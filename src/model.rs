@@ -18,7 +18,6 @@ use pyo3::prelude::*;
 pub type ParameterMap = IndexMap<String, PyObject>;
 
 /// Metadata describing a single fixture function.
-#[derive(Clone)]
 pub struct Fixture {
     pub name: String,
     pub callable: Py<PyAny>,
@@ -36,8 +35,8 @@ impl Fixture {
 }
 
 /// Metadata describing a single test case.
-#[derive(Clone)]
 pub struct TestCase {
+    #[allow(dead_code)]
     pub name: String,
     pub display_name: String,
     pub path: PathBuf,
@@ -48,14 +47,15 @@ pub struct TestCase {
 }
 
 impl TestCase {
+    #[allow(dead_code)]
     pub fn unique_id(&self) -> String {
         format!("{}::{}", self.path.display(), self.display_name)
     }
 }
 
 /// Collection of fixtures and test cases for a Python module.
-#[derive(Clone)]
 pub struct TestModule {
+    #[allow(dead_code)]
     pub path: PathBuf,
     pub fixtures: IndexMap<String, Fixture>,
     pub tests: Vec<TestCase>,
@@ -75,6 +75,7 @@ impl TestModule {
 #[derive(Clone, Debug)]
 pub struct RunConfiguration {
     pub pattern: Option<String>,
+    #[allow(dead_code)]
     pub worker_count: usize,
     pub capture_output: bool,
 }

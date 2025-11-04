@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use indexmap::IndexMap;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
@@ -21,7 +22,7 @@ use crate::model::{
 /// high-level summary information.
 pub fn run_collected_tests(
     py: Python<'_>,
-    modules: Vec<TestModule>,
+    modules: &[TestModule],
     config: &RunConfiguration,
 ) -> PyResult<PyRunReport> {
     let start = Instant::now();
@@ -128,8 +129,8 @@ fn execute_test_case(
     }
 
     let call_result = call_with_capture(py, config.capture_output, || {
-        let args_tuple = PyTuple::new(py, &call_args);
-        let callable = test_case.callable.as_ref(py);
+        let args_tuple = PyTuple::new_bound(py, &call_args);
+        let callable = test_case.callable.bind(py);
         callable.call1(args_tuple).map(|value| value.to_object(py))
     });
 
@@ -193,8 +194,7 @@ impl<'py> FixtureResolver<'py> {
         let fixture = self
             .fixtures
             .get(name)
-            .ok_or_else(|| invalid_test_definition(format!("Unknown fixture '{}'.", name)))?
-            .clone();
+            .ok_or_else(|| invalid_test_definition(format!("Unknown fixture '{}'.", name)))?;
 
         if !self.stack.insert(fixture.name.clone()) {
             return Err(PyRuntimeError::new_err(format!(
@@ -208,10 +208,11 @@ impl<'py> FixtureResolver<'py> {
             let value = self.resolve_argument(param)?;
             args.push(value);
         }
-        let args_tuple = PyTuple::new(self.py, &args);
+        let args_tuple = PyTuple::new_bound(self.py, &args);
         let call_result = fixture
             .callable
-            .call1(self.py, args_tuple)
+            .bind(self.py)
+            .call1(args_tuple)
             .map(|value| value.to_object(self.py));
         self.stack.remove(&fixture.name);
         let result = call_result?;
@@ -234,8 +235,8 @@ where
         return Ok((f(), None, None));
     }
 
-    let contextlib = py.import("contextlib")?;
-    let io = py.import("io")?;
+    let contextlib = py.import_bound("contextlib")?;
+    let io = py.import_bound("io")?;
     let stdout_buffer = io.getattr("StringIO")?.call0()?;
     let stderr_buffer = io.getattr("StringIO")?.call0()?;
     let redirect_stdout = contextlib
@@ -269,12 +270,15 @@ where
 
 /// Format a Python exception using `traceback.format_exception`.
 fn format_pyerr(py: Python<'_>, err: &PyErr) -> PyResult<String> {
-    let traceback = py.import("traceback")?;
+    let traceback = py.import_bound("traceback")?;
+    let exc_type = err.get_type_bound(py).into_py(py);
+    let exc_value = err.value_bound(py).into_py(py);
+    let exc_tb = err
+        .traceback_bound(py)
+        .map(|tb| tb.into_py(py))
+        .unwrap_or_else(|| py.None().into_py(py));
     let formatted: Vec<String> = traceback
-        .call_method1(
-            "format_exception",
-            (err.get_type(py), err.value(py), err.traceback(py)),
-        )?
+        .call_method1("format_exception", (exc_type, exc_value, exc_tb))?
         .extract()?;
     Ok(formatted.join(""))
 }

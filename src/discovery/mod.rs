@@ -10,7 +10,9 @@ use std::path::Path;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
+use pyo3::prelude::{PyAnyMethods, PyDictMethods};
 use pyo3::types::{PyAny, PyDict, PySequence};
+use pyo3::Bound;
 use walkdir::WalkDir;
 
 use crate::model::{
@@ -82,9 +84,9 @@ fn collect_from_file(
 ) -> PyResult<Option<TestModule>> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
-    let module_dict: &PyDict = module.getattr("__dict__")?.downcast()?;
+    let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.downcast_into()?;
 
-    let (fixtures, mut tests) = inspect_module(py, path, module_dict)?;
+    let (fixtures, mut tests) = inspect_module(py, path, &module_dict)?;
 
     if let Some(pattern) = &config.pattern {
         tests.retain(|case| test_matches_pattern(case, pattern));
@@ -116,26 +118,26 @@ fn test_matches_pattern(test_case: &TestCase, pattern: &str) -> bool {
 fn inspect_module(
     py: Python<'_>,
     path: &Path,
-    module_dict: &PyDict,
+    module_dict: &Bound<'_, PyDict>,
 ) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
-    let inspect = py.import("inspect")?;
+    let inspect = py.import_bound("inspect")?;
     let isfunction = inspect.getattr("isfunction")?;
     let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
 
     for (name_obj, value) in module_dict.iter() {
-        if !is_true(py, &isfunction.call1((value,))?)? {
+        if !isfunction.call1((&value,))?.is_truthy()? {
             continue;
         }
 
         let name: String = name_obj.extract()?;
-        if is_fixture(py, value)? {
+        if is_fixture(&value)? {
             fixtures.insert(
                 name.clone(),
                 Fixture::new(
                     name.clone(),
-                    value.into_py(py),
-                    extract_parameters(py, value)?,
+                    value.clone().unbind(),
+                    extract_parameters(py, &value)?,
                 ),
             );
             continue;
@@ -145,16 +147,16 @@ fn inspect_module(
             continue;
         }
 
-        let parameters = extract_parameters(py, value)?;
-        let skip_reason = string_attribute(py, value, "__rustest_skip__")?;
-        let param_cases = collect_parametrization(py, value)?;
+        let parameters = extract_parameters(py, &value)?;
+        let skip_reason = string_attribute(&value, "__rustest_skip__")?;
+        let param_cases = collect_parametrization(py, &value)?;
 
         if param_cases.is_empty() {
             tests.push(TestCase {
                 name: name.clone(),
                 display_name: name.clone(),
                 path: path.to_path_buf(),
-                callable: value.into_py(py),
+                callable: value.clone().unbind(),
                 parameters: parameters.clone(),
                 parameter_values: ParameterMap::new(),
                 skip_reason: skip_reason.clone(),
@@ -166,7 +168,7 @@ fn inspect_module(
                     name: name.clone(),
                     display_name,
                     path: path.to_path_buf(),
-                    callable: value.into_py(py),
+                    callable: value.clone().unbind(),
                     parameters: parameters.clone(),
                     parameter_values: values,
                     skip_reason: skip_reason.clone(),
@@ -179,15 +181,15 @@ fn inspect_module(
 }
 
 /// Determine whether a Python object has been marked as a fixture.
-fn is_fixture(py: Python<'_>, value: &PyAny) -> PyResult<bool> {
+fn is_fixture(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     Ok(match value.getattr("__rustest_fixture__") {
-        Ok(flag) => flag.is_true()?,
+        Ok(flag) => flag.is_truthy()?,
         Err(_) => false,
     })
 }
 
 /// Extract a string attribute from the object, if present.
-fn string_attribute(py: Python<'_>, value: &PyAny, attr: &str) -> PyResult<Option<String>> {
+fn string_attribute(value: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<String>> {
     match value.getattr(attr) {
         Ok(obj) => {
             if obj.is_none() {
@@ -201,36 +203,39 @@ fn string_attribute(py: Python<'_>, value: &PyAny, attr: &str) -> PyResult<Optio
 }
 
 /// Extract the parameter names from a Python callable.
-fn extract_parameters(py: Python<'_>, value: &PyAny) -> PyResult<Vec<String>> {
-    let inspect = py.import("inspect")?;
+fn extract_parameters(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    let inspect = py.import_bound("inspect")?;
     let signature = inspect.call_method1("signature", (value,))?;
     let params = signature.getattr("parameters")?;
     let mut names = Vec::new();
     for key in params.call_method0("keys")?.iter()? {
-        let key: &PyAny = key?;
+        let key = key?;
         names.push(key.extract()?);
     }
     Ok(names)
 }
 
 /// Collect parameterisation information attached to a test function.
-fn collect_parametrization(py: Python<'_>, value: &PyAny) -> PyResult<Vec<(String, ParameterMap)>> {
+fn collect_parametrization(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Vec<(String, ParameterMap)>> {
     let mut parametrized = Vec::new();
     let Ok(attr) = value.getattr("__rustest_parametrization__") else {
         return Ok(parametrized);
     };
-    let sequence: &PySequence = attr.downcast()?;
+    let sequence: Bound<'_, PySequence> = attr.downcast_into()?;
     for element in sequence.iter()? {
         let element = element?;
-        let case: &PyDict = element.downcast()?;
-        let case_id: String = case
-            .get_item("id")
-            .ok_or_else(|| invalid_test_definition("Missing id in parametrization metadata"))?
-            .extract()?;
-        let values: &PyDict = case
-            .get_item("values")
-            .ok_or_else(|| invalid_test_definition("Missing values in parametrization metadata"))?
-            .downcast()?;
+        let case: Bound<'_, PyDict> = element.downcast_into()?;
+        let case_id = case
+            .get_item("id")?
+            .ok_or_else(|| invalid_test_definition("Missing id in parametrization metadata"))?;
+        let case_id: String = case_id.extract()?;
+        let values = case
+            .get_item("values")?
+            .ok_or_else(|| invalid_test_definition("Missing values in parametrization metadata"))?;
+        let values: Bound<'_, PyDict> = values.downcast_into()?;
         let mut parameters = ParameterMap::new();
         for (key, value) in values.iter() {
             let key: String = key.extract()?;
@@ -242,13 +247,13 @@ fn collect_parametrization(py: Python<'_>, value: &PyAny) -> PyResult<Vec<(Strin
 }
 
 /// Load the Python module from disk.
-fn load_python_module(
-    py: Python<'_>,
+fn load_python_module<'py>(
+    py: Python<'py>,
     path: &Path,
     module_name: &str,
     package: Option<&str>,
-) -> PyResult<Bound<'_, PyAny>> {
-    let importlib = py.import("importlib.util")?;
+) -> PyResult<Bound<'py, PyAny>> {
+    let importlib = py.import_bound("importlib.util")?;
     let path_str = path.to_string_lossy();
     let spec =
         importlib.call_method1("spec_from_file_location", (module_name, path_str.as_ref()))?;
@@ -263,8 +268,8 @@ fn load_python_module(
     if let Some(package_name) = package {
         module.setattr("__package__", package_name)?;
     }
-    let sys = py.import("sys")?;
-    let modules: &PyDict = sys.getattr("modules")?.downcast()?;
+    let sys = py.import_bound("sys")?;
+    let modules: Bound<'_, PyDict> = sys.getattr("modules")?.downcast_into()?;
     modules.set_item(module_name, &module)?;
     loader.call_method1("exec_module", (&module,))?;
     Ok(module)
@@ -278,7 +283,6 @@ fn infer_module_names(path: &Path, fallback_id: usize) -> (String, Option<String
         .unwrap_or_else(|| "rustest_module");
 
     let mut components = vec![stem.to_string()];
-    let mut package_components = Vec::new();
     let mut parent = path.parent();
 
     while let Some(dir) = parent {
@@ -299,7 +303,7 @@ fn infer_module_names(path: &Path, fallback_id: usize) -> (String, Option<String
     }
 
     components.reverse();
-    package_components = components[..components.len() - 1].to_vec();
+    let package_components = components[..components.len() - 1].to_vec();
     let module_name = components.join(".");
     let package_name = if package_components.is_empty() {
         None
@@ -308,9 +312,4 @@ fn infer_module_names(path: &Path, fallback_id: usize) -> (String, Option<String
     };
 
     (module_name, package_name)
-}
-
-/// Evaluate whether the provided Python object is truthy.
-fn is_true(py: Python<'_>, value: &PyAny) -> PyResult<bool> {
-    Ok(value.is_true()?)
 }
