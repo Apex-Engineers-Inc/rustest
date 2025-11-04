@@ -9,7 +9,7 @@ readme = "README.md"
 repository = "https://example.com/rustest"
 
 [lib]
-name = "rustest"
+name = "_rust"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
