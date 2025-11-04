@@ -1,0 +1,28 @@
+[package]
+name = "rustest"
+version = "0.1.0"
+edition = "2021"
+authors = ["rustest contributors"]
+description = "A hyper-performant pytest-compatible test runner powered by Rust"
+license = "MIT"
+readme = "README.md"
+repository = "https://example.com/rustest"
+
+[lib]
+name = "rustest"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+indexmap = "2.1"
+pyo3 = { version = "0.20", features = ["extension-module", "anyhow"] }
+rayon = "1.8"
+globset = "0.4"
+walkdir = "2.4"
+
+[build-dependencies]
+pyo3-build-config = "0.20"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"

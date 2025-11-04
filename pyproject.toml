@@ -1,0 +1,49 @@
+[build-system]
+requires = ["maturin>=1.4,<2"]
+build-backend = "maturin"
+
+[project]
+name = "rustest"
+version = "0.1.0"
+description = "Rust powered pytest-compatible runner"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "rustest contributors" }]
+dependencies = [
+    "typing_extensions>=4.8",
+]
+scripts = { rustest = "rustest.__main__:main" }
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.7",
+    "poethepoet>=0.22",
+    "ruff>=0.1.9",
+]
+
+[project.urls]
+Homepage = "https://example.com/rustest"
+
+[tool.poe.tasks]
+build = "uv build"
+dev = "uv run maturin develop"
+fmt = "cargo fmt"
+lint = "uv run --with dev ruff check python"
+typecheck = "uv run --with dev mypy python"
+pytests = "uv run python -m unittest discover -s python/tests -t python"
+unit = "uv run python -m rustest"
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+mypy_path = ["python"]
+
+[tool.uv]
+managed = true
+
+[tool.uv.sources]
+rustest = { path = "." }
