@@ -1,0 +1,219 @@
+//! Shared data structures used across the discovery and execution pipelines.
+//!
+//! The majority of the structs defined here are small value objects carrying
+//! data between the different subsystems.  By keeping them in their own module
+//! we ensure that the control flow is easy to follow for developers who may not
+//! have much Rust experience yet.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use indexmap::IndexMap;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+
+/// Type alias to make signatures easier to read: parameter values are stored in
+/// an ordered map so that we can preserve the parameter order when constructing
+/// the argument list for a test function.
+pub type ParameterMap = IndexMap<String, PyObject>;
+
+/// Metadata describing a single fixture function.
+#[derive(Clone)]
+pub struct Fixture {
+    pub name: String,
+    pub callable: Py<PyAny>,
+    pub parameters: Vec<String>,
+}
+
+impl Fixture {
+    pub fn new(name: String, callable: Py<PyAny>, parameters: Vec<String>) -> Self {
+        Self {
+            name,
+            callable,
+            parameters,
+        }
+    }
+}
+
+/// Metadata describing a single test case.
+#[derive(Clone)]
+pub struct TestCase {
+    pub name: String,
+    pub display_name: String,
+    pub path: PathBuf,
+    pub callable: Py<PyAny>,
+    pub parameters: Vec<String>,
+    pub parameter_values: ParameterMap,
+    pub skip_reason: Option<String>,
+}
+
+impl TestCase {
+    pub fn unique_id(&self) -> String {
+        format!("{}::{}", self.path.display(), self.display_name)
+    }
+}
+
+/// Collection of fixtures and test cases for a Python module.
+#[derive(Clone)]
+pub struct TestModule {
+    pub path: PathBuf,
+    pub fixtures: IndexMap<String, Fixture>,
+    pub tests: Vec<TestCase>,
+}
+
+impl TestModule {
+    pub fn new(path: PathBuf, fixtures: IndexMap<String, Fixture>, tests: Vec<TestCase>) -> Self {
+        Self {
+            path,
+            fixtures,
+            tests,
+        }
+    }
+}
+
+/// Configuration coming from Python.
+#[derive(Clone, Debug)]
+pub struct RunConfiguration {
+    pub pattern: Option<String>,
+    pub worker_count: usize,
+    pub capture_output: bool,
+}
+
+impl RunConfiguration {
+    pub fn new(pattern: Option<String>, workers: Option<usize>, capture_output: bool) -> Self {
+        let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
+        Self {
+            pattern,
+            worker_count,
+            capture_output,
+        }
+    }
+}
+
+/// Public representation of the run summary exposed to Python.
+#[pyclass(module = "rustest._rust")]
+pub struct PyRunReport {
+    #[pyo3(get)]
+    pub total: usize,
+    #[pyo3(get)]
+    pub passed: usize,
+    #[pyo3(get)]
+    pub failed: usize,
+    #[pyo3(get)]
+    pub skipped: usize,
+    #[pyo3(get)]
+    pub duration: f64,
+    #[pyo3(get)]
+    pub results: Vec<PyTestResult>,
+}
+
+impl PyRunReport {
+    pub fn new(
+        total: usize,
+        passed: usize,
+        failed: usize,
+        skipped: usize,
+        duration: f64,
+        results: Vec<PyTestResult>,
+    ) -> Self {
+        Self {
+            total,
+            passed,
+            failed,
+            skipped,
+            duration,
+            results,
+        }
+    }
+}
+
+/// Individual test result exposed to Python callers.
+#[pyclass(module = "rustest._rust")]
+#[derive(Clone)]
+pub struct PyTestResult {
+    #[pyo3(get)]
+    pub name: String,
+    #[pyo3(get)]
+    pub path: String,
+    #[pyo3(get)]
+    pub status: String,
+    #[pyo3(get)]
+    pub duration: f64,
+    #[pyo3(get)]
+    pub message: Option<String>,
+    #[pyo3(get)]
+    pub stdout: Option<String>,
+    #[pyo3(get)]
+    pub stderr: Option<String>,
+}
+
+impl PyTestResult {
+    pub fn passed(
+        name: String,
+        path: String,
+        duration: f64,
+        stdout: Option<String>,
+        stderr: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            path,
+            status: "passed".to_string(),
+            duration,
+            message: None,
+            stdout,
+            stderr,
+        }
+    }
+
+    pub fn skipped(name: String, path: String, duration: f64, reason: String) -> Self {
+        Self {
+            name,
+            path,
+            status: "skipped".to_string(),
+            duration,
+            message: Some(reason),
+            stdout: None,
+            stderr: None,
+        }
+    }
+
+    pub fn failed(
+        name: String,
+        path: String,
+        duration: f64,
+        message: String,
+        stdout: Option<String>,
+        stderr: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            path,
+            status: "failed".to_string(),
+            duration,
+            message: Some(message),
+            stdout,
+            stderr,
+        }
+    }
+}
+
+/// Light-weight helper used to generate monotonically increasing identifiers
+/// for dynamically generated module names.
+#[derive(Default)]
+pub struct ModuleIdGenerator {
+    counter: AtomicUsize,
+}
+
+impl ModuleIdGenerator {
+    pub fn next(&self) -> usize {
+        self.counter.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+/// Convenience wrapper that converts a raw Python exception into a structured
+/// message.  We expose this via [`PyValueError`] for ergonomics on the Python
+/// side.
+pub fn invalid_test_definition(message: impl Into<String>) -> PyErr {
+    PyValueError::new_err(message.into())
+}
