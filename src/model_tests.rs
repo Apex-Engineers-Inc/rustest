@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::model::*;
+    use indexmap::IndexMap;
     use pyo3::prelude::*;
     use std::path::PathBuf;
 
@@ -64,13 +65,9 @@ mod tests {
 
     #[test]
     fn test_test_module_new() {
-        let fixtures = ParameterMap::new();
+        let fixtures = IndexMap::new();
         let tests = vec![];
-        let module = TestModule::new(
-            PathBuf::from("/test/module.py"),
-            fixtures,
-            tests,
-        );
+        let module = TestModule::new(PathBuf::from("/test/module.py"), fixtures, tests);
 
         assert_eq!(module.path, PathBuf::from("/test/module.py"));
         assert!(module.fixtures.is_empty());
