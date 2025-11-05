@@ -12,7 +12,7 @@ and [`poethepoet`](https://github.com/nat-n/poethepoet).
 - ✅ Test discovery for files named `test_*.py` or `*_test.py`.
 - ✅ Dependency-injected fixtures resolved by Rust for minimal overhead.
 - ✅ Optional stdout/stderr capture and pretty CLI output.
-- ✅ Fully typed Python API with `mypy` configuration ready to go.
+- ✅ Fully typed Python API with `basedpyright` configuration ready to go.
 
 ## Installation
 
@@ -178,7 +178,7 @@ We use `poe` (poethepoet) as a task runner. Think of it like `make` or `npm scri
 | `poe dev` | Rebuild the Rust extension | After changing any `.rs` files |
 | `poe pytests` | Run Python tests | After changing Python code |
 | `poe lint` | Check Python code style | Before committing |
-| `poe typecheck` | Check Python types with mypy | Before committing |
+| `poe typecheck` | Check Python types with basedpyright | Before committing |
 | `poe fmt` | Format Rust code | Before committing Rust changes |
 | `poe unit` | Run example test suite | To verify end-to-end functionality |
 | `cargo test` | Run Rust tests | After changing Rust code |
