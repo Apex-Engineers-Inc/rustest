@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unittest
 from types import SimpleNamespace
 
 from .helpers import stub_rust_module
@@ -8,7 +7,7 @@ from rustest import RunReport
 from rustest.core import run as core_run
 
 
-class CoreRunTests(unittest.TestCase):
+class TestCoreRun:
     def test_run_delegates_to_rust_layer(self) -> None:
         dummy_result = SimpleNamespace(
             name="test_sample",
@@ -45,14 +44,10 @@ class CoreRunTests(unittest.TestCase):
                 capture_output=False,
             )
 
-        self.assertIsInstance(report, RunReport)
-        self.assertEqual(captured_args["paths"], ["tests"])
-        self.assertEqual(captured_args["pattern"], "sample")
-        self.assertEqual(captured_args["workers"], 4)
-        self.assertFalse(captured_args["capture_output"])
-        self.assertEqual(report.total, 1)
-        self.assertEqual(report.passed, 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert isinstance(report, RunReport)
+        assert captured_args["paths"] == ["tests"]
+        assert captured_args["pattern"] == "sample"
+        assert captured_args["workers"] == 4
+        assert captured_args["capture_output"] is False
+        assert report.total == 1
+        assert report.passed == 1

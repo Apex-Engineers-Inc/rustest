@@ -20,6 +20,7 @@ dev = [
     "basedpyright>=1.19",
     "maturin>=1.4,<2",
     "poethepoet>=0.22",
+    "pytest>=7.0",
     "ruff>=0.1.9",
 ]
 
@@ -36,8 +37,9 @@ dev = "uv run maturin develop"
 fmt = "cargo fmt"
 lint = "uv run --with dev ruff check python"
 typecheck = "uv run --with dev basedpyright python"
-pytests = "uv run python -m unittest discover -s python/tests -t python"
-unit = "uv run python -m rustest"
+pytests = "uv run pytest python/tests -v"
+pytest-compat = "uv run rustest tests/pytest_compat/selected/"
+unit = "uv run rustest examples/tests/"
 
 [tool.ruff]
 line-length = 100

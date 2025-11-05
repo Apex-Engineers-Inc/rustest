@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unittest
 from types import SimpleNamespace
 
 from .helpers import ensure_rust_stub
@@ -9,7 +8,7 @@ from rustest._reporting import RunReport, TestResult
 ensure_rust_stub()
 
 
-class ReportingConversionTests(unittest.TestCase):
+class TestReportingConversion:
     def test_from_py_converts_nested_results(self) -> None:
         py_result = SimpleNamespace(
             name="test_sample",
@@ -31,13 +30,13 @@ class ReportingConversionTests(unittest.TestCase):
 
         report = RunReport.from_py(py_report)
 
-        self.assertEqual(report.total, 1)
-        self.assertEqual(report.passed, 1)
-        self.assertEqual(len(report.results), 1)
+        assert report.total == 1
+        assert report.passed == 1
+        assert len(report.results) == 1
         result = report.results[0]
-        self.assertIsInstance(result, TestResult)
-        self.assertEqual(result.name, "test_sample")
-        self.assertEqual(result.stdout, "output")
+        assert isinstance(result, TestResult)
+        assert result.name == "test_sample"
+        assert result.stdout == "output"
 
     def test_iter_status_filters_results(self) -> None:
         passed = TestResult(
@@ -69,8 +68,4 @@ class ReportingConversionTests(unittest.TestCase):
 
         failures = list(report.iter_status("failed"))
 
-        self.assertEqual(failures, [failed])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert failures == [failed]

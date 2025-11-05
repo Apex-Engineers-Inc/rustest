@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import io
-import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
+
+import pytest
 
 from .helpers import stub_rust_module
 from rustest import RunReport, TestResult
 from rustest import _cli
 
 
-class CliTests(unittest.TestCase):
+class TestCli:
     def test_build_parser_defaults(self) -> None:
         parser = _cli.build_parser()
         args = parser.parse_args([])
-        self.assertEqual(tuple(args.paths), (".",))
-        self.assertTrue(args.capture_output)
+        assert tuple(args.paths) == (".",)
+        assert args.capture_output is True
 
     def test_print_report_outputs_summary(self) -> None:
         result = TestResult(
@@ -41,9 +42,9 @@ class CliTests(unittest.TestCase):
             _cli._print_report(report)
 
         output = buffer.getvalue()
-        self.assertIn("FAILED", output)
-        self.assertIn("1 tests", output)
-        self.assertIn("assert False", output)
+        assert "FAILED" in output
+        assert "1 tests" in output
+        assert "assert False" in output
 
     def test_main_invokes_core_run(self) -> None:
         result = TestResult(
@@ -75,16 +76,12 @@ class CliTests(unittest.TestCase):
             workers=None,
             capture_output=True,
         )
-        self.assertEqual(exit_code, 0)
+        assert exit_code == 0
 
     def test_main_surfaces_rust_errors(self) -> None:
         def raising_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
             raise RuntimeError("boom")
 
         with stub_rust_module(run=raising_run):
-            with self.assertRaises(RuntimeError):
+            with pytest.raises(RuntimeError):
                 _cli.main(["tests"])
-
-
-if __name__ == "__main__":
-    _ = unittest.main()

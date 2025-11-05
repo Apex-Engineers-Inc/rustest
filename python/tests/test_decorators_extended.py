@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import unittest
+import pytest
 
 from .helpers import ensure_rust_stub
 from rustest import fixture, parametrize, skip
@@ -10,13 +10,13 @@ from rustest import fixture, parametrize, skip
 ensure_rust_stub()
 
 
-class ExtendedFixtureTests(unittest.TestCase):
+class TestExtendedFixture:
     def test_fixture_preserves_function_name(self) -> None:
         @fixture
         def my_fixture() -> int:
             return 42
 
-        self.assertEqual(my_fixture.__name__, "my_fixture")
+        assert my_fixture.__name__ == "my_fixture"
 
     def test_fixture_preserves_docstring(self) -> None:
         @fixture
@@ -24,15 +24,15 @@ class ExtendedFixtureTests(unittest.TestCase):
             """This is a docstring."""
             return 10
 
-        self.assertEqual(documented.__doc__, "This is a docstring.")
+        assert documented.__doc__ == "This is a docstring."
 
     def test_fixture_can_return_none(self) -> None:
         @fixture
         def none_fixture() -> None:
             return None
 
-        self.assertTrue(getattr(none_fixture, "__rustest_fixture__"))
-        self.assertIsNone(none_fixture())
+        assert getattr(none_fixture, "__rustest_fixture__")
+        assert none_fixture() is None
 
     def test_fixture_can_return_complex_types(self) -> None:
         @fixture
@@ -40,8 +40,8 @@ class ExtendedFixtureTests(unittest.TestCase):
             return {"key": "value"}
 
         result = dict_fixture()
-        self.assertIsInstance(result, dict)
-        self.assertEqual(result["key"], "value")
+        assert isinstance(result, dict)
+        assert result["key"] == "value"
 
     def test_multiple_fixture_decorations(self) -> None:
         """Test that fixture can be composed with other decorators."""
@@ -51,17 +51,17 @@ class ExtendedFixtureTests(unittest.TestCase):
             return 1
 
         # Should still be marked as a fixture
-        self.assertTrue(getattr(simple, "__rustest_fixture__"))
+        assert getattr(simple, "__rustest_fixture__")
 
 
-class ExtendedSkipTests(unittest.TestCase):
+class TestExtendedSkip:
     def test_skip_with_empty_string_reason(self) -> None:
         @skip("")
         def test_func() -> None:
             pass
 
         # Empty string is treated as no reason, so default is used
-        self.assertEqual(getattr(test_func, "__rustest_skip__"), "skipped via rustest.skip")
+        assert getattr(test_func, "__rustest_skip__") == "skipped via rustest.skip"
 
     def test_skip_with_multiline_reason(self) -> None:
         reason = "This is a\nmultiline\nreason"
@@ -70,7 +70,7 @@ class ExtendedSkipTests(unittest.TestCase):
         def test_func() -> None:
             pass
 
-        self.assertEqual(getattr(test_func, "__rustest_skip__"), reason)
+        assert getattr(test_func, "__rustest_skip__") == reason
 
     def test_skip_with_special_characters(self) -> None:
         reason = "Special chars: @#$%^&*(){}[]"
@@ -79,7 +79,7 @@ class ExtendedSkipTests(unittest.TestCase):
         def test_func() -> None:
             pass
 
-        self.assertEqual(getattr(test_func, "__rustest_skip__"), reason)
+        assert getattr(test_func, "__rustest_skip__") == reason
 
     def test_skip_preserves_function_attributes(self) -> None:
         @skip("reason")
@@ -87,19 +87,19 @@ class ExtendedSkipTests(unittest.TestCase):
             """Docstring here."""
             pass
 
-        self.assertEqual(test_with_attrs.__name__, "test_with_attrs")
-        self.assertEqual(test_with_attrs.__doc__, "Docstring here.")
+        assert test_with_attrs.__name__ == "test_with_attrs"
+        assert test_with_attrs.__doc__ == "Docstring here."
 
 
-class ExtendedParametrizeTests(unittest.TestCase):
+class TestExtendedParametrize:
     def test_parametrize_with_single_value(self) -> None:
         @parametrize("x", [(1,)])
         def test_func(x: int) -> int:
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 1)
-        self.assertEqual(cases[0]["values"]["x"], 1)
+        assert len(cases) == 1
+        assert cases[0]["values"]["x"] == 1
 
     def test_parametrize_with_many_parameters(self) -> None:
         @parametrize(("a", "b", "c", "d", "e"), [(1, 2, 3, 4, 5), (6, 7, 8, 9, 10)])
@@ -107,10 +107,10 @@ class ExtendedParametrizeTests(unittest.TestCase):
             return a + b + c + d + e
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 2)
-        self.assertEqual(cases[0]["values"]["a"], 1)
-        self.assertEqual(cases[0]["values"]["e"], 5)
-        self.assertEqual(cases[1]["values"]["a"], 6)
+        assert len(cases) == 2
+        assert cases[0]["values"]["a"] == 1
+        assert cases[0]["values"]["e"] == 5
+        assert cases[1]["values"]["a"] == 6
 
     def test_parametrize_with_complex_values(self) -> None:
         complex_data = [
@@ -123,9 +123,9 @@ class ExtendedParametrizeTests(unittest.TestCase):
             pass
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 2)
-        self.assertIsInstance(cases[0]["values"]["dict_val"], dict)
-        self.assertIsInstance(cases[0]["values"]["list_val"], list)
+        assert len(cases) == 2
+        assert isinstance(cases[0]["values"]["dict_val"], dict)
+        assert isinstance(cases[0]["values"]["list_val"], list)
 
     def test_parametrize_with_custom_ids(self) -> None:
         @parametrize("value", [(1,), (2,), (3,)], ids=["first", "second", "third"])
@@ -133,9 +133,9 @@ class ExtendedParametrizeTests(unittest.TestCase):
             return value
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(cases[0]["id"], "first")
-        self.assertEqual(cases[1]["id"], "second")
-        self.assertEqual(cases[2]["id"], "third")
+        assert cases[0]["id"] == "first"
+        assert cases[1]["id"] == "second"
+        assert cases[2]["id"] == "third"
 
     def test_parametrize_with_unicode_ids(self) -> None:
         @parametrize("value", [(1,), (2,)], ids=["测试", "🚀"])
@@ -143,8 +143,8 @@ class ExtendedParametrizeTests(unittest.TestCase):
             return value
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(cases[0]["id"], "测试")
-        self.assertEqual(cases[1]["id"], "🚀")
+        assert cases[0]["id"] == "测试"
+        assert cases[1]["id"] == "🚀"
 
     def test_parametrize_with_none_values(self) -> None:
         @parametrize("value", [(None,), (None,)])
@@ -152,11 +152,11 @@ class ExtendedParametrizeTests(unittest.TestCase):
             pass
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 2)
-        self.assertIsNone(cases[0]["values"]["value"])
+        assert len(cases) == 2
+        assert cases[0]["values"]["value"] is None
 
     def test_parametrize_rejects_none_as_argnames(self) -> None:
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
 
             @parametrize(None, [(1,)])  # type: ignore
             def _(_: int) -> None:
@@ -168,8 +168,8 @@ class ExtendedParametrizeTests(unittest.TestCase):
             return flag
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertTrue(cases[0]["values"]["flag"])
-        self.assertFalse(cases[1]["values"]["flag"])
+        assert cases[0]["values"]["flag"] is True
+        assert cases[1]["values"]["flag"] is False
 
     def test_parametrize_with_zero_and_negative_numbers(self) -> None:
         @parametrize("num", [(0,), (-1,), (-100,)])
@@ -177,9 +177,9 @@ class ExtendedParametrizeTests(unittest.TestCase):
             return num
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(cases[0]["values"]["num"], 0)
-        self.assertEqual(cases[1]["values"]["num"], -1)
-        self.assertEqual(cases[2]["values"]["num"], -100)
+        assert cases[0]["values"]["num"] == 0
+        assert cases[1]["values"]["num"] == -1
+        assert cases[2]["values"]["num"] == -100
 
     def test_parametrize_with_float_values(self) -> None:
         @parametrize("value", [(1.5,), (2.7,), (3.14159,)])
@@ -187,8 +187,8 @@ class ExtendedParametrizeTests(unittest.TestCase):
             return value
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertAlmostEqual(cases[0]["values"]["value"], 1.5)
-        self.assertAlmostEqual(cases[2]["values"]["value"], 3.14159)
+        assert abs(cases[0]["values"]["value"] - 1.5) < 0.001
+        assert abs(cases[2]["values"]["value"] - 3.14159) < 0.00001
 
     def test_parametrize_with_tuple_values(self) -> None:
         @parametrize("data", [((1, 2),), ((3, 4),)])
@@ -196,20 +196,20 @@ class ExtendedParametrizeTests(unittest.TestCase):
             return data
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(cases[0]["values"]["data"], (1, 2))
-        self.assertEqual(cases[1]["values"]["data"], (3, 4))
+        assert cases[0]["values"]["data"] == (1, 2)
+        assert cases[1]["values"]["data"] == (3, 4)
 
 
-class CombinedDecoratorsTests(unittest.TestCase):
+class TestCombinedDecorators:
     def test_skip_and_parametrize_together(self) -> None:
         @skip("not ready")
         @parametrize("x", [(1,), (2,)])
         def test_func(x: int) -> int:
             return x
 
-        self.assertEqual(getattr(test_func, "__rustest_skip__"), "not ready")
+        assert getattr(test_func, "__rustest_skip__") == "not ready"
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 2)
+        assert len(cases) == 2
 
     def test_parametrize_order_matters(self) -> None:
         """Test that decorator order is preserved."""
@@ -220,8 +220,4 @@ class CombinedDecoratorsTests(unittest.TestCase):
             return a + b
 
         # Should have parametrization metadata
-        self.assertTrue(hasattr(test_func, "__rustest_parametrization__"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert hasattr(test_func, "__rustest_parametrization__")

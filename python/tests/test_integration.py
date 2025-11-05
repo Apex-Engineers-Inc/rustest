@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import os
 import tempfile
-import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+
+import pytest
 
 from .helpers import ensure_rust_stub
 from rustest import _cli, run, RunReport, TestResult
@@ -15,20 +16,13 @@ from rustest import _cli, run, RunReport, TestResult
 ensure_rust_stub()
 
 
-class IntegrationTests(unittest.TestCase):
+class TestIntegration:
     """Integration tests that verify end-to-end functionality."""
 
-    def setUp(self) -> None:
+    @pytest.fixture(autouse=True)
+    def setup_temp_dir(self, tmp_path: Path) -> None:
         """Set up test fixtures."""
-        self.temp_dir = tempfile.mkdtemp(prefix="rustest_integration_")
-        self.addCleanup(self._cleanup_temp_dir)
-
-    def _cleanup_temp_dir(self) -> None:
-        """Clean up temporary directory."""
-        import shutil
-
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+        self.temp_dir = str(tmp_path)
 
     def _write_test_file(self, filename: str, content: str) -> Path:
         """Write a test file to the temp directory."""
@@ -48,13 +42,13 @@ def test_pass():
 
         try:
             report = run(paths=[self.temp_dir])
-            self.assertIsInstance(report, RunReport)
-            self.assertEqual(report.passed, 1)
-            self.assertEqual(report.failed, 0)
-            self.assertEqual(report.total, 1)
+            assert isinstance(report, RunReport)
+            assert report.passed == 1
+            assert report.failed == 0
+            assert report.total == 1
         except Exception:
             # If rust module is not available, skip this test
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
     def test_run_with_multiple_tests(self) -> None:
         """Test running multiple tests in one file."""
@@ -74,10 +68,10 @@ def test_three():
 
         try:
             report = run(paths=[self.temp_dir])
-            self.assertEqual(report.total, 3)
-            self.assertEqual(report.passed, 3)
+            assert report.total == 3
+            assert report.passed == 3
         except Exception:
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
     def test_run_with_pattern_filter(self) -> None:
         """Test pattern filtering."""
@@ -98,9 +92,9 @@ def test_gamma():
         try:
             report = run(paths=[self.temp_dir], pattern="alpha")
             # Should only match test_alpha
-            self.assertGreaterEqual(report.total, 0)
+            assert report.total >= 0
         except Exception:
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
     def test_run_without_capture_output(self) -> None:
         """Test running tests without capturing output."""
@@ -115,12 +109,12 @@ def test_with_print():
 
         try:
             report = run(paths=[self.temp_dir], capture_output=False)
-            self.assertEqual(report.passed, 1)
+            assert report.passed == 1
             # When capture_output is False, stdout should not be captured
             if report.results:
-                self.assertIsNone(report.results[0].stdout)
+                assert report.results[0].stdout is None
         except Exception:
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
     def test_cli_main_with_passing_tests(self) -> None:
         """Test CLI main function with passing tests."""
@@ -136,9 +130,9 @@ def test_success():
         try:
             with redirect_stdout(buffer):
                 exit_code = _cli.main([self.temp_dir])
-            self.assertEqual(exit_code, 0)
+            assert exit_code == 0
         except Exception:
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
     def test_test_result_attributes(self) -> None:
         """Test TestResult data class attributes."""
@@ -152,13 +146,13 @@ def test_success():
             stderr=None,
         )
 
-        self.assertEqual(result.name, "test_example")
-        self.assertEqual(result.path, "/path/to/test.py")
-        self.assertEqual(result.status, "passed")
-        self.assertEqual(result.duration, 0.5)
-        self.assertIsNone(result.message)
-        self.assertEqual(result.stdout, "output")
-        self.assertIsNone(result.stderr)
+        assert result.name == "test_example"
+        assert result.path == "/path/to/test.py"
+        assert result.status == "passed"
+        assert result.duration == 0.5
+        assert result.message is None
+        assert result.stdout == "output"
+        assert result.stderr is None
 
     def test_run_report_attributes(self) -> None:
         """Test RunReport data class attributes."""
@@ -180,12 +174,12 @@ def test_success():
             results=(result,),
         )
 
-        self.assertEqual(report.total, 1)
-        self.assertEqual(report.passed, 1)
-        self.assertEqual(report.failed, 0)
-        self.assertEqual(report.skipped, 0)
-        self.assertEqual(report.duration, 0.1)
-        self.assertEqual(len(report.results), 1)
+        assert report.total == 1
+        assert report.passed == 1
+        assert report.failed == 0
+        assert report.skipped == 0
+        assert report.duration == 0.1
+        assert len(report.results) == 1
 
     def test_run_report_iter_status(self) -> None:
         """Test filtering results by status."""
@@ -230,12 +224,12 @@ def test_success():
         failed_tests = list(report.iter_status("failed"))
         skipped_tests = list(report.iter_status("skipped"))
 
-        self.assertEqual(len(passed_tests), 1)
-        self.assertEqual(len(failed_tests), 1)
-        self.assertEqual(len(skipped_tests), 1)
-        self.assertEqual(passed_tests[0].name, "test_pass")
-        self.assertEqual(failed_tests[0].name, "test_fail")
-        self.assertEqual(skipped_tests[0].name, "test_skip")
+        assert len(passed_tests) == 1
+        assert len(failed_tests) == 1
+        assert len(skipped_tests) == 1
+        assert passed_tests[0].name == "test_pass"
+        assert failed_tests[0].name == "test_fail"
+        assert skipped_tests[0].name == "test_skip"
 
     def test_run_with_worker_count(self) -> None:
         """Test running tests with specific worker count."""
@@ -252,9 +246,9 @@ def test_two():
 
         try:
             report = run(paths=[self.temp_dir], workers=2)
-            self.assertEqual(report.total, 2)
+            assert report.total == 2
         except Exception:
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
     def test_empty_test_directory(self) -> None:
         """Test running tests in an empty directory."""
@@ -263,11 +257,11 @@ def test_two():
 
         try:
             report = run(paths=[str(empty_dir)])
-            self.assertEqual(report.total, 0)
-            self.assertEqual(report.passed, 0)
-            self.assertEqual(report.failed, 0)
+            assert report.total == 0
+            assert report.passed == 0
+            assert report.failed == 0
         except Exception:
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
     def test_multiple_test_files(self) -> None:
         """Test running tests from multiple files."""
@@ -288,56 +282,52 @@ def test_from_file2():
 
         try:
             report = run(paths=[self.temp_dir])
-            self.assertGreaterEqual(report.total, 2)
+            assert report.total >= 2
         except Exception:
-            self.skipTest("Rust module not available")
+            pytest.skip("Rust module not available")
 
 
-class CLIParserTests(unittest.TestCase):
+class TestCLIParser:
     """Tests for CLI argument parsing."""
 
     def test_parser_with_no_args(self) -> None:
         """Test parser with no arguments uses defaults."""
         parser = _cli.build_parser()
         args = parser.parse_args([])
-        self.assertEqual(tuple(args.paths), (".",))
-        self.assertIsNone(args.pattern)
-        self.assertIsNone(args.workers)
-        self.assertTrue(args.capture_output)
+        assert tuple(args.paths) == (".",)
+        assert args.pattern is None
+        assert args.workers is None
+        assert args.capture_output is True
 
     def test_parser_with_paths(self) -> None:
         """Test parser with custom paths."""
         parser = _cli.build_parser()
         args = parser.parse_args(["tests", "src"])
-        self.assertEqual(tuple(args.paths), ("tests", "src"))
+        assert tuple(args.paths) == ("tests", "src")
 
     def test_parser_with_pattern(self) -> None:
         """Test parser with pattern filter."""
         parser = _cli.build_parser()
         args = parser.parse_args(["-k", "test_pattern"])
-        self.assertEqual(args.pattern, "test_pattern")
+        assert args.pattern == "test_pattern"
 
     def test_parser_with_workers(self) -> None:
         """Test parser with worker count."""
         parser = _cli.build_parser()
         args = parser.parse_args(["-n", "4"])
-        self.assertEqual(args.workers, 4)
+        assert args.workers == 4
 
     def test_parser_with_no_capture(self) -> None:
         """Test parser with capture output disabled."""
         parser = _cli.build_parser()
         args = parser.parse_args(["--no-capture"])
-        self.assertFalse(args.capture_output)
+        assert args.capture_output is False
 
     def test_parser_with_all_options(self) -> None:
         """Test parser with all options specified."""
         parser = _cli.build_parser()
         args = parser.parse_args(["tests", "-k", "pattern", "-n", "8", "--no-capture"])
-        self.assertEqual(tuple(args.paths), ("tests",))
-        self.assertEqual(args.pattern, "pattern")
-        self.assertEqual(args.workers, 8)
-        self.assertFalse(args.capture_output)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert tuple(args.paths) == ("tests",)
+        assert args.pattern == "pattern"
+        assert args.workers == 8
+        assert args.capture_output is False
