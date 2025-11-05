@@ -18,6 +18,7 @@ scripts = { rustest = "rustest.__main__:main" }
 [project.optional-dependencies]
 dev = [
     "basedpyright>=1.19",
+    "maturin>=1.4,<2",
     "poethepoet>=0.22",
     "ruff>=0.1.9",
 ]

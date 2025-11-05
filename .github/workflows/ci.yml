@@ -35,7 +35,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Build Rust extension
-        run: uv run --with maturin maturin develop --release
+        run: uv run maturin develop --release
 
       - name: Run Python tests
         run: uv run python -m unittest discover -s python/tests -t python
