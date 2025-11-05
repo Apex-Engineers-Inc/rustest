@@ -10,6 +10,11 @@ mod execution;
 mod model;
 mod python_support;
 
+#[cfg(test)]
+mod model_tests;
+#[cfg(test)]
+mod python_support_tests;
+
 use discovery::discover_tests;
 use execution::run_collected_tests;
 use model::{PyRunReport, RunConfiguration};
@@ -153,5 +158,112 @@ mod tests {
                 ]
             );
         });
+    }
+
+    #[test]
+    fn test_pattern_filtering() {
+        Python::with_gil(|py| {
+            ensure_python_package_on_path(py);
+            let file_path = sample_test_module("test_basic.py");
+
+            let config = RunConfiguration::new(Some("nonexistent".to_string()), None, true);
+            let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
+            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
+
+            // No modules should match the pattern
+            assert_eq!(modules.len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_discovery_with_directory() {
+        Python::with_gil(|py| {
+            ensure_python_package_on_path(py);
+            let dir_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("python_suite");
+
+            let modules = run_discovery(py, &dir_path);
+            // Should discover all test files in the directory
+            assert!(modules.len() >= 3);
+        });
+    }
+
+    #[test]
+    fn test_execution_with_capture_output_disabled() {
+        Python::with_gil(|py| {
+            ensure_python_package_on_path(py);
+            let file_path = sample_test_module("test_basic.py");
+
+            let config = RunConfiguration::new(None, None, false);
+            let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
+            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
+            let report =
+                run_collected_tests(py, &modules, &config).expect("execution should succeed");
+
+            // Output should not be captured
+            assert_eq!(report.results[0].stdout, None);
+            assert_eq!(report.results[0].stderr, None);
+        });
+    }
+
+    #[test]
+    fn test_empty_directory_discovery() {
+        Python::with_gil(|py| {
+            ensure_python_package_on_path(py);
+
+            // Create a temporary empty directory
+            let temp_dir = std::env::temp_dir().join("rustest_empty");
+            std::fs::create_dir_all(&temp_dir).unwrap();
+
+            let modules = run_discovery(py, &temp_dir);
+            assert_eq!(modules.len(), 0);
+
+            // Cleanup
+            std::fs::remove_dir(&temp_dir).ok();
+        });
+    }
+
+    #[test]
+    fn test_nonexistent_path_error() {
+        Python::with_gil(|py| {
+            ensure_python_package_on_path(py);
+            let config = RunConfiguration::new(None, None, true);
+            let paths = PyPaths::from_vec(vec!["/nonexistent/path".to_string()]);
+            let result = discover_tests(py, &paths, &config);
+
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn test_run_report_statistics() {
+        Python::with_gil(|py| {
+            ensure_python_package_on_path(py);
+            let file_path = sample_test_module("test_parametrized.py");
+
+            let config = RunConfiguration::new(None, None, true);
+            let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
+            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
+            let report =
+                run_collected_tests(py, &modules, &config).expect("execution should succeed");
+
+            // Verify statistics are consistent
+            assert_eq!(report.total, report.passed + report.failed + report.skipped);
+            assert!(report.duration >= 0.0);
+            assert_eq!(report.results.len(), report.total);
+        });
+    }
+
+    #[test]
+    fn test_worker_count_configuration() {
+        let config1 = RunConfiguration::new(None, Some(1), true);
+        assert_eq!(config1.worker_count, 1);
+
+        let config2 = RunConfiguration::new(None, Some(8), true);
+        assert_eq!(config2.worker_count, 8);
+
+        let config3 = RunConfiguration::new(None, None, true);
+        assert!(config3.worker_count >= 1);
     }
 }
