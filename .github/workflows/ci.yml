@@ -34,12 +34,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --no-install-project
 
-      - name: Build Rust extension
-        run: |
-          source .venv/bin/activate
-          pip install -e . --no-build-isolation
-          echo "After pip install:"
-          pip list | grep rustest
+      - name: Build and install Rust extension
+        uses: PyO3/maturin-action@v1
+        with:
+          command: develop
+          args: --release
 
       - name: Run Python tests
         run: |
