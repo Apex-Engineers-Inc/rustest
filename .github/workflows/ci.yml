@@ -31,11 +31,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync --all-extras --no-install-project
-
-      - name: Build and install Rust extension
-        run: .venv/bin/maturin develop --release
+      - name: Install dependencies and build package
+        run: uv sync --all-extras
 
       - name: Run Python tests
         run: .venv/bin/python -m unittest discover -s python/tests -t python
@@ -66,7 +63,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras --no-install-project
+        run: uv sync --all-extras
 
       - name: Check Python formatting with ruff
         run: uv run --no-project ruff format --check python
@@ -98,7 +95,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --all-extras --no-install-project
+        run: uv sync --all-extras
 
       - name: Type check with basedpyright
         run: uv run --no-project basedpyright python

@@ -28,6 +28,7 @@ Homepage = "https://example.com/rustest"
 
 [tool.maturin]
 module-name = "rustest._rust"
+python-source = "python"
 
 [tool.poe.tasks]
 build = "uv build"
