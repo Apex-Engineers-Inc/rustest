@@ -41,7 +41,17 @@ jobs:
         run: .venv/bin/pytest tests/pytest_compat/selected/ -v
 
       - name: Run rustest integration tests
-        run: .venv/bin/python -m rustest tests/python_suite/ examples/tests/
+        run: |
+          # Run rustest on test files that should pass
+          # Exclude test_errors.py (intentional failures) and test_output.py (has intentional failure)
+          .venv/bin/python -m rustest \
+            tests/python_suite/test_basic.py \
+            tests/python_suite/test_complex_parametrize.py \
+            tests/python_suite/test_fixtures.py \
+            tests/python_suite/test_nested_fixtures.py \
+            tests/python_suite/test_parametrized.py \
+            tests/python_suite/test_skip.py \
+            examples/tests/
 
   lint:
     name: Lint and Format
