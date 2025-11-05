@@ -14,29 +14,29 @@ use discovery::discover_tests;
 use execution::run_collected_tests;
 use model::{PyRunReport, RunConfiguration};
 use pyo3::prelude::*;
+use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
+
+#[pyfunction(signature = (paths, pattern = None, workers = None, capture_output = true))]
+fn run(
+    py: Python<'_>,
+    paths: Vec<String>,
+    pattern: Option<String>,
+    workers: Option<usize>,
+    capture_output: bool,
+) -> PyResult<PyRunReport> {
+    let config = RunConfiguration::new(pattern, workers, capture_output);
+    let input_paths = PyPaths::from_vec(paths);
+    let collected = discover_tests(py, &input_paths, &config)?;
+    let report = run_collected_tests(py, &collected, &config)?;
+    Ok(report)
+}
 
 /// Entry point for the Python extension module.
 #[pymodule]
-fn _rust(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunReport>()?;
-
-    #[pyfn(m, "run")]
-    #[pyo3(signature = (paths, pattern = None, workers = None, capture_output = true))]
-    fn run_py(
-        py: Python<'_>,
-        paths: Vec<String>,
-        pattern: Option<String>,
-        workers: Option<usize>,
-        capture_output: bool,
-    ) -> PyResult<PyRunReport> {
-        let config = RunConfiguration::new(pattern, workers, capture_output);
-        let input_paths = PyPaths::from_vec(paths);
-        let collected = discover_tests(py, &input_paths, &config)?;
-        let report = run_collected_tests(py, collected, &config)?;
-        Ok(report)
-    }
-
+    m.add_function(wrap_pyfunction!(run, m)?)?;
     Ok(())
 }
 
@@ -48,22 +48,21 @@ mod tests {
     use crate::execution::run_collected_tests;
     use crate::model::RunConfiguration;
     use crate::python_support::PyPaths;
-    use pyo3::types::{PyList, PyString};
+    use pyo3::prelude::PyAnyMethods;
+    use pyo3::types::PyList;
+    use pyo3::Bound;
     use pyo3::Python;
 
     fn ensure_python_package_on_path(py: Python<'_>) {
-        let sys = py.import("sys").expect("failed to import sys");
-        let path: &PyList = sys
-            .getattr("path")
-            .expect("missing sys.path")
-            .downcast()
-            .expect("sys.path is not a list");
+        let sys = py.import_bound("sys").expect("failed to import sys");
+        let path = sys.getattr("path").expect("missing sys.path");
+        let path: Bound<'_, PyList> = path.downcast_into().expect("sys.path is not a list");
         let package_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("python");
         let package_root = package_root
             .to_str()
             .expect("python directory path is not valid unicode");
-        let entry = PyString::new(py, package_root);
-        path.insert(0, entry).expect("failed to insert python path");
+        path.call_method1("insert", (0, package_root))
+            .expect("failed to insert python path");
     }
 
     fn sample_test_module(name: &str) -> PathBuf {
@@ -104,7 +103,7 @@ mod tests {
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             assert_eq!(modules.len(), 1);
             let report =
-                run_collected_tests(py, modules, &config).expect("execution should succeed");
+                run_collected_tests(py, &modules, &config).expect("execution should succeed");
             assert_eq!(report.total, 1);
             assert_eq!(report.passed, 1);
             assert_eq!(report.failed, 0);
@@ -123,8 +122,8 @@ mod tests {
             let config = RunConfiguration::new(None, None, true);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
-            let report = run_collected_tests(py, modules.clone(), &config)
-                .expect("execution should succeed");
+            let report =
+                run_collected_tests(py, &modules, &config).expect("execution should succeed");
 
             assert_eq!(report.total, 3);
             assert_eq!(report.passed, 3);

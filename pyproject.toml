@@ -25,6 +25,9 @@ dev = [
 [project.urls]
 Homepage = "https://example.com/rustest"
 
+[tool.maturin]
+module-name = "rustest._rust"
+
 [tool.poe.tasks]
 build = "uv build"
 dev = "uv run maturin develop"
