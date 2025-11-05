@@ -35,10 +35,9 @@ jobs:
         run: uv sync --all-extras --no-install-project
 
       - name: Build and install Rust extension
-        uses: PyO3/maturin-action@v1
-        with:
-          command: develop
-          args: --release
+        run: |
+          source .venv/bin/activate
+          python -m pip install --no-build-isolation -e .
 
       - name: Run Python tests
         run: |
