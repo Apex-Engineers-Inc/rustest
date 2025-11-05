@@ -14,6 +14,25 @@ and [`poethepoet`](https://github.com/nat-n/poethepoet).
 - ✅ Optional stdout/stderr capture and pretty CLI output.
 - ✅ Fully typed Python API with `basedpyright` configuration ready to go.
 
+## Performance
+
+Rustest is designed for speed. Our benchmarks show **2.5x faster** execution compared to pytest on a comprehensive test suite with 161 tests covering various scenarios:
+
+| Test Runner | Avg Time | Tests/Second | Speedup |
+|-------------|----------|--------------|---------|
+| pytest      | 0.632s   | 254.5        | 1.0x (baseline) |
+| rustest     | 0.253s   | 636.4        | **2.5x faster** |
+
+**Performance by test type:**
+- **Simple tests**: 2.5x faster
+- **Fixture tests**: 3.0x faster (Rust-based fixture resolution shines here)
+- **Parametrized tests**: 2.5x faster
+- **Combined (fixtures + params)**: 2.8x faster
+
+The performance advantage grows with larger test suites. For a 1,000-test suite, rustest can save ~2.4 seconds per run, which adds up quickly in CI/CD pipelines and during development.
+
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis and methodology.
+
 ## Installation
 
 Rustest targets Python **3.10+**. The recommended workflow uses `uv` which acts
