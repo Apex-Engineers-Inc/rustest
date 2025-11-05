@@ -8,11 +8,64 @@ and [`poethepoet`](https://github.com/nat-n/poethepoet).
 
 ## Features
 
-- ✅ Familiar `@fixture`, `@parametrize`, and `@skip` helpers.
+- ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` helpers.
 - ✅ Test discovery for files named `test_*.py` or `*_test.py`.
 - ✅ Dependency-injected fixtures resolved by Rust for minimal overhead.
 - ✅ Optional stdout/stderr capture and pretty CLI output.
 - ✅ Fully typed Python API with `basedpyright` configuration ready to go.
+
+## Feature Comparison
+
+Rustest aims to provide the most commonly-used pytest features with dramatically better performance. Here's how the two compare:
+
+| Feature | pytest | rustest | Notes |
+|---------|--------|---------|-------|
+| **Core Test Discovery** |
+| `test_*.py` / `*_test.py` files | ✅ | ✅ | Rustest uses Rust for 2.5x faster discovery |
+| Test function detection (`test_*`) | ✅ | ✅ | |
+| Test class detection (`Test*`) | ✅ | ✅ | via `unittest.TestCase` support |
+| Pattern-based filtering | ✅ | ✅ | `-k` pattern matching |
+| **Fixtures** |
+| `@fixture` decorator | ✅ | ✅ | Rust-based dependency resolution |
+| Fixture dependency injection | ✅ | ✅ | 3x faster in rustest |
+| Fixture scopes (function/class/module/session) | ✅ | 🚧 | Function-scope only (for now) |
+| Fixture parametrization | ✅ | 🚧 | Planned |
+| **Parametrization** |
+| `@parametrize` decorator | ✅ | ✅ | Full support with custom IDs |
+| Multiple parameter sets | ✅ | ✅ | |
+| Parametrize with fixtures | ✅ | ✅ | |
+| **Marks** |
+| `@mark.skip` / `@skip` | ✅ | ✅ | Skip tests with reasons |
+| Custom marks (`@mark.slow`, etc.) | ✅ | ✅ | Just added! |
+| Mark with arguments | ✅ | ✅ | `@mark.timeout(30)` |
+| Selecting tests by mark (`-m`) | ✅ | 🚧 | Mark metadata collected, filtering planned |
+| **Test Execution** |
+| Detailed assertion introspection | ✅ | ❌ | Uses standard Python assertions |
+| Parallel execution | ✅ (`pytest-xdist`) | 🚧 | Planned (Rust makes this easier) |
+| Test isolation | ✅ | ✅ | |
+| Stdout/stderr capture | ✅ | ✅ | |
+| **Reporting** |
+| Pass/fail/skip summary | ✅ | ✅ | |
+| Failure tracebacks | ✅ | ✅ | Full Python traceback support |
+| Duration reporting | ✅ | ✅ | Per-test timing |
+| JUnit XML output | ✅ | 🚧 | Planned |
+| HTML reports | ✅ (`pytest-html`) | 🚧 | Planned |
+| **Advanced Features** |
+| Plugins | ✅ | ❌ | Not planned (keeps rustest simple) |
+| Hooks | ✅ | ❌ | Not planned |
+| Custom collectors | ✅ | ❌ | Not planned |
+| `conftest.py` | ✅ | 🚧 | Planned for fixture sharing |
+| **Developer Experience** |
+| Fully typed Python API | ⚠️ | ✅ | rustest uses `basedpyright` strict mode |
+| Fast CI/CD runs | ⚠️ | ✅ | 2.5x faster = shorter feedback loops |
+
+**Legend:**
+- ✅ Fully supported
+- 🚧 Planned or in progress
+- ⚠️ Partial support
+- ❌ Not planned
+
+**Philosophy:** Rustest implements the 20% of pytest features that cover 80% of use cases, with a focus on raw speed and simplicity. If you need advanced pytest features like plugins or custom hooks, stick with pytest. If you want fast, straightforward testing with familiar syntax, rustest is for you.
 
 ## Performance
 
@@ -368,15 +421,22 @@ uv run rustest examples/tests/
 A minimal test suite can look like this:
 
 ```python
-from rustest import fixture, parametrize
+from rustest import fixture, parametrize, mark
 
 @fixture
 def numbers() -> list[int]:
     return [1, 2, 3]
 
+@mark.unit
 @parametrize("value", [(1,), (2,), (3,)])
 def test_numbers(numbers: list[int], value: int) -> None:
     assert value in numbers
+
+@mark.slow
+@mark.integration
+def test_api_endpoint() -> None:
+    # Marks help categorize and filter tests
+    assert True
 ```
 
 Running `uv run rustest` executes the test with Rust-speed discovery and a clean
