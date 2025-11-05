@@ -134,7 +134,7 @@ rustest is a **hybrid Python/Rust project**. Here's what each part does:
 
 ```
 rustest/
-├── src/                          # 🦀 Rust code (the fast core)
+├── src/                          # 🦀 Rust code (the fast core - rustest-core crate)
 │   ├── lib.rs                    # Main entry point
 │   ├── model.rs                  # Data structures (TestCase, Fixture, etc.)
 │   ├── discovery/                # Fast test file discovery
@@ -159,14 +159,14 @@ rustest/
 │   ├── test_fixtures.py          # Test fixture resolution
 │   └── ...
 │
-├── Cargo.toml                    # Rust dependencies
+├── Cargo.toml                    # Rust dependencies (rustest-core crate)
 ├── pyproject.toml                # Python dependencies & project config
 └── README.md                     # This file!
 ```
 
 **Key Concepts:**
-- **Rust side:** Fast test discovery and execution. Think of it as the engine.
-- **Python side:** Friendly decorators and API. Think of it as the steering wheel.
+- **Rust side (rustest-core):** Fast test discovery and execution. Think of it as the engine.
+- **Python side (rustest):** Friendly decorators and API. Think of it as the steering wheel.
 - **PyO3/Maturin:** The bridge that connects Rust and Python together.
 
 ### Common Development Tasks
