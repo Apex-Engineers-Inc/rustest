@@ -35,7 +35,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Build Rust extension
-        run: uv run maturin develop --release
+        run: uv run --with maturin maturin develop --release
 
       - name: Run Python tests
         run: uv run python -m unittest discover -s python/tests -t python
@@ -72,10 +72,10 @@ jobs:
         run: uv sync --all-extras
 
       - name: Check Python formatting with ruff
-        run: uv run --with dev ruff format --check python
+        run: uv run ruff format --check python
 
       - name: Lint Python with ruff
-        run: uv run --with dev ruff check python
+        run: uv run ruff check python
 
       - name: Check Rust formatting
         run: cargo fmt --check
@@ -104,4 +104,4 @@ jobs:
         run: uv sync --all-extras
 
       - name: Type check with basedpyright
-        run: uv run --with dev basedpyright python
+        run: uv run basedpyright python
