@@ -34,11 +34,11 @@ jobs:
       - name: Install dependencies and build package
         run: uv sync --all-extras
 
-      - name: Run Python tests
-        run: .venv/bin/python -m unittest discover -s python/tests -t python
+      - name: Run Python tests with pytest
+        run: .venv/bin/pytest python/tests -v
 
-      - name: Run integration tests
-        run: .venv/bin/python -m rustest tests/python_suite/ examples/tests/
+      - name: Run pytest compatibility tests
+        run: .venv/bin/pytest tests/pytest_compat/selected/ -v
 
   lint:
     name: Lint and Format
