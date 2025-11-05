@@ -35,19 +35,13 @@ jobs:
         run: uv sync --all-extras --no-install-project
 
       - name: Build and install Rust extension
-        run: |
-          source .venv/bin/activate
-          python -m pip install --no-build-isolation -e .
+        run: uv pip install --no-build-isolation -e .
 
       - name: Run Python tests
-        run: |
-          source .venv/bin/activate
-          python -m unittest discover -s python/tests -t python
+        run: uv run python -m unittest discover -s python/tests -t python
 
       - name: Run integration tests
-        run: |
-          source .venv/bin/activate
-          python -m rustest tests/python_suite/ examples/tests/
+        run: uv run python -m rustest tests/python_suite/ examples/tests/
 
   lint:
     name: Lint and Format
@@ -75,10 +69,10 @@ jobs:
         run: uv sync --all-extras --no-install-project
 
       - name: Check Python formatting with ruff
-        run: uv run ruff format --check python
+        run: uv run --no-project ruff format --check python
 
       - name: Lint Python with ruff
-        run: uv run ruff check python
+        run: uv run --no-project ruff check python
 
       - name: Check Rust formatting
         run: cargo fmt --check
@@ -107,4 +101,4 @@ jobs:
         run: uv sync --all-extras --no-install-project
 
       - name: Type check with basedpyright
-        run: uv run basedpyright python
+        run: uv run --no-project basedpyright python
