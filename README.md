@@ -16,7 +16,7 @@ and [`poethepoet`](https://github.com/nat-n/poethepoet).
 
 ## Installation
 
-Rustest targets Python **3.10+**. The recommended workflow uses `uv` which acts
+Rustest supports Python **3.10 through 3.14**. The recommended workflow uses `uv` which acts
 as both the dependency resolver and the virtual environment manager.
 
 ```bash
@@ -79,10 +79,10 @@ uv --version
 
 **What is uv?** Think of it as a faster, more modern alternative to pip and virtualenv. It manages Python dependencies and virtual environments.
 
-#### 3. **Python 3.10+**
+#### 3. **Python 3.10-3.14**
 ```bash
 # Check your Python version
-python3 --version  # Should be 3.10 or higher
+python3 --version  # Should be 3.10 through 3.14
 ```
 
 ### Step-by-Step Setup
