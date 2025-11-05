@@ -154,9 +154,9 @@ rustest/
 │   ├── test_cli.py               # Test CLI
 │   └── ...
 │
-├── tests/python_suite/           # 🧪 Test fixtures for Rust tests
-│   ├── test_basic.py             # Sample tests used by Rust tests
-│   ├── test_fixtures.py          # Test fixture resolution
+├── tests/                        # 🧪 Integration test suite
+│   ├── test_basic.py             # Basic test functions
+│   ├── test_fixtures.py          # Fixture dependency injection
 │   └── ...
 │
 ├── Cargo.toml                    # Rust dependencies (rustest-core crate)
