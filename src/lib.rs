@@ -23,6 +23,7 @@ use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
 #[pyfunction(signature = (paths, pattern = None, workers = None, capture_output = true))]
+#[allow(clippy::useless_conversion)]
 fn run(
     py: Python<'_>,
     paths: Vec<String>,
