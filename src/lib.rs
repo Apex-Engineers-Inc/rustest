@@ -5,6 +5,8 @@
 //! specific concern (discovery, execution, modelling results, …) and exposes a
 //! clean, well documented API.
 
+#![allow(clippy::useless_conversion)]
+
 mod discovery;
 mod execution;
 mod model;
@@ -23,7 +25,6 @@ use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
 #[pyfunction(signature = (paths, pattern = None, workers = None, capture_output = true))]
-#[allow(clippy::useless_conversion)]
 fn run(
     py: Python<'_>,
     paths: Vec<String>,
