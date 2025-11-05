@@ -35,7 +35,7 @@ jobs:
         run: uv sync --all-extras --no-install-project
 
       - name: Build and install Rust extension
-        run: uv pip install --no-build-isolation -e .
+        run: .venv/bin/maturin develop --release
 
       - name: Run Python tests
         run: .venv/bin/python -m unittest discover -s python/tests -t python
