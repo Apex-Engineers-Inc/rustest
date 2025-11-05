@@ -175,8 +175,7 @@ fn inspect_module(
             }
         }
         // Check if it's a class (unittest.TestCase support)
-        else if isclass.call1((&value,))?.is_truthy()?
-            && is_test_case_class(py, &value)? {
+        else if isclass.call1((&value,))?.is_truthy()? && is_test_case_class(py, &value)? {
             let class_tests = discover_class_tests(py, path, &name, &value)?;
             tests.extend(class_tests);
         }
