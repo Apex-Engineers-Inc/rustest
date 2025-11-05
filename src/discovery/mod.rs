@@ -120,62 +120,161 @@ fn inspect_module(
 ) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
     let inspect = py.import_bound("inspect")?;
     let isfunction = inspect.getattr("isfunction")?;
+    let isclass = inspect.getattr("isclass")?;
     let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
 
     for (name_obj, value) in module_dict.iter() {
-        if !isfunction.call1((&value,))?.is_truthy()? {
-            continue;
-        }
-
         let name: String = name_obj.extract()?;
-        if is_fixture(&value)? {
-            fixtures.insert(
-                name.clone(),
-                Fixture::new(
+
+        // Check if it's a function
+        if isfunction.call1((&value,))?.is_truthy()? {
+            if is_fixture(&value)? {
+                fixtures.insert(
                     name.clone(),
-                    value.clone().unbind(),
-                    extract_parameters(py, &value)?,
-                ),
-            );
-            continue;
-        }
+                    Fixture::new(
+                        name.clone(),
+                        value.clone().unbind(),
+                        extract_parameters(py, &value)?,
+                    ),
+                );
+                continue;
+            }
 
-        if !name.starts_with("test") {
-            continue;
-        }
+            if !name.starts_with("test") {
+                continue;
+            }
 
-        let parameters = extract_parameters(py, &value)?;
-        let skip_reason = string_attribute(&value, "__rustest_skip__")?;
-        let param_cases = collect_parametrization(py, &value)?;
+            let parameters = extract_parameters(py, &value)?;
+            let skip_reason = string_attribute(&value, "__rustest_skip__")?;
+            let param_cases = collect_parametrization(py, &value)?;
 
-        if param_cases.is_empty() {
-            tests.push(TestCase {
-                name: name.clone(),
-                display_name: name.clone(),
-                path: path.to_path_buf(),
-                callable: value.clone().unbind(),
-                parameters: parameters.clone(),
-                parameter_values: ParameterMap::new(),
-                skip_reason: skip_reason.clone(),
-            });
-        } else {
-            for (case_id, values) in param_cases {
-                let display_name = format!("{}[{}]", name, case_id);
+            if param_cases.is_empty() {
                 tests.push(TestCase {
                     name: name.clone(),
-                    display_name,
+                    display_name: name.clone(),
                     path: path.to_path_buf(),
                     callable: value.clone().unbind(),
                     parameters: parameters.clone(),
-                    parameter_values: values,
+                    parameter_values: ParameterMap::new(),
                     skip_reason: skip_reason.clone(),
                 });
+            } else {
+                for (case_id, values) in param_cases {
+                    let display_name = format!("{}[{}]", name, case_id);
+                    tests.push(TestCase {
+                        name: name.clone(),
+                        display_name,
+                        path: path.to_path_buf(),
+                        callable: value.clone().unbind(),
+                        parameters: parameters.clone(),
+                        parameter_values: values,
+                        skip_reason: skip_reason.clone(),
+                    });
+                }
+            }
+        }
+        // Check if it's a class (unittest.TestCase support)
+        else if isclass.call1((&value,))?.is_truthy()? {
+            if is_test_case_class(py, &value)? {
+                let class_tests = discover_class_tests(py, path, &name, &value)?;
+                tests.extend(class_tests);
             }
         }
     }
 
     Ok((fixtures, tests))
+}
+
+/// Check if a class is a unittest.TestCase subclass.
+fn is_test_case_class(py: Python<'_>, cls: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let unittest = py.import_bound("unittest")?;
+    let test_case = unittest.getattr("TestCase")?;
+
+    // Use issubclass to check inheritance
+    let builtins = py.import_bound("builtins")?;
+    let issubclass_fn = builtins.getattr("issubclass")?;
+
+    match issubclass_fn.call1((cls, &test_case)) {
+        Ok(result) => Ok(result.is_truthy()?),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Discover test methods in a TestCase class.
+fn discover_class_tests(
+    py: Python<'_>,
+    path: &Path,
+    class_name: &str,
+    cls: &Bound<'_, PyAny>,
+) -> PyResult<Vec<TestCase>> {
+    let mut tests = Vec::new();
+    let inspect = py.import_bound("inspect")?;
+
+    // Get all members of the class
+    let members = inspect.call_method1("getmembers", (cls,))?;
+
+    for member in members.iter()? {
+        let member = member?;
+
+        // Each member is a tuple (name, value)
+        let name: String = member.get_item(0)?.extract()?;
+        let method = member.get_item(1)?;
+
+        // Check if it's a method and starts with "test"
+        if name.starts_with("test") && is_callable(&method)? {
+            let display_name = format!("{}.{}", class_name, name);
+
+            // Create a callable that properly instantiates and runs the test
+            let test_callable = create_test_method_runner(py, cls, &name)?;
+
+            tests.push(TestCase {
+                name: name.clone(),
+                display_name,
+                path: path.to_path_buf(),
+                callable: test_callable,
+                parameters: Vec::new(),
+                parameter_values: ParameterMap::new(),
+                skip_reason: None,
+            });
+        }
+    }
+
+    Ok(tests)
+}
+
+/// Check if an object is callable.
+fn is_callable(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let builtins = obj.py().import_bound("builtins")?;
+    let callable_fn = builtins.getattr("callable")?;
+    Ok(callable_fn.call1((obj,))?.is_truthy()?)
+}
+
+/// Create a callable that instantiates a TestCase and runs a specific test method.
+/// This follows unittest's pattern of instantiating with the method name.
+fn create_test_method_runner(
+    py: Python<'_>,
+    cls: &Bound<'_, PyAny>,
+    method_name: &str,
+) -> PyResult<PyObject> {
+    // Create a wrapper function that instantiates the test class and runs the method
+    // This will properly invoke setUp, the test method, and tearDown
+    let code = format!(
+        r#"
+def run_test():
+    test_instance = test_class('{}')
+    test_instance()
+"#,
+        method_name
+    );
+
+    let locals = PyDict::new_bound(py);
+    locals.set_item("test_class", cls)?;
+
+    py.run_bound(&code, None, Some(&locals))?;
+    let run_test = locals.get_item("run_test")?.unwrap();
+
+    Ok(run_test.to_object(py))
 }
 
 /// Determine whether a Python object has been marked as a fixture.
