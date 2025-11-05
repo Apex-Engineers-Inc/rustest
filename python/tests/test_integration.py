@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
-import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
 

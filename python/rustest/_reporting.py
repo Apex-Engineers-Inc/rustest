@@ -12,6 +12,8 @@ from . import _rust
 class TestResult:
     """Structured view of a single test outcome."""
 
+    __test__ = False  # Tell pytest this is not a test class
+
     name: str
     path: str
     status: str
