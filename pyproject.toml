@@ -17,7 +17,8 @@ scripts = { rustest = "rustest.__main__:main" }
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=1.7",
+    "basedpyright>=1.19",
+    "maturin>=1.4,<2",
     "poethepoet>=0.22",
     "ruff>=0.1.9",
 ]
@@ -33,17 +34,35 @@ build = "uv build"
 dev = "uv run maturin develop"
 fmt = "cargo fmt"
 lint = "uv run --with dev ruff check python"
-typecheck = "uv run --with dev mypy python"
+typecheck = "uv run --with dev basedpyright python"
 pytests = "uv run python -m unittest discover -s python/tests -t python"
 unit = "uv run python -m rustest"
 
 [tool.ruff]
 line-length = 100
 
-[tool.mypy]
-python_version = "3.10"
-strict = true
-mypy_path = ["python"]
+[tool.basedpyright]
+pythonVersion = "3.10"
+pythonPlatform = "Linux"
+typeCheckingMode = "strict"
+strictListInference = true
+strictDictionaryInference = true
+strictSetInference = true
+strictParameterNoneValue = true
+reportMissingTypeStubs = false
+reportImportCycles = false
+reportUnknownVariableType = "warning"
+reportUnknownMemberType = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownParameterType = "warning"
+reportUnknownLambdaType = "warning"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportImplicitStringConcatenation = "error"
+reportMissingSuperCall = "error"
+reportPropertyTypeMismatch = "error"
+reportUninitializedInstanceVariable = "error"
+include = ["python/rustest"]
+exclude = ["**/__pycache__", "**/.*", "**/*.pyc", "**/tests"]
 
 [tool.uv]
 managed = true

@@ -5,6 +5,8 @@
 //! specific concern (discovery, execution, modelling results, …) and exposes a
 //! clean, well documented API.
 
+#![allow(clippy::useless_conversion)]
+
 mod discovery;
 mod execution;
 mod model;

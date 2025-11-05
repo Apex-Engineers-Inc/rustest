@@ -72,12 +72,14 @@ class ParametrizeDecoratorTests(unittest.TestCase):
 
     def test_parametrize_rejects_mismatched_values(self) -> None:
         with self.assertRaises(ValueError):
+
             @parametrize(("x", "y"), [(1,)])
             def _(_: int, __: int) -> None:
                 raise AssertionError("should not run")
 
     def test_parametrize_rejects_mismatched_ids(self) -> None:
         with self.assertRaises(ValueError):
+
             @parametrize("value", [(1,), (2,)], ids=["only-one"])
             def _(_: int) -> None:
                 raise AssertionError("should not run")

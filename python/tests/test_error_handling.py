@@ -16,6 +16,7 @@ class ErrorHandlingTests(unittest.TestCase):
     def test_parametrize_empty_argnames_raises_error(self) -> None:
         """Test that empty argnames raises ValueError."""
         with self.assertRaises(ValueError) as ctx:
+
             @parametrize("", [(1,)])
             def _test(_: int) -> None:
                 pass
@@ -25,6 +26,7 @@ class ErrorHandlingTests(unittest.TestCase):
     def test_parametrize_mismatched_values_raises_error(self) -> None:
         """Test that mismatched values raises ValueError."""
         with self.assertRaises(ValueError) as ctx:
+
             @parametrize(("x", "y"), [(1,)])  # Missing one value
             def _test(_x: int, _y: int) -> None:
                 pass
@@ -34,6 +36,7 @@ class ErrorHandlingTests(unittest.TestCase):
     def test_parametrize_mismatched_ids_raises_error(self) -> None:
         """Test that mismatched IDs raises ValueError."""
         with self.assertRaises(ValueError) as ctx:
+
             @parametrize("value", [(1,), (2,)], ids=["only_one"])
             def _test(_: int) -> None:
                 pass
@@ -42,6 +45,7 @@ class ErrorHandlingTests(unittest.TestCase):
 
     def test_parametrize_with_empty_values_list(self) -> None:
         """Test that empty values list works correctly."""
+
         @parametrize("x", [])
         def test_func(x: int) -> int:
             return x
@@ -52,12 +56,14 @@ class ErrorHandlingTests(unittest.TestCase):
     def test_parametrize_with_whitespace_only_argname(self) -> None:
         """Test that whitespace-only argnames raise ValueError."""
         with self.assertRaises(ValueError):
+
             @parametrize("   ", [(1,)])
             def _test(_: int) -> None:
                 pass
 
     def test_parametrize_with_invalid_argname_format(self) -> None:
         """Test handling of invalid argname formats."""
+
         # Comma-separated string with spaces should work
         @parametrize("x, y", [(1, 2)])
         def test_func(x: int, y: int) -> None:
@@ -69,6 +75,7 @@ class ErrorHandlingTests(unittest.TestCase):
 
     def test_fixture_with_exception_in_body(self) -> None:
         """Test that fixtures can raise exceptions."""
+
         @fixture
         def broken_fixture() -> None:
             raise RuntimeError("Fixture is broken")
@@ -78,6 +85,7 @@ class ErrorHandlingTests(unittest.TestCase):
 
     def test_parametrize_with_generator_values(self) -> None:
         """Test that generator values are properly consumed."""
+
         def value_generator():
             yield (1,)
             yield (2,)
@@ -103,6 +111,7 @@ class ErrorHandlingTests(unittest.TestCase):
 
     def test_parametrize_with_duplicate_ids(self) -> None:
         """Test handling of duplicate IDs (should be allowed)."""
+
         @parametrize("x", [(1,), (2,)], ids=["same", "same"])
         def test_func(x: int) -> int:
             return x
@@ -117,6 +126,7 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_parametrize_with_single_comma_separated_arg(self) -> None:
         """Test single parameter with comma-separated string format."""
+
         @parametrize("x", [(1,), (2,)])
         def test_func(x: int) -> int:
             return x
@@ -126,6 +136,7 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_parametrize_with_nested_tuples(self) -> None:
         """Test parametrization with nested tuple values."""
+
         @parametrize("data", [((1, 2),), ((3, 4),)])
         def test_func(data: tuple) -> tuple:
             return data
@@ -135,13 +146,17 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_parametrize_with_mixed_types(self) -> None:
         """Test parametrization with mixed value types."""
-        @parametrize("value", [
-            (1,),
-            ("string",),
-            (None,),
-            (True,),
-            ([1, 2, 3],),
-        ])
+
+        @parametrize(
+            "value",
+            [
+                (1,),
+                ("string",),
+                (None,),
+                (True,),
+                ([1, 2, 3],),
+            ],
+        )
         def test_func(value) -> None:  # type: ignore
             pass
 
@@ -155,6 +170,7 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_fixture_with_class_method(self) -> None:
         """Test that fixture decorator works on class methods."""
+
         class TestClass:
             @staticmethod
             @fixture
@@ -178,13 +194,17 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_parametrize_with_special_string_values(self) -> None:
         """Test parametrization with special string values."""
-        @parametrize("text", [
-            ("",),  # Empty string
-            ("\\n",),  # Escaped newline
-            ("\n",),  # Actual newline
-            ("\t",),  # Tab
-            ("'\"",),  # Quotes
-        ])
+
+        @parametrize(
+            "text",
+            [
+                ("",),  # Empty string
+                ("\\n",),  # Escaped newline
+                ("\n",),  # Actual newline
+                ("\t",),  # Tab
+                ("'\"",),  # Quotes
+            ],
+        )
         def test_func(text: str) -> str:
             return text
 
@@ -195,6 +215,7 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_fixture_returns_lambda(self) -> None:
         """Test that fixtures can return callable objects."""
+
         @fixture
         def lambda_fixture():  # type: ignore
             return lambda x: x * 2
@@ -205,6 +226,7 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_parametrize_preserves_callable(self) -> None:
         """Test that parametrized functions remain callable."""
+
         @parametrize("x", [(1,), (2,)])
         def test_func(x: int) -> int:
             return x * 2
@@ -216,6 +238,7 @@ class EdgeCaseTests(unittest.TestCase):
 
     def test_multiple_parametrize_decorators(self) -> None:
         """Test applying parametrize multiple times."""
+
         @parametrize("y", [(10,), (20,)])
         @parametrize("x", [(1,), (2,)])
         def test_func(x: int, y: int) -> int:
@@ -230,6 +253,7 @@ class RobustnessTests(unittest.TestCase):
 
     def test_fixture_with_args_and_kwargs(self) -> None:
         """Test that fixtures work with *args and **kwargs."""
+
         @fixture
         def flexible_fixture(*args, **kwargs):  # type: ignore
             return (args, kwargs)
@@ -238,6 +262,7 @@ class RobustnessTests(unittest.TestCase):
 
     def test_parametrize_with_class_instances(self) -> None:
         """Test parametrization with class instances."""
+
         class DummyClass:
             def __init__(self, value: int):
                 self.value = value
@@ -255,6 +280,7 @@ class RobustnessTests(unittest.TestCase):
 
     def test_fixture_with_default_arguments(self) -> None:
         """Test fixtures with default argument values."""
+
         @fixture
         def fixture_with_default(x: int = 10) -> int:
             return x

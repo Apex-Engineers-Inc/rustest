@@ -45,6 +45,7 @@ class ExtendedFixtureTests(unittest.TestCase):
 
     def test_multiple_fixture_decorations(self) -> None:
         """Test that fixture can be composed with other decorators."""
+
         @fixture
         def simple() -> int:
             return 1
@@ -101,10 +102,7 @@ class ExtendedParametrizeTests(unittest.TestCase):
         self.assertEqual(cases[0]["values"]["x"], 1)
 
     def test_parametrize_with_many_parameters(self) -> None:
-        @parametrize(
-            ("a", "b", "c", "d", "e"),
-            [(1, 2, 3, 4, 5), (6, 7, 8, 9, 10)]
-        )
+        @parametrize(("a", "b", "c", "d", "e"), [(1, 2, 3, 4, 5), (6, 7, 8, 9, 10)])
         def test_func(a: int, b: int, c: int, d: int, e: int) -> int:
             return a + b + c + d + e
 
@@ -130,11 +128,7 @@ class ExtendedParametrizeTests(unittest.TestCase):
         self.assertIsInstance(cases[0]["values"]["list_val"], list)
 
     def test_parametrize_with_custom_ids(self) -> None:
-        @parametrize(
-            "value",
-            [(1,), (2,), (3,)],
-            ids=["first", "second", "third"]
-        )
+        @parametrize("value", [(1,), (2,), (3,)], ids=["first", "second", "third"])
         def test_func(value: int) -> int:
             return value
 
@@ -144,11 +138,7 @@ class ExtendedParametrizeTests(unittest.TestCase):
         self.assertEqual(cases[2]["id"], "third")
 
     def test_parametrize_with_unicode_ids(self) -> None:
-        @parametrize(
-            "value",
-            [(1,), (2,)],
-            ids=["测试", "🚀"]
-        )
+        @parametrize("value", [(1,), (2,)], ids=["测试", "🚀"])
         def test_func(value: int) -> int:
             return value
 
@@ -167,6 +157,7 @@ class ExtendedParametrizeTests(unittest.TestCase):
 
     def test_parametrize_rejects_none_as_argnames(self) -> None:
         with self.assertRaises(TypeError):
+
             @parametrize(None, [(1,)])  # type: ignore
             def _(_: int) -> None:
                 pass
@@ -216,15 +207,13 @@ class CombinedDecoratorsTests(unittest.TestCase):
         def test_func(x: int) -> int:
             return x
 
-        self.assertEqual(
-            getattr(test_func, "__rustest_skip__"),
-            "not ready"
-        )
+        self.assertEqual(getattr(test_func, "__rustest_skip__"), "not ready")
         cases = getattr(test_func, "__rustest_parametrization__")
         self.assertEqual(len(cases), 2)
 
     def test_parametrize_order_matters(self) -> None:
         """Test that decorator order is preserved."""
+
         @parametrize("a", [(1,)])
         @parametrize("b", [(2,)])
         def test_func(a: int, b: int) -> int:

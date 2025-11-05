@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Tuple
 
 from . import _rust
 
@@ -42,7 +42,7 @@ class RunReport:
     failed: int
     skipped: int
     duration: float
-    results: Tuple[TestResult, ...]
+    results: tuple[TestResult, ...]
 
     @classmethod
     def from_py(cls, report: _rust.PyRunReport) -> "RunReport":

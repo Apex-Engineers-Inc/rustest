@@ -5,7 +5,6 @@ mod tests {
     use super::super::python_support::*;
     use std::env;
     use std::fs;
-    use std::path::PathBuf;
 
     #[test]
     fn test_pypaths_from_vec() {
