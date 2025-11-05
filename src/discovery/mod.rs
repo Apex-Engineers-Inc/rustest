@@ -175,11 +175,10 @@ fn inspect_module(
             }
         }
         // Check if it's a class (unittest.TestCase support)
-        else if isclass.call1((&value,))?.is_truthy()? {
-            if is_test_case_class(py, &value)? {
-                let class_tests = discover_class_tests(py, path, &name, &value)?;
-                tests.extend(class_tests);
-            }
+        else if isclass.call1((&value,))?.is_truthy()?
+            && is_test_case_class(py, &value)? {
+            let class_tests = discover_class_tests(py, path, &name, &value)?;
+            tests.extend(class_tests);
         }
     }
 
@@ -247,7 +246,7 @@ fn discover_class_tests(
 fn is_callable(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
     let builtins = obj.py().import_bound("builtins")?;
     let callable_fn = builtins.getattr("callable")?;
-    Ok(callable_fn.call1((obj,))?.is_truthy()?)
+    callable_fn.call1((obj,))?.is_truthy()
 }
 
 /// Create a callable that instantiates a TestCase and runs a specific test method.
