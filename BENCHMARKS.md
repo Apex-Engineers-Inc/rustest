@@ -39,15 +39,30 @@ We benchmarked pytest against rustest using a comprehensive test suite with **16
 - **rustest**: 0.046s (~674 tests/sec)
 - **Speedup**: ~2.8x
 
+### Execution Model
+
+**Both test runners execute tests sequentially in these benchmarks:**
+
+- **pytest**: Sequential by default (no pytest-xdist plugin installed)
+- **rustest**: Sequential execution (see `src/execution/mod.rs:34-45`)
+  - Note: rustest has a `--workers` parameter, but parallel execution is not yet implemented due to Python's GIL limitations
+  - The infrastructure is designed to support future parallel strategies
+
+The 2.5x speedup comes from **Rust's efficiency in orchestration**, not from parallelization.
+
 ### Why is rustest faster?
+
+Since both runners execute tests sequentially, the performance advantage comes from:
 
 1. **Rust-native test discovery**: Rustest uses Rust's fast file I/O and pattern matching for test discovery, avoiding Python's import overhead.
 
 2. **Optimized fixture resolution**: Fixture dependencies are resolved by Rust using efficient graph algorithms, with minimal Python interpreter overhead.
 
-3. **Efficient test execution**: While the actual test code runs in Python, the orchestration, scheduling, and reporting are handled by Rust.
+3. **Efficient test orchestration**: While the actual test code runs in Python, the orchestration, scheduling, and reporting are handled by Rust.
 
 4. **Zero-overhead abstractions**: Rustest leverages Rust's zero-cost abstractions to minimize the test runner's footprint.
+
+5. **Less interpreter overhead**: The test runner itself contributes minimal overhead compared to pytest's pure-Python implementation.
 
 ### Real-world Impact
 
