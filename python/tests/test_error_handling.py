@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import unittest
+import pytest
 
 from .helpers import ensure_rust_stub
 from rustest import parametrize, fixture
@@ -10,38 +10,38 @@ from rustest import parametrize, fixture
 ensure_rust_stub()
 
 
-class ErrorHandlingTests(unittest.TestCase):
+class TestErrorHandling:
     """Tests for various error scenarios."""
 
     def test_parametrize_empty_argnames_raises_error(self) -> None:
         """Test that empty argnames raises ValueError."""
-        with self.assertRaises(ValueError) as ctx:
+        with pytest.raises(ValueError) as ctx:
 
             @parametrize("", [(1,)])
             def _test(_: int) -> None:
                 pass
 
-        self.assertIn("at least one argument", str(ctx.exception).lower())
+        assert "at least one argument" in str(ctx.value).lower()
 
     def test_parametrize_mismatched_values_raises_error(self) -> None:
         """Test that mismatched values raises ValueError."""
-        with self.assertRaises(ValueError) as ctx:
+        with pytest.raises(ValueError) as ctx:
 
             @parametrize(("x", "y"), [(1,)])  # Missing one value
             def _test(_x: int, _y: int) -> None:
                 pass
 
-        self.assertIn("does not match", str(ctx.exception).lower())
+        assert "does not match" in str(ctx.value).lower()
 
     def test_parametrize_mismatched_ids_raises_error(self) -> None:
         """Test that mismatched IDs raises ValueError."""
-        with self.assertRaises(ValueError) as ctx:
+        with pytest.raises(ValueError) as ctx:
 
             @parametrize("value", [(1,), (2,)], ids=["only_one"])
             def _test(_: int) -> None:
                 pass
 
-        self.assertIn("must match", str(ctx.exception).lower())
+        assert "must match" in str(ctx.value).lower()
 
     def test_parametrize_with_empty_values_list(self) -> None:
         """Test that empty values list works correctly."""
@@ -51,11 +51,11 @@ class ErrorHandlingTests(unittest.TestCase):
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 0)
+        assert len(cases) == 0
 
     def test_parametrize_with_whitespace_only_argname(self) -> None:
         """Test that whitespace-only argnames raise ValueError."""
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
 
             @parametrize("   ", [(1,)])
             def _test(_: int) -> None:
@@ -70,8 +70,8 @@ class ErrorHandlingTests(unittest.TestCase):
             pass
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertIn("x", cases[0]["values"])
-        self.assertIn("y", cases[0]["values"])
+        assert "x" in cases[0]["values"]
+        assert "y" in cases[0]["values"]
 
     def test_fixture_with_exception_in_body(self) -> None:
         """Test that fixtures can raise exceptions."""
@@ -80,7 +80,7 @@ class ErrorHandlingTests(unittest.TestCase):
         def broken_fixture() -> None:
             raise RuntimeError("Fixture is broken")
 
-        with self.assertRaises(RuntimeError):
+        with pytest.raises(RuntimeError):
             broken_fixture()
 
     def test_parametrize_with_generator_values(self) -> None:
@@ -96,7 +96,7 @@ class ErrorHandlingTests(unittest.TestCase):
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 3)
+        assert len(cases) == 3
 
     def test_parametrize_with_very_long_id(self) -> None:
         """Test handling of very long custom IDs."""
@@ -107,7 +107,7 @@ class ErrorHandlingTests(unittest.TestCase):
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(cases[0]["id"], long_id)
+        assert cases[0]["id"] == long_id
 
     def test_parametrize_with_duplicate_ids(self) -> None:
         """Test handling of duplicate IDs (should be allowed)."""
@@ -117,11 +117,11 @@ class ErrorHandlingTests(unittest.TestCase):
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(cases[0]["id"], "same")
-        self.assertEqual(cases[1]["id"], "same")
+        assert cases[0]["id"] == "same"
+        assert cases[1]["id"] == "same"
 
 
-class EdgeCaseTests(unittest.TestCase):
+class TestEdgeCases:
     """Tests for edge cases and boundary conditions."""
 
     def test_parametrize_with_single_comma_separated_arg(self) -> None:
@@ -132,7 +132,7 @@ class EdgeCaseTests(unittest.TestCase):
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 2)
+        assert len(cases) == 2
 
     def test_parametrize_with_nested_tuples(self) -> None:
         """Test parametrization with nested tuple values."""
@@ -142,7 +142,7 @@ class EdgeCaseTests(unittest.TestCase):
             return data
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(cases[0]["values"]["data"], (1, 2))
+        assert cases[0]["values"]["data"] == (1, 2)
 
     def test_parametrize_with_mixed_types(self) -> None:
         """Test parametrization with mixed value types."""
@@ -161,12 +161,12 @@ class EdgeCaseTests(unittest.TestCase):
             pass
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 5)
-        self.assertEqual(cases[0]["values"]["value"], 1)
-        self.assertEqual(cases[1]["values"]["value"], "string")
-        self.assertIsNone(cases[2]["values"]["value"])
-        self.assertTrue(cases[3]["values"]["value"])
-        self.assertEqual(cases[4]["values"]["value"], [1, 2, 3])
+        assert len(cases) == 5
+        assert cases[0]["values"]["value"] == 1
+        assert cases[1]["values"]["value"] == "string"
+        assert cases[2]["values"]["value"] is None
+        assert cases[3]["values"]["value"] is True
+        assert cases[4]["values"]["value"] == [1, 2, 3]
 
     def test_fixture_with_class_method(self) -> None:
         """Test that fixture decorator works on class methods."""
@@ -177,7 +177,7 @@ class EdgeCaseTests(unittest.TestCase):
             def static_fixture() -> int:
                 return 42
 
-        self.assertTrue(hasattr(TestClass.static_fixture, "__rustest_fixture__"))
+        assert hasattr(TestClass.static_fixture, "__rustest_fixture__")
 
     def test_parametrize_with_large_number_of_cases(self) -> None:
         """Test parametrization with many cases."""
@@ -188,9 +188,9 @@ class EdgeCaseTests(unittest.TestCase):
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 100)
-        self.assertEqual(cases[0]["values"]["x"], 0)
-        self.assertEqual(cases[99]["values"]["x"], 99)
+        assert len(cases) == 100
+        assert cases[0]["values"]["x"] == 0
+        assert cases[99]["values"]["x"] == 99
 
     def test_parametrize_with_special_string_values(self) -> None:
         """Test parametrization with special string values."""
@@ -209,9 +209,9 @@ class EdgeCaseTests(unittest.TestCase):
             return text
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 5)
-        self.assertEqual(cases[0]["values"]["text"], "")
-        self.assertEqual(cases[2]["values"]["text"], "\n")
+        assert len(cases) == 5
+        assert cases[0]["values"]["text"] == ""
+        assert cases[2]["values"]["text"] == "\n"
 
     def test_fixture_returns_lambda(self) -> None:
         """Test that fixtures can return callable objects."""
@@ -221,8 +221,8 @@ class EdgeCaseTests(unittest.TestCase):
             return lambda x: x * 2
 
         result = lambda_fixture()
-        self.assertTrue(callable(result))
-        self.assertEqual(result(5), 10)
+        assert callable(result)
+        assert result(5) == 10
 
     def test_parametrize_preserves_callable(self) -> None:
         """Test that parametrized functions remain callable."""
@@ -232,9 +232,9 @@ class EdgeCaseTests(unittest.TestCase):
             return x * 2
 
         # Should still be callable
-        self.assertTrue(callable(test_func))
+        assert callable(test_func)
         # When called directly, should execute normally
-        self.assertEqual(test_func(3), 6)
+        assert test_func(3) == 6
 
     def test_multiple_parametrize_decorators(self) -> None:
         """Test applying parametrize multiple times."""
@@ -245,10 +245,10 @@ class EdgeCaseTests(unittest.TestCase):
             return x + y
 
         # Both should be stored
-        self.assertTrue(hasattr(test_func, "__rustest_parametrization__"))
+        assert hasattr(test_func, "__rustest_parametrization__")
 
 
-class RobustnessTests(unittest.TestCase):
+class TestRobustness:
     """Tests for robustness and unusual inputs."""
 
     def test_fixture_with_args_and_kwargs(self) -> None:
@@ -258,7 +258,7 @@ class RobustnessTests(unittest.TestCase):
         def flexible_fixture(*args, **kwargs):  # type: ignore
             return (args, kwargs)
 
-        self.assertTrue(getattr(flexible_fixture, "__rustest_fixture__"))
+        assert getattr(flexible_fixture, "__rustest_fixture__")
 
     def test_parametrize_with_class_instances(self) -> None:
         """Test parametrization with class instances."""
@@ -275,8 +275,8 @@ class RobustnessTests(unittest.TestCase):
             return obj.value
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        self.assertEqual(len(cases), 2)
-        self.assertIsInstance(cases[0]["values"]["obj"], DummyClass)
+        assert len(cases) == 2
+        assert isinstance(cases[0]["values"]["obj"], DummyClass)
 
     def test_fixture_with_default_arguments(self) -> None:
         """Test fixtures with default argument values."""
@@ -285,9 +285,5 @@ class RobustnessTests(unittest.TestCase):
         def fixture_with_default(x: int = 10) -> int:
             return x
 
-        self.assertEqual(fixture_with_default(), 10)
-        self.assertEqual(fixture_with_default(20), 20)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert fixture_with_default() == 10
+        assert fixture_with_default(20) == 20

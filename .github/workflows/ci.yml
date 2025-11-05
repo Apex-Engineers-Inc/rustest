@@ -34,11 +34,36 @@ jobs:
       - name: Install dependencies and build package
         run: uv sync --all-extras
 
-      - name: Run Python tests
-        run: .venv/bin/python -m unittest discover -s python/tests -t python
+      - name: Run Python unit tests with pytest
+        run: .venv/bin/pytest python/tests -v
 
-      - name: Run integration tests
-        run: .venv/bin/python -m rustest tests/python_suite/ examples/tests/
+      - name: Run pytest compatibility tests
+        run: .venv/bin/pytest tests/pytest_compat/selected/ -v
+
+      - name: Run integration tests with pytest
+        run: |
+          # Run pytest on integration test files (excluding intentional error tests)
+          .venv/bin/pytest \
+            tests/python_suite/test_basic.py \
+            tests/python_suite/test_complex_parametrize.py \
+            tests/python_suite/test_fixtures.py \
+            tests/python_suite/test_nested_fixtures.py \
+            tests/python_suite/test_parametrized.py \
+            tests/python_suite/test_skip.py \
+            examples/tests/ \
+            -v
+
+      - name: Run integration tests with rustest
+        run: |
+          # Run rustest on same integration test files to verify compatibility
+          .venv/bin/python -m rustest \
+            tests/python_suite/test_basic.py \
+            tests/python_suite/test_complex_parametrize.py \
+            tests/python_suite/test_fixtures.py \
+            tests/python_suite/test_nested_fixtures.py \
+            tests/python_suite/test_parametrized.py \
+            tests/python_suite/test_skip.py \
+            examples/tests/
 
   lint:
     name: Lint and Format

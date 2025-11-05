@@ -64,12 +64,21 @@ def _build_cases(
         raise ValueError(msg)
 
     for index, case in enumerate(values):
-        if isinstance(case, Mapping):
+        # Mappings are only treated as parameter mappings when there are multiple parameters
+        # For single parameters, dicts/mappings are treated as values
+        if isinstance(case, Mapping) and len(names) > 1:
             data = {name: case[name] for name in names}
-        else:
-            if len(case) != len(names):
-                raise ValueError("Parametrized value does not match argument names")
+        elif isinstance(case, tuple) and len(case) == len(names):
+            # Tuples are unpacked to match parameter names (pytest convention)
+            # This handles both single and multiple parameters
             data = {name: case[pos] for pos, name in enumerate(names)}
+        else:
+            # Everything else is treated as a single value
+            # This includes: primitives, lists (even if len==names), dicts (single param), objects
+            if len(names) == 1:
+                data = {names[0]: case}
+            else:
+                raise ValueError("Parametrized value does not match argument names")
         case_id = ids[index] if ids is not None else f"case_{index}"
         case_payloads.append({"id": case_id, "values": data})
     return tuple(case_payloads)
