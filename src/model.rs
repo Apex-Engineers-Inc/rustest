@@ -44,6 +44,7 @@ pub struct TestCase {
     pub parameters: Vec<String>,
     pub parameter_values: ParameterMap,
     pub skip_reason: Option<String>,
+    pub marks: Vec<String>,
 }
 
 impl TestCase {
@@ -146,6 +147,8 @@ pub struct PyTestResult {
     pub stdout: Option<String>,
     #[pyo3(get)]
     pub stderr: Option<String>,
+    #[pyo3(get)]
+    pub marks: Vec<String>,
 }
 
 impl PyTestResult {
@@ -155,6 +158,7 @@ impl PyTestResult {
         duration: f64,
         stdout: Option<String>,
         stderr: Option<String>,
+        marks: Vec<String>,
     ) -> Self {
         Self {
             name,
@@ -164,10 +168,17 @@ impl PyTestResult {
             message: None,
             stdout,
             stderr,
+            marks,
         }
     }
 
-    pub fn skipped(name: String, path: String, duration: f64, reason: String) -> Self {
+    pub fn skipped(
+        name: String,
+        path: String,
+        duration: f64,
+        reason: String,
+        marks: Vec<String>,
+    ) -> Self {
         Self {
             name,
             path,
@@ -176,6 +187,7 @@ impl PyTestResult {
             message: Some(reason),
             stdout: None,
             stderr: None,
+            marks,
         }
     }
 
@@ -186,6 +198,7 @@ impl PyTestResult {
         message: String,
         stdout: Option<String>,
         stderr: Option<String>,
+        marks: Vec<String>,
     ) -> Self {
         Self {
             name,
@@ -195,6 +208,7 @@ impl PyTestResult {
             message: Some(message),
             stdout,
             stderr,
+            marks,
         }
     }
 }

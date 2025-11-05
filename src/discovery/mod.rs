@@ -148,6 +148,7 @@ fn inspect_module(
             let parameters = extract_parameters(py, &value)?;
             let skip_reason = string_attribute(&value, "__rustest_skip__")?;
             let param_cases = collect_parametrization(py, &value)?;
+            let marks = collect_marks(&value)?;
 
             if param_cases.is_empty() {
                 tests.push(TestCase {
@@ -158,6 +159,7 @@ fn inspect_module(
                     parameters: parameters.clone(),
                     parameter_values: ParameterMap::new(),
                     skip_reason: skip_reason.clone(),
+                    marks: marks.clone(),
                 });
             } else {
                 for (case_id, values) in param_cases {
@@ -170,6 +172,7 @@ fn inspect_module(
                         parameters: parameters.clone(),
                         parameter_values: values,
                         skip_reason: skip_reason.clone(),
+                        marks: marks.clone(),
                     });
                 }
             }
@@ -234,6 +237,7 @@ fn discover_class_tests(
                 parameters: Vec::new(),
                 parameter_values: ParameterMap::new(),
                 skip_reason: None,
+                marks: Vec::new(),
             });
         }
     }
@@ -339,6 +343,25 @@ fn collect_parametrization(
         parametrized.push((case_id, parameters));
     }
     Ok(parametrized)
+}
+
+/// Collect mark information attached to a test function.
+fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    let Ok(attr) = value.getattr("__rustest_marks__") else {
+        return Ok(Vec::new());
+    };
+    let sequence: Bound<'_, PySequence> = attr.downcast_into()?;
+    let mut marks = Vec::new();
+    for element in sequence.iter()? {
+        let element = element?;
+        let mark_dict: Bound<'_, PyDict> = element.downcast_into()?;
+        let name = mark_dict
+            .get_item("name")?
+            .ok_or_else(|| invalid_test_definition("Missing name in mark metadata"))?;
+        let name: String = name.extract()?;
+        marks.push(name);
+    }
+    Ok(marks)
 }
 
 /// Load the Python module from disk.
