@@ -35,13 +35,19 @@ jobs:
         run: uv sync --all-extras
 
       - name: Build Rust extension
-        run: .venv/bin/python -m maturin develop --release
+        run: |
+          source .venv/bin/activate
+          maturin develop --release
 
       - name: Run Python tests
-        run: .venv/bin/python -m unittest discover -s python/tests -t python
+        run: |
+          source .venv/bin/activate
+          python -m unittest discover -s python/tests -t python
 
       - name: Run integration tests
-        run: .venv/bin/python -m rustest tests/python_suite/ examples/tests/
+        run: |
+          source .venv/bin/activate
+          python -m rustest tests/python_suite/ examples/tests/
 
   lint:
     name: Lint and Format
