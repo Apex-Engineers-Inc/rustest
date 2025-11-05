@@ -56,7 +56,10 @@ mod tests {
                 skip_reason: Some("Not implemented yet".to_string()),
             };
 
-            assert_eq!(test_case.skip_reason, Some("Not implemented yet".to_string()));
+            assert_eq!(
+                test_case.skip_reason,
+                Some("Not implemented yet".to_string())
+            );
         });
     }
 

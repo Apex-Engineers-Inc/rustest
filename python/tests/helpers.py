@@ -5,10 +5,10 @@ import os
 import subprocess
 import sys
 import warnings
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import Iterator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,7 +36,7 @@ def _run_maturin_develop() -> bool:
     errors: list[str] = []
     for command in _candidate_maturin_commands():
         try:
-            subprocess.run(command, cwd=PROJECT_ROOT, check=True, capture_output=True)
+            _ = subprocess.run(command, cwd=PROJECT_ROOT, check=True, capture_output=True)
             return True
         except FileNotFoundError:
             errors.append(f"missing executable: {' '.join(command)}")
@@ -48,9 +48,8 @@ def _run_maturin_develop() -> bool:
                 + (f"\nstderr:\n{stderr.strip()}" if stderr else "")
             )
     message = "; ".join(errors)
-    warnings.warn(
-        "Unable to run `maturin develop`; falling back to importing the in-repo sources. "
-        + message
+    _ = warnings.warn(
+        "Unable to run `maturin develop`; falling back to importing the in-repo sources. " + message
     )
     return False
 
@@ -60,7 +59,7 @@ def ensure_develop_installed() -> None:
     if _INSTALLED:
         return
     if os.environ.get("RUSTEST_TESTS_SKIP_MATURIN") == "1":
-        warnings.warn("Skipping `maturin develop` due to RUSTEST_TESTS_SKIP_MATURIN=1.")
+        _ = warnings.warn("Skipping `maturin develop` due to RUSTEST_TESTS_SKIP_MATURIN=1.")
     else:
         succeeded = _run_maturin_develop()
         if not succeeded and os.environ.get("RUSTEST_TESTS_REQUIRE_MATURIN") == "1":
@@ -68,8 +67,8 @@ def ensure_develop_installed() -> None:
                 "maturin develop failed and fallback is disabled (set RUSTEST_TESTS_SKIP_MATURIN=1 to bypass)."
             )
     _purge_rustest_modules()
-    importlib.invalidate_caches()
-    importlib.import_module("rustest")
+    _ = importlib.invalidate_caches()
+    _ = importlib.import_module("rustest")
     _INSTALLED = True
 
 

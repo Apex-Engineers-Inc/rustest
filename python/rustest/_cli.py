@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Sequence
+from collections.abc import Sequence
 
 from ._reporting import RunReport
 from .core import run
@@ -14,30 +14,30 @@ def build_parser() -> argparse.ArgumentParser:
         prog="rustest",
         description="Run Python tests at blazing speed with a Rust powered core.",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "paths",
         nargs="*",
         default=(".",),
         help="Files or directories to collect tests from.",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "-k",
         "--pattern",
         help="Substring to filter tests by (case insensitive).",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "-n",
         "--workers",
         type=int,
         help="Number of worker slots to use (experimental).",
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--no-capture",
         dest="capture_output",
         action="store_false",
         help="Do not capture stdout/stderr during test execution.",
     )
-    parser.set_defaults(capture_output=True)
+    _ = parser.set_defaults(capture_output=True)
     return parser
 
 

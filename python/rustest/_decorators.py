@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Mapping, Sequence, Tuple, TypeVar
+from collections.abc import Callable, Mapping, Sequence
+from typing import TypeVar
 
-F = TypeVar("F", bound=Callable[..., Any])
+F = TypeVar("F", bound=Callable[..., object])
 
 
 def fixture(func: F) -> F:
@@ -26,7 +27,7 @@ def skip(reason: str | None = None) -> Callable[[F], F]:
 
 def parametrize(
     arg_names: str | Sequence[str],
-    values: Sequence[Sequence[Any] | Mapping[str, Any]],
+    values: Sequence[Sequence[object] | Mapping[str, object]],
     *,
     ids: Sequence[str] | None = None,
 ) -> Callable[[F], F]:
@@ -42,7 +43,7 @@ def parametrize(
     return decorator
 
 
-def _normalize_arg_names(arg_names: str | Sequence[str]) -> Tuple[str, ...]:
+def _normalize_arg_names(arg_names: str | Sequence[str]) -> tuple[str, ...]:
     if isinstance(arg_names, str):
         parts = [part.strip() for part in arg_names.split(",") if part.strip()]
         if not parts:
@@ -53,11 +54,11 @@ def _normalize_arg_names(arg_names: str | Sequence[str]) -> Tuple[str, ...]:
 
 
 def _build_cases(
-    names: Tuple[str, ...],
-    values: Sequence[Sequence[Any] | Mapping[str, Any]],
+    names: tuple[str, ...],
+    values: Sequence[Sequence[object] | Mapping[str, object]],
     ids: Sequence[str] | None,
-) -> Tuple[Dict[str, Any], ...]:
-    case_payloads: list[Dict[str, Any]] = []
+) -> tuple[dict[str, object], ...]:
+    case_payloads: list[dict[str, object]] = []
     if ids is not None and len(ids) != len(values):
         msg = "ids must match the number of value sets"
         raise ValueError(msg)

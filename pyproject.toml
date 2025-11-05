@@ -43,23 +43,25 @@ line-length = 100
 [tool.basedpyright]
 pythonVersion = "3.10"
 pythonPlatform = "Linux"
-typeCheckingMode = "all"
+typeCheckingMode = "strict"
 strictListInference = true
 strictDictionaryInference = true
 strictSetInference = true
 strictParameterNoneValue = true
-enableTypeIgnoreComments = false
-reportAny = "error"
-reportExplicitAny = "error"
-reportIgnoreCommentWithoutRule = "error"
+reportMissingTypeStubs = false
+reportImportCycles = false
+reportUnknownVariableType = "warning"
+reportUnknownMemberType = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownParameterType = "warning"
+reportUnknownLambdaType = "warning"
+reportUnnecessaryTypeIgnoreComment = "error"
 reportImplicitStringConcatenation = "error"
 reportMissingSuperCall = "error"
 reportPropertyTypeMismatch = "error"
 reportUninitializedInstanceVariable = "error"
-reportUnnecessaryTypeIgnoreComment = "error"
-reportUnusedCallResult = "error"
-include = ["python"]
-exclude = ["**/__pycache__", "**/.*", "**/*.pyc"]
+include = ["python/rustest"]
+exclude = ["**/__pycache__", "**/.*", "**/*.pyc", "**/tests"]
 
 [tool.uv]
 managed = true

@@ -26,6 +26,7 @@ class IntegrationTests(unittest.TestCase):
     def _cleanup_temp_dir(self) -> None:
         """Clean up temporary directory."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -37,10 +38,13 @@ class IntegrationTests(unittest.TestCase):
 
     def test_run_with_passing_tests(self) -> None:
         """Test running a simple passing test."""
-        self._write_test_file("test_simple.py", """
+        self._write_test_file(
+            "test_simple.py",
+            """
 def test_pass():
     assert True
-""")
+""",
+        )
 
         try:
             report = run(paths=[self.temp_dir])
@@ -54,7 +58,9 @@ def test_pass():
 
     def test_run_with_multiple_tests(self) -> None:
         """Test running multiple tests in one file."""
-        self._write_test_file("test_multiple.py", """
+        self._write_test_file(
+            "test_multiple.py",
+            """
 def test_one():
     assert 1 == 1
 
@@ -63,7 +69,8 @@ def test_two():
 
 def test_three():
     assert 3 == 3
-""")
+""",
+        )
 
         try:
             report = run(paths=[self.temp_dir])
@@ -74,7 +81,9 @@ def test_three():
 
     def test_run_with_pattern_filter(self) -> None:
         """Test pattern filtering."""
-        self._write_test_file("test_pattern.py", """
+        self._write_test_file(
+            "test_pattern.py",
+            """
 def test_alpha():
     assert True
 
@@ -83,7 +92,8 @@ def test_beta():
 
 def test_gamma():
     assert True
-""")
+""",
+        )
 
         try:
             report = run(paths=[self.temp_dir], pattern="alpha")
@@ -94,11 +104,14 @@ def test_gamma():
 
     def test_run_without_capture_output(self) -> None:
         """Test running tests without capturing output."""
-        self._write_test_file("test_output.py", """
+        self._write_test_file(
+            "test_output.py",
+            """
 def test_with_print():
     print("Hello")
     assert True
-""")
+""",
+        )
 
         try:
             report = run(paths=[self.temp_dir], capture_output=False)
@@ -111,10 +124,13 @@ def test_with_print():
 
     def test_cli_main_with_passing_tests(self) -> None:
         """Test CLI main function with passing tests."""
-        self._write_test_file("test_cli_pass.py", """
+        self._write_test_file(
+            "test_cli_pass.py",
+            """
 def test_success():
     assert True
-""")
+""",
+        )
 
         buffer = io.StringIO()
         try:
@@ -223,13 +239,16 @@ def test_success():
 
     def test_run_with_worker_count(self) -> None:
         """Test running tests with specific worker count."""
-        self._write_test_file("test_workers.py", """
+        self._write_test_file(
+            "test_workers.py",
+            """
 def test_one():
     assert True
 
 def test_two():
     assert True
-""")
+""",
+        )
 
         try:
             report = run(paths=[self.temp_dir], workers=2)
@@ -252,14 +271,20 @@ def test_two():
 
     def test_multiple_test_files(self) -> None:
         """Test running tests from multiple files."""
-        self._write_test_file("test_file1.py", """
+        self._write_test_file(
+            "test_file1.py",
+            """
 def test_from_file1():
     assert True
-""")
-        self._write_test_file("test_file2.py", """
+""",
+        )
+        self._write_test_file(
+            "test_file2.py",
+            """
 def test_from_file2():
     assert True
-""")
+""",
+        )
 
         try:
             report = run(paths=[self.temp_dir])
@@ -307,12 +332,7 @@ class CLIParserTests(unittest.TestCase):
     def test_parser_with_all_options(self) -> None:
         """Test parser with all options specified."""
         parser = _cli.build_parser()
-        args = parser.parse_args([
-            "tests",
-            "-k", "pattern",
-            "-n", "8",
-            "--no-capture"
-        ])
+        args = parser.parse_args(["tests", "-k", "pattern", "-n", "8", "--no-capture"])
         self.assertEqual(tuple(args.paths), ("tests",))
         self.assertEqual(args.pattern, "pattern")
         self.assertEqual(args.workers, 8)
