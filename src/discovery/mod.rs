@@ -47,11 +47,9 @@ pub fn discover_tests(
                     }
                 }
             }
-        } else if path.is_file() {
-            if glob.is_match(&path) {
-                if let Some(module) = collect_from_file(py, &path, config, &module_ids)? {
-                    modules.push(module);
-                }
+        } else if path.is_file() && glob.is_match(&path) {
+            if let Some(module) = collect_from_file(py, &path, config, &module_ids)? {
+                modules.push(module);
             }
         }
     }
@@ -70,9 +68,9 @@ fn build_file_glob() -> PyResult<GlobSet> {
         Glob::new("*_test.py")
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?,
     );
-    Ok(builder
+    builder
         .build()
-        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?)
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
 /// Load a module from `path` and extract fixtures and tests.
@@ -280,7 +278,7 @@ fn infer_module_names(path: &Path, fallback_id: usize) -> (String, Option<String
     let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
-        .unwrap_or_else(|| "rustest_module");
+        .unwrap_or("rustest_module");
 
     let mut components = vec![stem.to_string()];
     let mut parent = path.parent();

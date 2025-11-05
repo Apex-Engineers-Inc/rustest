@@ -4,7 +4,6 @@
 mod tests {
     use super::super::model::*;
     use pyo3::prelude::*;
-    use pyo3::types::PyDict;
     use std::path::PathBuf;
 
     #[test]
@@ -65,19 +64,17 @@ mod tests {
 
     #[test]
     fn test_test_module_new() {
-        Python::with_gil(|py| {
-            let fixtures = ParameterMap::new();
-            let tests = vec![];
-            let module = TestModule::new(
-                PathBuf::from("/test/module.py"),
-                fixtures.clone(),
-                tests.clone(),
-            );
+        let fixtures = ParameterMap::new();
+        let tests = vec![];
+        let module = TestModule::new(
+            PathBuf::from("/test/module.py"),
+            fixtures,
+            tests,
+        );
 
-            assert_eq!(module.path, PathBuf::from("/test/module.py"));
-            assert!(module.fixtures.is_empty());
-            assert!(module.tests.is_empty());
-        });
+        assert_eq!(module.path, PathBuf::from("/test/module.py"));
+        assert!(module.fixtures.is_empty());
+        assert!(module.tests.is_empty());
     }
 
     #[test]
@@ -110,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_py_run_report_new() {
-        Python::with_gil(|py| {
+        Python::with_gil(|_py| {
             let results = vec![];
             let report = PyRunReport::new(10, 8, 1, 1, 1.5, results);
 
@@ -232,7 +229,7 @@ mod tests {
                 path: PathBuf::from("/test.py"),
                 callable: callable.unbind(),
                 parameters: vec!["x".to_string(), "y".to_string()],
-                parameter_values: param_values.clone(),
+                parameter_values: param_values,
                 skip_reason: None,
             };
 
