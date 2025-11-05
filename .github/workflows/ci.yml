@@ -38,10 +38,10 @@ jobs:
         run: uv run maturin develop --release
 
       - name: Run Python tests
-        run: uv run python -m unittest discover -s python/tests -t python
+        run: uv run --no-sync python -m unittest discover -s python/tests -t python
 
       - name: Run integration tests
-        run: uv run python -m rustest tests/python_suite/ examples/tests/
+        run: uv run --no-sync python -m rustest tests/python_suite/ examples/tests/
 
   lint:
     name: Lint and Format
