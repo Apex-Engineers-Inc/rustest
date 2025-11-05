@@ -37,7 +37,11 @@ jobs:
       - name: Build Rust extension
         run: |
           source .venv/bin/activate
+          which python
+          which maturin
           maturin develop --release
+          echo "After maturin develop:"
+          pip list | grep rustest || echo "rustest NOT in pip list after maturin"
 
       - name: Run Python tests
         run: |
