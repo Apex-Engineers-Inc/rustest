@@ -61,11 +61,11 @@ pub fn discover_tests(
 fn build_file_glob() -> PyResult<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     builder.add(
-        Glob::new("test_*.py")
+        Glob::new("**/test_*.py")
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?,
     );
     builder.add(
-        Glob::new("*_test.py")
+        Glob::new("**/*_test.py")
             .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?,
     );
     builder

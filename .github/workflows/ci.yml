@@ -40,6 +40,9 @@ jobs:
       - name: Run pytest compatibility tests
         run: .venv/bin/pytest tests/pytest_compat/selected/ -v
 
+      - name: Run rustest integration tests
+        run: .venv/bin/python -m rustest tests/python_suite/ examples/tests/
+
   lint:
     name: Lint and Format
     runs-on: ubuntu-latest
