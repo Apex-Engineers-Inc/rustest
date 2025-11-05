@@ -16,7 +16,7 @@ and [`poethepoet`](https://github.com/nat-n/poethepoet).
 
 ## Installation
 
-Rustest targets Python **3.10+**. The recommended workflow uses `uv` which acts
+Rustest supports Python **3.10 through 3.13**. The recommended workflow uses `uv` which acts
 as both the dependency resolver and the virtual environment manager.
 
 ```bash
@@ -79,10 +79,10 @@ uv --version
 
 **What is uv?** Think of it as a faster, more modern alternative to pip and virtualenv. It manages Python dependencies and virtual environments.
 
-#### 3. **Python 3.10+**
+#### 3. **Python 3.10-3.13**
 ```bash
 # Check your Python version
-python3 --version  # Should be 3.10 or higher
+python3 --version  # Should be 3.10 through 3.13
 ```
 
 ### Step-by-Step Setup
@@ -154,9 +154,9 @@ rustest/
 │   ├── test_cli.py               # Test CLI
 │   └── ...
 │
-├── tests/python_suite/           # 🧪 Test fixtures for Rust tests
-│   ├── test_basic.py             # Sample tests used by Rust tests
-│   ├── test_fixtures.py          # Test fixture resolution
+├── tests/                        # 🧪 Integration test suite
+│   ├── test_basic.py             # Basic test functions
+│   ├── test_fixtures.py          # Fixture dependency injection
 │   └── ...
 │
 ├── Cargo.toml                    # Rust dependencies (rustest-core crate)

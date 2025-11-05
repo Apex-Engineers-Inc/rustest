@@ -10,13 +10,13 @@ Tests in this directory use `from rustest import parametrize, fixture, skip`, bu
 
 **With pytest:**
 ```bash
-pytest tests/python_suite/
+pytest tests/
 ```
 The `conftest.py` intercepts `from rustest import ...` and redirects to pytest's native decorators (`pytest.mark.parametrize`, `pytest.fixture`, etc.)
 
 **With rustest:**
 ```bash
-python -m rustest tests/python_suite/
+python -m rustest tests/
 ```
 Uses rustest's actual decorators and runs through the Rust-powered test engine.
 
@@ -46,29 +46,29 @@ Uses rustest's actual decorators and runs through the Rust-powered test engine.
 ### Run with pytest
 ```bash
 # All tests (includes intentional failures)
-pytest tests/python_suite/ -v
+pytest tests/ -v
 
 # Only passing tests
-pytest tests/python_suite/test_basic.py \
-       tests/python_suite/test_complex_parametrize.py \
-       tests/python_suite/test_fixtures.py \
-       tests/python_suite/test_nested_fixtures.py \
-       tests/python_suite/test_parametrized.py \
-       tests/python_suite/test_skip.py -v
+pytest tests/test_basic.py \
+       tests/test_complex_parametrize.py \
+       tests/test_fixtures.py \
+       tests/test_nested_fixtures.py \
+       tests/test_parametrized.py \
+       tests/test_skip.py -v
 ```
 
 ### Run with rustest
 ```bash
 # All tests (includes intentional failures)
-python -m rustest tests/python_suite/
+python -m rustest tests/
 
 # Only passing tests
-python -m rustest tests/python_suite/test_basic.py \
-                  tests/python_suite/test_complex_parametrize.py \
-                  tests/python_suite/test_fixtures.py \
-                  tests/python_suite/test_nested_fixtures.py \
-                  tests/python_suite/test_parametrized.py \
-                  tests/python_suite/test_skip.py
+python -m rustest tests/test_basic.py \
+                  tests/test_complex_parametrize.py \
+                  tests/test_fixtures.py \
+                  tests/test_nested_fixtures.py \
+                  tests/test_parametrized.py \
+                  tests/test_skip.py
 ```
 
 ## Expected Results

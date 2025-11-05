@@ -75,7 +75,6 @@ mod tests {
     fn sample_test_module(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
-            .join("python_suite")
             .join(name)
     }
 
@@ -181,9 +180,7 @@ mod tests {
     fn test_discovery_with_directory() {
         Python::with_gil(|py| {
             ensure_python_package_on_path(py);
-            let dir_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests")
-                .join("python_suite");
+            let dir_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
 
             let modules = run_discovery(py, &dir_path);
             // Should discover all test files in the directory

@@ -38,7 +38,6 @@ fmt = "cargo fmt"
 lint = "uv run --with dev ruff check python"
 typecheck = "uv run --with dev basedpyright python"
 pytests = "uv run pytest python/tests -v"
-pytest-compat = "uv run rustest tests/pytest_compat/selected/"
 unit = "uv run rustest examples/tests/"
 
 [tool.ruff]
