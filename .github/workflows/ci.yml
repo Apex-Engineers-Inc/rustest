@@ -39,14 +39,22 @@ jobs:
 
       - name: Run integration tests with pytest
         run: |
-          # Run pytest on integration test files (excluding intentional error tests)
+          # Run pytest on integration test files (excluding test_errors.py which has intentional failures)
           .venv/bin/pytest \
             tests/test_basic.py \
             tests/test_complex_parametrize.py \
+            tests/test_fixture_class_scope.py \
+            tests/test_fixture_scope_edge_cases.py \
+            tests/test_fixture_scopes.py \
+            tests/test_fixture_validation.py \
             tests/test_fixtures.py \
+            tests/test_marks.py \
             tests/test_nested_fixtures.py \
+            tests/test_output.py \
             tests/test_parametrized.py \
+            tests/test_scope_validation_errors.py \
             tests/test_skip.py \
+            tests/test_yield_fixtures.py \
             examples/tests/ \
             -v
 
@@ -56,11 +64,19 @@ jobs:
           .venv/bin/python -m rustest \
             tests/test_basic.py \
             tests/test_complex_parametrize.py \
+            tests/test_fixture_class_scope.py \
+            tests/test_fixture_scope_edge_cases.py \
+            tests/test_fixture_scopes.py \
+            tests/test_fixture_validation.py \
             tests/test_fixtures.py \
+            tests/test_marks.py \
             tests/test_nested_fixtures.py \
+            tests/test_output.py \
             tests/test_parametrized.py \
+            tests/test_scope_validation_errors.py \
             tests/test_skip.py \
-            examples/tests/
+            tests/test_yield_fixtures.py \
+            examples/tests
 
       - name: Run conftest.py tests with pytest
         run: |

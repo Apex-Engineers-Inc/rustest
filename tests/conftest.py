@@ -18,9 +18,13 @@ else:
         """Mock rustest module that exports pytest-compatible decorators."""
 
         @staticmethod
-        def fixture(func):
+        def fixture(func=None, *, scope="function"):
             """Redirect to pytest.fixture."""
-            return pytest.fixture(func)
+            if func is None:
+                # Called with arguments: @fixture(scope="module")
+                return lambda f: pytest.fixture(f, scope=scope)
+            # Called without arguments: @fixture
+            return pytest.fixture(func, scope=scope)
 
         @staticmethod
         def parametrize(argnames, argvalues, *, ids=None):
@@ -31,6 +35,9 @@ else:
         def skip(reason=None):
             """Redirect to pytest.mark.skip."""
             return pytest.mark.skip(reason=reason or "skipped via rustest.skip")
+
+        # Add mark attribute for pytest.mark compatibility
+        mark = pytest.mark
 
     def pytest_configure(config):
         """Inject rustest compatibility shim when pytest starts."""
