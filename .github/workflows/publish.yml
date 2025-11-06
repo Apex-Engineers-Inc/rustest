@@ -1,0 +1,71 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PACKAGE_NAME: rustest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync project dependencies
+        run: uv sync --python 3.12 --all-extras
+
+      - name: Determine publish target
+        id: release
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          TMP_FILE=$(mktemp)
+          if curl -fsSL "https://pypi.org/pypi/${PACKAGE_NAME}/json" -o "$TMP_FILE"; then
+            if jq -e --arg ver "$VERSION" '.releases | has($ver)' "$TMP_FILE" > /dev/null; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+          rm -f "$TMP_FILE"
+
+      - name: Publish decision
+        run: |
+          if [ "${{ steps.release.outputs.publish }}" = "true" ]; then
+            echo "Will publish version ${{ steps.release.outputs.version }} to PyPI."
+          else
+            echo "Version ${{ steps.release.outputs.version }} already exists on PyPI. Skipping publish."
+          fi
+
+      - name: Build distributions
+        if: steps.release.outputs.publish == 'true'
+        run: uv build
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.publish == 'true'
+        run: uv publish --check-url https://pypi.org/simple --trusted-publishing always
