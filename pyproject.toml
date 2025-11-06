@@ -45,6 +45,7 @@ Repository = "https://github.com/Apex-Engineers-Inc/rustest"
 [tool.maturin]
 module-name = "rustest._rust"
 python-source = "python"
+compatibility = "manylinux2014"
 
 [tool.poe.tasks]
 build = "uv build"
