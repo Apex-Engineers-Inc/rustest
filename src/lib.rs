@@ -24,6 +24,7 @@ use model::{PyRunReport, RunConfiguration};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
+use watch::watch_mode;
 
 #[pyfunction(signature = (paths, pattern = None, workers = None, capture_output = true))]
 fn run(
@@ -40,12 +41,23 @@ fn run(
     Ok(report)
 }
 
+#[pyfunction(name = "watch", signature = (paths, pattern = None, workers = None, capture_output = true))]
+fn run_watch(
+    py: Python<'_>,
+    paths: Vec<String>,
+    pattern: Option<String>,
+    workers: Option<usize>,
+    capture_output: bool,
+) -> PyResult<PyRunReport> {
+    watch_mode(py, paths, pattern, workers, capture_output)
+}
+
 /// Entry point for the Python extension module.
 #[pymodule]
 fn _rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunReport>()?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
-    m.add_function(wrap_pyfunction!(watch::watch, m)?)?;
+    m.add_function(wrap_pyfunction!(run_watch, m)?)?;
     Ok(())
 }
 
