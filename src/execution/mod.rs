@@ -290,6 +290,14 @@ impl<'py> FixtureResolver<'py> {
             )));
         }
 
+        // Validate scope ordering: higher-scoped fixtures cannot depend on lower-scoped ones
+        // This check happens during resolution of dependencies
+        for param in fixture.parameters.iter() {
+            if let Some(dep_fixture) = self.fixtures.get(param) {
+                self.validate_scope_dependency(fixture, dep_fixture)?;
+            }
+        }
+
         // Resolve fixture dependencies recursively
         let mut args = Vec::new();
         for param in fixture.parameters.iter() {
@@ -328,6 +336,25 @@ impl<'py> FixtureResolver<'py> {
         }
 
         Ok(result)
+    }
+
+    /// Validate that a fixture's scope is compatible with its dependency's scope.
+    ///
+    /// The rule is: a fixture can only depend on fixtures with equal or broader scope.
+    /// - Session fixtures can depend on: session only
+    /// - Module fixtures can depend on: session, module
+    /// - Class fixtures can depend on: session, module, class
+    /// - Function fixtures can depend on: session, module, class, function
+    fn validate_scope_dependency(&self, fixture: &Fixture, dependency: &Fixture) -> PyResult<()> {
+        // Check if dependency scope is narrower than fixture scope
+        if fixture.scope > dependency.scope {
+            return Err(invalid_test_definition(format!(
+                "ScopeMismatch: Fixture '{}' (scope: {:?}) cannot depend on '{}' (scope: {:?}). \
+                 A fixture can only depend on fixtures with equal or broader scope.",
+                fixture.name, fixture.scope, dependency.name, dependency.scope
+            )));
+        }
+        Ok(())
     }
 }
 
