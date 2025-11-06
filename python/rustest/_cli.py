@@ -205,9 +205,7 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
         print(f"\n{Colors.bold}{file_path}{Colors.reset}")
 
         # Group tests by class within this file
-        tests_by_class: dict[str | None, list[tuple[TestResult, str | None]]] = defaultdict(
-            list
-        )
+        tests_by_class: dict[str | None, list[tuple[TestResult, str | None]]] = defaultdict(list)
         for result in tests_by_file[file_path]:
             # Parse test name to extract class if present
             # Format can be: "test_name" or "ClassName.test_name" or "module::Class::test"
