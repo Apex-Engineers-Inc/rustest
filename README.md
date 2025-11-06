@@ -1,28 +1,33 @@
 # rustest
 
-Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **78x faster** test execution with familiar syntax and minimal setup.
+Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **133x faster** test execution with familiar syntax and minimal setup.
 
 ## Why rustest?
 
-- 🚀 **78x faster** than pytest (measured on real-world integration tests)
+- 🚀 **133x faster** than pytest (measured on real-world integration tests)
 - ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
 - 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
+- 🧮 Built-in `approx()` helper for tolerant numeric comparisons across scalars, collections, and complex numbers
+- 🪤 `raises()` context manager for precise exception assertions with optional message matching
 - 📦 Easy installation with pip or uv
 - ⚡ Sub-10ms execution for small test suites—tests feel instant
 
 ## Performance
 
-Rustest is designed for speed. Our benchmarks show **78x faster** execution compared to pytest on the rustest integration test suite (~199 tests):
+Rustest is designed for speed. Our benchmarks show **133x faster** execution compared to pytest on the rustest integration test suite (~200 tests):
 
 | Test Runner | Time | Tests/Second | Speedup |
 |-------------|------|--------------|---------|
-| pytest      | 0.39s | 502 | 1.0x (baseline) |
-| rustest     | 0.005s | 39,800 | **78x faster** |
+| pytest      | 0.40s | 502 | 1.0x (baseline) |
+| rustest     | 0.003s | 66,333 | **133x faster** |
 
 **Actual CI measurements:**
-- **pytest**: 196 passed, 5 skipped in 0.39s
-- **rustest**: 194 passed, 5 skipped in 0.005s
+- **pytest**: 196 passed, 5 skipped in 0.40s (`pytest tests/ examples/tests/ -v`)
+- **rustest**: 194 passed, 5 skipped in 0.003s (`python -m rustest tests/ examples/tests/`)
+- **Wall-clock comparison:** pytest completed in 0.89s of real time vs. rustest in 0.48s (including interpreter startup overhead)
+
+Rustest counts parametrized cases slightly differently than pytest, so you will see 199 executed cases vs. pytest's 201 discoveries on the same suite—the reported pass/skip counts still align.
 
 **Why so fast?**
 - **Near-zero startup time**: Native Rust binary vs Python interpreter startup
@@ -31,9 +36,9 @@ Rustest is designed for speed. Our benchmarks show **78x faster** execution comp
 - **Efficient orchestration**: ~50-100μs per-test overhead vs ~1-2ms in pytest
 
 **Real-world impact:**
-- **200 tests**: 0.39s → 0.005s (instant feedback)
-- **1,000 tests**: ~2s → ~0.025s (tests complete before you can switch tabs)
-- **10,000 tests**: ~20s → ~0.25s (dramatically faster feedback loops)
+- **200 tests**: 0.40s → 0.003s (instant feedback)
+- **1,000 tests**: ~2.0s → ~0.023s (tests complete before you can switch tabs)
+- **10,000 tests**: ~20s → ~0.23s (dramatically faster feedback loops)
 
 See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis and methodology.
 
@@ -61,14 +66,14 @@ If you want to contribute to rustest, see [DEVELOPMENT.md](DEVELOPMENT.md) for s
 Create a file `test_math.py`:
 
 ```python
-from rustest import fixture, parametrize, mark
+from rustest import fixture, parametrize, mark, approx, raises
 
 @fixture
 def numbers() -> list[int]:
     return [1, 2, 3, 4, 5]
 
 def test_sum(numbers: list[int]) -> None:
-    assert sum(numbers) == 15
+    assert sum(numbers) == approx(15)
 
 @parametrize("value,expected", [(2, 4), (3, 9), (4, 16)])
 def test_square(value: int, expected: int) -> None:
@@ -79,6 +84,10 @@ def test_expensive_operation() -> None:
     # This test is marked as slow for filtering
     result = sum(range(1000000))
     assert result > 0
+
+def test_division_by_zero_is_reported() -> None:
+    with raises(ZeroDivisionError, match="division by zero"):
+        1 / 0
 ```
 
 ### 2. Run Your Tests
@@ -197,6 +206,21 @@ def api_client(api_url: str) -> dict:
 def test_api_configuration(api_client: dict) -> None:
     assert api_client["base_url"].startswith("https://")
     assert api_client["timeout"] == 30
+```
+
+#### Assertion Helpers
+
+Rustest ships helpers for expressive assertions:
+
+```python
+from rustest import approx, raises
+
+def test_nearly_equal() -> None:
+    assert 0.1 + 0.2 == approx(0.3, rel=1e-9)
+
+def test_raises_with_message() -> None:
+    with raises(ValueError, match="invalid configuration"):
+        raise ValueError("invalid configuration")
 ```
 
 #### Yield Fixtures with Setup/Teardown

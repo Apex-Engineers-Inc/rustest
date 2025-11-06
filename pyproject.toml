@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "typing_extensions>=4.8",
+    "typing-extensions>=4.15",
 ]
 scripts = { rustest = "rustest.__main__:main" }
 
