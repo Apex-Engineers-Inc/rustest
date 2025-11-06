@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from .helpers import ensure_rust_stub
-from rustest import parametrize, fixture
+from rustest import parametrize, fixture, raises
 
 ensure_rust_stub()
 
@@ -287,3 +287,124 @@ class TestRobustness:
 
         assert fixture_with_default() == 10
         assert fixture_with_default(20) == 20
+
+
+class TestRaises:
+    """Tests for the raises() context manager."""
+
+    def test_raises_basic_exception(self) -> None:
+        """Test that raises catches the expected exception."""
+        with raises(ValueError):
+            raise ValueError("test error")
+
+    def test_raises_with_match_success(self) -> None:
+        """Test that raises with match works when pattern matches."""
+        with raises(ValueError, match="invalid"):
+            raise ValueError("invalid literal")
+
+    def test_raises_with_match_regex(self) -> None:
+        """Test that raises match supports regex patterns."""
+        with raises(ValueError, match=r"invalid \w+"):
+            raise ValueError("invalid literal")
+
+    def test_raises_with_match_failure(self) -> None:
+        """Test that raises with match fails when pattern doesn't match."""
+        with pytest.raises(AssertionError, match="Pattern.*does not match"):
+            with raises(ValueError, match="notfound"):
+                raise ValueError("something else")
+
+    def test_raises_no_exception(self) -> None:
+        """Test that raises fails when no exception is raised."""
+        with pytest.raises(AssertionError, match="DID NOT RAISE"):
+            with raises(ValueError):
+                pass  # No exception raised
+
+    def test_raises_wrong_exception(self) -> None:
+        """Test that raises lets unexpected exceptions propagate."""
+        with pytest.raises(TypeError):
+            with raises(ValueError):
+                raise TypeError("wrong exception")
+
+    def test_raises_tuple_of_exceptions(self) -> None:
+        """Test that raises accepts a tuple of exception types."""
+        with raises((ValueError, TypeError)):
+            raise ValueError("test")
+
+        with raises((ValueError, TypeError)):
+            raise TypeError("test")
+
+    def test_raises_access_exception_value(self) -> None:
+        """Test that we can access the caught exception."""
+        with raises(ValueError) as exc_info:
+            raise ValueError("test message")
+
+        assert exc_info.value is not None
+        assert str(exc_info.value) == "test message"
+        assert exc_info.type is ValueError
+
+    def test_raises_access_exception_before_exit(self) -> None:
+        """Test that accessing exception before exit raises AttributeError."""
+        ctx = raises(ValueError)
+        with pytest.raises(AttributeError, match="No exception was caught"):
+            _ = ctx.value
+
+    def test_raises_subclass_exception(self) -> None:
+        """Test that raises catches subclass exceptions."""
+
+        class CustomError(ValueError):
+            pass
+
+        with raises(ValueError):
+            raise CustomError("test")
+
+    def test_raises_with_assertion_error(self) -> None:
+        """Test that raises works with AssertionError."""
+        with raises(AssertionError):
+            assert False, "This should fail"
+
+    def test_raises_with_runtime_error(self) -> None:
+        """Test that raises works with RuntimeError."""
+        with raises(RuntimeError, match="Something went wrong"):
+            raise RuntimeError("Something went wrong")
+
+    def test_raises_with_zero_division(self) -> None:
+        """Test that raises works with ZeroDivisionError."""
+        with raises(ZeroDivisionError):
+            _ = 1 / 0
+
+    def test_raises_excinfo_repr(self) -> None:
+        """Test the ExceptionInfo repr."""
+        with raises(ValueError) as exc_info:
+            raise ValueError("test")
+
+        repr_str = repr(exc_info.excinfo)
+        assert "ExceptionInfo" in repr_str
+        assert "ValueError" in repr_str
+
+    def test_raises_with_partial_match(self) -> None:
+        """Test that match does partial matching, not exact."""
+        with raises(ValueError, match="invalid"):
+            raise ValueError("this is an invalid literal for conversion")
+
+    def test_raises_format_exc_name_single(self) -> None:
+        """Test formatting of single exception name."""
+        with pytest.raises(AssertionError, match="DID NOT RAISE ValueError"):
+            with raises(ValueError):
+                pass
+
+    def test_raises_format_exc_name_tuple(self) -> None:
+        """Test formatting of tuple of exception names."""
+        with pytest.raises(AssertionError, match="ValueError or TypeError"):
+            with raises((ValueError, TypeError)):
+                pass
+
+    def test_raises_with_exception_in_message(self) -> None:
+        """Test that match failure message includes exception details."""
+        with pytest.raises(AssertionError) as exc_info:
+            with raises(ValueError, match="expected"):
+                raise ValueError("actual message")
+
+        error_msg = str(exc_info.value)
+        assert "Pattern 'expected' does not match" in error_msg
+        assert "'actual message'" in error_msg
+        assert "ValueError" in error_msg

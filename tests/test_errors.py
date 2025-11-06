@@ -10,17 +10,7 @@ try:
     raises = pytest.raises
 except ImportError:
     import rustest as testlib
-
-    # rustest doesn't have raises, so create a simple context manager
-    from contextlib import contextmanager
-
-    @contextmanager
-    def raises(exc_type):
-        try:
-            yield
-            raise AssertionError(f"Expected {exc_type.__name__} but no exception was raised")
-        except exc_type:
-            pass  # Expected exception
+    from rustest import raises
 
 
 def test_assertion_error():
