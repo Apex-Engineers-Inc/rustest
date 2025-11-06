@@ -132,6 +132,7 @@ fn inspect_module(
         if isfunction.call1((&value,))?.is_truthy()? {
             if is_fixture(&value)? {
                 let scope = extract_fixture_scope(&value)?;
+                let is_generator = is_generator_function(py, &value)?;
                 fixtures.insert(
                     name.clone(),
                     Fixture::new(
@@ -139,6 +140,7 @@ fn inspect_module(
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
                         scope,
+                        is_generator,
                     ),
                 );
                 continue;
@@ -294,6 +296,13 @@ fn is_fixture(value: &Bound<'_, PyAny>) -> PyResult<bool> {
         Ok(flag) => flag.is_truthy()?,
         Err(_) => false,
     })
+}
+
+/// Check if a function is a generator function (contains yield).
+fn is_generator_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let inspect = py.import("inspect")?;
+    let is_gen = inspect.call_method1("isgeneratorfunction", (value,))?;
+    Ok(is_gen.is_truthy()?)
 }
 
 /// Extract the scope of a fixture, defaulting to "function" if not specified.

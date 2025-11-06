@@ -33,10 +33,12 @@ pub fn run_collected_tests(
 
     // Session-scoped fixture cache lives for the entire test run
     let mut session_cache = IndexMap::new();
+    let mut session_teardowns: Vec<Py<PyAny>> = Vec::new();
 
     for module in modules.iter() {
         // Module-scoped fixture cache lives for all tests in this module
         let mut module_cache = IndexMap::new();
+        let mut module_teardowns: Vec<Py<PyAny>> = Vec::new();
 
         // Group tests by class for class-scoped fixtures
         let mut tests_by_class: IndexMap<Option<String>, Vec<&TestCase>> = IndexMap::new();
@@ -50,6 +52,7 @@ pub fn run_collected_tests(
         for (_class_name, tests) in tests_by_class {
             // Class-scoped fixture cache lives for all tests in this class
             let mut class_cache = IndexMap::new();
+            let mut class_teardowns: Vec<Py<PyAny>> = Vec::new();
 
             for test in tests {
                 let result = run_single_test(
@@ -60,6 +63,9 @@ pub fn run_collected_tests(
                     &mut session_cache,
                     &mut module_cache,
                     &mut class_cache,
+                    &mut session_teardowns,
+                    &mut module_teardowns,
+                    &mut class_teardowns,
                 )?;
                 match result.status.as_str() {
                     "passed" => passed += 1,
@@ -70,13 +76,16 @@ pub fn run_collected_tests(
                 results.push(result);
             }
 
-            // Class-scoped fixtures are dropped here
+            // Class-scoped fixtures are dropped here - run teardowns
+            finalize_generators(py, &mut class_teardowns);
         }
 
-        // Module-scoped fixtures are dropped here
+        // Module-scoped fixtures are dropped here - run teardowns
+        finalize_generators(py, &mut module_teardowns);
     }
 
-    // Session-scoped fixtures are dropped here
+    // Session-scoped fixtures are dropped here - run teardowns
+    finalize_generators(py, &mut session_teardowns);
     let duration = start.elapsed().as_secs_f64();
     let total = passed + failed + skipped;
     Ok(PyRunReport::new(
@@ -93,6 +102,9 @@ fn run_single_test(
     session_cache: &mut IndexMap<String, Py<PyAny>>,
     module_cache: &mut IndexMap<String, Py<PyAny>>,
     class_cache: &mut IndexMap<String, Py<PyAny>>,
+    session_teardowns: &mut Vec<Py<PyAny>>,
+    module_teardowns: &mut Vec<Py<PyAny>>,
+    class_teardowns: &mut Vec<Py<PyAny>>,
 ) -> PyResult<PyTestResult> {
     if let Some(reason) = &test_case.skip_reason {
         return Ok(PyTestResult::skipped(
@@ -113,6 +125,9 @@ fn run_single_test(
         session_cache,
         module_cache,
         class_cache,
+        session_teardowns,
+        module_teardowns,
+        class_teardowns,
     );
     let duration = start.elapsed().as_secs_f64();
     let name = test_case.display_name.clone();
@@ -161,6 +176,9 @@ fn execute_test_case(
     session_cache: &mut IndexMap<String, Py<PyAny>>,
     module_cache: &mut IndexMap<String, Py<PyAny>>,
     class_cache: &mut IndexMap<String, Py<PyAny>>,
+    session_teardowns: &mut Vec<Py<PyAny>>,
+    module_teardowns: &mut Vec<Py<PyAny>>,
+    class_teardowns: &mut Vec<Py<PyAny>>,
 ) -> Result<TestCallSuccess, TestCallFailure> {
     let mut resolver = FixtureResolver::new(
         py,
@@ -169,6 +187,9 @@ fn execute_test_case(
         session_cache,
         module_cache,
         class_cache,
+        session_teardowns,
+        module_teardowns,
+        class_teardowns,
     );
     let mut call_args = Vec::new();
     for param in &test_case.parameters {
@@ -194,13 +215,18 @@ fn execute_test_case(
     let (result, stdout, stderr) = match call_result {
         Ok(value) => value,
         Err(err) => {
+            // Clean up function-scoped fixtures before returning
+            finalize_generators(py, &mut resolver.function_teardowns);
             return Err(TestCallFailure {
                 message: err.to_string(),
                 stdout: None,
                 stderr: None,
-            })
+            });
         }
     };
+
+    // Clean up function-scoped fixtures after test completes
+    finalize_generators(py, &mut resolver.function_teardowns);
 
     match result {
         Ok(_) => Ok(TestCallSuccess { stdout, stderr }),
@@ -231,6 +257,10 @@ struct FixtureResolver<'py> {
     module_cache: &'py mut IndexMap<String, Py<PyAny>>,
     class_cache: &'py mut IndexMap<String, Py<PyAny>>,
     function_cache: IndexMap<String, Py<PyAny>>,
+    session_teardowns: &'py mut Vec<Py<PyAny>>,
+    module_teardowns: &'py mut Vec<Py<PyAny>>,
+    class_teardowns: &'py mut Vec<Py<PyAny>>,
+    function_teardowns: Vec<Py<PyAny>>,
     stack: HashSet<String>,
     parameters: &'py ParameterMap,
 }
@@ -243,6 +273,9 @@ impl<'py> FixtureResolver<'py> {
         session_cache: &'py mut IndexMap<String, Py<PyAny>>,
         module_cache: &'py mut IndexMap<String, Py<PyAny>>,
         class_cache: &'py mut IndexMap<String, Py<PyAny>>,
+        session_teardowns: &'py mut Vec<Py<PyAny>>,
+        module_teardowns: &'py mut Vec<Py<PyAny>>,
+        class_teardowns: &'py mut Vec<Py<PyAny>>,
     ) -> Self {
         Self {
             py,
@@ -251,6 +284,10 @@ impl<'py> FixtureResolver<'py> {
             module_cache,
             class_cache,
             function_cache: IndexMap::new(),
+            session_teardowns,
+            module_teardowns,
+            class_teardowns,
+            function_teardowns: Vec::new(),
             stack: HashSet::new(),
             parameters,
         }
@@ -307,13 +344,44 @@ impl<'py> FixtureResolver<'py> {
 
         // Execute the fixture
         let args_tuple = PyTuple::new(self.py, &args)?;
-        let call_result = fixture
-            .callable
-            .bind(self.py)
-            .call1(args_tuple)
-            .map(|value| value.unbind());
+        let result = if fixture.is_generator {
+            // For generator fixtures: call to get generator, then call next() to get yielded value
+            let generator = fixture
+                .callable
+                .bind(self.py)
+                .call1(args_tuple)
+                .map(|value| value.unbind())?;
+
+            // Call next() on the generator to get the yielded value
+            let yielded_value = generator.bind(self.py).call_method0("__next__")?.unbind();
+
+            // Store the generator in the appropriate teardown list
+            match fixture.scope {
+                FixtureScope::Session => {
+                    self.session_teardowns.push(generator);
+                }
+                FixtureScope::Module => {
+                    self.module_teardowns.push(generator);
+                }
+                FixtureScope::Class => {
+                    self.class_teardowns.push(generator);
+                }
+                FixtureScope::Function => {
+                    self.function_teardowns.push(generator);
+                }
+            }
+
+            yielded_value
+        } else {
+            // For regular fixtures: call and use the return value directly
+            fixture
+                .callable
+                .bind(self.py)
+                .call1(args_tuple)
+                .map(|value| value.unbind())?
+        };
+
         self.stack.remove(&fixture.name);
-        let result = call_result?;
 
         // Store in the appropriate cache based on scope
         match fixture.scope {
@@ -416,4 +484,24 @@ fn format_pyerr(py: Python<'_>, err: &PyErr) -> PyResult<String> {
         .call_method1("format_exception", (exc_type, exc_value, exc_tb))?
         .extract()?;
     Ok(formatted.join(""))
+}
+
+/// Finalize generator fixtures by running their teardown code.
+/// This calls next() on each generator, which will execute the code after yield.
+/// The generator will raise StopIteration when complete, which we catch and ignore.
+fn finalize_generators(py: Python<'_>, generators: &mut Vec<Py<PyAny>>) {
+    // Process generators in reverse order (LIFO) to match pytest behavior
+    for generator in generators.drain(..).rev() {
+        let result = generator.bind(py).call_method0("__next__");
+        // Ignore StopIteration (expected) and log other errors
+        if let Err(err) = result {
+            // Check if it's StopIteration - that's expected and OK
+            if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py) {
+                // For other exceptions, we could log them, but for now we'll ignore
+                // to avoid breaking the test run. In pytest, teardown errors are collected
+                // but don't stop other teardowns from running.
+                eprintln!("Warning: Error during fixture teardown: {}", err);
+            }
+        }
+    }
 }
