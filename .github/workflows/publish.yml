@@ -1,10 +1,7 @@
-name: Tests and Publish
+name: Publish to PyPI
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
     branches:
       - main
   workflow_dispatch:
@@ -14,107 +11,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  checks:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version:
-          - "3.10"
-          - "3.11"
-          - "3.12"
-          - "3.13"
-          - "3.14"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-
-      - name: Install Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Sync dependencies
-        run: uv sync --python ${{ matrix.python-version }} --all-extras
-
-      - name: Run Python unit tests with pytest
-        run: uv run --python ${{ matrix.python-version }} pytest python/tests -v
-
-      - name: Run all integration tests with pytest
-        run: uv run --python ${{ matrix.python-version }} pytest tests/ examples/tests/ -v
-
-      - name: Run all integration tests with rustest
-        run: uv run --python ${{ matrix.python-version }} python -m rustest tests/ examples/tests/
-
-  lint:
-    name: Lint and Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Check Python formatting with ruff
-        run: uv run --no-project ruff format --check python
-
-      - name: Lint Python with ruff
-        run: uv run --no-project ruff check python
-
-      - name: Check Rust formatting
-        run: cargo fmt --check
-
-      - name: Lint Rust with clippy
-        run: cargo clippy --lib -- -D warnings
-
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Type check with basedpyright
-        run: uv run --no-project basedpyright python
-
   publish:
     name: Build and Publish
-    needs: [checks, lint, typecheck]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       id-token: write
