@@ -18,6 +18,25 @@ use crate::model::{
     RunConfiguration, TestCase, TestModule,
 };
 
+/// Manages teardown for generator fixtures across different scopes.
+struct TeardownCollector {
+    session: Vec<Py<PyAny>>,
+    module: Vec<Py<PyAny>>,
+    class: Vec<Py<PyAny>>,
+    function: Vec<Py<PyAny>>,
+}
+
+impl TeardownCollector {
+    fn new() -> Self {
+        Self {
+            session: Vec::new(),
+            module: Vec::new(),
+            class: Vec::new(),
+            function: Vec::new(),
+        }
+    }
+}
+
 /// Run the collected test modules and return a report that mirrors pytest's
 /// high-level summary information.
 pub fn run_collected_tests(
@@ -33,12 +52,11 @@ pub fn run_collected_tests(
 
     // Session-scoped fixture cache lives for the entire test run
     let mut session_cache = IndexMap::new();
-    let mut session_teardowns: Vec<Py<PyAny>> = Vec::new();
+    let mut teardowns = TeardownCollector::new();
 
     for module in modules.iter() {
         // Module-scoped fixture cache lives for all tests in this module
         let mut module_cache = IndexMap::new();
-        let mut module_teardowns: Vec<Py<PyAny>> = Vec::new();
 
         // Group tests by class for class-scoped fixtures
         let mut tests_by_class: IndexMap<Option<String>, Vec<&TestCase>> = IndexMap::new();
@@ -52,7 +70,6 @@ pub fn run_collected_tests(
         for (_class_name, tests) in tests_by_class {
             // Class-scoped fixture cache lives for all tests in this class
             let mut class_cache = IndexMap::new();
-            let mut class_teardowns: Vec<Py<PyAny>> = Vec::new();
 
             for test in tests {
                 let result = run_single_test(
@@ -63,9 +80,7 @@ pub fn run_collected_tests(
                     &mut session_cache,
                     &mut module_cache,
                     &mut class_cache,
-                    &mut session_teardowns,
-                    &mut module_teardowns,
-                    &mut class_teardowns,
+                    &mut teardowns,
                 )?;
                 match result.status.as_str() {
                     "passed" => passed += 1,
@@ -77,15 +92,15 @@ pub fn run_collected_tests(
             }
 
             // Class-scoped fixtures are dropped here - run teardowns
-            finalize_generators(py, &mut class_teardowns);
+            finalize_generators(py, &mut teardowns.class);
         }
 
         // Module-scoped fixtures are dropped here - run teardowns
-        finalize_generators(py, &mut module_teardowns);
+        finalize_generators(py, &mut teardowns.module);
     }
 
     // Session-scoped fixtures are dropped here - run teardowns
-    finalize_generators(py, &mut session_teardowns);
+    finalize_generators(py, &mut teardowns.session);
     let duration = start.elapsed().as_secs_f64();
     let total = passed + failed + skipped;
     Ok(PyRunReport::new(
@@ -102,9 +117,7 @@ fn run_single_test(
     session_cache: &mut IndexMap<String, Py<PyAny>>,
     module_cache: &mut IndexMap<String, Py<PyAny>>,
     class_cache: &mut IndexMap<String, Py<PyAny>>,
-    session_teardowns: &mut Vec<Py<PyAny>>,
-    module_teardowns: &mut Vec<Py<PyAny>>,
-    class_teardowns: &mut Vec<Py<PyAny>>,
+    teardowns: &mut TeardownCollector,
 ) -> PyResult<PyTestResult> {
     if let Some(reason) = &test_case.skip_reason {
         return Ok(PyTestResult::skipped(
@@ -125,9 +138,7 @@ fn run_single_test(
         session_cache,
         module_cache,
         class_cache,
-        session_teardowns,
-        module_teardowns,
-        class_teardowns,
+        teardowns,
     );
     let duration = start.elapsed().as_secs_f64();
     let name = test_case.display_name.clone();
@@ -176,9 +187,7 @@ fn execute_test_case(
     session_cache: &mut IndexMap<String, Py<PyAny>>,
     module_cache: &mut IndexMap<String, Py<PyAny>>,
     class_cache: &mut IndexMap<String, Py<PyAny>>,
-    session_teardowns: &mut Vec<Py<PyAny>>,
-    module_teardowns: &mut Vec<Py<PyAny>>,
-    class_teardowns: &mut Vec<Py<PyAny>>,
+    teardowns: &mut TeardownCollector,
 ) -> Result<TestCallSuccess, TestCallFailure> {
     let mut resolver = FixtureResolver::new(
         py,
@@ -187,9 +196,7 @@ fn execute_test_case(
         session_cache,
         module_cache,
         class_cache,
-        session_teardowns,
-        module_teardowns,
-        class_teardowns,
+        teardowns,
     );
     let mut call_args = Vec::new();
     for param in &test_case.parameters {
@@ -257,9 +264,7 @@ struct FixtureResolver<'py> {
     module_cache: &'py mut IndexMap<String, Py<PyAny>>,
     class_cache: &'py mut IndexMap<String, Py<PyAny>>,
     function_cache: IndexMap<String, Py<PyAny>>,
-    session_teardowns: &'py mut Vec<Py<PyAny>>,
-    module_teardowns: &'py mut Vec<Py<PyAny>>,
-    class_teardowns: &'py mut Vec<Py<PyAny>>,
+    teardowns: &'py mut TeardownCollector,
     function_teardowns: Vec<Py<PyAny>>,
     stack: HashSet<String>,
     parameters: &'py ParameterMap,
@@ -273,9 +278,7 @@ impl<'py> FixtureResolver<'py> {
         session_cache: &'py mut IndexMap<String, Py<PyAny>>,
         module_cache: &'py mut IndexMap<String, Py<PyAny>>,
         class_cache: &'py mut IndexMap<String, Py<PyAny>>,
-        session_teardowns: &'py mut Vec<Py<PyAny>>,
-        module_teardowns: &'py mut Vec<Py<PyAny>>,
-        class_teardowns: &'py mut Vec<Py<PyAny>>,
+        teardowns: &'py mut TeardownCollector,
     ) -> Self {
         Self {
             py,
@@ -284,9 +287,7 @@ impl<'py> FixtureResolver<'py> {
             module_cache,
             class_cache,
             function_cache: IndexMap::new(),
-            session_teardowns,
-            module_teardowns,
-            class_teardowns,
+            teardowns,
             function_teardowns: Vec::new(),
             stack: HashSet::new(),
             parameters,
@@ -358,13 +359,13 @@ impl<'py> FixtureResolver<'py> {
             // Store the generator in the appropriate teardown list
             match fixture.scope {
                 FixtureScope::Session => {
-                    self.session_teardowns.push(generator);
+                    self.teardowns.session.push(generator);
                 }
                 FixtureScope::Module => {
-                    self.module_teardowns.push(generator);
+                    self.teardowns.module.push(generator);
                 }
                 FixtureScope::Class => {
-                    self.class_teardowns.push(generator);
+                    self.teardowns.class.push(generator);
                 }
                 FixtureScope::Function => {
                     self.function_teardowns.push(generator);

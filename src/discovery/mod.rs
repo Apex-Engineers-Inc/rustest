@@ -302,7 +302,7 @@ fn is_fixture(value: &Bound<'_, PyAny>) -> PyResult<bool> {
 fn is_generator_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
     let inspect = py.import("inspect")?;
     let is_gen = inspect.call_method1("isgeneratorfunction", (value,))?;
-    Ok(is_gen.is_truthy()?)
+    is_gen.is_truthy()
 }
 
 /// Extract the scope of a fixture, defaulting to "function" if not specified.
