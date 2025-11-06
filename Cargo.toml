@@ -18,6 +18,8 @@ pyo3 = { version = "0.27", features = ["extension-module", "anyhow"] }
 rayon = "1.8"
 globset = "0.4.13"
 walkdir = "2.4"
+notify = "6.1"
+notify-debouncer-full = "0.3"
 
 [dev-dependencies]
 pyo3 = { version = "0.27", features = ["auto-initialize"] }

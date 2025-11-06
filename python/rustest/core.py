@@ -19,3 +19,16 @@ def run(
 
     raw_report = _rust.run(list(paths), pattern, workers, capture_output)
     return RunReport.from_py(raw_report)
+
+
+def watch(
+    *,
+    paths: Sequence[str],
+    pattern: str | None,
+    workers: int | None,
+    capture_output: bool,
+) -> RunReport:
+    """Run tests in watch mode, re-running affected tests on file changes."""
+
+    raw_report = _rust.watch(list(paths), pattern, workers, capture_output)
+    return RunReport.from_py(raw_report)

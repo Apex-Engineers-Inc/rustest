@@ -6,7 +6,7 @@ import argparse
 from collections.abc import Sequence
 
 from ._reporting import RunReport, TestResult
-from .core import run
+from .core import run, watch
 
 
 # ANSI color codes
@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable colored output.",
     )
+    _ = parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch for file changes and re-run affected tests.",
+    )
     _ = parser.set_defaults(capture_output=True, color=True)
     return parser
 
@@ -93,6 +98,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.color:
         Colors.disable()
 
+    # Handle watch mode
+    if args.watch:
+        report = watch(
+            paths=tuple(args.paths),
+            pattern=args.pattern,
+            workers=args.workers,
+            capture_output=args.capture_output,
+        )
+        _print_report(report, verbose=args.verbose, ascii_mode=args.ascii)
+        return 0 if report.failed == 0 else 1
+
+    # Normal mode
     report = run(
         paths=tuple(args.paths),
         pattern=args.pattern,
