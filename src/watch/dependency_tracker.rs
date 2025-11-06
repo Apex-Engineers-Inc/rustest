@@ -172,9 +172,9 @@ impl DependencyTracker {
         // Try to resolve from parent directories (walking up to find the package root)
         let mut current_dir = from_dir;
         while let Some(parent) = current_dir.parent() {
-            let target = parts.iter().fold(parent.to_path_buf(), |path, part| {
-                path.join(part)
-            });
+            let target = parts
+                .iter()
+                .fold(parent.to_path_buf(), |path, part| path.join(part));
             if let Some(path) = self.try_resolve_path(&target) {
                 return Some(path);
             }

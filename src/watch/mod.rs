@@ -74,10 +74,7 @@ pub fn watch_mode(
         let watch_path = if path_obj.is_dir() {
             path_obj.to_path_buf()
         } else if path_obj.is_file() {
-            path_obj
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf()
+            path_obj.parent().unwrap_or(Path::new(".")).to_path_buf()
         } else {
             continue;
         };
