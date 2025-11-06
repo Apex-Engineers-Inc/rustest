@@ -11,9 +11,9 @@ def test_overridable_at_root(overridable_fixture):
     assert overridable_fixture == "from_root"
 
 
-def test_session_fixture(session_fixture):
+def test_session_fixture(nested_session_fixture):
     """Test can access session-scoped fixture."""
-    assert session_fixture == "session_from_root"
+    assert nested_session_fixture == "session_from_root"
 
 
 def test_root_only(root_only):

@@ -1,9 +1,9 @@
 """Second test module to verify cross-module scope behavior."""
 
 
-def test_session_shared(session_fixture):
+def test_session_shared(scopes_session_fixture):
     """Session fixture should be the same across modules."""
-    assert session_fixture == "session_value"
+    assert scopes_session_fixture == "session_value"
 
 
 def test_module_fixture(module_fixture):
@@ -16,11 +16,11 @@ def test_module_reused_in_same(module_fixture):
     assert module_fixture == "module_value"
 
 
-def test_all_scopes(function_fixture, module_fixture, session_fixture):
+def test_all_scopes(function_fixture, module_fixture, scopes_session_fixture):
     """Test with all scope levels."""
     assert function_fixture == "function_value"
     assert module_fixture == "module_value"
-    assert session_fixture == "session_value"
+    assert scopes_session_fixture == "session_value"
 
 
 def test_class_fixture(class_fixture):

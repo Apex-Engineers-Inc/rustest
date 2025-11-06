@@ -31,9 +31,9 @@ def test_deep_with_chain(deep_with_chain):
     assert deep_with_chain == "deep_child_root"
 
 
-def test_session_fixture_in_deep(session_fixture):
+def test_session_fixture_in_deep(nested_session_fixture):
     """Session fixture from root is accessible in deep level."""
-    assert session_fixture == "session_from_root"
+    assert nested_session_fixture == "session_from_root"
 
 
 def test_root_only_in_deep(root_only):

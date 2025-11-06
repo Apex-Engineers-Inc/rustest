@@ -25,12 +25,12 @@ def module_fixture():
 
 
 @testlib.fixture(scope="session")
-def session_fixture():
-    """Session-scoped fixture - shared across all tests."""
+def scopes_session_fixture():
+    """Session-scoped fixture - shared across all tests in scopes directory."""
     return "session_value"
 
 
 @testlib.fixture
-def fixture_with_dep(session_fixture):
+def fixture_with_dep(scopes_session_fixture):
     """Fixture that depends on session fixture."""
-    return f"depends_on_{session_fixture}"
+    return f"depends_on_{scopes_session_fixture}"

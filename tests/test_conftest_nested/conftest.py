@@ -25,6 +25,6 @@ def root_only():
 
 
 @testlib.fixture(scope="session")
-def session_fixture():
-    """Session-scoped fixture from root conftest."""
+def nested_session_fixture():
+    """Session-scoped fixture from nested test conftest."""
     return "session_from_root"

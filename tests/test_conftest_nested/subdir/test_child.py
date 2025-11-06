@@ -21,9 +21,9 @@ def test_child_with_root_dep(child_with_root_dep):
     assert child_with_root_dep == "child_uses_root"
 
 
-def test_session_fixture_accessible(session_fixture):
+def test_session_fixture_accessible(nested_session_fixture):
     """Session fixture from root is accessible in child."""
-    assert session_fixture == "session_from_root"
+    assert nested_session_fixture == "session_from_root"
 
 
 def test_root_only_accessible(root_only):

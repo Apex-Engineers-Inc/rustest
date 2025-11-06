@@ -213,17 +213,17 @@ def test_class_mutation_3(mutable_class_state):
 
 
 @fixture(scope="session")
-def session_base():
-    """Session-level base."""
-    return {"level": "session", "calls": track_call("session_base")}
+def class_scope_session_base():
+    """Session-level base for class scope tests."""
+    return {"level": "session", "calls": track_call("class_scope_session_base")}
 
 
 @fixture(scope="module")
-def module_layer(session_base):
+def module_layer(class_scope_session_base):
     """Module-level layer."""
     return {
         "level": "module",
-        "base": session_base,
+        "base": class_scope_session_base,
         "calls": track_call("module_layer"),
     }
 
