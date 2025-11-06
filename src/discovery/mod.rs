@@ -299,9 +299,7 @@ fn is_fixture(value: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// Extract the scope of a fixture, defaulting to "function" if not specified.
 fn extract_fixture_scope(value: &Bound<'_, PyAny>) -> PyResult<FixtureScope> {
     match string_attribute(value, "__rustest_fixture_scope__")? {
-        Some(scope_str) => {
-            FixtureScope::from_str(&scope_str).map_err(|e| invalid_test_definition(e))
-        }
+        Some(scope_str) => FixtureScope::from_str(&scope_str).map_err(invalid_test_definition),
         None => Ok(FixtureScope::default()),
     }
 }

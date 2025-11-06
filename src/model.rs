@@ -18,9 +18,10 @@ use pyo3::prelude::*;
 pub type ParameterMap = IndexMap<String, Py<PyAny>>;
 
 /// The scope of a fixture determines when it is created and destroyed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum FixtureScope {
     /// Created once per test function (default).
+    #[default]
     Function,
     /// Shared across all test methods in a class.
     Class,
@@ -40,12 +41,6 @@ impl FixtureScope {
             "session" => Ok(FixtureScope::Session),
             _ => Err(format!("Invalid fixture scope: {}", s)),
         }
-    }
-}
-
-impl Default for FixtureScope {
-    fn default() -> Self {
-        FixtureScope::Function
     }
 }
 

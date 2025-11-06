@@ -47,7 +47,7 @@ pub fn run_collected_tests(
                 .push(test);
         }
 
-        for (class_name, tests) in tests_by_class {
+        for (_class_name, tests) in tests_by_class {
             // Class-scoped fixture cache lives for all tests in this class
             let mut class_cache = IndexMap::new();
 
