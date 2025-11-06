@@ -1,9 +1,5 @@
 """Conftest with yield fixtures for setup/teardown testing."""
-# Support both pytest and rustest
-try:
-    import pytest as testlib
-except ImportError:
-    import rustest as testlib
+import rustest as testlib
 
 # Global list to track setup/teardown order
 _lifecycle = []

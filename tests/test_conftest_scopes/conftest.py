@@ -1,9 +1,5 @@
 """Conftest with fixtures of different scopes."""
-# Support both pytest and rustest
-try:
-    import pytest as testlib
-except ImportError:
-    import rustest as testlib
+import rustest as testlib
 
 
 @testlib.fixture(scope="function")

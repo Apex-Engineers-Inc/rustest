@@ -1,9 +1,5 @@
 """Deep level conftest.py."""
-# Support both pytest and rustest
-try:
-    import pytest as testlib
-except ImportError:
-    import rustest as testlib
+import rustest as testlib
 
 
 @testlib.fixture
