@@ -9,6 +9,29 @@ from ._reporting import RunReport
 from .core import run
 
 
+# ANSI color codes
+class Colors:
+    """ANSI color codes for terminal output."""
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    CYAN = "\033[96m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+
+    @staticmethod
+    def disable():
+        """Disable all colors."""
+        Colors.GREEN = ""
+        Colors.RED = ""
+        Colors.YELLOW = ""
+        Colors.CYAN = ""
+        Colors.BOLD = ""
+        Colors.DIM = ""
+        Colors.RESET = ""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rustest",
@@ -48,13 +71,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use ASCII characters instead of Unicode symbols for output.",
     )
-    _ = parser.set_defaults(capture_output=True)
+    _ = parser.add_argument(
+        "--no-color",
+        dest="color",
+        action="store_false",
+        help="Disable colored output.",
+    )
+    _ = parser.set_defaults(capture_output=True, color=True)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Disable colors if requested
+    if not args.color:
+        Colors.disable()
+
     report = run(
         paths=tuple(args.paths),
         pattern=args.pattern,
@@ -78,12 +112,16 @@ def _print_report(report: RunReport, verbose: bool = False, ascii_mode: bool = F
     else:
         _print_default_report(report, ascii_mode)
 
-    # Print summary line
+    # Print summary line with colors
+    passed_str = f"{Colors.GREEN}{report.passed} passed{Colors.RESET}" if report.passed > 0 else f"{report.passed} passed"
+    failed_str = f"{Colors.RED}{report.failed} failed{Colors.RESET}" if report.failed > 0 else f"{report.failed} failed"
+    skipped_str = f"{Colors.YELLOW}{report.skipped} skipped{Colors.RESET}" if report.skipped > 0 else f"{report.skipped} skipped"
+
     summary = (
-        f"\n{report.total} tests: "
-        f"{report.passed} passed, "
-        f"{report.failed} failed, "
-        f"{report.skipped} skipped in {report.duration:.3f}s"
+        f"\n{Colors.BOLD}{report.total} tests:{Colors.RESET} "
+        f"{passed_str}, "
+        f"{failed_str}, "
+        f"{skipped_str} in {Colors.DIM}{report.duration:.3f}s{Colors.RESET}"
     )
     print(summary)
 
@@ -96,33 +134,31 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
         pass_symbol = "."
         fail_symbol = "F"
         skip_symbol = "s"
-        separator = ""
     else:
-        # Unicode symbols with spaces
-        pass_symbol = "✓"
-        fail_symbol = "✗"
-        skip_symbol = "⊘"
-        separator = " "
+        # Unicode symbols (no spaces, with colors)
+        pass_symbol = f"{Colors.GREEN}✓{Colors.RESET}"
+        fail_symbol = f"{Colors.RED}✗{Colors.RESET}"
+        skip_symbol = f"{Colors.YELLOW}⊘{Colors.RESET}"
 
     # Print progress indicators
     for result in report.results:
         if result.status == "passed":
-            print(pass_symbol, end=separator)
+            print(pass_symbol, end="")
         elif result.status == "failed":
-            print(fail_symbol, end=separator)
+            print(fail_symbol, end="")
         elif result.status == "skipped":
-            print(skip_symbol, end=separator)
+            print(skip_symbol, end="")
     print()  # Newline after progress indicators
 
     # Print failure details
     failures = [r for r in report.results if r.status == "failed"]
     if failures:
-        print("\n" + "=" * 70)
-        print("FAILURES")
-        print("=" * 70)
+        print(f"\n{Colors.RED}{'=' * 70}")
+        print(f"{Colors.BOLD}FAILURES{Colors.RESET}")
+        print(f"{Colors.RED}{'=' * 70}{Colors.RESET}")
         for result in failures:
-            print(f"\n{result.name} ({result.path})")
-            print("-" * 70)
+            print(f"\n{Colors.BOLD}{result.name}{Colors.RESET} ({Colors.CYAN}{result.path}{Colors.RESET})")
+            print(f"{Colors.RED}{'-' * 70}{Colors.RESET}")
             if result.message:
                 print(result.message.rstrip())
 
@@ -135,9 +171,9 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
         fail_symbol = "FAIL"
         skip_symbol = "SKIP"
     else:
-        pass_symbol = "✓"
-        fail_symbol = "✗"
-        skip_symbol = "⊘"
+        pass_symbol = f"{Colors.GREEN}✓{Colors.RESET}"
+        fail_symbol = f"{Colors.RED}✗{Colors.RESET}"
+        skip_symbol = f"{Colors.YELLOW}⊘{Colors.RESET}"
 
     # Group tests by file path and organize hierarchically
     from collections import defaultdict
@@ -147,7 +183,7 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
 
     # Print hierarchical structure
     for file_path in sorted(tests_by_file.keys()):
-        print(f"\n{file_path}")
+        print(f"\n{Colors.BOLD}{file_path}{Colors.RESET}")
 
         # Group tests by class within this file
         tests_by_class: dict[str | None, list] = defaultdict(list)
@@ -168,7 +204,7 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
         for class_name in sorted(tests_by_class.keys(), key=lambda x: (x is None, x)):
             # Print class name if present
             if class_name:
-                print(f"  {class_name}")
+                print(f"  {Colors.CYAN}{class_name}{Colors.RESET}")
 
             for result, _ in tests_by_class[class_name]:
                 # Get symbol based on status
@@ -193,7 +229,7 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
                 indent = "    " if class_name else "  "
 
                 # Print with symbol, name, and timing
-                duration_str = f"{result.duration * 1000:.0f}ms"
+                duration_str = f"{Colors.DIM}{result.duration * 1000:.0f}ms{Colors.RESET}"
                 print(f"{indent}{symbol} {display_name} {duration_str}")
 
                 # Show error message for failures
