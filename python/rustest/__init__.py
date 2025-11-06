@@ -5,7 +5,7 @@ from __future__ import annotations
 from . import _decorators
 from ._cli import main
 from ._reporting import RunReport, TestResult
-from .core import run
+from .core import run, watch
 
 fixture = _decorators.fixture
 mark = _decorators.mark
@@ -21,4 +21,5 @@ __all__ = [
     "parametrize",
     "run",
     "skip",
+    "watch",
 ]

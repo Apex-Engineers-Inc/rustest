@@ -11,6 +11,7 @@ mod discovery;
 mod execution;
 mod model;
 mod python_support;
+mod watch;
 
 #[cfg(test)]
 mod model_tests;
@@ -44,6 +45,7 @@ fn run(
 fn _rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunReport>()?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(watch::watch, m)?)?;
     Ok(())
 }
 
