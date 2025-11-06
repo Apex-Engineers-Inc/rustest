@@ -1,6 +1,6 @@
 # rustest
 
-Rustest is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **78x faster** test execution with familiar syntax and minimal setup.
+Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **78x faster** test execution with familiar syntax and minimal setup.
 
 ## Why rustest?
 
@@ -46,9 +46,9 @@ Rustest supports Python **3.10 through 3.14**.
 pip install rustest
 ```
 
-### Using uv (recommended)
+### Using uv
 ```bash
-uv add rustest --dev
+uv add rustest
 ```
 
 ### For Development
@@ -114,9 +114,6 @@ rustest -k "auth"           # Runs all tests with "auth" in the name
 
 # Control output capture
 rustest --no-capture        # See print statements during test execution
-
-# Experimental: parallel execution
-rustest -n 4                # Run with 4 worker processes
 ```
 
 ### Python API Usage
