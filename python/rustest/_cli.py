@@ -5,31 +5,35 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from ._reporting import RunReport
+from ._reporting import RunReport, TestResult
 from .core import run
 
 
 # ANSI color codes
-class Colors:
-    """ANSI color codes for terminal output."""
-    GREEN = "\033[92m"
-    RED = "\033[91m"
-    YELLOW = "\033[93m"
-    CYAN = "\033[96m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RESET = "\033[0m"
+class _ColorsNamespace:
+    """Namespace for ANSI color codes."""
 
-    @staticmethod
-    def disable():
+    def __init__(self) -> None:  # pyright: ignore[reportMissingSuperCall]
+        self.green = "\033[92m"
+        self.red = "\033[91m"
+        self.yellow = "\033[93m"
+        self.cyan = "\033[96m"
+        self.bold = "\033[1m"
+        self.dim = "\033[2m"
+        self.reset = "\033[0m"
+
+    def disable(self) -> None:
         """Disable all colors."""
-        Colors.GREEN = ""
-        Colors.RED = ""
-        Colors.YELLOW = ""
-        Colors.CYAN = ""
-        Colors.BOLD = ""
-        Colors.DIM = ""
-        Colors.RESET = ""
+        self.green = ""
+        self.red = ""
+        self.yellow = ""
+        self.cyan = ""
+        self.bold = ""
+        self.dim = ""
+        self.reset = ""
+
+
+Colors = _ColorsNamespace()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,15 +117,27 @@ def _print_report(report: RunReport, verbose: bool = False, ascii_mode: bool = F
         _print_default_report(report, ascii_mode)
 
     # Print summary line with colors
-    passed_str = f"{Colors.GREEN}{report.passed} passed{Colors.RESET}" if report.passed > 0 else f"{report.passed} passed"
-    failed_str = f"{Colors.RED}{report.failed} failed{Colors.RESET}" if report.failed > 0 else f"{report.failed} failed"
-    skipped_str = f"{Colors.YELLOW}{report.skipped} skipped{Colors.RESET}" if report.skipped > 0 else f"{report.skipped} skipped"
+    passed_str = (
+        f"{Colors.green}{report.passed} passed{Colors.reset}"
+        if report.passed > 0
+        else f"{report.passed} passed"
+    )
+    failed_str = (
+        f"{Colors.red}{report.failed} failed{Colors.reset}"
+        if report.failed > 0
+        else f"{report.failed} failed"
+    )
+    skipped_str = (
+        f"{Colors.yellow}{report.skipped} skipped{Colors.reset}"
+        if report.skipped > 0
+        else f"{report.skipped} skipped"
+    )
 
     summary = (
-        f"\n{Colors.BOLD}{report.total} tests:{Colors.RESET} "
+        f"\n{Colors.bold}{report.total} tests:{Colors.reset} "
         f"{passed_str}, "
         f"{failed_str}, "
-        f"{skipped_str} in {Colors.DIM}{report.duration:.3f}s{Colors.RESET}"
+        f"{skipped_str} in {Colors.dim}{report.duration:.3f}s{Colors.reset}"
     )
     print(summary)
 
@@ -136,9 +152,9 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
         skip_symbol = "s"
     else:
         # Unicode symbols (no spaces, with colors)
-        pass_symbol = f"{Colors.GREEN}✓{Colors.RESET}"
-        fail_symbol = f"{Colors.RED}✗{Colors.RESET}"
-        skip_symbol = f"{Colors.YELLOW}⊘{Colors.RESET}"
+        pass_symbol = f"{Colors.green}✓{Colors.reset}"
+        fail_symbol = f"{Colors.red}✗{Colors.reset}"
+        skip_symbol = f"{Colors.yellow}⊘{Colors.reset}"
 
     # Print progress indicators
     for result in report.results:
@@ -153,12 +169,14 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
     # Print failure details
     failures = [r for r in report.results if r.status == "failed"]
     if failures:
-        print(f"\n{Colors.RED}{'=' * 70}")
-        print(f"{Colors.BOLD}FAILURES{Colors.RESET}")
-        print(f"{Colors.RED}{'=' * 70}{Colors.RESET}")
+        print(f"\n{Colors.red}{'=' * 70}")
+        print(f"{Colors.bold}FAILURES{Colors.reset}")
+        print(f"{Colors.red}{'=' * 70}{Colors.reset}")
         for result in failures:
-            print(f"\n{Colors.BOLD}{result.name}{Colors.RESET} ({Colors.CYAN}{result.path}{Colors.RESET})")
-            print(f"{Colors.RED}{'-' * 70}{Colors.RESET}")
+            print(
+                f"\n{Colors.bold}{result.name}{Colors.reset} ({Colors.cyan}{result.path}{Colors.reset})"
+            )
+            print(f"{Colors.red}{'-' * 70}{Colors.reset}")
             if result.message:
                 print(result.message.rstrip())
 
@@ -171,25 +189,29 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
         fail_symbol = "FAIL"
         skip_symbol = "SKIP"
     else:
-        pass_symbol = f"{Colors.GREEN}✓{Colors.RESET}"
-        fail_symbol = f"{Colors.RED}✗{Colors.RESET}"
-        skip_symbol = f"{Colors.YELLOW}⊘{Colors.RESET}"
+        pass_symbol = f"{Colors.green}✓{Colors.reset}"
+        fail_symbol = f"{Colors.red}✗{Colors.reset}"
+        skip_symbol = f"{Colors.yellow}⊘{Colors.reset}"
 
     # Group tests by file path and organize hierarchically
     from collections import defaultdict
-    tests_by_file: dict[str, list] = defaultdict(list)
+
+    tests_by_file: dict[str, list[TestResult]] = defaultdict(list)
     for result in report.results:
         tests_by_file[result.path].append(result)
 
     # Print hierarchical structure
     for file_path in sorted(tests_by_file.keys()):
-        print(f"\n{Colors.BOLD}{file_path}{Colors.RESET}")
+        print(f"\n{Colors.bold}{file_path}{Colors.reset}")
 
         # Group tests by class within this file
-        tests_by_class: dict[str | None, list] = defaultdict(list)
+        tests_by_class: dict[str | None, list[tuple[TestResult, str | None]]] = defaultdict(
+            list
+        )
         for result in tests_by_file[file_path]:
             # Parse test name to extract class if present
             # Format can be: "test_name" or "ClassName.test_name" or "module::Class::test"
+            class_name: str | None
             if "::" in result.name:
                 parts = result.name.split("::")
                 class_name = "::".join(parts[:-1]) if len(parts) > 1 else None
@@ -204,7 +226,7 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
         for class_name in sorted(tests_by_class.keys(), key=lambda x: (x is None, x)):
             # Print class name if present
             if class_name:
-                print(f"  {Colors.CYAN}{class_name}{Colors.RESET}")
+                print(f"  {Colors.cyan}{class_name}{Colors.reset}")
 
             for result, _ in tests_by_class[class_name]:
                 # Get symbol based on status
@@ -229,7 +251,7 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
                 indent = "    " if class_name else "  "
 
                 # Print with symbol, name, and timing
-                duration_str = f"{Colors.DIM}{result.duration * 1000:.0f}ms{Colors.RESET}"
+                duration_str = f"{Colors.dim}{result.duration * 1000:.0f}ms{Colors.reset}"
                 print(f"{indent}{symbol} {display_name} {duration_str}")
 
                 # Show error message for failures

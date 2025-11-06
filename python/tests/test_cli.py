@@ -14,8 +14,8 @@ from rustest import _cli
 
 def strip_ansi(text: str) -> str:
     """Remove ANSI color codes from text."""
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    return ansi_escape.sub('', text)
+    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    return ansi_escape.sub("", text)
 
 
 class TestCli:
@@ -208,8 +208,11 @@ class TestOutputFormatting:
 
         output = strip_ansi(buffer.getvalue())
         # Should contain pytest-style characters
-        assert ".Fs" in output or ".sF" in output or "F.s" in output or any(
-            c in output for c in ['.', 'F', 's']
+        assert (
+            ".Fs" in output
+            or ".sF" in output
+            or "F.s" in output
+            or any(c in output for c in [".", "F", "s"])
         )
         # Verify all three character types are present
         assert "." in output  # passed
@@ -246,7 +249,9 @@ class TestOutputFormatting:
         """Test verbose mode shows hierarchical structure."""
         results = (
             TestResult("test_func", "test_module.py", "passed", 0.001, None, None, None),
-            TestResult("TestClass.test_method", "test_module.py", "passed", 0.002, None, None, None),
+            TestResult(
+                "TestClass.test_method", "test_module.py", "passed", 0.002, None, None, None
+            ),
         )
         report = RunReport(
             total=2,
@@ -331,8 +336,8 @@ class TestOutputFormatting:
         )
 
         # Reset colors to default state
-        _cli.Colors.GREEN = "\033[92m"
-        _cli.Colors.RESET = "\033[0m"
+        _cli.Colors.green = "\033[92m"
+        _cli.Colors.reset = "\033[0m"
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
@@ -454,8 +459,8 @@ class TestCliArguments:
         )
 
         # Save original color values
-        original_green = _cli.Colors.GREEN
-        original_reset = _cli.Colors.RESET
+        original_green = _cli.Colors.green
+        original_reset = _cli.Colors.reset
 
         try:
             with patch("rustest._cli.run", return_value=report):
@@ -468,5 +473,5 @@ class TestCliArguments:
                 assert "\033[" not in output
         finally:
             # Restore original colors
-            _cli.Colors.GREEN = original_green
-            _cli.Colors.RESET = original_reset
+            _cli.Colors.green = original_green
+            _cli.Colors.reset = original_reset
