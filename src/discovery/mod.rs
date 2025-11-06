@@ -399,14 +399,15 @@ def run_test():
         method_name
     );
 
-    let locals = PyDict::new(py);
-    locals.set_item("test_class", cls)?;
+    let namespace = PyDict::new(py);
+    namespace.set_item("test_class", cls)?;
 
     let code_cstr = CString::new(code).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
     })?;
-    py.run(&code_cstr, None, Some(&locals))?;
-    let run_test = locals.get_item("run_test")?.unwrap();
+    // Use the same dict for both globals and locals to ensure proper variable resolution
+    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
+    let run_test = namespace.get_item("run_test")?.unwrap();
 
     Ok(run_test.unbind())
 }
