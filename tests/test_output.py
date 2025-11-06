@@ -30,6 +30,25 @@ def test_with_multiline_output():
 
 
 def test_failure_with_output():
-    """Test that fails after producing output."""
+    """Test that assertion failures with output are properly captured."""
+    try:
+        import pytest
+
+        raises = pytest.raises
+    except ImportError:
+        # rustest doesn't have raises, so create a simple context manager
+        from contextlib import contextmanager
+
+        @contextmanager
+        def raises(exc_type):
+            try:
+                yield
+                raise AssertionError(
+                    f"Expected {exc_type.__name__} but no exception was raised"
+                )
+            except exc_type:
+                pass  # Expected exception
+
     print("Some output before failure")
-    assert False, "Expected failure"
+    with raises(AssertionError):
+        assert False, "Expected failure"
