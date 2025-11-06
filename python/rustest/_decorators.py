@@ -192,3 +192,159 @@ class MarkGenerator:
 
 # Create a singleton instance
 mark = MarkGenerator()
+
+
+class ExceptionInfo:
+    """Information about an exception caught by raises().
+
+    Attributes:
+        type: The exception type
+        value: The exception instance
+        traceback: The exception traceback
+    """
+
+    def __init__(
+        self, exc_type: type[BaseException], exc_value: BaseException, exc_tb: Any
+    ) -> None:
+        super().__init__()
+        self.type = exc_type
+        self.value = exc_value
+        self.traceback = exc_tb
+
+    def __repr__(self) -> str:
+        return f"<ExceptionInfo {self.type.__name__}({self.value!r})>"
+
+
+class RaisesContext:
+    """Context manager for asserting that code raises a specific exception.
+
+    This mimics pytest.raises() behavior, supporting:
+    - Single or tuple of exception types
+    - Optional regex matching of exception messages
+    - Access to caught exception information
+
+    Usage:
+        with raises(ValueError):
+            int("not a number")
+
+        with raises(ValueError, match="invalid literal"):
+            int("not a number")
+
+        with raises((ValueError, TypeError)):
+            some_function()
+
+        # Access the caught exception
+        with raises(ValueError) as exc_info:
+            raise ValueError("oops")
+        assert "oops" in str(exc_info.value)
+    """
+
+    def __init__(
+        self,
+        exc_type: type[BaseException] | tuple[type[BaseException], ...],
+        *,
+        match: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.exc_type = exc_type
+        self.match_pattern = match
+        self.excinfo: ExceptionInfo | None = None
+
+    def __enter__(self) -> RaisesContext:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> bool:
+        # No exception was raised
+        if exc_type is None:
+            exc_name = self._format_exc_name()
+            msg = f"DID NOT RAISE {exc_name}"
+            raise AssertionError(msg)
+
+        # At this point, we know an exception was raised, so exc_val cannot be None
+        assert exc_val is not None, "exc_val must not be None when exc_type is not None"
+
+        # Check if the exception type matches
+        if not issubclass(exc_type, self.exc_type):
+            # Unexpected exception type - let it propagate
+            return False
+
+        # Store the exception information
+        self.excinfo = ExceptionInfo(exc_type, exc_val, exc_tb)
+
+        # Check if the message matches the pattern (if provided)
+        if self.match_pattern is not None:
+            import re
+
+            exc_message = str(exc_val)
+            if not re.search(self.match_pattern, exc_message):
+                msg = (
+                    f"Pattern {self.match_pattern!r} does not match "
+                    f"{exc_message!r}. Exception: {exc_type.__name__}: {exc_message}"
+                )
+                raise AssertionError(msg)
+
+        # Suppress the exception (it was expected)
+        return True
+
+    def _format_exc_name(self) -> str:
+        """Format the expected exception name(s) for error messages."""
+        if isinstance(self.exc_type, tuple):
+            names = " or ".join(exc.__name__ for exc in self.exc_type)
+            return names
+        return self.exc_type.__name__
+
+    @property
+    def value(self) -> BaseException:
+        """Access the caught exception value."""
+        if self.excinfo is None:
+            msg = "No exception was caught"
+            raise AttributeError(msg)
+        return self.excinfo.value
+
+    @property
+    def type(self) -> type[BaseException]:
+        """Access the caught exception type."""
+        if self.excinfo is None:
+            msg = "No exception was caught"
+            raise AttributeError(msg)
+        return self.excinfo.type
+
+
+def raises(
+    exc_type: type[BaseException] | tuple[type[BaseException], ...],
+    *,
+    match: str | None = None,
+) -> RaisesContext:
+    """Assert that code raises a specific exception.
+
+    Args:
+        exc_type: The expected exception type(s). Can be a single type or tuple of types.
+        match: Optional regex pattern to match against the exception message.
+
+    Returns:
+        A context manager that catches and validates the exception.
+
+    Raises:
+        AssertionError: If no exception is raised, or if the message doesn't match.
+
+    Usage:
+        with raises(ValueError):
+            int("not a number")
+
+        with raises(ValueError, match="invalid literal"):
+            int("not a number")
+
+        with raises((ValueError, TypeError)):
+            some_function()
+
+        # Access the caught exception
+        with raises(ValueError) as exc_info:
+            raise ValueError("oops")
+        assert "oops" in str(exc_info.value)
+    """
+    return RaisesContext(exc_type, match=match)
