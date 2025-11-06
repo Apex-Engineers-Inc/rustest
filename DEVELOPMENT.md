@@ -137,6 +137,41 @@ We use `poe` (poethepoet) as a task runner. Think of it like `make` or `npm scri
 | `cargo test` | Run Rust tests | After changing Rust code |
 | `cargo check` | Fast-check Rust code compiles | While developing Rust code |
 
+## Pre-commit Hooks (Recommended)
+
+We use pre-commit hooks to automatically check code quality before every commit. This catches issues early and ensures consistent code style.
+
+### Setup (One-time)
+```bash
+# Install pre-commit hooks into your git repository
+uv run pre-commit install
+```
+
+### What it does
+Every time you run `git commit`, pre-commit will automatically:
+- ✅ Format Python code with ruff
+- ✅ Lint Python code with ruff
+- ✅ Type-check Python code with basedpyright
+- ✅ Format Rust code with cargo fmt
+- ✅ Lint Rust code with cargo clippy
+- ✅ Check YAML and TOML files
+- ✅ Trim trailing whitespace
+- ✅ Fix end-of-file issues
+
+If any check fails, the commit is blocked until you fix the issues.
+
+### Manual usage
+```bash
+# Run all hooks on all files
+uv run pre-commit run --all-files
+
+# Run hooks only on staged files
+uv run pre-commit run
+
+# Skip hooks for a single commit (not recommended!)
+git commit --no-verify
+```
+
 **Typical workflow:**
 ```bash
 # 1. Make your changes to Python or Rust files
@@ -148,12 +183,15 @@ poe dev
 poe pytests        # Python tests
 cargo test         # Rust tests
 
-# 4. Check code quality:
-poe lint           # Python linting
-poe typecheck      # Python type checking
-poe fmt            # Rust formatting
+# 4. Commit your changes (pre-commit runs automatically):
+git add .
+git commit -m "Your message"
+# → Pre-commit hooks run automatically
+# → If they pass, commit succeeds
+# → If they fail, fix issues and try again
 
-# 5. Commit your changes!
+# 5. Alternatively, run checks manually before committing:
+uv run pre-commit run --all-files
 ```
 
 ## Making Your First Change

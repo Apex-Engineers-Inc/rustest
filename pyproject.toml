@@ -33,6 +33,7 @@ dev = [
     "basedpyright>=1.19",
     "maturin>=1.4,<2",
     "poethepoet>=0.22",
+    "pre-commit>=3.5",
     "pytest>=7.0",
     "ruff>=0.1.9",
 ]
