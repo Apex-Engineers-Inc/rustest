@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable colored output.",
     )
+    _ = parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch for file changes and re-run affected tests.",
+    )
     _ = parser.set_defaults(capture_output=True, color=True)
     return parser
 
