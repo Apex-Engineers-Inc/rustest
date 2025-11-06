@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from . import _decorators
+from ._approx import approx
 from ._cli import main
 from ._reporting import RunReport, TestResult
 from .core import run
@@ -15,6 +16,7 @@ skip = _decorators.skip
 __all__ = [
     "RunReport",
     "TestResult",
+    "approx",
     "fixture",
     "main",
     "mark",
