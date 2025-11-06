@@ -92,22 +92,26 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
     """Print pytest-style progress indicators followed by failure details."""
     # Define symbols
     if ascii_mode:
-        pass_symbol = "PASS"
-        fail_symbol = "FAIL"
-        skip_symbol = "SKIP"
+        # pytest-style: . (pass), F (fail), s (skip)
+        pass_symbol = "."
+        fail_symbol = "F"
+        skip_symbol = "s"
+        separator = ""
     else:
+        # Unicode symbols with spaces
         pass_symbol = "✓"
         fail_symbol = "✗"
         skip_symbol = "⊘"
+        separator = " "
 
     # Print progress indicators
     for result in report.results:
         if result.status == "passed":
-            print(pass_symbol, end=" ")
+            print(pass_symbol, end=separator)
         elif result.status == "failed":
-            print(fail_symbol, end=" ")
+            print(fail_symbol, end=separator)
         elif result.status == "skipped":
-            print(skip_symbol, end=" ")
+            print(skip_symbol, end=separator)
     print()  # Newline after progress indicators
 
     # Print failure details
