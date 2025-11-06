@@ -64,6 +64,7 @@ fn run_single_test(
             test_case.path.display().to_string(),
             0.0,
             reason.clone(),
+            test_case.marks.clone(),
         ));
     }
 
@@ -80,6 +81,7 @@ fn run_single_test(
             duration,
             success.stdout,
             success.stderr,
+            test_case.marks.clone(),
         )),
         Err(failure) => Ok(PyTestResult::failed(
             name,
@@ -88,6 +90,7 @@ fn run_single_test(
             failure.message,
             failure.stdout,
             failure.stderr,
+            test_case.marks.clone(),
         )),
     }
 }

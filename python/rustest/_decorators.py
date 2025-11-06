@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import TypeVar
+from typing import Any, TypeVar
 
 F = TypeVar("F", bound=Callable[..., object])
 
@@ -82,3 +82,77 @@ def _build_cases(
         case_id = ids[index] if ids is not None else f"case_{index}"
         case_payloads.append({"id": case_id, "values": data})
     return tuple(case_payloads)
+
+
+class MarkDecorator:
+    """A decorator for applying a mark to a test function."""
+
+    def __init__(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        super().__init__()
+        self.name = name
+        self.args = args
+        self.kwargs = kwargs
+
+    def __call__(self, func: F) -> F:
+        """Apply this mark to the given function."""
+        # Get existing marks or create a new list
+        existing_marks: list[dict[str, Any]] = getattr(func, "__rustest_marks__", [])
+
+        # Add this mark to the list
+        mark_data = {
+            "name": self.name,
+            "args": self.args,
+            "kwargs": self.kwargs,
+        }
+        existing_marks.append(mark_data)
+
+        # Store the marks list on the function
+        setattr(func, "__rustest_marks__", existing_marks)
+        return func
+
+    def __repr__(self) -> str:
+        return f"Mark({self.name!r}, {self.args!r}, {self.kwargs!r})"
+
+
+class MarkGenerator:
+    """Namespace for dynamically creating marks like pytest.mark.
+
+    Usage:
+        @mark.slow
+        @mark.integration
+        @mark.timeout(seconds=30)
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        """Create a mark decorator for the given name."""
+        # Return a callable that can be used as @mark.name or @mark.name(args)
+        return self._create_mark(name)
+
+    def _create_mark(self, name: str) -> Any:
+        """Create a MarkDecorator that can be called with or without arguments."""
+
+        class _MarkDecoratorFactory:
+            """Factory that allows @mark.name or @mark.name(args)."""
+
+            def __init__(self, mark_name: str) -> None:
+                super().__init__()
+                self.mark_name = mark_name
+
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
+                # If called with a single argument that's a function, it's @mark.name
+                if (
+                    len(args) == 1
+                    and not kwargs
+                    and callable(args[0])
+                    and hasattr(args[0], "__name__")
+                ):
+                    decorator = MarkDecorator(self.mark_name, (), {})
+                    return decorator(args[0])
+                # Otherwise it's @mark.name(args) - return a decorator
+                return MarkDecorator(self.mark_name, args, kwargs)
+
+        return _MarkDecoratorFactory(name)
+
+
+# Create a singleton instance
+mark = MarkGenerator()
