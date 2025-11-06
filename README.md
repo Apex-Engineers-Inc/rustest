@@ -1,44 +1,45 @@
 # rustest
 
-Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **133x faster** test execution with familiar syntax and minimal setup.
+Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **~2x faster** test execution with familiar syntax and minimal setup.
 
 ## Why rustest?
 
-- 🚀 **133x faster** than pytest (measured on real-world integration tests)
+- 🚀 **About 2x faster** than pytest on the rustest integration test suite
 - ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
 - 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
 - 🧮 Built-in `approx()` helper for tolerant numeric comparisons across scalars, collections, and complex numbers
 - 🪤 `raises()` context manager for precise exception assertions with optional message matching
 - 📦 Easy installation with pip or uv
-- ⚡ Sub-10ms execution for small test suites—tests feel instant
+- ⚡ Low-overhead execution keeps small suites feeling instant
 
 ## Performance
 
-Rustest is designed for speed. Our benchmarks show **133x faster** execution compared to pytest on the rustest integration test suite (~200 tests):
+Rustest is designed for speed. Our latest benchmarks on the rustest integration suite (~200 tests) show a consistent **2.1x wall-clock speedup** over pytest:
 
-| Test Runner | Time | Tests/Second | Speedup |
-|-------------|------|--------------|---------|
-| pytest      | 0.40s | 502 | 1.0x (baseline) |
-| rustest     | 0.003s | 66,333 | **133x faster** |
+| Test Runner | Reported Runtime† | Wall Clock‡ | Speedup (wall) | Command |
+|-------------|------------------|-------------|----------------|---------|
+| pytest      | 0.43–0.59s       | 1.33–1.59s  | 1.0x (baseline) | `pytest tests/ examples/tests/ -q`
+| rustest     | 0.003s           | 0.69–0.70s  | **~2.1x faster** | `python -m rustest tests/ examples/tests/`*
 
-**Actual CI measurements:**
-- **pytest**: 196 passed, 5 skipped in 0.40s (`pytest tests/ examples/tests/ -v`)
-- **rustest**: 194 passed, 5 skipped in 0.003s (`python -m rustest tests/ examples/tests/`)
-- **Wall-clock comparison:** pytest completed in 0.89s of real time vs. rustest in 0.48s (including interpreter startup overhead)
+† pytest and rustest both report only active test execution time; rustest's figure omits Python interpreter start-up overhead.
+
+‡ Wall-clock timing measured with the shell `time` builtin across two consecutive runs in the same environment.
+
+*Command executed with `PYTHONPATH=python` in this repository checkout to exercise the local sources.
 
 Rustest counts parametrized cases slightly differently than pytest, so you will see 199 executed cases vs. pytest's 201 discoveries on the same suite—the reported pass/skip counts still align.
 
-**Why so fast?**
-- **Near-zero startup time**: Native Rust binary vs Python interpreter startup
-- **Rust-native test discovery**: Minimal imports until test execution
-- **Optimized fixture resolution**: Efficient dependency graph in Rust
-- **Efficient orchestration**: ~50-100μs per-test overhead vs ~1-2ms in pytest
+**Why is rustest faster?**
+- **Near-zero startup time**: Native Rust binary minimizes overhead before Python code starts running.
+- **Rust-native test discovery**: Minimal imports until test execution keeps collection quick.
+- **Optimized fixture resolution**: Efficient dependency graph resolution reduces per-test work.
+- **Lean orchestration**: Rust handles scheduling and reporting so the Python interpreter focuses on running test bodies.
 
 **Real-world impact:**
-- **200 tests**: 0.40s → 0.003s (instant feedback)
-- **1,000 tests**: ~2.0s → ~0.023s (tests complete before you can switch tabs)
-- **10,000 tests**: ~20s → ~0.23s (dramatically faster feedback loops)
+- **200 tests** (this repository): 1.46s → 0.70s (average wall-clock, ~0.76s saved per run)
+- **1,000 tests** (projected): ~7.3s → ~3.4s assuming similar scaling
+- **10,000 tests** (projected): ~73s → ~34s—minutes saved across CI runs
 
 See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis and methodology.
 

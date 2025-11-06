@@ -11,91 +11,57 @@ We benchmarked pytest against rustest using the **actual rustest integration tes
 - **Error handling**: Test failures, skips, and edge cases
 - **Marks**: Skip marks and custom test markers
 
-### Benchmark Results (from CI)
+### Benchmark Results (local measurements)
 
-| Test Runner | Time | Tests/Second | Speedup |
-|-------------|------|--------------|---------|
-| pytest      | 0.39s | 502 | 1.0x (baseline) |
-| rustest     | 0.005s | 39,800 | **78x faster** |
+| Test Runner | Reported Runtime† | Wall Clock‡ | Speedup (wall) | Command |
+|-------------|------------------|-------------|----------------|---------|
+| pytest      | 0.43–0.59s       | 1.33–1.59s  | 1.0x (baseline) | `pytest tests/ examples/tests/ -q`
+| rustest     | 0.003s           | 0.69–0.70s  | **~2.1x faster** | `python -m rustest tests/ examples/tests/`*
 
-**Actual CI measurements** (rustest integration test suite):
-- **pytest**: 196 passed, 5 skipped in **0.39s**
-- **rustest**: 194 passed, 5 skipped in **0.005s**
-- **Speedup**: **78x faster** (0.39 ÷ 0.005)
+† pytest and rustest only include active test execution time in their summaries. rustest's number omits Python interpreter start-up.
 
-### Why is rustest 78x faster?
+‡ Wall-clock timing captured with the shell `time` builtin across two consecutive runs in the same container.
 
-The massive performance advantage comes from several factors:
+*Executed with `PYTHONPATH=python` to exercise the in-repo sources without installing the package.
 
-#### 1. **Near-Zero Startup Time**
-- **pytest**: Python interpreter startup, import overhead, plugin loading (~0.15-0.20s)
-- **rustest**: Native Rust binary with instant startup (< 0.001s)
-- This alone accounts for 30-50% of the speedup on small/medium test suites
+### Why is rustest faster?
+
+The improvement is smaller than earlier marketing claims but still significant on the rustest suite:
+
+#### 1. **Reduced Startup Overhead**
+- **pytest**: Python interpreter startup, import overhead, plugin loading (~0.2s) dominate small suites.
+- **rustest**: Native Rust binary reaches test execution quickly, so less wall time is spent booting the runner.
 
 #### 2. **Rust-Native Test Discovery**
-- **pytest**: Python imports every test file to discover tests (expensive!)
-- **rustest**: Fast file system scanning with minimal imports
-- Avoids expensive Python module initialization until test execution
+- **pytest**: Imports every test module for discovery, paying the Python import cost.
+- **rustest**: Scans the filesystem from Rust and delays Python imports until execution.
 
 #### 3. **Optimized Fixture Resolution**
-- Rust-based dependency graph resolution using efficient algorithms
-- Minimal Python interpreter overhead during fixture setup
-- Smart caching and reuse of scoped fixtures
+- Rust-based dependency graphs reduce per-test setup work compared to Python-driven orchestration.
 
-#### 4. **Efficient Test Orchestration**
-- Test scheduling, execution, and collection handled in Rust
-- Only the actual test code runs in Python
-- Dramatically reduced overhead between tests (~50-100μs per test vs ~1-2ms in pytest)
-
-#### 5. **Fast Result Collection**
-- Test results aggregated in Rust with minimal allocations
-- Efficient reporting without Python overhead
-- No expensive Python object creation for internal bookkeeping
-
-#### 6. **Zero-Cost Abstractions**
-- Rust's compile-time optimizations eliminate runtime overhead
-- No GIL contention for orchestration tasks
-- Predictable, fast execution
-
-### Performance Breakdown
-
-The 78x speedup breaks down approximately as:
-- **Startup time**: ~40x faster (0.20s → 0.005s for empty suite)
-- **Test discovery**: ~50x faster (minimal imports vs full Python imports)
-- **Test execution**: ~10x faster per-test overhead
-- **Result collection**: ~30x faster (Rust vs Python aggregation)
+#### 4. **Lean Orchestration**
+- Scheduling and reporting happen in Rust, minimizing Python bookkeeping in between tests.
 
 ### Real-world Impact
 
-For typical test suites, the 78x speedup has dramatic effects:
+For typical test suites, the ~2x speedup has noticeable effects:
 
 **Small suite (200 tests, like rustest itself):**
-- **pytest**: ~0.39s
-- **rustest**: ~0.005s
-- **Time saved**: ~0.385s per run (instant feedback)
+- **pytest**: ~1.46s wall time (average of two runs)
+- **rustest**: ~0.70s wall time
+- **Time saved**: ~0.76s per run
 
-**Medium suite (1,000 tests):**
-- **pytest**: ~2.0s (based on 502 tests/sec)
-- **rustest**: ~0.025s (78x faster)
-- **Time saved**: ~1.975s per run
+**Medium suite (1,000 tests, projected):**
+- **pytest**: ~7.3s assuming similar scaling
+- **rustest**: ~3.4s
+- **Time saved**: ~3.9s per run
 
-**Large suite (10,000 tests):**
-- **pytest**: ~20s
-- **rustest**: ~0.25s
-- **Time saved**: ~19.75s per run
+**Large suite (10,000 tests, projected):**
+- **pytest**: ~73s
+- **rustest**: ~34s
+- **Time saved**: ~39s per run
 
-**Enterprise suite (100,000 tests):**
-- **pytest**: ~200s (3.3 minutes)
-- **rustest**: ~2.5s
-- **Time saved**: ~197.5s (3.3 minutes) per run
-
-**In CI/CD pipelines:**
-- **Small projects**: Essentially instant test feedback (< 0.01s)
-- **Medium projects**: Tests complete before you can switch tabs
-- **Large projects**: 20s → 0.25s means dramatically faster feedback loops
-- **Enterprise**: Save 3+ minutes per run × thousands of runs per day = hours of compute time saved
-
-This speedup is especially impactful during development when running tests frequently. The sub-10ms execution time for small suites means tests feel instantaneous, encouraging test-driven development.
+This speedup is especially impactful during development when running tests frequently. Even a ~0.7s loop for ~200 tests keeps feedback tight and scales to bigger suites with noticeably less wait time.
 
 ### Running the Benchmarks
 
