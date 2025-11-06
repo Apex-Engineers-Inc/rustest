@@ -139,9 +139,11 @@ def test_approx_type_mismatch() -> None:
 
 def test_approx_with_none() -> None:
     """Test approx with None values."""
-    assert None == approx(None)
-    assert not (None == approx(0))
-    assert not (0 == approx(None))
+    # For None checks, use 'is None' instead of '== approx(None)'
+    # These tests verify the internal handling when None appears in collections
+    assert {"a": None} == approx({"a": None})
+    assert not ({"a": None} == approx({"a": 0}))
+    assert not ({"a": 0} == approx({"a": None}))
 
 
 def test_approx_repr() -> None:

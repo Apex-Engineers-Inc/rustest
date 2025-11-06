@@ -47,6 +47,7 @@ class approx:
             rel: The relative tolerance (default: 1e-6)
             abs: The absolute tolerance (default: 1e-12)
         """
+        super().__init__()
         self.expected = expected
         self.rel = rel
         self.abs = abs
@@ -86,20 +87,16 @@ class approx:
                 return False
             if set(actual.keys()) != set(expected.keys()):
                 return False
-            return all(
-                self._approx_compare(actual[k], expected[k])
-                for k in expected.keys()
-            )
+            return all(self._approx_compare(actual[k], expected[k]) for k in expected.keys())
 
         # Handle sequences (lists, tuples, etc.) but not strings
         if isinstance(expected, (list, tuple)) and not isinstance(expected, str):
-            if not isinstance(actual, (list, tuple)):
+            # Check that actual is the same type (list vs tuple matters)
+            if type(actual) is not type(expected):
                 return False
             if len(actual) != len(expected):
                 return False
-            return all(
-                self._approx_compare(a, e) for a, e in zip(actual, expected)
-            )
+            return all(self._approx_compare(a, e) for a, e in zip(actual, expected))
 
         # Handle numbers (float, int, complex)
         if isinstance(expected, (float, int, complex)) and isinstance(
@@ -110,7 +107,9 @@ class approx:
         # For other types, use exact equality
         return actual == expected
 
-    def _is_close(self, actual: Union[float, int, complex], expected: Union[float, int, complex]) -> bool:
+    def _is_close(
+        self, actual: Union[float, int, complex], expected: Union[float, int, complex]
+    ) -> bool:
         """Check if two numbers are close within tolerance.
 
         Uses the formula: |actual - expected| <= max(rel * max(|actual|, |expected|), abs)
@@ -146,6 +145,7 @@ class approx:
 
         # Check for NaN - NaN should never be equal to anything
         import math
+
         if math.isnan(actual_float) or math.isnan(expected_float):
             return False
 
@@ -155,9 +155,6 @@ class approx:
 
         # Calculate tolerance
         abs_diff = abs(actual_float - expected_float)
-        tolerance = max(
-            self.rel * max(abs(actual_float), abs(expected_float)),
-            self.abs
-        )
+        tolerance = max(self.rel * max(abs(actual_float), abs(expected_float)), self.abs)
 
         return abs_diff <= tolerance
