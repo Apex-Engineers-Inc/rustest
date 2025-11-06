@@ -61,9 +61,9 @@ mod tests {
     use pyo3::Python;
 
     fn ensure_python_package_on_path(py: Python<'_>) {
-        let sys = py.import_bound("sys").expect("failed to import sys");
+        let sys = py.import("sys").expect("failed to import sys");
         let path = sys.getattr("path").expect("missing sys.path");
-        let path: Bound<'_, PyList> = path.downcast_into().expect("sys.path is not a list");
+        let path: Bound<'_, PyList> = path.cast_into().expect("sys.path is not a list");
         let package_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("python");
         let package_root = package_root
             .to_str()

@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 /// Type alias to make signatures easier to read: parameter values are stored in
 /// an ordered map so that we can preserve the parameter order when constructing
 /// the argument list for a test function.
-pub type ParameterMap = IndexMap<String, PyObject>;
+pub type ParameterMap = IndexMap<String, Py<PyAny>>;
 
 /// Metadata describing a single fixture function.
 pub struct Fixture {
