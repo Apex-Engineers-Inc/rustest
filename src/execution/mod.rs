@@ -132,9 +132,9 @@ fn execute_test_case(
     }
 
     let call_result = call_with_capture(py, config.capture_output, || {
-        let args_tuple = PyTuple::new_bound(py, &call_args);
+        let args_tuple = PyTuple::new(py, &call_args)?;
         let callable = test_case.callable.bind(py);
-        callable.call1(args_tuple).map(|value| value.to_object(py))
+        callable.call1(args_tuple).map(|value| value.unbind())
     });
 
     let (result, stdout, stderr) = match call_result {
@@ -165,7 +165,7 @@ fn execute_test_case(
 struct FixtureResolver<'py> {
     py: Python<'py>,
     fixtures: &'py IndexMap<String, Fixture>,
-    cache: IndexMap<String, PyObject>,
+    cache: IndexMap<String, Py<PyAny>>,
     stack: HashSet<String>,
     parameters: &'py ParameterMap,
 }
@@ -185,7 +185,7 @@ impl<'py> FixtureResolver<'py> {
         }
     }
 
-    fn resolve_argument(&mut self, name: &str) -> PyResult<PyObject> {
+    fn resolve_argument(&mut self, name: &str) -> PyResult<Py<PyAny>> {
         if let Some(value) = self.parameters.get(name) {
             return Ok(value.clone_ref(self.py));
         }
@@ -211,12 +211,12 @@ impl<'py> FixtureResolver<'py> {
             let value = self.resolve_argument(param)?;
             args.push(value);
         }
-        let args_tuple = PyTuple::new_bound(self.py, &args);
+        let args_tuple = PyTuple::new(self.py, &args)?;
         let call_result = fixture
             .callable
             .bind(self.py)
             .call1(args_tuple)
-            .map(|value| value.to_object(self.py));
+            .map(|value| value.unbind());
         self.stack.remove(&fixture.name);
         let result = call_result?;
         self.cache
@@ -225,21 +225,20 @@ impl<'py> FixtureResolver<'py> {
     }
 }
 
+/// Result type for test execution with optional stdout/stderr capture.
+type CallResult = (PyResult<Py<PyAny>>, Option<String>, Option<String>);
+
 /// Execute a callable while optionally capturing stdout/stderr.
-fn call_with_capture<F>(
-    py: Python<'_>,
-    capture_output: bool,
-    f: F,
-) -> PyResult<(PyResult<PyObject>, Option<String>, Option<String>)>
+fn call_with_capture<F>(py: Python<'_>, capture_output: bool, f: F) -> PyResult<CallResult>
 where
-    F: FnOnce() -> PyResult<PyObject>,
+    F: FnOnce() -> PyResult<Py<PyAny>>,
 {
     if !capture_output {
         return Ok((f(), None, None));
     }
 
-    let contextlib = py.import_bound("contextlib")?;
-    let io = py.import_bound("io")?;
+    let contextlib = py.import("contextlib")?;
+    let io = py.import("io")?;
     let stdout_buffer = io.getattr("StringIO")?.call0()?;
     let stderr_buffer = io.getattr("StringIO")?.call0()?;
     let redirect_stdout = contextlib
@@ -273,13 +272,13 @@ where
 
 /// Format a Python exception using `traceback.format_exception`.
 fn format_pyerr(py: Python<'_>, err: &PyErr) -> PyResult<String> {
-    let traceback = py.import_bound("traceback")?;
-    let exc_type = err.get_type_bound(py).into_py(py);
-    let exc_value = err.value_bound(py).into_py(py);
-    let exc_tb = err
-        .traceback_bound(py)
-        .map(|tb| tb.into_py(py))
-        .unwrap_or_else(|| py.None().into_py(py));
+    let traceback = py.import("traceback")?;
+    let exc_type: Py<PyAny> = err.get_type(py).unbind().into();
+    let exc_value: Py<PyAny> = err.value(py).clone().unbind().into();
+    let exc_tb: Py<PyAny> = err
+        .traceback(py)
+        .map(|tb| tb.clone().unbind().into())
+        .unwrap_or_else(|| py.None());
     let formatted: Vec<String> = traceback
         .call_method1("format_exception", (exc_type, exc_value, exc_tb))?
         .extract()?;

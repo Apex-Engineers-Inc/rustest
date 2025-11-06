@@ -5,6 +5,7 @@
 //! because the interaction with Python's reflection facilities can otherwise be
 //! tricky to follow.
 
+use std::ffi::CString;
 use std::path::Path;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -82,7 +83,7 @@ fn collect_from_file(
 ) -> PyResult<Option<TestModule>> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
-    let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.downcast_into()?;
+    let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
     let (fixtures, mut tests) = inspect_module(py, path, &module_dict)?;
 
@@ -118,7 +119,7 @@ fn inspect_module(
     path: &Path,
     module_dict: &Bound<'_, PyDict>,
 ) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
-    let inspect = py.import_bound("inspect")?;
+    let inspect = py.import("inspect")?;
     let isfunction = inspect.getattr("isfunction")?;
     let isclass = inspect.getattr("isclass")?;
     let mut fixtures = IndexMap::new();
@@ -189,11 +190,11 @@ fn inspect_module(
 
 /// Check if a class is a unittest.TestCase subclass.
 fn is_test_case_class(py: Python<'_>, cls: &Bound<'_, PyAny>) -> PyResult<bool> {
-    let unittest = py.import_bound("unittest")?;
+    let unittest = py.import("unittest")?;
     let test_case = unittest.getattr("TestCase")?;
 
     // Use issubclass to check inheritance
-    let builtins = py.import_bound("builtins")?;
+    let builtins = py.import("builtins")?;
     let issubclass_fn = builtins.getattr("issubclass")?;
 
     match issubclass_fn.call1((cls, &test_case)) {
@@ -210,12 +211,12 @@ fn discover_class_tests(
     cls: &Bound<'_, PyAny>,
 ) -> PyResult<Vec<TestCase>> {
     let mut tests = Vec::new();
-    let inspect = py.import_bound("inspect")?;
+    let inspect = py.import("inspect")?;
 
     // Get all members of the class
     let members = inspect.call_method1("getmembers", (cls,))?;
 
-    for member in members.iter()? {
+    for member in members.try_iter()? {
         let member = member?;
 
         // Each member is a tuple (name, value)
@@ -247,7 +248,7 @@ fn discover_class_tests(
 
 /// Check if an object is callable.
 fn is_callable(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
-    let builtins = obj.py().import_bound("builtins")?;
+    let builtins = obj.py().import("builtins")?;
     let callable_fn = builtins.getattr("callable")?;
     callable_fn.call1((obj,))?.is_truthy()
 }
@@ -258,7 +259,7 @@ fn create_test_method_runner(
     py: Python<'_>,
     cls: &Bound<'_, PyAny>,
     method_name: &str,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     // Create a wrapper function that instantiates the test class and runs the method
     // This will properly invoke setUp, the test method, and tearDown
     let code = format!(
@@ -270,13 +271,16 @@ def run_test():
         method_name
     );
 
-    let locals = PyDict::new_bound(py);
+    let locals = PyDict::new(py);
     locals.set_item("test_class", cls)?;
 
-    py.run_bound(&code, None, Some(&locals))?;
+    let code_cstr = CString::new(code).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
+    })?;
+    py.run(&code_cstr, None, Some(&locals))?;
     let run_test = locals.get_item("run_test")?.unwrap();
 
-    Ok(run_test.to_object(py))
+    Ok(run_test.unbind())
 }
 
 /// Determine whether a Python object has been marked as a fixture.
@@ -303,11 +307,11 @@ fn string_attribute(value: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<Str
 
 /// Extract the parameter names from a Python callable.
 fn extract_parameters(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
-    let inspect = py.import_bound("inspect")?;
+    let inspect = py.import("inspect")?;
     let signature = inspect.call_method1("signature", (value,))?;
     let params = signature.getattr("parameters")?;
     let mut names = Vec::new();
-    for key in params.call_method0("keys")?.iter()? {
+    for key in params.call_method0("keys")?.try_iter()? {
         let key = key?;
         names.push(key.extract()?);
     }
@@ -316,17 +320,17 @@ fn extract_parameters(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<
 
 /// Collect parameterisation information attached to a test function.
 fn collect_parametrization(
-    py: Python<'_>,
+    _py: Python<'_>,
     value: &Bound<'_, PyAny>,
 ) -> PyResult<Vec<(String, ParameterMap)>> {
     let mut parametrized = Vec::new();
     let Ok(attr) = value.getattr("__rustest_parametrization__") else {
         return Ok(parametrized);
     };
-    let sequence: Bound<'_, PySequence> = attr.downcast_into()?;
-    for element in sequence.iter()? {
+    let sequence: Bound<'_, PySequence> = attr.cast_into()?;
+    for element in sequence.try_iter()? {
         let element = element?;
-        let case: Bound<'_, PyDict> = element.downcast_into()?;
+        let case: Bound<'_, PyDict> = element.cast_into()?;
         let case_id = case
             .get_item("id")?
             .ok_or_else(|| invalid_test_definition("Missing id in parametrization metadata"))?;
@@ -334,11 +338,11 @@ fn collect_parametrization(
         let values = case
             .get_item("values")?
             .ok_or_else(|| invalid_test_definition("Missing values in parametrization metadata"))?;
-        let values: Bound<'_, PyDict> = values.downcast_into()?;
+        let values: Bound<'_, PyDict> = values.cast_into()?;
         let mut parameters = ParameterMap::new();
         for (key, value) in values.iter() {
             let key: String = key.extract()?;
-            parameters.insert(key, value.to_object(py));
+            parameters.insert(key, value.unbind());
         }
         parametrized.push((case_id, parameters));
     }
@@ -350,11 +354,11 @@ fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     let Ok(attr) = value.getattr("__rustest_marks__") else {
         return Ok(Vec::new());
     };
-    let sequence: Bound<'_, PySequence> = attr.downcast_into()?;
+    let sequence: Bound<'_, PySequence> = attr.cast_into()?;
     let mut marks = Vec::new();
-    for element in sequence.iter()? {
+    for element in sequence.try_iter()? {
         let element = element?;
-        let mark_dict: Bound<'_, PyDict> = element.downcast_into()?;
+        let mark_dict: Bound<'_, PyDict> = element.cast_into()?;
         let name = mark_dict
             .get_item("name")?
             .ok_or_else(|| invalid_test_definition("Missing name in mark metadata"))?;
@@ -371,7 +375,7 @@ fn load_python_module<'py>(
     module_name: &str,
     package: Option<&str>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let importlib = py.import_bound("importlib.util")?;
+    let importlib = py.import("importlib.util")?;
     let path_str = path.to_string_lossy();
     let spec =
         importlib.call_method1("spec_from_file_location", (module_name, path_str.as_ref()))?;
@@ -386,8 +390,8 @@ fn load_python_module<'py>(
     if let Some(package_name) = package {
         module.setattr("__package__", package_name)?;
     }
-    let sys = py.import_bound("sys")?;
-    let modules: Bound<'_, PyDict> = sys.getattr("modules")?.downcast_into()?;
+    let sys = py.import("sys")?;
+    let modules: Bound<'_, PyDict> = sys.getattr("modules")?.cast_into()?;
     modules.set_item(module_name, &module)?;
     loader.call_method1("exec_module", (&module,))?;
     Ok(module)

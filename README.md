@@ -31,7 +31,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis and methodo
 
 ## Installation
 
-Rustest supports Python **3.10 through 3.13**.
+Rustest supports Python **3.10 through 3.14**.
 
 ### Using pip
 ```bash
@@ -344,16 +344,6 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 - ❌ Not planned
 
 **Philosophy:** Rustest implements the 20% of pytest features that cover 80% of use cases, with a focus on raw speed and simplicity. If you need advanced pytest features like plugins or custom hooks, stick with pytest. If you want fast, straightforward testing with familiar syntax, rustest is for you.
-
-## Contributing
-
-We welcome contributions! See [DEVELOPMENT.md](DEVELOPMENT.md) for:
-- Development environment setup
-- Project structure overview
-- How to build and test your changes
-- Troubleshooting common issues
-
-Whether you're a Python developer new to Rust or a Rust expert, we'd love your help making rustest better!
 
 ## License
 

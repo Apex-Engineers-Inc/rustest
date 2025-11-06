@@ -4,13 +4,14 @@
 mod tests {
     use super::super::model::*;
     use indexmap::IndexMap;
+    use pyo3::ffi::c_str;
     use pyo3::prelude::*;
     use std::path::PathBuf;
 
     #[test]
     fn test_fixture_new() {
         Python::with_gil(|py| {
-            let callable = py.eval_bound("lambda x: x", None, None).unwrap();
+            let callable = py.eval(c_str!("lambda x: x"), None, None).unwrap();
             let fixture = Fixture::new(
                 "test_fixture".to_string(),
                 callable.unbind(),
@@ -25,7 +26,7 @@ mod tests {
     #[test]
     fn test_test_case_unique_id() {
         Python::with_gil(|py| {
-            let callable = py.eval_bound("lambda: None", None, None).unwrap();
+            let callable = py.eval(c_str!("lambda: None"), None, None).unwrap();
             let test_case = TestCase {
                 name: "test_example".to_string(),
                 display_name: "test_example".to_string(),
@@ -34,6 +35,7 @@ mod tests {
                 parameters: vec![],
                 parameter_values: ParameterMap::new(),
                 skip_reason: None,
+                marks: vec![],
             };
 
             let unique_id = test_case.unique_id();
@@ -45,7 +47,7 @@ mod tests {
     #[test]
     fn test_test_case_with_skip_reason() {
         Python::with_gil(|py| {
-            let callable = py.eval_bound("lambda: None", None, None).unwrap();
+            let callable = py.eval(c_str!("lambda: None"), None, None).unwrap();
             let test_case = TestCase {
                 name: "test_skipped".to_string(),
                 display_name: "test_skipped".to_string(),
@@ -54,6 +56,7 @@ mod tests {
                 parameters: vec![],
                 parameter_values: ParameterMap::new(),
                 skip_reason: Some("Not implemented yet".to_string()),
+                marks: vec![],
             };
 
             assert_eq!(
@@ -124,6 +127,7 @@ mod tests {
             0.5,
             Some("output".to_string()),
             None,
+            vec![],
         );
 
         assert_eq!(result.name, "test_example");
@@ -144,6 +148,7 @@ mod tests {
             "AssertionError".to_string(),
             Some("stdout".to_string()),
             Some("stderr".to_string()),
+            vec![],
         );
 
         assert_eq!(result.name, "test_fail");
@@ -160,6 +165,7 @@ mod tests {
             "/path/to/test.py".to_string(),
             0.0,
             "Not implemented".to_string(),
+            vec![],
         );
 
         assert_eq!(result.name, "test_skip");
@@ -215,10 +221,16 @@ mod tests {
     #[test]
     fn test_test_case_with_parameters() {
         Python::with_gil(|py| {
-            let callable = py.eval_bound("lambda x, y: x + y", None, None).unwrap();
+            let callable = py.eval(c_str!("lambda x, y: x + y"), None, None).unwrap();
             let mut param_values = ParameterMap::new();
-            param_values.insert("x".to_string(), 5.to_object(py));
-            param_values.insert("y".to_string(), 10.to_object(py));
+            param_values.insert(
+                "x".to_string(),
+                5i32.into_pyobject(py).unwrap().into_any().unbind(),
+            );
+            param_values.insert(
+                "y".to_string(),
+                10i32.into_pyobject(py).unwrap().into_any().unbind(),
+            );
 
             let test_case = TestCase {
                 name: "test_add".to_string(),
@@ -228,6 +240,7 @@ mod tests {
                 parameters: vec!["x".to_string(), "y".to_string()],
                 parameter_values: param_values,
                 skip_reason: None,
+                marks: vec![],
             };
 
             assert_eq!(test_case.parameters.len(), 2);
