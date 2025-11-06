@@ -14,8 +14,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use crate::model::{
-    invalid_test_definition, Fixture, ParameterMap, PyRunReport, PyTestResult, RunConfiguration,
-    TestCase, TestModule,
+    invalid_test_definition, Fixture, FixtureScope, ParameterMap, PyRunReport, PyTestResult,
+    RunConfiguration, TestCase, TestModule,
 };
 
 /// Run the collected test modules and return a report that mirrors pytest's
@@ -31,19 +31,52 @@ pub fn run_collected_tests(
     let mut failed = 0;
     let mut skipped = 0;
 
+    // Session-scoped fixture cache lives for the entire test run
+    let mut session_cache = IndexMap::new();
+
     for module in modules.iter() {
+        // Module-scoped fixture cache lives for all tests in this module
+        let mut module_cache = IndexMap::new();
+
+        // Group tests by class for class-scoped fixtures
+        let mut tests_by_class: IndexMap<Option<String>, Vec<&TestCase>> = IndexMap::new();
         for test in module.tests.iter() {
-            let result = run_single_test(py, module, test, config)?;
-            match result.status.as_str() {
-                "passed" => passed += 1,
-                "failed" => failed += 1,
-                "skipped" => skipped += 1,
-                _ => failed += 1,
-            }
-            results.push(result);
+            tests_by_class
+                .entry(test.class_name.clone())
+                .or_default()
+                .push(test);
         }
+
+        for (class_name, tests) in tests_by_class {
+            // Class-scoped fixture cache lives for all tests in this class
+            let mut class_cache = IndexMap::new();
+
+            for test in tests {
+                let result = run_single_test(
+                    py,
+                    module,
+                    test,
+                    config,
+                    &mut session_cache,
+                    &mut module_cache,
+                    &mut class_cache,
+                )?;
+                match result.status.as_str() {
+                    "passed" => passed += 1,
+                    "failed" => failed += 1,
+                    "skipped" => skipped += 1,
+                    _ => failed += 1,
+                }
+                results.push(result);
+            }
+
+            // Class-scoped fixtures are dropped here
+        }
+
+        // Module-scoped fixtures are dropped here
     }
 
+    // Session-scoped fixtures are dropped here
     let duration = start.elapsed().as_secs_f64();
     let total = passed + failed + skipped;
     Ok(PyRunReport::new(
@@ -57,6 +90,9 @@ fn run_single_test(
     module: &TestModule,
     test_case: &TestCase,
     config: &RunConfiguration,
+    session_cache: &mut IndexMap<String, Py<PyAny>>,
+    module_cache: &mut IndexMap<String, Py<PyAny>>,
+    class_cache: &mut IndexMap<String, Py<PyAny>>,
 ) -> PyResult<PyTestResult> {
     if let Some(reason) = &test_case.skip_reason {
         return Ok(PyTestResult::skipped(
@@ -69,7 +105,15 @@ fn run_single_test(
     }
 
     let start = Instant::now();
-    let outcome = execute_test_case(py, module, test_case, config);
+    let outcome = execute_test_case(
+        py,
+        module,
+        test_case,
+        config,
+        session_cache,
+        module_cache,
+        class_cache,
+    );
     let duration = start.elapsed().as_secs_f64();
     let name = test_case.display_name.clone();
     let path = test_case.path.display().to_string();
@@ -114,8 +158,18 @@ fn execute_test_case(
     module: &TestModule,
     test_case: &TestCase,
     config: &RunConfiguration,
+    session_cache: &mut IndexMap<String, Py<PyAny>>,
+    module_cache: &mut IndexMap<String, Py<PyAny>>,
+    class_cache: &mut IndexMap<String, Py<PyAny>>,
 ) -> Result<TestCallSuccess, TestCallFailure> {
-    let mut resolver = FixtureResolver::new(py, &module.fixtures, &test_case.parameter_values);
+    let mut resolver = FixtureResolver::new(
+        py,
+        &module.fixtures,
+        &test_case.parameter_values,
+        session_cache,
+        module_cache,
+        class_cache,
+    );
     let mut call_args = Vec::new();
     for param in &test_case.parameters {
         match resolver.resolve_argument(param) {
@@ -161,11 +215,22 @@ fn execute_test_case(
     }
 }
 
-/// Helper struct implementing a very small fixture dependency resolver.
+/// Helper struct implementing fixture dependency resolver with scope support.
+///
+/// The resolver works with a cascading cache system:
+/// - Session cache: shared across all tests
+/// - Module cache: shared across all tests in a module
+/// - Class cache: shared across all tests in a class
+/// - Function cache: per-test, created fresh each time
+///
+/// When resolving a fixture, it checks caches in order based on the fixture's scope.
 struct FixtureResolver<'py> {
     py: Python<'py>,
     fixtures: &'py IndexMap<String, Fixture>,
-    cache: IndexMap<String, Py<PyAny>>,
+    session_cache: &'py mut IndexMap<String, Py<PyAny>>,
+    module_cache: &'py mut IndexMap<String, Py<PyAny>>,
+    class_cache: &'py mut IndexMap<String, Py<PyAny>>,
+    function_cache: IndexMap<String, Py<PyAny>>,
     stack: HashSet<String>,
     parameters: &'py ParameterMap,
 }
@@ -175,30 +240,49 @@ impl<'py> FixtureResolver<'py> {
         py: Python<'py>,
         fixtures: &'py IndexMap<String, Fixture>,
         parameters: &'py ParameterMap,
+        session_cache: &'py mut IndexMap<String, Py<PyAny>>,
+        module_cache: &'py mut IndexMap<String, Py<PyAny>>,
+        class_cache: &'py mut IndexMap<String, Py<PyAny>>,
     ) -> Self {
         Self {
             py,
             fixtures,
-            cache: IndexMap::new(),
+            session_cache,
+            module_cache,
+            class_cache,
+            function_cache: IndexMap::new(),
             stack: HashSet::new(),
             parameters,
         }
     }
 
     fn resolve_argument(&mut self, name: &str) -> PyResult<Py<PyAny>> {
+        // First check if it's a parametrized value
         if let Some(value) = self.parameters.get(name) {
             return Ok(value.clone_ref(self.py));
         }
 
-        if let Some(value) = self.cache.get(name) {
+        // Check all caches in order: function -> class -> module -> session
+        if let Some(value) = self.function_cache.get(name) {
+            return Ok(value.clone_ref(self.py));
+        }
+        if let Some(value) = self.class_cache.get(name) {
+            return Ok(value.clone_ref(self.py));
+        }
+        if let Some(value) = self.module_cache.get(name) {
+            return Ok(value.clone_ref(self.py));
+        }
+        if let Some(value) = self.session_cache.get(name) {
             return Ok(value.clone_ref(self.py));
         }
 
+        // Fixture not in any cache, need to execute it
         let fixture = self
             .fixtures
             .get(name)
             .ok_or_else(|| invalid_test_definition(format!("Unknown fixture '{}'.", name)))?;
 
+        // Detect circular dependencies
         if !self.stack.insert(fixture.name.clone()) {
             return Err(PyRuntimeError::new_err(format!(
                 "Detected recursive fixture dependency involving '{}'.",
@@ -206,11 +290,14 @@ impl<'py> FixtureResolver<'py> {
             )));
         }
 
+        // Resolve fixture dependencies recursively
         let mut args = Vec::new();
         for param in fixture.parameters.iter() {
             let value = self.resolve_argument(param)?;
             args.push(value);
         }
+
+        // Execute the fixture
         let args_tuple = PyTuple::new(self.py, &args)?;
         let call_result = fixture
             .callable
@@ -219,8 +306,27 @@ impl<'py> FixtureResolver<'py> {
             .map(|value| value.unbind());
         self.stack.remove(&fixture.name);
         let result = call_result?;
-        self.cache
-            .insert(fixture.name.clone(), result.clone_ref(self.py));
+
+        // Store in the appropriate cache based on scope
+        match fixture.scope {
+            FixtureScope::Session => {
+                self.session_cache
+                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+            }
+            FixtureScope::Module => {
+                self.module_cache
+                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+            }
+            FixtureScope::Class => {
+                self.class_cache
+                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+            }
+            FixtureScope::Function => {
+                self.function_cache
+                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+            }
+        }
+
         Ok(result)
     }
 }

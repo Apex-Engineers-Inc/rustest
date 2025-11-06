@@ -194,6 +194,47 @@ def test_api_configuration(api_client: dict) -> None:
     assert api_client["timeout"] == 30
 ```
 
+#### Fixture Scopes
+
+Fixtures support different scopes to control when they are created and destroyed:
+
+```python
+from rustest import fixture
+
+@fixture  # Default: function scope - new instance per test
+def function_fixture() -> dict:
+    return {"value": "reset each test"}
+
+@fixture(scope="class")  # Shared across all tests in a class
+def class_database() -> dict:
+    return {"connection": "db://test", "shared": True}
+
+@fixture(scope="module")  # Shared across all tests in a module
+def module_config() -> dict:
+    return {"env": "test", "timeout": 30}
+
+@fixture(scope="session")  # Shared across entire test session
+def session_cache() -> dict:
+    return {"global_cache": {}}
+
+# Fixtures can depend on fixtures with different scopes
+@fixture(scope="function")
+def request_handler(module_config: dict, session_cache: dict) -> dict:
+    return {
+        "config": module_config,  # module-scoped
+        "cache": session_cache,   # session-scoped
+        "request_id": id(object())  # unique per test
+    }
+```
+
+**Scope Behavior:**
+- `function` (default): New instance for each test function
+- `class`: Shared across all test methods in a test class
+- `module`: Shared across all tests in a Python module
+- `session`: Shared across the entire test session
+
+Scoped fixtures are especially useful for expensive setup operations like database connections, API clients, or configuration loading.
+
 #### Parametrized Tests
 
 Run the same test with different inputs:
@@ -306,7 +347,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | **Fixtures** |
 | `@fixture` decorator | ✅ | ✅ | Rust-based dependency resolution |
 | Fixture dependency injection | ✅ | ✅ | 3x faster in rustest |
-| Fixture scopes (function/class/module/session) | ✅ | 🚧 | Function-scope only (for now) |
+| Fixture scopes (function/class/module/session) | ✅ | ✅ | Full support for all scopes |
 | Fixture parametrization | ✅ | 🚧 | Planned |
 | **Parametrization** |
 | `@parametrize` decorator | ✅ | ✅ | Full support with custom IDs |

@@ -17,8 +17,8 @@ use pyo3::Bound;
 use walkdir::WalkDir;
 
 use crate::model::{
-    invalid_test_definition, Fixture, ModuleIdGenerator, ParameterMap, RunConfiguration, TestCase,
-    TestModule,
+    invalid_test_definition, Fixture, FixtureScope, ModuleIdGenerator, ParameterMap,
+    RunConfiguration, TestCase, TestModule,
 };
 use crate::python_support::PyPaths;
 
@@ -131,12 +131,14 @@ fn inspect_module(
         // Check if it's a function
         if isfunction.call1((&value,))?.is_truthy()? {
             if is_fixture(&value)? {
+                let scope = extract_fixture_scope(&value)?;
                 fixtures.insert(
                     name.clone(),
                     Fixture::new(
                         name.clone(),
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
+                        scope,
                     ),
                 );
                 continue;
@@ -161,6 +163,7 @@ fn inspect_module(
                     parameter_values: ParameterMap::new(),
                     skip_reason: skip_reason.clone(),
                     marks: marks.clone(),
+                    class_name: None,
                 });
             } else {
                 for (case_id, values) in param_cases {
@@ -174,6 +177,7 @@ fn inspect_module(
                         parameter_values: values,
                         skip_reason: skip_reason.clone(),
                         marks: marks.clone(),
+                        class_name: None,
                     });
                 }
             }
@@ -239,6 +243,7 @@ fn discover_class_tests(
                 parameter_values: ParameterMap::new(),
                 skip_reason: None,
                 marks: Vec::new(),
+                class_name: Some(class_name.to_string()),
             });
         }
     }
@@ -289,6 +294,16 @@ fn is_fixture(value: &Bound<'_, PyAny>) -> PyResult<bool> {
         Ok(flag) => flag.is_truthy()?,
         Err(_) => false,
     })
+}
+
+/// Extract the scope of a fixture, defaulting to "function" if not specified.
+fn extract_fixture_scope(value: &Bound<'_, PyAny>) -> PyResult<FixtureScope> {
+    match string_attribute(value, "__rustest_fixture_scope__")? {
+        Some(scope_str) => {
+            FixtureScope::from_str(&scope_str).map_err(|e| invalid_test_definition(e))
+        }
+        None => Ok(FixtureScope::default()),
+    }
 }
 
 /// Extract a string attribute from the object, if present.

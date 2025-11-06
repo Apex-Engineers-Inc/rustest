@@ -17,19 +17,58 @@ use pyo3::prelude::*;
 /// the argument list for a test function.
 pub type ParameterMap = IndexMap<String, Py<PyAny>>;
 
+/// The scope of a fixture determines when it is created and destroyed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FixtureScope {
+    /// Created once per test function (default).
+    Function,
+    /// Shared across all test methods in a class.
+    Class,
+    /// Shared across all tests in a module.
+    Module,
+    /// Shared across all tests in the entire session.
+    Session,
+}
+
+impl FixtureScope {
+    /// Parse a scope string from Python.
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "function" => Ok(FixtureScope::Function),
+            "class" => Ok(FixtureScope::Class),
+            "module" => Ok(FixtureScope::Module),
+            "session" => Ok(FixtureScope::Session),
+            _ => Err(format!("Invalid fixture scope: {}", s)),
+        }
+    }
+}
+
+impl Default for FixtureScope {
+    fn default() -> Self {
+        FixtureScope::Function
+    }
+}
+
 /// Metadata describing a single fixture function.
 pub struct Fixture {
     pub name: String,
     pub callable: Py<PyAny>,
     pub parameters: Vec<String>,
+    pub scope: FixtureScope,
 }
 
 impl Fixture {
-    pub fn new(name: String, callable: Py<PyAny>, parameters: Vec<String>) -> Self {
+    pub fn new(
+        name: String,
+        callable: Py<PyAny>,
+        parameters: Vec<String>,
+        scope: FixtureScope,
+    ) -> Self {
         Self {
             name,
             callable,
             parameters,
+            scope,
         }
     }
 }
@@ -45,6 +84,8 @@ pub struct TestCase {
     pub parameter_values: ParameterMap,
     pub skip_reason: Option<String>,
     pub marks: Vec<String>,
+    /// The class name if this test is part of a test class (for class-scoped fixtures).
+    pub class_name: Option<String>,
 }
 
 impl TestCase {
