@@ -31,7 +31,7 @@ See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis and methodo
 
 ## Installation
 
-Rustest supports Python **3.10 through 3.13**.
+Rustest supports Python **3.10 through 3.14**.
 
 ### Using pip
 ```bash
