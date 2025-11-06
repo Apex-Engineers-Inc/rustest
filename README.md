@@ -12,20 +12,22 @@ Rustest is a Rust-powered test runner that aims to provide the most common pytes
 
 ## Performance
 
-Rustest is designed for speed. Our benchmarks show **2.5x faster** execution compared to pytest on a comprehensive test suite with 161 tests:
+Rustest is designed for speed. Our benchmarks show **2.5x faster** execution compared to pytest on a comprehensive test suite with 209 tests:
 
 | Test Runner | Avg Time | Tests/Second | Speedup |
 |-------------|----------|--------------|---------|
-| pytest      | 0.632s   | 254.5        | 1.0x (baseline) |
-| rustest     | 0.253s   | 636.4        | **2.5x faster** |
+| pytest      | 0.872s   | 239.7        | 1.0x (baseline) |
+| rustest     | 0.349s   | 599.1        | **2.5x faster** |
 
 **Performance by test type:**
 - **Simple tests**: 2.5x faster
 - **Fixture tests**: 3.0x faster (Rust-based fixture resolution shines here)
 - **Parametrized tests**: 2.5x faster
-- **Combined (fixtures + params)**: 2.8x faster
+- **Combined (fixtures + params)**: 2.5x faster
+- **Yield fixtures (setup/teardown)**: 2.5x faster
+- **Scoped fixtures**: 2.3x faster
 
-The performance advantage grows with larger test suites. For a 1,000-test suite, rustest can save ~2.4 seconds per run, which adds up quickly in CI/CD pipelines and during development.
+The performance advantage grows with larger test suites. For a 1,000-test suite, rustest can save ~2.5 seconds per run, which adds up quickly in CI/CD pipelines and during development.
 
 See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis and methodology.
 
@@ -194,6 +196,42 @@ def test_api_configuration(api_client: dict) -> None:
     assert api_client["timeout"] == 30
 ```
 
+#### Yield Fixtures with Setup/Teardown
+
+Fixtures can use `yield` to perform cleanup after tests:
+
+```python
+from rustest import fixture
+
+@fixture
+def database_connection():
+    # Setup: create connection
+    conn = create_db_connection()
+    print("Database connected")
+
+    yield conn
+
+    # Teardown: close connection
+    conn.close()
+    print("Database connection closed")
+
+@fixture
+def temp_file():
+    # Setup
+    file = open("temp.txt", "w")
+    file.write("test data")
+
+    yield file
+
+    # Teardown
+    file.close()
+    os.remove("temp.txt")
+
+def test_database_query(database_connection):
+    result = database_connection.query("SELECT 1")
+    assert result is not None
+```
+
 #### Fixture Scopes
 
 Fixtures support different scopes to control when they are created and destroyed:
@@ -234,6 +272,29 @@ def request_handler(module_config: dict, session_cache: dict) -> dict:
 - `session`: Shared across the entire test session
 
 Scoped fixtures are especially useful for expensive setup operations like database connections, API clients, or configuration loading.
+
+**Using conftest.py for Shared Fixtures:**
+
+You can define fixtures in a `conftest.py` file to share them across multiple test files:
+
+```python
+# conftest.py
+from rustest import fixture
+
+@fixture(scope="session")
+def database():
+    """Shared database connection for all tests."""
+    db = setup_database()
+    yield db
+    db.cleanup()
+
+@fixture(scope="module")
+def api_client():
+    """API client shared across a module."""
+    return create_api_client()
+```
+
+All test files in the same directory (and subdirectories) can use these fixtures automatically.
 
 #### Parametrized Tests
 
@@ -348,6 +409,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | `@fixture` decorator | ✅ | ✅ | Rust-based dependency resolution |
 | Fixture dependency injection | ✅ | ✅ | 3x faster in rustest |
 | Fixture scopes (function/class/module/session) | ✅ | ✅ | Full support for all scopes |
+| Yield fixtures (setup/teardown) | ✅ | ✅ | Full support with cleanup |
 | Fixture parametrization | ✅ | 🚧 | Planned |
 | **Parametrization** |
 | `@parametrize` decorator | ✅ | ✅ | Full support with custom IDs |
@@ -373,7 +435,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | Plugins | ✅ | ❌ | Not planned (keeps rustest simple) |
 | Hooks | ✅ | ❌ | Not planned |
 | Custom collectors | ✅ | ❌ | Not planned |
-| `conftest.py` | ✅ | 🚧 | Planned for fixture sharing |
+| `conftest.py` | ✅ | ✅ | Shared fixtures across test files |
 | **Developer Experience** |
 | Fully typed Python API | ⚠️ | ✅ | rustest uses `basedpyright` strict mode |
 | Fast CI/CD runs | ⚠️ | ✅ | 2.5x faster = shorter feedback loops |

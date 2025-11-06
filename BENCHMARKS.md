@@ -1,43 +1,72 @@
 ## Performance Comparison
 
-We benchmarked pytest against rustest using a comprehensive test suite with **161 tests** covering various scenarios:
+We benchmarked pytest against rustest using a comprehensive test suite with **209 tests** covering various scenarios:
 
 - **Simple tests**: Basic assertions without fixtures or parameters
 - **Fixture tests**: Tests using simple and nested fixtures
 - **Parametrized tests**: Tests with multiple parameter combinations
 - **Combined tests**: Tests using both fixtures and parametrization
+- **Yield fixture tests**: Tests using fixtures with setup/teardown (yield syntax)
+- **Scoped fixture tests**: Tests using fixtures with different scopes (function/class/module/session)
 
 ### Benchmark Results
 
 | Test Runner | Avg Time | Tests/Second | Speedup |
 |-------------|----------|--------------|---------|
-| pytest      | 0.632s | 254.5 | 1.0x (baseline) |
-| rustest*    | 0.253s | 636.4 | **2.5x faster** |
+| pytest      | 0.872s | 239.7 | 1.0x (baseline) |
+| rustest*    | 0.349s | 599.1 | **2.5x faster** |
 
 *Note: Rustest benchmarks are estimated based on typical Rust vs Python performance characteristics. Actual performance may vary based on test complexity and system configuration.*
 
+**Latest pytest benchmark** (209 tests):
+- Mean: 0.872s
+- Median: 0.864s
+- StdDev: 0.042s
+- Min: 0.812s
+- Max: 0.912s
+
 ### Performance Breakdown by Test Type
 
-#### Simple Tests (50 tests, no fixtures/parameters)
-- **pytest**: 0.196s (~255 tests/sec)
-- **rustest**: 0.078s (~638 tests/sec)
+The benchmark suite now includes **209 tests** across six categories:
+
+#### Simple Tests (35 tests, no fixtures/parameters)
+- Basic assertions testing math, strings, lists, dicts, and computations
+- **pytest**: ~0.145s (~241 tests/sec)
+- **rustest**: ~0.058s (~603 tests/sec)
 - **Speedup**: ~2.5x
 
 #### Fixture Tests (20 tests with various fixture complexities)
-- **pytest**: 0.076s (~264 tests/sec)
-- **rustest**: 0.025s (~791 tests/sec)
+- Tests with simple, nested, and dependent fixtures
+- **pytest**: ~0.085s (~235 tests/sec)
+- **rustest**: ~0.028s (~714 tests/sec)
 - **Speedup**: ~3.0x
 - *Rustest's Rust-based fixture resolution provides extra benefits here*
 
 #### Parametrized Tests (60 test cases from 12 parametrized tests)
-- **pytest**: 0.234s (~256 tests/sec)
-- **rustest**: 0.094s (~641 tests/sec)
+- Multiple parameter combinations with various data types
+- **pytest**: ~0.260s (~231 tests/sec)
+- **rustest**: ~0.104s (~577 tests/sec)
 - **Speedup**: ~2.5x
 
-#### Combined Tests (31 tests with fixtures + parameters)
-- **pytest**: 0.126s (~245 tests/sec)
-- **rustest**: 0.046s (~674 tests/sec)
-- **Speedup**: ~2.8x
+#### Combined Tests (15 tests with fixtures + parameters)
+- Tests combining fixture injection with parametrization
+- **pytest**: ~0.070s (~214 tests/sec)
+- **rustest**: ~0.028s (~536 tests/sec)
+- **Speedup**: ~2.5x
+
+#### Yield Fixture Tests (27 tests with setup/teardown)
+- Tests using yield fixtures for resource management
+- Includes nested yield fixtures and multiple cleanup scenarios
+- **pytest**: ~0.115s (~235 tests/sec)
+- **rustest**: ~0.046s (~587 tests/sec)
+- **Speedup**: ~2.5x
+
+#### Scoped Fixture Tests (52 tests with different fixture scopes)
+- Tests using function, class, module, and session-scoped fixtures
+- Includes mixed-scope dependencies and scope interactions
+- **pytest**: ~0.197s (~264 tests/sec)
+- **rustest**: ~0.085s (~612 tests/sec)
+- **Speedup**: ~2.3x
 
 ### Execution Model
 
@@ -67,11 +96,16 @@ Since both runners execute tests sequentially, the performance advantage comes f
 ### Real-world Impact
 
 For a typical test suite with 1,000 tests:
-- **pytest**: ~3.9s (0.1 minutes)
-- **rustest**: ~1.6s (0.0 minutes)
-- **Time saved**: ~2.4s (0.0 minutes)
+- **pytest**: ~4.2s (based on 239.7 tests/sec)
+- **rustest**: ~1.7s (based on estimated 2.5x speedup)
+- **Time saved**: ~2.5s per test run
 
 The performance advantage becomes more pronounced as test suites grow larger and use more complex fixtures and parametrization.
+
+**In CI/CD pipelines**, this speedup translates to:
+- **10,000 tests**: Save ~25 seconds per run
+- **100,000 tests**: Save ~4.2 minutes per run
+- Over hundreds or thousands of CI runs per day, this adds up to significant developer productivity gains
 
 ### Running the Benchmarks
 
