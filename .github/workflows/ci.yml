@@ -40,12 +40,12 @@ jobs:
       - name: Run integration tests with pytest
         run: |
           # Run pytest on integration test files
-          # Excluded: test_errors.py (intentional failures), test_output.py (intentional failure),
-          #           test_yield_fixtures.py (buggy tests), test_fixture_scope_edge_cases.py (tests invalid behavior)
+          # Excluded: test_errors.py (intentional failures), test_output.py (intentional failure)
           # Note: test_fixture_class_scope.py run separately to avoid session fixture name collisions
           .venv/bin/pytest \
             tests/test_basic.py \
             tests/test_complex_parametrize.py \
+            tests/test_fixture_scope_edge_cases.py \
             tests/test_fixture_scopes.py \
             tests/test_fixture_validation.py \
             tests/test_fixtures.py \
@@ -54,6 +54,7 @@ jobs:
             tests/test_parametrized.py \
             tests/test_scope_validation_errors.py \
             tests/test_skip.py \
+            tests/test_yield_fixtures.py \
             examples/tests/ \
             -v
           # Run test_fixture_class_scope.py separately (has session_base fixture that conflicts)
@@ -62,10 +63,11 @@ jobs:
       - name: Run integration tests with rustest
         run: |
           # Run rustest on integration test files
-          # Excluded: Files with intentional failures, buggy tests, or invalid fixture usage
+          # Excluded: Files with intentional failures (test_errors.py, test_output.py)
           .venv/bin/python -m rustest \
             tests/test_basic.py \
             tests/test_complex_parametrize.py \
+            tests/test_fixture_scope_edge_cases.py \
             tests/test_fixture_scopes.py \
             tests/test_fixture_validation.py \
             tests/test_fixtures.py \
@@ -74,6 +76,7 @@ jobs:
             tests/test_parametrized.py \
             tests/test_scope_validation_errors.py \
             tests/test_skip.py \
+            tests/test_yield_fixtures.py \
             examples/tests
           # Run test_fixture_class_scope.py separately (has session_base fixture that conflicts)
           .venv/bin/python -m rustest tests/test_fixture_class_scope.py

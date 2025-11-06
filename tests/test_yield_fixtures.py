@@ -70,7 +70,7 @@ def module_yield_fixture():
 
 def test_module_yield_1(module_yield_fixture):
     """Test that module-scoped yield fixture provides value."""
-    reset_lifecycle()  # Clear previous test events
+    # Don't reset - we want to see the setup event that already happened
     assert module_yield_fixture == "module_value"
     assert "module_setup" in get_events()
     assert "module_teardown" not in get_events()
@@ -103,7 +103,7 @@ class TestClassYieldFixture:
 
     def test_class_yield_1(self, class_yield_fixture):
         """Test class-scoped yield fixture."""
-        reset_lifecycle()
+        # Don't reset - we want to see the setup event that already happened
         assert class_yield_fixture == "class_value"
         assert "class_setup" in get_events()
         assert "class_teardown" not in get_events()
@@ -163,7 +163,7 @@ def inner_yield(outer_yield):
 
 def test_nested_yield(inner_yield):
     """Test nested yield fixtures."""
-    reset_lifecycle()
+    # Don't reset - we want to see the setup events that already happened
     assert inner_yield == "inner_with_outer"
     events = get_events()
     assert "outer_setup" in events
@@ -206,7 +206,7 @@ def yield_fixture_mixed():
 
 def test_mixed_fixtures(regular_fixture, yield_fixture_mixed):
     """Test mixing regular and yield fixtures."""
-    reset_lifecycle()
+    # Don't reset - we want to see the setup events that already happened
     assert regular_fixture == "regular_value"
     assert yield_fixture_mixed == "yield_value"
     events = get_events()
@@ -254,7 +254,7 @@ def database():
 
 def test_database_fixture_1(database):
     """Test database fixture provides connected database."""
-    reset_lifecycle()
+    # Don't reset - we want to see the setup events that already happened
     assert database.connected
     result = database.execute("SELECT * FROM users")
     assert result == "result_1"
@@ -286,7 +286,7 @@ def tuple_yield():
 
 def test_tuple_yield(tuple_yield):
     """Test yield fixture with tuple value."""
-    reset_lifecycle()
+    # Don't reset - just test the fixture value
     assert tuple_yield == (1, 2, 3)
     assert len(tuple_yield) == 3
 
@@ -301,6 +301,6 @@ def dict_yield():
 
 def test_dict_yield(dict_yield):
     """Test yield fixture with dict value."""
-    reset_lifecycle()
+    # Don't reset - just test the fixture value
     assert dict_yield["key"] == "value"
     assert dict_yield["number"] == 42
