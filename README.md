@@ -43,9 +43,6 @@ pip install rustest
 uv add rustest --dev
 ```
 
-### For Development
-If you want to contribute to rustest, see [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions.
-
 ## Quick Start
 
 ### 1. Write Your Tests
