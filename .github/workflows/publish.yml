@@ -11,30 +11,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build and Publish
+  check-version:
+    name: Check if version should be published
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+    outputs:
+      should_publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
     env:
       PACKAGE_NAME: rustest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-
-      - name: Install Python 3.12
-        run: uv python install 3.12
-
-      - name: Sync project dependencies
-        run: uv sync --python 3.12 --all-extras
 
       - name: Determine publish target
         id: release
@@ -62,10 +48,67 @@ jobs:
             echo "Version ${{ steps.release.outputs.version }} already exists on PyPI. Skipping publish."
           fi
 
-      - name: Build distributions
-        if: steps.release.outputs.publish == 'true'
-        run: uv build
+  build-wheels:
+    name: Build wheels on ${{ matrix.os }}
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
+          manylinux: auto
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist
+
+  build-sdist:
+    name: Build source distribution
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+  publish:
+    name: Publish to PyPI
+    needs: [check-version, build-wheels, build-sdist]
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: '*'
+          merge-multiple: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
 
       - name: Publish to PyPI
-        if: steps.release.outputs.publish == 'true'
-        run: uv publish --check-url https://pypi.org/simple --trusted-publishing always
+        run: uv publish --check-url https://pypi.org/simple --trusted-publishing always dist/*
