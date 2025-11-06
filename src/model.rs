@@ -69,6 +69,17 @@ impl Fixture {
             is_generator,
         }
     }
+
+    /// Clone the fixture with a Python context.
+    pub fn clone_with_py(&self, py: Python<'_>) -> Self {
+        Self {
+            name: self.name.clone(),
+            callable: self.callable.clone_ref(py),
+            parameters: self.parameters.clone(),
+            scope: self.scope,
+            is_generator: self.is_generator,
+        }
+    }
 }
 
 /// Metadata describing a single test case.

@@ -5,8 +5,9 @@
 //! because the interaction with Python's reflection facilities can otherwise be
 //! tricky to follow.
 
+use std::collections::HashMap;
 use std::ffi::CString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
@@ -38,24 +39,140 @@ pub fn discover_tests(
     let mut modules = Vec::new();
     let module_ids = ModuleIdGenerator::default();
 
+    // First, discover all conftest.py files and their fixtures
+    let mut conftest_fixtures: HashMap<PathBuf, IndexMap<String, Fixture>> = HashMap::new();
+    for path in &canonical_paths {
+        if path.is_dir() {
+            discover_conftest_files(py, path, &mut conftest_fixtures, &module_ids)?;
+        } else if path.is_file() {
+            // Also check for conftest.py in the directory of a single file
+            if let Some(parent) = path.parent() {
+                discover_conftest_files(py, parent, &mut conftest_fixtures, &module_ids)?;
+            }
+        }
+    }
+
+    // Now discover test files, merging with conftest fixtures
     for path in canonical_paths {
         if path.is_dir() {
             for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
                 let file = entry.into_path();
                 if file.is_file() && glob.is_match(&file) {
-                    if let Some(module) = collect_from_file(py, &file, config, &module_ids)? {
+                    if let Some(module) =
+                        collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)?
+                    {
                         modules.push(module);
                     }
                 }
             }
         } else if path.is_file() && glob.is_match(&path) {
-            if let Some(module) = collect_from_file(py, &path, config, &module_ids)? {
+            if let Some(module) =
+                collect_from_file(py, &path, config, &module_ids, &conftest_fixtures)?
+            {
                 modules.push(module);
             }
         }
     }
 
     Ok(modules)
+}
+
+/// Discover all conftest.py files in a directory tree and load their fixtures.
+fn discover_conftest_files(
+    py: Python<'_>,
+    root: &Path,
+    conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
+    module_ids: &ModuleIdGenerator,
+) -> PyResult<()> {
+    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_file() && path.file_name() == Some("conftest.py".as_ref()) {
+            let fixtures = load_conftest_fixtures(py, path, module_ids)?;
+            if let Some(parent) = path.parent() {
+                conftest_map.insert(parent.to_path_buf(), fixtures);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Load fixtures from a conftest.py file.
+fn load_conftest_fixtures(
+    py: Python<'_>,
+    path: &Path,
+    module_ids: &ModuleIdGenerator,
+) -> PyResult<IndexMap<String, Fixture>> {
+    let (module_name, package_name) = infer_module_names(path, module_ids.next());
+    let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
+    let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
+
+    let inspect = py.import("inspect")?;
+    let isfunction = inspect.getattr("isfunction")?;
+    let mut fixtures = IndexMap::new();
+
+    for (name_obj, value) in module_dict.iter() {
+        let name: String = name_obj.extract()?;
+
+        // Check if it's a function and a fixture
+        if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
+            let scope = extract_fixture_scope(&value)?;
+            let is_generator = is_generator_function(py, &value)?;
+            fixtures.insert(
+                name.clone(),
+                Fixture::new(
+                    name.clone(),
+                    value.clone().unbind(),
+                    extract_parameters(py, &value)?,
+                    scope,
+                    is_generator,
+                ),
+            );
+        }
+    }
+
+    Ok(fixtures)
+}
+
+/// Merge conftest fixtures for a test file with the file's own fixtures.
+/// Conftest fixtures from parent directories are merged from farthest to nearest,
+/// and the test file's own fixtures override any conftest fixtures with the same name.
+fn merge_conftest_fixtures(
+    py: Python<'_>,
+    test_path: &Path,
+    module_fixtures: IndexMap<String, Fixture>,
+    conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+) -> IndexMap<String, Fixture> {
+    let mut merged = IndexMap::new();
+
+    // Collect all parent directories from farthest to nearest
+    let mut parent_dirs = Vec::new();
+    if let Some(mut parent) = test_path.parent() {
+        loop {
+            parent_dirs.push(parent.to_path_buf());
+            if let Some(next_parent) = parent.parent() {
+                parent = next_parent;
+            } else {
+                break;
+            }
+        }
+    }
+    parent_dirs.reverse(); // Process from farthest to nearest
+
+    // Merge conftest fixtures from farthest to nearest
+    for dir in parent_dirs {
+        if let Some(fixtures) = conftest_map.get(&dir) {
+            for (name, fixture) in fixtures {
+                merged.insert(name.clone(), fixture.clone_with_py(py));
+            }
+        }
+    }
+
+    // Module's own fixtures override conftest fixtures
+    for (name, fixture) in module_fixtures {
+        merged.insert(name, fixture);
+    }
+
+    merged
 }
 
 /// Build the default glob set matching `test_*.py` and `*_test.py` files.
@@ -80,12 +197,16 @@ fn collect_from_file(
     path: &Path,
     config: &RunConfiguration,
     module_ids: &ModuleIdGenerator,
+    conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
 ) -> PyResult<Option<TestModule>> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let (fixtures, mut tests) = inspect_module(py, path, &module_dict)?;
+    let (module_fixtures, mut tests) = inspect_module(py, path, &module_dict)?;
+
+    // Merge conftest fixtures with the module's own fixtures
+    let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map);
 
     if let Some(pattern) = &config.pattern {
         tests.retain(|case| test_matches_pattern(case, pattern));
