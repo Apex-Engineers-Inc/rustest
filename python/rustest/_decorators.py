@@ -88,6 +88,7 @@ class MarkDecorator:
     """A decorator for applying a mark to a test function."""
 
     def __init__(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        super().__init__()
         self.name = name
         self.args = args
         self.kwargs = kwargs
@@ -122,23 +123,22 @@ class MarkGenerator:
         @mark.timeout(seconds=30)
     """
 
-    def __getattr__(self, name: str) -> MarkDecorator:
+    def __getattr__(self, name: str) -> Any:
         """Create a mark decorator for the given name."""
         # Return a callable that can be used as @mark.name or @mark.name(args)
         return self._create_mark(name)
 
-    def _create_mark(self, name: str) -> Callable[..., Any]:
+    def _create_mark(self, name: str) -> Any:
         """Create a MarkDecorator that can be called with or without arguments."""
 
         class _MarkDecoratorFactory:
             """Factory that allows @mark.name or @mark.name(args)."""
 
             def __init__(self, mark_name: str) -> None:
+                super().__init__()
                 self.mark_name = mark_name
 
-            def __call__(
-                self, *args: Any, **kwargs: Any
-            ) -> MarkDecorator | Callable[[F], F]:
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 # If called with a single argument that's a function, it's @mark.name
                 if (
                     len(args) == 1

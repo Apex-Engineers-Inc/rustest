@@ -3,12 +3,15 @@
 from rustest import parametrize, fixture
 
 
-@parametrize("x,y,expected", [
-    (1, 2, 3),
-    (5, 5, 10),
-    (10, -5, 5),
-    (0, 0, 0),
-])
+@parametrize(
+    "x,y,expected",
+    [
+        (1, 2, 3),
+        (5, 5, 10),
+        (10, -5, 5),
+        (0, 0, 0),
+    ],
+)
 def test_addition(x, y, expected):
     """Test addition with multiple parameters."""
     assert x + y == expected
@@ -27,21 +30,27 @@ def test_string_param(text):
     assert len(text) > 0
 
 
-@parametrize("data", [
-    {"key": "value"},
-    {"a": 1, "b": 2},
-    {},
-])
+@parametrize(
+    "data",
+    [
+        {"key": "value"},
+        {"a": 1, "b": 2},
+        {},
+    ],
+)
 def test_dict_param(data):
     """Test with dictionary parameters."""
     assert isinstance(data, dict)
 
 
-@parametrize("items", [
-    [1, 2, 3],
-    ["a", "b", "c"],
-    [],
-])
+@parametrize(
+    "items",
+    [
+        [1, 2, 3],
+        ["a", "b", "c"],
+        [],
+    ],
+)
 def test_list_param(items):
     """Test with list parameters."""
     assert isinstance(items, list)

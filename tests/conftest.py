@@ -30,4 +30,4 @@ class RustestCompatModule:
 def pytest_configure(config):
     """Inject rustest compatibility shim when pytest starts."""
     # Replace rustest module with our compatibility shim for this test session
-    sys.modules['rustest'] = RustestCompatModule()
+    sys.modules["rustest"] = RustestCompatModule()
