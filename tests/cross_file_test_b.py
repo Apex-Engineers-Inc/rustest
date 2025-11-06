@@ -74,9 +74,7 @@ def test_common_name_in_b(common_name):
     assert common_name["defined_in"] == "file_B"
 
 
-def test_multiple_fixtures_b(
-    fixture_from_file_b, module_fixture_from_b, session_fixture_from_b
-):
+def test_multiple_fixtures_b(fixture_from_file_b, module_fixture_from_b, session_fixture_from_b):
     """Test using multiple local fixtures together."""
     assert fixture_from_file_b["file"] == "B"
     assert module_fixture_from_b["file"] == "B"

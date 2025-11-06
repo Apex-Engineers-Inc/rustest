@@ -21,7 +21,7 @@ def run_command(cmd, runs=5):
         end = time.perf_counter()
         elapsed = end - start
         times.append(elapsed)
-        print(f"  Run {i+1}/{runs}: {elapsed:.4f}s")
+        print(f"  Run {i + 1}/{runs}: {elapsed:.4f}s")
 
     return {
         "mean": statistics.mean(times),
@@ -41,16 +41,16 @@ def count_tests(directory):
         capture_output=True,
         text=True,
     )
-    lines = result.stdout.strip().split('\n')
+    lines = result.stdout.strip().split("\n")
     for line in lines:
-        if 'test' in line.lower() and 'selected' in line.lower():
+        if "test" in line.lower() and "selected" in line.lower():
             # Extract number from line like "123 tests collected"
             parts = line.split()
             for i, part in enumerate(parts):
                 if part.isdigit():
                     return int(part)
     # Fallback: count lines that look like test items
-    return len([line for line in lines if line.strip() and '::test_' in line])
+    return len([line for line in lines if line.strip() and "::test_" in line])
 
 
 def main():

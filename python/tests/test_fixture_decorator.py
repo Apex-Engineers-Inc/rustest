@@ -73,9 +73,7 @@ def test_fixture_invalid_scope():
 
 def test_fixture_invalid_scope_message():
     """Test that error message lists valid scopes."""
-    with pytest.raises(
-        ValueError, match="Must be one of: class, function, module, session"
-    ):
+    with pytest.raises(ValueError, match="Must be one of: class, function, module, session"):
 
         @fixture(scope="wrong")
         def my_fixture():

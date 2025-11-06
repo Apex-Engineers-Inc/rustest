@@ -102,9 +102,7 @@ def no_params_function():
     return track_edge_call("no_params_function")
 
 
-def test_no_params_1(
-    no_params_session, no_params_module, no_params_class, no_params_function
-):
+def test_no_params_1(no_params_session, no_params_module, no_params_class, no_params_function):
     """Test fixtures with no parameters."""
     assert no_params_session == 1
     assert no_params_module == 1
@@ -112,9 +110,7 @@ def test_no_params_1(
     assert no_params_function == 1
 
 
-def test_no_params_2(
-    no_params_session, no_params_module, no_params_class, no_params_function
-):
+def test_no_params_2(no_params_session, no_params_module, no_params_class, no_params_function):
     """Test no-param fixture scoping."""
     # Session, module, class reused
     assert no_params_session == 1
