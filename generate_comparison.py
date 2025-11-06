@@ -36,33 +36,33 @@ We benchmarked pytest against rustest using a comprehensive test suite with **{t
 
 | Test Runner | Avg Time | Tests/Second | Speedup |
 |-------------|----------|--------------|---------|
-| pytest      | {pytest_time:.3f}s | {test_count/pytest_time:.1f} | 1.0x (baseline) |
-| rustest*    | {rustest_time:.3f}s | {test_count/rustest_time:.1f} | **{speedup:.1f}x faster** |
+| pytest      | {pytest_time:.3f}s | {test_count / pytest_time:.1f} | 1.0x (baseline) |
+| rustest*    | {rustest_time:.3f}s | {test_count / rustest_time:.1f} | **{speedup:.1f}x faster** |
 
 *Note: Rustest benchmarks are estimated based on typical Rust vs Python performance characteristics. Actual performance may vary based on test complexity and system configuration.*
 
 ### Performance Breakdown by Test Type
 
 #### Simple Tests (50 tests, no fixtures/parameters)
-- **pytest**: {data['pytest']['mean'] * 0.31:.3f}s (~{50/(data['pytest']['mean']*0.31):.0f} tests/sec)
-- **rustest**: {(data['pytest']['mean'] * 0.31)/rustest_execution_speedup:.3f}s (~{50/((data['pytest']['mean']*0.31)/rustest_execution_speedup):.0f} tests/sec)
+- **pytest**: {data["pytest"]["mean"] * 0.31:.3f}s (~{50 / (data["pytest"]["mean"] * 0.31):.0f} tests/sec)
+- **rustest**: {(data["pytest"]["mean"] * 0.31) / rustest_execution_speedup:.3f}s (~{50 / ((data["pytest"]["mean"] * 0.31) / rustest_execution_speedup):.0f} tests/sec)
 - **Speedup**: ~{rustest_execution_speedup:.1f}x
 
 #### Fixture Tests (20 tests with various fixture complexities)
-- **pytest**: {data['pytest']['mean'] * 0.12:.3f}s (~{20/(data['pytest']['mean']*0.12):.0f} tests/sec)
-- **rustest**: {(data['pytest']['mean'] * 0.12)/(rustest_execution_speedup*1.2):.3f}s (~{20/((data['pytest']['mean']*0.12)/(rustest_execution_speedup*1.2)):.0f} tests/sec)
-- **Speedup**: ~{rustest_execution_speedup*1.2:.1f}x
+- **pytest**: {data["pytest"]["mean"] * 0.12:.3f}s (~{20 / (data["pytest"]["mean"] * 0.12):.0f} tests/sec)
+- **rustest**: {(data["pytest"]["mean"] * 0.12) / (rustest_execution_speedup * 1.2):.3f}s (~{20 / ((data["pytest"]["mean"] * 0.12) / (rustest_execution_speedup * 1.2)):.0f} tests/sec)
+- **Speedup**: ~{rustest_execution_speedup * 1.2:.1f}x
 - *Rustest's Rust-based fixture resolution provides extra benefits here*
 
 #### Parametrized Tests (60 test cases from 12 parametrized tests)
-- **pytest**: {data['pytest']['mean'] * 0.37:.3f}s (~{60/(data['pytest']['mean']*0.37):.0f} tests/sec)
-- **rustest**: {(data['pytest']['mean'] * 0.37)/rustest_execution_speedup:.3f}s (~{60/((data['pytest']['mean']*0.37)/rustest_execution_speedup):.0f} tests/sec)
+- **pytest**: {data["pytest"]["mean"] * 0.37:.3f}s (~{60 / (data["pytest"]["mean"] * 0.37):.0f} tests/sec)
+- **rustest**: {(data["pytest"]["mean"] * 0.37) / rustest_execution_speedup:.3f}s (~{60 / ((data["pytest"]["mean"] * 0.37) / rustest_execution_speedup):.0f} tests/sec)
 - **Speedup**: ~{rustest_execution_speedup:.1f}x
 
 #### Combined Tests (31 tests with fixtures + parameters)
-- **pytest**: {data['pytest']['mean'] * 0.20:.3f}s (~{31/(data['pytest']['mean']*0.20):.0f} tests/sec)
-- **rustest**: {(data['pytest']['mean'] * 0.20)/(rustest_execution_speedup*1.1):.3f}s (~{31/((data['pytest']['mean']*0.20)/(rustest_execution_speedup*1.1)):.0f} tests/sec)
-- **Speedup**: ~{rustest_execution_speedup*1.1:.1f}x
+- **pytest**: {data["pytest"]["mean"] * 0.20:.3f}s (~{31 / (data["pytest"]["mean"] * 0.20):.0f} tests/sec)
+- **rustest**: {(data["pytest"]["mean"] * 0.20) / (rustest_execution_speedup * 1.1):.3f}s (~{31 / ((data["pytest"]["mean"] * 0.20) / (rustest_execution_speedup * 1.1)):.0f} tests/sec)
+- **Speedup**: ~{rustest_execution_speedup * 1.1:.1f}x
 
 ### Why is rustest faster?
 
@@ -77,9 +77,9 @@ We benchmarked pytest against rustest using a comprehensive test suite with **{t
 ### Real-world Impact
 
 For a typical test suite with 1,000 tests:
-- **pytest**: ~{1000 * (pytest_time/test_count):.1f}s ({(1000 * (pytest_time/test_count))/60:.1f} minutes)
-- **rustest**: ~{1000 * (rustest_time/test_count):.1f}s ({(1000 * (rustest_time/test_count))/60:.1f} minutes)
-- **Time saved**: ~{1000 * ((pytest_time/test_count) - (rustest_time/test_count)):.1f}s ({(1000 * ((pytest_time/test_count) - (rustest_time/test_count)))/60:.1f} minutes)
+- **pytest**: ~{1000 * (pytest_time / test_count):.1f}s ({(1000 * (pytest_time / test_count)) / 60:.1f} minutes)
+- **rustest**: ~{1000 * (rustest_time / test_count):.1f}s ({(1000 * (rustest_time / test_count)) / 60:.1f} minutes)
+- **Time saved**: ~{1000 * ((pytest_time / test_count) - (rustest_time / test_count)):.1f}s ({(1000 * ((pytest_time / test_count) - (rustest_time / test_count))) / 60:.1f} minutes)
 
 The performance advantage becomes more pronounced as test suites grow larger and use more complex fixtures and parametrization.
 

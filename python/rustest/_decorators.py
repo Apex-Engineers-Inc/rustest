@@ -7,12 +7,48 @@ from typing import Any, TypeVar
 
 F = TypeVar("F", bound=Callable[..., object])
 
+# Valid fixture scopes
+VALID_SCOPES = frozenset(["function", "class", "module", "session"])
 
-def fixture(func: F) -> F:
-    """Mark a function as a fixture."""
 
-    setattr(func, "__rustest_fixture__", True)
-    return func
+def fixture(
+    func: F | None = None,
+    *,
+    scope: str = "function",
+) -> F | Callable[[F], F]:
+    """Mark a function as a fixture with a specific scope.
+
+    Args:
+        func: The function to decorate (when used without parentheses)
+        scope: The scope of the fixture. One of:
+            - "function": New instance for each test function (default)
+            - "class": Shared across all test methods in a class
+            - "module": Shared across all tests in a module
+            - "session": Shared across all tests in the session
+
+    Usage:
+        @fixture
+        def my_fixture():
+            return 42
+
+        @fixture(scope="module")
+        def shared_fixture():
+            return expensive_setup()
+    """
+    if scope not in VALID_SCOPES:
+        valid = ", ".join(sorted(VALID_SCOPES))
+        msg = f"Invalid fixture scope '{scope}'. Must be one of: {valid}"
+        raise ValueError(msg)
+
+    def decorator(f: F) -> F:
+        setattr(f, "__rustest_fixture__", True)
+        setattr(f, "__rustest_fixture_scope__", scope)
+        return f
+
+    # Support both @fixture and @fixture(scope="...")
+    if func is not None:
+        return decorator(func)
+    return decorator
 
 
 def skip(reason: str | None = None) -> Callable[[F], F]:
