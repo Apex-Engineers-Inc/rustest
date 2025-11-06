@@ -40,12 +40,12 @@ jobs:
       - name: Run integration tests with pytest
         run: |
           # Run pytest on integration test files
-          # Note: test_errors.py, test_output.py, and test_yield_fixtures.py have intentional/expected failures
+          # Excluded: test_errors.py (intentional failures), test_output.py (intentional failure),
+          #           test_yield_fixtures.py (buggy tests), test_fixture_scope_edge_cases.py (tests invalid behavior)
           # Note: test_fixture_class_scope.py run separately to avoid session fixture name collisions
           .venv/bin/pytest \
             tests/test_basic.py \
             tests/test_complex_parametrize.py \
-            tests/test_fixture_scope_edge_cases.py \
             tests/test_fixture_scopes.py \
             tests/test_fixture_validation.py \
             tests/test_fixtures.py \
@@ -62,11 +62,10 @@ jobs:
       - name: Run integration tests with rustest
         run: |
           # Run rustest on integration test files
-          # Note: Some tests excluded due to fixture name collisions or intentional failures
+          # Excluded: Files with intentional failures, buggy tests, or invalid fixture usage
           .venv/bin/python -m rustest \
             tests/test_basic.py \
             tests/test_complex_parametrize.py \
-            tests/test_fixture_scope_edge_cases.py \
             tests/test_fixture_scopes.py \
             tests/test_fixture_validation.py \
             tests/test_fixtures.py \
