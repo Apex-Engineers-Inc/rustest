@@ -303,9 +303,9 @@ pub fn watch(
         move |result: DebounceEventResult| match result {
             Ok(events) => {
                 for event in events {
-                    for path in event.paths {
+                    for path in &event.paths {
                         if path.extension().and_then(|s| s.to_str()) == Some("py") {
-                            let _ = tx.send(path);
+                            let _ = tx.send(path.clone());
                         }
                     }
                 }
