@@ -1,8 +1,12 @@
 """Integration test conftest combining multiple features."""
-import rustest
+# Support both pytest and rustest
+try:
+    import pytest as testlib
+except ImportError:
+    import rustest as testlib
 
 
-@rustest.fixture(scope="session")
+@testlib.fixture(scope="session")
 def db_connection():
     """Simulate a database connection."""
     connection = {"connected": True, "queries": []}
@@ -11,7 +15,7 @@ def db_connection():
     connection["connected"] = False
 
 
-@rustest.fixture(scope="module")
+@testlib.fixture(scope="module")
 def db_session(db_connection):
     """Simulate a database session."""
     session = {"connection": db_connection, "transaction": "open"}
@@ -19,7 +23,7 @@ def db_session(db_connection):
     session["transaction"] = "closed"
 
 
-@rustest.fixture
+@testlib.fixture
 def db_cursor(db_session):
     """Simulate a database cursor."""
     cursor = {"session": db_session, "position": 0}
@@ -27,13 +31,13 @@ def db_cursor(db_session):
     cursor["position"] = -1
 
 
-@rustest.fixture
+@testlib.fixture
 def sample_data():
     """Provide sample test data."""
     return {"users": ["alice", "bob"], "count": 2}
 
 
-@rustest.fixture
+@testlib.fixture
 def data_processor(sample_data):
     """Process sample data."""
     def process(transform):
@@ -41,7 +45,7 @@ def data_processor(sample_data):
     return process
 
 
-@rustest.fixture
+@testlib.fixture
 def authenticated_user():
     """Simulate an authenticated user."""
     user = {"name": "testuser", "authenticated": True}

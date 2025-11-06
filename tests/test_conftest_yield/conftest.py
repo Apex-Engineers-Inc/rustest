@@ -1,11 +1,15 @@
 """Conftest with yield fixtures for setup/teardown testing."""
-import rustest
+# Support both pytest and rustest
+try:
+    import pytest as testlib
+except ImportError:
+    import rustest as testlib
 
 # Global list to track setup/teardown order
 _lifecycle = []
 
 
-@rustest.fixture
+@testlib.fixture
 def simple_yield():
     """Simple yield fixture."""
     _lifecycle.append("simple_setup")
@@ -13,7 +17,7 @@ def simple_yield():
     _lifecycle.append("simple_teardown")
 
 
-@rustest.fixture
+@testlib.fixture
 def yield_with_cleanup():
     """Yield fixture with cleanup."""
     resource = {"status": "open"}
@@ -23,7 +27,7 @@ def yield_with_cleanup():
     _lifecycle.append("resource_teardown")
 
 
-@rustest.fixture
+@testlib.fixture
 def dependent_yield(simple_yield):
     """Yield fixture that depends on another yield fixture."""
     _lifecycle.append("dependent_setup")
@@ -31,7 +35,7 @@ def dependent_yield(simple_yield):
     _lifecycle.append("dependent_teardown")
 
 
-@rustest.fixture(scope="module")
+@testlib.fixture(scope="module")
 def module_yield():
     """Module-scoped yield fixture."""
     _lifecycle.append("module_yield_setup")
@@ -39,13 +43,13 @@ def module_yield():
     _lifecycle.append("module_yield_teardown")
 
 
-@rustest.fixture
+@testlib.fixture
 def get_lifecycle():
     """Helper to access lifecycle for verification."""
     return _lifecycle.copy()
 
 
-@rustest.fixture
+@testlib.fixture
 def clear_lifecycle():
     """Helper to clear lifecycle before test."""
     _lifecycle.clear()

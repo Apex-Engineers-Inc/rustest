@@ -37,71 +37,11 @@ jobs:
       - name: Run Python unit tests with pytest
         run: .venv/bin/pytest python/tests -v
 
-      - name: Run integration tests with pytest
-        run: |
-          # Run pytest on integration test files
-          # Excluded: test_errors.py (intentional failures), test_output.py (intentional failure)
-          # Note: test_fixture_class_scope.py run separately to avoid session fixture name collisions
-          .venv/bin/pytest \
-            tests/test_basic.py \
-            tests/test_complex_parametrize.py \
-            tests/test_fixture_scope_edge_cases.py \
-            tests/test_fixture_scopes.py \
-            tests/test_fixture_validation.py \
-            tests/test_fixtures.py \
-            tests/test_marks.py \
-            tests/test_nested_fixtures.py \
-            tests/test_parametrized.py \
-            tests/test_scope_validation_errors.py \
-            tests/test_skip.py \
-            tests/test_yield_fixtures.py \
-            examples/tests/ \
-            -v
-          # Run test_fixture_class_scope.py separately (has session_base fixture that conflicts)
-          .venv/bin/pytest tests/test_fixture_class_scope.py -v
+      - name: Run all integration tests with pytest
+        run: .venv/bin/pytest tests/ examples/tests/ -v
 
-      - name: Run integration tests with rustest
-        run: |
-          # Run rustest on integration test files
-          # Excluded: Files with intentional failures (test_errors.py, test_output.py)
-          .venv/bin/python -m rustest \
-            tests/test_basic.py \
-            tests/test_complex_parametrize.py \
-            tests/test_fixture_scope_edge_cases.py \
-            tests/test_fixture_scopes.py \
-            tests/test_fixture_validation.py \
-            tests/test_fixtures.py \
-            tests/test_marks.py \
-            tests/test_nested_fixtures.py \
-            tests/test_parametrized.py \
-            tests/test_scope_validation_errors.py \
-            tests/test_skip.py \
-            tests/test_yield_fixtures.py \
-            examples/tests
-          # Run test_fixture_class_scope.py separately (has session_base fixture that conflicts)
-          .venv/bin/python -m rustest tests/test_fixture_class_scope.py
-
-      - name: Run conftest.py tests with pytest
-        run: |
-          # Run pytest on conftest.py feature tests
-          # Each directory is tested separately to avoid fixture name conflicts
-          .venv/bin/pytest tests/test_conftest_basic/ -v
-          .venv/bin/pytest tests/test_conftest_nested/ -v
-          .venv/bin/pytest tests/test_conftest_override/ -v
-          .venv/bin/pytest tests/test_conftest_scopes/ -v
-          .venv/bin/pytest tests/test_conftest_yield/ -v
-          .venv/bin/pytest tests/test_conftest_integration/ -v
-
-      - name: Run conftest.py tests with rustest
-        run: |
-          # Run rustest on conftest.py feature tests
-          # Each directory is tested separately to avoid fixture name conflicts
-          .venv/bin/python -m rustest tests/test_conftest_basic/
-          .venv/bin/python -m rustest tests/test_conftest_nested/
-          .venv/bin/python -m rustest tests/test_conftest_override/
-          .venv/bin/python -m rustest tests/test_conftest_scopes/
-          .venv/bin/python -m rustest tests/test_conftest_yield/
-          .venv/bin/python -m rustest tests/test_conftest_integration/
+      - name: Run all integration tests with rustest
+        run: .venv/bin/python -m rustest tests/ examples/tests/
 
   lint:
     name: Lint and Format

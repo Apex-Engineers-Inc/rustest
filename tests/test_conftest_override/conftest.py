@@ -1,20 +1,24 @@
 """Conftest with fixtures that will be overridden by test module."""
-import rustest
+# Support both pytest and rustest
+try:
+    import pytest as testlib
+except ImportError:
+    import rustest as testlib
 
 
-@rustest.fixture
+@testlib.fixture
 def shared_name():
     """This will be overridden by the test module."""
     return "from_conftest"
 
 
-@rustest.fixture
+@testlib.fixture
 def conftest_only():
     """This won't be overridden."""
     return "conftest_value"
 
 
-@rustest.fixture
+@testlib.fixture
 def another_shared():
     """Another fixture that will be overridden."""
     return "conftest_version"
