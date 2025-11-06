@@ -1,0 +1,172 @@
+name: Tests and Publish
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync --python ${{ matrix.python-version }} --all-extras
+
+      - name: Run Python unit tests with pytest
+        run: uv run --python ${{ matrix.python-version }} pytest python/tests -v
+
+      - name: Run all integration tests with pytest
+        run: uv run --python ${{ matrix.python-version }} pytest tests/ examples/tests/ -v
+
+      - name: Run all integration tests with rustest
+        run: uv run --python ${{ matrix.python-version }} python -m rustest tests/ examples/tests/
+
+  lint:
+    name: Lint and Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Check Python formatting with ruff
+        run: uv run --no-project ruff format --check python
+
+      - name: Lint Python with ruff
+        run: uv run --no-project ruff check python
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+      - name: Lint Rust with clippy
+        run: cargo clippy --lib -- -D warnings
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Type check with basedpyright
+        run: uv run --no-project basedpyright python
+
+  publish:
+    name: Build and Publish
+    needs: [checks, lint, typecheck]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PACKAGE_NAME: rustest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync project dependencies
+        run: uv sync --python 3.12 --all-extras
+
+      - name: Determine publish target
+        id: release
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          TMP_FILE=$(mktemp)
+          if curl -fsSL "https://pypi.org/pypi/${PACKAGE_NAME}/json" -o "$TMP_FILE"; then
+            if jq -e --arg ver "$VERSION" '.releases | has($ver)' "$TMP_FILE" > /dev/null; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+          rm -f "$TMP_FILE"
+
+      - name: Publish decision
+        run: |
+          if [ "${{ steps.release.outputs.publish }}" = "true" ]; then
+            echo "Will publish version ${{ steps.release.outputs.version }} to PyPI."
+          else
+            echo "Version ${{ steps.release.outputs.version }} already exists on PyPI. Skipping publish."
+          fi
+
+      - name: Build distributions
+        if: steps.release.outputs.publish == 'true'
+        run: uv build
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.publish == 'true'
+        run: uv publish --check-url https://pypi.org/simple --trusted-publishing always
