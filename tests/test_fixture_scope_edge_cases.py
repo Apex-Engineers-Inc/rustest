@@ -23,6 +23,12 @@ def track_edge_call(name):
     return edge_case_calls[name]
 
 
+def get_edge_call_count(name):
+    """Get the call count for a tracked name."""
+    global edge_case_calls
+    return edge_case_calls.get(name, 0)
+
+
 # ============================================================================
 # FIXTURES RETURNING NONE
 # ============================================================================
@@ -378,24 +384,29 @@ def test_complex_types_2(session_tuple, module_set, class_custom_object):
 
 
 # ============================================================================
-# SCOPE WITH GENERATORS (if supported in future)
+# SCOPE WITH GENERATORS (yield support)
 # ============================================================================
-# Note: These tests are placeholders for future generator/yield support
 
 
 @fixture(scope="module")
-def generator_like():
-    """Module fixture that simulates generator pattern."""
-    # In real pytest, this would be a yield fixture
-    # For now, just return a dict to track setup/teardown
-    return {"setup": track_edge_call("generator_like"), "teardown": None}
+def generator_yield_fixture():
+    """Module fixture with real yield support."""
+    setup_count = track_edge_call("generator_yield_setup")
+    yield {"setup": setup_count, "data": "test_data"}
+    track_edge_call("generator_yield_teardown")
 
 
-def test_generator_pattern_1(generator_like):
-    """Test generator-like fixture."""
-    assert generator_like["setup"] == 1
+def test_generator_yield_1(generator_yield_fixture):
+    """Test real yield fixture."""
+    assert generator_yield_fixture["setup"] == 1
+    assert generator_yield_fixture["data"] == "test_data"
+    # Teardown hasn't run yet
+    assert get_edge_call_count("generator_yield_teardown") == 0
 
 
-def test_generator_pattern_2(generator_like):
-    """Test generator-like fixture is reused."""
-    assert generator_like["setup"] == 1
+def test_generator_yield_2(generator_yield_fixture):
+    """Test yield fixture is reused within module scope."""
+    assert generator_yield_fixture["setup"] == 1  # Same instance
+    assert generator_yield_fixture["data"] == "test_data"
+    # Teardown still hasn't run
+    assert get_edge_call_count("generator_yield_teardown") == 0

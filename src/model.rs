@@ -50,6 +50,7 @@ pub struct Fixture {
     pub callable: Py<PyAny>,
     pub parameters: Vec<String>,
     pub scope: FixtureScope,
+    pub is_generator: bool,
 }
 
 impl Fixture {
@@ -58,12 +59,14 @@ impl Fixture {
         callable: Py<PyAny>,
         parameters: Vec<String>,
         scope: FixtureScope,
+        is_generator: bool,
     ) -> Self {
         Self {
             name,
             callable,
             parameters,
             scope,
+            is_generator,
         }
     }
 }
