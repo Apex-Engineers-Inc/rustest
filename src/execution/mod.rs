@@ -96,6 +96,13 @@ pub fn run_collected_tests(
                     _ => failed += 1,
                 }
                 results.push(result);
+
+                // If this is a plain function test (no class), clear class cache
+                // Class-scoped fixtures should NOT be shared across plain function tests
+                if test.class_name.is_none() {
+                    context.class_cache.clear();
+                    finalize_generators(py, &mut context.teardowns.class);
+                }
             }
 
             // Class-scoped fixtures are dropped here - run teardowns

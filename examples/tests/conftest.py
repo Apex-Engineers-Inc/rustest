@@ -1,28 +1,7 @@
 """Pytest compatibility for rustest example tests.
 
-This allows example tests to run under both pytest and rustest.
+This conftest is intentionally minimal because pytest compatibility
+is handled by the main tests/conftest.py file at the repository root.
 """
 
-import pytest
-import sys
-
-
-class RustestCompatModule:
-    """Mock rustest module that exports pytest-compatible decorators."""
-
-    @staticmethod
-    def fixture(func):
-        return pytest.fixture(func)
-
-    @staticmethod
-    def parametrize(argnames, argvalues, *, ids=None):
-        return pytest.mark.parametrize(argnames, argvalues, ids=ids)
-
-    @staticmethod
-    def skip(reason=None):
-        return pytest.mark.skip(reason=reason or "skipped via rustest.skip")
-
-
-def pytest_configure(config):
-    """Inject rustest compatibility shim when pytest starts."""
-    sys.modules["rustest"] = RustestCompatModule()
+# No configuration needed - tests/conftest.py handles pytest compatibility

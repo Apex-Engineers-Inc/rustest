@@ -1,0 +1,73 @@
+# Pre-commit hooks for rustest
+# See https://pre-commit.com for more information
+#
+# Installation:
+#   1. Install pre-commit: pip install pre-commit
+#   2. Install git hooks: pre-commit install
+#
+# Usage:
+#   - Runs automatically on git commit
+#   - Run manually on all files: pre-commit run --all-files
+#   - Skip hooks for a commit: git commit --no-verify
+
+repos:
+  # Python formatting and linting with ruff
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      # Run the formatter
+      - id: ruff-format
+        name: ruff format
+        files: ^python/
+
+      # Run the linter
+      - id: ruff
+        name: ruff check
+        args: [--fix]
+        files: ^python/
+
+  # Python type checking with basedpyright
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.390
+    hooks:
+      - id: pyright
+        name: basedpyright
+        entry: basedpyright
+        args: [python]
+        language: python
+        types: [python]
+        pass_filenames: false
+        additional_dependencies:
+          - basedpyright>=1.19
+
+  # Rust formatting with cargo fmt
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # Rust linting with clippy
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy
+        args: [--lib, --, -D, warnings]
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict

@@ -37,30 +37,11 @@ jobs:
       - name: Run Python unit tests with pytest
         run: .venv/bin/pytest python/tests -v
 
-      - name: Run integration tests with pytest
-        run: |
-          # Run pytest on integration test files (excluding intentional error tests)
-          .venv/bin/pytest \
-            tests/test_basic.py \
-            tests/test_complex_parametrize.py \
-            tests/test_fixtures.py \
-            tests/test_nested_fixtures.py \
-            tests/test_parametrized.py \
-            tests/test_skip.py \
-            examples/tests/ \
-            -v
+      - name: Run all integration tests with pytest
+        run: .venv/bin/pytest tests/ examples/tests/ -v
 
-      - name: Run integration tests with rustest
-        run: |
-          # Run rustest on same integration test files to verify compatibility
-          .venv/bin/python -m rustest \
-            tests/test_basic.py \
-            tests/test_complex_parametrize.py \
-            tests/test_fixtures.py \
-            tests/test_nested_fixtures.py \
-            tests/test_parametrized.py \
-            tests/test_skip.py \
-            examples/tests/
+      - name: Run all integration tests with rustest
+        run: .venv/bin/python -m rustest tests/ examples/tests/
 
   lint:
     name: Lint and Format

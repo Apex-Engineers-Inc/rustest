@@ -33,6 +33,7 @@ dev = [
     "basedpyright>=1.19",
     "maturin>=1.4,<2",
     "poethepoet>=0.22",
+    "pre-commit>=3.5",
     "pytest>=7.0",
     "ruff>=0.1.9",
 ]
@@ -84,3 +85,16 @@ managed = true
 
 [tool.uv.sources]
 rustest = { path = "." }
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "fast: marks tests as fast",
+    "timeout: marks tests with timeout requirement",
+    "custom: custom mark with arbitrary parameters",
+    "regression: marks tests for regression testing",
+    "smoke: marks tests for smoke testing",
+    "critical: marks tests as critical",
+]
