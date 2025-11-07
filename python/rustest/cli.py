@@ -81,7 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable colored output.",
     )
-    _ = parser.set_defaults(capture_output=True, color=True)
+    _ = parser.add_argument(
+        "--no-codeblocks",
+        dest="enable_codeblocks",
+        action="store_false",
+        help="Disable code block tests from markdown files.",
+    )
+    _ = parser.set_defaults(capture_output=True, color=True, enable_codeblocks=True)
     return parser
 
 
@@ -98,6 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pattern=args.pattern,
         workers=args.workers,
         capture_output=args.capture_output,
+        enable_codeblocks=args.enable_codeblocks,
     )
     _print_report(report, verbose=args.verbose, ascii_mode=args.ascii)
     return 0 if report.failed == 0 else 1

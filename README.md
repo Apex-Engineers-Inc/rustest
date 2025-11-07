@@ -7,6 +7,7 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 - 🚀 **About 2x faster** than pytest on the rustest integration test suite
 - ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
 - 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
+- 📝 **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
 - 🧮 Built-in `approx()` helper for tolerant numeric comparisons across scalars, collections, and complex numbers
 - 🪤 `raises()` context manager for precise exception assertions with optional message matching
@@ -69,6 +70,51 @@ uv add rustest
 ### For Development
 If you want to contribute to rustest, see [DEVELOPMENT.md](DEVELOPMENT.md) for setup instructions.
 
+## Testing Markdown Code Blocks
+
+Rustest can automatically discover and test Python code blocks in your markdown files, similar to pytest-codeblocks. This is perfect for ensuring your documentation examples stay up-to-date and functional.
+
+### Enabling Code Block Tests
+
+By default, rustest will automatically discover and test Python code blocks in markdown files (`.md`). Each Python code block is treated as a separate test case.
+
+```bash
+# Run tests including markdown code blocks
+rustest
+
+# Disable code block tests
+rustest --no-codeblocks
+```
+
+### Example Markdown File
+
+```markdown
+# Example Documentation
+
+## Basic Addition
+
+\```python
+x = 1 + 1
+assert x == 2
+\```
+
+## String Operations
+
+\```python
+text = "hello world"
+assert text.startswith("hello")
+\```
+```
+
+Each Python code block will be executed as a test. Code blocks with other language tags (like `javascript`, `bash`, etc.) are ignored.
+
+### Features
+
+- **Automatic Discovery**: All `.md` files are scanned for Python code blocks
+- **Simple Testing**: Each `\```python` code block is executed as a test
+- **CLI Control**: Use `--no-codeblocks` to disable code block testing
+- **Fast Execution**: Rust-powered parsing and execution keeps tests fast
+
 ## Quick Start
 
 ### 1. Write Your Tests
@@ -121,7 +167,7 @@ rustest --no-capture
 ### CLI Usage
 
 ```bash
-# Run all tests in current directory
+# Run all tests in current directory (including markdown code blocks)
 rustest
 
 # Run tests in specific paths
@@ -133,6 +179,9 @@ rustest -k "auth"           # Runs all tests with "auth" in the name
 
 # Control output capture
 rustest --no-capture        # See print statements during test execution
+
+# Disable markdown code block tests
+rustest --no-codeblocks     # Only run Python test files, skip .md files
 ```
 
 ### Python API Usage
@@ -151,6 +200,9 @@ report = run(paths=["tests"], pattern="user")
 
 # Without output capture (see print statements)
 report = run(paths=["tests"], capture_output=False)
+
+# Disable markdown code block tests
+report = run(paths=["tests"], enable_codeblocks=False)
 
 # Access individual test results
 for result in report.results:
@@ -578,6 +630,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | Test function detection (`test_*`) | ✅ | ✅ | |
 | Test class detection (`Test*`) | ✅ | ✅ | Full pytest-style class support with fixture methods |
 | Pattern-based filtering | ✅ | ✅ | `-k` pattern matching |
+| Markdown code block testing | ✅ (`pytest-codeblocks`) | ✅ | Built-in support for testing Python blocks in `.md` files |
 | **Fixtures** |
 | `@fixture` decorator | ✅ | ✅ | Rust-based dependency resolution |
 | Fixture dependency injection | ✅ | ✅ | Much faster in rustest |

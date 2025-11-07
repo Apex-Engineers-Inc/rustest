@@ -35,7 +35,12 @@ pub fn discover_tests(
     config: &RunConfiguration,
 ) -> PyResult<Vec<TestModule>> {
     let canonical_paths = paths.materialise()?;
-    let glob = build_file_glob()?;
+    let py_glob = build_file_glob()?;
+    let md_glob = if config.enable_codeblocks {
+        Some(build_markdown_glob()?)
+    } else {
+        None
+    };
     let mut modules = Vec::new();
     let module_ids = ModuleIdGenerator::default();
 
@@ -57,19 +62,39 @@ pub fn discover_tests(
         if path.is_dir() {
             for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
                 let file = entry.into_path();
-                if file.is_file() && glob.is_match(&file) {
+                if file.is_file() {
+                    if py_glob.is_match(&file) {
+                        if let Some(module) =
+                            collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)?
+                        {
+                            modules.push(module);
+                        }
+                    } else if let Some(ref md_glob_set) = md_glob {
+                        if md_glob_set.is_match(&file) {
+                            if let Some(module) =
+                                collect_from_markdown(py, &file, config, &conftest_fixtures)?
+                            {
+                                modules.push(module);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if path.is_file() {
+            if py_glob.is_match(&path) {
+                if let Some(module) =
+                    collect_from_file(py, &path, config, &module_ids, &conftest_fixtures)?
+                {
+                    modules.push(module);
+                }
+            } else if let Some(ref md_glob_set) = md_glob {
+                if md_glob_set.is_match(&path) {
                     if let Some(module) =
-                        collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)?
+                        collect_from_markdown(py, &path, config, &conftest_fixtures)?
                     {
                         modules.push(module);
                     }
                 }
-            }
-        } else if path.is_file() && glob.is_match(&path) {
-            if let Some(module) =
-                collect_from_file(py, &path, config, &module_ids, &conftest_fixtures)?
-            {
-                modules.push(module);
             }
         }
     }
@@ -191,6 +216,18 @@ fn build_file_glob() -> PyResult<GlobSet> {
         .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
 }
 
+/// Build the glob set matching markdown files (*.md).
+fn build_markdown_glob() -> PyResult<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    builder.add(
+        Glob::new("**/*.md")
+            .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))?,
+    );
+    builder
+        .build()
+        .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+}
+
 /// Load a module from `path` and extract fixtures and tests.
 fn collect_from_file(
     py: Python<'_>,
@@ -217,6 +254,123 @@ fn collect_from_file(
     }
 
     Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
+}
+
+/// Parse markdown file and extract Python code blocks as tests.
+fn collect_from_markdown(
+    py: Python<'_>,
+    path: &Path,
+    config: &RunConfiguration,
+    conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+) -> PyResult<Option<TestModule>> {
+    // Read the markdown file
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| invalid_test_definition(format!("Failed to read {}: {}", path.display(), e)))?;
+
+    // Parse Python code blocks
+    let mut tests = Vec::new();
+    let code_blocks = extract_python_code_blocks(&content);
+
+    for (index, code) in code_blocks.into_iter().enumerate() {
+        // Create a test name based on the block index
+        let test_name = format!("codeblock_{}", index);
+        let display_name = format!("{}[{}]", path.display(), test_name);
+
+        // Create a Python callable that executes the code block
+        let callable = create_codeblock_callable(py, &code)?;
+
+        tests.push(TestCase {
+            name: test_name.clone(),
+            display_name,
+            path: path.to_path_buf(),
+            callable,
+            parameters: Vec::new(),
+            parameter_values: ParameterMap::new(),
+            skip_reason: None,
+            marks: vec!["codeblock".to_string()],
+            class_name: None,
+        });
+    }
+
+    // Apply pattern filtering if specified
+    if let Some(pattern) = &config.pattern {
+        tests.retain(|case| test_matches_pattern(case, pattern));
+    }
+
+    if tests.is_empty() {
+        return Ok(None);
+    }
+
+    // Merge conftest fixtures for the markdown file
+    let fixtures = merge_conftest_fixtures(py, path, IndexMap::new(), conftest_map);
+
+    Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
+}
+
+/// Extract Python code blocks from markdown content.
+/// Returns a vector of Python code strings.
+fn extract_python_code_blocks(content: &str) -> Vec<String> {
+    let mut code_blocks = Vec::new();
+    let mut in_code_block = false;
+    let mut current_block = String::new();
+    let mut block_language = String::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("```") {
+            if in_code_block {
+                // End of code block
+                if block_language == "python" {
+                    code_blocks.push(current_block.clone());
+                }
+                current_block.clear();
+                block_language.clear();
+                in_code_block = false;
+            } else {
+                // Start of code block
+                in_code_block = true;
+                // Extract the language identifier
+                block_language = trimmed[3..].trim().to_lowercase();
+            }
+        } else if in_code_block {
+            // Add line to current block
+            if !current_block.is_empty() {
+                current_block.push('\n');
+            }
+            current_block.push_str(line);
+        }
+    }
+
+    code_blocks
+}
+
+/// Create a Python callable that executes a code block.
+fn create_codeblock_callable(py: Python<'_>, code: &str) -> PyResult<Py<PyAny>> {
+    // Create a wrapper function that executes the code block
+    let wrapper_code = format!(
+        r#"
+def run_codeblock():
+{}
+"#,
+        // Indent the code block by 4 spaces
+        code.lines()
+            .map(|line| format!("    {}", line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    let namespace = PyDict::new(py);
+    let code_cstr = CString::new(wrapper_code).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
+    })?;
+
+    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
+    let run_codeblock = namespace
+        .get_item("run_codeblock")?
+        .ok_or_else(|| invalid_test_definition("Failed to create codeblock callable"))?;
+
+    Ok(run_codeblock.unbind())
 }
 
 /// Determine whether a test case should be kept for the provided pattern.

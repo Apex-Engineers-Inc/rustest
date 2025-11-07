@@ -14,8 +14,9 @@ def run(
     pattern: str | None,
     workers: int | None,
     capture_output: bool,
+    enable_codeblocks: bool = True,
 ) -> RunReport:
     """Execute tests and return a rich report."""
 
-    raw_report = rust.run(list(paths), pattern, workers, capture_output)
+    raw_report = rust.run(list(paths), pattern, workers, capture_output, enable_codeblocks)
     return RunReport.from_py(raw_report)
