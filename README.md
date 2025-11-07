@@ -411,6 +411,142 @@ def test_full_workflow() -> None:
     pass
 ```
 
+#### Test Classes
+
+Rustest supports pytest-style test classes, allowing you to organize related tests together:
+
+```python
+from rustest import fixture, parametrize, mark
+
+class TestBasicMath:
+    """Group related tests in a class."""
+
+    def test_addition(self):
+        assert 1 + 1 == 2
+
+    def test_subtraction(self):
+        assert 5 - 3 == 2
+
+    def test_multiplication(self):
+        assert 3 * 4 == 12
+```
+
+**Using Fixtures in Test Classes:**
+
+Test methods can inject fixtures just like standalone test functions:
+
+```python
+from rustest import fixture
+
+@fixture
+def calculator():
+    return {"add": lambda x, y: x + y, "multiply": lambda x, y: x * y}
+
+class TestCalculator:
+    """Test class using fixtures."""
+
+    def test_addition(self, calculator):
+        assert calculator["add"](2, 3) == 5
+
+    def test_multiplication(self, calculator):
+        assert calculator["multiply"](4, 5) == 20
+```
+
+**Class-Scoped Fixtures:**
+
+Class-scoped fixtures are shared across all test methods in the same class, perfect for expensive setup operations:
+
+```python
+from rustest import fixture
+
+@fixture(scope="class")
+def database():
+    """Expensive setup shared across all tests in a class."""
+    db = {"connection": "db://test", "data": []}
+    return db
+
+class TestDatabase:
+    """All tests share the same database fixture instance."""
+
+    def test_connection(self, database):
+        assert database["connection"] == "db://test"
+
+    def test_add_data(self, database):
+        database["data"].append("item1")
+        assert len(database["data"]) >= 1
+
+    def test_data_persists(self, database):
+        # Same database instance, so previous test's data is still there
+        assert len(database["data"]) >= 1
+```
+
+**Fixture Methods Within Test Classes:**
+
+You can define fixtures as methods inside test classes, providing class-specific setup:
+
+```python
+from rustest import fixture
+
+class TestWithFixtureMethod:
+    """Test class with its own fixture methods."""
+
+    @fixture(scope="class")
+    def class_resource(self):
+        """Fixture method shared across tests in this class."""
+        resource = {"value": 42, "name": "test_resource"}
+        yield resource
+        # Teardown happens after all tests in class
+        resource["closed"] = True
+
+    @fixture
+    def per_test_data(self, class_resource):
+        """Fixture method that depends on another fixture."""
+        return {"id": id(self), "resource": class_resource}
+
+    def test_uses_class_resource(self, class_resource):
+        assert class_resource["value"] == 42
+
+    def test_uses_per_test_data(self, per_test_data):
+        assert "resource" in per_test_data
+        assert per_test_data["resource"]["value"] == 42
+```
+
+**Class Variables and Instance Variables:**
+
+Test classes can use class variables for shared state and instance variables for per-test isolation:
+
+```python
+class TestWithVariables:
+    """Test class with class and instance variables."""
+
+    class_variable = "shared_data"  # Shared across all tests
+
+    def test_class_variable(self):
+        # Access class variable
+        assert self.class_variable == "shared_data"
+        assert TestWithVariables.class_variable == "shared_data"
+
+    def test_instance_variable(self):
+        # Each test gets a fresh instance
+        self.instance_var = "test_specific"
+        assert self.instance_var == "test_specific"
+```
+
+**Parametrized Test Methods:**
+
+Use `@parametrize` on class methods just like regular test functions:
+
+```python
+from rustest import parametrize
+
+class TestParametrized:
+    """Test class with parametrized methods."""
+
+    @parametrize("value,expected", [(2, 4), (3, 9), (4, 16)])
+    def test_square(self, value, expected):
+        assert value ** 2 == expected
+```
+
 ### Test Output
 
 When you run rustest, you'll see clean, informative output:
@@ -440,13 +576,14 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | **Core Test Discovery** |
 | `test_*.py` / `*_test.py` files | ✅ | ✅ | Rustest uses Rust for dramatically faster discovery |
 | Test function detection (`test_*`) | ✅ | ✅ | |
-| Test class detection (`Test*`) | ✅ | ✅ | via `unittest.TestCase` support |
+| Test class detection (`Test*`) | ✅ | ✅ | Full pytest-style class support with fixture methods |
 | Pattern-based filtering | ✅ | ✅ | `-k` pattern matching |
 | **Fixtures** |
 | `@fixture` decorator | ✅ | ✅ | Rust-based dependency resolution |
 | Fixture dependency injection | ✅ | ✅ | Much faster in rustest |
 | Fixture scopes (function/class/module/session) | ✅ | ✅ | Full support for all scopes |
 | Yield fixtures (setup/teardown) | ✅ | ✅ | Full support with cleanup |
+| Fixture methods within test classes | ✅ | ✅ | Define fixtures as class methods |
 | Fixture parametrization | ✅ | 🚧 | Planned |
 | **Parametrization** |
 | `@parametrize` decorator | ✅ | ✅ | Full support with custom IDs |
