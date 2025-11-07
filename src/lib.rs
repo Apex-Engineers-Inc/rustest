@@ -41,7 +41,7 @@ fn run(
 
 /// Entry point for the Python extension module.
 #[pymodule]
-fn _rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunReport>()?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
     Ok(())
