@@ -129,15 +129,22 @@ pub struct RunConfiguration {
     #[allow(dead_code)]
     pub worker_count: usize,
     pub capture_output: bool,
+    pub enable_codeblocks: bool,
 }
 
 impl RunConfiguration {
-    pub fn new(pattern: Option<String>, workers: Option<usize>, capture_output: bool) -> Self {
+    pub fn new(
+        pattern: Option<String>,
+        workers: Option<usize>,
+        capture_output: bool,
+        enable_codeblocks: bool,
+    ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
             pattern,
             worker_count,
             capture_output,
+            enable_codeblocks,
         }
     }
 }
