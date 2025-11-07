@@ -264,8 +264,9 @@ fn collect_from_markdown(
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
 ) -> PyResult<Option<TestModule>> {
     // Read the markdown file
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| invalid_test_definition(format!("Failed to read {}: {}", path.display(), e)))?;
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        invalid_test_definition(format!("Failed to read {}: {}", path.display(), e))
+    })?;
 
     // Parse Python code blocks
     let mut tests = Vec::new();
