@@ -305,14 +305,33 @@ fn inspect_module(
                 }
             }
         }
-        // Check if it's a class (unittest.TestCase support)
-        else if isclass.call1((&value,))?.is_truthy()? && is_test_case_class(py, &value)? {
-            let class_tests = discover_class_tests(py, path, &name, &value)?;
-            tests.extend(class_tests);
+        // Check if it's a class (both unittest.TestCase and plain test classes)
+        else if isclass.call1((&value,))?.is_truthy()? {
+            if is_test_case_class(py, &value)? {
+                // unittest.TestCase support
+                let class_tests = discover_unittest_class_tests(py, path, &name, &value)?;
+                tests.extend(class_tests);
+            } else if is_plain_test_class(&name) {
+                // Plain pytest-style test class support
+                // Extract both test methods and fixture methods from the class
+                let (class_fixtures, class_tests) =
+                    discover_plain_class_tests_and_fixtures(py, path, &name, &value)?;
+                // Merge class fixtures into module fixtures
+                for (fixture_name, fixture) in class_fixtures {
+                    fixtures.insert(fixture_name, fixture);
+                }
+                tests.extend(class_tests);
+            }
         }
     }
 
     Ok((fixtures, tests))
+}
+
+/// Check if a class name follows the pytest-style test class naming convention.
+/// A plain test class starts with "Test" (capital T).
+fn is_plain_test_class(name: &str) -> bool {
+    name.starts_with("Test")
 }
 
 /// Check if a class is a unittest.TestCase subclass.
@@ -330,8 +349,8 @@ fn is_test_case_class(py: Python<'_>, cls: &Bound<'_, PyAny>) -> PyResult<bool> 
     }
 }
 
-/// Discover test methods in a TestCase class.
-fn discover_class_tests(
+/// Discover test methods in a unittest.TestCase class.
+fn discover_unittest_class_tests(
     py: Python<'_>,
     path: &Path,
     class_name: &str,
@@ -352,10 +371,10 @@ fn discover_class_tests(
 
         // Check if it's a method and starts with "test"
         if name.starts_with("test") && is_callable(&method)? {
-            let display_name = format!("{}.{}", class_name, name);
+            let display_name = format!("{}::{}", class_name, name);
 
             // Create a callable that properly instantiates and runs the test
-            let test_callable = create_test_method_runner(py, cls, &name)?;
+            let test_callable = create_unittest_method_runner(py, cls, &name)?;
 
             tests.push(TestCase {
                 name: name.clone(),
@@ -374,6 +393,110 @@ fn discover_class_tests(
     Ok(tests)
 }
 
+/// Discover test methods and fixture methods in a plain pytest-style test class.
+/// Returns both fixtures defined in the class and the test cases.
+fn discover_plain_class_tests_and_fixtures(
+    py: Python<'_>,
+    path: &Path,
+    class_name: &str,
+    cls: &Bound<'_, PyAny>,
+) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
+    let mut fixtures = IndexMap::new();
+    let mut tests = Vec::new();
+    let inspect = py.import("inspect")?;
+
+    // Get all members of the class
+    let members = inspect.call_method1("getmembers", (cls,))?;
+
+    for member in members.try_iter()? {
+        let member = member?;
+
+        // Each member is a tuple (name, value)
+        let name: String = member.get_item(0)?.extract()?;
+        let method = member.get_item(1)?;
+
+        // Skip special methods (like __init__, __str__, etc.)
+        if name.starts_with("__") {
+            continue;
+        }
+
+        // Check if it's a fixture method
+        if is_callable(&method)? && is_fixture(&method)? {
+            // Extract fixture metadata
+            let scope = extract_fixture_scope(&method)?;
+            let is_generator = is_generator_function(py, &method)?;
+
+            // Extract parameters (excluding 'self')
+            let all_params = extract_parameters(py, &method)?;
+            let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
+
+            // Create a wrapper that instantiates the class and calls the fixture method
+            let fixture_callable = create_plain_class_method_runner(py, cls, &name)?;
+
+            fixtures.insert(
+                name.clone(),
+                Fixture::new(
+                    name.clone(),
+                    fixture_callable,
+                    parameters,
+                    scope,
+                    is_generator,
+                ),
+            );
+            continue;
+        }
+
+        // Check if it's a test method
+        if name.starts_with("test") && is_callable(&method)? {
+            let display_name = format!("{}::{}", class_name, name);
+
+            // Extract parameters (excluding 'self')
+            let all_params = extract_parameters(py, &method)?;
+            let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
+
+            // Extract metadata
+            let skip_reason = string_attribute(&method, "__rustest_skip__")?;
+            let marks = collect_marks(&method)?;
+            let param_cases = collect_parametrization(py, &method)?;
+
+            // Create a callable that instantiates the class and calls the method with fixtures
+            let test_callable = create_plain_class_method_runner(py, cls, &name)?;
+
+            if param_cases.is_empty() {
+                tests.push(TestCase {
+                    name: name.clone(),
+                    display_name,
+                    path: path.to_path_buf(),
+                    callable: test_callable,
+                    parameters,
+                    parameter_values: ParameterMap::new(),
+                    skip_reason,
+                    marks,
+                    class_name: Some(class_name.to_string()),
+                });
+            } else {
+                // Handle parametrized test methods
+                for (case_id, values) in param_cases {
+                    let param_display_name = format!("{}::{}[{}]", class_name, name, case_id);
+                    tests.push(TestCase {
+                        name: name.clone(),
+                        display_name: param_display_name,
+                        path: path.to_path_buf(),
+                        callable: test_callable.clone_ref(py),
+                        parameters: parameters.clone(),
+                        parameter_values: values,
+                        skip_reason: skip_reason.clone(),
+                        marks: marks.clone(),
+                        class_name: Some(class_name.to_string()),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok((fixtures, tests))
+}
+
 /// Check if an object is callable.
 fn is_callable(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
     let builtins = obj.py().import("builtins")?;
@@ -381,9 +504,9 @@ fn is_callable(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
     callable_fn.call1((obj,))?.is_truthy()
 }
 
-/// Create a callable that instantiates a TestCase and runs a specific test method.
+/// Create a callable that instantiates a unittest.TestCase and runs a specific test method.
 /// This follows unittest's pattern of instantiating with the method name.
-fn create_test_method_runner(
+fn create_unittest_method_runner(
     py: Python<'_>,
     cls: &Bound<'_, PyAny>,
     method_name: &str,
@@ -395,6 +518,40 @@ fn create_test_method_runner(
 def run_test():
     test_instance = test_class('{}')
     test_instance()
+"#,
+        method_name
+    );
+
+    let namespace = PyDict::new(py);
+    namespace.set_item("test_class", cls)?;
+
+    let code_cstr = CString::new(code).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
+    })?;
+    // Use the same dict for both globals and locals to ensure proper variable resolution
+    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
+    let run_test = namespace.get_item("run_test")?.unwrap();
+
+    Ok(run_test.unbind())
+}
+
+/// Create a callable that instantiates a plain test class and runs a specific test method.
+/// This wrapper will receive fixtures as arguments and pass them to the method.
+fn create_plain_class_method_runner(
+    py: Python<'_>,
+    cls: &Bound<'_, PyAny>,
+    method_name: &str,
+) -> PyResult<Py<PyAny>> {
+    // Create a wrapper function that:
+    // 1. Instantiates the test class (without arguments)
+    // 2. Gets the test method
+    // 3. Calls the method with provided fixtures (as *args)
+    let code = format!(
+        r#"
+def run_test(*args, **kwargs):
+    test_instance = test_class()
+    test_method = getattr(test_instance, '{}')
+    return test_method(*args, **kwargs)
 "#,
         method_name
     );

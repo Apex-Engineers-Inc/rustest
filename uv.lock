@@ -338,7 +338,7 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.9" },
-    { name = "typing-extensions", specifier = ">=4.8" },
+    { name = "typing-extensions", specifier = ">=4.15" },
 ]
 provides-extras = ["dev"]
 
