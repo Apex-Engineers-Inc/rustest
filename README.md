@@ -190,25 +190,27 @@ You can also run rustest programmatically from Python:
 
 ```python
 from rustest import run
+import os
 
-# Basic usage
-report = run(paths=["."])
-print(f"Passed: {report.passed}, Failed: {report.failed}")
+# Basic usage (specify your test directory)
+if os.path.exists("tests"):
+    report = run(paths=["tests"])
+    print(f"Passed: {report.passed}, Failed: {report.failed}")
 
-# With pattern filtering
-report = run(paths=["."], pattern="user")
+    # With pattern filtering
+    report = run(paths=["tests"], pattern="user")
 
-# Without output capture (see print statements)
-report = run(paths=["."], capture_output=False)
+    # Without output capture (see print statements)
+    report = run(paths=["tests"], capture_output=False)
 
-# Disable markdown code block tests
-report = run(paths=["."], enable_codeblocks=False)
+    # Disable markdown code block tests
+    report = run(paths=["tests"], enable_codeblocks=False)
 
-# Access individual test results
-for result in report.results:
-    print(f"{result.name}: {result.status} ({result.duration:.3f}s)")
-    if result.status == "failed":
-        print(f"  Error: {result.message}")
+    # Access individual test results
+    for result in report.results:
+        print(f"{result.name}: {result.status} ({result.duration:.3f}s)")
+        if result.status == "failed":
+            print(f"  Error: {result.message}")
 ```
 
 ### Writing Tests
