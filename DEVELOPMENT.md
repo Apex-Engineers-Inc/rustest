@@ -274,13 +274,13 @@ fn run(paths: Vec<String>, ...) -> PyResult<PyRunReport> {
 }
 
 // ...can be called from Python:
-from rustest._rust import run
+from rustest.rust import run
 report = run(paths=["tests"])
 ```
 
 ## Troubleshooting
 
-### "Cannot import name '_rust'"
+### "Cannot import name 'rust'"
 **Problem:** The Rust extension isn't built.
 **Solution:** Run `uv run maturin develop`
 
