@@ -41,7 +41,7 @@ jobs:
         run: .venv/bin/pytest tests/ examples/tests/ -v
 
       - name: Run all integration tests with rustest
-        run: .venv/bin/python -m rustest tests/ examples/tests/
+        run: .venv/bin/python -m rustest tests/ examples/tests/ -v
 
   lint:
     name: Lint and Format
