@@ -30,6 +30,7 @@ def run(
     pattern: str | None,
     workers: int | None,
     capture_output: bool,
+    enable_codeblocks: bool,
 ) -> PyRunReport:
     """Execute tests and return a report."""
     ...

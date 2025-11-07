@@ -82,6 +82,7 @@ class TestCli:
             pattern=None,
             workers=None,
             capture_output=True,
+            enable_codeblocks=True,
         )
         assert exit_code == 0
 

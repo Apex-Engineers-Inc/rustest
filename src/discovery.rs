@@ -264,8 +264,9 @@ fn collect_from_markdown(
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
 ) -> PyResult<Option<TestModule>> {
     // Read the markdown file
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| invalid_test_definition(format!("Failed to read {}: {}", path.display(), e)))?;
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        invalid_test_definition(format!("Failed to read {}: {}", path.display(), e))
+    })?;
 
     // Parse Python code blocks
     let mut tests = Vec::new();
@@ -318,7 +319,7 @@ fn extract_python_code_blocks(content: &str) -> Vec<String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed.starts_with("```") {
+        if let Some(stripped) = trimmed.strip_prefix("```") {
             if in_code_block {
                 // End of code block
                 if block_language == "python" {
@@ -331,7 +332,7 @@ fn extract_python_code_blocks(content: &str) -> Vec<String> {
                 // Start of code block
                 in_code_block = true;
                 // Extract the language identifier
-                block_language = trimmed[3..].trim().to_lowercase();
+                block_language = stripped.trim().to_lowercase();
             }
         } else if in_code_block {
             // Add line to current block
