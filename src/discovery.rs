@@ -313,7 +313,13 @@ fn inspect_module(
                 tests.extend(class_tests);
             } else if is_plain_test_class(&name) {
                 // Plain pytest-style test class support
-                let class_tests = discover_plain_class_tests(py, path, &name, &value)?;
+                // Extract both test methods and fixture methods from the class
+                let (class_fixtures, class_tests) =
+                    discover_plain_class_tests_and_fixtures(py, path, &name, &value)?;
+                // Merge class fixtures into module fixtures
+                for (fixture_name, fixture) in class_fixtures {
+                    fixtures.insert(fixture_name, fixture);
+                }
                 tests.extend(class_tests);
             }
         }
@@ -387,13 +393,15 @@ fn discover_unittest_class_tests(
     Ok(tests)
 }
 
-/// Discover test methods in a plain pytest-style test class.
-fn discover_plain_class_tests(
+/// Discover test methods and fixture methods in a plain pytest-style test class.
+/// Returns both fixtures defined in the class and the test cases.
+fn discover_plain_class_tests_and_fixtures(
     py: Python<'_>,
     path: &Path,
     class_name: &str,
     cls: &Bound<'_, PyAny>,
-) -> PyResult<Vec<TestCase>> {
+) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
+    let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
     let inspect = py.import("inspect")?;
 
@@ -407,7 +415,38 @@ fn discover_plain_class_tests(
         let name: String = member.get_item(0)?.extract()?;
         let method = member.get_item(1)?;
 
-        // Check if it's a method and starts with "test"
+        // Skip special methods (like __init__, __str__, etc.)
+        if name.starts_with("__") {
+            continue;
+        }
+
+        // Check if it's a fixture method
+        if is_callable(&method)? && is_fixture(&method)? {
+            // Extract fixture metadata
+            let scope = extract_fixture_scope(&method)?;
+            let is_generator = is_generator_function(py, &method)?;
+
+            // Extract parameters (excluding 'self')
+            let all_params = extract_parameters(py, &method)?;
+            let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
+
+            // Create a wrapper that instantiates the class and calls the fixture method
+            let fixture_callable = create_plain_class_method_runner(py, cls, &name)?;
+
+            fixtures.insert(
+                name.clone(),
+                Fixture::new(
+                    name.clone(),
+                    fixture_callable,
+                    parameters,
+                    scope,
+                    is_generator,
+                ),
+            );
+            continue;
+        }
+
+        // Check if it's a test method
         if name.starts_with("test") && is_callable(&method)? {
             let display_name = format!("{}::{}", class_name, name);
 
@@ -455,7 +494,7 @@ fn discover_plain_class_tests(
         }
     }
 
-    Ok(tests)
+    Ok((fixtures, tests))
 }
 
 /// Check if an object is callable.
