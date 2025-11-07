@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from ._reporting import RunReport, TestResult
+from .reporting import RunReport, TestResult
 from .core import run
 
 
