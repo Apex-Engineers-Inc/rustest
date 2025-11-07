@@ -161,7 +161,7 @@ def test_fixture_scope_whitespace():
 
 def test_all_valid_scopes():
     """Test that all documented scopes are valid."""
-    from rustest._decorators import VALID_SCOPES
+    from rustest.decorators import VALID_SCOPES
 
     assert VALID_SCOPES == frozenset(["function", "class", "module", "session"])
 

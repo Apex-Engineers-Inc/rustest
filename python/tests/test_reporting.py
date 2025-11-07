@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from .helpers import ensure_rust_stub
-from rustest._reporting import RunReport, TestResult
+from rustest.reporting import RunReport, TestResult
 
 ensure_rust_stub()
 

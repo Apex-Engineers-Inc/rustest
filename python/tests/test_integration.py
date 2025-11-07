@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from .helpers import ensure_rust_stub
-from rustest import _cli, run, RunReport, TestResult
+from rustest import cli, run, RunReport, TestResult
 
 ensure_rust_stub()
 
@@ -127,7 +127,7 @@ def test_success():
         buffer = io.StringIO()
         try:
             with redirect_stdout(buffer):
-                exit_code = _cli.main([self.temp_dir])
+                exit_code = cli.main([self.temp_dir])
             assert exit_code == 0
         except Exception:
             pytest.skip("Rust module not available")
@@ -290,7 +290,7 @@ class TestCLIParser:
 
     def test_parser_with_no_args(self) -> None:
         """Test parser with no arguments uses defaults."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args([])
         assert tuple(args.paths) == (".",)
         assert args.pattern is None
@@ -299,31 +299,31 @@ class TestCLIParser:
 
     def test_parser_with_paths(self) -> None:
         """Test parser with custom paths."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["tests", "src"])
         assert tuple(args.paths) == ("tests", "src")
 
     def test_parser_with_pattern(self) -> None:
         """Test parser with pattern filter."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["-k", "test_pattern"])
         assert args.pattern == "test_pattern"
 
     def test_parser_with_workers(self) -> None:
         """Test parser with worker count."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["-n", "4"])
         assert args.workers == 4
 
     def test_parser_with_no_capture(self) -> None:
         """Test parser with capture output disabled."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["--no-capture"])
         assert args.capture_output is False
 
     def test_parser_with_all_options(self) -> None:
         """Test parser with all options specified."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["tests", "-k", "pattern", "-n", "8", "--no-capture"])
         assert tuple(args.paths) == ("tests",)
         assert args.pattern == "pattern"
