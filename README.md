@@ -20,13 +20,22 @@ Rustest is designed for speed. Our latest benchmarks on the rustest integration 
 | Test Runner | Reported Runtime† | Wall Clock‡ | Speedup (wall) | Command |
 |-------------|------------------|-------------|----------------|---------|
 | pytest      | 0.43–0.59s       | 1.33–1.59s  | 1.0x (baseline) | `pytest tests/ examples/tests/ -q`
-| rustest     | 0.003s           | 0.69–0.70s  | **~2.1x faster** | `python -m rustest tests/ examples/tests/`*
+| rustest     | 0.003s           | 0.69–0.70s  | **~2.1x faster** | `python -m rustest tests/ examples/tests/`§
+
+### Large parametrized stress test
+
+We also profiled an extreme case with **10,000 parametrized invocations** to ensure rustest scales on synthetic but heavy workloads. The test lives in [`benchmarks/test_large_parametrize.py`](benchmarks/test_large_parametrize.py) and simply asserts `value + value == 2 * value` across every case. Running the module on its own shows a dramatic gap:
+
+| Test Runner | Avg. Wall Clock (3 runs) | Speedup | Command |
+|-------------|--------------------------|---------|---------|
+| pytest      | 9.72s                    | 1.0x    | `pytest benchmarks/test_large_parametrize.py -q`§
+| rustest     | 0.41s                    | **~24x** | `python -m rustest benchmarks/test_large_parametrize.py`§
 
 † pytest and rustest both report only active test execution time; rustest's figure omits Python interpreter start-up overhead.
 
-‡ Wall-clock timing measured with the shell `time` builtin across two consecutive runs in the same environment.
+‡ Integration-suite wall-clock timing measured with the shell `time` builtin across two consecutive runs in the same environment.
 
-*Command executed with `PYTHONPATH=python` in this repository checkout to exercise the local sources.
+§ Commands executed with `PYTHONPATH=python` in this repository checkout to exercise the local sources. Pytest relies on a small compatibility shim in [`benchmarks/conftest.py`](benchmarks/conftest.py) so it understands the rustest-style decorators. Large-parametrization timings come from averaging three `time.perf_counter()` measurements with output suppressed via `subprocess.DEVNULL`.
 
 Rustest counts parametrized cases slightly differently than pytest, so you will see 199 executed cases vs. pytest's 201 discoveries on the same suite—the reported pass/skip counts still align.
 
