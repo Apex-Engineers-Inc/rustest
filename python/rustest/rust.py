@@ -19,5 +19,5 @@ def run(
     """Placeholder implementation that mirrors the extension signature."""
 
     raise NotImplementedError(
-        "The rustest native extension is unavailable. Tests must patch rustest._rust.run."
+        "The rustest native extension is unavailable. Tests must patch rustest.rust.run."
     )

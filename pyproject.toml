@@ -43,7 +43,7 @@ Homepage = "https://github.com/Apex-Engineers-Inc/rustest"
 Repository = "https://github.com/Apex-Engineers-Inc/rustest"
 
 [tool.maturin]
-module-name = "rustest._rust"
+module-name = "rustest.rust"
 python-source = "python"
 compatibility = "manylinux2014"
 

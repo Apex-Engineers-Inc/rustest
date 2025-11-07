@@ -143,7 +143,7 @@ impl RunConfiguration {
 }
 
 /// Public representation of the run summary exposed to Python.
-#[pyclass(module = "rustest._rust")]
+#[pyclass(module = "rustest.rust")]
 pub struct PyRunReport {
     #[pyo3(get)]
     pub total: usize,
@@ -180,7 +180,7 @@ impl PyRunReport {
 }
 
 /// Individual test result exposed to Python callers.
-#[pyclass(module = "rustest._rust")]
+#[pyclass(module = "rustest.rust")]
 #[derive(Clone)]
 pub struct PyTestResult {
     #[pyo3(get)]

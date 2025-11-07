@@ -1,11 +1,11 @@
-"""Type stubs for the Rust extension module."""
+"""Type stubs for the rustest Rust extension module."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from typing import Sequence
 
 class PyTestResult:
-    """Test result from Rust layer."""
+    """Individual test result from the Rust extension."""
 
     name: str
     path: str
@@ -16,20 +16,20 @@ class PyTestResult:
     stderr: str | None
 
 class PyRunReport:
-    """Run report from Rust layer."""
+    """Test run report from the Rust extension."""
 
     total: int
     passed: int
     failed: int
     skipped: int
     duration: float
-    results: Sequence[PyTestResult]
+    results: list[PyTestResult]
 
 def run(
-    paths: list[str],
+    paths: Sequence[str],
     pattern: str | None,
     workers: int | None,
     capture_output: bool,
 ) -> PyRunReport:
-    """Run tests and return a report."""
+    """Execute tests and return a report."""
     ...

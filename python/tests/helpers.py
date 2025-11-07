@@ -80,7 +80,7 @@ def _purge_rustest_modules() -> None:
 
 def ensure_rust_stub() -> ModuleType:
     ensure_develop_installed()
-    module = importlib.import_module("rustest._rust")
+    module = importlib.import_module("rustest.rust")
     return module
 
 

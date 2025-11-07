@@ -9,7 +9,7 @@ import pytest
 
 from .helpers import stub_rust_module
 from rustest import RunReport, TestResult
-from rustest import _cli
+from rustest import cli
 
 
 def strip_ansi(text: str) -> str:
@@ -20,7 +20,7 @@ def strip_ansi(text: str) -> str:
 
 class TestCli:
     def test_build_parser_defaults(self) -> None:
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args([])
         assert tuple(args.paths) == (".",)
         assert args.capture_output is True
@@ -46,7 +46,7 @@ class TestCli:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report)
+            cli._print_report(report)
 
         output = buffer.getvalue()
         assert "FAILURES" in output  # Updated: new format shows "FAILURES" section
@@ -72,10 +72,10 @@ class TestCli:
             results=(result,),
         )
 
-        with patch("rustest._cli.run", return_value=report) as mock_run:
+        with patch("rustest.cli.run", return_value=report) as mock_run:
             buffer = io.StringIO()
             with redirect_stdout(buffer):
-                exit_code = _cli.main(["tests"])
+                exit_code = cli.main(["tests"])
 
         mock_run.assert_called_once_with(
             paths=("tests",),
@@ -91,7 +91,7 @@ class TestCli:
 
         with stub_rust_module(run=raising_run):
             with pytest.raises(RuntimeError):
-                _cli.main(["tests"])
+                cli.main(["tests"])
 
 
 class TestOutputFormatting:
@@ -119,7 +119,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=False, ascii_mode=False)
+            cli._print_report(report, verbose=False, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should contain green checkmark (with ANSI codes)
@@ -149,7 +149,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=False, ascii_mode=False)
+            cli._print_report(report, verbose=False, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should contain red X mark
@@ -179,7 +179,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=False, ascii_mode=False)
+            cli._print_report(report, verbose=False, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should contain yellow skip symbol
@@ -204,7 +204,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=False, ascii_mode=True)
+            cli._print_report(report, verbose=False, ascii_mode=True)
 
         output = strip_ansi(buffer.getvalue())
         # Should contain pytest-style characters
@@ -237,7 +237,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=False, ascii_mode=False)
+            cli._print_report(report, verbose=False, ascii_mode=False)
 
         output = buffer.getvalue()
         # Strip ANSI codes to check the actual spacing
@@ -264,7 +264,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=True, ascii_mode=False)
+            cli._print_report(report, verbose=True, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should show file path
@@ -295,7 +295,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=True, ascii_mode=True)
+            cli._print_report(report, verbose=True, ascii_mode=True)
 
         output = strip_ansi(buffer.getvalue())
         # Should use full words in verbose mode
@@ -317,7 +317,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=True, ascii_mode=False)
+            cli._print_report(report, verbose=True, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should show timing in milliseconds (123ms from 0.123s)
@@ -336,12 +336,12 @@ class TestOutputFormatting:
         )
 
         # Reset colors to default state
-        _cli.Colors.green = "\033[92m"
-        _cli.Colors.reset = "\033[0m"
+        cli.Colors.green = "\033[92m"
+        cli.Colors.reset = "\033[0m"
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=False, ascii_mode=False)
+            cli._print_report(report, verbose=False, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should contain ANSI escape codes
@@ -365,7 +365,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=False, ascii_mode=False)
+            cli._print_report(report, verbose=False, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should have failures section
@@ -397,7 +397,7 @@ class TestOutputFormatting:
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            _cli._print_report(report, verbose=True, ascii_mode=False)
+            cli._print_report(report, verbose=True, ascii_mode=False)
 
         output = buffer.getvalue()
         # Should show error message inline (indented)
@@ -410,37 +410,37 @@ class TestCliArguments:
 
     def test_verbose_flag_short(self) -> None:
         """Test -v flag is parsed correctly."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["-v"])
         assert args.verbose is True
 
     def test_verbose_flag_long(self) -> None:
         """Test --verbose flag is parsed correctly."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["--verbose"])
         assert args.verbose is True
 
     def test_ascii_flag(self) -> None:
         """Test --ascii flag is parsed correctly."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["--ascii"])
         assert args.ascii is True
 
     def test_no_color_flag(self) -> None:
         """Test --no-color flag is parsed correctly."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["--no-color"])
         assert args.color is False
 
     def test_color_enabled_by_default(self) -> None:
         """Test color is enabled by default."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args([])
         assert args.color is True
 
     def test_combined_flags(self) -> None:
         """Test multiple flags can be combined."""
-        parser = _cli.build_parser()
+        parser = cli.build_parser()
         args = parser.parse_args(["-v", "--ascii", "--no-color"])
         assert args.verbose is True
         assert args.ascii is True
@@ -459,19 +459,19 @@ class TestCliArguments:
         )
 
         # Save original color values
-        original_green = _cli.Colors.green
-        original_reset = _cli.Colors.reset
+        original_green = cli.Colors.green
+        original_reset = cli.Colors.reset
 
         try:
-            with patch("rustest._cli.run", return_value=report):
+            with patch("rustest.cli.run", return_value=report):
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    _cli.main(["--no-color", "tests"])
+                    cli.main(["--no-color", "tests"])
 
                 output = buffer.getvalue()
                 # Should not contain ANSI escape codes
                 assert "\033[" not in output
         finally:
             # Restore original colors
-            _cli.Colors.green = original_green
-            _cli.Colors.reset = original_reset
+            cli.Colors.green = original_green
+            cli.Colors.reset = original_reset

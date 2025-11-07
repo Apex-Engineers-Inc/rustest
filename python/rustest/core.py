@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from . import _rust
-from ._reporting import RunReport
+from . import rust
+from .reporting import RunReport
 
 
 def run(
@@ -17,5 +17,5 @@ def run(
 ) -> RunReport:
     """Execute tests and return a rich report."""
 
-    raw_report = _rust.run(list(paths), pattern, workers, capture_output)
+    raw_report = rust.run(list(paths), pattern, workers, capture_output)
     return RunReport.from_py(raw_report)

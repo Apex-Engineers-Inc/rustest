@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from . import _rust
+from . import rust
 
 
 @dataclass(slots=True)
@@ -23,7 +23,7 @@ class TestResult:
     stderr: str | None
 
     @classmethod
-    def from_py(cls, result: _rust.PyTestResult) -> "TestResult":
+    def from_py(cls, result: rust.PyTestResult) -> "TestResult":
         return cls(
             name=result.name,
             path=result.path,
@@ -47,7 +47,7 @@ class RunReport:
     results: tuple[TestResult, ...]
 
     @classmethod
-    def from_py(cls, report: _rust.PyRunReport) -> "RunReport":
+    def from_py(cls, report: rust.PyRunReport) -> "RunReport":
         return cls(
             total=report.total,
             passed=report.passed,
