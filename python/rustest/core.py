@@ -11,9 +11,9 @@ from .reporting import RunReport
 def run(
     *,
     paths: Sequence[str],
-    pattern: str | None,
-    workers: int | None,
-    capture_output: bool,
+    pattern: str | None = None,
+    workers: int | None = None,
+    capture_output: bool = True,
     enable_codeblocks: bool = True,
 ) -> RunReport:
     """Execute tests and return a rich report."""
