@@ -166,17 +166,23 @@ See [Fixtures](fixtures.md) for more information.
 When you run rustest, you'll see clean, informative output:
 
 ```
-  PASSED   0.001s test_basic_assertion
-  PASSED   0.002s test_string_operations
-  PASSED   0.001s test_list_operations
- SKIPPED   0.000s test_future_feature
-  FAILED   0.005s test_broken_feature
-----------------------------------------
+✓✓✓⏭✗
+
+======================================================================
+FAILURES
+======================================================================
+
+test_broken_feature (/path/to/test_example.py)
+----------------------------------------------------------------------
 AssertionError: Expected 5, got 4
-  at test_example.py:42
 
 5 tests: 3 passed, 1 failed, 1 skipped in 0.009s
 ```
+
+**Output symbols:**
+- `✓` = Passed test
+- `✗` = Failed test
+- `⏭` = Skipped test
 
 ### Viewing Print Statements
 

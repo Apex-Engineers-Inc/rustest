@@ -2,6 +2,36 @@
 
 The rustest command-line interface provides a simple and powerful way to run your tests.
 
+## Quick Reference
+
+```bash
+rustest --help
+```
+
+```
+usage: rustest [-h] [-k PATTERN] [-n WORKERS] [--no-capture] [-v] [--ascii]
+               [--no-color] [--no-codeblocks]
+               [paths ...]
+
+Run Python tests at blazing speed with a Rust powered core.
+
+positional arguments:
+  paths                 Files or directories to collect tests from.
+
+options:
+  -h, --help            show this help message and exit
+  -k PATTERN, --pattern PATTERN
+                        Substring to filter tests by (case insensitive).
+  -n WORKERS, --workers WORKERS
+                        Number of worker slots to use (experimental).
+  --no-capture          Do not capture stdout/stderr during test execution.
+  -v, --verbose         Show verbose output with hierarchical test structure.
+  --ascii               Use ASCII characters instead of Unicode symbols for
+                        output.
+  --no-color            Disable colored output.
+  --no-codeblocks       Disable code block tests from markdown files.
+```
+
 ## Basic Commands
 
 ### Running All Tests
@@ -88,9 +118,6 @@ rustest
 
 # Disable capture to see print statements
 rustest --no-capture
-
-# Same as --no-capture
-rustest -s
 ```
 
 Example with output:
@@ -141,11 +168,14 @@ rustest [OPTIONS] [PATHS...]
 | Option | Description |
 |--------|-------------|
 | `[PATHS...]` | Paths to test files or directories (default: current directory) |
-| `-k PATTERN` | Filter tests by name pattern |
-| `--no-capture` / `-s` | Don't capture stdout/stderr during tests |
+| `-k PATTERN, --pattern PATTERN` | Substring to filter tests by (case insensitive) |
+| `-n WORKERS, --workers WORKERS` | Number of worker slots to use (experimental) |
+| `--no-capture` | Don't capture stdout/stderr during test execution |
+| `-v, --verbose` | Show verbose output with hierarchical test structure |
+| `--ascii` | Use ASCII characters instead of Unicode symbols |
+| `--no-color` | Disable colored output |
 | `--no-codeblocks` | Disable markdown code block testing |
-| `--version` | Show version and exit |
-| `--help` | Show help message |
+| `-h, --help` | Show help message and exit |
 
 ## Exit Codes
 
@@ -342,9 +372,6 @@ python -m rustest
 ```bash
 # Use --no-capture to see print statements
 rustest --no-capture
-
-# Or -s shorthand
-rustest -s
 ```
 
 ## Best Practices

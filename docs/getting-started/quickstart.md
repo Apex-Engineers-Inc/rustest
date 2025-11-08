@@ -27,11 +27,12 @@ rustest
 You should see output like this:
 
 ```
-  PASSED   0.001s test_simple_addition
-  PASSED   0.002s test_string_operations
+✓✓
 
-2 tests: 2 passed in 0.003s
+2 tests: 2 passed, 0 failed, 0 skipped in 0.000s
 ```
+
+Each `✓` represents a passing test. Failed tests show as `✗` with detailed error information.
 
 ## 3. Using Fixtures
 
@@ -67,12 +68,12 @@ def test_double(input: int, expected: int) -> None:
     assert input * 2 == expected
 ```
 
-This will run three separate test cases:
+This will run three separate test cases, showing three checkmarks in the output:
 
 ```
-  PASSED   0.001s test_double[case_0]
-  PASSED   0.001s test_double[case_1]
-  PASSED   0.001s test_double[case_2]
+✓✓✓
+
+3 tests: 3 passed, 0 failed, 0 skipped in 0.000s
 ```
 
 ## 5. Assertion Helpers
