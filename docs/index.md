@@ -6,15 +6,15 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 ## Why rustest?
 
-- :rocket: **About 2x faster** than pytest on the rustest integration test suite
-- :white_check_mark: Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
-- :mag: Automatic test discovery (`test_*.py` and `*_test.py` files)
-- :memo: **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
-- :dart: Simple, clean API—if you know pytest, you already know rustest
-- :abacus: Built-in `approx()` helper for tolerant numeric comparisons across scalars, collections, and complex numbers
-- :mouse_trap: `raises()` context manager for precise exception assertions with optional message matching
-- :package: Easy installation with pip or uv
-- :zap: Low-overhead execution keeps small suites feeling instant
+- :material-rocket-launch: **About 2x faster** than pytest on the rustest integration test suite
+- :material-check-circle: Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
+- :material-magnify: Automatic test discovery (`test_*.py` and `*_test.py` files)
+- :material-file-document: **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
+- :material-bullseye-arrow: Simple, clean API—if you know pytest, you already know rustest
+- :material-calculator: Built-in `approx()` helper for tolerant numeric comparisons across scalars, collections, and complex numbers
+- :material-bug-check: `raises()` context manager for precise exception assertions with optional message matching
+- :material-package-variant: Easy installation with pip or uv
+- :material-lightning-bolt: Low-overhead execution keeps small suites feeling instant
 
 ## Quick Example
 

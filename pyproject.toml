@@ -47,6 +47,7 @@ docs = [
 [project.urls]
 Homepage = "https://github.com/Apex-Engineers-Inc/rustest"
 Repository = "https://github.com/Apex-Engineers-Inc/rustest"
+Documentation = "https://apex-engineers-inc.github.io/rustest"
 
 [tool.maturin]
 module-name = "rustest.rust"
