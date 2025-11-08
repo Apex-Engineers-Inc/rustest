@@ -1,0 +1,102 @@
+site_name: rustest
+site_description: Rust-powered pytest-compatible test runner - ~2x faster test execution
+site_url: https://apex-engineers-inc.github.io/rustest
+repo_url: https://github.com/Apex-Engineers-Inc/rustest
+repo_name: Apex-Engineers-Inc/rustest
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+
+plugins:
+  - search
+  - autorefs
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [python]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            group_by_category: true
+            show_signature_annotations: true
+            separate_signature: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - User Guide:
+    - Writing Tests: guide/writing-tests.md
+    - Fixtures: guide/fixtures.md
+    - Parametrization: guide/parametrization.md
+    - Marks & Skipping: guide/marks.md
+    - Test Classes: guide/test-classes.md
+    - Assertion Helpers: guide/assertions.md
+    - Markdown Testing: guide/markdown-testing.md
+    - CLI Usage: guide/cli.md
+    - Python API: guide/python-api.md
+  - API Reference:
+    - Overview: api/overview.md
+    - Decorators: api/decorators.md
+    - Test Execution: api/core.md
+    - Reporting: api/reporting.md
+    - Assertion Utilities: api/approx.md
+  - Advanced:
+    - Performance: advanced/performance.md
+    - Comparison with pytest: advanced/comparison.md
+    - Development: advanced/development.md
+  - Changelog: changelog.md
