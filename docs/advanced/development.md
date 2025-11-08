@@ -339,6 +339,34 @@ report = run(paths=["tests"])
     - The Rust code is well-commented and designed to be readable
     - Ask questions in issues or pull requests—we're here to help!
 
+## Documentation
+
+### Updating CLI Documentation
+
+If you change CLI arguments, update the documentation:
+
+```bash
+# Automatically update CLI help in docs
+python scripts/update_cli_docs.py
+```
+
+This script captures the output of `rustest --help` and updates `docs/guide/cli.md`.
+
+### Building Documentation Locally
+
+```bash
+# Install docs dependencies
+uv pip install -e ".[docs]"
+
+# Serve docs locally
+mkdocs serve
+
+# Build docs
+mkdocs build
+```
+
+Visit http://127.0.0.1:8000 to preview the documentation.
+
 ## Quick Reference
 
 ```bash
@@ -350,7 +378,10 @@ uv run pre-commit install
 # Daily development
 poe dev          # Rebuild Rust after changes
 poe pytests      # Run Python tests
-cargo test       # Run Rust tests
+cargo test       # Rust tests
+
+# Update docs after CLI changes
+python scripts/update_cli_docs.py
 
 # Before committing
 poe lint         # Check Python style

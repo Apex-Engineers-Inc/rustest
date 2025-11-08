@@ -166,7 +166,7 @@ See [Fixtures](fixtures.md) for more information.
 When you run rustest, you'll see clean, informative output:
 
 ```
-✓✓✓⏭✗
+✓✓✓⊘✗
 
 ======================================================================
 FAILURES
@@ -182,7 +182,33 @@ AssertionError: Expected 5, got 4
 **Output symbols:**
 - `✓` = Passed test
 - `✗` = Failed test
-- `⏭` = Skipped test
+- `⊘` = Skipped test
+
+### Verbose Output
+
+For more detailed output showing test names and timing, use the `-v` or `--verbose` flag:
+
+```bash
+rustest -v
+```
+
+```
+/home/user/project/test_example.py
+  ✓ test_basic_assertion 0ms
+  ✓ test_string_operations 1ms
+  ✓ test_list_operations 0ms
+  ⊘ test_future_feature 0ms
+  ✗ test_broken_feature 2ms
+    AssertionError: Expected 5, got 4
+
+5 tests: 3 passed, 1 failed, 1 skipped in 0.003s
+```
+
+Verbose mode shows:
+- File paths being tested
+- Individual test names with indentation
+- Timing for each test in milliseconds
+- Inline error output for failed tests
 
 ### Viewing Print Statements
 

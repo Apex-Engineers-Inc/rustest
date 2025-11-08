@@ -34,6 +34,16 @@ You should see output like this:
 
 Each `✓` represents a passing test. Failed tests show as `✗` with detailed error information.
 
+!!! tip "Verbose Output"
+    Use `-v` or `--verbose` to see individual test names and timing:
+    ```
+    /path/to/test_math.py
+      ✓ test_simple_addition 0ms
+      ✓ test_string_operations 1ms
+
+    2 tests: 2 passed, 0 failed, 0 skipped in 0.001s
+    ```
+
 ## 3. Using Fixtures
 
 Fixtures provide reusable test data and setup. Add this to your test file:

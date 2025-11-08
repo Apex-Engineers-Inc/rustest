@@ -30,6 +30,7 @@ options:
                         output.
   --no-color            Disable colored output.
   --no-codeblocks       Disable code block tests from markdown files.
+
 ```
 
 ## Basic Commands
@@ -107,6 +108,44 @@ rustest -k "user and critical"
 ```
 
 ## Output Control
+
+### Verbose Mode
+
+Show detailed test information with names and timing:
+
+```bash
+# Default: compact output (✓✗⊘ symbols only)
+rustest
+
+# Verbose: show test names and timing
+rustest -v
+rustest --verbose
+```
+
+**Compact output:**
+```
+✓✓✓⊘✗
+
+5 tests: 3 passed, 1 failed, 1 skipped in 0.003s
+```
+
+**Verbose output:**
+```
+/home/user/project/tests/test_math.py
+  ✓ test_addition 0ms
+  ✓ test_subtraction 1ms
+  ✓ test_multiplication 0ms
+  ⊘ test_future_feature 0ms
+  ✗ test_division_error 2ms
+    AssertionError: Expected 5, got 4
+
+5 tests: 3 passed, 1 failed, 1 skipped in 0.003s
+```
+
+!!! tip "Output Symbols"
+    - `✓` = Passed test
+    - `✗` = Failed test
+    - `⊘` = Skipped test
 
 ### Capture Mode
 
