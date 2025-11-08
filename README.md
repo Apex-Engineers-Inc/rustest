@@ -366,7 +366,7 @@ Scoped fixtures are especially useful for expensive setup operations like databa
 
 **Using conftest.py for Shared Fixtures:**
 
-You can define fixtures in a `conftest.py` file to share them across multiple test files:
+You can define fixtures in a `conftest.py` file to share them across multiple test files. Rustest automatically discovers and loads conftest.py files, making their fixtures available to all tests in the same directory and subdirectories.
 
 ```python
 # conftest.py
@@ -386,6 +386,48 @@ def api_client():
 ```
 
 All test files in the same directory (and subdirectories) can use these fixtures automatically.
+
+**Nested conftest.py Files:**
+
+Rustest supports nested conftest.py files in subdirectories. Fixtures are merged from parent to child directories, with child fixtures able to override parent fixtures or depend on them:
+
+```python
+# tests/conftest.py (root level)
+from rustest import fixture
+
+@fixture
+def base_config():
+    """Base configuration available to all tests."""
+    return {"environment": "test", "debug": True}
+
+@fixture
+def database_url():
+    """Database URL - can be overridden by child conftest."""
+    return "sqlite:///:memory:"
+
+# tests/integration/conftest.py (child level)
+from rustest import fixture
+
+@fixture
+def database_url():
+    """Override parent fixture for integration tests."""
+    return "postgresql://localhost/test_db"
+
+@fixture
+def api_client(base_config):
+    """Child fixture that depends on parent fixture."""
+    return create_client(base_config)
+```
+
+**How conftest.py Discovery Works:**
+
+1. Rustest scans all directories in the test path for conftest.py files
+2. Fixtures are loaded from the farthest ancestor to the nearest parent
+3. Child conftest.py fixtures override parent fixtures with the same name
+4. Test file fixtures override any conftest.py fixtures
+5. All fixture scopes (function, class, module, session) are fully supported
+
+This hierarchical fixture system makes it easy to organize test fixtures with sensible defaults at the root level and specialized fixtures in subdirectories.
 
 #### Parametrized Tests
 
