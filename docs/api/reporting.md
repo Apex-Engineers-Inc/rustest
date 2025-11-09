@@ -43,6 +43,7 @@ Tuple of individual test results. Each result is a [`TestResult`](#testresult) o
 #### iter_status
 
 **Signature:**
+<!--pytest.mark.skip-->
 ```python
 def iter_status(self, status: str) -> Iterable[TestResult]:
     ...

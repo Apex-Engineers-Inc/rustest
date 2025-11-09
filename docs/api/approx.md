@@ -71,8 +71,14 @@ abs(actual - expected) <= abs_tolerance
 The comparison passes if **either** the relative **or** absolute tolerance is satisfied:
 
 ```python
-# Passes if within relative OR absolute tolerance
-assert actual == approx(expected, rel=1e-6, abs=1e-12)
+from rustest import approx
+
+def test_tolerance_logic():
+    actual = 1.0001
+    expected = 1.0
+
+    # Passes if within relative OR absolute tolerance
+    assert actual == approx(expected, rel=1e-6, abs=1e-12)
 ```
 
 ## Examples
@@ -239,24 +245,33 @@ def test_bad():
 ### Don't Use approx() for Exact Values
 
 ```python
-# Good - exact integers
-assert 2 + 2 == 4
+from rustest import approx
 
-# Unnecessary - integers are exact
-assert 2 + 2 == approx(4)
+def test_when_to_use_approx():
+    # Good - exact integers
+    assert 2 + 2 == 4
 
-# Good - floating point needs approx
-assert 0.1 + 0.2 == approx(0.3)
+    # Unnecessary - integers are exact
+    # assert 2 + 2 == approx(4)  # Works but not needed
+
+    # Good - floating point needs approx
+    assert 0.1 + 0.2 == approx(0.3)
 ```
 
 ### Be Explicit About Tolerances
 
 ```python
-# Good - explicit tolerance for clarity
-assert value == approx(expected, rel=1e-6)
+from rustest import approx
 
-# Less clear - relies on default
-assert value == approx(expected)
+def test_explicit_tolerance():
+    value = 100.0001
+    expected = 100.0
+
+    # Good - explicit tolerance for clarity
+    assert value == approx(expected, rel=1e-6)
+
+    # Also works - relies on default
+    assert value == approx(expected)
 ```
 
 ## See Also
