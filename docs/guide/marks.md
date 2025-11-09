@@ -80,6 +80,7 @@ def test_modern_python() -> None:
 Mark tests that are expected to fail:
 
 ```python
+import sys
 from rustest import mark
 
 @mark.xfail(reason="Known bug in backend #123")
@@ -139,6 +140,17 @@ async def test_with_module_loop() -> None:
 **Usage with classes:**
 
 ```python
+import asyncio
+from rustest import mark
+
+async def async_operation_one():
+    await asyncio.sleep(0.001)
+    return "result1"
+
+async def async_operation_two():
+    await asyncio.sleep(0.001)
+    return "result2"
+
 @mark.asyncio(loop_scope="class")
 class TestAsyncOperations:
     """All async methods in this class share an event loop."""
@@ -217,6 +229,8 @@ def test_long_running_process() -> None:
 Apply multiple marks to a single test:
 
 ```python
+from rustest import mark
+
 @mark.integration
 @mark.slow
 @mark.critical
@@ -230,6 +244,8 @@ def test_full_workflow() -> None:
 Marks can accept arguments and keyword arguments:
 
 ```python
+from rustest import mark
+
 @mark.timeout(seconds=30)
 def test_with_timeout() -> None:
     # Should complete within 30 seconds
@@ -249,6 +265,8 @@ def test_with_dependencies() -> None:
 ### Speed Categories
 
 ```python
+from rustest import mark
+
 @mark.fast
 def test_quick_operation() -> None:
     assert 1 + 1 == 2
@@ -262,6 +280,8 @@ def test_expensive_computation() -> None:
 ### Test Levels
 
 ```python
+from rustest import mark
+
 @mark.unit
 def test_function_unit() -> None:
     """Tests a single function in isolation."""
@@ -281,6 +301,8 @@ def test_end_to_end_workflow() -> None:
 ### Environment-Specific Tests
 
 ```python
+from rustest import mark
+
 @mark.requires_postgres
 def test_postgres_specific_feature() -> None:
     pass
@@ -297,6 +319,8 @@ def test_production_behavior() -> None:
 ### Priority Levels
 
 ```python
+from rustest import mark
+
 @mark.smoke
 def test_basic_functionality() -> None:
     """Smoke tests run first in CI."""
@@ -318,6 +342,8 @@ def test_bug_fix() -> None:
 Apply marks to all tests in a class:
 
 ```python
+from rustest import mark
+
 @mark.integration
 class TestDatabaseOperations:
     """All tests in this class are marked as integration."""
@@ -335,6 +361,8 @@ class TestDatabaseOperations:
 You can also add marks to individual methods:
 
 ```python
+from rustest import mark
+
 @mark.integration
 class TestAPI:
     def test_get_user(self) -> None:
@@ -370,6 +398,7 @@ Use the `-m` flag to run only tests matching a mark expression:
 
 ### Basic Mark Filtering
 
+<!--pytest.mark.skip-->
 ```bash
 # Run only slow tests
 rustest -m "slow"
@@ -383,6 +412,7 @@ rustest -m "unit"
 
 ### Negation
 
+<!--pytest.mark.skip-->
 ```bash
 # Run all tests except slow ones
 rustest -m "not slow"
@@ -395,6 +425,7 @@ rustest -m "not integration"
 
 Combine multiple mark filters with `and` and `or`:
 
+<!--pytest.mark.skip-->
 ```bash
 # Run tests marked as both slow AND integration
 rustest -m "slow and integration"
@@ -410,6 +441,7 @@ rustest -m "slow and not integration"
 
 Use parentheses for complex boolean logic:
 
+<!--pytest.mark.skip-->
 ```bash
 # Run tests that are either (slow or fast) but not integration
 rustest -m "(slow or fast) and not integration"
@@ -422,6 +454,7 @@ rustest -m "(critical or smoke) and not slow"
 
 You can combine mark filtering with test name pattern matching:
 
+<!--pytest.mark.skip-->
 ```bash
 # Run slow database tests
 rustest -m "slow" -k "database"
@@ -432,6 +465,7 @@ rustest -m "integration" -k "api"
 
 ### Common Filtering Patterns
 
+<!--pytest.mark.skip-->
 ```bash
 # Fast feedback loop - run only fast unit tests
 rustest -m "unit and not slow"
@@ -513,6 +547,8 @@ Less ideal - inconsistent naming:
 If you create custom marks with special meaning, document them:
 
 ```python
+from rustest import mark
+
 @mark.flaky(max_retries=3)
 def test_external_api():
     """Test may fail intermittently due to external API.
@@ -526,6 +562,8 @@ def test_external_api():
 ### Don't Overuse Marks
 
 ```python
+from rustest import mark
+
 # Good - meaningful categorization
 @mark.integration
 @mark.slow

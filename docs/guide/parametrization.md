@@ -33,6 +33,8 @@ This creates three separate test cases:
 You can specify parameter names as a comma-separated string:
 
 ```python
+from rustest import parametrize
+
 @parametrize("x,y,expected", [
     (1, 1, 2),
     (2, 3, 5),
@@ -47,6 +49,8 @@ def test_addition(x: int, y: int, expected: int) -> None:
 Or as a list of strings:
 
 ```python
+from rustest import parametrize
+
 @parametrize(["x", "y", "expected"], [
     (1, 1, 2),
     (2, 3, 5),
@@ -61,6 +65,8 @@ def test_addition(x: int, y: int, expected: int) -> None:
 For a single parameter, pass values directly:
 
 ```python
+from rustest import parametrize
+
 @parametrize("value", [1, 2, 3, 4, 5])
 def test_is_positive(value: int) -> None:
     assert value > 0
@@ -69,6 +75,8 @@ def test_is_positive(value: int) -> None:
 Or as tuples if you prefer consistency:
 
 ```python
+from rustest import parametrize
+
 @parametrize("value", [(1,), (2,), (3,)])
 def test_is_positive(value: int) -> None:
     assert value > 0
@@ -79,6 +87,8 @@ def test_is_positive(value: int) -> None:
 Provide custom IDs to make test output more readable:
 
 ```python
+from rustest import parametrize
+
 @parametrize("value,expected", [
     (2, 4),
     (3, 9),
@@ -101,6 +111,8 @@ Output:
 Use descriptive IDs for complex test cases:
 
 ```python
+from rustest import parametrize
+
 @parametrize("operation,a,b,expected", [
     ("add", 2, 3, 5),
     ("subtract", 5, 3, 2),
@@ -145,6 +157,8 @@ def test_multiply(multiplier: int, value: int, expected: int) -> None:
 Pass dictionaries as parameter values:
 
 ```python
+from rustest import parametrize
+
 @parametrize("user", [
     {"name": "Alice", "age": 30},
     {"name": "Bob", "age": 25},
@@ -159,6 +173,7 @@ def test_user_valid(user: dict) -> None:
 
 ```python
 from dataclasses import dataclass
+from rustest import parametrize
 
 @dataclass
 class User:
@@ -176,6 +191,8 @@ def test_user_email(user: User) -> None:
 ### Using Lists
 
 ```python
+from rustest import parametrize
+
 @parametrize("numbers", [
     [1, 2, 3],
     [10, 20, 30],
@@ -190,6 +207,8 @@ def test_sum_positive(numbers: list) -> None:
 You can stack `@parametrize` decorators to test all combinations:
 
 ```python
+from rustest import parametrize
+
 @parametrize("x", [1, 2])
 @parametrize("y", [3, 4])
 def test_combinations(x: int, y: int) -> None:
@@ -207,6 +226,8 @@ This creates 4 test cases:
 Apply parametrization to all methods in a test class:
 
 ```python
+from rustest import parametrize
+
 @parametrize("value", [1, 2, 3])
 class TestNumber:
     def test_positive(self, value: int) -> None:
@@ -223,6 +244,8 @@ This runs both tests for each value (6 total tests).
 ### Testing Edge Cases
 
 ```python
+from rustest import parametrize
+
 @parametrize("text,expected", [
     ("", 0),                    # Empty string
     ("a", 1),                   # Single character
@@ -237,6 +260,8 @@ def test_string_length(text: str, expected: int) -> None:
 ### Testing Multiple Data Types
 
 ```python
+from rustest import parametrize
+
 @parametrize("value,expected_type", [
     (42, int),
     (3.14, float),
@@ -266,12 +291,25 @@ def test_invalid_conversion(invalid_input, error_type):
 ### Testing API Responses
 
 ```python
+from rustest import parametrize
+
+class MockResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+class MockAPIClient:
+    def get(self, endpoint):
+        if endpoint.startswith("/api/") and endpoint != "/api/invalid":
+            return MockResponse(200)
+        return MockResponse(404)
+
 @parametrize("endpoint,expected_status", [
     ("/api/users", 200),
     ("/api/posts", 200),
     ("/api/invalid", 404),
 ], ids=["users", "posts", "not_found"])
-def test_api_endpoints(api_client, endpoint: str, expected_status: int):
+def test_api_endpoints(endpoint: str, expected_status: int):
+    api_client = MockAPIClient()
     response = api_client.get(endpoint)
     assert response.status_code == expected_status
 ```
@@ -281,6 +319,11 @@ def test_api_endpoints(api_client, endpoint: str, expected_status: int):
 ### Use Meaningful IDs
 
 ```python
+from rustest import parametrize
+
+def is_adult(age: int) -> bool:
+    return age >= 18
+
 # Good - clear what's being tested
 @parametrize("age,valid", [
     (17, False),
@@ -303,6 +346,8 @@ def test_age_validation(age: int, valid: bool):
 ### Keep Test Cases Focused
 
 ```python
+from rustest import parametrize
+
 # Good - focused test cases
 @parametrize("value", [1, 2, 3, 100, 1000])
 def test_positive_numbers(value: int):
@@ -330,6 +375,20 @@ def test_number_sign(value: int, expected: str):
 ### Document Complex Parameters
 
 ```python
+from rustest import parametrize
+
+class ConfigResult:
+    def __init__(self, cache_status: str):
+        self.cache_status = cache_status
+
+def run_with_config(config: dict) -> ConfigResult:
+    if config.get("mock"):
+        return ConfigResult("mocked")
+    elif config.get("cache"):
+        return ConfigResult("cached")
+    else:
+        return ConfigResult("uncached")
+
 @parametrize("config,expected_result", [
     # Production config with caching enabled
     ({"env": "prod", "cache": True}, "cached"),
