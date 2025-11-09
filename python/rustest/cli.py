@@ -53,6 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Substring to filter tests by (case insensitive).",
     )
     _ = parser.add_argument(
+        "-m",
+        "--marks",
+        dest="mark_expr",
+        help='Run tests matching the given mark expression (e.g., "slow", "not slow", "slow and integration").',
+    )
+    _ = parser.add_argument(
         "-n",
         "--workers",
         type=int,
@@ -102,6 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = run(
         paths=tuple(args.paths),
         pattern=args.pattern,
+        mark_expr=args.mark_expr,
         workers=args.workers,
         capture_output=args.capture_output,
         enable_codeblocks=args.enable_codeblocks,

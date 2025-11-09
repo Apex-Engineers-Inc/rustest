@@ -9,6 +9,7 @@
 
 mod discovery;
 mod execution;
+mod mark_expr;
 mod model;
 mod python_support;
 
@@ -24,16 +25,17 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, workers = None, capture_output = true, enable_codeblocks = true))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true))]
 fn run(
     py: Python<'_>,
     paths: Vec<String>,
     pattern: Option<String>,
+    mark_expr: Option<String>,
     workers: Option<usize>,
     capture_output: bool,
     enable_codeblocks: bool,
 ) -> PyResult<PyRunReport> {
-    let config = RunConfiguration::new(pattern, workers, capture_output, enable_codeblocks);
+    let config = RunConfiguration::new(pattern, mark_expr, workers, capture_output, enable_codeblocks);
     let input_paths = PyPaths::from_vec(paths);
     let collected = discover_tests(py, &input_paths, &config)?;
     let report = run_collected_tests(py, &collected, &config)?;
@@ -80,7 +82,7 @@ mod tests {
     }
 
     fn run_discovery(py: Python<'_>, path: &Path) -> Vec<crate::model::TestModule> {
-        let config = RunConfiguration::new(None, None, true, true);
+        let config = RunConfiguration::new(None, None, None, true, true);
         let paths = PyPaths::from_vec(vec![path.to_string_lossy().into_owned()]);
         discover_tests(py, &paths, &config).expect("discovery should succeed")
     }
@@ -105,7 +107,7 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_fixtures.py");
 
-            let config = RunConfiguration::new(None, None, true, true);
+            let config = RunConfiguration::new(None, None, None, true, true);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             assert_eq!(modules.len(), 1);

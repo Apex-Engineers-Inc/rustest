@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use indexmap::IndexMap;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 
 /// Type alias to make signatures easier to read: parameter values are stored in
 /// an ordered map so that we can preserve the parameter order when constructing
@@ -41,6 +42,65 @@ impl FixtureScope {
             "session" => Ok(FixtureScope::Session),
             _ => Err(format!("Invalid fixture scope: {}", s)),
         }
+    }
+}
+
+/// Metadata describing a mark applied to a test function.
+pub struct Mark {
+    pub name: String,
+    pub args: Py<PyList>,
+    pub kwargs: Py<PyDict>,
+}
+
+impl Clone for Mark {
+    fn clone(&self) -> Self {
+        Python::with_gil(|py| self.clone_with_py(py))
+    }
+}
+
+impl Mark {
+    pub fn new(name: String, args: Py<PyList>, kwargs: Py<PyDict>) -> Self {
+        Self { name, args, kwargs }
+    }
+
+    /// Clone the mark with a Python context.
+    pub fn clone_with_py(&self, py: Python<'_>) -> Self {
+        Self {
+            name: self.name.clone(),
+            args: self.args.clone_ref(py),
+            kwargs: self.kwargs.clone_ref(py),
+        }
+    }
+
+    /// Check if this mark has the given name.
+    pub fn is_named(&self, name: &str) -> bool {
+        self.name == name
+    }
+
+    /// Get a string argument from the mark args by position.
+    pub fn get_string_arg(&self, py: Python<'_>, index: usize) -> Option<String> {
+        self.args
+            .bind(py)
+            .get_item(index)
+            .ok()
+            .and_then(|item| item.extract().ok())
+    }
+
+    /// Get a keyword argument from the mark kwargs.
+    pub fn get_kwarg(&self, py: Python<'_>, key: &str) -> Option<Py<PyAny>> {
+        self.kwargs
+            .bind(py)
+            .get_item(key)
+            .ok()
+            .flatten()
+            .map(|item| item.unbind())
+    }
+
+    /// Get a boolean from kwargs with a default value.
+    pub fn get_bool_kwarg(&self, py: Python<'_>, key: &str, default: bool) -> bool {
+        self.get_kwarg(py, key)
+            .and_then(|val| val.extract(py).ok())
+            .unwrap_or(default)
     }
 }
 
@@ -92,7 +152,7 @@ pub struct TestCase {
     pub parameters: Vec<String>,
     pub parameter_values: ParameterMap,
     pub skip_reason: Option<String>,
-    pub marks: Vec<String>,
+    pub marks: Vec<Mark>,
     /// The class name if this test is part of a test class (for class-scoped fixtures).
     pub class_name: Option<String>,
 }
@@ -101,6 +161,21 @@ impl TestCase {
     #[allow(dead_code)]
     pub fn unique_id(&self) -> String {
         format!("{}::{}", self.path.display(), self.display_name)
+    }
+
+    /// Find a mark by name.
+    pub fn find_mark(&self, name: &str) -> Option<&Mark> {
+        self.marks.iter().find(|m| m.is_named(name))
+    }
+
+    /// Check if this test has a mark with the given name.
+    pub fn has_mark(&self, name: &str) -> bool {
+        self.marks.iter().any(|m| m.is_named(name))
+    }
+
+    /// Get mark names as strings for reporting.
+    pub fn mark_names(&self) -> Vec<String> {
+        self.marks.iter().map(|m| m.name.clone()).collect()
     }
 }
 
@@ -126,6 +201,7 @@ impl TestModule {
 #[derive(Clone, Debug)]
 pub struct RunConfiguration {
     pub pattern: Option<String>,
+    pub mark_expr: Option<String>,
     #[allow(dead_code)]
     pub worker_count: usize,
     pub capture_output: bool,
@@ -135,6 +211,7 @@ pub struct RunConfiguration {
 impl RunConfiguration {
     pub fn new(
         pattern: Option<String>,
+        mark_expr: Option<String>,
         workers: Option<usize>,
         capture_output: bool,
         enable_codeblocks: bool,
@@ -142,6 +219,7 @@ impl RunConfiguration {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
             pattern,
+            mark_expr,
             worker_count,
             capture_output,
             enable_codeblocks,
