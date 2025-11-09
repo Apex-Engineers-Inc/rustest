@@ -41,6 +41,7 @@ With **10,000 parametrized invocations**:
 
 Rustest supports Python **3.10 through 3.14**.
 
+<!--pytest.mark.skip-->
 ```bash
 # Using pip
 pip install rustest
@@ -91,6 +92,7 @@ def test_division_by_zero() -> None:
 
 ### 2. Run Your Tests
 
+<!--pytest.mark.skip-->
 ```bash
 # Run all tests
 rustest
@@ -159,6 +161,7 @@ We welcome contributions! See the [Development Guide](https://apex-engineers-inc
 
 Quick reference:
 
+<!--pytest.mark.skip-->
 ```bash
 # Setup
 git clone https://github.com/Apex-Engineers-Inc/rustest.git

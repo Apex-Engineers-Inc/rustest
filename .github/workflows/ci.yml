@@ -46,6 +46,9 @@ jobs:
       - name: Test README code blocks with rustest
         run: .venv/bin/python -m rustest README.md
 
+      - name: Test README code blocks with pytest-codeblocks
+        run: .venv/bin/pytest README.md --codeblocks
+
   lint:
     name: Lint and Format
     runs-on: ubuntu-latest

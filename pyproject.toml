@@ -111,4 +111,5 @@ markers = [
 ]
 
 [tool.pytest_codeblocks]
-skip = true  # Skip code blocks in pytest - rustest handles them
+# Test Python code blocks in markdown files
+# Use <!--pytest-codeblocks:skip--> HTML comments to skip individual blocks
