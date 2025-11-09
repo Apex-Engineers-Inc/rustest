@@ -204,6 +204,8 @@ class TestUserProfile:
 ### By Test Type
 
 ```python
+from rustest import mark
+
 @mark.unit
 class TestUnitMath:
     def test_addition(self):
@@ -385,6 +387,11 @@ class TestStuff:
 Use class-scoped fixtures only when necessary:
 
 ```python
+from rustest import fixture
+
+def create_expensive_connection():
+    return {"status": "connected"}
+
 # Good - expensive setup worth sharing
 @fixture(scope="class")
 def database_connection():
@@ -394,6 +401,12 @@ def database_connection():
 @fixture(scope="class")  # Should be function scope
 def sample_number():
     return 42
+
+def test_with_db(database_connection):
+    assert database_connection["status"] == "connected"
+
+def test_with_number(sample_number):
+    assert sample_number == 42
 ```
 
 ### Combine with conftest.py
