@@ -678,6 +678,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest-codeblocks"
+version = "0.17.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a5/99/1ee3017a525dcb36566f0523938fbc20fb33ef8bf957205fafe6659f3a60/pytest_codeblocks-0.17.0.tar.gz", hash = "sha256:446e1babd182f54b4f113d567737a22f5405cade144c08a0085b2985247943d5", size = 11176, upload-time = "2023-09-17T19:17:31.05Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/2c/503f797c7ac1e35d81944f8fbcf3ea7a1965e435676570a833035d8d0937/pytest_codeblocks-0.17.0-py3-none-any.whl", hash = "sha256:b2aed8e66c3ce65435630783b391e7c7ae46f80b8220d3fa1bb7c689b36e78ad", size = 7716, upload-time = "2023-09-17T19:17:29.506Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -822,6 +834,7 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-codeblocks" },
     { name = "ruff" },
 ]
 docs = [
@@ -843,6 +856,7 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.2.0" },
+    { name = "pytest-codeblocks", marker = "extra == 'dev'", specifier = ">=0.17.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.9" },
     { name = "typing-extensions", specifier = ">=4.15" },
 ]

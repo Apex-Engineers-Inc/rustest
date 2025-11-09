@@ -36,6 +36,7 @@ dev = [
     "pre-commit>=3.5",
     "pytest>=7.0",
     "pytest-asyncio>=1.2.0",
+    "pytest-codeblocks>=0.17.0",
     "ruff>=0.1.9",
 ]
 docs = [
@@ -108,3 +109,6 @@ markers = [
     "smoke: marks tests for smoke testing",
     "critical: marks tests as critical",
 ]
+
+[tool.pytest_codeblocks]
+skip = true  # Skip code blocks in pytest - rustest handles them

@@ -42,8 +42,10 @@ Tuple of individual test results. Each result is a [`TestResult`](#testresult) o
 
 #### iter_status
 
+**Signature:**
 ```python
-def iter_status(self, status: str) -> Iterable[TestResult]
+def iter_status(self, status: str) -> Iterable[TestResult]:
+    ...
 ```
 
 Yield results with the requested status.

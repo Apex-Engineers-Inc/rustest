@@ -483,16 +483,29 @@ def test_calculation():
 
 ### Use Consistent Mark Names
 
+Good - consistent naming:
 ```python
-# Good - consistent naming
-@mark.unit
-@mark.integration
-@mark.e2e
+from rustest import mark
 
-# Less ideal - inconsistent
-@mark.unit_test
-@mark.Integration
-@mark.end2end
+@mark.unit
+def test_calculation():
+    assert 2 + 2 == 4
+
+@mark.integration
+def test_api_call():
+    assert True
+
+@mark.e2e
+def test_full_workflow():
+    assert True
+```
+
+Less ideal - inconsistent naming:
+```text
+❌ Avoid these inconsistent styles:
+@mark.unit_test     # Inconsistent - uses underscore
+@mark.Integration   # Inconsistent - uses Pascal case
+@mark.end2end       # Inconsistent - abbreviated differently
 ```
 
 ### Document Custom Marks

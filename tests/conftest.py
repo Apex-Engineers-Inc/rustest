@@ -9,7 +9,8 @@ import sys
 # Only activate when pytest is actually running (not just installed)
 # Detection: check if _pytest is already loaded (pytest loads it early during startup)
 # This is more reliable than PYTEST_CURRENT_TEST which is only set during test execution
-if "_pytest" in sys.modules:
+# Also skip if we're running inside rustest's code block execution
+if "_pytest" in sys.modules and "rustest" not in sys.modules:
     try:
         import pytest
     except ImportError:

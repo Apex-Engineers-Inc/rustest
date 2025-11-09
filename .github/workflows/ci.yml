@@ -43,6 +43,9 @@ jobs:
       - name: Run all integration tests with rustest
         run: .venv/bin/python -m rustest tests/ examples/tests/ -v
 
+      - name: Test README code blocks with rustest
+        run: .venv/bin/python -m rustest README.md
+
   lint:
     name: Lint and Format
     runs-on: ubuntu-latest
