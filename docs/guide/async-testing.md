@@ -71,6 +71,9 @@ The `loop_scope` parameter controls the lifetime of the event loop used for your
 Each test gets its own fresh event loop:
 
 ```python
+import asyncio
+from rustest import mark
+
 @mark.asyncio  # Same as @mark.asyncio(loop_scope="function")
 async def test_with_function_loop():
     """Each test gets a fresh event loop."""
