@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from rustest import mark, raises
+from rustest import mark
 
 
 def test_asyncio_mark_basic_usage():

@@ -35,6 +35,7 @@ dev = [
     "poethepoet>=0.22",
     "pre-commit>=3.5",
     "pytest>=7.0",
+    "pytest-asyncio>=1.2.0",
     "ruff>=0.1.9",
 ]
 docs = [

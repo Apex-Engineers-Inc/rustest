@@ -59,6 +59,7 @@ Create a file `test_math.py`:
 
 ```python
 from rustest import fixture, parametrize, mark, approx, raises
+import asyncio
 
 @fixture
 def numbers() -> list[int]:
@@ -78,8 +79,10 @@ def test_expensive_operation() -> None:
 
 @mark.asyncio
 async def test_async_operation() -> None:
-    result = await some_async_function()
-    assert result == expected
+    # Example async operation
+    await asyncio.sleep(0.001)
+    result = 42
+    assert result == 42
 
 def test_division_by_zero() -> None:
     with raises(ZeroDivisionError, match="division by zero"):

@@ -38,6 +38,36 @@ if "_pytest" in sys.modules:
             """Redirect to pytest.mark.skip."""
             return pytest.mark.skip(reason=reason or "skipped via rustest.skip")
 
+        # Import approx and raises from rustest.approx and rustest.decorators
+        # These need to come from the real rustest package
+        try:
+            # Try to import from installed rustest package
+            import importlib.util
+
+            # Find the real rustest module (not this shim)
+            spec = importlib.util.find_spec("rustest")
+            if spec and spec.origin and "tests/conftest.py" not in str(spec.origin):
+                # Load the real module temporarily to get approx and raises
+                real_rustest = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(real_rustest)
+                compat_module.approx = real_rustest.approx
+                compat_module.raises = real_rustest.raises
+        except Exception:
+            # Fallback: define minimal versions
+            from math import isclose
+
+            class _Approx:
+                def __init__(self, expected, *, rel_tol=1e-6, abs_tol=1e-12):
+                    self.expected = expected
+                    self.rel_tol = rel_tol
+                    self.abs_tol = abs_tol
+
+                def __eq__(self, actual):
+                    return isclose(actual, self.expected, rel_tol=self.rel_tol, abs_tol=self.abs_tol)
+
+            compat_module.approx = _Approx
+            compat_module.raises = pytest.raises
+
         compat_module.fixture = _fixture
         compat_module.parametrize = _parametrize
         compat_module.skip = _skip
