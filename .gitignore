@@ -15,3 +15,4 @@ __pycache__/
 .DS_Store
 /external
 /rustest/
+test-results.json
