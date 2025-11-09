@@ -85,6 +85,9 @@ async def test_with_function_loop():
 All tests in the module share the same event loop:
 
 ```python
+import asyncio
+from rustest import mark
+
 @mark.asyncio(loop_scope="module")
 async def test_one():
     """Shares loop with other module-scoped tests."""
@@ -101,6 +104,17 @@ async def test_two():
 All async methods in a class share the same event loop:
 
 ```python
+import asyncio
+from rustest import mark
+
+class MockAPI:
+    async def get_user(self, id: int):
+        return {"id": id, "name": "User"}
+    async def create_user(self, data: dict):
+        return data
+
+api = MockAPI()
+
 @mark.asyncio(loop_scope="class")
 class TestAsyncAPI:
     """All async methods share the same event loop."""
@@ -119,6 +133,12 @@ class TestAsyncAPI:
 All tests in the entire test session share one event loop:
 
 ```python
+import asyncio
+from rustest import mark
+
+async def setup_database():
+    pass
+
 @mark.asyncio(loop_scope="session")
 async def test_session_scoped():
     """Shares loop with all other session-scoped tests."""
@@ -132,6 +152,10 @@ async def test_session_scoped():
 ```python
 from rustest import mark
 import asyncio
+
+async def fetch_user(user_id: int):
+    await asyncio.sleep(0.001)
+    return {"id": user_id, "name": f"User{user_id}"}
 
 @mark.asyncio
 async def test_concurrent_operations():
@@ -148,6 +172,16 @@ async def test_concurrent_operations():
 ### Using create_task
 
 ```python
+import asyncio
+from rustest import mark
+
+async def slow_operation():
+    await asyncio.sleep(0.01)
+    return "slow"
+
+async def fast_operation():
+    return "fast"
+
 @mark.asyncio
 async def test_with_tasks():
     """Test using asyncio.create_task."""
@@ -164,6 +198,17 @@ async def test_with_tasks():
 ### Async Context Managers
 
 ```python
+import asyncio
+from rustest import mark
+
+class AsyncDatabase:
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *args):
+        pass
+    async def get_user(self, id: int):
+        return {"id": id}
+
 @mark.asyncio
 async def test_async_context_manager():
     """Test with async context manager."""
@@ -175,6 +220,13 @@ async def test_async_context_manager():
 ### Async Generators
 
 ```python
+import asyncio
+from rustest import mark
+
+async def async_data_stream():
+    for i in range(3):
+        yield i
+
 @mark.asyncio
 async def test_async_generator():
     """Test with async generator."""
@@ -216,7 +268,12 @@ async def test_timeout_error():
 Async tests work seamlessly with rustest fixtures:
 
 ```python
+import asyncio
 from rustest import fixture, mark
+
+async def call_api(api_key: str):
+    await asyncio.sleep(0.001)
+    return {"status": "success", "key": api_key}
 
 @fixture
 def api_key() -> str:
@@ -233,7 +290,13 @@ async def test_with_fixture(api_key: str):
 ### With Parametrization
 
 ```python
+import asyncio
 from rustest import parametrize, mark
+
+async def fetch_user(user_id: int):
+    await asyncio.sleep(0.001)
+    names = {1: "Alice", 2: "Bob", 3: "Charlie"}
+    return {"id": user_id, "name": names.get(user_id, "Unknown")}
 
 @mark.asyncio
 @parametrize("user_id,expected_name", [
@@ -250,7 +313,12 @@ async def test_parametrized_async(user_id: int, expected_name: str):
 ### With Other Marks
 
 ```python
+import asyncio
 from rustest import mark
+
+async def run_integration_test():
+    await asyncio.sleep(0.001)
+    return {"success": True}
 
 @mark.asyncio
 @mark.slow
@@ -264,13 +332,20 @@ async def test_full_workflow():
 ### With Exception Assertions
 
 ```python
+import asyncio
 from rustest import mark, raises
+
+async def process_data(data):
+    await asyncio.sleep(0.001)
+    if not data:
+        raise ValueError("invalid input")
+    return data
 
 @mark.asyncio
 async def test_async_exception():
     """Test that async function raises expected exception."""
     with raises(ValueError, match="invalid input"):
-        await process_data(invalid_input)
+        await process_data(None)
 ```
 
 ## Test Classes
@@ -278,13 +353,37 @@ async def test_async_exception():
 You can apply `@mark.asyncio` to entire test classes:
 
 ```python
+import asyncio
+from rustest import mark
+
+class Database:
+    def __init__(self):
+        self._connected = False
+
+    async def connect(self):
+        await asyncio.sleep(0.001)
+        self._connected = True
+        return self
+
+    def is_connected(self):
+        return self._connected
+
+    async def query(self, sql: str):
+        return [{"id": 1}, {"id": 2}]
+
+    async def disconnect(self):
+        self._connected = False
+
+db = None
+
 @mark.asyncio(loop_scope="class")
 class TestAsyncDatabase:
     """All async methods share the same event loop."""
 
     async def test_connect(self):
         """Test database connection."""
-        db = await Database.connect()
+        global db
+        db = await Database().connect()
         assert db.is_connected()
 
     async def test_query(self):
@@ -303,6 +402,16 @@ class TestAsyncDatabase:
 You can mix sync and async tests in the same class:
 
 ```python
+import asyncio
+from rustest import mark
+
+def calculate(a: int, b: int) -> int:
+    return a + b
+
+async def async_calculate(a: int, b: int) -> int:
+    await asyncio.sleep(0.001)
+    return a + b
+
 class TestMixed:
     """Class with both sync and async tests."""
 
@@ -322,11 +431,19 @@ class TestMixed:
 Exceptions raised in async tests are properly propagated:
 
 ```python
+import asyncio
+from rustest import mark, raises
+
+async def function_that_raises():
+    await asyncio.sleep(0.001)
+    raise RuntimeError("Something went wrong")
+
 @mark.asyncio
 async def test_exception_propagation():
     """Test that exceptions are properly raised."""
-    # This will fail the test with the proper error message
-    await function_that_raises()
+    # This will properly catch and assert the exception
+    with raises(RuntimeError, match="Something went wrong"):
+        await function_that_raises()
 ```
 
 Use `raises()` context manager for expected exceptions:
@@ -348,6 +465,13 @@ async def test_expected_exception():
 Creating a new event loop for each test (function scope) has some overhead. For test suites with many small async tests, consider using broader scopes:
 
 ```python
+import asyncio
+from rustest import mark
+
+async def quick_operation():
+    await asyncio.sleep(0.001)
+    return "done"
+
 # Many small tests - use module scope
 @mark.asyncio(loop_scope="module")
 async def test_small_operation_1():
@@ -401,6 +525,23 @@ Currently, rustest supports synchronous fixtures used by async tests. Support fo
 Use module or class-scoped loops for shared async resources:
 
 ```python
+import asyncio
+from rustest import mark
+
+class MockConnection:
+    async def query(self, sql: str):
+        return [1]
+
+class MockPool:
+    async def __aenter__(self):
+        return MockConnection()
+    async def __aexit__(self, *args):
+        pass
+    def acquire(self):
+        return self
+
+connection_pool = MockPool()
+
 # Shared connection pool across all tests in module
 @mark.asyncio(loop_scope="module")
 async def test_with_shared_pool():
