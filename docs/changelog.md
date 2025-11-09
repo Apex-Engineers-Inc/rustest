@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - 2025-11-09
 
+### Added
+- **Comprehensive marks support with filtering**
+  - Standard pytest marks: `@mark.skipif`, `@mark.xfail`, `@mark.usefixtures`
+  - Mark filtering with `-m/--marks` CLI flag
+  - Boolean expressions in mark filters: `and`, `or`, `not`, and parentheses
+  - Mark expression parser and evaluator
+  - Examples: `rustest -m "slow"`, `rustest -m "not slow"`, `rustest -m "(slow or fast) and not integration"`
+- **Documentation improvements**
+  - MkDocs-based documentation with Material theme
+  - Automatic API reference generation via mkdocstrings
+  - GitHub Pages deployment at https://apex-engineers-inc.github.io/rustest
+  - Enhanced conftest.py documentation with nested file support
+  - Auto-documentation script for CLI help output
+
 ### Changed
-- Bumped package version from 0.4.0 to 0.5.0
+- Migrated from README-based docs to comprehensive MkDocs structure
+- Updated documentation icons to Material Design icons
+- Improved mark data storage in Rust (full mark data with args and kwargs)
+
+### Fixed
+- Tuple to list conversion for mark args in PyO3 bindings
+- Documentation rendering issues with emoji icons
 
 ## [0.4.0] - 2025-01-08
 
@@ -81,7 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Planned features for future releases:
 
-- **Mark-based filtering**: Filter tests by marks with `-m` option
 - **Parallel execution**: Run tests across multiple cores
 - **JUnit XML output**: Generate JUnit-compatible test reports
 - **HTML reports**: Generate HTML test reports
@@ -91,6 +110,45 @@ Planned features for future releases:
 See our [GitHub issues](https://github.com/Apex-Engineers-Inc/rustest/issues) for the full roadmap.
 
 ## Migration Guide
+
+### Migrating from 0.4.x to 0.5.0
+
+No breaking changes! The 0.5.0 release is fully backward compatible with 0.4.x.
+
+**New features:**
+
+1. **Mark-based filtering**: You can now filter tests by marks using the `-m` flag:
+
+```bash
+# Run only slow tests
+rustest -m "slow"
+
+# Skip slow tests
+rustest -m "not slow"
+
+# Complex expressions
+rustest -m "(slow or fast) and not integration"
+```
+
+2. **Standard pytest marks**: New standard marks are available:
+
+```python
+from rustest import mark
+
+@mark.skipif(condition, reason="Skipped because...")
+def test_example():
+    pass
+
+@mark.xfail(reason="Expected to fail")
+def test_failing():
+    pass
+
+@mark.usefixtures("setup_fixture")
+def test_with_fixture():
+    pass
+```
+
+3. **Documentation**: Full documentation is now available at https://apex-engineers-inc.github.io/rustest
 
 ### Migrating from 0.3.x to 0.4.0
 
