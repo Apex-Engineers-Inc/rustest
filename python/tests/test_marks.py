@@ -125,7 +125,7 @@ def test_xfail_mark_with_raises():
         raise ValueError("Expected")
 
     marks = test_expected_exception.__rustest_marks__
-    assert marks[0]["kwargs"]["raises"] == ValueError
+    assert marks[0]["kwargs"]["raises"] is ValueError
 
 
 def test_usefixtures_mark():
@@ -232,7 +232,7 @@ def test_mark_with_positional_and_keyword_args():
 def test_xfail_default_values():
     """Test that xfail mark has correct default values."""
 
-    @mark.xfail
+    @mark.xfail()
     def test_defaults():
         pass
 
@@ -294,6 +294,7 @@ def test_marks_with_fixtures():
 # Edge cases
 def test_empty_usefixtures():
     """Test usefixtures with no arguments raises or handles gracefully."""
+
     # In pytest, this would be allowed but pointless
     # Our implementation should handle it gracefully
     @mark.usefixtures()

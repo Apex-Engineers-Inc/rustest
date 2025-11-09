@@ -28,5 +28,7 @@ def run(
         enable_codeblocks: Whether to enable code block tests from markdown files
     """
 
-    raw_report = rust.run(list(paths), pattern, mark_expr, workers, capture_output, enable_codeblocks)
+    raw_report = rust.run(
+        list(paths), pattern, mark_expr, workers, capture_output, enable_codeblocks
+    )
     return RunReport.from_py(raw_report)

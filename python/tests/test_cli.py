@@ -80,6 +80,7 @@ class TestCli:
         mock_run.assert_called_once_with(
             paths=("tests",),
             pattern=None,
+            mark_expr=None,
             workers=None,
             capture_output=True,
             enable_codeblocks=True,

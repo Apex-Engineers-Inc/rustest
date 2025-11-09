@@ -3,7 +3,6 @@
 These tests verify that the -m flag correctly filters tests based on mark expressions.
 """
 
-import tempfile
 from pathlib import Path
 
 # Note: These tests would normally use the rustest.run() function to test filtering,

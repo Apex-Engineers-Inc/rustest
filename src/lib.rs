@@ -35,7 +35,13 @@ fn run(
     capture_output: bool,
     enable_codeblocks: bool,
 ) -> PyResult<PyRunReport> {
-    let config = RunConfiguration::new(pattern, mark_expr, workers, capture_output, enable_codeblocks);
+    let config = RunConfiguration::new(
+        pattern,
+        mark_expr,
+        workers,
+        capture_output,
+        enable_codeblocks,
+    );
     let input_paths = PyPaths::from_vec(paths);
     let collected = discover_tests(py, &input_paths, &config)?;
     let report = run_collected_tests(py, &collected, &config)?;

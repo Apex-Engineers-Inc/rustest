@@ -28,6 +28,7 @@ class PyRunReport:
 def run(
     paths: Sequence[str],
     pattern: str | None,
+    mark_expr: str | None,
     workers: int | None,
     capture_output: bool,
     enable_codeblocks: bool,
