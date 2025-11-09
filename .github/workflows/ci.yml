@@ -49,6 +49,17 @@ jobs:
       - name: Test README code blocks with pytest-codeblocks
         run: .venv/bin/pytest README.md --codeblocks
 
+      - name: Test documentation code blocks with pytest-codeblocks
+        run: |
+          .venv/bin/pytest docs/guide/writing-tests.md --codeblocks
+          .venv/bin/pytest docs/guide/fixtures.md --codeblocks
+          .venv/bin/pytest docs/guide/assertions.md --codeblocks
+          .venv/bin/pytest docs/guide/test-classes.md --codeblocks
+          .venv/bin/pytest docs/guide/python-api.md --codeblocks
+          .venv/bin/pytest docs/api/approx.md --codeblocks
+          .venv/bin/pytest docs/api/decorators.md --codeblocks
+          .venv/bin/pytest docs/api/overview.md --codeblocks
+
   lint:
     name: Lint and Format
     runs-on: ubuntu-latest
