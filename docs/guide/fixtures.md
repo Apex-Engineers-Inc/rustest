@@ -31,6 +31,8 @@ Fixtures support different scopes to control when they are created and destroyed
 Creates a new instance for each test function:
 
 ```python
+from rustest import fixture
+
 @fixture  # Same as @fixture(scope="function")
 def counter() -> dict:
     return {"count": 0}
@@ -50,6 +52,8 @@ def test_increment_2(counter: dict) -> None:
 Shared across all test methods in a class:
 
 ```python
+from rustest import fixture
+
 @fixture(scope="class")
 def database() -> dict:
     """Expensive setup shared across class tests."""
@@ -73,6 +77,8 @@ class TestDatabase:
 Shared across all tests in a Python module:
 
 ```python
+from rustest import fixture
+
 @fixture(scope="module")
 def api_client() -> dict:
     """Shared across all tests in this module."""
@@ -90,6 +96,11 @@ def test_api_timeout(api_client: dict) -> None:
 Shared across the entire test session:
 
 ```python
+from rustest import fixture
+
+def load_config() -> dict:
+    return {"environment": "test", "debug": False}
+
 @fixture(scope="session")
 def config() -> dict:
     """Global configuration loaded once."""
@@ -110,6 +121,8 @@ def test_config_loaded(config: dict) -> None:
 Fixtures can depend on other fixtures:
 
 ```python
+from rustest import fixture
+
 @fixture
 def database_url() -> str:
     return "postgresql://localhost/testdb"
@@ -160,6 +173,19 @@ def test_file_exists(temp_file: str) -> None:
 Teardown timing depends on the fixture scope:
 
 ```python
+from rustest import fixture
+
+class MockConnection:
+    def query(self, sql: str):
+        return [1]
+    def execute(self, sql: str):
+        pass
+    def close(self):
+        pass
+
+def connect_to_database():
+    return MockConnection()
+
 @fixture(scope="class")
 def database_connection():
     # Setup once for the class
@@ -186,6 +212,7 @@ class TestQueries:
 
 Create a `conftest.py` file to share fixtures across multiple test files:
 
+<!--pytest.mark.skip-->
 ```python
 # conftest.py
 from rustest import fixture
@@ -205,6 +232,7 @@ def api_client():
 
 All test files in the same directory (and subdirectories) can use these fixtures:
 
+<!--pytest.mark.skip-->
 ```python
 # test_users.py
 def test_get_user(api_client, database):
@@ -217,6 +245,7 @@ def test_get_user(api_client, database):
 
 Rustest supports nested `conftest.py` files in subdirectories:
 
+<!--pytest.mark.skip-->
 ```
 tests/
 ├── conftest.py          # Root fixtures
@@ -226,6 +255,7 @@ tests/
     └── test_api.py
 ```
 
+<!--pytest.mark.skip-->
 ```python
 # tests/conftest.py
 from rustest import fixture
@@ -249,6 +279,30 @@ Child fixtures can override parent fixtures with the same name.
 You can define fixtures as methods within test classes:
 
 ```python
+from rustest import fixture
+
+class User:
+    def __init__(self, name: str, id: int):
+        self.name = name
+        self.id = id
+
+class UserService:
+    def __init__(self):
+        self.users = {}
+        self.next_id = 1
+    def create(self, name: str):
+        user = User(name, self.next_id)
+        self.users[self.next_id] = user
+        self.next_id += 1
+        return user
+    def delete(self, user_id: int):
+        if user_id in self.users:
+            del self.users[user_id]
+    def exists(self, user_id: int):
+        return user_id in self.users
+    def cleanup(self):
+        self.users.clear()
+
 class TestUserService:
     @fixture(scope="class")
     def user_service(self):
@@ -275,6 +329,22 @@ class TestUserService:
 ### Fixture Providing Multiple Values
 
 ```python
+from rustest import fixture
+
+class MockDB:
+    def close(self):
+        pass
+
+class MockCache:
+    def close(self):
+        pass
+
+def connect_to_database():
+    return MockDB()
+
+def connect_to_cache():
+    return MockCache()
+
 @fixture
 def database_and_cache():
     db = connect_to_database()
@@ -289,6 +359,8 @@ def test_caching(database_and_cache):
     db = database_and_cache["db"]
     cache = database_and_cache["cache"]
     # Use both connections
+    assert db is not None
+    assert cache is not None
 ```
 
 ### Conditional Fixture Behavior
@@ -296,6 +368,13 @@ def test_caching(database_and_cache):
 ```python
 import os
 from rustest import fixture
+
+class MockDB:
+    def __init__(self, url: str):
+        self.url = url
+
+def connect(url: str):
+    return MockDB(url)
 
 @fixture
 def database_url():
@@ -306,11 +385,35 @@ def database_url():
 @fixture
 def database(database_url):
     return connect(database_url)
+
+def test_database(database):
+    assert database.url is not None
 ```
 
 ### Fixtures with Complex Setup
 
 ```python
+from rustest import fixture
+
+class MockDB:
+    def drop_all(self):
+        pass
+    def stop(self):
+        pass
+
+class MockServer:
+    def stop(self):
+        pass
+
+def start_test_database():
+    return MockDB()
+
+def start_test_server(db):
+    return MockServer()
+
+def load_fixtures(db):
+    pass
+
 @fixture(scope="session")
 def test_environment():
     """Set up a complete test environment."""
@@ -329,6 +432,10 @@ def test_environment():
     server.stop()
     db.drop_all()
     db.stop()
+
+def test_environment_setup(test_environment):
+    assert test_environment["db"] is not None
+    assert test_environment["server"] is not None
 ```
 
 ## Best Practices
@@ -338,6 +445,20 @@ def test_environment():
 Each fixture should have a single, clear purpose:
 
 ```python
+from rustest import fixture
+
+def create_user():
+    return {"type": "user", "id": 1}
+
+def create_admin():
+    return {"type": "admin", "id": 2}
+
+def create_posts():
+    return [{"id": 1, "title": "Post"}]
+
+def create_comments():
+    return [{"id": 1, "text": "Comment"}]
+
 # Good - single responsibility
 @fixture
 def user():
@@ -346,6 +467,12 @@ def user():
 @fixture
 def admin():
     return create_admin()
+
+def test_user(user):
+    assert user["type"] == "user"
+
+def test_admin(admin):
+    assert admin["type"] == "admin"
 
 # Less ideal - doing too much
 @fixture
@@ -356,6 +483,9 @@ def test_data():
         "posts": create_posts(),
         "comments": create_comments(),
     }
+
+def test_all_data(test_data):
+    assert test_data["user"] is not None
 ```
 
 ### Use Appropriate Scopes
@@ -363,6 +493,14 @@ def test_data():
 Choose the narrowest scope that meets your needs:
 
 ```python
+from rustest import fixture
+
+def create_user():
+    return {"id": 1, "name": "Test User"}
+
+def load_config_from_file():
+    return {"env": "test", "debug": True}
+
 # Good - function scope for test isolation
 @fixture
 def user():
@@ -372,6 +510,12 @@ def user():
 @fixture(scope="session")
 def config():
     return load_config_from_file()
+
+def test_user_isolation(user):
+    assert user["name"] == "Test User"
+
+def test_config(config):
+    assert config["env"] == "test"
 ```
 
 ### Document Your Fixtures
@@ -379,6 +523,15 @@ def config():
 Add docstrings to complex fixtures:
 
 ```python
+from rustest import fixture
+
+class MockDB:
+    def cleanup(self):
+        pass
+
+def setup_test_database():
+    return MockDB()
+
 @fixture(scope="session")
 def database():
     """Provides a PostgreSQL database connection for testing.
@@ -389,6 +542,9 @@ def database():
     db = setup_test_database()
     yield db
     db.cleanup()
+
+def test_database_documented(database):
+    assert database is not None
 ```
 
 ## Next Steps

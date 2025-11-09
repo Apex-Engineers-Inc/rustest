@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import types
 
-if "_pytest" in sys.modules:
+if "_pytest" in sys.modules and "rustest" not in sys.modules:
     try:
         import pytest  # type: ignore
     except ImportError:  # pragma: no cover - pytest is always installed during pytest runs
@@ -25,6 +25,22 @@ if "_pytest" in sys.modules:
 
         def _skip(reason=None):
             return pytest.mark.skip(reason=reason or "skipped via rustest.skip")
+
+        # Try to get run, approx, raises from real rustest
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec("rustest")
+            if spec and spec.origin and "conftest.py" not in str(spec.origin):
+                real_rustest = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(real_rustest)
+                if hasattr(real_rustest, "run"):
+                    compat_module.run = real_rustest.run
+                if hasattr(real_rustest, "approx"):
+                    compat_module.approx = real_rustest.approx
+                if hasattr(real_rustest, "raises"):
+                    compat_module.raises = real_rustest.raises
+        except Exception:
+            pass
 
         compat_module.fixture = _fixture
         compat_module.parametrize = _parametrize

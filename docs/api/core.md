@@ -94,6 +94,7 @@ Returns a [`RunReport`](reporting.md#runreport) object containing test results a
 
 ### Basic Usage
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -108,6 +109,7 @@ print(f"Duration: {report.duration:.3f}s")
 
 ### With Pattern Filtering
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -120,6 +122,7 @@ if report.failed == 0:
 
 ### Without Output Capture
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -129,6 +132,7 @@ report = run(paths=["tests"], capture_output=False)
 
 ### Analyzing Results
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -150,6 +154,7 @@ if slow_tests:
 
 ### In a Script
 
+<!--pytest.mark.skip-->
 ```python
 #!/usr/bin/env python3
 from rustest import run
