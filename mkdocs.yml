@@ -87,6 +87,7 @@ nav:
     - Fixtures: guide/fixtures.md
     - Parametrization: guide/parametrization.md
     - Marks & Skipping: guide/marks.md
+    - Async Testing: guide/async-testing.md
     - Test Classes: guide/test-classes.md
     - Assertion Helpers: guide/assertions.md
     - Markdown Testing: guide/markdown-testing.md

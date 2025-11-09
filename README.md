@@ -8,6 +8,7 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 - 🚀 **About 2x faster** than pytest on the rustest integration test suite
 - ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
+- 🔄 **Built-in async support** with `@mark.asyncio` (like pytest-asyncio)
 - 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
 - 📝 **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
@@ -74,6 +75,11 @@ def test_square(value: int, expected: int) -> None:
 def test_expensive_operation() -> None:
     result = sum(range(1000000))
     assert result > 0
+
+@mark.asyncio
+async def test_async_operation() -> None:
+    result = await some_async_function()
+    assert result == expected
 
 def test_division_by_zero() -> None:
     with raises(ZeroDivisionError, match="division by zero"):

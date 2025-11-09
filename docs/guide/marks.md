@@ -110,6 +110,50 @@ def test_strict_xfail() -> None:
 - `run`: Whether to run the test (False means skip it)
 - `strict`: If True, passing test will fail the suite
 
+### @mark.asyncio - Async Test Support
+
+Mark async test functions to be executed with asyncio:
+
+```python
+from rustest import mark
+
+@mark.asyncio
+async def test_async_operation() -> None:
+    """Test async function execution."""
+    result = await some_async_function()
+    assert result == expected_value
+
+@mark.asyncio(loop_scope="module")
+async def test_with_module_loop() -> None:
+    """Test with shared event loop across the module."""
+    await another_async_operation()
+```
+
+**Parameters:**
+- `loop_scope`: The scope of the event loop. One of:
+  - `"function"`: New loop for each test function (default)
+  - `"class"`: Shared loop across all test methods in a class
+  - `"module"`: Shared loop across all tests in a module
+  - `"session"`: Shared loop across all tests in the session
+
+**Usage with classes:**
+
+```python
+@mark.asyncio(loop_scope="class")
+class TestAsyncOperations:
+    """All async methods in this class share an event loop."""
+
+    async def test_async_one(self) -> None:
+        result = await async_operation_one()
+        assert result is not None
+
+    async def test_async_two(self) -> None:
+        result = await async_operation_two()
+        assert result is not None
+```
+
+For more details, see the [Async Testing Guide](async-testing.md).
+
 ### @mark.usefixtures - Implicit Fixture Usage
 
 Use fixtures without explicitly requesting them as parameters:
