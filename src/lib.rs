@@ -9,6 +9,7 @@
 
 mod discovery;
 mod execution;
+mod mark_expr;
 mod model;
 mod python_support;
 
@@ -24,16 +25,23 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, workers = None, capture_output = true, enable_codeblocks = true))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true))]
 fn run(
     py: Python<'_>,
     paths: Vec<String>,
     pattern: Option<String>,
+    mark_expr: Option<String>,
     workers: Option<usize>,
     capture_output: bool,
     enable_codeblocks: bool,
 ) -> PyResult<PyRunReport> {
-    let config = RunConfiguration::new(pattern, workers, capture_output, enable_codeblocks);
+    let config = RunConfiguration::new(
+        pattern,
+        mark_expr,
+        workers,
+        capture_output,
+        enable_codeblocks,
+    );
     let input_paths = PyPaths::from_vec(paths);
     let collected = discover_tests(py, &input_paths, &config)?;
     let report = run_collected_tests(py, &collected, &config)?;
@@ -80,7 +88,7 @@ mod tests {
     }
 
     fn run_discovery(py: Python<'_>, path: &Path) -> Vec<crate::model::TestModule> {
-        let config = RunConfiguration::new(None, None, true, true);
+        let config = RunConfiguration::new(None, None, None, true, true);
         let paths = PyPaths::from_vec(vec![path.to_string_lossy().into_owned()]);
         discover_tests(py, &paths, &config).expect("discovery should succeed")
     }
@@ -105,7 +113,7 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_fixtures.py");
 
-            let config = RunConfiguration::new(None, None, true, true);
+            let config = RunConfiguration::new(None, None, None, true, true);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             assert_eq!(modules.len(), 1);
@@ -126,7 +134,7 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_parametrized.py");
 
-            let config = RunConfiguration::new(None, None, true, true);
+            let config = RunConfiguration::new(None, None, None, true, true);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             let report =
@@ -168,7 +176,8 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_basic.py");
 
-            let config = RunConfiguration::new(Some("nonexistent".to_string()), None, true, true);
+            let config =
+                RunConfiguration::new(Some("nonexistent".to_string()), None, None, true, true);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
 
@@ -195,7 +204,7 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_basic.py");
 
-            let config = RunConfiguration::new(None, None, false, true);
+            let config = RunConfiguration::new(None, None, None, false, true);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             let report =
@@ -228,7 +237,7 @@ mod tests {
     fn test_nonexistent_path_error() {
         Python::with_gil(|py| {
             ensure_python_package_on_path(py);
-            let config = RunConfiguration::new(None, None, true, true);
+            let config = RunConfiguration::new(None, None, None, true, true);
             let paths = PyPaths::from_vec(vec!["/nonexistent/path".to_string()]);
             let result = discover_tests(py, &paths, &config);
 
@@ -242,7 +251,7 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_parametrized.py");
 
-            let config = RunConfiguration::new(None, None, true, true);
+            let config = RunConfiguration::new(None, None, None, true, true);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             let report =
@@ -257,13 +266,13 @@ mod tests {
 
     #[test]
     fn test_worker_count_configuration() {
-        let config1 = RunConfiguration::new(None, Some(1), true, true);
+        let config1 = RunConfiguration::new(None, None, Some(1), true, true);
         assert_eq!(config1.worker_count, 1);
 
-        let config2 = RunConfiguration::new(None, Some(8), true, true);
+        let config2 = RunConfiguration::new(None, None, Some(8), true, true);
         assert_eq!(config2.worker_count, 8);
 
-        let config3 = RunConfiguration::new(None, None, true, true);
+        let config3 = RunConfiguration::new(None, None, None, true, true);
         assert!(config3.worker_count >= 1);
     }
 }

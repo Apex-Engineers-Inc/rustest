@@ -16,6 +16,8 @@ mod tests {
                 "test_fixture".to_string(),
                 callable.unbind(),
                 vec!["param1".to_string(), "param2".to_string()],
+                FixtureScope::Function,
+                false,
             );
 
             assert_eq!(fixture.name, "test_fixture");
@@ -36,6 +38,7 @@ mod tests {
                 parameter_values: ParameterMap::new(),
                 skip_reason: None,
                 marks: vec![],
+                class_name: None,
             };
 
             let unique_id = test_case.unique_id();
@@ -57,6 +60,7 @@ mod tests {
                 parameter_values: ParameterMap::new(),
                 skip_reason: Some("Not implemented yet".to_string()),
                 marks: vec![],
+                class_name: None,
             };
 
             assert_eq!(
@@ -79,16 +83,17 @@ mod tests {
 
     #[test]
     fn test_run_configuration_new_with_defaults() {
-        let config = RunConfiguration::new(None, None, true);
+        let config = RunConfiguration::new(None, None, None, true, true);
 
         assert!(config.pattern.is_none());
+        assert!(config.mark_expr.is_none());
         assert!(config.worker_count >= 1);
         assert!(config.capture_output);
     }
 
     #[test]
     fn test_run_configuration_new_with_pattern() {
-        let config = RunConfiguration::new(Some("test_.*".to_string()), Some(4), false);
+        let config = RunConfiguration::new(Some("test_.*".to_string()), None, Some(4), false, true);
 
         assert_eq!(config.pattern, Some("test_.*".to_string()));
         assert_eq!(config.worker_count, 4);
@@ -97,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_run_configuration_clone() {
-        let config = RunConfiguration::new(Some("pattern".to_string()), Some(2), true);
+        let config = RunConfiguration::new(Some("pattern".to_string()), None, Some(2), true, true);
         let cloned = config.clone();
 
         assert_eq!(config.pattern, cloned.pattern);
@@ -241,6 +246,7 @@ mod tests {
                 parameter_values: param_values,
                 skip_reason: None,
                 marks: vec![],
+                class_name: None,
             };
 
             assert_eq!(test_case.parameters.len(), 2);

@@ -78,8 +78,9 @@ class TestCli:
                 exit_code = cli.main(["tests"])
 
         mock_run.assert_called_once_with(
-            paths=("tests",),
+            paths=["tests"],
             pattern=None,
+            mark_expr=None,
             workers=None,
             capture_output=True,
             enable_codeblocks=True,

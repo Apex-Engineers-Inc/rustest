@@ -157,7 +157,80 @@ class MarkGenerator:
         @mark.slow
         @mark.integration
         @mark.timeout(seconds=30)
+
+    Standard marks:
+        @mark.skipif(condition, *, reason="...")
+        @mark.xfail(condition=None, *, reason=None, raises=None, run=True, strict=False)
+        @mark.usefixtures("fixture1", "fixture2")
     """
+
+    def skipif(
+        self,
+        condition: bool | str,
+        *,
+        reason: str | None = None,
+    ) -> MarkDecorator:
+        """Skip test if condition is true.
+
+        Args:
+            condition: Boolean or string condition to evaluate
+            reason: Explanation for why the test is skipped
+
+        Usage:
+            @mark.skipif(sys.platform == "win32", reason="Not supported on Windows")
+            def test_unix_only():
+                pass
+        """
+        return MarkDecorator("skipif", (condition,), {"reason": reason})
+
+    def xfail(
+        self,
+        condition: bool | str | None = None,
+        *,
+        reason: str | None = None,
+        raises: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+        run: bool = True,
+        strict: bool = False,
+    ) -> MarkDecorator:
+        """Mark test as expected to fail.
+
+        Args:
+            condition: Optional condition - if False, mark is ignored
+            reason: Explanation for why the test is expected to fail
+            raises: Expected exception type(s)
+            run: Whether to run the test (False means skip it)
+            strict: If True, passing test will fail the suite
+
+        Usage:
+            @mark.xfail(reason="Known bug in backend")
+            def test_known_bug():
+                assert False
+
+            @mark.xfail(sys.platform == "win32", reason="Not implemented on Windows")
+            def test_feature():
+                pass
+        """
+        kwargs = {
+            "reason": reason,
+            "raises": raises,
+            "run": run,
+            "strict": strict,
+        }
+        args = () if condition is None else (condition,)
+        return MarkDecorator("xfail", args, kwargs)
+
+    def usefixtures(self, *names: str) -> MarkDecorator:
+        """Use fixtures without explicitly requesting them as parameters.
+
+        Args:
+            *names: Names of fixtures to use
+
+        Usage:
+            @mark.usefixtures("setup_db", "cleanup")
+            def test_with_fixtures():
+                pass
+        """
+        return MarkDecorator("usefixtures", names, {})
 
     def __getattr__(self, name: str) -> Any:
         """Create a mark decorator for the given name."""

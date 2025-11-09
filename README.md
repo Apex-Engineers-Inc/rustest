@@ -89,8 +89,13 @@ rustest
 # Run specific tests
 rustest tests/
 
-# Filter by pattern
+# Filter by test name pattern
 rustest -k "test_sum"
+
+# Filter by marks
+rustest -m "slow"                    # Run only slow tests
+rustest -m "not slow"                # Skip slow tests
+rustest -m "slow and integration"    # Run tests with both marks
 
 # Show output during execution
 rustest --no-capture

@@ -52,6 +52,100 @@ def test_expensive_operation() -> None:
     pass
 ```
 
+## Standard Pytest Marks
+
+Rustest supports standard pytest marks for advanced test control:
+
+### @mark.skipif - Conditional Skipping
+
+Skip tests based on runtime conditions:
+
+```python
+import sys
+from rustest import mark
+
+@mark.skipif(sys.platform == "win32", reason="Not supported on Windows")
+def test_unix_only() -> None:
+    """This test only runs on Unix-like systems."""
+    pass
+
+@mark.skipif(sys.version_info < (3, 10), reason="Requires Python 3.10+")
+def test_modern_python() -> None:
+    """This test only runs on Python 3.10 or newer."""
+    pass
+```
+
+### @mark.xfail - Expected Failures
+
+Mark tests that are expected to fail:
+
+```python
+from rustest import mark
+
+@mark.xfail(reason="Known bug in backend #123")
+def test_known_bug() -> None:
+    """This test is expected to fail until the bug is fixed."""
+    assert False  # Expected to fail
+
+@mark.xfail(sys.platform == "darwin", reason="Not implemented on macOS")
+def test_platform_specific() -> None:
+    """This test is expected to fail on macOS."""
+    pass
+
+@mark.xfail(reason="Flaky test", strict=False)
+def test_flaky_behavior() -> None:
+    """Test may pass or fail; either is acceptable."""
+    pass
+
+@mark.xfail(reason="Must fail", strict=True)
+def test_strict_xfail() -> None:
+    """If this test passes unexpectedly, the suite will fail."""
+    assert False
+```
+
+**Parameters:**
+- `condition`: Optional boolean condition - if False, mark is ignored
+- `reason`: Explanation for why the test is expected to fail
+- `raises`: Expected exception type(s)
+- `run`: Whether to run the test (False means skip it)
+- `strict`: If True, passing test will fail the suite
+
+### @mark.usefixtures - Implicit Fixture Usage
+
+Use fixtures without explicitly requesting them as parameters:
+
+```python
+from rustest import fixture, mark
+
+@fixture
+def setup_database():
+    """Initialize test database."""
+    db = create_test_db()
+    yield
+    db.cleanup()
+
+@mark.usefixtures("setup_database")
+def test_without_explicit_fixture() -> None:
+    """Uses setup_database fixture without requesting it."""
+    # Database is already set up
+    assert query_database() is not None
+
+@mark.usefixtures("setup_database", "setup_cache")
+class TestDatabaseOperations:
+    """All tests in this class use both fixtures."""
+
+    def test_query(self) -> None:
+        pass
+
+    def test_insert(self) -> None:
+        pass
+```
+
+This is useful when:
+- A fixture has side effects but no return value
+- You want to apply fixtures to an entire test class
+- The fixture name would conflict with a parameter name
+
 ## Custom Marks
 
 Create custom marks to categorize tests:
@@ -228,18 +322,87 @@ def test_square(value: int, expected: int) -> None:
 
 ## Filtering Tests by Marks
 
-!!! note "Mark Filtering"
-    Mark-based test filtering (e.g., `-m "slow"`) is planned but not yet implemented in rustest. For now, use the `-k` pattern matching to filter tests by name.
+Use the `-m` flag to run only tests matching a mark expression:
 
-Current workaround using test name patterns:
+### Basic Mark Filtering
 
 ```bash
-# Include "slow" in test names for slow tests
-def test_slow_operation() -> None:
-    pass
+# Run only slow tests
+rustest -m "slow"
 
-# Then filter with -k
-rustest -k "slow"
+# Run only integration tests
+rustest -m "integration"
+
+# Run only unit tests
+rustest -m "unit"
+```
+
+### Negation
+
+```bash
+# Run all tests except slow ones
+rustest -m "not slow"
+
+# Run all tests except integration tests
+rustest -m "not integration"
+```
+
+### Boolean Expressions
+
+Combine multiple mark filters with `and` and `or`:
+
+```bash
+# Run tests marked as both slow AND integration
+rustest -m "slow and integration"
+
+# Run tests marked as either slow OR integration
+rustest -m "slow or integration"
+
+# Run slow tests that are not integration tests
+rustest -m "slow and not integration"
+```
+
+### Complex Expressions
+
+Use parentheses for complex boolean logic:
+
+```bash
+# Run tests that are either (slow or fast) but not integration
+rustest -m "(slow or fast) and not integration"
+
+# Run critical tests or smoke tests, but not slow ones
+rustest -m "(critical or smoke) and not slow"
+```
+
+### Combining with Pattern Matching
+
+You can combine mark filtering with test name pattern matching:
+
+```bash
+# Run slow database tests
+rustest -m "slow" -k "database"
+
+# Run integration tests matching "api" in the name
+rustest -m "integration" -k "api"
+```
+
+### Common Filtering Patterns
+
+```bash
+# Fast feedback loop - run only fast unit tests
+rustest -m "unit and not slow"
+
+# Pre-commit checks - run non-slow tests
+rustest -m "not slow"
+
+# Full test suite except integration tests (for local dev)
+rustest -m "not integration"
+
+# CI smoke tests - run critical and smoke tests
+rustest -m "critical or smoke"
+
+# Nightly builds - run all slow and integration tests
+rustest -m "slow or integration"
 ```
 
 ## Creating a Mark Registry

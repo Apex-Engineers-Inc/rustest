@@ -29,9 +29,10 @@ class TestCoreRun:
 
         captured_args: dict[str, object] = {}
 
-        def fake_run(paths, pattern, workers, capture_output, enable_codeblocks):  # type: ignore[no-untyped-def]
+        def fake_run(paths, pattern, mark_expr, workers, capture_output, enable_codeblocks):  # type: ignore[no-untyped-def]
             captured_args["paths"] = paths
             captured_args["pattern"] = pattern
+            captured_args["mark_expr"] = mark_expr
             captured_args["workers"] = workers
             captured_args["capture_output"] = capture_output
             captured_args["enable_codeblocks"] = enable_codeblocks
@@ -48,6 +49,7 @@ class TestCoreRun:
         assert isinstance(report, RunReport)
         assert captured_args["paths"] == ["tests"]
         assert captured_args["pattern"] == "sample"
+        assert captured_args["mark_expr"] is None
         assert captured_args["workers"] == 4
         assert captured_args["capture_output"] is False
         assert captured_args["enable_codeblocks"] is True

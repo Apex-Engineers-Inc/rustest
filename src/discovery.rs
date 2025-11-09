@@ -13,12 +13,13 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
-use pyo3::types::{PyAny, PyDict, PySequence};
+use pyo3::types::{PyAny, PyDict, PyList, PySequence};
 use pyo3::Bound;
 use walkdir::WalkDir;
 
+use crate::mark_expr::MarkExpr;
 use crate::model::{
-    invalid_test_definition, Fixture, FixtureScope, ModuleIdGenerator, ParameterMap,
+    invalid_test_definition, Fixture, FixtureScope, Mark, ModuleIdGenerator, ParameterMap,
     RunConfiguration, TestCase, TestModule,
 };
 use crate::python_support::PyPaths;
@@ -249,6 +250,13 @@ fn collect_from_file(
         tests.retain(|case| test_matches_pattern(case, pattern));
     }
 
+    // Apply mark filtering if specified
+    if let Some(mark_expr_str) = &config.mark_expr {
+        let mark_expr = MarkExpr::parse(mark_expr_str)
+            .map_err(|e| invalid_test_definition(format!("Invalid mark expression: {}", e)))?;
+        tests.retain(|case| mark_expr.matches(&case.marks));
+    }
+
     if tests.is_empty() {
         return Ok(None);
     }
@@ -280,6 +288,13 @@ fn collect_from_markdown(
         // Create a Python callable that executes the code block
         let callable = create_codeblock_callable(py, &code)?;
 
+        // Create codeblock mark
+        let codeblock_mark = Mark::new(
+            "codeblock".to_string(),
+            PyList::empty(py).unbind(),
+            PyDict::new(py).unbind(),
+        );
+
         tests.push(TestCase {
             name: test_name.clone(),
             display_name,
@@ -288,7 +303,7 @@ fn collect_from_markdown(
             parameters: Vec::new(),
             parameter_values: ParameterMap::new(),
             skip_reason: None,
-            marks: vec!["codeblock".to_string()],
+            marks: vec![codeblock_mark],
             class_name: None,
         });
     }
@@ -296,6 +311,13 @@ fn collect_from_markdown(
     // Apply pattern filtering if specified
     if let Some(pattern) = &config.pattern {
         tests.retain(|case| test_matches_pattern(case, pattern));
+    }
+
+    // Apply mark filtering if specified
+    if let Some(mark_expr_str) = &config.mark_expr {
+        let mark_expr = MarkExpr::parse(mark_expr_str)
+            .map_err(|e| invalid_test_definition(format!("Invalid mark expression: {}", e)))?;
+        tests.retain(|case| mark_expr.matches(&case.marks));
     }
 
     if tests.is_empty() {
@@ -806,7 +828,7 @@ fn collect_parametrization(
 }
 
 /// Collect mark information attached to a test function.
-fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<Mark>> {
     let Ok(attr) = value.getattr("__rustest_marks__") else {
         return Ok(Vec::new());
     };
@@ -815,11 +837,32 @@ fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     for element in sequence.try_iter()? {
         let element = element?;
         let mark_dict: Bound<'_, PyDict> = element.cast_into()?;
+
+        // Extract name
         let name = mark_dict
             .get_item("name")?
             .ok_or_else(|| invalid_test_definition("Missing name in mark metadata"))?;
         let name: String = name.extract()?;
-        marks.push(name);
+
+        // Extract args (default to empty list if not present)
+        // Convert tuple to list if necessary, since Python decorators store args as tuples
+        let args_raw = mark_dict
+            .get_item("args")?
+            .unwrap_or_else(|| PyList::empty(value.py()).into_any());
+        let args: Py<PyList> = if args_raw.is_instance_of::<pyo3::types::PyTuple>() {
+            let tuple: Bound<'_, pyo3::types::PyTuple> = args_raw.cast_into()?;
+            PyList::new(value.py(), tuple.iter())?.unbind()
+        } else {
+            args_raw.extract()?
+        };
+
+        // Extract kwargs (default to empty dict if not present)
+        let kwargs = mark_dict
+            .get_item("kwargs")?
+            .unwrap_or_else(|| PyDict::new(value.py()).into_any());
+        let kwargs: Py<PyDict> = kwargs.extract()?;
+
+        marks.push(Mark::new(name, args, kwargs));
     }
     Ok(marks)
 }
