@@ -56,6 +56,8 @@ jobs:
           .venv/bin/pytest docs/guide/assertions.md --codeblocks
           .venv/bin/pytest docs/guide/test-classes.md --codeblocks
           .venv/bin/pytest docs/guide/python-api.md --codeblocks
+          .venv/bin/pytest docs/guide/parametrization.md --codeblocks
+          .venv/bin/pytest docs/guide/marks.md --codeblocks
           .venv/bin/pytest docs/api/approx.md --codeblocks
           .venv/bin/pytest docs/api/decorators.md --codeblocks
           .venv/bin/pytest docs/api/overview.md --codeblocks
