@@ -113,3 +113,4 @@ markers = [
 [tool.pytest_codeblocks]
 # Test Python code blocks in markdown files
 # Use <!--pytest-codeblocks:skip--> HTML comments to skip individual blocks
+testpaths = ["docs"]

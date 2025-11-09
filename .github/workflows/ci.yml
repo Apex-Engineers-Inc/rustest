@@ -34,6 +34,9 @@ jobs:
       - name: Install dependencies and build package
         run: uv sync --all-extras
 
+      - name: Run Rust library tests
+        run: cargo test --lib
+
       - name: Run Python unit tests with pytest
         run: .venv/bin/pytest python/tests -v
 
@@ -49,20 +52,11 @@ jobs:
       - name: Test README code blocks with pytest-codeblocks
         run: .venv/bin/pytest README.md --codeblocks
 
+      - name: Test documentation code blocks with rustest
+        run: .venv/bin/python -m rustest docs/ -v
+
       - name: Test documentation code blocks with pytest-codeblocks
-        run: |
-          .venv/bin/pytest docs/guide/writing-tests.md --codeblocks
-          .venv/bin/pytest docs/guide/fixtures.md --codeblocks
-          .venv/bin/pytest docs/guide/assertions.md --codeblocks
-          .venv/bin/pytest docs/guide/test-classes.md --codeblocks
-          .venv/bin/pytest docs/guide/python-api.md --codeblocks
-          .venv/bin/pytest docs/guide/parametrization.md --codeblocks
-          .venv/bin/pytest docs/guide/marks.md --codeblocks
-          .venv/bin/pytest docs/guide/async-testing.md --codeblocks
-          .venv/bin/pytest docs/getting-started/quickstart.md --codeblocks
-          .venv/bin/pytest docs/api/approx.md --codeblocks
-          .venv/bin/pytest docs/api/decorators.md --codeblocks
-          .venv/bin/pytest docs/api/overview.md --codeblocks
+        run: .venv/bin/pytest docs/ --codeblocks
 
   lint:
     name: Lint and Format
