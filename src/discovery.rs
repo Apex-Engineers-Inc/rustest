@@ -845,10 +845,16 @@ fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<Mark>> {
         let name: String = name.extract()?;
 
         // Extract args (default to empty list if not present)
-        let args = mark_dict
+        // Convert tuple to list if necessary, since Python decorators store args as tuples
+        let args_raw = mark_dict
             .get_item("args")?
             .unwrap_or_else(|| PyList::empty(value.py()).into_any());
-        let args: Py<PyList> = args.extract()?;
+        let args: Py<PyList> = if args_raw.is_instance_of::<pyo3::types::PyTuple>() {
+            let tuple: Bound<'_, pyo3::types::PyTuple> = args_raw.cast_into()?;
+            PyList::new(value.py(), tuple.iter())?.unbind()
+        } else {
+            args_raw.extract()?
+        };
 
         // Extract kwargs (default to empty dict if not present)
         let kwargs = mark_dict

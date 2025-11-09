@@ -106,7 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         Colors.disable()
 
     report = run(
-        paths=tuple(args.paths),
+        paths=list(args.paths),
         pattern=args.pattern,
         mark_expr=args.mark_expr,
         workers=args.workers,

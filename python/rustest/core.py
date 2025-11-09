@@ -27,8 +27,12 @@ def run(
         capture_output: Whether to capture stdout/stderr during test execution
         enable_codeblocks: Whether to enable code block tests from markdown files
     """
-
     raw_report = rust.run(
-        list(paths), pattern, mark_expr, workers, capture_output, enable_codeblocks
+        paths=list(paths),
+        pattern=pattern,
+        mark_expr=mark_expr,
+        workers=workers,
+        capture_output=capture_output,
+        enable_codeblocks=enable_codeblocks,
     )
     return RunReport.from_py(raw_report)
