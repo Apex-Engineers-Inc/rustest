@@ -20,8 +20,8 @@ use walkdir::WalkDir;
 use crate::cache;
 use crate::mark_expr::MarkExpr;
 use crate::model::{
-    invalid_test_definition, Fixture, FixtureScope, LastFailedMode, Mark, ModuleIdGenerator, ParameterMap,
-    RunConfiguration, TestCase, TestModule,
+    invalid_test_definition, Fixture, FixtureScope, LastFailedMode, Mark, ModuleIdGenerator,
+    ParameterMap, RunConfiguration, TestCase, TestModule,
 };
 use crate::python_support::PyPaths;
 

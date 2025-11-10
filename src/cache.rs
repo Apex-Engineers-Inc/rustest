@@ -1,8 +1,8 @@
+use pyo3::PyResult;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
-use pyo3::PyResult;
 
 const CACHE_DIR: &str = ".rustest_cache";
 const LAST_FAILED_FILE: &str = "lastfailed";
@@ -40,15 +40,17 @@ pub fn read_last_failed() -> PyResult<HashSet<String>> {
         return Ok(HashSet::new());
     }
 
-    let content = fs::read_to_string(&cache_path)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to read cache: {}", e)))?;
+    let content = fs::read_to_string(&cache_path).map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to read cache: {}", e))
+    })?;
 
     if content.trim().is_empty() {
         return Ok(HashSet::new());
     }
 
-    let cache: LastFailedCache = serde_json::from_str(&content)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to parse cache: {}", e)))?;
+    let cache: LastFailedCache = serde_json::from_str(&content).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Failed to parse cache: {}", e))
+    })?;
 
     Ok(cache.failed)
 }
@@ -56,18 +58,21 @@ pub fn read_last_failed() -> PyResult<HashSet<String>> {
 /// Write the failed tests to cache
 /// Takes a set of test IDs that failed in this run
 pub fn write_last_failed(failed_tests: &HashSet<String>) -> PyResult<()> {
-    ensure_cache_dir()
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to create cache directory: {}", e)))?;
+    ensure_cache_dir().map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to create cache directory: {}", e))
+    })?;
 
     let cache = LastFailedCache {
         failed: failed_tests.clone(),
     };
 
-    let content = serde_json::to_string_pretty(&cache)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to serialize cache: {}", e)))?;
+    let content = serde_json::to_string_pretty(&cache).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Failed to serialize cache: {}", e))
+    })?;
 
-    fs::write(get_last_failed_path(), content)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to write cache: {}", e)))?;
+    fs::write(get_last_failed_path(), content).map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to write cache: {}", e))
+    })?;
 
     Ok(())
 }
@@ -78,8 +83,9 @@ pub fn clear_last_failed() -> PyResult<()> {
     let cache_path = get_last_failed_path();
 
     if cache_path.exists() {
-        fs::remove_file(&cache_path)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to clear cache: {}", e)))?;
+        fs::remove_file(&cache_path).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!("Failed to clear cache: {}", e))
+        })?;
     }
 
     Ok(())

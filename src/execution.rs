@@ -108,9 +108,8 @@ pub fn run_collected_tests(
 
                     let duration = start.elapsed().as_secs_f64();
                     let total = passed + failed + skipped;
-                    let report = PyRunReport::new(
-                        total, passed, failed, skipped, duration, results,
-                    );
+                    let report =
+                        PyRunReport::new(total, passed, failed, skipped, duration, results);
 
                     // Write cache before returning
                     write_failed_tests_cache(&report)?;
@@ -138,9 +137,7 @@ pub fn run_collected_tests(
     finalize_generators(py, &mut context.teardowns.session);
     let duration = start.elapsed().as_secs_f64();
     let total = passed + failed + skipped;
-    let report = PyRunReport::new(
-        total, passed, failed, skipped, duration, results,
-    );
+    let report = PyRunReport::new(total, passed, failed, skipped, duration, results);
 
     // Write cache after all tests complete
     write_failed_tests_cache(&report)?;

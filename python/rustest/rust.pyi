@@ -32,6 +32,8 @@ def run(
     workers: int | None,
     capture_output: bool,
     enable_codeblocks: bool,
+    last_failed_mode: str,
+    fail_fast: bool,
 ) -> PyRunReport:
     """Execute tests and return a report."""
     ...
