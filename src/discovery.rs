@@ -22,7 +22,7 @@ use crate::model::{
     invalid_test_definition, Fixture, FixtureScope, Mark, ModuleIdGenerator, ParameterMap,
     RunConfiguration, TestCase, TestModule,
 };
-use crate::python_support::PyPaths;
+use crate::python_support::{setup_python_path, PyPaths};
 
 /// Discover tests for the provided paths.
 ///
@@ -36,6 +36,10 @@ pub fn discover_tests(
     config: &RunConfiguration,
 ) -> PyResult<Vec<TestModule>> {
     let canonical_paths = paths.materialise()?;
+
+    // Setup sys.path to enable imports like pytest does
+    setup_python_path(py, &canonical_paths)?;
+
     let py_glob = build_file_glob()?;
     let md_glob = if config.enable_codeblocks {
         Some(build_markdown_glob()?)
