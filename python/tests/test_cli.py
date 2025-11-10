@@ -84,6 +84,8 @@ class TestCli:
             workers=None,
             capture_output=True,
             enable_codeblocks=True,
+            last_failed_mode="none",
+            fail_fast=False,
         )
         assert exit_code == 0
 
