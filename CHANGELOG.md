@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2025-11-10
+
+### Added
+
+- **Pytest Builtin Fixtures**: Added support for pytest's built-in fixtures including:
+  - `tmp_path` and `tmp_path_factory` for temporary directory management with pathlib
+  - `tmpdir` and `tmpdir_factory` for py.path compatibility
+  - `monkeypatch` fixture for patching attributes, environment variables, and sys.path
+  - Full fixture scope support (function, session)
+
+- **Enhanced Benchmark Suites**: Generate richer benchmark suites with support for advanced pytest features and more comprehensive performance testing
+
+### Changed
+
+- Improved documentation with project logo and branding
+- Enhanced test fixtures infrastructure for better pytest compatibility
+
 ## [0.7.0] - 2025-11-10
 
 ### Added

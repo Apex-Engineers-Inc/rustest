@@ -16,13 +16,11 @@ VALID_SCOPES = frozenset(["function", "class", "module", "session"])
 
 
 @overload
-def fixture(func: Callable[P, R], *, scope: str = "function") -> Callable[P, R]:
-    ...
+def fixture(func: Callable[P, R], *, scope: str = "function") -> Callable[P, R]: ...
 
 
 @overload
-def fixture(*, scope: str = "function") -> Callable[[Callable[P, R]], Callable[P, R]]:
-    ...
+def fixture(*, scope: str = "function") -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
 def fixture(

@@ -25,8 +25,6 @@ else:
     py = _py_module
 
 if TYPE_CHECKING:
-    from typing import Protocol
-
     try:  # pragma: no cover - typing-only import
         from py import path as _py_path
     except ImportError:
@@ -246,13 +244,13 @@ class TmpDirFactory:
         super().__init__()
         self._factory = path_factory
 
-    def mktemp(self, basename: str, *, numbered: bool = True) -> PyPathLocal:
+    def mktemp(self, basename: str, *, numbered: bool = True) -> Any:
         if py is None:  # pragma: no cover - exercised only when dependency missing
             raise RuntimeError("py library is required for tmpdir fixtures")
         path = self._factory.mktemp(basename, numbered=numbered)
         return py.path.local(path)
 
-    def getbasetemp(self) -> PyPathLocal:
+    def getbasetemp(self) -> Any:
         if py is None:  # pragma: no cover - exercised only when dependency missing
             raise RuntimeError("py library is required for tmpdir fixtures")
         return py.path.local(self._factory.getbasetemp())
@@ -286,7 +284,7 @@ def tmpdir_factory() -> Iterator[TmpDirFactory]:
 
 
 @fixture(scope="function")
-def tmpdir(tmpdir_factory: TmpDirFactory) -> Iterator[PyPathLocal]:
+def tmpdir(tmpdir_factory: TmpDirFactory) -> Iterator[Any]:
     yield tmpdir_factory.mktemp("tmpdir")
 
 
