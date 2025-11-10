@@ -46,20 +46,20 @@ from rustest import fixture, parametrize, skip, mark
 
 @fixture(scope="function")  # or "class", "module", "session"
 def my_fixture():
-    return data
+    return {"data": "value"}
 
-@parametrize("arg1,arg2", [(val1, val2), ...], ids=["id1", ...])
+@parametrize("arg1,arg2", [(1, 2), (3, 4)], ids=["case1", "case2"])
 def test_function(arg1, arg2):
-    pass
+    assert arg1 < arg2
 
-@skip("reason")
+@skip("Not implemented yet")
 def test_skip():
     pass
 
 @mark.slow
 @mark.integration
 def test_marked():
-    pass
+    assert True
 ```
 
 ### Assertions
@@ -67,16 +67,23 @@ def test_marked():
 ```python
 from rustest import approx, raises
 
-# Floating-point comparison
-assert 0.1 + 0.2 == approx(0.3)
-assert value == approx(expected, rel=1e-6, abs=1e-12)
+def risky_operation():
+    raise ValueError("invalid value")
 
-# Exception testing
-with raises(ValueError):
-    risky_operation()
+def test_assertions():
+    # Floating-point comparison
+    assert 0.1 + 0.2 == approx(0.3)
 
-with raises(ValueError, match="pattern"):
-    risky_operation()
+    value = 100.0001
+    expected = 100.0
+    assert value == approx(expected, rel=1e-6, abs=1e-12)
+
+    # Exception testing
+    with raises(ValueError):
+        risky_operation()
+
+    with raises(ValueError, match="invalid"):
+        risky_operation()
 ```
 
 ### Test Execution
@@ -98,6 +105,7 @@ print(f"{report.passed}/{report.total} passed")
 
 All public APIs include full type annotations for use with type checkers like mypy, pyright, or basedpyright:
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run, RunReport
 from typing import Optional

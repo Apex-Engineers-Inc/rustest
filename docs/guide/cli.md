@@ -9,8 +9,8 @@ rustest --help
 ```
 
 ```
-usage: rustest [-h] [-k PATTERN] [-n WORKERS] [--no-capture] [-v] [--ascii]
-               [--no-color] [--no-codeblocks]
+usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [--no-capture]
+               [-v] [--ascii] [--no-color] [--no-codeblocks]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -22,6 +22,9 @@ options:
   -h, --help            show this help message and exit
   -k PATTERN, --pattern PATTERN
                         Substring to filter tests by (case insensitive).
+  -m MARK_EXPR, --marks MARK_EXPR
+                        Run tests matching the given mark expression (e.g.,
+                        "slow", "not slow", "slow and integration").
   -n WORKERS, --workers WORKERS
                         Number of worker slots to use (experimental).
   --no-capture          Do not capture stdout/stderr during test execution.

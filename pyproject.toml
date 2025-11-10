@@ -35,6 +35,8 @@ dev = [
     "poethepoet>=0.22",
     "pre-commit>=3.5",
     "pytest>=7.0",
+    "pytest-asyncio>=1.2.0",
+    "pytest-codeblocks>=0.17.0",
     "ruff>=0.1.9",
 ]
 docs = [
@@ -107,3 +109,7 @@ markers = [
     "smoke: marks tests for smoke testing",
     "critical: marks tests as critical",
 ]
+
+[tool.pytest_codeblocks]
+# Test Python code blocks in markdown files
+# Use <!--pytest-codeblocks:skip--> HTML comments to skip individual blocks

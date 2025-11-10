@@ -118,6 +118,36 @@ def test_validation():
         validate_email("")
 ```
 
+### Async Testing
+
+```python
+from rustest import mark
+import asyncio
+
+@mark.asyncio
+async def test_async_operation():
+    """Test async function."""
+    result = await some_async_function()
+    assert result == expected_value
+
+@mark.asyncio(loop_scope="module")
+async def test_with_module_loop():
+    """Test with module-scoped event loop."""
+    await another_async_operation()
+
+@mark.asyncio(loop_scope="class")
+class TestAsyncAPI:
+    """All async methods share an event loop."""
+
+    async def test_get(self):
+        result = await api.get()
+        assert result is not None
+
+    async def test_post(self):
+        result = await api.post(data)
+        assert result["status"] == "success"
+```
+
 ## See Also
 
 - [Fixtures Guide](../guide/fixtures.md) - Detailed fixture usage

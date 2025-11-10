@@ -42,8 +42,11 @@ Tuple of individual test results. Each result is a [`TestResult`](#testresult) o
 
 #### iter_status
 
+**Signature:**
+<!--pytest.mark.skip-->
 ```python
-def iter_status(self, status: str) -> Iterable[TestResult]
+def iter_status(self, status: str) -> Iterable[TestResult]:
+    ...
 ```
 
 Yield results with the requested status.
@@ -55,6 +58,7 @@ Yield results with the requested status.
 
 **Example:**
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -119,6 +123,7 @@ Captured stderr output from the test (if `capture_output=True`), `None` otherwis
 
 ### Basic Usage
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -133,6 +138,7 @@ print(f"Duration: {report.duration:.3f}s")
 
 ### Accessing Individual Results
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -152,6 +158,7 @@ for result in report.results:
 
 ### Filtering Results
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -172,6 +179,7 @@ print(f"Tests with output: {len(with_output)}")
 
 ### Using iter_status
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -191,6 +199,7 @@ for test in report.iter_status("skipped"):
 
 ### Creating Reports
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 import json
@@ -223,6 +232,7 @@ with open("test-results.json", "w") as f:
 
 ### Calculate Statistics
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 

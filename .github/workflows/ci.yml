@@ -43,6 +43,41 @@ jobs:
       - name: Run all integration tests with rustest
         run: .venv/bin/python -m rustest tests/ examples/tests/ -v
 
+      - name: Test README code blocks with rustest
+        run: .venv/bin/python -m rustest README.md
+
+      - name: Test README code blocks with pytest-codeblocks
+        run: .venv/bin/pytest README.md --codeblocks
+
+      - name: Test documentation code blocks with rustest
+        run: |
+          .venv/bin/python -m rustest docs/guide/writing-tests.md -v
+          .venv/bin/python -m rustest docs/guide/fixtures.md -v
+          .venv/bin/python -m rustest docs/guide/assertions.md -v
+          .venv/bin/python -m rustest docs/guide/test-classes.md -v
+          .venv/bin/python -m rustest docs/guide/parametrization.md -v
+          .venv/bin/python -m rustest docs/guide/marks.md -v
+          .venv/bin/python -m rustest docs/guide/async-testing.md -v
+          .venv/bin/python -m rustest docs/getting-started/quickstart.md -v
+          .venv/bin/python -m rustest docs/api/approx.md -v
+          .venv/bin/python -m rustest docs/api/decorators.md -v
+          .venv/bin/python -m rustest docs/api/overview.md -v
+
+      - name: Test documentation code blocks with pytest-codeblocks
+        run: |
+          .venv/bin/pytest docs/guide/writing-tests.md --codeblocks
+          .venv/bin/pytest docs/guide/fixtures.md --codeblocks
+          .venv/bin/pytest docs/guide/assertions.md --codeblocks
+          .venv/bin/pytest docs/guide/test-classes.md --codeblocks
+          .venv/bin/pytest docs/guide/python-api.md --codeblocks
+          .venv/bin/pytest docs/guide/parametrization.md --codeblocks
+          .venv/bin/pytest docs/guide/marks.md --codeblocks
+          .venv/bin/pytest docs/guide/async-testing.md --codeblocks
+          .venv/bin/pytest docs/getting-started/quickstart.md --codeblocks
+          .venv/bin/pytest docs/api/approx.md --codeblocks
+          .venv/bin/pytest docs/api/decorators.md --codeblocks
+          .venv/bin/pytest docs/api/overview.md --codeblocks
+
   lint:
     name: Lint and Format
     runs-on: ubuntu-latest

@@ -8,6 +8,7 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 - 🚀 **About 2x faster** than pytest on the rustest integration test suite
 - ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
+- 🔄 **Built-in async support** with `@mark.asyncio` (like pytest-asyncio)
 - 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
 - 📝 **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
@@ -40,6 +41,7 @@ With **10,000 parametrized invocations**:
 
 Rustest supports Python **3.10 through 3.14**.
 
+<!--pytest.mark.skip-->
 ```bash
 # Using pip
 pip install rustest
@@ -58,6 +60,7 @@ Create a file `test_math.py`:
 
 ```python
 from rustest import fixture, parametrize, mark, approx, raises
+import asyncio
 
 @fixture
 def numbers() -> list[int]:
@@ -75,6 +78,13 @@ def test_expensive_operation() -> None:
     result = sum(range(1000000))
     assert result > 0
 
+@mark.asyncio
+async def test_async_operation() -> None:
+    # Example async operation
+    await asyncio.sleep(0.001)
+    result = 42
+    assert result == 42
+
 def test_division_by_zero() -> None:
     with raises(ZeroDivisionError, match="division by zero"):
         1 / 0
@@ -82,6 +92,7 @@ def test_division_by_zero() -> None:
 
 ### 2. Run Your Tests
 
+<!--pytest.mark.skip-->
 ```bash
 # Run all tests
 rustest
@@ -150,6 +161,7 @@ We welcome contributions! See the [Development Guide](https://apex-engineers-inc
 
 Quick reference:
 
+<!--pytest.mark.skip-->
 ```bash
 # Setup
 git clone https://github.com/Apex-Engineers-Inc/rustest.git

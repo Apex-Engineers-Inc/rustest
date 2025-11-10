@@ -23,10 +23,10 @@ from rustest import run
 report = run(paths=["tests"])
 
 # Multiple paths
-report = run(paths=["tests", "integration", "README.md"])
+report = run(paths=["tests", "examples/tests"])
 
-# Specific files
-report = run(paths=["tests/test_user.py", "tests/test_auth.py"])
+# Single file
+report = run(paths=["README.md"])
 ```
 
 ### pattern
@@ -36,6 +36,8 @@ report = run(paths=["tests/test_user.py", "tests/test_auth.py"])
 Filter tests by name using pattern matching. Same as the CLI `-k` option.
 
 ```python
+from rustest import run
+
 # Run only user-related tests
 report = run(paths=["tests"], pattern="user")
 
@@ -59,6 +61,8 @@ Reserved for future parallel execution support. Currently not implemented.
 Whether to capture stdout/stderr during test execution.
 
 ```python
+from rustest import run
+
 # Capture output (default)
 report = run(paths=["tests"], capture_output=True)
 
@@ -73,6 +77,8 @@ report = run(paths=["tests"], capture_output=False)
 Whether to test Python code blocks in markdown files.
 
 ```python
+from rustest import run
+
 # Test markdown code blocks (default)
 report = run(paths=["docs"], enable_codeblocks=True)
 
@@ -88,6 +94,7 @@ Returns a [`RunReport`](reporting.md#runreport) object containing test results a
 
 ### Basic Usage
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -102,6 +109,7 @@ print(f"Duration: {report.duration:.3f}s")
 
 ### With Pattern Filtering
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -114,6 +122,7 @@ if report.failed == 0:
 
 ### Without Output Capture
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -123,6 +132,7 @@ report = run(paths=["tests"], capture_output=False)
 
 ### Analyzing Results
 
+<!--pytest.mark.skip-->
 ```python
 from rustest import run
 
@@ -144,6 +154,7 @@ if slow_tests:
 
 ### In a Script
 
+<!--pytest.mark.skip-->
 ```python
 #!/usr/bin/env python3
 from rustest import run
