@@ -3,19 +3,33 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, TypeVar
+from typing import Any, ParamSpec, TypeVar, overload
 
-F = TypeVar("F", bound=Callable[..., object])
+P = ParamSpec("P")
+R = TypeVar("R")
+Q = ParamSpec("Q")
+S = TypeVar("S")
+TFunc = TypeVar("TFunc", bound=Callable[..., Any])
 
 # Valid fixture scopes
 VALID_SCOPES = frozenset(["function", "class", "module", "session"])
 
 
+@overload
+def fixture(func: Callable[P, R], *, scope: str = "function") -> Callable[P, R]:
+    ...
+
+
+@overload
+def fixture(*, scope: str = "function") -> Callable[[Callable[P, R]], Callable[P, R]]:
+    ...
+
+
 def fixture(
-    func: F | None = None,
+    func: Callable[P, R] | None = None,
     *,
     scope: str = "function",
-) -> F | Callable[[F], F]:
+) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """Mark a function as a fixture with a specific scope.
 
     Args:
@@ -40,7 +54,7 @@ def fixture(
         msg = f"Invalid fixture scope '{scope}'. Must be one of: {valid}"
         raise ValueError(msg)
 
-    def decorator(f: F) -> F:
+    def decorator(f: Callable[P, R]) -> Callable[P, R]:
         setattr(f, "__rustest_fixture__", True)
         setattr(f, "__rustest_fixture_scope__", scope)
         return f
@@ -51,10 +65,10 @@ def fixture(
     return decorator
 
 
-def skip(reason: str | None = None) -> Callable[[F], F]:
+def skip(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Skip a test or fixture."""
 
-    def decorator(func: F) -> F:
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
         setattr(func, "__rustest_skip__", reason or "skipped via rustest.skip")
         return func
 
@@ -66,12 +80,12 @@ def parametrize(
     values: Sequence[Sequence[object] | Mapping[str, object]],
     *,
     ids: Sequence[str] | None = None,
-) -> Callable[[F], F]:
+) -> Callable[[Callable[Q, S]], Callable[Q, S]]:
     """Parametrise a test function."""
 
     normalized_names = _normalize_arg_names(arg_names)
 
-    def decorator(func: F) -> F:
+    def decorator(func: Callable[Q, S]) -> Callable[Q, S]:
         cases = _build_cases(normalized_names, values, ids)
         setattr(func, "__rustest_parametrization__", cases)
         return func
@@ -129,7 +143,7 @@ class MarkDecorator:
         self.args = args
         self.kwargs = kwargs
 
-    def __call__(self, func: F) -> F:
+    def __call__(self, func: TFunc) -> TFunc:
         """Apply this mark to the given function."""
         # Get existing marks or create a new list
         existing_marks: list[dict[str, Any]] = getattr(func, "__rustest_marks__", [])

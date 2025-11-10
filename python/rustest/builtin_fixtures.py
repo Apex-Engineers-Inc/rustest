@@ -11,20 +11,28 @@ import tempfile
 from collections.abc import Generator, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, cast
 
 from .decorators import fixture
 
+py: ModuleType | None
 try:  # pragma: no cover - optional dependency at runtime
-    import py  # type: ignore[import-not-found]
+    import py as _py_module
 except Exception:  # pragma: no cover - import error reported at fixture usage time
-    py = None  # type: ignore[assignment]
+    py = None
+else:
+    py = _py_module
 
 if TYPE_CHECKING:
     from typing import Protocol
 
-    class PyPathLocal(Protocol):
-        def __fspath__(self) -> str: ...
+    try:  # pragma: no cover - typing-only import
+        from py import path as _py_path
+    except ImportError:
+        PyPathLocal = Any
+    else:
+        PyPathLocal = _py_path.local
 
 else:  # pragma: no cover - imported only for typing
     PyPathLocal = Any
@@ -44,6 +52,7 @@ class MonkeyPatch:
     """Lightweight re-implementation of :class:`pytest.MonkeyPatch`."""
 
     def __init__(self) -> None:
+        super().__init__()
         self._setattrs: list[tuple[object, str, object | _NotSet]] = []
         self._setitems: list[tuple[MutableMapping[Any, Any], Any, object | _NotSet]] = []
         self._environ: list[tuple[str, str | _NotSet]] = []
@@ -134,9 +143,10 @@ class MonkeyPatch:
         str_value = str(value)
         if prepend and name in os.environ:
             str_value = f"{str_value}{prepend}{os.environ[name]}"
-        original = os.environ.get(name, _NOT_SET)
+        original = os.environ.get(name)
         os.environ[name] = str_value
-        self._environ.append((name, original if original is not None else _NOT_SET))
+        stored_original: str | _NotSet = original if original is not None else _NOT_SET
+        self._environ.append((name, stored_original))
 
     def delenv(self, name: str, *, raising: bool = True) -> None:
         if name not in os.environ:
@@ -201,6 +211,7 @@ class TmpPathFactory:
     """Create temporary directories using :class:`pathlib.Path`."""
 
     def __init__(self, prefix: str = "tmp_path") -> None:
+        super().__init__()
         self._base = Path(tempfile.mkdtemp(prefix=f"rustest-{prefix}-"))
         self._counter = itertools.count()
         self._created: list[Path] = []
@@ -232,6 +243,7 @@ class TmpDirFactory:
     """Wrapper that exposes ``py.path.local`` directories."""
 
     def __init__(self, path_factory: TmpPathFactory) -> None:
+        super().__init__()
         self._factory = path_factory
 
     def mktemp(self, basename: str, *, numbered: bool = True) -> PyPathLocal:
