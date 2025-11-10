@@ -98,6 +98,7 @@ managed = true
 rustest = { path = "." }
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
