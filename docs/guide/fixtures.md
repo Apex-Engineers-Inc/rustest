@@ -547,6 +547,254 @@ def test_database_documented(database):
     assert database is not None
 ```
 
+## Built-in Fixtures
+
+Rustest provides a set of built-in fixtures that mirror pytest's most commonly used fixtures. These are automatically available without requiring any imports or conftest.py configuration.
+
+### tmp_path - Temporary Directories with pathlib
+
+The `tmp_path` fixture provides a unique temporary directory for each test function as a `pathlib.Path` object:
+
+```python
+from pathlib import Path
+
+def test_write_file(tmp_path: Path) -> None:
+    """Each test gets a fresh temporary directory."""
+    file = tmp_path / "test.txt"
+    file.write_text("Hello, World!")
+    assert file.read_text() == "Hello, World!"
+
+def test_create_subdirectory(tmp_path: Path) -> None:
+    """tmp_path is isolated - previous test's files are gone."""
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    assert subdir.exists()
+    assert subdir.is_dir()
+```
+
+This fixture is perfect for tests that need to write files or create temporary data without polluting your filesystem. Each test receives a completely isolated directory that is automatically cleaned up after the test completes.
+
+!!! tip "pathlib.Path Advantages"
+    The `tmp_path` fixture uses Python's modern `pathlib.Path` instead of string paths. Benefits include:
+    - Object-oriented path operations (`/` operator for joining)
+    - Built-in methods like `.mkdir()`, `.read_text()`, `.write_text()`
+    - Cross-platform path handling
+    - Better type safety with type hints
+
+### tmp_path_factory - Creating Multiple Temporary Directories
+
+For tests that need multiple temporary directories or when you want to create directories at different times, use `tmp_path_factory`:
+
+```python
+from pathlib import Path
+from typing import Any
+
+def test_multiple_temp_dirs(tmp_path_factory: Any) -> None:
+    """Create multiple temporary directories in a single test."""
+    dir1 = tmp_path_factory.mktemp("data")
+    dir2 = tmp_path_factory.mktemp("config")
+
+    # Both directories exist independently
+    (dir1 / "file1.txt").write_text("Data")
+    (dir2 / "config.json").write_text('{"key": "value"}')
+
+    assert (dir1 / "file1.txt").exists()
+    assert (dir2 / "config.json").exists()
+
+def test_numbered_directories(tmp_path_factory: Any) -> None:
+    """Directories are automatically numbered to avoid conflicts."""
+    # Both are named "output" but get unique numbers
+    output1 = tmp_path_factory.mktemp("output")  # Creates output0
+    output2 = tmp_path_factory.mktemp("output")  # Creates output1
+
+    assert output1 != output2
+
+def test_custom_naming(tmp_path_factory: Any) -> None:
+    """Control numbering behavior with the numbered parameter."""
+    # Without numbering - exact name, only create once
+    unique = tmp_path_factory.mktemp("data", numbered=False)
+    assert unique.name == "data"
+```
+
+The `tmp_path_factory` fixture is session-scoped, meaning it persists for the entire test session but all created directories are cleaned up at the end.
+
+!!! note "Factory vs Direct Fixture"
+    Use `tmp_path` when you need one temporary directory per test (most common).
+    Use `tmp_path_factory` when you need multiple directories in a single test or more control over directory creation.
+
+### tmpdir - Legacy Support for py.path
+
+For compatibility with older code that uses the `py` library, Rustest provides the `tmpdir` fixture:
+
+```python
+def test_with_legacy_tmpdir(tmpdir) -> None:
+    """Using the legacy py.path.local API."""
+    # tmpdir is a py.path.local object
+    file = tmpdir.join("test.txt")
+    file.write("Content")
+
+    assert file.read() == "Content"
+    assert tmpdir.listdir()  # List directory contents
+```
+
+!!! warning "Prefer tmp_path"
+    The `tmpdir` fixture is provided for legacy compatibility. New tests should use `tmp_path` with `pathlib.Path`, which is the modern Python standard.
+
+### tmpdir_factory - Session-Level Legacy Temporary Directories
+
+Similar to `tmp_path_factory` but using the legacy `py.path.local` API:
+
+```python
+def test_with_legacy_factory(tmpdir_factory) -> None:
+    """Create multiple py.path.local directories."""
+    dir1 = tmpdir_factory.mktemp("session_data")
+    dir2 = tmpdir_factory.mktemp("cache")
+
+    file1 = dir1.join("data.txt")
+    file1.write("session data")
+
+    assert file1.check()  # Check if file exists
+```
+
+### monkeypatch - Patching Attributes and Environment Variables
+
+The `monkeypatch` fixture allows you to temporarily modify attributes, environment variables, dictionary items, and sys.path during testing. All changes are automatically reverted after the test:
+
+#### Patching Object Attributes
+
+```python
+class Config:
+    debug = False
+    timeout = 30
+
+def test_patch_attribute(monkeypatch) -> None:
+    """Temporarily patch an object attribute."""
+    monkeypatch.setattr(Config, "debug", True)
+    assert Config.debug is True
+
+    # After the test, Config.debug reverts to False
+```
+
+#### Patching Environment Variables
+
+```python
+import os
+
+def test_environment_variable(monkeypatch) -> None:
+    """Temporarily set an environment variable."""
+    monkeypatch.setenv("API_KEY", "test-key-123")
+    assert os.environ["API_KEY"] == "test-key-123"
+
+def test_remove_environment_variable(monkeypatch) -> None:
+    """Remove an environment variable for the test."""
+    monkeypatch.delenv("HOME", raising=False)
+    assert "HOME" not in os.environ
+    # HOME is restored after the test
+```
+
+#### Patching Dictionary Items
+
+```python
+def test_patch_dict(monkeypatch) -> None:
+    """Temporarily modify dictionary items."""
+    settings = {"theme": "light", "language": "en"}
+
+    monkeypatch.setitem(settings, "theme", "dark")
+    assert settings["theme"] == "dark"
+
+    # After the test, reverts to "light"
+```
+
+#### Modifying sys.path
+
+```python
+import sys
+
+def test_add_to_syspath(monkeypatch) -> None:
+    """Temporarily add a directory to sys.path."""
+    monkeypatch.syspath_prepend("/custom/module/path")
+    assert "/custom/module/path" in sys.path
+    # After the test, it's removed from sys.path
+```
+
+#### Changing the Working Directory
+
+```python
+import os
+from pathlib import Path
+
+def test_change_directory(monkeypatch, tmp_path: Path) -> None:
+    """Temporarily change the working directory."""
+    original_cwd = os.getcwd()
+
+    monkeypatch.chdir(tmp_path)
+    assert os.getcwd() == str(tmp_path)
+
+    # After the test, cwd is restored
+    assert os.getcwd() == original_cwd
+```
+
+#### Patching Module Functions
+
+```python
+import requests
+
+def test_patch_module_function(monkeypatch) -> None:
+    """Patch a function in an imported module."""
+    def mock_get(*args, **kwargs):
+        class Response:
+            status_code = 200
+            text = '{"result": "success"}'
+        return Response()
+
+    monkeypatch.setattr(requests, "get", mock_get)
+    response = requests.get("https://api.example.com")
+    assert response.status_code == 200
+```
+
+#### Using the Context Manager
+
+```python
+from rustest.builtin_fixtures import MonkeyPatch
+
+def test_with_context_manager() -> None:
+    """Use MonkeyPatch as a context manager."""
+    with MonkeyPatch.context() as patch:
+        import os
+        patch.setenv("TEST_VAR", "test_value")
+        assert os.environ["TEST_VAR"] == "test_value"
+
+    # Changes are reverted after the with block
+```
+
+!!! tip "Automatic Cleanup"
+    All monkeypatch changes are automatically reverted after each test, even if the test fails. This ensures test isolation and prevents side effects from affecting other tests.
+
+### Combining Built-in Fixtures
+
+You can combine multiple built-in fixtures in your tests:
+
+```python
+import os
+from pathlib import Path
+
+def test_multiple_builtin_fixtures(tmp_path: Path, monkeypatch) -> None:
+    """Use multiple built-in fixtures together."""
+    # Create a test file
+    config_file = tmp_path / "config.txt"
+    config_file.write_text("API_KEY=secret123")
+
+    # Patch environment variable
+    monkeypatch.setenv("CONFIG_PATH", str(config_file))
+
+    # Change working directory
+    monkeypatch.chdir(tmp_path)
+
+    # All patches are isolated and cleaned up
+    assert os.environ["CONFIG_PATH"] == str(config_file)
+    assert os.getcwd() == str(tmp_path)
+```
+
 ## Next Steps
 
 - [Parametrization](parametrization.md) - Combine fixtures with parametrized tests
