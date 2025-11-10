@@ -4,25 +4,43 @@ Rustest is designed for speed. This page details benchmark results and explains 
 
 ## Benchmark Results
 
-We benchmarked pytest against rustest using the **actual rustest integration test suite** with **~199 tests** covering real-world scenarios:
+### Synthetic benchmark matrix (1–5,000 tests)
 
-- Basic functionality tests: Test discovery, execution, and reporting
-- Fixture tests: Simple fixtures, nested fixtures, fixture dependencies
-- Fixture scopes: Function, class, module, and session-scoped fixtures
-- Yield fixtures: Setup/teardown with proper cleanup
-- Parametrized tests: Multiple parameter combinations
-- conftest.py integration: Shared fixtures across test files
-- Error handling: Test failures, skips, and edge cases
-- Marks: Skip marks and custom test markers
+We generated identical pytest and rustest suites with 1, 5, 20, 100, 500, 1,000, 2,000, and 5,000 tests. Each command ran five times and we report the mean wall-clock duration:
 
-### Integration Suite (~200 tests)
+| Test Count | pytest (mean) | rustest (mean) | Speedup | pytest tests/s | rustest tests/s |
+|-----------:|--------------:|---------------:|--------:|----------------:|-----------------:|
+|          1 |       0.428s |        0.116s |    3.68x |             2.3 |              8.6 |
+|          5 |       0.428s |        0.120s |    3.56x |            11.7 |             41.6 |
+|         20 |       0.451s |        0.116s |    3.88x |            44.3 |            171.7 |
+|        100 |       0.656s |        0.133s |    4.93x |           152.4 |            751.1 |
+|        500 |       1.206s |        0.146s |    8.29x |           414.4 |           3436.1 |
+|      1,000 |       1.854s |        0.171s |   10.83x |           539.4 |           5839.4 |
+|      2,000 |       3.343s |        0.243s |   13.74x |           598.3 |           8219.9 |
+|      5,000 |       7.811s |        0.403s |   19.37x |           640.2 |          12399.7 |
+
+Key takeaways:
+
+- **8.53× average speedup** (7.03× geometric mean) across the matrix
+- **16.22× weighted speedup** when weighting by the number of executed tests
+- **16.18s → 1.45s** total runtime reduction when summing all eight suites
+
+### What should my suite expect?
+
+- **Tiny suites (≤20 tests):** Rustest trims startup overhead for **~3–4× faster** runs. Think "still instant" but consistently a few hundred milliseconds quicker than pytest.
+- **Growing suites (≈100–500 tests):** Expect **~5–8× faster** execution as file-system discovery, fixture setup, and orchestration all move into Rust.
+- **Large suites (≥1,000 tests):** The fixed startup cost disappears in the noise, unlocking **~11–19× faster** runs and dramatic CI savings.
+
+### Integration suite (~200 tests)
+
+The production integration suite still shows a consistent **~2.1× wall-clock speedup**, providing a realistic reference point for everyday development:
 
 | Test Runner | Wall Clock | Speedup | Command |
 |-------------|------------|---------|---------|
 | pytest      | 1.33–1.59s | 1.0x (baseline) | `pytest tests/ examples/tests/ -q` |
 | rustest     | 0.69–0.70s | **~2.1x faster** | `python -m rustest tests/ examples/tests/` |
 
-### Large Parametrization Stress Test (10,000 tests)
+### Large parametrization stress test (10,000 tests)
 
 We created a synthetic stress test in `benchmarks/test_large_parametrize.py` with **10,000 parametrized invocations** to test scheduling overhead:
 
@@ -87,48 +105,41 @@ We created a synthetic stress test in `benchmarks/test_large_parametrize.py` wit
 
 ## Real-World Impact
 
-The ~2x speedup has noticeable effects on development workflow:
+The benchmark matrix shows how the gap widens as suites grow:
 
-### Small Suite (200 tests)
+### Small suite (100 tests)
 
-Like the rustest project itself:
+- **pytest**: 0.66s mean (0.62s median)
+- **rustest**: 0.13s mean (0.13s median)
+- **Time saved**: ~0.52s per run (**~26s/day** at 50 local runs)
 
-- **pytest**: ~1.46s wall time
-- **rustest**: ~0.70s wall time
-- **Time saved**: ~0.76s per run
+### Medium suite (1,000 tests)
 
-!!! tip "Development Impact"
-    During active development, you might run tests 50+ times per day. At 0.76s savings per run, that's **38 seconds saved daily**—keeping you in flow state.
+- **pytest**: 1.85s mean (1.48s median)
+- **rustest**: 0.17s mean (0.17s median)
+- **Time saved**: ~1.68s per run (**~1.4 minutes/day** at 50 local runs)
 
-### Medium Suite (1,000 tests, projected)
+### Large suite (5,000 tests)
 
-- **pytest**: ~7.3s
-- **rustest**: ~3.4s
-- **Time saved**: ~3.9s per run
-- **Daily savings** (50 runs): ~3.25 minutes
-
-### Large Suite (10,000 tests, projected)
-
-- **pytest**: ~73s
-- **rustest**: ~34s
-- **Time saved**: ~39s per run
-- **Daily savings** (50 runs): ~32.5 minutes
+- **pytest**: 7.81s mean (5.75s median)
+- **rustest**: 0.40s mean (0.36s median)
+- **Time saved**: ~7.41s per run (**~6.2 minutes/day** at 50 local runs)
 
 ### CI/CD Impact
 
-For a typical CI pipeline running tests on every commit:
+For a typical CI pipeline running on every commit:
 
 **Repository with 1,000 tests:**
 - 100 commits/day
-- pytest: ~12 minutes total
-- rustest: ~5.6 minutes total
-- **Time saved**: ~6.4 minutes of CI time per day
+- pytest: ~185s total (~3.1 minutes)
+- rustest: ~17s total (~0.3 minutes)
+- **Time saved**: ~168s per day (~2.8 minutes)
 
-**Repository with 10,000 tests:**
+**Repository with 5,000 tests:**
 - 100 commits/day
-- pytest: ~2 hours total
-- rustest: ~56 minutes total
-- **Time saved**: ~1 hour of CI time per day
+- pytest: ~781s total (~13.0 minutes)
+- rustest: ~40s total (~0.7 minutes)
+- **Time saved**: ~741s per day (~12.3 minutes)
 
 ## Performance Characteristics
 
@@ -137,9 +148,9 @@ For a typical CI pipeline running tests on every commit:
 Rustest's overhead is mostly fixed (startup time), so the benefits increase with more tests:
 
 ```
-200 tests:    2.1x faster
-1,000 tests:  2.1x faster (projected)
-10,000 tests: 2.1x faster (projected)
+100 tests:    4.9x faster
+1,000 tests:  10.8x faster
+5,000 tests:  19.4x faster
 ```
 
 ### Parametrization Benefits
@@ -147,7 +158,7 @@ Rustest's overhead is mostly fixed (startup time), so the benefits increase with
 Heavy parametrization sees even bigger gains due to efficient dispatch:
 
 ```
-Standard tests:      ~2.1x faster
+Standard tests:  up to 19.4x faster (5,000-case matrix)
 10,000 parameters:   ~24x faster
 ```
 
@@ -182,6 +193,16 @@ elapsed = time.perf_counter() - start
 
 ## Running Benchmarks Yourself
 
+### Benchmark matrix
+
+```bash
+# Run the multi-suite benchmark matrix
+python3 profile_tests.py --runs 5
+
+# Render the Markdown summary (writes BENCHMARKS.md)
+python3 generate_comparison.py
+```
+
 ### Integration Suite
 
 ```bash
@@ -195,9 +216,6 @@ rustest tests/ examples/tests/
 ### Stress Test
 
 ```bash
-# Using the profile script
-python3 profile_tests.py
-
 # Or manually
 pytest benchmarks/test_large_parametrize.py -q
 rustest benchmarks/test_large_parametrize.py
