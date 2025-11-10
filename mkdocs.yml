@@ -9,7 +9,6 @@ favicon: assets/logo-icon.svg
 theme:
   name: material
   logo: assets/logo-icon.svg
-  favicon: assets/logo-icon.svg
   palette:
     # Palette toggle for light mode
     - media: "(prefers-color-scheme: light)"
