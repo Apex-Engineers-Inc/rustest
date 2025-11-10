@@ -587,6 +587,7 @@ For tests that need multiple temporary directories or when you want to create di
 
 ```python
 from pathlib import Path
+from typing import Any
 
 def test_multiple_temp_dirs(tmp_path_factory: Any) -> None:
     """Create multiple temporary directories in a single test."""
