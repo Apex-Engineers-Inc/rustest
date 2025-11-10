@@ -1,5 +1,9 @@
 # rustest
 
+<div style="text-align: center; margin-bottom: 2rem;">
+  <img src="assets/logo-icon.svg" alt="rustest logo" style="height: 120px; width: 120px;">
+</div>
+
 **Rust-powered pytest-compatible test runner**
 
 Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **massive speedups (8.5× average, up to 19× faster)** with familiar syntax and minimal setup.
