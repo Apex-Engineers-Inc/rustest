@@ -12,6 +12,7 @@ __pycache__/
 *.dll
 .mypy_cache/
 .pytest_cache/
+.rustest_cache/
 .DS_Store
 /external
 /rustest/

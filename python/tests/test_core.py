@@ -29,13 +29,24 @@ class TestCoreRun:
 
         captured_args: dict[str, object] = {}
 
-        def fake_run(paths, pattern, mark_expr, workers, capture_output, enable_codeblocks):  # type: ignore[no-untyped-def]
+        def fake_run(
+            paths,
+            pattern,
+            mark_expr,
+            workers,
+            capture_output,
+            enable_codeblocks,
+            last_failed_mode,
+            fail_fast,
+        ):  # type: ignore[no-untyped-def]
             captured_args["paths"] = paths
             captured_args["pattern"] = pattern
             captured_args["mark_expr"] = mark_expr
             captured_args["workers"] = workers
             captured_args["capture_output"] = capture_output
             captured_args["enable_codeblocks"] = enable_codeblocks
+            captured_args["last_failed_mode"] = last_failed_mode
+            captured_args["fail_fast"] = fail_fast
             return dummy_report
 
         with stub_rust_module(run=fake_run):
@@ -53,5 +64,7 @@ class TestCoreRun:
         assert captured_args["workers"] == 4
         assert captured_args["capture_output"] is False
         assert captured_args["enable_codeblocks"] is True
+        assert captured_args["last_failed_mode"] == "none"
+        assert captured_args["fail_fast"] is False
         assert report.total == 1
         assert report.passed == 1

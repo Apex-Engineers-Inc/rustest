@@ -161,7 +161,6 @@ pub struct TestCase {
 }
 
 impl TestCase {
-    #[allow(dead_code)]
     pub fn unique_id(&self) -> String {
         format!("{}::{}", self.path.display(), self.display_name)
     }
@@ -202,6 +201,29 @@ impl TestModule {
     }
 }
 
+/// Mode for running last failed tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LastFailedMode {
+    /// Don't filter based on last failed tests.
+    None,
+    /// Only run tests that failed in the last run.
+    OnlyFailed,
+    /// Run failed tests first, then all other tests.
+    FailedFirst,
+}
+
+impl LastFailedMode {
+    /// Parse from string (matches pytest's options).
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "none" => Ok(LastFailedMode::None),
+            "only" => Ok(LastFailedMode::OnlyFailed),
+            "first" => Ok(LastFailedMode::FailedFirst),
+            _ => Err(format!("Invalid last failed mode: {}", s)),
+        }
+    }
+}
+
 /// Configuration coming from Python.
 #[derive(Clone, Debug)]
 pub struct RunConfiguration {
@@ -211,6 +233,8 @@ pub struct RunConfiguration {
     pub worker_count: usize,
     pub capture_output: bool,
     pub enable_codeblocks: bool,
+    pub last_failed_mode: LastFailedMode,
+    pub fail_fast: bool,
 }
 
 impl RunConfiguration {
@@ -220,6 +244,8 @@ impl RunConfiguration {
         workers: Option<usize>,
         capture_output: bool,
         enable_codeblocks: bool,
+        last_failed_mode: LastFailedMode,
+        fail_fast: bool,
     ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
@@ -228,6 +254,8 @@ impl RunConfiguration {
             worker_count,
             capture_output,
             enable_codeblocks,
+            last_failed_mode,
+            fail_fast,
         }
     }
 }
@@ -292,6 +320,11 @@ pub struct PyTestResult {
 }
 
 impl PyTestResult {
+    /// Get the unique identifier for this test result.
+    pub fn unique_id(&self) -> String {
+        format!("{}::{}", self.path, self.name)
+    }
+
     pub fn passed(
         name: String,
         path: String,

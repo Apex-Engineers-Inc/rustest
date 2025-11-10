@@ -10,7 +10,8 @@ rustest --help
 
 ```
 usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [--no-capture]
-               [-v] [--ascii] [--no-color] [--no-codeblocks]
+               [-v] [--ascii] [--no-color] [--no-codeblocks] [--lf] [--ff]
+               [-x]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -33,6 +34,10 @@ options:
                         output.
   --no-color            Disable colored output.
   --no-codeblocks       Disable code block tests from markdown files.
+  --lf, --last-failed   Rerun only the tests that failed in the last run.
+  --ff, --failed-first  Run previously failed tests first, then all other
+                        tests.
+  -x, --exitfirst       Exit instantly on first error or failed test.
 
 ```
 
@@ -109,6 +114,195 @@ rustest -k "not slow"
 # Run critical user tests
 rustest -k "user and critical"
 ```
+
+## Test Workflow Options
+
+### Last Failed Tests (--lf)
+
+Rerun only tests that failed in the previous run. This is helpful for quickly iterating on fixes:
+
+```bash
+# First run - some tests fail
+rustest test_workflow.py
+```
+
+```
+✓✓✗✓✗
+
+======================================================================
+FAILURES
+======================================================================
+
+test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
+
+test_failing_2 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 21, in test_failing_2
+    assert "world".startswith("x"), "String doesn't start with x"
+           ^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: String doesn't start with x
+
+5 tests: 3 passed, 2 failed, 0 skipped in 0.004s
+```
+
+```bash
+# Run only the 2 failed tests
+rustest test_workflow.py --lf
+```
+
+```
+✗✗
+
+======================================================================
+FAILURES
+======================================================================
+
+test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
+
+test_failing_2 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 21, in test_failing_2
+    assert "world".startswith("x"), "String doesn't start with x"
+           ^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: String doesn't start with x
+
+2 tests: 0 passed, 2 failed, 0 skipped in 0.004s
+```
+
+!!! tip "Cache Location"
+    Failed test information is stored in `.rustest_cache/lastfailed`. This file is automatically created and updated after each test run.
+
+### Failed First (--ff)
+
+Run previously failed tests first, then continue with all other tests. This helps you see failures quickly while still running the full suite:
+
+```bash
+# Run failed tests first, then all others
+rustest test_workflow.py --ff
+```
+
+```
+✗✗✓✓✓
+
+======================================================================
+FAILURES
+======================================================================
+
+test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
+
+test_failing_2 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 21, in test_failing_2
+    assert "world".startswith("x"), "String doesn't start with x"
+           ^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: String doesn't start with x
+
+5 tests: 3 passed, 2 failed, 0 skipped in 0.004s
+```
+
+Notice the output shows `✗✗✓✓✓` - failed tests run first!
+
+### Fail Fast (-x)
+
+Stop execution immediately after the first test failure. Useful for quick feedback during development:
+
+```bash
+# Stop on first failure
+rustest test_workflow.py -x
+```
+
+```
+✓✓✗
+
+======================================================================
+FAILURES
+======================================================================
+
+test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
+
+3 tests: 2 passed, 1 failed, 0 skipped in 0.004s
+```
+
+Only 3 tests ran instead of all 5 - execution stopped after the first failure!
+
+### Combining Workflow Options
+
+Combine `--ff` and `-x` to run failed tests first and stop on first failure:
+
+```bash
+# Run failed tests first, stop on first failure
+rustest test_workflow.py --ff -x
+```
+
+```
+✗
+
+======================================================================
+FAILURES
+======================================================================
+
+test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
+
+1 tests: 0 passed, 1 failed, 0 skipped in 0.004s
+```
+
+Only the first failed test ran! This is extremely fast for iterative development.
+
+### Workflow Use Cases
+
+```bash
+# Quick fix iteration - run only what failed
+rustest --lf
+
+# CI pipeline - see failures first but run everything
+rustest --ff
+
+# Local development - fast feedback on first issue
+rustest -x
+
+# Super fast iteration - fix one failure at a time
+rustest --ff -x
+
+# Combine with pattern filtering
+rustest -k "database" --lf      # Only failed database tests
+rustest -k "integration" -x     # Stop on first integration test failure
+```
+
+!!! tip "Pytest Compatibility"
+    These options work exactly like pytest's `--lf`, `--ff`, and `-x` flags, making rustest a drop-in replacement for your existing workflow.
 
 ## Output Control
 
@@ -211,12 +405,16 @@ rustest [OPTIONS] [PATHS...]
 |--------|-------------|
 | `[PATHS...]` | Paths to test files or directories (default: current directory) |
 | `-k PATTERN, --pattern PATTERN` | Substring to filter tests by (case insensitive) |
+| `-m MARK_EXPR, --marks MARK_EXPR` | Run tests matching mark expression (e.g., "slow", "not slow") |
 | `-n WORKERS, --workers WORKERS` | Number of worker slots to use (experimental) |
 | `--no-capture` | Don't capture stdout/stderr during test execution |
 | `-v, --verbose` | Show verbose output with hierarchical test structure |
 | `--ascii` | Use ASCII characters instead of Unicode symbols |
 | `--no-color` | Disable colored output |
 | `--no-codeblocks` | Disable markdown code block testing |
+| `--lf, --last-failed` | Rerun only tests that failed in the last run |
+| `--ff, --failed-first` | Run failed tests first, then all other tests |
+| `-x, --exitfirst` | Exit instantly on first error or failed test |
 | `-h, --help` | Show help message and exit |
 
 ## Exit Codes
@@ -253,6 +451,19 @@ rustest tests/test_user_service.py
 
 # Test and see debug output
 rustest --no-capture
+
+# Fix-iterate workflow with last failed
+rustest --lf                      # Run only failed tests
+# Fix the issue, then run again
+rustest --lf                      # Verify the fix
+
+# Fast feedback during TDD
+rustest -x                        # Stop on first failure
+# Fix issue
+rustest -x                        # Continue to next failure
+
+# Maximum speed iteration
+rustest --ff -x                   # Run failed tests first, stop on first failure
 ```
 
 ### CI/CD Pipeline
@@ -271,6 +482,12 @@ rustest -k "smoke"
 rustest -k "unit"
 rustest -k "integration"
 rustest -k "e2e"
+
+# See failures first but run everything
+rustest --ff                      # Failed tests run first for quick feedback
+
+# Quick CI feedback (fail fast on main branch)
+rustest -x                        # Stop on first failure to save CI time
 ```
 
 ### Pre-commit Checks

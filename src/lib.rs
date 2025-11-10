@@ -7,6 +7,7 @@
 
 #![allow(clippy::useless_conversion)]
 
+mod cache;
 mod discovery;
 mod execution;
 mod mark_expr;
@@ -20,12 +21,13 @@ mod python_support_tests;
 
 use discovery::discover_tests;
 use execution::run_collected_tests;
-use model::{PyRunReport, RunConfiguration};
+use model::{LastFailedMode, PyRunReport, RunConfiguration};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false))]
+#[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
     paths: Vec<String>,
@@ -34,13 +36,20 @@ fn run(
     workers: Option<usize>,
     capture_output: bool,
     enable_codeblocks: bool,
+    last_failed_mode: &str,
+    fail_fast: bool,
 ) -> PyResult<PyRunReport> {
+    let last_failed_mode = LastFailedMode::from_str(last_failed_mode)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+
     let config = RunConfiguration::new(
         pattern,
         mark_expr,
         workers,
         capture_output,
         enable_codeblocks,
+        last_failed_mode,
+        fail_fast,
     );
     let input_paths = PyPaths::from_vec(paths);
     let collected = discover_tests(py, &input_paths, &config)?;
@@ -62,7 +71,7 @@ mod tests {
 
     use crate::discovery::discover_tests;
     use crate::execution::run_collected_tests;
-    use crate::model::RunConfiguration;
+    use crate::model::{LastFailedMode, RunConfiguration};
     use crate::python_support::PyPaths;
     use pyo3::prelude::PyAnyMethods;
     use pyo3::types::PyList;
@@ -88,7 +97,8 @@ mod tests {
     }
 
     fn run_discovery(py: Python<'_>, path: &Path) -> Vec<crate::model::TestModule> {
-        let config = RunConfiguration::new(None, None, None, true, true);
+        let config =
+            RunConfiguration::new(None, None, None, true, true, LastFailedMode::None, false);
         let paths = PyPaths::from_vec(vec![path.to_string_lossy().into_owned()]);
         discover_tests(py, &paths, &config).expect("discovery should succeed")
     }
@@ -113,7 +123,8 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_fixtures.py");
 
-            let config = RunConfiguration::new(None, None, None, true, true);
+            let config =
+                RunConfiguration::new(None, None, None, true, true, LastFailedMode::None, false);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             assert_eq!(modules.len(), 1);
@@ -134,7 +145,8 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_parametrized.py");
 
-            let config = RunConfiguration::new(None, None, None, true, true);
+            let config =
+                RunConfiguration::new(None, None, None, true, true, LastFailedMode::None, false);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             let report =
@@ -176,8 +188,15 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_basic.py");
 
-            let config =
-                RunConfiguration::new(Some("nonexistent".to_string()), None, None, true, true);
+            let config = RunConfiguration::new(
+                Some("nonexistent".to_string()),
+                None,
+                None,
+                true,
+                true,
+                LastFailedMode::None,
+                false,
+            );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
 
@@ -204,7 +223,8 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_basic.py");
 
-            let config = RunConfiguration::new(None, None, None, false, true);
+            let config =
+                RunConfiguration::new(None, None, None, false, true, LastFailedMode::None, false);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             let report =
@@ -237,7 +257,8 @@ mod tests {
     fn test_nonexistent_path_error() {
         Python::with_gil(|py| {
             ensure_python_package_on_path(py);
-            let config = RunConfiguration::new(None, None, None, true, true);
+            let config =
+                RunConfiguration::new(None, None, None, true, true, LastFailedMode::None, false);
             let paths = PyPaths::from_vec(vec!["/nonexistent/path".to_string()]);
             let result = discover_tests(py, &paths, &config);
 
@@ -251,7 +272,8 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_parametrized.py");
 
-            let config = RunConfiguration::new(None, None, None, true, true);
+            let config =
+                RunConfiguration::new(None, None, None, true, true, LastFailedMode::None, false);
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
             let report =
@@ -266,13 +288,16 @@ mod tests {
 
     #[test]
     fn test_worker_count_configuration() {
-        let config1 = RunConfiguration::new(None, None, Some(1), true, true);
+        let config1 =
+            RunConfiguration::new(None, None, Some(1), true, true, LastFailedMode::None, false);
         assert_eq!(config1.worker_count, 1);
 
-        let config2 = RunConfiguration::new(None, None, Some(8), true, true);
+        let config2 =
+            RunConfiguration::new(None, None, Some(8), true, true, LastFailedMode::None, false);
         assert_eq!(config2.worker_count, 8);
 
-        let config3 = RunConfiguration::new(None, None, None, true, true);
+        let config3 =
+            RunConfiguration::new(None, None, None, true, true, LastFailedMode::None, false);
         assert!(config3.worker_count >= 1);
     }
 }

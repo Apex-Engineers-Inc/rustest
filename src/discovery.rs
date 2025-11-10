@@ -17,10 +17,11 @@ use pyo3::types::{PyAny, PyDict, PyList, PySequence};
 use pyo3::Bound;
 use walkdir::WalkDir;
 
+use crate::cache;
 use crate::mark_expr::MarkExpr;
 use crate::model::{
-    invalid_test_definition, Fixture, FixtureScope, Mark, ModuleIdGenerator, ParameterMap,
-    RunConfiguration, TestCase, TestModule,
+    invalid_test_definition, Fixture, FixtureScope, LastFailedMode, Mark, ModuleIdGenerator,
+    ParameterMap, RunConfiguration, TestCase, TestModule,
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
@@ -102,6 +103,11 @@ pub fn discover_tests(
                 }
             }
         }
+    }
+
+    // Apply last-failed filtering if configured
+    if config.last_failed_mode != LastFailedMode::None {
+        apply_last_failed_filter(&mut modules, config)?;
     }
 
     Ok(modules)
@@ -937,4 +943,59 @@ fn infer_module_names(path: &Path, fallback_id: usize) -> (String, Option<String
     };
 
     (module_name, package_name)
+}
+
+/// Apply last-failed filtering to the collected test modules.
+/// This modifies the modules in place, filtering or reordering tests based on the last failed cache.
+fn apply_last_failed_filter(
+    modules: &mut Vec<TestModule>,
+    config: &RunConfiguration,
+) -> PyResult<()> {
+    // Read the last failed test IDs from cache
+    let failed_ids = cache::read_last_failed()?;
+
+    // If the cache is empty and we're in OnlyFailed mode, return empty modules
+    if failed_ids.is_empty() && config.last_failed_mode == LastFailedMode::OnlyFailed {
+        modules.clear();
+        return Ok(());
+    }
+
+    // Process each module
+    for module in modules.iter_mut() {
+        let mut failed_tests = Vec::new();
+        let mut other_tests = Vec::new();
+
+        // Separate tests into failed and non-failed
+        for test in module.tests.drain(..) {
+            let test_id = test.unique_id();
+            if failed_ids.contains(&test_id) {
+                failed_tests.push(test);
+            } else {
+                other_tests.push(test);
+            }
+        }
+
+        // Apply the filtering/ordering based on mode
+        match config.last_failed_mode {
+            LastFailedMode::None => {
+                // This should not happen as we check this before calling this function
+                module.tests = failed_tests;
+                module.tests.extend(other_tests);
+            }
+            LastFailedMode::OnlyFailed => {
+                // Only include failed tests
+                module.tests = failed_tests;
+            }
+            LastFailedMode::FailedFirst => {
+                // Include failed tests first, then other tests
+                module.tests = failed_tests;
+                module.tests.extend(other_tests);
+            }
+        }
+    }
+
+    // Remove modules that have no tests (only relevant in OnlyFailed mode)
+    modules.retain(|m| !m.tests.is_empty());
+
+    Ok(())
 }

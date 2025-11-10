@@ -108,6 +108,16 @@ rustest -m "slow"                    # Run only slow tests
 rustest -m "not slow"                # Skip slow tests
 rustest -m "slow and integration"    # Run tests with both marks
 
+# Rerun only failed tests
+rustest --lf                         # Last failed only
+rustest --ff                         # Failed first, then all others
+
+# Exit on first failure
+rustest -x                           # Fail fast
+
+# Combine options
+rustest --ff -x                      # Run failed tests first, stop on first failure
+
 # Show output during execution
 rustest --no-capture
 ```
