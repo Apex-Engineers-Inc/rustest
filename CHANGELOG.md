@@ -32,6 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package import errors in src-layout and regular project structures by implementing automatic PYTHONPATH discovery
 - Pytest fixture compatibility in integration tests by updating pytest discovery configuration
 
-## [0.6.0] - 2025-10-02
+## [0.6.0] - 2025-11-10
 
 (See previous releases for earlier changelog entries)
