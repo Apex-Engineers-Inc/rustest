@@ -53,6 +53,9 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
                 spec.loader.exec_module(real_rustest)
                 compat_module.approx = real_rustest.approx
                 compat_module.raises = real_rustest.raises
+            else:
+                # No real rustest found, use fallback
+                raise ImportError("Real rustest module not found")
         except Exception:
             # Fallback: define minimal versions
             from math import isclose
@@ -64,7 +67,9 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
                     self.abs_tol = abs_tol
 
                 def __eq__(self, actual):
-                    return isclose(actual, self.expected, rel_tol=self.rel_tol, abs_tol=self.abs_tol)
+                    return isclose(
+                        actual, self.expected, rel_tol=self.rel_tol, abs_tol=self.abs_tol
+                    )
 
             compat_module.approx = _Approx
             compat_module.raises = pytest.raises
