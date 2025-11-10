@@ -391,13 +391,19 @@ mod tests {
             let sys_path: Bound<'_, PyList> = sys.getattr("path").unwrap().extract().unwrap();
             let project_str = project_dir.to_string_lossy();
 
-            let count = sys_path.iter().filter(|item| {
-                item.extract::<String>()
-                    .map(|s| s == project_str.as_ref())
-                    .unwrap_or(false)
-            }).count();
+            let count = sys_path
+                .iter()
+                .filter(|item| {
+                    item.extract::<String>()
+                        .map(|s| s == project_str.as_ref())
+                        .unwrap_or(false)
+                })
+                .count();
 
-            assert_eq!(count, 1, "Project directory should appear only once in sys.path");
+            assert_eq!(
+                count, 1,
+                "Project directory should appear only once in sys.path"
+            );
         });
 
         // Cleanup

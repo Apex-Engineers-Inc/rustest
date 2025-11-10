@@ -64,7 +64,8 @@ pub(crate) fn find_basedir(path: &Path) -> PathBuf {
             // If the test directory doesn't have __init__.py, use its parent
             // as the basedir (the project root). This allows imports of packages
             // that are siblings to the test directory.
-            return current.parent()
+            return current
+                .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| current.to_path_buf());
         }
@@ -176,13 +177,11 @@ pub fn setup_python_path(py: Python<'_>, paths: &[PathBuf]) -> PyResult<()> {
         let path_str = path_str.as_ref();
 
         // Check if already in sys.path
-        let already_exists = sys_path
-            .iter()
-            .any(|item| {
-                item.extract::<String>()
-                    .map(|s| s == path_str)
-                    .unwrap_or(false)
-            });
+        let already_exists = sys_path.iter().any(|item| {
+            item.extract::<String>()
+                .map(|s| s == path_str)
+                .unwrap_or(false)
+        });
 
         if !already_exists {
             // Insert at the beginning like pytest does (prepend mode)
