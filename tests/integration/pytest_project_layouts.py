@@ -3,6 +3,9 @@ Integration tests for different project layouts.
 
 These tests create temporary project structures and verify that rustest
 can correctly discover and run tests for each layout pattern.
+
+NOTE: These tests use pytest fixtures and subprocess to test rustest externally.
+They are automatically skipped when run with rustest (via conftest.py).
 """
 import subprocess
 import sys
