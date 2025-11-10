@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Generator, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator, cast
 
 from .decorators import fixture
 
@@ -19,6 +19,15 @@ try:  # pragma: no cover - optional dependency at runtime
     import py  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover - import error reported at fixture usage time
     py = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    from typing import Protocol
+
+    class PyPathLocal(Protocol):
+        def __fspath__(self) -> str: ...
+
+else:  # pragma: no cover - imported only for typing
+    PyPathLocal = Any
 
 
 class _NotSet:
@@ -60,9 +69,7 @@ class MonkeyPatch:
     ) -> None:
         if value is _NOT_SET:
             if not isinstance(target, str):
-                raise TypeError(
-                    "use setattr(target, name, value) or setattr('module.attr', value)"
-                )
+                raise TypeError("use setattr(target, name, value) or setattr('module.attr', value)")
             module_path, attr_name = target.rsplit(".", 1)
             module = importlib.import_module(module_path)
             obj = module
@@ -84,7 +91,9 @@ class MonkeyPatch:
         setattr(obj, attr_name, attr_value)
         self._setattrs.append((obj, attr_name, original))
 
-    def delattr(self, target: object | str, name: str | _NotSet = _NOT_SET, *, raising: bool = True) -> None:
+    def delattr(
+        self, target: object | str, name: str | _NotSet = _NOT_SET, *, raising: bool = True
+    ) -> None:
         if isinstance(target, str) and name is _NOT_SET:
             module_path, attr_name = target.rsplit(".", 1)
             module = importlib.import_module(module_path)
@@ -173,7 +182,7 @@ class MonkeyPatch:
             if original is _NOT_SET:
                 os.environ.pop(name, None)
             else:
-                os.environ[name] = original
+                os.environ[name] = cast(str, original)
         self._environ.clear()
 
         while self._syspath_prepend:
@@ -225,13 +234,13 @@ class TmpDirFactory:
     def __init__(self, path_factory: TmpPathFactory) -> None:
         self._factory = path_factory
 
-    def mktemp(self, basename: str, *, numbered: bool = True) -> "py.path.local":
+    def mktemp(self, basename: str, *, numbered: bool = True) -> PyPathLocal:
         if py is None:  # pragma: no cover - exercised only when dependency missing
             raise RuntimeError("py library is required for tmpdir fixtures")
         path = self._factory.mktemp(basename, numbered=numbered)
         return py.path.local(path)
 
-    def getbasetemp(self) -> "py.path.local":
+    def getbasetemp(self) -> PyPathLocal:
         if py is None:  # pragma: no cover - exercised only when dependency missing
             raise RuntimeError("py library is required for tmpdir fixtures")
         return py.path.local(self._factory.getbasetemp())
@@ -265,7 +274,7 @@ def tmpdir_factory() -> Iterator[TmpDirFactory]:
 
 
 @fixture(scope="function")
-def tmpdir(tmpdir_factory: TmpDirFactory) -> Iterator["py.path.local"]:
+def tmpdir(tmpdir_factory: TmpDirFactory) -> Iterator[PyPathLocal]:
     yield tmpdir_factory.mktemp("tmpdir")
 
 
