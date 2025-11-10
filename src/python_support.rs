@@ -50,7 +50,7 @@ impl PyPaths {
 /// Walks up the directory tree from the given path until it finds the first
 /// directory that does NOT contain an `__init__.py` file. Returns that directory's
 /// parent (the project root) to make imports work for packages at the project level.
-fn find_basedir(path: &Path) -> PathBuf {
+pub(crate) fn find_basedir(path: &Path) -> PathBuf {
     let mut current = if path.is_file() {
         path.parent().unwrap_or(path)
     } else {
@@ -80,7 +80,7 @@ fn find_basedir(path: &Path) -> PathBuf {
 ///
 /// This handles the common "src layout" where the package code lives in a `src/`
 /// directory at the project root.
-fn find_src_directory(base_path: &Path) -> Option<PathBuf> {
+pub(crate) fn find_src_directory(base_path: &Path) -> Option<PathBuf> {
     let mut current = base_path;
 
     loop {
@@ -98,12 +98,60 @@ fn find_src_directory(base_path: &Path) -> Option<PathBuf> {
 
 /// Setup sys.path to enable imports, mimicking pytest's behavior.
 ///
-/// For each test path:
-/// 1. Finds the "basedir" (first parent directory without __init__.py)
-/// 2. Adds the basedir to sys.path if not already present
-/// 3. Checks for a `src/` directory and adds it if found
+/// This function automatically configures Python's module search path (`sys.path`)
+/// to make your project's code importable from tests, without requiring manual
+/// PYTHONPATH configuration.
 ///
-/// This allows test code to import project modules without manually setting PYTHONPATH.
+/// ## How it works
+///
+/// For each test path provided:
+///
+/// 1. **Find the project root**: Walks up the directory tree from your test file/directory
+///    until it finds a directory without `__init__.py`. The parent of that directory is
+///    considered the project root and added to `sys.path`.
+///
+/// 2. **Detect src-layout**: Checks if a `src/` directory exists at the project root
+///    or any parent level. If found, it's also added to `sys.path`.
+///
+/// 3. **Prepend to sys.path**: Paths are inserted at the beginning of `sys.path`
+///    (like pytest's prepend mode) so your project code takes precedence.
+///
+/// 4. **Avoid duplicates**: Checks if paths already exist in `sys.path` before adding.
+///
+/// ## Supported Project Layouts
+///
+/// **Src Layout** (recommended for libraries):
+/// ```text
+/// myproject/
+///   src/
+///     mypackage/
+///       __init__.py
+///   tests/
+///     test_something.py
+/// ```
+/// → Adds `myproject/` and `myproject/src/` to sys.path
+///
+/// **Flat Layout**:
+/// ```text
+/// myproject/
+///   mypackage/
+///     __init__.py
+///   tests/
+///     test_something.py
+/// ```
+/// → Adds `myproject/` to sys.path
+///
+/// ## Example
+///
+/// With this automatic setup, your tests can simply:
+/// ```python
+/// from mypackage import some_function  # Just works!
+/// ```
+///
+/// Instead of requiring:
+/// ```bash
+/// PYTHONPATH=src rustest tests/  # Not needed anymore!
+/// ```
 pub fn setup_python_path(py: Python<'_>, paths: &[PathBuf]) -> PyResult<()> {
     let sys = py.import("sys")?;
     let sys_path: Bound<'_, PyList> = sys.getattr("path")?.extract()?;
