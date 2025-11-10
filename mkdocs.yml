@@ -84,6 +84,7 @@ nav:
     - Quick Start: getting-started/quickstart.md
   - User Guide:
     - Writing Tests: guide/writing-tests.md
+    - Project Structure & Imports: guide/project-structure.md
     - Fixtures: guide/fixtures.md
     - Parametrization: guide/parametrization.md
     - Marks & Skipping: guide/marks.md
