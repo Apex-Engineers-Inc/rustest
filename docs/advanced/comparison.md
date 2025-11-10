@@ -46,7 +46,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | Custom collectors | ✅ | ❌ | Not planned |
 | **Developer Experience** |
 | Fully typed Python API | ⚠️ | ✅ | rustest uses `basedpyright` strict mode |
-| Fast CI/CD runs | ⚠️ | ✅ | ~2x faster = dramatically shorter feedback loops |
+| Fast CI/CD runs | ⚠️ | ✅ | 8.5× average speedup (peaks at 19×) for dramatically shorter feedback loops |
 
 **Legend:**
 - ✅ Fully supported
@@ -62,7 +62,8 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 
 ✅ **Use rustest when:**
 
-- You want faster test execution (~2x speedup)
+- You want faster test execution (8.5× average speedup, up to 19×)
+- You want predictable gains: **~3–4×** on tiny suites, **~5–8×** once you reach a few hundred tests, and **11–19×** on thousand-test workloads
 - You use standard pytest features (fixtures, parametrization, marks)
 - You want a simple, focused testing tool
 - You value fast CI/CD feedback loops

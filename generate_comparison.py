@@ -1,103 +1,94 @@
 #!/usr/bin/env python3
-"""Generate a detailed performance comparison report."""
+"""Generate a detailed performance comparison report from recorded benchmarks."""
+
+from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import Dict, List
 
 
-def generate_markdown_table():
+def _load_results(path: Path) -> Dict[str, object]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _format_seconds(value: float) -> str:
+    return f"{value:.3f}s"
+
+
+def _tests_per_second(test_count: int, duration: float) -> float:
+    return test_count / duration if duration else 0.0
+
+
+def generate_markdown_table(results_path: Path | None = None) -> str:
     """Generate markdown table comparing pytest and rustest."""
-    with open("benchmark_results.json") as f:
-        data = json.load(f)
 
-    pytest_time = data["pytest"]["mean"]
-    test_count = data["test_count"]
+    path = results_path or Path("benchmark_results.json")
+    data = _load_results(path)
+    suites: List[Dict[str, object]] = data["suites"]
+    summary: Dict[str, float] = data["summary"]
+    config: Dict[str, object] = data.get("config", {})
 
-    # Conservative estimates based on Rust performance characteristics
-    # Discovery is typically 3-5x faster, execution 2-3x faster
-    rustest_discovery_speedup = 3.5
-    rustest_execution_speedup = 2.5
+    lines: List[str] = []
+    lines.append("## Performance Comparison")
+    lines.append("")
+    counts: List[int] = list(config.get("test_counts", [suite["test_count"] for suite in suites]))
+    lines.append(
+        "We benchmarked pytest and rustest on synthetically generated suites ranging from "
+        f"{min(counts):,} to {max(counts):,} tests. "
+        "Each entry in the table reflects the mean runtime across multiple runs."
+    )
+    lines.append("")
+    lines.append(
+        "| Test Count | pytest (mean) | rustest (mean) | Speedup | pytest tests/s | rustest tests/s |"
+    )
+    lines.append("|-----------:|--------------:|---------------:|--------:|----------------:|-----------------:|")
 
-    # Estimate rustest time (conservative estimate)
-    rustest_time = pytest_time / rustest_execution_speedup
+    for suite in suites:
+        test_count = suite["test_count"]
+        pytest_mean = suite["pytest"]["mean"]
+        rustest_mean = suite["rustest"]["mean"]
+        speedup = suite["speedup"]
+        lines.append(
+            "| {count:>10,} | {pytest:>12} | {rustest:>13} | {speedup:>7.2f}x | {pytest_tps:>15.1f} | {rustest_tps:>16.1f} |".format(
+                count=test_count,
+                pytest=_format_seconds(pytest_mean),
+                rustest=_format_seconds(rustest_mean),
+                speedup=speedup,
+                pytest_tps=_tests_per_second(test_count, pytest_mean),
+                rustest_tps=_tests_per_second(test_count, rustest_mean),
+            )
+        )
 
-    speedup = pytest_time / rustest_time
+    lines.append("")
+    lines.append("### Aggregate results")
+    lines.append("")
+    lines.append(
+        "- **Average speedup:** {avg:.2f}×\n- **Geometric mean speedup:** {geo:.2f}×\n- **Weighted by tests:** {weighted:.2f}×".format(
+            avg=summary["average_speedup"],
+            geo=summary["geometric_mean_speedup"],
+            weighted=summary["weighted_speedup"],
+        )
+    )
+    lines.append("")
+    lines.append(
+        "Across the entire benchmark matrix pytest required {py:.2f}s total execution time, "
+        "while rustest completed in {rs:.2f}s.".format(
+            py=summary["total_time_pytest"], rs=summary["total_time_rustest"],
+        )
+    )
+    lines.append("")
+    lines.append("### Reproducing the benchmarks")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("python3 profile_tests.py --runs {runs}".format(runs=config.get("runs_per_command", 5)))
+    lines.append("python3 generate_comparison.py")
+    lines.append("```")
+    lines.append("")
+    lines.append("`profile_tests.py` generates synthetic suites in `target/generated_benchmarks/` and records the results in `benchmark_results.json`. `generate_comparison.py` then renders the Markdown summary in `BENCHMARKS.md`.")
 
-    markdown = f"""
-## Performance Comparison
-
-We benchmarked pytest against rustest using a comprehensive test suite with **{test_count} tests** covering various scenarios:
-
-- **Simple tests**: Basic assertions without fixtures or parameters
-- **Fixture tests**: Tests using simple and nested fixtures
-- **Parametrized tests**: Tests with multiple parameter combinations
-- **Combined tests**: Tests using both fixtures and parametrization
-
-### Benchmark Results
-
-| Test Runner | Avg Time | Tests/Second | Speedup |
-|-------------|----------|--------------|---------|
-| pytest      | {pytest_time:.3f}s | {test_count / pytest_time:.1f} | 1.0x (baseline) |
-| rustest*    | {rustest_time:.3f}s | {test_count / rustest_time:.1f} | **{speedup:.1f}x faster** |
-
-*Note: Rustest benchmarks are estimated based on typical Rust vs Python performance characteristics. Actual performance may vary based on test complexity and system configuration.*
-
-### Performance Breakdown by Test Type
-
-#### Simple Tests (50 tests, no fixtures/parameters)
-- **pytest**: {data["pytest"]["mean"] * 0.31:.3f}s (~{50 / (data["pytest"]["mean"] * 0.31):.0f} tests/sec)
-- **rustest**: {(data["pytest"]["mean"] * 0.31) / rustest_execution_speedup:.3f}s (~{50 / ((data["pytest"]["mean"] * 0.31) / rustest_execution_speedup):.0f} tests/sec)
-- **Speedup**: ~{rustest_execution_speedup:.1f}x
-
-#### Fixture Tests (20 tests with various fixture complexities)
-- **pytest**: {data["pytest"]["mean"] * 0.12:.3f}s (~{20 / (data["pytest"]["mean"] * 0.12):.0f} tests/sec)
-- **rustest**: {(data["pytest"]["mean"] * 0.12) / (rustest_execution_speedup * 1.2):.3f}s (~{20 / ((data["pytest"]["mean"] * 0.12) / (rustest_execution_speedup * 1.2)):.0f} tests/sec)
-- **Speedup**: ~{rustest_execution_speedup * 1.2:.1f}x
-- *Rustest's Rust-based fixture resolution provides extra benefits here*
-
-#### Parametrized Tests (60 test cases from 12 parametrized tests)
-- **pytest**: {data["pytest"]["mean"] * 0.37:.3f}s (~{60 / (data["pytest"]["mean"] * 0.37):.0f} tests/sec)
-- **rustest**: {(data["pytest"]["mean"] * 0.37) / rustest_execution_speedup:.3f}s (~{60 / ((data["pytest"]["mean"] * 0.37) / rustest_execution_speedup):.0f} tests/sec)
-- **Speedup**: ~{rustest_execution_speedup:.1f}x
-
-#### Combined Tests (31 tests with fixtures + parameters)
-- **pytest**: {data["pytest"]["mean"] * 0.20:.3f}s (~{31 / (data["pytest"]["mean"] * 0.20):.0f} tests/sec)
-- **rustest**: {(data["pytest"]["mean"] * 0.20) / (rustest_execution_speedup * 1.1):.3f}s (~{31 / ((data["pytest"]["mean"] * 0.20) / (rustest_execution_speedup * 1.1)):.0f} tests/sec)
-- **Speedup**: ~{rustest_execution_speedup * 1.1:.1f}x
-
-### Why is rustest faster?
-
-1. **Rust-native test discovery**: Rustest uses Rust's fast file I/O and pattern matching for test discovery, avoiding Python's import overhead.
-
-2. **Optimized fixture resolution**: Fixture dependencies are resolved by Rust using efficient graph algorithms, with minimal Python interpreter overhead.
-
-3. **Efficient test execution**: While the actual test code runs in Python, the orchestration, scheduling, and reporting are handled by Rust.
-
-4. **Zero-overhead abstractions**: Rustest leverages Rust's zero-cost abstractions to minimize the test runner's footprint.
-
-### Real-world Impact
-
-For a typical test suite with 1,000 tests:
-- **pytest**: ~{1000 * (pytest_time / test_count):.1f}s ({(1000 * (pytest_time / test_count)) / 60:.1f} minutes)
-- **rustest**: ~{1000 * (rustest_time / test_count):.1f}s ({(1000 * (rustest_time / test_count)) / 60:.1f} minutes)
-- **Time saved**: ~{1000 * ((pytest_time / test_count) - (rustest_time / test_count)):.1f}s ({(1000 * ((pytest_time / test_count) - (rustest_time / test_count))) / 60:.1f} minutes)
-
-The performance advantage becomes more pronounced as test suites grow larger and use more complex fixtures and parametrization.
-
-### Running the Benchmarks
-
-To reproduce these benchmarks:
-
-```bash
-# Run the profiling script
-python3 profile_tests.py
-
-# Results are saved to benchmark_results.json
-```
-
-The benchmark suite is located in `benchmarks_pytest/` (pytest-compatible) and `benchmarks/` (rustest-compatible).
-"""
-
-    return markdown
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

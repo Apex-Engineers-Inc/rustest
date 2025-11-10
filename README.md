@@ -1,12 +1,12 @@
 # rustest
 
-Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **~2x faster** test execution with familiar syntax and minimal setup.
+Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **massive speedups (8.5× average, up to 19× faster)** with familiar syntax and minimal setup.
 
 📚 **[Full Documentation](https://apex-engineers-inc.github.io/rustest)** | [Getting Started](https://apex-engineers-inc.github.io/rustest/getting-started/quickstart/) | [User Guide](https://apex-engineers-inc.github.io/rustest/guide/writing-tests/) | [API Reference](https://apex-engineers-inc.github.io/rustest/api/overview/)
 
 ## Why rustest?
 
-- 🚀 **About 2x faster** than pytest on the rustest integration test suite
+- 🚀 **8.5× average speedup** over pytest on the synthetic benchmark matrix (peaking at 19× on 5k-test suites)
 - ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
 - 🔄 **Built-in async support** with `@mark.asyncio` (like pytest-asyncio)
 - 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
@@ -19,14 +19,48 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 ## Performance
 
-Rustest is designed for speed. Our latest benchmarks on the rustest integration suite (~200 tests) show a consistent **2.1x wall-clock speedup** over pytest:
+Rustest is designed for speed. The new benchmark matrix generates identical pytest and rustest suites ranging from 1 to 5,000 tests and runs each command five times. Rustest delivers an **8.5× average speedup** and reaches **19× faster** execution on the largest suite:
+
+| Test Count | pytest (mean) | rustest (mean) | Speedup | pytest tests/s | rustest tests/s |
+|-----------:|--------------:|---------------:|--------:|----------------:|-----------------:|
+|          1 |       0.428s |        0.116s |    3.68x |             2.3 |              8.6 |
+|          5 |       0.428s |        0.120s |    3.56x |            11.7 |             41.6 |
+|         20 |       0.451s |        0.116s |    3.88x |            44.3 |            171.7 |
+|        100 |       0.656s |        0.133s |    4.93x |           152.4 |            751.1 |
+|        500 |       1.206s |        0.146s |    8.29x |           414.4 |           3436.1 |
+|      1,000 |       1.854s |        0.171s |   10.83x |           539.4 |           5839.4 |
+|      2,000 |       3.343s |        0.243s |   13.74x |           598.3 |           8219.9 |
+|      5,000 |       7.811s |        0.403s |   19.37x |           640.2 |          12399.7 |
+
+### What speedup should you expect?
+
+- **Tiny suites (≤20 tests):** Expect **~3–4× faster** runs. Startup costs dominate here, so both runners feel instant, but rustest still trims a few hundred milliseconds on every run.
+- **Growing suites (≈100–500 tests):** Expect **~5–8× faster** execution. Once you have a few dozen files, rustest's lean discovery and fixture orchestration start to compound.
+- **Large suites (≥1,000 tests):** Expect **~11–19× faster** runs. Bigger suites amortize startup overhead entirely, letting rustest's Rust core stretch its legs and deliver order-of-magnitude gains.
+
+Highlights:
+
+- **8.5× average speedup** across the matrix (geometric mean 7.0×)
+- **16.2× weighted speedup** when weighting by the number of executed tests
+- **1.45s total runtime** for rustest vs **16.18s** for pytest across all suites
+
+Reproduce the matrix locally:
+
+```bash
+python3 profile_tests.py --runs 5
+python3 generate_comparison.py
+```
+
+### Real-world integration suite (~200 tests)
+
+Our integration suite remains a great proxy for day-to-day use and still shows a **~2.1× wall-clock speedup**:
 
 | Test Runner | Wall Clock | Speedup | Command |
 |-------------|------------|---------|---------|
 | pytest      | 1.33–1.59s | 1.0x (baseline) | `pytest tests/ examples/tests/ -q` |
 | rustest     | 0.69–0.70s | **~2.1x faster** | `python -m rustest tests/ examples/tests/` |
 
-### Large Parametrized Stress Test
+### Large parametrized stress test
 
 With **10,000 parametrized invocations**:
 

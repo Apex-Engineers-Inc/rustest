@@ -2,11 +2,11 @@
 
 **Rust-powered pytest-compatible test runner**
 
-Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **~2x faster** test execution with familiar syntax and minimal setup.
+Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **massive speedups (8.5× average, up to 19× faster)** with familiar syntax and minimal setup.
 
 ## Why rustest?
 
-- :material-rocket-launch: **About 2x faster** than pytest on the rustest integration test suite
+- :material-rocket-launch: **8.5× average speedup** over pytest on the benchmark matrix (reaching 19× on 5k-test suites)
 - :material-check-circle: Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
 - :material-magnify: Automatic test discovery (`test_*.py` and `*_test.py` files)
 - :material-file-document: **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
@@ -50,20 +50,22 @@ rustest
 
 ## Performance
 
-Rustest is designed for speed. Our latest benchmarks on the rustest integration suite (~200 tests) show a consistent **2.1x wall-clock speedup** over pytest:
+Rustest is designed for speed. The benchmark matrix generates identical pytest and rustest suites ranging from 1 to 5,000 tests and runs each command five times. Rustest delivers an **8.5× average speedup** and hits **19× faster** execution on the largest suite:
 
-| Test Runner | Wall Clock | Speedup | Command |
-|-------------|------------|---------|---------|
-| pytest      | 1.33–1.59s | 1.0x (baseline) | `pytest tests/ examples/tests/ -q` |
-| rustest     | 0.69–0.70s | **~2.1x faster** | `python -m rustest tests/ examples/tests/` |
+| Test Count | pytest (mean) | rustest (mean) | Speedup | pytest tests/s | rustest tests/s |
+|-----------:|--------------:|---------------:|--------:|----------------:|-----------------:|
+|          1 |       0.428s |        0.116s |    3.68x |             2.3 |              8.6 |
+|          5 |       0.428s |        0.120s |    3.56x |            11.7 |             41.6 |
+|         20 |       0.451s |        0.116s |    3.88x |            44.3 |            171.7 |
+|        100 |       0.656s |        0.133s |    4.93x |           152.4 |            751.1 |
+|        500 |       1.206s |        0.146s |    8.29x |           414.4 |           3436.1 |
+|      1,000 |       1.854s |        0.171s |   10.83x |           539.4 |           5839.4 |
+|      2,000 |       3.343s |        0.243s |   13.74x |           598.3 |           8219.9 |
+|      5,000 |       7.811s |        0.403s |   19.37x |           640.2 |          12399.7 |
 
-!!! tip "Why is rustest faster?"
-    - **Near-zero startup time**: Native Rust binary minimizes overhead
-    - **Rust-native test discovery**: Minimal imports until test execution
-    - **Optimized fixture resolution**: Efficient dependency graph resolution
-    - **Lean orchestration**: Rust handles scheduling and reporting
+**What to expect:** tiny suites (≤20 tests) still run **~3–4× faster**, growing suites around 100–500 tests see **~5–8× speedups**, and large suites with 1,000+ tests jump to **~11–19× faster** execution.
 
-See the [Performance](advanced/performance.md) page for detailed benchmarks and analysis.
+Our integration suite (~200 tests) remains a great proxy for day-to-day development and continues to show **~2.1× wall-clock speedups**. See the [Performance](advanced/performance.md) page for breakdowns, methodology, and replication instructions.
 
 ## Next Steps
 
