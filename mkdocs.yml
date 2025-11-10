@@ -4,9 +4,12 @@ site_url: https://apex-engineers-inc.github.io/rustest
 repo_url: https://github.com/Apex-Engineers-Inc/rustest
 repo_name: Apex-Engineers-Inc/rustest
 edit_uri: edit/main/docs/
+favicon: assets/logo-icon.svg
 
 theme:
   name: material
+  logo: assets/logo-icon.svg
+  favicon: assets/logo-icon.svg
   palette:
     # Palette toggle for light mode
     - media: "(prefers-color-scheme: light)"

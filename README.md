@@ -1,4 +1,8 @@
-# rustest
+<div align="center">
+
+![rustest logo](assets/logo.svg)
+
+</div>
 
 Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **massive speedups (8.5× average, up to 19× faster)** with familiar syntax and minimal setup.
 
