@@ -13,6 +13,7 @@ use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
+use crate::cache;
 use crate::model::{
     invalid_test_definition, Fixture, FixtureScope, ParameterMap, PyRunReport, PyTestResult,
     RunConfiguration, TestCase, TestModule,
@@ -89,6 +90,7 @@ pub fn run_collected_tests(
 
             for test in tests {
                 let result = run_single_test(py, module, test, config, &mut context)?;
+                let is_failed = result.status == "failed";
                 match result.status.as_str() {
                     "passed" => passed += 1,
                     "failed" => failed += 1,
@@ -96,6 +98,25 @@ pub fn run_collected_tests(
                     _ => failed += 1,
                 }
                 results.push(result);
+
+                // Check for fail-fast mode: exit immediately on first failure
+                if config.fail_fast && is_failed {
+                    // Clean up fixtures before returning early
+                    finalize_generators(py, &mut context.teardowns.class);
+                    finalize_generators(py, &mut context.teardowns.module);
+                    finalize_generators(py, &mut context.teardowns.session);
+
+                    let duration = start.elapsed().as_secs_f64();
+                    let total = passed + failed + skipped;
+                    let report = PyRunReport::new(
+                        total, passed, failed, skipped, duration, results,
+                    );
+
+                    // Write cache before returning
+                    write_failed_tests_cache(&report)?;
+
+                    return Ok(report);
+                }
 
                 // If this is a plain function test (no class), clear class cache
                 // Class-scoped fixtures should NOT be shared across plain function tests
@@ -117,9 +138,14 @@ pub fn run_collected_tests(
     finalize_generators(py, &mut context.teardowns.session);
     let duration = start.elapsed().as_secs_f64();
     let total = passed + failed + skipped;
-    Ok(PyRunReport::new(
+    let report = PyRunReport::new(
         total, passed, failed, skipped, duration, results,
-    ))
+    );
+
+    // Write cache after all tests complete
+    write_failed_tests_cache(&report)?;
+
+    Ok(report)
 }
 
 /// Execute a single test case and convert the outcome into a [`PyTestResult`].
@@ -504,4 +530,21 @@ fn finalize_generators(py: Python<'_>, generators: &mut Vec<Py<PyAny>>) {
             }
         }
     }
+}
+
+/// Write the cache of failed tests for the --lf and --ff options.
+fn write_failed_tests_cache(report: &PyRunReport) -> PyResult<()> {
+    let mut failed_tests = HashSet::new();
+
+    // Collect all failed test IDs
+    for result in &report.results {
+        if result.status == "failed" {
+            failed_tests.insert(result.unique_id());
+        }
+    }
+
+    // Write to cache
+    cache::write_last_failed(&failed_tests)?;
+
+    Ok(())
 }

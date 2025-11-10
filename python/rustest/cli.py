@@ -93,7 +93,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable code block tests from markdown files.",
     )
-    _ = parser.set_defaults(capture_output=True, color=True, enable_codeblocks=True)
+    _ = parser.add_argument(
+        "--lf",
+        "--last-failed",
+        action="store_true",
+        dest="last_failed",
+        help="Rerun only the tests that failed in the last run.",
+    )
+    _ = parser.add_argument(
+        "--ff",
+        "--failed-first",
+        action="store_true",
+        dest="failed_first",
+        help="Run previously failed tests first, then all other tests.",
+    )
+    _ = parser.add_argument(
+        "-x",
+        "--exitfirst",
+        action="store_true",
+        dest="fail_fast",
+        help="Exit instantly on first error or failed test.",
+    )
+    _ = parser.set_defaults(
+        capture_output=True,
+        color=True,
+        enable_codeblocks=True,
+        last_failed=False,
+        failed_first=False,
+        fail_fast=False,
+    )
     return parser
 
 
@@ -105,6 +133,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.color:
         Colors.disable()
 
+    # Determine last_failed_mode
+    if args.last_failed:
+        last_failed_mode = "only"
+    elif args.failed_first:
+        last_failed_mode = "first"
+    else:
+        last_failed_mode = "none"
+
     report = run(
         paths=list(args.paths),
         pattern=args.pattern,
@@ -112,6 +148,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         workers=args.workers,
         capture_output=args.capture_output,
         enable_codeblocks=args.enable_codeblocks,
+        last_failed_mode=last_failed_mode,
+        fail_fast=args.fail_fast,
     )
     _print_report(report, verbose=args.verbose, ascii_mode=args.ascii)
     return 0 if report.failed == 0 else 1

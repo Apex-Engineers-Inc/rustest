@@ -16,6 +16,8 @@ def run(
     workers: int | None = None,
     capture_output: bool = True,
     enable_codeblocks: bool = True,
+    last_failed_mode: str = "none",
+    fail_fast: bool = False,
 ) -> RunReport:
     """Execute tests and return a rich report.
 
@@ -26,6 +28,8 @@ def run(
         workers: Number of worker slots to use (experimental)
         capture_output: Whether to capture stdout/stderr during test execution
         enable_codeblocks: Whether to enable code block tests from markdown files
+        last_failed_mode: Last failed mode: "none", "only", or "first"
+        fail_fast: Exit instantly on first error or failed test
     """
     raw_report = rust.run(
         paths=list(paths),
@@ -34,5 +38,7 @@ def run(
         workers=workers,
         capture_output=capture_output,
         enable_codeblocks=enable_codeblocks,
+        last_failed_mode=last_failed_mode,
+        fail_fast=fail_fast,
     )
     return RunReport.from_py(raw_report)
