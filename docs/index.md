@@ -1,7 +1,7 @@
 # rustest
 
 <div style="text-align: center; margin-bottom: 2rem;">
-  <img src="assets/logo-icon.svg" alt="rustest logo" style="height: 120px; width: 120px;">
+  <img src="assets/logo.svg" alt="rustest logo" style="height: 200px; width: 200px;">
 </div>
 
 **Rust-powered pytest-compatible test runner**
