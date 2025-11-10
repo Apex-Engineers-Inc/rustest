@@ -5,6 +5,15 @@ All notable changes to rustest will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-11-10
+
+### Added
+- **Async test support with `@mark.asyncio` decorator**
+  - Run async test functions with `async def` and `await` syntax
+  - Mark async tests with `@mark.asyncio` decorator
+  - Full integration with Rust async runtime
+  - Example: `@mark.asyncio` followed by `async def test_async(): await some_async_function()`
+
 ## [0.5.0] - 2025-11-09
 
 ### Added
