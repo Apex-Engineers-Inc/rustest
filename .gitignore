@@ -17,3 +17,4 @@ __pycache__/
 /external
 /rustest/
 test-results.json
+/site/
