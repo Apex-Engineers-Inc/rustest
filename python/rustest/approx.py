@@ -1,13 +1,16 @@
 """Approximate comparison for floating-point numbers.
 
 This module provides the `approx` class for comparing floating-point numbers
-with a tolerance, similar to pytest.approx.
+with a tolerance, similar to ``pytest.approx``.
 """
 
-from typing import Any, Mapping, Sequence, Union
+from __future__ import annotations
 
-# Type alias for values that can be approximated
-ApproxValue = Union[float, int, complex, Sequence[Any], Mapping[str, Any]]
+from collections.abc import Mapping, Sequence
+from typing import Any, Union, cast
+
+ApproxScalar = Union[float, int, complex]
+ApproxValue = Union[ApproxScalar, Sequence["ApproxValue"], Mapping[str, "ApproxValue"]]
 
 
 class approx:
@@ -82,21 +85,34 @@ class approx:
             return actual == expected
 
         # Handle dictionaries
-        if isinstance(expected, dict):
-            if not isinstance(actual, dict):
+        if isinstance(expected, Mapping):
+            expected_mapping = cast(Mapping[str, ApproxValue], expected)
+            if not isinstance(actual, Mapping):
                 return False
-            if set(actual.keys()) != set(expected.keys()):
+            actual_mapping = cast(Mapping[str, ApproxValue], actual)
+            if set(actual_mapping.keys()) != set(expected_mapping.keys()):
                 return False
-            return all(self._approx_compare(actual[k], expected[k]) for k in expected.keys())
+            return all(
+                self._approx_compare(actual_mapping[key], expected_mapping[key])
+                for key in expected_mapping
+            )
 
         # Handle sequences (lists, tuples, etc.) but not strings
-        if isinstance(expected, (list, tuple)) and not isinstance(expected, str):
-            # Check that actual is the same type (list vs tuple matters)
-            if type(actual) is not type(expected):
+        if isinstance(expected, Sequence) and not isinstance(expected, (str, bytes, bytearray)):
+            expected_sequence = cast(Sequence[ApproxValue], expected)
+            if not (
+                isinstance(actual, Sequence)
+                and not isinstance(actual, (str, bytes, bytearray))
+                and type(actual) is type(expected)
+            ):
                 return False
-            if len(actual) != len(expected):
+            actual_sequence = cast(Sequence[ApproxValue], actual)
+            if len(actual_sequence) != len(expected_sequence):
                 return False
-            return all(self._approx_compare(a, e) for a, e in zip(actual, expected))
+            return all(
+                self._approx_compare(actual_item, expected_item)
+                for actual_item, expected_item in zip(actual_sequence, expected_sequence)
+            )
 
         # Handle numbers (float, int, complex)
         if isinstance(expected, (float, int, complex)) and isinstance(

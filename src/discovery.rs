@@ -177,8 +177,13 @@ fn merge_conftest_fixtures(
     test_path: &Path,
     module_fixtures: IndexMap<String, Fixture>,
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
-) -> IndexMap<String, Fixture> {
+) -> PyResult<IndexMap<String, Fixture>> {
     let mut merged = IndexMap::new();
+
+    // Start with built-in fixtures so user-defined ones can override them.
+    for (name, fixture) in load_builtin_fixtures(py)? {
+        merged.insert(name, fixture);
+    }
 
     // Collect all parent directories from farthest to nearest
     let mut parent_dirs = Vec::new();
@@ -208,7 +213,38 @@ fn merge_conftest_fixtures(
         merged.insert(name, fixture);
     }
 
-    merged
+    Ok(merged)
+}
+
+/// Load the built-in fixtures bundled with rustest.
+fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> {
+    let module = py.import("rustest.builtin_fixtures")?;
+    let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
+
+    let inspect = py.import("inspect")?;
+    let isfunction = inspect.getattr("isfunction")?;
+    let mut fixtures = IndexMap::new();
+
+    for (name_obj, value) in module_dict.iter() {
+        let name: String = name_obj.extract()?;
+
+        if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
+            let scope = extract_fixture_scope(&value)?;
+            let is_generator = is_generator_function(py, &value)?;
+            fixtures.insert(
+                name.clone(),
+                Fixture::new(
+                    name,
+                    value.clone().unbind(),
+                    extract_parameters(py, &value)?,
+                    scope,
+                    is_generator,
+                ),
+            );
+        }
+    }
+
+    Ok(fixtures)
 }
 
 /// Build the default glob set matching `test_*.py` and `*_test.py` files.
@@ -254,7 +290,7 @@ fn collect_from_file(
     let (module_fixtures, mut tests) = inspect_module(py, path, &module_dict)?;
 
     // Merge conftest fixtures with the module's own fixtures
-    let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map);
+    let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
 
     if let Some(pattern) = &config.pattern {
         tests.retain(|case| test_matches_pattern(case, pattern));
@@ -335,7 +371,7 @@ fn collect_from_markdown(
     }
 
     // Merge conftest fixtures for the markdown file
-    let fixtures = merge_conftest_fixtures(py, path, IndexMap::new(), conftest_map);
+    let fixtures = merge_conftest_fixtures(py, path, IndexMap::new(), conftest_map)?;
 
     Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
 }
