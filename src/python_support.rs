@@ -241,6 +241,14 @@ pub fn setup_python_path(py: Python<'_>, paths: &[PathBuf]) -> PyResult<()> {
     // Look for pyproject.toml in the first test path
     if let Some(first_path) = paths.first() {
         if let Some(project_root) = find_project_root(first_path) {
+            // Always add the project root itself so top-level packages like `tests`
+            // become importable. This mirrors pytest's behaviour where the
+            // directory containing the configuration file is placed on
+            // ``sys.path``. Without this, projects that rely on importing the
+            // ``tests`` package (or other top-level modules) would fail when
+            // intermediate directories lack ``__init__.py`` files.
+            paths_to_add.insert(project_root.clone());
+
             // Read pythonpath from pyproject.toml if it exists
             if let Some(configured_paths) = read_pythonpath_from_pyproject(&project_root) {
                 for path in configured_paths {
