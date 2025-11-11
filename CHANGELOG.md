@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2025-11-11
+
+### Added
+
+- **`pyproject.toml` pythonpath configuration support**
+  - Automatically reads `tool.pytest.ini_options.pythonpath` from pyproject.toml
+  - Makes rustest work identically to pytest for import path configuration
+  - No more manual PYTHONPATH setup or wrapper scripts needed
+  - Falls back to automatic detection if no configuration present
+  - Example: Add `pythonpath = ["src"]` to your pyproject.toml
+
+### Changed
+
+- Import path discovery now prioritizes pyproject.toml configuration over auto-detection
+- Enhanced project root detection to locate pyproject.toml files accurately
+
+### Fixed
+
+- Library root detection to properly find project root and apply pythonpath configuration
+
 ## [0.8.0] - 2025-11-10
 
 ### Added
