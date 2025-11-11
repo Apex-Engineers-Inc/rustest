@@ -1,6 +1,6 @@
 # Changelog
 
-For the complete, authoritative changelog with all version history and details, see the [main CHANGELOG.md](../CHANGELOG.md).
+For the complete, authoritative changelog with all version history and details, see the [main CHANGELOG.md](CHANGELOG.md).
 
 This page includes migration guides and historical context for upgrading rustest.
 
