@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use toml::Value;
 
 /// Simple wrapper holding the user supplied paths.
 ///
@@ -97,6 +98,66 @@ pub(crate) fn find_src_directory(base_path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Find the project root by looking for a pyproject.toml file.
+///
+/// Walks up the directory tree from the given path until it finds a pyproject.toml file.
+/// Returns the directory containing the pyproject.toml file.
+pub(crate) fn find_project_root(path: &Path) -> Option<PathBuf> {
+    let mut current = if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+
+    loop {
+        let pyproject_toml = current.join("pyproject.toml");
+        if pyproject_toml.is_file() {
+            return Some(current.to_path_buf());
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return None,
+        }
+    }
+}
+
+/// Read and parse pythonpath configuration from pyproject.toml.
+///
+/// Looks for `tool.pytest.ini_options.pythonpath` in the pyproject.toml file
+/// and returns the list of paths configured there. These paths are relative to
+/// the project root (the directory containing pyproject.toml).
+pub(crate) fn read_pythonpath_from_pyproject(project_root: &Path) -> Option<Vec<PathBuf>> {
+    let pyproject_path = project_root.join("pyproject.toml");
+
+    // Read the file
+    let contents = std::fs::read_to_string(&pyproject_path).ok()?;
+
+    // Parse the TOML
+    let config: Value = contents.parse().ok()?;
+
+    // Navigate to tool.pytest.ini_options.pythonpath
+    let pythonpath = config
+        .get("tool")?
+        .get("pytest")?
+        .get("ini_options")?
+        .get("pythonpath")?
+        .as_array()?;
+
+    // Convert the array of strings to PathBufs relative to the project root
+    let paths: Vec<PathBuf> = pythonpath
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|s| project_root.join(s))
+        .collect();
+
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths)
+    }
+}
+
 /// Setup sys.path to enable imports, mimicking pytest's behavior.
 ///
 /// This function automatically configures Python's module search path (`sys.path`)
@@ -107,21 +168,37 @@ pub(crate) fn find_src_directory(base_path: &Path) -> Option<PathBuf> {
 ///
 /// For each test path provided:
 ///
-/// 1. **Find the project root**: Walks up the directory tree from your test file/directory
+/// 1. **Read pyproject.toml configuration**: Looks for `tool.pytest.ini_options.pythonpath`
+///    in the project's pyproject.toml file. If found, those paths are added to `sys.path`.
+///    This matches pytest's behavior exactly.
+///
+/// 2. **Find the project root**: Walks up the directory tree from your test file/directory
 ///    until it finds a directory without `__init__.py`. The parent of that directory is
 ///    considered the project root and added to `sys.path`.
 ///
-/// 2. **Detect src-layout**: Checks if a `src/` directory exists at the project root
+/// 3. **Detect src-layout**: Checks if a `src/` directory exists at the project root
 ///    or any parent level. If found, it's also added to `sys.path`.
 ///
-/// 3. **Prepend to sys.path**: Paths are inserted at the beginning of `sys.path`
+/// 4. **Prepend to sys.path**: Paths are inserted at the beginning of `sys.path`
 ///    (like pytest's prepend mode) so your project code takes precedence.
 ///
-/// 4. **Avoid duplicates**: Checks if paths already exist in `sys.path` before adding.
+/// 5. **Avoid duplicates**: Checks if paths already exist in `sys.path` before adding.
 ///
 /// ## Supported Project Layouts
 ///
-/// **Src Layout** (recommended for libraries):
+/// **With pyproject.toml configuration** (recommended):
+/// ```text
+/// myproject/
+///   pyproject.toml  # Contains: pythonpath = ["src"]
+///   src/
+///     mypackage/
+///       __init__.py
+///   tests/
+///     test_something.py
+/// ```
+/// → Reads from pyproject.toml and adds `myproject/src/` to sys.path
+///
+/// **Src Layout** (auto-detected):
 /// ```text
 /// myproject/
 ///   src/
@@ -159,6 +236,21 @@ pub fn setup_python_path(py: Python<'_>, paths: &[PathBuf]) -> PyResult<()> {
 
     // Track which paths we've already added to avoid duplicates
     let mut paths_to_add: HashSet<PathBuf> = HashSet::new();
+
+    // First, check for pyproject.toml and read pythonpath configuration
+    // Look for pyproject.toml in the first test path
+    if let Some(first_path) = paths.first() {
+        if let Some(project_root) = find_project_root(first_path) {
+            // Read pythonpath from pyproject.toml if it exists
+            if let Some(configured_paths) = read_pythonpath_from_pyproject(&project_root) {
+                for path in configured_paths {
+                    if path.is_dir() {
+                        paths_to_add.insert(path);
+                    }
+                }
+            }
+        }
+    }
 
     // Find basedirs and src directories for all test paths
     for path in paths {

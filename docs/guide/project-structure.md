@@ -15,12 +15,59 @@ from mypackage import my_function
 
 When you run rustest, it automatically:
 
-1. **Finds your project root** by walking up from your test files
-2. **Detects if you're using a `src/` layout**
-3. **Adds the appropriate directories to `sys.path`**
-4. **Makes your code importable from tests**
+1. **Reads `pyproject.toml` configuration** (if present) for explicit pythonpath settings
+2. **Finds your project root** by walking up from your test files
+3. **Detects if you're using a `src/` layout**
+4. **Adds the appropriate directories to `sys.path`**
+5. **Makes your code importable from tests**
 
 This happens automatically before any tests run, so imports work seamlessly.
+
+## Configuration with pyproject.toml (Recommended)
+
+The **recommended and most explicit way** to configure import paths is using `pyproject.toml`, exactly like pytest:
+
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+```
+
+Rustest reads this configuration and adds the specified paths to `sys.path` automatically. This approach:
+
+- ✅ **Works identically in pytest and rustest** - no migration needed
+- ✅ **Explicit and clear** - your import paths are documented
+- ✅ **Standard** - follows Python packaging conventions
+- ✅ **Flexible** - supports multiple paths if needed
+
+**Example project with configuration:**
+
+```text
+myproject/
+├── pyproject.toml      # Contains: pythonpath = ["src"]
+├── src/
+│   └── mypackage/
+│       ├── __init__.py
+│       └── module.py
+└── tests/
+    └── test_module.py
+```
+
+With this setup, `rustest` will automatically add `myproject/src/` to `sys.path`, allowing your tests to import:
+
+```python
+from mypackage import module
+```
+
+### Multiple Paths
+
+You can specify multiple directories if needed:
+
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["src", "lib", "vendor"]
+```
+
+All specified paths will be added relative to your project root (the directory containing `pyproject.toml`).
 
 ## Supported Project Layouts
 
@@ -30,6 +77,7 @@ This is the recommended layout for Python packages that will be published. It pr
 
 ```text
 myproject/
+├── pyproject.toml      # Recommended: pythonpath = ["src"]
 ├── src/
 │   └── mypackage/
 │       ├── __init__.py
@@ -38,13 +86,18 @@ myproject/
 ├── tests/
 │   ├── test_module1.py
 │   └── test_module2.py
-├── pyproject.toml
 └── README.md
 ```
 
+**Recommended configuration in `pyproject.toml`:**
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+```
+
 **What gets added to `sys.path`:**
-- `myproject/` (project root)
-- `myproject/src/` (automatically detected)
+- `myproject/src/` (from pyproject.toml configuration, or auto-detected)
+- `myproject/` (project root, auto-detected)
 
 **Your tests can import:**
 ```python
@@ -100,9 +153,39 @@ myproject/
 
 Understanding the algorithm helps debug import issues:
 
-### Step 1: Find the Base Directory
+### Step 1: Look for pyproject.toml Configuration (Highest Priority)
 
-Starting from your test file or directory, rustest walks **up** the directory tree:
+Starting from your test file or directory, rustest walks **up** the directory tree looking for `pyproject.toml`:
+
+```text
+tests/unit/test_module1.py  ← Start here
+    ↓
+tests/unit/                 Check for pyproject.toml
+    ↓
+tests/                      Check for pyproject.toml
+    ↓
+myproject/                  Found pyproject.toml!
+```
+
+If found, rustest reads `tool.pytest.ini_options.pythonpath` and adds those paths:
+
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["src", "lib"]
+```
+
+Results in:
+```python
+sys.path = [
+    '/path/to/myproject/src',   # From configuration
+    '/path/to/myproject/lib',   # From configuration
+    # ... fallback paths below
+]
+```
+
+### Step 2: Find the Base Directory (Fallback)
+
+If no `pyproject.toml` configuration exists, rustest walks **up** from your test to find the package root:
 
 ```text
 tests/unit/test_module1.py  ← Start here
@@ -116,7 +199,7 @@ myproject/                  No __init__.py? → This is the base!
 
 The **parent** of the first directory without `__init__.py` becomes the project root.
 
-### Step 2: Check for Src Layout
+### Step 3: Check for Src Layout (Fallback)
 
 From the project root, rustest checks if a `src/` directory exists:
 
@@ -128,17 +211,22 @@ myproject/
 
 If found, `src/` is also added to `sys.path`.
 
-### Step 3: Update sys.path
+### Step 4: Update sys.path
 
-Directories are prepended to `sys.path` (added to the beginning):
+All discovered directories are prepended to `sys.path` (added to the beginning):
 
 ```python
 sys.path = [
-    '/path/to/myproject/src',  # Added first if src/ exists
-    '/path/to/myproject',       # Project root added
+    '/path/to/myproject/src',  # From config or auto-detected
+    '/path/to/myproject',       # Project root (auto-detected)
     # ... other paths
 ]
 ```
+
+**Priority Order:**
+1. **pyproject.toml configuration** (if present)
+2. **Auto-detected src/ directory** (if exists)
+3. **Auto-detected project root** (always added)
 
 ## Common Patterns and Solutions
 
@@ -245,17 +333,35 @@ rustest project2/tests/
 
 ### Problem: Imports work in pytest but not rustest
 
-This is likely because pytest has different path discovery rules or you have pytest configuration. Check:
+This is **rarely an issue anymore** since rustest now reads `pyproject.toml` configuration. If you encounter this:
 
-1. **pytest.ini or pyproject.toml:**
-   ```ini
+1. **Check your pyproject.toml configuration:**
+   ```toml
    [tool.pytest.ini_options]
-   pythonpath = ["custom/path"]
+   pythonpath = ["src"]  # Rustest reads this automatically
    ```
 
-   Rustest doesn't read pytest configuration. Use the standard layouts above instead.
+   Rustest now reads and respects this configuration, just like pytest!
 
-2. **`conftest.py` with path manipulation:**
+2. **If using pytest.ini instead:**
+
+   Rustest only reads `pyproject.toml`, not `pytest.ini`. Migrate your config:
+
+   ```ini
+   # pytest.ini (old) - not read by rustest
+   [pytest]
+   pythonpath = src
+   ```
+
+   To:
+
+   ```toml
+   # pyproject.toml (new) - read by both pytest and rustest
+   [tool.pytest.ini_options]
+   pythonpath = ["src"]
+   ```
+
+3. **`conftest.py` with path manipulation:**
    ```python
    # conftest.py
    import sys
@@ -279,6 +385,17 @@ from mypackage import module
 ```
 
 ## Best Practices
+
+### ✅ DO: Use pyproject.toml Configuration (Recommended)
+
+Explicitly configure your pythonpath in `pyproject.toml`:
+
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+```
+
+This is the most explicit, portable, and pytest-compatible approach.
 
 ### ✅ DO: Use Standard Layouts
 
@@ -349,8 +466,9 @@ If you're migrating from pytest, **most projects will just work** without change
 1. ✅ Standard src-layout: Works automatically
 2. ✅ Flat layout: Works automatically
 3. ✅ conftest.py files: Fully supported
-4. ⚠️ pytest.ini `pythonpath` setting: Not read by rustest (use standard layouts instead)
-5. ⚠️ Custom pytest plugins modifying sys.path: Won't work (use standard layouts)
+4. ✅ `pyproject.toml` pythonpath configuration: **Now fully supported!**
+5. ⚠️ `pytest.ini` pythonpath setting: Not supported (migrate to pyproject.toml)
+6. ⚠️ Custom pytest plugins modifying sys.path: Won't work (use pyproject.toml configuration)
 
 ## Advanced: Understanding the Implementation
 
@@ -378,9 +496,10 @@ def test_show_paths():
 
 ## Summary
 
+- **Use `pyproject.toml` configuration** (recommended) - most explicit and pytest-compatible
 - **Rustest automatically configures sys.path** - no manual setup needed
 - **Use standard layouts** (src-layout or flat-layout) for best results
-- **Don't manipulate sys.path manually** - let rustest handle it
+- **Don't manipulate sys.path manually** - use pyproject.toml or let rustest handle it
 - **Use absolute imports** in your tests
 - **Keep tests separate** from production code
 
