@@ -78,30 +78,44 @@ With **10,000 parametrized invocations**:
 
 ## Debugging: Crystal-Clear Error Messages
 
-Rustest transforms confusing assertion failures into instantly readable error messages. Every test failure shows you exactly what went wrong and what was expected:
+Rustest transforms confusing assertion failures into instantly readable error messages. Every test failure shows you exactly what went wrong and what was expected, without any guesswork.
 
 ### Enhanced Error Output
 
-When a test fails, rustest displays:
+Rustest makes failed assertions obvious. Here's a simple example:
+
+**Your test code:**
+
+```python
+def test_numeric_comparison():
+    actual = 42
+    expected = 100
+    assert actual == expected
+```
+
+**What Rustest shows when it fails:**
 
 ```text
 Code:
-    """Test numeric comparison without message."""
-    actual = 42
-    expected = 100
-  → assert actual == expected
+    def test_numeric_comparison():
+        actual = 42
+        expected = 100
+      → assert actual == expected
 
-E     AssertionError: assert 42 == 100
-E    Expected: 100
-E    Received: 42
+E   AssertionError: assert 42 == 100
+E   Expected: 100
+E   Received: 42
+
+─ /path/to/test_math.py:5
 ```
 
 **What you get:**
-- 📍 **Code Context** — 3 lines of surrounding code with the failing line highlighted
-- ✨ **vitest-style output** — Clear "Expected/Received" values with color coding
-- 🔍 **Value Substitution** — Actual values substituted into the assertion (e.g., `assert 42 == 100`)
-- 🎯 **Frame Introspection** — Even bare assertions like `assert result == expected` automatically show runtime values
-- 🔗 **Clickable Locations** — File paths formatted as links for easy navigation
+
+- 📍 **Code Context** — Three lines of surrounding code with the failing line highlighted.
+- ✨ **Vitest-style Output** — Clear "Expected" vs "Received" values with color coding.
+- 🔍 **Value Substitution** — Real runtime values are inserted into the assertion (e.g., `assert 42 == 100`).
+- 🎯 **Frame Introspection** — Even minimal assertions like `assert result == expected` show both runtime values.
+- 🔗 **Clickable Locations** — File paths appear as clickable links for fast navigation in supported editors.
 
 ### Real-World Example
 
@@ -109,33 +123,37 @@ E    Received: 42
 
 ```python
 class User:
-    def __init__(self, email):
+    def __init__(self, email: str):
         self.email = email
 
-def create_user(name, age):
-    # Returns a user with properly formatted email
+def create_user(name: str, age: int):
+    """Return a User with a properly formatted email."""
     return User(f"{name.lower()}@company.com")
 
 def test_user_creation():
     user = create_user("Alice", 25)
+    # Intentional mistake for demonstration:
+    user.email = "alice.wrong@example.com"
     assert user.email == "alice@company.com"
 ```
 
-**What rustest shows when it fails:**
+**What Rustest shows when it fails:**
+
 ```text
 Code:
     def test_user_creation():
         user = create_user("Alice", 25)
+        user.email = "alice.wrong@example.com"
       → assert user.email == "alice@company.com"
 
-E     AssertionError: assert alice.wrong@example.com == alice@company.com
-E    Expected: alice@company.com
-E    Received: alice.wrong@example.com
+E   AssertionError: assert 'alice.wrong@example.com' == 'alice@company.com'
+E   Expected: alice@company.com
+E   Received: alice.wrong@example.com
 
-─ /path/to/test_users.py:5
+─ /path/to/test_users.py:10
 ```
 
-**No more debugging confusion!** You immediately see exactly what value was received vs what was expected, in a format inspired by pytest and vitest.
+**No more debugging confusion!** You immediately see what value was received, what was expected, and where it failed — all in a format inspired by pytest and vitest.
 
 ## Installation
 
