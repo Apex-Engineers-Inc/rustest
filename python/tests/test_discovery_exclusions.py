@@ -20,7 +20,9 @@ ensure_rust_stub()
 class TestDirectoryExclusions:
     """Test directory exclusions during test discovery."""
 
-    def _write_test_file(self, temp_dir: Path, relative_path: str, test_name: str = "test_example") -> Path:
+    def _write_test_file(
+        self, temp_dir: Path, relative_path: str, test_name: str = "test_example"
+    ) -> Path:
         """Write a simple test file to the specified path."""
         path = temp_dir / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
