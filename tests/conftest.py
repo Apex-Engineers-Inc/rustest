@@ -23,13 +23,13 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
         compat_module.__file__ = __file__
         compat_module.__package__ = "rustest"
 
-        def _fixture(func=None, *, scope="function"):
+        def _fixture(func=None, *, scope="function", autouse=False):
             """Redirect to pytest.fixture."""
             if func is None:
-                # Called with arguments: @fixture(scope="module")
-                return lambda f: pytest.fixture(f, scope=scope)
+                # Called with arguments: @fixture(scope="module", autouse=True)
+                return lambda f: pytest.fixture(f, scope=scope, autouse=autouse)
             # Called without arguments: @fixture
-            return pytest.fixture(func, scope=scope)
+            return pytest.fixture(func, scope=scope, autouse=autouse)
 
         def _parametrize(argnames, argvalues, *, ids=None):
             """Redirect to pytest.mark.parametrize."""

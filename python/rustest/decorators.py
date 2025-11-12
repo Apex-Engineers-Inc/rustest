@@ -16,17 +16,22 @@ VALID_SCOPES = frozenset(["function", "class", "module", "session"])
 
 
 @overload
-def fixture(func: Callable[P, R], *, scope: str = "function") -> Callable[P, R]: ...
+def fixture(
+    func: Callable[P, R], *, scope: str = "function", autouse: bool = False
+) -> Callable[P, R]: ...
 
 
 @overload
-def fixture(*, scope: str = "function") -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+def fixture(
+    *, scope: str = "function", autouse: bool = False
+) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
 def fixture(
     func: Callable[P, R] | None = None,
     *,
     scope: str = "function",
+    autouse: bool = False,
 ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """Mark a function as a fixture with a specific scope.
 
@@ -37,6 +42,8 @@ def fixture(
             - "class": Shared across all test methods in a class
             - "module": Shared across all tests in a module
             - "session": Shared across all tests in the session
+        autouse: If True, the fixture will be automatically used by all tests
+            in its scope without needing to be explicitly requested (default: False)
 
     Usage:
         @fixture
@@ -46,6 +53,11 @@ def fixture(
         @fixture(scope="module")
         def shared_fixture():
             return expensive_setup()
+
+        @fixture(autouse=True)
+        def setup_fixture():
+            # This fixture will run automatically before each test
+            setup_environment()
     """
     if scope not in VALID_SCOPES:
         valid = ", ".join(sorted(VALID_SCOPES))
@@ -55,6 +67,7 @@ def fixture(
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
         setattr(f, "__rustest_fixture__", True)
         setattr(f, "__rustest_fixture_scope__", scope)
+        setattr(f, "__rustest_fixture_autouse__", autouse)
         return f
 
     # Support both @fixture and @fixture(scope="...")

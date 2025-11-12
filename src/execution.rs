@@ -220,6 +220,17 @@ fn execute_test_case(
         &mut context.class_cache,
         &mut context.teardowns,
     );
+
+    // Resolve autouse fixtures first
+    if let Err(err) = resolver.resolve_autouse_fixtures() {
+        let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+        return Err(TestCallFailure {
+            message,
+            stdout: None,
+            stderr: None,
+        });
+    }
+
     let mut call_args = Vec::new();
     for param in &test_case.parameters {
         match resolver.resolve_argument(param) {
@@ -445,6 +456,35 @@ impl<'py> FixtureResolver<'py> {
                 fixture.name, fixture.scope, dependency.name, dependency.scope
             )));
         }
+        Ok(())
+    }
+
+    /// Resolve all autouse fixtures appropriate for the current test.
+    /// Autouse fixtures are automatically executed without needing to be explicitly requested.
+    fn resolve_autouse_fixtures(&mut self) -> PyResult<()> {
+        // Collect all autouse fixtures
+        let autouse_fixtures: Vec<String> = self
+            .fixtures
+            .iter()
+            .filter(|(_, fixture)| fixture.autouse)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        // Resolve each autouse fixture
+        for name in autouse_fixtures {
+            // Skip if already in cache (for higher-scoped autouse fixtures)
+            if self.function_cache.contains_key(&name)
+                || self.class_cache.contains_key(&name)
+                || self.module_cache.contains_key(&name)
+                || self.session_cache.contains_key(&name)
+            {
+                continue;
+            }
+
+            // Resolve the autouse fixture
+            self.resolve_argument(&name)?;
+        }
+
         Ok(())
     }
 }

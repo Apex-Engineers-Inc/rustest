@@ -153,6 +153,7 @@ fn load_conftest_fixtures(
         if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
+            let autouse = extract_fixture_autouse(&value)?;
             fixtures.insert(
                 name.clone(),
                 Fixture::new(
@@ -161,6 +162,7 @@ fn load_conftest_fixtures(
                     extract_parameters(py, &value)?,
                     scope,
                     is_generator,
+                    autouse,
                 ),
             );
         }
@@ -231,6 +233,7 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
         if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
+            let autouse = extract_fixture_autouse(&value)?;
             fixtures.insert(
                 name.clone(),
                 Fixture::new(
@@ -239,6 +242,7 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
                     extract_parameters(py, &value)?,
                     scope,
                     is_generator,
+                    autouse,
                 ),
             );
         }
@@ -477,6 +481,7 @@ fn inspect_module(
             if is_fixture(&value)? {
                 let scope = extract_fixture_scope(&value)?;
                 let is_generator = is_generator_function(py, &value)?;
+                let autouse = extract_fixture_autouse(&value)?;
                 fixtures.insert(
                     name.clone(),
                     Fixture::new(
@@ -485,6 +490,7 @@ fn inspect_module(
                         extract_parameters(py, &value)?,
                         scope,
                         is_generator,
+                        autouse,
                     ),
                 );
                 continue;
@@ -648,6 +654,7 @@ fn discover_plain_class_tests_and_fixtures(
             // Extract fixture metadata
             let scope = extract_fixture_scope(&method)?;
             let is_generator = is_generator_function(py, &method)?;
+            let autouse = extract_fixture_autouse(&method)?;
 
             // Extract parameters (excluding 'self')
             let all_params = extract_parameters(py, &method)?;
@@ -664,6 +671,7 @@ fn discover_plain_class_tests_and_fixtures(
                     parameters,
                     scope,
                     is_generator,
+                    autouse,
                 ),
             );
             continue;
@@ -812,6 +820,14 @@ fn extract_fixture_scope(value: &Bound<'_, PyAny>) -> PyResult<FixtureScope> {
     match string_attribute(value, "__rustest_fixture_scope__")? {
         Some(scope_str) => FixtureScope::from_str(&scope_str).map_err(invalid_test_definition),
         None => Ok(FixtureScope::default()),
+    }
+}
+
+/// Extract the autouse flag of a fixture, defaulting to false if not specified.
+fn extract_fixture_autouse(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    match value.getattr("__rustest_fixture_autouse__") {
+        Ok(flag) => flag.is_truthy(),
+        Err(_) => Ok(false),
     }
 }
 
