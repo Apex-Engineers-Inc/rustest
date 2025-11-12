@@ -10,6 +10,7 @@ from io import StringIO
 
 from .reporting import RunReport, TestResult
 from .core import run
+from .error_formatter import ErrorFormatter
 
 
 # ANSI color codes
@@ -236,20 +237,23 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
         sys.stdout.write("".join(progress_symbols))
     sys.stdout.write("\n")
 
-    # Print failure details
+    # Print failure details with enhanced formatting
     failures = [r for r in report.results if r.status == "failed"]
     if failures:
         separator = f"{Colors.red}{'=' * 70}{Colors.reset}"
         failure_header = f"{Colors.bold}FAILURES{Colors.reset}"
         details_chunks = [f"\n{separator}\n", f"{failure_header}\n", f"{separator}\n"]
+
+        # Use enhanced error formatter
+        formatter = ErrorFormatter(use_colors=True)
         for result in failures:
-            details_chunks.append(
-                f"\n{Colors.bold}{result.name}{Colors.reset} ({Colors.cyan}{result.path}{Colors.reset})\n"
+            formatted_error = formatter.format_failure(
+                result.name,
+                result.path,
+                result.message or "No error message available"
             )
-            details_chunks.append(f"{Colors.red}{'-' * 70}{Colors.reset}\n")
-            if result.message:
-                details_chunks.append(result.message.rstrip("\n"))
-                details_chunks.append("\n")
+            details_chunks.append(formatted_error)
+            details_chunks.append("\n")
         sys.stdout.write("".join(details_chunks))
 
 
@@ -302,9 +306,17 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
                 duration_str = f"{Colors.dim}{result.duration * 1000:.0f}ms{Colors.reset}"
                 buffer.write(f"{indent}{symbol} {display_name} {duration_str}\n")
 
-                # Show error message for failures
+                # Show error message for failures with enhanced formatting
                 if result.status == "failed" and result.message:
-                    error_lines = result.message.rstrip().split("\n")
-                    for line in error_lines:
-                        buffer.write(f"{indent}  {line}\n")
+                    # Format the error nicely
+                    formatter = ErrorFormatter(use_colors=True)
+                    formatted = formatter.format_failure(
+                        display_name,
+                        result.path,
+                        result.message
+                    )
+                    # Indent each line of the formatted error
+                    for line in formatted.split("\n"):
+                        if line:  # Skip empty lines
+                            buffer.write(f"{indent}  {line}\n")
     sys.stdout.write(buffer.getvalue())
