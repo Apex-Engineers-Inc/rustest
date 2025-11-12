@@ -314,3 +314,20 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
                         if line:  # Skip empty lines
                             buffer.write(f"{indent}  {line}\n")
     sys.stdout.write(buffer.getvalue())
+
+    # Also print FAILURES section at the bottom like in default mode
+    failures = [r for r in report.results if r.status == "failed"]
+    if failures:
+        separator = f"{Colors.red}{'=' * 70}{Colors.reset}"
+        failure_header = f"{Colors.bold}FAILURES{Colors.reset}"
+        details_chunks = [f"\n{separator}\n", f"{failure_header}\n", f"{separator}\n"]
+
+        # Use enhanced error formatter
+        formatter = ErrorFormatter(use_colors=True)
+        for result in failures:
+            formatted_error = formatter.format_failure(
+                result.name, result.path, result.message or "No error message available"
+            )
+            details_chunks.append(formatted_error)
+            details_chunks.append("\n")
+        sys.stdout.write("".join(details_chunks))
