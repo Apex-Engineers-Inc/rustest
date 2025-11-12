@@ -131,3 +131,58 @@ class TestMarkDecorator:
 
         assert test_func() == 42
         assert hasattr(test_func, "__rustest_marks__")
+
+    def test_mark_parametrize_matches_top_level_decorator(self) -> None:
+        @mark.parametrize(
+            "start,increment,expected",
+            [(10, 1, 11), (5, 4, 9)],
+            ids=["ten-plus-one", "five-plus-four"],
+        )
+        def test_func(start: int, increment: int, expected: int) -> None:
+            pass
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        assert cases == (
+            {
+                "id": "ten-plus-one",
+                "values": {"start": 10, "increment": 1, "expected": 11},
+            },
+            {
+                "id": "five-plus-four",
+                "values": {"start": 5, "increment": 4, "expected": 9},
+            },
+        )
+        assert not hasattr(test_func, "__rustest_marks__")
+
+    def test_mark_parametrize_allows_fixture_arguments(self) -> None:
+        @fixture
+        def base_number() -> int:
+            return 10
+
+        @mark.parametrize(
+            "addend,expected_total",
+            [
+                (3, 13),
+                (7, 17),
+            ],
+            ids=["plus-three", "plus-seven"],
+        )
+        def test_func(base_number: int, addend: int, expected_total: int) -> tuple[int, int]:
+            return base_number + addend, expected_total
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        assert cases == (
+            {
+                "id": "plus-three",
+                "values": {"addend": 3, "expected_total": 13},
+            },
+            {
+                "id": "plus-seven",
+                "values": {"addend": 7, "expected_total": 17},
+            },
+        )
+        assert not hasattr(test_func, "__rustest_marks__")
+
+        first_case = cases[0]["values"]
+        calculated, expected = test_func(10, first_case["addend"], first_case["expected_total"])
+        assert calculated == expected
