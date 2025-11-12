@@ -84,7 +84,7 @@ Rustest transforms confusing assertion failures into instantly readable error me
 
 When a test fails, rustest displays:
 
-```
+```text
 Code:
     """Test numeric comparison without message."""
     actual = 42
@@ -106,6 +106,8 @@ E    Received: 42
 ### Real-World Example
 
 **Your test code:**
+
+<!--pytest.mark.skip-->
 ```python
 def test_user_creation():
     user = create_user("Alice", 25)
@@ -113,7 +115,7 @@ def test_user_creation():
 ```
 
 **What rustest shows when it fails:**
-```
+```text
 Code:
     def test_user_creation():
         user = create_user("Alice", 25)
