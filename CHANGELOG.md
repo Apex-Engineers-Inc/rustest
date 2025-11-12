@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2025-11-12
+
+### Added
+
+- **Autouse Fixtures**: Implement pytest-compatible autouse fixture support, allowing fixtures to automatically execute for all tests in their scope without explicit request.
+  - Autouse fixtures work across all scopes (function, class, module, session)
+  - Support fixture dependencies for autouse fixtures
+  - Comprehensive documentation with examples for common use cases
+  - Fully compatible with yield (setup/teardown) fixtures
+
+### Changed
+
+- Optimized CLI report batching to improve performance when processing large test suites
+
 ## [0.8.3] - 2025-11-12
 
 ### Fixed

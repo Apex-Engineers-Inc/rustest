@@ -141,6 +141,181 @@ def test_repository(user_repository: dict) -> None:
 
 Rustest automatically resolves the dependency graph and calls fixtures in the correct order.
 
+## Autouse Fixtures
+
+Autouse fixtures run automatically for all tests in their scope without being explicitly requested as a parameter. This is useful for setup/teardown operations that should run for every test.
+
+### Basic Autouse Fixture
+
+```python
+import rustest
+
+@rustest.fixture(autouse=True)
+def reset_database():
+    """Automatically run before each test."""
+    # Setup
+    print("Resetting database...")
+    db_reset()
+
+    yield
+
+    # Teardown
+    db_cleanup()
+
+def test_user_creation():
+    # Database is automatically reset before this test
+    create_user("Alice")
+    assert user_exists("Alice")
+
+def test_user_deletion():
+    # Database is automatically reset before this test too
+    delete_user("Bob")
+    assert not user_exists("Bob")
+```
+
+### Autouse with Different Scopes
+
+Autouse fixtures respect scope boundaries just like regular fixtures:
+
+```python
+import rustest
+
+# Function scope (default) - runs before each test
+@rustest.fixture(autouse=True)
+def clear_cache():
+    """Clear cache before each test."""
+    cache_obj = get_global_cache()
+    cache_obj.clear()
+    yield
+    cache_obj.clear()
+
+# Module scope - runs once per module
+@rustest.fixture(autouse=True, scope="module")
+def setup_test_module():
+    """Initialize test module resources."""
+    print("Setting up module...")
+    init_module_resources()
+    yield
+    print("Tearing down module...")
+    cleanup_module_resources()
+
+# Session scope - runs once per test session
+@rustest.fixture(autouse=True, scope="session")
+def initialize_test_environment():
+    """Initialize entire test environment."""
+    print("Initializing test environment...")
+    setup_test_db()
+    yield
+    print("Cleaning up test environment...")
+    teardown_test_db()
+
+def test_first():
+    # cache is cleared, module setup has run, session setup has run
+    pass
+
+def test_second():
+    # cache is cleared again, but module and session setup don't re-run
+    pass
+```
+
+### Autouse Fixtures with Dependencies
+
+Autouse fixtures can depend on other fixtures:
+
+```python
+import rustest
+
+@rustest.fixture
+def database_connection():
+    return create_db_connection()
+
+@rustest.fixture(autouse=True)
+def initialize_data(database_connection):
+    """Automatically populate test data before each test."""
+    # This depends on database_connection, which will be provided
+    database_connection.execute("INSERT INTO users VALUES (...)")
+    yield
+    database_connection.execute("DELETE FROM users")
+
+def test_user_count(database_connection):
+    # Database is automatically populated, and database_connection is available
+    result = database_connection.execute("SELECT COUNT(*) FROM users")
+    assert result > 0
+```
+
+### Autouse with Test Classes
+
+Autouse fixtures work with test classes too:
+
+```python
+import rustest
+
+class TestUserService:
+    @rustest.fixture(autouse=True)
+    def setup_service(self):
+        """Automatically initialize service before each test method."""
+        self.service = UserService()
+        self.service.start()
+        yield
+        self.service.stop()
+
+    def test_service_ready(self):
+        # self.service is automatically initialized
+        assert self.service.is_running()
+
+    def test_another_operation(self):
+        # self.service is initialized again for this test
+        assert self.service.is_ready()
+```
+
+### Common Use Cases for Autouse
+
+**1. Logging and Monitoring**
+
+```python
+import rustest
+
+@rustest.fixture(autouse=True)
+def test_logging(request):
+    """Log test start and end."""
+    print(f"Starting test: {request.node.name}")
+    yield
+    print(f"Finished test: {request.node.name}")
+```
+
+**2. Temporary File Cleanup**
+
+```python
+import rustest
+
+@rustest.fixture(autouse=True)
+def cleanup_temp_files(tmp_path):
+    """Ensure temp files are cleaned up."""
+    yield
+    # tmp_path is automatically cleaned up by rustest
+```
+
+**3. State Reset Across Tests**
+
+```python
+import rustest
+
+@rustest.fixture(autouse=True)
+def reset_global_state():
+    """Reset any global state before each test."""
+    global_state.reset()
+    yield
+    global_state.reset()
+```
+
+!!! tip "When to Use Autouse"
+    Use autouse for setup/teardown that should happen for every test in a scope. Common patterns:
+    - Database resets
+    - Cache clearing
+    - State initialization
+    - Logging and monitoring
+    - Temporary file management
+
 ## Yield Fixtures (Setup/Teardown)
 
 Use `yield` to perform cleanup after tests:
