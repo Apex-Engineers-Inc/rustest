@@ -20,6 +20,7 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 - 🪤 `raises()` context manager for precise exception assertions
 - 📦 Easy installation with pip or uv
 - ⚡ Low-overhead execution keeps small suites feeling instant
+- 🐛 **Crystal-clear error messages** that make debugging effortless
 
 ## Performance
 
@@ -74,6 +75,58 @@ With **10,000 parametrized invocations**:
 | rustest     | 0.41s           | **~24x faster** | `python -m rustest benchmarks/test_large_parametrize.py` |
 
 **[📊 View Detailed Performance Analysis →](https://apex-engineers-inc.github.io/rustest/advanced/performance/)**
+
+## Debugging: Crystal-Clear Error Messages
+
+Rustest transforms confusing assertion failures into instantly readable error messages. Every test failure shows you exactly what went wrong and what was expected:
+
+### Enhanced Error Output
+
+When a test fails, rustest displays:
+
+```
+Code:
+    """Test numeric comparison without message."""
+    actual = 42
+    expected = 100
+  → assert actual == expected
+
+E     AssertionError: assert 42 == 100
+E    Expected: 100
+E    Received: 42
+```
+
+**What you get:**
+- 📍 **Code Context** — 3 lines of surrounding code with the failing line highlighted
+- ✨ **vitest-style output** — Clear "Expected/Received" values with color coding
+- 🔍 **Value Substitution** — Actual values substituted into the assertion (e.g., `assert 42 == 100`)
+- 🎯 **Frame Introspection** — Even bare assertions like `assert result == expected` automatically show runtime values
+- 🔗 **Clickable Locations** — File paths formatted as links for easy navigation
+
+### Real-World Example
+
+**Your test code:**
+```python
+def test_user_creation():
+    user = create_user("Alice", 25)
+    assert user.email == "alice@company.com"
+```
+
+**What rustest shows when it fails:**
+```
+Code:
+    def test_user_creation():
+        user = create_user("Alice", 25)
+      → assert user.email == "alice@company.com"
+
+E     AssertionError: assert alice.wrong@example.com == alice@company.com
+E    Expected: alice@company.com
+E    Received: alice.wrong@example.com
+
+─ /path/to/test_users.py:5
+```
+
+**No more debugging confusion!** You immediately see exactly what value was received vs what was expected, in a format inspired by pytest and vitest.
 
 ## Installation
 
