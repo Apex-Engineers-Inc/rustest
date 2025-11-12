@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2025-11-12
+
+### Added
+
+- **Pytest-Compatible Directory Exclusion**: Test discovery now exactly mimics pytest's behavior for excluding directories, preventing tests from being discovered in virtual environments and build artifacts.
+  - Implements pytest's default `norecursedirs` patterns: `*.egg`, `.*`, `_darcs`, `build`, `CVS`, `dist`, `node_modules`, `venv`, `{arch}`
+  - Intelligent virtualenv detection via marker files:
+    - `pyvenv.cfg` for standard Python virtual environments (PEP 405)
+    - `conda-meta/history` for conda environments
+  - Pattern matching compatible with pytest's fnmatch-style behavior
+  - Excludes hidden directories (starting with `.`) automatically
+  - Comprehensive test suite with 21 tests covering all exclusion scenarios
+
+### Fixed
+
+- Test discovery no longer finds tests in `venv`, `.venv`, and other virtual environment directories when running `rustest` without a path argument
+- Hidden directories (`.git`, `.pytest_cache`, etc.) are now properly excluded from test discovery
+
 ## [0.9.0] - 2025-11-12
 
 ### Added
