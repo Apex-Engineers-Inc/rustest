@@ -1,7 +1,39 @@
 """Enhanced error formatting for better test failure presentation."""
 
 import re
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, TypedDict
+
+
+class StackFrame(TypedDict):
+    """Type definition for a stack frame."""
+
+    file: str
+    line: int
+    function: str
+    code: Optional[str]
+
+
+class Comparison(TypedDict):
+    """Type definition for parsed comparison."""
+
+    left: str
+    operator: str
+    right: str
+
+
+class ParsedTraceback(TypedDict):
+    """Type definition for parsed traceback information."""
+
+    error_type: Optional[str]
+    error_message: Optional[str]
+    file_path: Optional[str]
+    line_number: Optional[int]
+    failing_code: Optional[str]
+    context_lines: List[str]
+    comparison: Optional[Comparison]
+    stack_frames: List[StackFrame]
+    actual_value: Optional[str]
+    expected_value: Optional[str]
 
 
 class Colors:
@@ -22,6 +54,7 @@ class ErrorFormatter:
     """Formats test errors in a user-friendly way."""
 
     def __init__(self, use_colors: bool = True):
+        super().__init__()
         self.use_colors = use_colors
 
     def format_failure(self, test_name: str, test_path: str, message: str) -> str:
@@ -46,16 +79,9 @@ class ErrorFormatter:
         parsed = self._parse_traceback(message)
 
         # Check if we got any useful data from parsing
-        has_useful_data = (
-            parsed
-            and (
-                parsed["error_type"]
-                or parsed["failing_code"]
-                or parsed["stack_frames"]
-            )
-        )
-
-        if has_useful_data:
+        if parsed is not None and (
+            parsed["error_type"] or parsed["failing_code"] or parsed["stack_frames"]
+        ):
             # Show the assertion error prominently
             if parsed["error_type"]:
                 error_header = f"{parsed['error_type']}"
@@ -86,7 +112,7 @@ class ErrorFormatter:
 
         return "\n".join(lines)
 
-    def _parse_traceback(self, message: str) -> Optional[dict]:
+    def _parse_traceback(self, message: str) -> Optional[ParsedTraceback]:
         """
         Parse a Python traceback to extract useful information.
 
@@ -225,7 +251,7 @@ class ErrorFormatter:
         ]
         return any(pattern in file_path for pattern in internal_patterns)
 
-    def _extract_rust_injected_values(self, message: str) -> Optional[dict]:
+    def _extract_rust_injected_values(self, message: str) -> Optional[dict[str, str]]:
         """
         Extract values that were injected by the Rust code from frame inspection.
 
@@ -252,14 +278,14 @@ class ErrorFormatter:
             elif line.startswith("Received:"):
                 actual = line[9:].strip()  # Remove "Received:"
 
-        if expected or actual:
+        if expected is not None and actual is not None:
             return {"expected": expected, "actual": actual}
 
         return None
 
     def _extract_values_from_message(
-        self, error_message: str, comparison: Optional[dict]
-    ) -> Optional[dict]:
+        self, error_message: str, comparison: Optional[Comparison]
+    ) -> Optional[dict[str, str]]:
         """
         Try to extract actual and expected values from the error message.
 
@@ -330,7 +356,7 @@ class ErrorFormatter:
 
         return None
 
-    def _parse_assertion(self, code: str) -> Optional[dict]:
+    def _parse_assertion(self, code: str) -> Optional[Comparison]:
         """
         Try to parse assertion code to extract expected/actual values.
 
@@ -354,7 +380,7 @@ class ErrorFormatter:
         line_number: Optional[int],
         failing_code: Optional[str],
         context_lines: List[str],
-        comparison: Optional[dict] = None,
+        comparison: Optional[Comparison] = None,
         expected_value: Optional[str] = None,
         actual_value: Optional[str] = None,
     ) -> str:
@@ -436,7 +462,7 @@ class ErrorFormatter:
             return None
 
     def _substitute_values_in_assertion(
-        self, assertion: str, comparison: dict, actual_value: str, expected_value: str
+        self, assertion: str, comparison: Comparison, actual_value: str, expected_value: str
     ) -> Optional[str]:
         """
         Substitute actual runtime values into the assertion statement.
@@ -463,7 +489,7 @@ class ErrorFormatter:
 
         return substituted
 
-    def _format_comparison(self, comparison: dict) -> str:
+    def _format_comparison(self, comparison: Comparison) -> str:
         """Format a comparison (expected vs actual) in a readable way."""
         lines = []
         lines.append(
@@ -518,7 +544,7 @@ class ErrorFormatter:
         # If it's a simple value, just return it
         return value
 
-    def _format_stack_trace(self, stack_frames: List[dict]) -> str:
+    def _format_stack_trace(self, stack_frames: List[StackFrame]) -> str:
         """Format a simplified stack trace."""
         if not stack_frames or len(stack_frames) <= 1:
             return ""
