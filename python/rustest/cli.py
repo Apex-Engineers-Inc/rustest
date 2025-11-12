@@ -244,8 +244,7 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
         details_chunks = [f"\n{separator}\n", f"{failure_header}\n", f"{separator}\n"]
         for result in failures:
             details_chunks.append(
-                f"\n{Colors.bold}{result.name}{Colors.reset} "
-                f"({Colors.cyan}{result.path}{Colors.reset})\n"
+                f"\n{Colors.bold}{result.name}{Colors.reset} ({Colors.cyan}{result.path}{Colors.reset})\n"
             )
             details_chunks.append(f"{Colors.red}{'-' * 70}{Colors.reset}\n")
             if result.message:
