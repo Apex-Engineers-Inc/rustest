@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from collections import defaultdict
 from collections.abc import Sequence
+from io import StringIO
 
 from .reporting import RunReport, TestResult
 from .core import run
@@ -191,7 +194,19 @@ def _print_report(report: RunReport, verbose: bool = False, ascii_mode: bool = F
         f"{failed_str}, "
         f"{skipped_str} in {Colors.dim}{report.duration:.3f}s{Colors.reset}"
     )
-    print(summary)
+    sys.stdout.write(f"{summary}\n")
+
+
+def _split_result_name(name: str) -> tuple[str | None, str]:
+    """Return the containing class (if present) and display name for a test result."""
+
+    if "::" in name:
+        parent, leaf = name.rsplit("::", 1)
+        return (parent or None, leaf)
+    if "." in name:
+        parent, leaf = name.rsplit(".", 1)
+        return (parent or None, leaf)
+    return (None, name)
 
 
 def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
@@ -209,28 +224,34 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
         skip_symbol = f"{Colors.yellow}⊘{Colors.reset}"
 
     # Print progress indicators
+    progress_symbols: list[str] = []
     for result in report.results:
         if result.status == "passed":
-            print(pass_symbol, end="")
+            progress_symbols.append(pass_symbol)
         elif result.status == "failed":
-            print(fail_symbol, end="")
+            progress_symbols.append(fail_symbol)
         elif result.status == "skipped":
-            print(skip_symbol, end="")
-    print()  # Newline after progress indicators
+            progress_symbols.append(skip_symbol)
+    if progress_symbols:
+        sys.stdout.write("".join(progress_symbols))
+    sys.stdout.write("\n")
 
     # Print failure details
     failures = [r for r in report.results if r.status == "failed"]
     if failures:
-        print(f"\n{Colors.red}{'=' * 70}")
-        print(f"{Colors.bold}FAILURES{Colors.reset}")
-        print(f"{Colors.red}{'=' * 70}{Colors.reset}")
+        separator = f"{Colors.red}{'=' * 70}{Colors.reset}"
+        failure_header = f"{Colors.bold}FAILURES{Colors.reset}"
+        details_chunks = [f"\n{separator}\n", f"{failure_header}\n", f"{separator}\n"]
         for result in failures:
-            print(
-                f"\n{Colors.bold}{result.name}{Colors.reset} ({Colors.cyan}{result.path}{Colors.reset})"
+            details_chunks.append(
+                f"\n{Colors.bold}{result.name}{Colors.reset} "
+                f"({Colors.cyan}{result.path}{Colors.reset})\n"
             )
-            print(f"{Colors.red}{'-' * 70}{Colors.reset}")
+            details_chunks.append(f"{Colors.red}{'-' * 70}{Colors.reset}\n")
             if result.message:
-                print(result.message.rstrip())
+                details_chunks.append(result.message.rstrip("\n"))
+                details_chunks.append("\n")
+        sys.stdout.write("".join(details_chunks))
 
 
 def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
@@ -246,66 +267,45 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
         skip_symbol = f"{Colors.yellow}⊘{Colors.reset}"
 
     # Group tests by file path and organize hierarchically
-    from collections import defaultdict
-
-    tests_by_file: dict[str, list[TestResult]] = defaultdict(list)
+    tests_by_file: dict[str, list[tuple[str | None, str, TestResult]]] = defaultdict(list)
     for result in report.results:
-        tests_by_file[result.path].append(result)
+        class_name, display_name = _split_result_name(result.name)
+        tests_by_file[result.path].append((class_name, display_name, result))
 
     # Print hierarchical structure
+    buffer = StringIO()
+    symbol_by_status = {
+        "passed": pass_symbol,
+        "failed": fail_symbol,
+        "skipped": skip_symbol,
+    }
     for file_path in sorted(tests_by_file.keys()):
-        print(f"\n{Colors.bold}{file_path}{Colors.reset}")
+        buffer.write(f"\n{Colors.bold}{file_path}{Colors.reset}\n")
 
         # Group tests by class within this file
-        tests_by_class: dict[str | None, list[tuple[TestResult, str | None]]] = defaultdict(list)
-        for result in tests_by_file[file_path]:
-            # Parse test name to extract class if present
-            # Format can be: "test_name" or "ClassName.test_name" or "module::Class::test"
-            class_name: str | None
-            if "::" in result.name:
-                parts = result.name.split("::")
-                class_name = "::".join(parts[:-1]) if len(parts) > 1 else None
-            elif "." in result.name:
-                parts = result.name.split(".")
-                class_name = parts[0] if len(parts) > 1 else None
-            else:
-                class_name = None
-            tests_by_class[class_name].append((result, class_name))
+        tests_by_class: dict[str | None, list[tuple[str, TestResult]]] = defaultdict(list)
+        for class_name, display_name, result in tests_by_file[file_path]:
+            tests_by_class[class_name].append((display_name, result))
 
         # Print tests organized by class
         for class_name in sorted(tests_by_class.keys(), key=lambda x: (x is None, x)):
             # Print class name if present
             if class_name:
-                print(f"  {Colors.cyan}{class_name}{Colors.reset}")
+                buffer.write(f"  {Colors.cyan}{class_name}{Colors.reset}\n")
 
-            for result, _ in tests_by_class[class_name]:
-                # Get symbol based on status
-                if result.status == "passed":
-                    symbol = pass_symbol
-                elif result.status == "failed":
-                    symbol = fail_symbol
-                elif result.status == "skipped":
-                    symbol = skip_symbol
-                else:
-                    symbol = "?"
-
-                # Extract just the test method name
-                if "::" in result.name:
-                    display_name = result.name.split("::")[-1]
-                elif "." in result.name:
-                    display_name = result.name.split(".")[-1]
-                else:
-                    display_name = result.name
+            for display_name, result in tests_by_class[class_name]:
+                symbol = symbol_by_status.get(result.status, "?")
 
                 # Indent based on whether it's in a class
                 indent = "    " if class_name else "  "
 
                 # Print with symbol, name, and timing
                 duration_str = f"{Colors.dim}{result.duration * 1000:.0f}ms{Colors.reset}"
-                print(f"{indent}{symbol} {display_name} {duration_str}")
+                buffer.write(f"{indent}{symbol} {display_name} {duration_str}\n")
 
                 # Show error message for failures
                 if result.status == "failed" and result.message:
                     error_lines = result.message.rstrip().split("\n")
                     for line in error_lines:
-                        print(f"{indent}  {line}")
+                        buffer.write(f"{indent}  {line}\n")
+    sys.stdout.write(buffer.getvalue())
