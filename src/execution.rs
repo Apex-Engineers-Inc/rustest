@@ -535,6 +535,8 @@ where
 }
 
 /// Format a Python exception using `traceback.format_exception`.
+/// For AssertionErrors, also attempts to extract the actual vs expected values
+/// from the local scope.
 fn format_pyerr(py: Python<'_>, err: &PyErr) -> PyResult<String> {
     let traceback = py.import("traceback")?;
     let exc_type: Py<PyAny> = err.get_type(py).unbind().into();
@@ -546,7 +548,94 @@ fn format_pyerr(py: Python<'_>, err: &PyErr) -> PyResult<String> {
     let formatted: Vec<String> = traceback
         .call_method1("format_exception", (exc_type, exc_value, exc_tb))?
         .extract()?;
-    Ok(formatted.join(""))
+
+    let mut result = formatted.join("");
+
+    // For AssertionError, try to extract comparison values from the frame
+    if err.is_instance_of::<pyo3::exceptions::PyAssertionError>(py) {
+        if let Some(tb) = err.traceback(py) {
+            if let Ok(enriched) = enrich_assertion_error(py, &tb, &result) {
+                result = enriched;
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Attempt to enrich an AssertionError with actual vs expected values
+/// by inspecting the local variables in the frame where the assertion failed.
+fn enrich_assertion_error(py: Python<'_>, tb: &pyo3::Bound<'_, pyo3::types::PyTraceback>, formatted: &str) -> PyResult<String> {
+    // Get the frame from the traceback
+    let frame = tb.getattr("tb_frame")?;
+    let locals = frame.getattr("f_locals")?;
+
+    // Try to extract the failing line from the formatted traceback
+    // Look for lines containing "assert"
+    for line in formatted.lines() {
+        if line.trim().starts_with("assert ") {
+            // Parse the assertion to find variable names
+            let assertion = line.trim();
+
+            // Try to extract comparison values
+            if let Some(values) = extract_comparison_values(py, assertion, &locals)? {
+                // Append the extracted values to the formatted traceback
+                return Ok(format!(
+                    "{}\n__RUSTEST_ASSERTION_VALUES__\nExpected: {}\nReceived: {}",
+                    formatted,
+                    values.0,
+                    values.1
+                ));
+            }
+            break;
+        }
+    }
+
+    Ok(formatted.to_string())
+}
+
+/// Extract the actual comparison values from local variables
+fn extract_comparison_values(
+    _py: Python<'_>,
+    assertion: &str,
+    locals: &pyo3::Bound<'_, pyo3::PyAny>,
+) -> PyResult<Option<(String, String)>> {
+    use regex::Regex;
+
+    // Match patterns like: assert x == y, assert a != b, etc.
+    let re = Regex::new(r"assert\s+(\w+)\s*(==|!=|>|<|>=|<=)\s+(\w+)").unwrap();
+
+    if let Some(caps) = re.captures(assertion) {
+        let left_var = &caps[1];
+        let right_var = &caps[3];
+        let operator = &caps[2];
+
+        // Try to get the values from locals
+        // Check if the variables exist, then get their values
+        if locals.contains(left_var).unwrap_or(false) && locals.contains(right_var).unwrap_or(false) {
+            match (locals.get_item(left_var), locals.get_item(right_var)) {
+                (Ok(left), Ok(right)) => {
+                    let left_repr = left.repr()?.to_string();
+                    let right_repr = right.repr()?.to_string();
+
+                    // For == comparisons, left is actual, right is expected (by convention)
+                    // For comparison operators (>, <, >=, <=), left is the value being tested,
+                    // right is the threshold/expected value
+                    return Ok(match operator {
+                        "==" => Some((right_repr, left_repr)),  // (expected, actual)
+                        "!=" => Some((left_repr, right_repr)),  // Show both sides
+                        ">=" | "<=" | ">" | "<" => Some((right_repr, left_repr)),  // (threshold, actual)
+                        _ => Some((left_repr, right_repr)),
+                    });
+                }
+                _ => {
+                    // Could not get the values
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Finalize generator fixtures by running their teardown code.

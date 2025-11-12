@@ -99,7 +99,13 @@ class ErrorFormatter:
         if not message:
             return None
 
-        lines = message.strip().split('\n')
+        # Strip out the Rust-injected values marker section from the traceback
+        # before parsing (we'll extract it separately)
+        traceback_message = message
+        if '__RUSTEST_ASSERTION_VALUES__' in message:
+            traceback_message = message.split('__RUSTEST_ASSERTION_VALUES__')[0].strip()
+
+        lines = traceback_message.strip().split('\n')
 
         # Find the exception type and message (usually last line)
         error_type = None
@@ -176,8 +182,13 @@ class ErrorFormatter:
         if error_type == 'AssertionError' and main_frame and main_frame['code']:
             comparison = self._parse_assertion(main_frame['code'])
 
-            # Try to extract actual values from error message or traceback
-            if error_message:
+            # First, check if Rust injected the actual values (from frame inspection)
+            rust_values = self._extract_rust_injected_values(message)
+            if rust_values:
+                actual_value = rust_values.get('actual')
+                expected_value = rust_values.get('expected')
+            # Otherwise, try to extract from error message
+            elif error_message:
                 values = self._extract_values_from_message(error_message, comparison)
                 if values:
                     actual_value = values.get('actual')
@@ -205,6 +216,38 @@ class ErrorFormatter:
             '<frozen',
         ]
         return any(pattern in file_path for pattern in internal_patterns)
+
+    def _extract_rust_injected_values(self, message: str) -> Optional[dict]:
+        """
+        Extract values that were injected by the Rust code from frame inspection.
+
+        The Rust code adds a special marker with the actual values.
+        Format: __RUSTEST_ASSERTION_VALUES__\nExpected: X\nReceived: Y
+        """
+        if '__RUSTEST_ASSERTION_VALUES__' not in message:
+            return None
+
+        # Split by the marker
+        parts = message.split('__RUSTEST_ASSERTION_VALUES__')
+        if len(parts) < 2:
+            return None
+
+        # Parse the values section
+        values_section = parts[1]
+        expected = None
+        actual = None
+
+        for line in values_section.split('\n'):
+            line = line.strip()
+            if line.startswith('Expected:'):
+                expected = line[9:].strip()  # Remove "Expected:"
+            elif line.startswith('Received:'):
+                actual = line[9:].strip()  # Remove "Received:"
+
+        if expected or actual:
+            return {'expected': expected, 'actual': actual}
+
+        return None
 
     def _extract_values_from_message(self, error_message: str, comparison: Optional[dict]) -> Optional[dict]:
         """
