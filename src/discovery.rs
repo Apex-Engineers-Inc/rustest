@@ -25,27 +25,66 @@ use crate::model::{
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
+/// Check if a directory is a virtual environment by detecting marker files.
+///
+/// This mimics pytest's `_in_venv()` function, which checks for:
+/// - `pyvenv.cfg`: Standard Python virtual environments (PEP 405)
+/// - `conda-meta/history`: Conda environments
+fn is_virtualenv(path: &Path) -> bool {
+    path.join("pyvenv.cfg").is_file() || path.join("conda-meta").join("history").is_file()
+}
+
+/// Check if a directory basename matches a glob pattern.
+///
+/// This implements simplified fnmatch-style matching similar to pytest's fnmatch_ex.
+/// If the pattern contains no path separator, it's matched against the basename only.
+fn matches_pattern(basename: &str, pattern: &str) -> bool {
+    // Common patterns that need exact or wildcard matching
+    match pattern {
+        // Match directories starting with dot (hidden directories)
+        ".*" => basename.starts_with('.'),
+        // Match directories ending with specific suffix
+        "*.egg" => basename.ends_with(".egg"),
+        // Exact matches
+        _ => basename == pattern,
+    }
+}
+
 /// Check if a directory should be excluded from test discovery.
 ///
-/// This excludes common virtual environment directories and build artifacts
-/// to prevent discovering tests in dependencies.
+/// This implements pytest's norecursedirs behavior with the default patterns:
+/// ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}"]
+///
+/// Additionally checks for virtual environments via marker files (pyvenv.cfg).
 fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
     if !entry.file_type().is_dir() {
         return false;
     }
 
-    let file_name = entry.file_name().to_string_lossy();
+    let path = entry.path();
+    let basename = entry.file_name().to_string_lossy();
 
-    // Exclude virtual environment directories
-    matches!(
-        file_name.as_ref(),
-        "venv" | ".venv" | "virtualenv" | "env" | ".env"
-            | "node_modules"
-            | ".git" | ".hg" | ".svn"
-            | "__pycache__" | ".pytest_cache"
-            | ".tox" | ".nox"
-            | "dist" | "build" | ".eggs"
-    ) || file_name.ends_with(".egg-info")
+    // First check if this is a virtual environment (pytest's _in_venv check)
+    if is_virtualenv(path) {
+        return true;
+    }
+
+    // Apply pytest's default norecursedirs patterns
+    const NORECURSE_PATTERNS: &[&str] = &[
+        "*.egg",
+        ".*",
+        "_darcs",
+        "build",
+        "CVS",
+        "dist",
+        "node_modules",
+        "venv",
+        "{arch}",
+    ];
+
+    NORECURSE_PATTERNS
+        .iter()
+        .any(|pattern| matches_pattern(&basename, pattern))
 }
 
 /// Discover tests for the provided paths.
