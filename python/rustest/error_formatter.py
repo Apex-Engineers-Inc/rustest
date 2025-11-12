@@ -58,18 +58,11 @@ class ErrorFormatter:
                     parsed['file_path'],
                     parsed['line_number'],
                     parsed['failing_code'],
-                    parsed['context_lines']
-                ))
-
-            # Show expected vs received values if available
-            if parsed.get('expected_value') or parsed.get('actual_value'):
-                lines.append(self._format_expected_received(
+                    parsed['context_lines'],
+                    parsed.get('comparison'),
                     parsed.get('expected_value'),
                     parsed.get('actual_value')
                 ))
-            # Otherwise show comparison if available
-            elif parsed['comparison']:
-                lines.append(self._format_comparison(parsed['comparison']))
 
             # Show simplified stack trace
             if parsed['stack_frames']:
@@ -335,8 +328,11 @@ class ErrorFormatter:
         return None
 
     def _format_code_context(self, file_path: Optional[str], line_number: Optional[int],
-                            failing_code: Optional[str], context_lines: List[str]) -> str:
-        """Format the code context around the failure."""
+                            failing_code: Optional[str], context_lines: List[str],
+                            comparison: Optional[dict] = None,
+                            expected_value: Optional[str] = None,
+                            actual_value: Optional[str] = None) -> str:
+        """Format the code context around the failure with pytest-style output."""
         lines = []
 
         if file_path and line_number:
@@ -347,10 +343,98 @@ class ErrorFormatter:
 
         if failing_code:
             lines.append(f"\n{self._dim('Code:')}")
-            # Show the failing line with an arrow
-            lines.append(f"  {self._red('→')} {failing_code.strip()}")
+
+            # Try to read the actual source file for context
+            source_context = self._get_source_context(file_path, line_number, num_lines=3)
+
+            if source_context:
+                for line_no, code_line in source_context:
+                    is_failing_line = line_no == line_number
+                    if is_failing_line:
+                        # Show the failing line with arrow
+                        lines.append(f"  {self._red('→')} {code_line}")
+                    else:
+                        # Show context line (dimmed)
+                        lines.append(f"    {self._dim(code_line)}")
+            else:
+                # Fallback: just show the failing line
+                lines.append(f"  {self._red('→')} {failing_code.strip()}")
+
+            # Add pytest-style assertion output with E prefix
+            if comparison and expected_value and actual_value:
+                lines.append("")  # Blank line
+                # Show "E  AssertionError: assert actual == expected"
+                assertion_with_values = self._substitute_values_in_assertion(
+                    failing_code.strip(),
+                    comparison,
+                    actual_value,
+                    expected_value
+                )
+                if assertion_with_values:
+                    lines.append(self._red(f"E     AssertionError: {assertion_with_values}"))
+                else:
+                    lines.append(self._red(f"E     AssertionError"))
+
+                # Show "E  Expected: X"
+                lines.append(self._red(f"E    Expected: {expected_value}"))
+                # Show "E  Received: X"
+                lines.append(self._red(f"E    Received: {actual_value}"))
 
         return "\n".join(lines)
+
+    def _get_source_context(self, file_path: Optional[str], line_number: Optional[int],
+                           num_lines: int = 3) -> Optional[List[Tuple[int, str]]]:
+        """
+        Read the source file and get context lines around the failing line.
+
+        Returns a list of (line_number, code) tuples.
+        """
+        if not file_path or not line_number:
+            return None
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                all_lines = f.readlines()
+
+            # Get lines before the failing line (num_lines before)
+            start_idx = max(0, line_number - num_lines - 1)
+            end_idx = line_number  # Inclusive of the failing line
+
+            context = []
+            for i in range(start_idx, end_idx):
+                if i < len(all_lines):
+                    # Line numbers are 1-indexed
+                    context.append((i + 1, all_lines[i].rstrip()))
+
+            return context if context else None
+        except (IOError, OSError):
+            # File not readable
+            return None
+
+    def _substitute_values_in_assertion(self, assertion: str, comparison: dict,
+                                       actual_value: str, expected_value: str) -> Optional[str]:
+        """
+        Substitute actual runtime values into the assertion statement.
+
+        For example: "assert result == expected" becomes "assert 'foo' == 'bar'"
+        """
+        if not comparison:
+            return None
+
+        left_var = comparison['left']
+        operator = comparison['operator']
+        right_var = comparison['right']
+
+        # Replace variable names with actual values
+        # For == comparisons, left is actual, right is expected
+        substituted = assertion.replace(f"assert {left_var}", f"assert {actual_value}", 1)
+        substituted = substituted.replace(f"{operator} {right_var}", f"{operator} {expected_value}", 1)
+
+        # Clean up if it has a trailing message
+        if ',' in substituted:
+            substituted = substituted.split(',')[0].strip()
+
+        return substituted
 
     def _format_comparison(self, comparison: dict) -> str:
         """Format a comparison (expected vs actual) in a readable way."""
