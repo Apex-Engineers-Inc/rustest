@@ -107,8 +107,15 @@ E    Received: 42
 
 **Your test code:**
 
-<!--pytest.mark.skip-->
 ```python
+class User:
+    def __init__(self, email):
+        self.email = email
+
+def create_user(name, age):
+    # Returns a user with properly formatted email
+    return User(f"{name.lower()}@company.com")
+
 def test_user_creation():
     user = create_user("Alice", 25)
     assert user.email == "alice@company.com"
