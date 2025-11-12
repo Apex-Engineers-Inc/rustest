@@ -56,6 +56,61 @@ rustest tests/
 rustest tests/ integration/ e2e/
 ```
 
+### Test Discovery and Directory Exclusion
+
+Rustest automatically discovers test files matching the patterns `test_*.py` and `*_test.py`, while **intelligently excluding directories that shouldn't contain tests**. This behavior exactly matches pytest's defaults.
+
+#### Automatically Excluded Directories
+
+The following directories are excluded from test discovery to prevent running tests from dependencies:
+
+**Virtual Environments:**
+- `venv`, `.venv` - Standard Python virtual environments
+- Any directory containing `pyvenv.cfg` (PEP 405 marker)
+- Any directory containing `conda-meta/history` (conda environments)
+
+**Build Artifacts:**
+- `build` - Build output directories
+- `dist` - Distribution packages
+- `*.egg` - Python egg directories
+
+**Hidden Directories:**
+- `.*` - Any directory starting with a dot (`.git`, `.pytest_cache`, `.tox`, etc.)
+
+**Version Control:**
+- `CVS`, `_darcs` - Legacy version control systems
+
+**Other:**
+- `node_modules` - Node.js dependencies
+- `{arch}` - Arch Linux package directories
+
+#### Why This Matters
+
+When you run `rustest` without specifying a path, it searches the current directory for tests. Without directory exclusion, rustest would discover and run tests from your virtual environment's site-packages, which can be slow and produce confusing results:
+
+```bash
+# Without exclusions (old behavior):
+rustest  # Would find thousands of tests in venv/lib/python3.11/site-packages/
+
+# With exclusions (current behavior):
+rustest  # Only finds your project's tests
+```
+
+#### Customizing Test Discovery
+
+If you need to test specific directories that would normally be excluded, explicitly specify them:
+
+```bash
+# Test a specific directory that would normally be excluded
+rustest .venv/custom_tests/
+
+# Test specific files in build directory
+rustest build/generated_tests/test_*.py
+```
+
+!!! tip "Pytest Compatibility"
+    This directory exclusion behavior exactly matches pytest's default `norecursedirs` patterns, making rustest a true drop-in replacement.
+
 ### Running Specific Files
 
 ```bash

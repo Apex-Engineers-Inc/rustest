@@ -25,6 +25,68 @@ use crate::model::{
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
+/// Check if a directory is a virtual environment by detecting marker files.
+///
+/// This mimics pytest's `_in_venv()` function, which checks for:
+/// - `pyvenv.cfg`: Standard Python virtual environments (PEP 405)
+/// - `conda-meta/history`: Conda environments
+fn is_virtualenv(path: &Path) -> bool {
+    path.join("pyvenv.cfg").is_file() || path.join("conda-meta").join("history").is_file()
+}
+
+/// Check if a directory basename matches a glob pattern.
+///
+/// This implements simplified fnmatch-style matching similar to pytest's fnmatch_ex.
+/// If the pattern contains no path separator, it's matched against the basename only.
+fn matches_pattern(basename: &str, pattern: &str) -> bool {
+    // Common patterns that need exact or wildcard matching
+    match pattern {
+        // Match directories starting with dot (hidden directories)
+        ".*" => basename.starts_with('.'),
+        // Match directories ending with specific suffix
+        "*.egg" => basename.ends_with(".egg"),
+        // Exact matches
+        _ => basename == pattern,
+    }
+}
+
+/// Check if a directory should be excluded from test discovery.
+///
+/// This implements pytest's norecursedirs behavior with the default patterns:
+/// ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}"]
+///
+/// Additionally checks for virtual environments via marker files (pyvenv.cfg).
+fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+
+    let path = entry.path();
+    let basename = entry.file_name().to_string_lossy();
+
+    // First check if this is a virtual environment (pytest's _in_venv check)
+    if is_virtualenv(path) {
+        return true;
+    }
+
+    // Apply pytest's default norecursedirs patterns
+    const NORECURSE_PATTERNS: &[&str] = &[
+        "*.egg",
+        ".*",
+        "_darcs",
+        "build",
+        "CVS",
+        "dist",
+        "node_modules",
+        "venv",
+        "{arch}",
+    ];
+
+    NORECURSE_PATTERNS
+        .iter()
+        .any(|pattern| matches_pattern(&basename, pattern))
+}
+
 /// Discover tests for the provided paths.
 ///
 /// The return type is intentionally high level: the caller receives a list of
@@ -66,7 +128,11 @@ pub fn discover_tests(
     // Now discover test files, merging with conftest fixtures
     for path in canonical_paths {
         if path.is_dir() {
-            for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
+            for entry in WalkDir::new(&path)
+                .into_iter()
+                .filter_entry(|e| !should_exclude_dir(e))
+                .filter_map(Result::ok)
+            {
                 let file = entry.into_path();
                 if file.is_file() {
                     if py_glob.is_match(&file) {
@@ -120,7 +186,11 @@ fn discover_conftest_files(
     conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
     module_ids: &ModuleIdGenerator,
 ) -> PyResult<()> {
-    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| !should_exclude_dir(e))
+        .filter_map(Result::ok)
+    {
         let path = entry.path();
         if path.is_file() && path.file_name() == Some("conftest.py".as_ref()) {
             let fixtures = load_conftest_fixtures(py, path, module_ids)?;
