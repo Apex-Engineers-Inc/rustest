@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2025-11-12
+
+### Added
+
+- **Enhanced Error Message Formatting**: Dramatically improved test failure output with human-readable error presentation
+  - Clear error headers showing exception type and message with visual indicators (red arrows)
+  - vitest-style Expected/Received output with color coding for better clarity
+  - pytest-style error formatting with code context showing 3 lines of surrounding code
+  - Automatic frame introspection to extract actual vs expected values from Python assertions
+  - Value substitution in assertion output (e.g., `assert result == expected` becomes `assert 42 == 100`)
+  - Support for multiple error message patterns and comparison operators
+  - Clickable file links in error messages (path:line format)
+
+- **Improved Test Failure Reporting**: New verbose mode enhancements
+  - FAILURES summary section at the end of verbose output showing all failures together
+  - Inline failure display during test execution for immediate feedback
+  - Better visual hierarchy with color-coded output
+
+### Changed
+
+- Error formatting now parses Python tracebacks to present failures in a more debuggable format
+- Rust code now inspects Python frames before they're lost to extract detailed error context
+
 ## [0.9.1] - 2025-11-12
 
 ### Added
