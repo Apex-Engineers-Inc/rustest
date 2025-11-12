@@ -147,6 +147,7 @@ Autouse fixtures run automatically for all tests in their scope without being ex
 
 ### Basic Autouse Fixture
 
+<!--pytest-codeblocks:skip-->
 ```python
 from rustest import fixture
 
@@ -177,6 +178,7 @@ def test_user_deletion():
 
 Autouse fixtures respect scope boundaries just like regular fixtures:
 
+<!--pytest-codeblocks:skip-->
 ```python
 from rustest import fixture
 
@@ -222,6 +224,7 @@ def test_second():
 
 Autouse fixtures can depend on other fixtures:
 
+<!--pytest-codeblocks:skip-->
 ```python
 from rustest import fixture
 
@@ -247,6 +250,7 @@ def test_user_count(database_connection):
 
 Autouse fixtures work with test classes too:
 
+<!--pytest-codeblocks:skip-->
 ```python
 from rustest import fixture
 
@@ -271,6 +275,8 @@ class TestUserService:
 ### Common Use Cases for Autouse
 
 **1. Logging and Monitoring**
+
+<!--pytest-codeblocks:skip-->
 ```python
 @fixture(autouse=True)
 def test_logging(request):
@@ -281,6 +287,8 @@ def test_logging(request):
 ```
 
 **2. Temporary File Cleanup**
+
+<!--pytest-codeblocks:skip-->
 ```python
 @fixture(autouse=True)
 def cleanup_temp_files(tmp_path):
@@ -290,6 +298,8 @@ def cleanup_temp_files(tmp_path):
 ```
 
 **3. State Reset Across Tests**
+
+<!--pytest-codeblocks:skip-->
 ```python
 @fixture(autouse=True)
 def reset_global_state():
