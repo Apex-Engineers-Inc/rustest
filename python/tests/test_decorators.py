@@ -167,9 +167,7 @@ class TestMarkDecorator:
             ],
             ids=["plus-three", "plus-seven"],
         )
-        def test_func(
-            base_number: int, addend: int, expected_total: int
-        ) -> tuple[int, int]:
+        def test_func(base_number: int, addend: int, expected_total: int) -> tuple[int, int]:
             return base_number + addend, expected_total
 
         cases = getattr(test_func, "__rustest_parametrization__")
@@ -186,7 +184,5 @@ class TestMarkDecorator:
         assert not hasattr(test_func, "__rustest_marks__")
 
         first_case = cases[0]["values"]
-        calculated, expected = test_func(
-            10, first_case["addend"], first_case["expected_total"]
-        )
+        calculated, expected = test_func(10, first_case["addend"], first_case["expected_total"])
         assert calculated == expected
