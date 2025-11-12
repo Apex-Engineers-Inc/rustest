@@ -114,6 +114,7 @@ pub struct Fixture {
     pub parameters: Vec<String>,
     pub scope: FixtureScope,
     pub is_generator: bool,
+    pub autouse: bool,
 }
 
 impl Fixture {
@@ -123,6 +124,7 @@ impl Fixture {
         parameters: Vec<String>,
         scope: FixtureScope,
         is_generator: bool,
+        autouse: bool,
     ) -> Self {
         Self {
             name,
@@ -130,6 +132,7 @@ impl Fixture {
             parameters,
             scope,
             is_generator,
+            autouse,
         }
     }
 
@@ -141,6 +144,7 @@ impl Fixture {
             parameters: self.parameters.clone(),
             scope: self.scope,
             is_generator: self.is_generator,
+            autouse: self.autouse,
         }
     }
 }
