@@ -147,11 +147,10 @@ Autouse fixtures run automatically for all tests in their scope without being ex
 
 ### Basic Autouse Fixture
 
-<!--pytest-codeblocks:skip-->
 ```python
-from rustest import fixture
+import rustest
 
-@fixture(autouse=True)
+@rustest.fixture(autouse=True)
 def reset_database():
     """Automatically run before each test."""
     # Setup
@@ -178,12 +177,11 @@ def test_user_deletion():
 
 Autouse fixtures respect scope boundaries just like regular fixtures:
 
-<!--pytest-codeblocks:skip-->
 ```python
-from rustest import fixture
+import rustest
 
 # Function scope (default) - runs before each test
-@fixture(autouse=True)
+@rustest.fixture(autouse=True)
 def clear_cache():
     """Clear cache before each test."""
     cache_obj = get_global_cache()
@@ -192,7 +190,7 @@ def clear_cache():
     cache_obj.clear()
 
 # Module scope - runs once per module
-@fixture(autouse=True, scope="module")
+@rustest.fixture(autouse=True, scope="module")
 def setup_test_module():
     """Initialize test module resources."""
     print("Setting up module...")
@@ -202,7 +200,7 @@ def setup_test_module():
     cleanup_module_resources()
 
 # Session scope - runs once per test session
-@fixture(autouse=True, scope="session")
+@rustest.fixture(autouse=True, scope="session")
 def initialize_test_environment():
     """Initialize entire test environment."""
     print("Initializing test environment...")
@@ -224,15 +222,14 @@ def test_second():
 
 Autouse fixtures can depend on other fixtures:
 
-<!--pytest-codeblocks:skip-->
 ```python
-from rustest import fixture
+import rustest
 
-@fixture
+@rustest.fixture
 def database_connection():
     return create_db_connection()
 
-@fixture(autouse=True)
+@rustest.fixture(autouse=True)
 def initialize_data(database_connection):
     """Automatically populate test data before each test."""
     # This depends on database_connection, which will be provided
@@ -250,12 +247,11 @@ def test_user_count(database_connection):
 
 Autouse fixtures work with test classes too:
 
-<!--pytest-codeblocks:skip-->
 ```python
-from rustest import fixture
+import rustest
 
 class TestUserService:
-    @fixture(autouse=True)
+    @rustest.fixture(autouse=True)
     def setup_service(self):
         """Automatically initialize service before each test method."""
         self.service = UserService()
@@ -276,9 +272,10 @@ class TestUserService:
 
 **1. Logging and Monitoring**
 
-<!--pytest-codeblocks:skip-->
 ```python
-@fixture(autouse=True)
+import rustest
+
+@rustest.fixture(autouse=True)
 def test_logging(request):
     """Log test start and end."""
     print(f"Starting test: {request.node.name}")
@@ -288,9 +285,10 @@ def test_logging(request):
 
 **2. Temporary File Cleanup**
 
-<!--pytest-codeblocks:skip-->
 ```python
-@fixture(autouse=True)
+import rustest
+
+@rustest.fixture(autouse=True)
 def cleanup_temp_files(tmp_path):
     """Ensure temp files are cleaned up."""
     yield
@@ -299,9 +297,10 @@ def cleanup_temp_files(tmp_path):
 
 **3. State Reset Across Tests**
 
-<!--pytest-codeblocks:skip-->
 ```python
-@fixture(autouse=True)
+import rustest
+
+@rustest.fixture(autouse=True)
 def reset_global_state():
     """Reset any global state before each test."""
     global_state.reset()
