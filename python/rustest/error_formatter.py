@@ -371,9 +371,9 @@ class ErrorFormatter:
                     expected_value
                 )
                 if assertion_with_values:
-                    lines.append(self._red(f"E     AssertionError: {assertion_with_values}"))
+                    lines.append(self._red(f"E    AssertionError: {assertion_with_values}"))
                 else:
-                    lines.append(self._red(f"E     AssertionError"))
+                    lines.append(self._red(f"E    AssertionError"))
 
                 # Show "E  Expected: X"
                 lines.append(self._red(f"E    Expected: {expected_value}"))
