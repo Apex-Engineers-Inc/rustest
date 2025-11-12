@@ -61,8 +61,14 @@ class ErrorFormatter:
                     parsed['context_lines']
                 ))
 
-            # Show comparison if available
-            if parsed['comparison']:
+            # Show expected vs received values if available
+            if parsed.get('expected_value') or parsed.get('actual_value'):
+                lines.append(self._format_expected_received(
+                    parsed.get('expected_value'),
+                    parsed.get('actual_value')
+                ))
+            # Otherwise show comparison if available
+            elif parsed['comparison']:
                 lines.append(self._format_comparison(parsed['comparison']))
 
             # Show simplified stack trace
@@ -87,6 +93,8 @@ class ErrorFormatter:
         - context_lines: Lines of code around the failure
         - comparison: Parsed comparison info (for assertions)
         - stack_frames: List of stack frames
+        - actual_value: The actual/received value (if parseable)
+        - expected_value: The expected value (if parseable)
         """
         if not message:
             return None
@@ -162,8 +170,18 @@ class ErrorFormatter:
 
         # Try to extract comparison info from AssertionError
         comparison = None
+        actual_value = None
+        expected_value = None
+
         if error_type == 'AssertionError' and main_frame and main_frame['code']:
             comparison = self._parse_assertion(main_frame['code'])
+
+            # Try to extract actual values from error message or traceback
+            if error_message:
+                values = self._extract_values_from_message(error_message, comparison)
+                if values:
+                    actual_value = values.get('actual')
+                    expected_value = values.get('expected')
 
         return {
             'error_type': error_type,
@@ -173,7 +191,9 @@ class ErrorFormatter:
             'failing_code': main_frame['code'] if main_frame else None,
             'context_lines': [],  # Could be enhanced by reading the actual file
             'comparison': comparison,
-            'stack_frames': [f for f in stack_frames if not self._is_internal_frame(f['file'])]
+            'stack_frames': [f for f in stack_frames if not self._is_internal_frame(f['file'])],
+            'actual_value': actual_value,
+            'expected_value': expected_value,
         }
 
     def _is_internal_frame(self, file_path: str) -> bool:
@@ -185,6 +205,75 @@ class ErrorFormatter:
             '<frozen',
         ]
         return any(pattern in file_path for pattern in internal_patterns)
+
+    def _extract_values_from_message(self, error_message: str, comparison: Optional[dict]) -> Optional[dict]:
+        """
+        Try to extract actual and expected values from the error message.
+
+        This works for custom assertion messages that include the values.
+        For example: "Expected 5, got 4" or "value should be 10 but was 20"
+        """
+        if not error_message:
+            return None
+
+        # Common patterns in assertion messages
+        # Using .+ instead of .+? to be less greedy and capture full values
+        patterns = [
+            # "Expected X, got Y" - most common pattern
+            r'[Ee]xpected\s+(.+?),\s+got\s+(.+?)$',
+            # "expected 'X' to be 'Y'"
+            r"expected\s+'([^']+)'\s+to\s+be\s+'([^']+)'",
+            r'expected\s+"([^"]+)"\s+to\s+be\s+"([^"]+)"',
+            # "Expected: X, Received: Y"
+            r'[Ee]xpected:\s*(.+?),\s*[Rr]eceived:\s*(.+?)$',
+            # "should be X but was Y"
+            r'should\s+be\s+at\s+least\s+(\d+)',  # Special case for "at least"
+            r'should\s+be\s+(.+?)\s+(?:but\s+was|got)\s+(.+?)$',
+            # "X != Y" in message
+            r'^(.+?)\s*!=\s*(.+?)$',
+            # "got X, expected Y"
+            r'got\s+(.+?),\s+expected\s+(.+?)$',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, error_message, re.IGNORECASE | re.DOTALL)
+            if match:
+                # Check if it's the "at least" special case
+                if 'at least' in pattern:
+                    # For "Score X should be at least Y", parse differently
+                    score_match = re.search(r'(\w+)\s+(\d+)\s+should\s+be\s+at\s+least\s+(\d+)', error_message)
+                    if score_match:
+                        return {
+                            'actual': score_match.group(2),
+                            'expected': f"at least {score_match.group(3)}"
+                        }
+                    return None
+
+                # Determine which group is expected vs actual
+                if 'got' in pattern.lower() or 'received' in pattern.lower():
+                    # Pattern has "expected ... got/received"
+                    return {
+                        'expected': match.group(1).strip().strip('"\''),
+                        'actual': match.group(2).strip().strip('"\'')
+                    }
+                elif 'to be' in pattern.lower():
+                    # "expected X to be Y" - first is actual, second is expected
+                    return {
+                        'actual': match.group(1).strip().strip('"\''),
+                        'expected': match.group(2).strip().strip('"\'')
+                    }
+                elif match.lastindex and match.lastindex >= 2:
+                    # Default: try to infer from context
+                    g1 = match.group(1).strip().strip('"\'')
+                    g2 = match.group(2).strip().strip('"\'')
+
+                    # If the message says "Expected" first, that's probably expected
+                    if error_message.lower().startswith('expected'):
+                        return {'expected': g1, 'actual': g2}
+                    else:
+                        return {'actual': g1, 'expected': g2}
+
+        return None
 
     def _parse_assertion(self, code: str) -> Optional[dict]:
         """
@@ -208,7 +297,10 @@ class ErrorFormatter:
         lines = []
 
         if file_path and line_number:
-            lines.append(f"\n{self._dim('Location:')} {self._cyan(file_path)}:{self._cyan(str(line_number))}")
+            # Format as clickable link (path:line format is widely supported)
+            location = f"{file_path}:{line_number}"
+            # Many terminals and IDEs recognize this format and make it clickable
+            lines.append(f"\n {self._dim('─')} {self._cyan(location)}")
 
         if failing_code:
             lines.append(f"\n{self._dim('Code:')}")
@@ -240,6 +332,32 @@ class ErrorFormatter:
         lines.append(f"  {self._cyan(comparison['left'])} {self._dim(explanation)} {self._cyan(comparison['right'])}")
 
         return "\n".join(lines)
+
+    def _format_expected_received(self, expected: Optional[str], actual: Optional[str]) -> str:
+        """Format expected vs received values (vitest-style)."""
+        lines = []
+
+        if expected is not None or actual is not None:
+            lines.append("")  # Empty line for spacing
+
+            if expected is not None:
+                lines.append(f"{self._green('Expected:')} {self._format_value(expected)}")
+
+            if actual is not None:
+                lines.append(f"{self._red('Received:')} {self._format_value(actual)}")
+
+        return "\n".join(lines)
+
+    def _format_value(self, value: str) -> str:
+        """Format a value for display, handling strings vs other types."""
+        # If it looks like a string literal (quoted), keep the quotes
+        if (value.startswith('"') and value.endswith('"')) or \
+           (value.startswith("'") and value.endswith("'")):
+            return value
+
+        # Otherwise, try to make it readable
+        # If it's a simple value, just return it
+        return value
 
     def _format_stack_trace(self, stack_frames: List[dict]) -> str:
         """Format a simplified stack trace."""
