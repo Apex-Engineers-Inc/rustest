@@ -361,6 +361,8 @@ class MarkGenerator:
     def __getattr__(self, name: str) -> Any:
         """Create a mark decorator for the given name."""
         # Return a callable that can be used as @mark.name or @mark.name(args)
+        if name == "parametrize":
+            return self._create_parametrize_mark()
         return self._create_mark(name)
 
     def _create_mark(self, name: str) -> Any:
@@ -387,6 +389,17 @@ class MarkGenerator:
                 return MarkDecorator(self.mark_name, args, kwargs)
 
         return _MarkDecoratorFactory(name)
+
+    def _create_parametrize_mark(self) -> Callable[..., Any]:
+        """Create a decorator matching top-level parametrize behaviour."""
+
+        def _parametrize_mark(*args: Any, **kwargs: Any) -> Any:
+            if len(args) == 1 and callable(args[0]) and not kwargs:
+                msg = "@mark.parametrize must be called with arguments"
+                raise TypeError(msg)
+            return parametrize(*args, **kwargs)
+
+        return _parametrize_mark
 
 
 # Create a singleton instance
