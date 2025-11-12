@@ -248,9 +248,7 @@ def _print_default_report(report: RunReport, ascii_mode: bool) -> None:
         formatter = ErrorFormatter(use_colors=True)
         for result in failures:
             formatted_error = formatter.format_failure(
-                result.name,
-                result.path,
-                result.message or "No error message available"
+                result.name, result.path, result.message or "No error message available"
             )
             details_chunks.append(formatted_error)
             details_chunks.append("\n")
@@ -310,11 +308,7 @@ def _print_verbose_report(report: RunReport, ascii_mode: bool) -> None:
                 if result.status == "failed" and result.message:
                     # Format the error nicely
                     formatter = ErrorFormatter(use_colors=True)
-                    formatted = formatter.format_failure(
-                        display_name,
-                        result.path,
-                        result.message
-                    )
+                    formatted = formatter.format_failure(display_name, result.path, result.message)
                     # Indent each line of the formatted error
                     for line in formatted.split("\n"):
                         if line:  # Skip empty lines

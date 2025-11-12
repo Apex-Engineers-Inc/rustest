@@ -565,7 +565,11 @@ fn format_pyerr(py: Python<'_>, err: &PyErr) -> PyResult<String> {
 
 /// Attempt to enrich an AssertionError with actual vs expected values
 /// by inspecting the local variables in the frame where the assertion failed.
-fn enrich_assertion_error(py: Python<'_>, tb: &pyo3::Bound<'_, pyo3::types::PyTraceback>, formatted: &str) -> PyResult<String> {
+fn enrich_assertion_error(
+    py: Python<'_>,
+    tb: &pyo3::Bound<'_, pyo3::types::PyTraceback>,
+    formatted: &str,
+) -> PyResult<String> {
     // Get the frame from the traceback
     let frame = tb.getattr("tb_frame")?;
     let locals = frame.getattr("f_locals")?;
@@ -582,9 +586,7 @@ fn enrich_assertion_error(py: Python<'_>, tb: &pyo3::Bound<'_, pyo3::types::PyTr
                 // Append the extracted values to the formatted traceback
                 return Ok(format!(
                     "{}\n__RUSTEST_ASSERTION_VALUES__\nExpected: {}\nReceived: {}",
-                    formatted,
-                    values.0,
-                    values.1
+                    formatted, values.0, values.1
                 ));
             }
             break;
@@ -612,7 +614,8 @@ fn extract_comparison_values(
 
         // Try to get the values from locals
         // Check if the variables exist, then get their values
-        if locals.contains(left_var).unwrap_or(false) && locals.contains(right_var).unwrap_or(false) {
+        if locals.contains(left_var).unwrap_or(false) && locals.contains(right_var).unwrap_or(false)
+        {
             match (locals.get_item(left_var), locals.get_item(right_var)) {
                 (Ok(left), Ok(right)) => {
                     let left_repr = left.repr()?.to_string();
@@ -622,9 +625,9 @@ fn extract_comparison_values(
                     // For comparison operators (>, <, >=, <=), left is the value being tested,
                     // right is the threshold/expected value
                     return Ok(match operator {
-                        "==" => Some((right_repr, left_repr)),  // (expected, actual)
-                        "!=" => Some((left_repr, right_repr)),  // Show both sides
-                        ">=" | "<=" | ">" | "<" => Some((right_repr, left_repr)),  // (threshold, actual)
+                        "==" => Some((right_repr, left_repr)), // (expected, actual)
+                        "!=" => Some((left_repr, right_repr)), // Show both sides
+                        ">=" | "<=" | ">" | "<" => Some((right_repr, left_repr)), // (threshold, actual)
                         _ => Some((left_repr, right_repr)),
                     });
                 }
