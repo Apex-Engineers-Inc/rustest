@@ -25,6 +25,29 @@ use crate::model::{
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
+/// Check if a directory should be excluded from test discovery.
+///
+/// This excludes common virtual environment directories and build artifacts
+/// to prevent discovering tests in dependencies.
+fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+
+    let file_name = entry.file_name().to_string_lossy();
+
+    // Exclude virtual environment directories
+    matches!(
+        file_name.as_ref(),
+        "venv" | ".venv" | "virtualenv" | "env" | ".env"
+            | "node_modules"
+            | ".git" | ".hg" | ".svn"
+            | "__pycache__" | ".pytest_cache"
+            | ".tox" | ".nox"
+            | "dist" | "build" | ".eggs"
+    ) || file_name.ends_with(".egg-info")
+}
+
 /// Discover tests for the provided paths.
 ///
 /// The return type is intentionally high level: the caller receives a list of
@@ -66,7 +89,11 @@ pub fn discover_tests(
     // Now discover test files, merging with conftest fixtures
     for path in canonical_paths {
         if path.is_dir() {
-            for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
+            for entry in WalkDir::new(&path)
+                .into_iter()
+                .filter_entry(|e| !should_exclude_dir(e))
+                .filter_map(Result::ok)
+            {
                 let file = entry.into_path();
                 if file.is_file() {
                     if py_glob.is_match(&file) {
@@ -120,7 +147,11 @@ fn discover_conftest_files(
     conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
     module_ids: &ModuleIdGenerator,
 ) -> PyResult<()> {
-    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| !should_exclude_dir(e))
+        .filter_map(Result::ok)
+    {
         let path = entry.path();
         if path.is_file() && path.file_name() == Some("conftest.py".as_ref()) {
             let fixtures = load_conftest_fixtures(py, path, module_ids)?;
