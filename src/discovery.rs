@@ -45,108 +45,122 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     let reset = "\x1b[0m";
     let bold = "\x1b[1m";
 
-    // Box drawing characters
-    let top_left = "╔";
-    let top_right = "╗";
-    let bottom_left = "╚";
-    let bottom_right = "╝";
-    let horizontal = "═";
-    let vertical = "║";
-    let left_t = "╠";
-    let right_t = "╣";
-
-    // Box width (64 characters wide for standard 80-char terminals)
-    let box_width = 64;
-    let content_width = box_width - 2; // Subtract 2 for the left/right borders
-
-    // Helper to print a line with box borders and padding
-    let print_line = |text: &str| {
-        // Calculate visible text length (excluding ANSI escape codes)
-        let visible_len = text
-            .chars()
-            .filter(|c| !matches!(c, '\x1b'))
-            .collect::<String>()
-            .len()
-            - text.matches("\x1b[").count() * 4; // Rough estimate for escape codes
-
-        let padding = if visible_len < content_width {
-            content_width - visible_len
-        } else {
-            0
-        };
-        eprintln!(
-            "{}{}{}{}{}{}{}",
-            yellow,
-            vertical,
-            reset,
-            text,
-            " ".repeat(padding),
-            yellow,
-            vertical
-        );
-    };
+    // Box width (62 characters wide for standard 80-char terminals)
+    let box_width = 62;
+    let content_width = box_width - 2; // Subtract 2 for the left/right borders (60 chars)
 
     // Print banner
     eprintln!();
     eprintln!(
-        "{}{}{}{}{}",
+        "{}╔{}╗{}",
         yellow,
-        top_left,
-        horizontal.repeat(box_width - 2),
-        top_right,
+        "═".repeat(box_width - 2),
         reset
     );
 
-    // Title
-    let title = format!("{}RUSTEST PYTEST COMPATIBILITY MODE{}", bold, reset);
-    let title_len = "RUSTEST PYTEST COMPATIBILITY MODE".len();
-    let title_padding = (content_width - title_len) / 2;
+    // Title line
+    let title_text = "RUSTEST PYTEST COMPATIBILITY MODE";
+    let title_padding_left = (content_width - title_text.len()) / 2;
+    let title_padding_right = content_width - title_text.len() - title_padding_left;
     eprintln!(
-        "{}{}{}{}{}{}{}{}",
+        "{}║{}{}{}{} {}{}║{}",
         yellow,
-        vertical,
         reset,
-        " ".repeat(title_padding),
-        title,
-        " ".repeat(content_width - title_len - title_padding),
-        yellow,
-        vertical
+        " ".repeat(title_padding_left),
+        bold,
+        title_text,
+        reset,
+        " ".repeat(title_padding_right),
+        yellow
     );
 
+    // Separator
     eprintln!(
-        "{}{}{}{}{}",
+        "{}╠{}╣{}",
         yellow,
-        left_t,
-        horizontal.repeat(box_width - 2),
-        right_t,
+        "═".repeat(box_width - 2),
         reset
     );
+
+    // Helper to print a content line with proper padding
+    let print_line = |line_parts: Vec<(&str, bool)>| {
+        // line_parts is a vec of (text, is_colored) tuples
+        let mut full_text = String::new();
+        let mut visible_text = String::new();
+
+        for (text, is_colored) in line_parts {
+            full_text.push_str(text);
+            if !is_colored {
+                visible_text.push_str(text);
+            }
+        }
+
+        let visible = visible_text.chars().count();
+        let padding = if visible < content_width {
+            content_width - visible
+        } else {
+            0
+        };
+
+        eprintln!(
+            "{}║{} {}{}{}║{}",
+            yellow,
+            reset,
+            full_text,
+            " ".repeat(padding),
+            yellow,
+            reset
+        );
+    };
 
     // Content lines
-    print_line(" Running existing pytest tests with rustest.");
-    print_line("");
-    print_line(&format!(
-        " {}Supported:{} fixtures, parametrize, marks, approx",
-        cyan, reset
-    ));
-    print_line(&format!(
-        " {}Built-ins:{} tmp_path, tmpdir, monkeypatch",
-        cyan, reset
-    ));
-    print_line(&format!(" {}Not yet:{} fixture params, some builtins", cyan, reset));
-    print_line("");
-    print_line(" For full features, use native rustest imports:");
-    print_line(&format!(
-        "   {}from rustest import fixture, mark, ...{}",
-        cyan, reset
-    ));
+    print_line(vec![("Running existing pytest tests with rustest.", false)]);
+    print_line(vec![("", false)]);
 
+    let mut supported = String::new();
+    supported.push_str(cyan);
+    supported.push_str("Supported:");
+    supported.push_str(reset);
+    supported.push_str(" fixtures, parametrize, marks, approx");
+    let supported_visible = "Supported: fixtures, parametrize, marks, approx";
+    let supported_padding = content_width - supported_visible.len();
+    eprintln!("{}║{} {}{}{}║{}", yellow, reset, supported, " ".repeat(supported_padding), yellow, reset);
+
+    let mut builtins = String::new();
+    builtins.push_str(cyan);
+    builtins.push_str("Built-ins:");
+    builtins.push_str(reset);
+    builtins.push_str(" tmp_path, tmpdir, monkeypatch");
+    let builtins_visible = "Built-ins: tmp_path, tmpdir, monkeypatch";
+    let builtins_padding = content_width - builtins_visible.len();
+    eprintln!("{}║{} {}{}{}║{}", yellow, reset, builtins, " ".repeat(builtins_padding), yellow, reset);
+
+    let mut notyet = String::new();
+    notyet.push_str(cyan);
+    notyet.push_str("Not yet:");
+    notyet.push_str(reset);
+    notyet.push_str(" fixture params, some builtins");
+    let notyet_visible = "Not yet: fixture params, some builtins";
+    let notyet_padding = content_width - notyet_visible.len();
+    eprintln!("{}║{} {}{}{}║{}", yellow, reset, notyet, " ".repeat(notyet_padding), yellow, reset);
+
+    print_line(vec![("", false)]);
+    print_line(vec![("For full features, use native rustest imports:", false)]);
+
+    let mut imports = String::new();
+    imports.push_str("  ");
+    imports.push_str(cyan);
+    imports.push_str("from rustest import fixture, mark, ...");
+    imports.push_str(reset);
+    let imports_visible = "  from rustest import fixture, mark, ...";
+    let imports_padding = content_width - imports_visible.len();
+    eprintln!("{}║{} {}{}{}║{}", yellow, reset, imports, " ".repeat(imports_padding), yellow, reset);
+
+    // Bottom border
     eprintln!(
-        "{}{}{}{}{}",
+        "{}╚{}╝{}",
         yellow,
-        bottom_left,
-        horizontal.repeat(box_width - 2),
-        bottom_right,
+        "═".repeat(box_width - 2),
         reset
     );
     eprintln!();
