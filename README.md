@@ -12,6 +12,7 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 **Test rustest on your existing pytest suite in 10 seconds:**
 
+<!--pytest.mark.skip-->
 ```bash
 # Using uvx (recommended - no installation needed!)
 uvx rustest --pytest-compat tests/
