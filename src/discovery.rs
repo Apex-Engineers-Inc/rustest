@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use console::{style, measure_text_width, Term};
+use console::{style, Term};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
@@ -47,11 +47,10 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     let box_width = 62;
     let content_width = box_width - 2; // Subtract 2 for borders (60 chars)
 
-    // Helper to print a bordered line with proper padding
+    // Helper to print a simple bordered line
     let print_line = |text: &str| {
-        let visible_width = measure_text_width(text);
-        let padding = if visible_width < content_width {
-            content_width - visible_width
+        let padding = if text.len() < content_width {
+            content_width - text.len()
         } else {
             0
         };
@@ -97,34 +96,12 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     // Content lines
     print_line("Running existing pytest tests with rustest.");
     print_line("");
-
-    // Colored content lines - build them as strings then print
-    let supported_line = format!(
-        "{} fixtures, parametrize, marks, approx",
-        style("Supported:").cyan()
-    );
-    print_line(&supported_line);
-
-    let builtins_line = format!(
-        "{} tmp_path, tmpdir, monkeypatch",
-        style("Built-ins:").cyan()
-    );
-    print_line(&builtins_line);
-
-    let notyet_line = format!(
-        "{} fixture params, some builtins",
-        style("Not yet:").cyan()
-    );
-    print_line(&notyet_line);
-
+    print_line("Supported: fixtures, parametrize, marks, approx");
+    print_line("Built-ins: tmp_path, tmpdir, monkeypatch");
+    print_line("Not yet: fixture params, some builtins");
     print_line("");
     print_line("For full features, use native rustest imports:");
-
-    let imports_line = format!(
-        "  {}",
-        style("from rustest import fixture, mark, ...").cyan()
-    );
-    print_line(&imports_line);
+    print_line("  from rustest import fixture, mark, ...");
 
     // Bottom border
     term.write_line(&format!(
