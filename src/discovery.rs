@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use console::{style, Term};
+use console::style;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
@@ -41,8 +41,6 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     sys_modules.set_item("pytest", compat_module)?;
 
     // Print a banner to inform the user they're in compatibility mode
-    let term = Term::stderr();
-
     // Box width (62 characters wide for standard 80-char terminals)
     let box_width = 62;
     let content_width = box_width - 2; // Subtract 2 for borders (60 chars)
@@ -65,34 +63,31 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     };
 
     // Print banner
-    term.write_line("").ok();
-    term.write_line(&format!(
-        "{}{}{}",
-        style("╔").yellow(),
-        style("═".repeat(box_width - 2)).yellow(),
-        style("╗").yellow()
-    )).ok();
+    eprintln!();
+
+    // Top border
+    eprint!("{}", style("╔").yellow());
+    eprint!("{}", style("═".repeat(box_width - 2)).yellow());
+    eprintln!("{}", style("╗").yellow());
 
     // Title line
     let title_text = "RUSTEST PYTEST COMPATIBILITY MODE";
     let title_padding_left = (content_width - title_text.len()) / 2;
     let title_padding_right = content_width - title_text.len() - title_padding_left;
-    term.write_line(&format!(
-        "{} {}{}{}{}",
-        style("║").yellow(),
+    let title_content = format!(
+        "{}{}{}",
         " ".repeat(title_padding_left),
-        style(title_text).bold(),
-        " ".repeat(title_padding_right),
-        style("║").yellow()
-    )).ok();
+        title_text,
+        " ".repeat(title_padding_right)
+    );
+    eprint!("{}", style("║").yellow());
+    eprint!("{}", title_content);
+    eprintln!("{}", style("║").yellow());
 
     // Separator
-    term.write_line(&format!(
-        "{}{}{}",
-        style("╠").yellow(),
-        style("═".repeat(box_width - 2)).yellow(),
-        style("╣").yellow()
-    )).ok();
+    eprint!("{}", style("╠").yellow());
+    eprint!("{}", style("═".repeat(box_width - 2)).yellow());
+    eprintln!("{}", style("╣").yellow());
 
     // Content lines
     print_line("Running existing pytest tests with rustest.");
@@ -105,13 +100,10 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     print_line("  from rustest import fixture, mark, ...");
 
     // Bottom border
-    term.write_line(&format!(
-        "{}{}{}",
-        style("╚").yellow(),
-        style("═".repeat(box_width - 2)).yellow(),
-        style("╝").yellow()
-    )).ok();
-    term.write_line("").ok();
+    eprint!("{}", style("╚").yellow());
+    eprint!("{}", style("═".repeat(box_width - 2)).yellow());
+    eprintln!("{}", style("╝").yellow());
+    eprintln!();
 
     Ok(())
 }
