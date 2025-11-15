@@ -34,6 +34,7 @@ def run(
     enable_codeblocks: bool,
     last_failed_mode: str,
     fail_fast: bool,
+    pytest_compat: bool,
 ) -> PyRunReport:
     """Execute tests and return a report."""
     ...

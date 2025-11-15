@@ -18,6 +18,7 @@ def run(
     enable_codeblocks: bool = True,
     last_failed_mode: str = "none",
     fail_fast: bool = False,
+    pytest_compat: bool = False,
 ) -> RunReport:
     """Execute tests and return a rich report.
 
@@ -30,6 +31,7 @@ def run(
         enable_codeblocks: Whether to enable code block tests from markdown files
         last_failed_mode: Last failed mode: "none", "only", or "first"
         fail_fast: Exit instantly on first error or failed test
+        pytest_compat: Enable pytest compatibility mode (intercept 'import pytest')
     """
     raw_report = rust.run(
         paths=list(paths),
@@ -40,5 +42,6 @@ def run(
         enable_codeblocks=enable_codeblocks,
         last_failed_mode=last_failed_mode,
         fail_fast=fail_fast,
+        pytest_compat=pytest_compat,
     )
     return RunReport.from_py(raw_report)

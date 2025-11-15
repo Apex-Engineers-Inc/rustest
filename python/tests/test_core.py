@@ -38,6 +38,7 @@ class TestCoreRun:
             enable_codeblocks,
             last_failed_mode,
             fail_fast,
+            pytest_compat,
         ):  # type: ignore[no-untyped-def]
             captured_args["paths"] = paths
             captured_args["pattern"] = pattern
@@ -47,6 +48,7 @@ class TestCoreRun:
             captured_args["enable_codeblocks"] = enable_codeblocks
             captured_args["last_failed_mode"] = last_failed_mode
             captured_args["fail_fast"] = fail_fast
+            captured_args["pytest_compat"] = pytest_compat
             return dummy_report
 
         with stub_rust_module(run=fake_run):
@@ -66,5 +68,6 @@ class TestCoreRun:
         assert captured_args["enable_codeblocks"] is True
         assert captured_args["last_failed_mode"] == "none"
         assert captured_args["fail_fast"] is False
+        assert captured_args["pytest_compat"] is False
         assert report.total == 1
         assert report.passed == 1

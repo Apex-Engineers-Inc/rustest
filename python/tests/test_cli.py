@@ -86,6 +86,7 @@ class TestCli:
             enable_codeblocks=True,
             last_failed_mode="none",
             fail_fast=False,
+            pytest_compat=False,
         )
         assert exit_code == 0
 
