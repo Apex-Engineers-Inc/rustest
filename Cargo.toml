@@ -25,6 +25,7 @@ regex = "1.10"
 
 [dev-dependencies]
 pyo3 = { version = "0.27", features = ["auto-initialize"] }
+indicatif = "0.17"
 
 [build-dependencies]
 pyo3-build-config = "0.27"
