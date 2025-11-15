@@ -41,7 +41,6 @@ Usage:
 from __future__ import annotations
 
 from typing import Any, Callable, TypeVar
-from collections.abc import Sequence
 
 # Import rustest's actual implementations
 from rustest.decorators import (
