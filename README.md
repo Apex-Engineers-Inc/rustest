@@ -33,19 +33,8 @@ The `--pytest-compat` mode intercepts `import pytest` statements and provides ru
 - ✅ No code changes required — just run and compare!
 
 **Example output:**
-```
-╔══════════════════════════════════════════════════════════════╗
-║              RUSTEST PYTEST COMPATIBILITY MODE               ║
-╠══════════════════════════════════════════════════════════════╣
-║ Running existing pytest tests with rustest.                  ║
-║ Supported: fixtures, parametrize, marks, approx               ║
-║ Built-ins: tmp_path, tmpdir, monkeypatch                      ║
-╚══════════════════════════════════════════════════════════════╝
 
-✓✓✓✓✓✓✓✓
-
-8 tests: 8 passed in 0.003s  (pytest takes 0.428s → 142× faster!)
-```
+![Pytest Compatibility Mode Banner](assets/pytest-compat-banner.svg)
 
 Once you see the performance gains, migrate to native rustest imports for the full feature set.
 
