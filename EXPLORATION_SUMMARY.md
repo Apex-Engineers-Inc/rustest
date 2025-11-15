@@ -53,36 +53,44 @@ All examples are runnable with `cargo run --example <name>`:
 
 ## Recommendations
 
-### Short Term (Recommended First Step)
-**Hybrid Event Streaming** - Rust streams events, Python renders with indicatif-style library
+### ✨ UPDATED BASED ON RECENT CHANGES ✨
 
-**Why:**
-- Achieves real-time feedback quickly
-- Low risk (no major refactoring)
-- Keeps proven error formatter in Python
-- Can migrate to pure Rust later
+**New Direction:** **All-Rust Output** (direct implementation)
 
-**Implementation:**
-1. Modify `run_collected_tests()` to yield events via callback
-2. Add event types: `FileStarted`, `TestCompleted`, `FileCompleted`
-3. Use Python's `rich.progress` or similar to render
-4. ~1 week of work
+**Why This Changed:**
+- ✅ `console = "0.15"` already merged (PR #64)
+- ✅ Error formatting already moving to Rust
+- ✅ Styled terminal output already in use
+- ✅ Momentum toward Rust-native console handling
 
-### Medium Term (After Validation)
-**Full Rust Output** - Port all output rendering to Rust with indicatif
+### Implementation Plan: ~3-4 Weeks
 
-**Why:**
-- Simpler architecture (one language)
-- Tighter integration with test execution
-- Better performance at scale
-- Cleaner separation of concerns
+**Week 1:** Streaming infrastructure + file spinners
+- Add indicatif to main dependencies
+- Create `src/output/` module with renderer trait
+- Implement `SpinnerDisplay` for file-level progress
+- Integrate into execution loop
+- **Deliverable:** Real-time file spinners working
 
-**Prerequisites:**
-- Port or simplify error formatter
-- Comprehensive testing
-- Migration period with feature flag
+**Week 2:** Error formatting in Rust
+- Port `error_formatter.py` logic to `src/output/formatter.rs`
+- Leverage existing error enrichment in `execution.rs`
+- Display failures immediately as they occur
+- **Deliverable:** Rich error output in Rust
 
-**Timeline:** 1-2 months
+**Week 3:** Remove Python output code
+- Simplify `cli.py` (just call Rust, return exit code)
+- Delete `error_formatter.py` (~600 lines removed)
+- Update `PyRunReport` to minimal fields
+- **Deliverable:** Clean Python/Rust boundary
+
+**Week 4:** Additional display modes
+- Implement `HierarchicalDisplay` (verbose mode)
+- Implement `ProgressBarDisplay` (large suites)
+- Auto-detect mode based on suite size
+- **Deliverable:** Complete output system
+
+**See:** `RUST_OUTPUT_IMPLEMENTATION_PLAN.md` for detailed implementation guide
 
 ## Key Decision Points
 
