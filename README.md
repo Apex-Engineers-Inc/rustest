@@ -8,9 +8,53 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 📚 **[Full Documentation](https://apex-engineers-inc.github.io/rustest)** | [Getting Started](https://apex-engineers-inc.github.io/rustest/getting-started/quickstart/) | [User Guide](https://apex-engineers-inc.github.io/rustest/guide/writing-tests/) | [API Reference](https://apex-engineers-inc.github.io/rustest/api/overview/)
 
+## 🚀 Try It Now — Zero Commitment
+
+**Test rustest on your existing pytest suite in 10 seconds:**
+
+```bash
+# Using uvx (recommended - no installation needed!)
+uvx rustest --pytest-compat tests/
+
+# Or using pipx
+pipx run rustest --pytest-compat tests/
+```
+
+**That's it!** The `--pytest-compat` flag lets you run your existing pytest tests with rustest **without changing a single line of code**. See the speedup immediately, then decide if you want to migrate.
+
+<details>
+<summary><b>What does --pytest-compat do?</b></summary>
+
+The `--pytest-compat` mode intercepts `import pytest` statements and provides rustest implementations transparently:
+
+- ✅ Works with existing `@pytest.fixture`, `@pytest.mark.*`, `@pytest.mark.parametrize()`
+- ✅ Supports built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`
+- ✅ Handles `pytest.raises()`, `pytest.approx()`, `@pytest.mark.asyncio`
+- ✅ No code changes required — just run and compare!
+
+**Example output:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║              RUSTEST PYTEST COMPATIBILITY MODE               ║
+╠══════════════════════════════════════════════════════════════╣
+║ Running existing pytest tests with rustest.                  ║
+║ Supported: fixtures, parametrize, marks, approx               ║
+║ Built-ins: tmp_path, tmpdir, monkeypatch                      ║
+╚══════════════════════════════════════════════════════════════╝
+
+✓✓✓✓✓✓✓✓
+
+8 tests: 8 passed in 0.003s  (pytest takes 0.428s → 142× faster!)
+```
+
+Once you see the performance gains, migrate to native rustest imports for the full feature set.
+
+</details>
+
 ## Why rustest?
 
 - 🚀 **8.5× average speedup** over pytest on the synthetic benchmark matrix (peaking at 19× on 5k-test suites)
+- 🧪 **Pytest compatibility mode** — Run existing pytest tests without code changes (`--pytest-compat`)
 - ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
 - 🔄 **Built-in async support** with `@mark.asyncio` (like pytest-asyncio)
 - 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
@@ -18,7 +62,8 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
 - 🧮 Built-in `approx()` helper for tolerant numeric comparisons
 - 🪤 `raises()` context manager for precise exception assertions
-- 📦 Easy installation with pip or uv
+- 🛠️ **Built-in fixtures**: `tmp_path`, `tmpdir`, `monkeypatch` (pytest-compatible)
+- 📦 Easy installation with pip/uv, or try instantly with uvx/pipx
 - ⚡ Low-overhead execution keeps small suites feeling instant
 - 🐛 **Crystal-clear error messages** that make debugging effortless
 
@@ -159,18 +204,37 @@ E   Received: alice.wrong@example.com
 
 Rustest supports Python **3.10 through 3.14**.
 
+### Try First (No Installation)
+
+Test rustest on your existing pytest tests without installing anything:
+
+<!--pytest.mark.skip-->
+```bash
+# Try it instantly with uvx (recommended)
+uvx rustest --pytest-compat tests/
+
+# Or with pipx
+pipx run rustest --pytest-compat tests/
+```
+
+### Install Permanently
+
+Once you're convinced, install rustest:
+
 <!--pytest.mark.skip-->
 ```bash
 # Using pip
 pip install rustest
 
-# Using uv
+# Using uv (recommended for new projects)
 uv add rustest
 ```
 
 **[📖 Installation Guide →](https://apex-engineers-inc.github.io/rustest/getting-started/installation/)**
 
 ## Quick Start
+
+> **💡 Already have pytest tests?** Skip to step 2 and use `rustest --pytest-compat tests/` to run them immediately without changes!
 
 ### 1. Write Your Tests
 
@@ -217,6 +281,9 @@ rustest
 
 # Run specific tests
 rustest tests/
+
+# Run existing pytest tests without code changes
+rustest --pytest-compat tests/
 
 # Filter by test name pattern
 rustest -k "test_sum"
@@ -279,8 +346,14 @@ Rustest implements the 20% of pytest features that cover 80% of use cases, with 
 
 **[📋 View Full Feature Comparison →](https://apex-engineers-inc.github.io/rustest/advanced/comparison/)**
 
-✅ **Supported:** Fixtures, parametrization, marks, test classes, conftest.py, markdown testing
-🚧 **Planned:** Parallel execution, mark filtering, JUnit XML output
+✅ **Supported:**
+- Core features: Fixtures, parametrization, marks, test classes, conftest.py, markdown testing
+- Built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`
+- Async testing: `@mark.asyncio` (pytest-asyncio compatible)
+- **Pytest compatibility mode**: Run existing pytest tests with `--pytest-compat` (no code changes!)
+
+🚧 **Planned:** Parallel execution, JUnit XML output, more built-in fixtures
+
 ❌ **Not Planned:** Plugins, hooks, custom collectors (keeps rustest simple)
 
 ## Contributing
