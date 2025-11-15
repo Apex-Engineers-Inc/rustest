@@ -4,7 +4,6 @@
 /// with running statistics, ideal for large test suites.
 ///
 /// Run with: cargo run --example indicatif_progress_bar_poc
-
 use indicatif::{ProgressBar, ProgressStyle};
 use std::thread;
 use std::time::Duration;

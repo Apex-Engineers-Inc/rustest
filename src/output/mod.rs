@@ -7,7 +7,6 @@ mod formatter;
 mod renderer;
 mod spinner_display;
 
-pub use formatter::ErrorFormatter;
 pub use renderer::{OutputMode, OutputRenderer};
 pub use spinner_display::SpinnerDisplay;
 
@@ -16,9 +15,11 @@ use crate::model::RunConfiguration;
 /// Configuration for output display
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
+    #[allow(dead_code)]
     pub verbose: bool,
     pub ascii_mode: bool,
     pub use_colors: bool,
+    #[allow(dead_code)]
     pub mode: OutputMode,
 }
 

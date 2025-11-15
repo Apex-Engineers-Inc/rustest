@@ -60,27 +60,21 @@ impl SpinnerDisplay {
                 } else {
                     "FAIL".to_string()
                 }
+            } else if self.use_colors {
+                format!("{}", style("PASS").green())
             } else {
-                if self.use_colors {
-                    format!("{}", style("PASS").green())
-                } else {
-                    "PASS".to_string()
-                }
+                "PASS".to_string()
             }
+        } else if failed > 0 {
+            if self.use_colors {
+                format!("{}", style("✗").red())
+            } else {
+                "✗".to_string()
+            }
+        } else if self.use_colors {
+            format!("{}", style("✓").green())
         } else {
-            if failed > 0 {
-                if self.use_colors {
-                    format!("{}", style("✗").red())
-                } else {
-                    "✗".to_string()
-                }
-            } else {
-                if self.use_colors {
-                    format!("{}", style("✓").green())
-                } else {
-                    "✓".to_string()
-                }
-            }
+            "✓".to_string()
         }
     }
 }
@@ -117,7 +111,9 @@ impl OutputRenderer for SpinnerDisplay {
 
                 // Format and display the error immediately
                 if let Some(ref message) = result.message {
-                    let formatted = self.formatter.format_failure(&result.name, &result.path, message);
+                    let formatted =
+                        self.formatter
+                            .format_failure(&result.name, &result.path, message);
                     let _ = self.multi.println(&formatted);
                 }
             }
@@ -173,25 +169,28 @@ impl OutputRenderer for SpinnerDisplay {
             } else {
                 format!(
                     "✗ {} tests: {} passed, {} failed, {} skipped in {:.2}s",
-                    total, passed, failed, skipped,
-                    duration.as_secs_f64()
-                )
-            }
-        } else {
-            if self.use_colors {
-                format!(
-                    "{} {} tests: {} passed in {:.2}s",
-                    style("✓").green(),
                     total,
-                    style(passed).green(),
+                    passed,
+                    failed,
+                    skipped,
                     duration.as_secs_f64()
                 )
-            } else {
-                format!(
-                    "✓ {} tests: {} passed in {:.2}s",
-                    total, passed, duration.as_secs_f64()
-                )
             }
+        } else if self.use_colors {
+            format!(
+                "{} {} tests: {} passed in {:.2}s",
+                style("✓").green(),
+                total,
+                style(passed).green(),
+                duration.as_secs_f64()
+            )
+        } else {
+            format!(
+                "✓ {} tests: {} passed in {:.2}s",
+                total,
+                passed,
+                duration.as_secs_f64()
+            )
         };
 
         eprintln!("{}", summary);

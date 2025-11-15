@@ -11,8 +11,10 @@ pub enum OutputMode {
     /// Hierarchical with test-level spinners (verbose mode)
     Hierarchical,
     /// Single progress bar with stats (> 50 files)
+    #[allow(dead_code)]
     ProgressBar,
     /// Quiet mode - minimal output
+    #[allow(dead_code)]
     Quiet,
 }
 
@@ -38,6 +40,7 @@ pub trait OutputRenderer {
     fn start_file(&mut self, module: &TestModule);
 
     /// Called when a test starts (only used in verbose modes)
+    #[allow(dead_code)]
     fn start_test(&mut self, test: &TestCase);
 
     /// Called when a test completes
@@ -64,5 +67,6 @@ pub trait OutputRenderer {
     );
 
     /// Print a message without disrupting progress display
+    #[allow(dead_code)]
     fn println(&self, message: &str);
 }

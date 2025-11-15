@@ -4,7 +4,6 @@
 /// real-time progress as tests run.
 ///
 /// Run with: cargo run --example indicatif_poc
-
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::thread;
 use std::time::Duration;
@@ -80,11 +79,9 @@ fn run_test_file(file: TestFile, multi: &MultiProgress) {
 
     // Configure spinner style
     pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] {msg:<50} {pos}/{len}"
-        )
-        .unwrap()
-        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+        ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg:<50} {pos}/{len}")
+            .unwrap()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
     );
 
     pb.set_message(format!("Running {}", file.path));
@@ -96,12 +93,7 @@ fn run_test_file(file: TestFile, multi: &MultiProgress) {
     let mut failed = 0;
 
     // Simulate running each test
-    for (i, (duration, will_fail)) in file
-        .test_durations
-        .iter()
-        .zip(&file.will_fail)
-        .enumerate()
-    {
+    for (i, (duration, will_fail)) in file.test_durations.iter().zip(&file.will_fail).enumerate() {
         thread::sleep(Duration::from_millis(*duration));
 
         if *will_fail {
@@ -111,7 +103,12 @@ fn run_test_file(file: TestFile, multi: &MultiProgress) {
         }
 
         pb.inc(1);
-        pb.set_message(format!("Running {} (test {}/{})", file.path, i + 1, file.test_count));
+        pb.set_message(format!(
+            "Running {} (test {}/{})",
+            file.path,
+            i + 1,
+            file.test_count
+        ));
     }
 
     // Finish with appropriate status

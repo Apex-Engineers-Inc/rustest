@@ -4,7 +4,6 @@
 /// within each file, similar to verbose mode with live updates.
 ///
 /// Run with: cargo run --example indicatif_hierarchical_poc
-
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -70,23 +69,17 @@ fn main() {
     let multi = MultiProgress::new();
 
     // Style for file-level progress
-    let file_style = ProgressStyle::with_template(
-        "{spinner:.cyan} {msg:<60} {pos}/{len}"
-    )
-    .unwrap()
-    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+    let file_style = ProgressStyle::with_template("{spinner:.cyan} {msg:<60} {pos}/{len}")
+        .unwrap()
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
 
     // Style for test-level progress
-    let test_style = ProgressStyle::with_template(
-        "  {spinner:.green} {msg:<58} {elapsed:.dim}"
-    )
-    .unwrap()
-    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+    let test_style = ProgressStyle::with_template("  {spinner:.green} {msg:<58} {elapsed:.dim}")
+        .unwrap()
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
 
-    let completed_test_style = ProgressStyle::with_template(
-        "  {prefix} {msg:<58} {elapsed:.dim}"
-    )
-    .unwrap();
+    let completed_test_style =
+        ProgressStyle::with_template("  {prefix} {msg:<58} {elapsed:.dim}").unwrap();
 
     let mut handles = vec![];
 
@@ -120,16 +113,10 @@ fn main() {
                 test_pb.set_style(completed_test_style.clone());
                 if test.will_fail {
                     test_pb.set_prefix("❌");
-                    test_pb.finish_with_message(format!(
-                        "{} - FAILED",
-                        test.name
-                    ));
+                    test_pb.finish_with_message(format!("{} - FAILED", test.name));
                 } else {
                     test_pb.set_prefix("✅");
-                    test_pb.finish_with_message(format!(
-                        "{}",
-                        test.name
-                    ));
+                    test_pb.finish_with_message(format!("{}", test.name));
                 }
 
                 file_pb.inc(1);

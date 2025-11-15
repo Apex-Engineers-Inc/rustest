@@ -23,7 +23,7 @@ impl ErrorFormatter {
         let mut output = String::new();
 
         // Header with test name and path
-        output.push_str("\n");
+        output.push('\n');
         if self.use_colors {
             output.push_str(&format!(
                 "{} {}\n",
@@ -117,7 +117,8 @@ impl ErrorFormatter {
                                     // The next line typically has the failing code
                                     if i + 1 < lines.len() {
                                         let failing_line = lines[i + 1].trim().to_string();
-                                        location = Some((file_path.to_string(), line_num, failing_line));
+                                        location =
+                                            Some((file_path.to_string(), line_num, failing_line));
                                     }
                                 }
                             }
@@ -134,10 +135,10 @@ impl ErrorFormatter {
             let mut received = None;
 
             for line in values_section.lines() {
-                if line.starts_with("Expected: ") {
-                    expected = Some(line[10..].to_string());
-                } else if line.starts_with("Received: ") {
-                    received = Some(line[10..].to_string());
+                if let Some(stripped) = line.strip_prefix("Expected: ") {
+                    expected = Some(stripped.to_string());
+                } else if let Some(stripped) = line.strip_prefix("Received: ") {
+                    received = Some(stripped.to_string());
                 }
             }
 
@@ -162,7 +163,7 @@ impl ErrorFormatter {
     ) -> Option<Vec<(usize, String)>> {
         let file = File::open(file_path).ok()?;
         let reader = BufReader::new(file);
-        let all_lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
+        let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
         if line_num == 0 || line_num > all_lines.len() {
             return None;
@@ -225,10 +226,7 @@ impl ErrorFormatter {
                 style(actual).red()
             )
         } else {
-            format!(
-                "  Expected: {}\n  Received: {}",
-                expected, actual
-            )
+            format!("  Expected: {}\n  Received: {}", expected, actual)
         }
     }
 }
