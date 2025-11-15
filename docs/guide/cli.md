@@ -184,27 +184,19 @@ rustest test_workflow.py
 ```
 ✓✓✗✓✗
 
-======================================================================
-FAILURES
-======================================================================
+test_failing_1 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: Math is broken
 
-test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
-    assert 2 + 2 == 5, "Math is broken"
-           ^^^^^^^^^^
-AssertionError: Math is broken
+  → assert 2 + 2 == 5, "Math is broken"
 
-test_failing_2 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 21, in test_failing_2
-    assert "world".startswith("x"), "String doesn't start with x"
-           ^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: String doesn't start with x
+test_failing_2 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: String doesn't start with x
 
-5 tests: 3 passed, 2 failed, 0 skipped in 0.004s
+  → assert "world".startswith("x"), "String doesn't start with x"
+
+✗ 5 tests: 3 passed, 2 failed, 0 skipped in 0.00s
 ```
 
 ```bash
@@ -215,27 +207,19 @@ rustest test_workflow.py --lf
 ```
 ✗✗
 
-======================================================================
-FAILURES
-======================================================================
+test_failing_1 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: Math is broken
 
-test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
-    assert 2 + 2 == 5, "Math is broken"
-           ^^^^^^^^^^
-AssertionError: Math is broken
+  → assert 2 + 2 == 5, "Math is broken"
 
-test_failing_2 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 21, in test_failing_2
-    assert "world".startswith("x"), "String doesn't start with x"
-           ^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: String doesn't start with x
+test_failing_2 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: String doesn't start with x
 
-2 tests: 0 passed, 2 failed, 0 skipped in 0.004s
+  → assert "world".startswith("x"), "String doesn't start with x"
+
+✗ 2 tests: 0 passed, 2 failed, 0 skipped in 0.00s
 ```
 
 !!! tip "Cache Location"
@@ -253,27 +237,19 @@ rustest test_workflow.py --ff
 ```
 ✗✗✓✓✓
 
-======================================================================
-FAILURES
-======================================================================
+test_failing_1 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: Math is broken
 
-test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
-    assert 2 + 2 == 5, "Math is broken"
-           ^^^^^^^^^^
-AssertionError: Math is broken
+  → assert 2 + 2 == 5, "Math is broken"
 
-test_failing_2 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 21, in test_failing_2
-    assert "world".startswith("x"), "String doesn't start with x"
-           ^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: String doesn't start with x
+test_failing_2 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: String doesn't start with x
 
-5 tests: 3 passed, 2 failed, 0 skipped in 0.004s
+  → assert "world".startswith("x"), "String doesn't start with x"
+
+✗ 5 tests: 3 passed, 2 failed, 0 skipped in 0.00s
 ```
 
 Notice the output shows `✗✗✓✓✓` - failed tests run first!
@@ -290,19 +266,13 @@ rustest test_workflow.py -x
 ```
 ✓✓✗
 
-======================================================================
-FAILURES
-======================================================================
+test_failing_1 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: Math is broken
 
-test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
-    assert 2 + 2 == 5, "Math is broken"
-           ^^^^^^^^^^
-AssertionError: Math is broken
+  → assert 2 + 2 == 5, "Math is broken"
 
-3 tests: 2 passed, 1 failed, 0 skipped in 0.004s
+✗ 3 tests: 2 passed, 1 failed, 0 skipped in 0.00s
 ```
 
 Only 3 tests ran instead of all 5 - execution stopped after the first failure!
@@ -319,19 +289,13 @@ rustest test_workflow.py --ff -x
 ```
 ✗
 
-======================================================================
-FAILURES
-======================================================================
+test_failing_1 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: Math is broken
 
-test_failing_1 (/tmp/rustest_docs_test/test_workflow.py)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/tmp/rustest_docs_test/test_workflow.py", line 13, in test_failing_1
-    assert 2 + 2 == 5, "Math is broken"
-           ^^^^^^^^^^
-AssertionError: Math is broken
+  → assert 2 + 2 == 5, "Math is broken"
 
-1 tests: 0 passed, 1 failed, 0 skipped in 0.004s
+✗ 1 tests: 0 passed, 1 failed, 0 skipped in 0.00s
 ```
 
 Only the first failed test ran! This is extremely fast for iterative development.
