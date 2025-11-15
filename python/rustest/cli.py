@@ -118,6 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="fail_fast",
         help="Exit instantly on first error or failed test.",
     )
+    _ = parser.add_argument(
+        "--pytest-compat",
+        action="store_true",
+        dest="pytest_compat",
+        help="Enable pytest compatibility mode - allows running existing pytest tests without modifying imports.",
+    )
     _ = parser.set_defaults(
         capture_output=True,
         color=True,
@@ -125,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
         last_failed=False,
         failed_first=False,
         fail_fast=False,
+        pytest_compat=False,
     )
     return parser
 
@@ -154,6 +161,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         enable_codeblocks=args.enable_codeblocks,
         last_failed_mode=last_failed_mode,
         fail_fast=args.fail_fast,
+        pytest_compat=args.pytest_compat,
     )
     _print_report(report, verbose=args.verbose, ascii_mode=args.ascii)
     return 0 if report.failed == 0 else 1
