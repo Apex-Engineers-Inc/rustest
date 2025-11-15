@@ -3,6 +3,7 @@
 //! Shows a spinner next to each test file as it runs, updating to a
 //! status symbol when complete.
 
+use super::formatter::ErrorFormatter;
 use super::renderer::OutputRenderer;
 use crate::model::{PyTestResult, TestCase, TestModule};
 use console::style;
@@ -14,6 +15,7 @@ use std::time::Duration;
 pub struct SpinnerDisplay {
     multi: MultiProgress,
     spinners: HashMap<String, ProgressBar>,
+    formatter: ErrorFormatter,
     use_colors: bool,
     ascii_mode: bool,
     passed: usize,
@@ -27,6 +29,7 @@ impl SpinnerDisplay {
         Self {
             multi: MultiProgress::new(),
             spinners: HashMap::new(),
+            formatter: ErrorFormatter::new(use_colors),
             use_colors,
             ascii_mode,
             passed: 0,
@@ -106,10 +109,18 @@ impl OutputRenderer for SpinnerDisplay {
             pb.inc(1);
         }
 
-        // Update overall counters
+        // Update overall counters and show failures immediately
         match result.status.as_str() {
             "passed" => self.passed += 1,
-            "failed" => self.failed += 1,
+            "failed" => {
+                self.failed += 1;
+
+                // Format and display the error immediately
+                if let Some(ref message) = result.message {
+                    let formatted = self.formatter.format_failure(&result.name, &result.path, message);
+                    let _ = self.multi.println(&formatted);
+                }
+            }
             "skipped" => self.skipped += 1,
             _ => {}
         }

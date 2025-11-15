@@ -3,9 +3,11 @@
 //! This module handles all terminal output for rustest, providing
 //! real-time feedback during test execution.
 
+mod formatter;
 mod renderer;
 mod spinner_display;
 
+pub use formatter::ErrorFormatter;
 pub use renderer::{OutputMode, OutputRenderer};
 pub use spinner_display::SpinnerDisplay;
 
