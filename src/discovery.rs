@@ -41,68 +41,64 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     sys_modules.set_item("pytest", compat_module)?;
 
     // Print a banner to inform the user they're in compatibility mode
-    // Box width (62 characters wide for standard 80-char terminals)
     let box_width = 62;
-    let content_width = box_width - 2; // Subtract 2 for borders (60 chars)
+    let content_width = box_width - 2;
 
-    // Helper to print a simple bordered line
+    // Helper to print a line with borders and padding
     let print_line = |text: &str| {
-        // Build content: leading space + text + padding = content_width total
-        let content_str = if text.is_empty() {
-            " ".repeat(content_width)
+        let padding = if text.is_empty() {
+            content_width
         } else {
-            let text_with_space = format!(" {}", text);
-            let padding_needed = content_width.saturating_sub(text_with_space.len());
-            format!("{}{}", text_with_space, " ".repeat(padding_needed))
+            content_width - 1 - text.len() // 1 for leading space
         };
-
-        // Print with yellow borders
-        eprint!("{}", style("║").yellow());
-        eprint!("{}", content_str);
-        eprintln!("{}", style("║").yellow());
+        eprintln!("{}{}{}{}{}",
+            style("║").yellow(),
+            if text.is_empty() { "" } else { " " },
+            text,
+            " ".repeat(padding),
+            style("║").yellow()
+        );
     };
 
     // Print banner
     eprintln!();
-
-    // Top border
-    eprint!("{}", style("╔").yellow());
-    eprint!("{}", style("═".repeat(box_width - 2)).yellow());
-    eprintln!("{}", style("╗").yellow());
-
-    // Title line
-    let title_text = "RUSTEST PYTEST COMPATIBILITY MODE";
-    let title_padding_left = (content_width - title_text.len()) / 2;
-    let title_padding_right = content_width - title_text.len() - title_padding_left;
-    let title_content = format!(
-        "{}{}{}",
-        " ".repeat(title_padding_left),
-        title_text,
-        " ".repeat(title_padding_right)
+    eprintln!("{}{}{}",
+        style("╔").yellow(),
+        style("═".repeat(content_width)).yellow(),
+        style("╗").yellow()
     );
-    eprint!("{}", style("║").yellow());
-    eprint!("{}", title_content);
-    eprintln!("{}", style("║").yellow());
 
-    // Separator
-    eprint!("{}", style("╠").yellow());
-    eprint!("{}", style("═".repeat(box_width - 2)).yellow());
-    eprintln!("{}", style("╣").yellow());
+    // Centered title
+    let title = "RUSTEST PYTEST COMPATIBILITY MODE";
+    let title_padding = (content_width - title.len()) / 2;
+    eprintln!("{}{}{}{}{}",
+        style("║").yellow(),
+        " ".repeat(title_padding),
+        title,
+        " ".repeat(content_width - title.len() - title_padding),
+        style("║").yellow()
+    );
 
-    // Content lines
-    print_line("Running existing pytest tests with rustest.");
+    eprintln!("{}{}{}",
+        style("╠").yellow(),
+        style("═".repeat(content_width)).yellow(),
+        style("╣").yellow()
+    );
+
+    print_line("Running pytest tests with rustest.");
     print_line("");
     print_line("Supported: fixtures, parametrize, marks, approx");
     print_line("Built-ins: tmp_path, tmpdir, monkeypatch");
     print_line("Not yet: fixture params, some builtins");
     print_line("");
-    print_line("For full features, use native rustest imports:");
+    print_line("For full features, use native rustest:");
     print_line("  from rustest import fixture, mark, ...");
 
-    // Bottom border
-    eprint!("{}", style("╚").yellow());
-    eprint!("{}", style("═".repeat(box_width - 2)).yellow());
-    eprintln!("{}", style("╝").yellow());
+    eprintln!("{}{}{}",
+        style("╚").yellow(),
+        style("═".repeat(content_width)).yellow(),
+        style("╝").yellow()
+    );
     eprintln!();
 
     Ok(())
