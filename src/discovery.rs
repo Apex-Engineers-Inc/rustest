@@ -45,18 +45,110 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     let reset = "\x1b[0m";
     let bold = "\x1b[1m";
 
+    // Box drawing characters
+    let top_left = "╔";
+    let top_right = "╗";
+    let bottom_left = "╚";
+    let bottom_right = "╝";
+    let horizontal = "═";
+    let vertical = "║";
+    let left_t = "╠";
+    let right_t = "╣";
+
+    // Box width (64 characters wide for standard 80-char terminals)
+    let box_width = 64;
+    let content_width = box_width - 2; // Subtract 2 for the left/right borders
+
+    // Helper to print a line with box borders and padding
+    let print_line = |text: &str| {
+        // Calculate visible text length (excluding ANSI escape codes)
+        let visible_len = text
+            .chars()
+            .filter(|c| !matches!(c, '\x1b'))
+            .collect::<String>()
+            .len()
+            - text.matches("\x1b[").count() * 4; // Rough estimate for escape codes
+
+        let padding = if visible_len < content_width {
+            content_width - visible_len
+        } else {
+            0
+        };
+        eprintln!(
+            "{}{}{}{}{}{}{}",
+            yellow,
+            vertical,
+            reset,
+            text,
+            " ".repeat(padding),
+            yellow,
+            vertical
+        );
+    };
+
+    // Print banner
     eprintln!();
-    eprintln!("{}╔════════════════════════════════════════════════════════════════╗{}", yellow, reset);
-    eprintln!("{}║{}           RUSTEST PYTEST COMPATIBILITY MODE{}              {}║{}", yellow, bold, reset, yellow, reset);
-    eprintln!("{}╠════════════════════════════════════════════════════════════════╣{}", yellow, reset);
-    eprintln!("{}║{} Running existing pytest tests with rustest under the hood.  {}║{}", yellow, reset, yellow, reset);
-    eprintln!("{}║{}                                                                {}║{}", yellow, reset, yellow, reset);
-    eprintln!("{}║{} {}Supported:{} fixtures, parametrize, marks, raises, approx       {}║{}", yellow, reset, cyan, reset, yellow, reset);
-    eprintln!("{}║{} {}Not yet:{} fixture params, built-in fixtures, plugins        {}║{}", yellow, reset, cyan, reset, yellow, reset);
-    eprintln!("{}║{}                                                                {}║{}", yellow, reset, yellow, reset);
-    eprintln!("{}║{} To use full rustest features, change imports to:            {}║{}", yellow, reset, yellow, reset);
-    eprintln!("{}║{} {}from rustest import fixture, mark, parametrize, ...{}        {}║{}", yellow, reset, cyan, reset, yellow, reset);
-    eprintln!("{}╚════════════════════════════════════════════════════════════════╝{}", yellow, reset);
+    eprintln!(
+        "{}{}{}{}{}",
+        yellow,
+        top_left,
+        horizontal.repeat(box_width - 2),
+        top_right,
+        reset
+    );
+
+    // Title
+    let title = format!("{}RUSTEST PYTEST COMPATIBILITY MODE{}", bold, reset);
+    let title_len = "RUSTEST PYTEST COMPATIBILITY MODE".len();
+    let title_padding = (content_width - title_len) / 2;
+    eprintln!(
+        "{}{}{}{}{}{}{}{}",
+        yellow,
+        vertical,
+        reset,
+        " ".repeat(title_padding),
+        title,
+        " ".repeat(content_width - title_len - title_padding),
+        yellow,
+        vertical
+    );
+
+    eprintln!(
+        "{}{}{}{}{}",
+        yellow,
+        left_t,
+        horizontal.repeat(box_width - 2),
+        right_t,
+        reset
+    );
+
+    // Content lines
+    print_line(" Running existing pytest tests with rustest.");
+    print_line("");
+    print_line(&format!(
+        " {}Supported:{} fixtures, parametrize, marks, approx",
+        cyan, reset
+    ));
+    print_line(&format!(
+        " {}Built-ins:{} tmp_path, tmpdir, monkeypatch",
+        cyan, reset
+    ));
+    print_line(&format!(" {}Not yet:{} fixture params, some builtins", cyan, reset));
+    print_line("");
+    print_line(" For full features, use native rustest imports:");
+    print_line(&format!(
+        "   {}from rustest import fixture, mark, ...{}",
+        cyan, reset
+    ));
+
+    eprintln!(
+        "{}{}{}{}{}",
+        yellow,
+        bottom_left,
+        horizontal.repeat(box_width - 2),
+        bottom_right,
+        reset
+    );
     eprintln!();
 
     Ok(())

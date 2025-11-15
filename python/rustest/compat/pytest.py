@@ -10,15 +10,17 @@ Supported pytest features:
 - @pytest.mark.* decorators
 - @pytest.mark.parametrize()
 - @pytest.mark.skip() and @pytest.mark.skipif()
+- @pytest.mark.asyncio (from pytest-asyncio plugin)
 - pytest.raises()
 - pytest.approx()
+- Built-in fixtures: tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, monkeypatch
 
 Not supported (with clear error messages):
 - Fixture params (@pytest.fixture(params=[...]))
 - request fixture
-- Built-in fixtures (tmpdir, capsys, etc.) - users must define their own
+- Some built-in fixtures (capsys, capfd, caplog, etc.)
 - Assertion rewriting
-- Plugins
+- Other pytest plugins
 
 Usage:
     # Instead of modifying your tests, just run:
@@ -125,6 +127,8 @@ def fixture(
             f"Workarounds:\n"
             f"  - params: Use @pytest.mark.parametrize() on your test function instead\n"
             f"  - name: Just use the function name\n"
+            f"\n"
+            f"Note: Built-in fixtures (tmp_path, tmpdir, monkeypatch) are fully supported!\n"
             f"\n"
             f"To use full rustest features, change 'import pytest' to 'from rustest import fixture, mark, ...'."
         )
