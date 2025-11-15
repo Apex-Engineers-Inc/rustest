@@ -49,18 +49,19 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
 
     // Helper to print a simple bordered line
     let print_line = |text: &str| {
-        let padding = if text.len() < content_width {
-            content_width - text.len()
+        // Build content: leading space + text + padding = content_width total
+        let content_str = if text.is_empty() {
+            " ".repeat(content_width)
         } else {
-            0
+            let text_with_space = format!(" {}", text);
+            let padding_needed = content_width.saturating_sub(text_with_space.len());
+            format!("{}{}", text_with_space, " ".repeat(padding_needed))
         };
-        term.write_line(&format!(
-            "{} {}{}{}",
-            style("║").yellow(),
-            text,
-            " ".repeat(padding),
-            style("║").yellow()
-        )).ok();
+
+        // Print with yellow borders
+        eprint!("{}", style("║").yellow());
+        eprint!("{}", content_str);
+        eprintln!("{}", style("║").yellow());
     };
 
     // Print banner
