@@ -19,6 +19,9 @@ def run(
     last_failed_mode: str = "none",
     fail_fast: bool = False,
     pytest_compat: bool = False,
+    verbose: bool = False,
+    ascii: bool = False,
+    no_color: bool = False,
 ) -> RunReport:
     """Execute tests and return a rich report.
 
@@ -32,6 +35,9 @@ def run(
         last_failed_mode: Last failed mode: "none", "only", or "first"
         fail_fast: Exit instantly on first error or failed test
         pytest_compat: Enable pytest compatibility mode (intercept 'import pytest')
+        verbose: Show verbose output with hierarchical test structure
+        ascii: Use ASCII characters instead of Unicode symbols for output
+        no_color: Disable colored output
     """
     raw_report = rust.run(
         paths=list(paths),
@@ -43,5 +49,8 @@ def run(
         last_failed_mode=last_failed_mode,
         fail_fast=fail_fast,
         pytest_compat=pytest_compat,
+        verbose=verbose,
+        ascii=ascii,
+        no_color=no_color,
     )
     return RunReport.from_py(raw_report)

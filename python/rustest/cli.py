@@ -162,8 +162,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         last_failed_mode=last_failed_mode,
         fail_fast=args.fail_fast,
         pytest_compat=args.pytest_compat,
+        verbose=args.verbose,
+        ascii=args.ascii,
+        no_color=not args.color,
     )
-    _print_report(report, verbose=args.verbose, ascii_mode=args.ascii)
+    # Note: Rust now handles all output rendering with real-time progress
+    # The Python _print_report() function is no longer called
     return 0 if report.failed == 0 else 1
 
 

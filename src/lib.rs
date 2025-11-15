@@ -12,6 +12,7 @@ mod discovery;
 mod execution;
 mod mark_expr;
 mod model;
+mod output;
 mod python_support;
 
 #[cfg(test)]
@@ -26,7 +27,7 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
@@ -39,6 +40,9 @@ fn run(
     last_failed_mode: &str,
     fail_fast: bool,
     pytest_compat: bool,
+    verbose: bool,
+    ascii: bool,
+    no_color: bool,
 ) -> PyResult<PyRunReport> {
     let last_failed_mode = LastFailedMode::from_str(last_failed_mode)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -52,6 +56,9 @@ fn run(
         last_failed_mode,
         fail_fast,
         pytest_compat,
+        verbose,
+        ascii,
+        no_color,
     );
     let input_paths = PyPaths::from_vec(paths);
     let collected = discover_tests(py, &input_paths, &config)?;

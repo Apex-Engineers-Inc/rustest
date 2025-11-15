@@ -35,6 +35,9 @@ def run(
     last_failed_mode: str,
     fail_fast: bool,
     pytest_compat: bool,
+    verbose: bool,
+    ascii: bool,
+    no_color: bool,
 ) -> PyRunReport:
     """Execute tests and return a report."""
     ...

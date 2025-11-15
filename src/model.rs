@@ -240,6 +240,9 @@ pub struct RunConfiguration {
     pub last_failed_mode: LastFailedMode,
     pub fail_fast: bool,
     pub pytest_compat: bool,
+    pub verbose: bool,
+    pub ascii: bool,
+    pub no_color: bool,
 }
 
 impl RunConfiguration {
@@ -253,6 +256,9 @@ impl RunConfiguration {
         last_failed_mode: LastFailedMode,
         fail_fast: bool,
         pytest_compat: bool,
+        verbose: bool,
+        ascii: bool,
+        no_color: bool,
     ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
@@ -264,6 +270,9 @@ impl RunConfiguration {
             last_failed_mode,
             fail_fast,
             pytest_compat,
+            verbose,
+            ascii,
+            no_color,
         }
     }
 }
