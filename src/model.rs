@@ -239,6 +239,7 @@ pub struct RunConfiguration {
     pub enable_codeblocks: bool,
     pub last_failed_mode: LastFailedMode,
     pub fail_fast: bool,
+    pub pytest_compat: bool,
 }
 
 impl RunConfiguration {
@@ -250,6 +251,7 @@ impl RunConfiguration {
         enable_codeblocks: bool,
         last_failed_mode: LastFailedMode,
         fail_fast: bool,
+        pytest_compat: bool,
     ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
@@ -260,6 +262,7 @@ impl RunConfiguration {
             enable_codeblocks,
             last_failed_mode,
             fail_fast,
+            pytest_compat,
         }
     }
 }

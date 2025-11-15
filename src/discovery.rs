@@ -25,6 +25,43 @@ use crate::model::{
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
+/// Inject the pytest compatibility shim into sys.modules.
+///
+/// This allows existing pytest test files to work with rustest without any code changes.
+/// When tests do `import pytest`, they'll get our compatibility shim which maps pytest's
+/// API to rustest's implementations.
+fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
+    // Import our compatibility module
+    let compat_module = py.import("rustest.compat.pytest")?;
+
+    // Inject it as 'pytest' in sys.modules
+    let sys = py.import("sys")?;
+    let sys_modules: Bound<'_, PyDict> = sys.getattr("modules")?.cast_into()?;
+    sys_modules.set_item("pytest", compat_module)?;
+
+    // Print a banner to inform the user they're in compatibility mode
+    let yellow = "\x1b[93m";
+    let cyan = "\x1b[96m";
+    let reset = "\x1b[0m";
+    let bold = "\x1b[1m";
+
+    eprintln!();
+    eprintln!("{}╔════════════════════════════════════════════════════════════════╗{}", yellow, reset);
+    eprintln!("{}║{}           RUSTEST PYTEST COMPATIBILITY MODE{}              {}║{}", yellow, bold, reset, yellow, reset);
+    eprintln!("{}╠════════════════════════════════════════════════════════════════╣{}", yellow, reset);
+    eprintln!("{}║{} Running existing pytest tests with rustest under the hood.  {}║{}", yellow, reset, yellow, reset);
+    eprintln!("{}║{}                                                                {}║{}", yellow, reset, yellow, reset);
+    eprintln!("{}║{} {}Supported:{} fixtures, parametrize, marks, raises, approx       {}║{}", yellow, reset, cyan, reset, yellow, reset);
+    eprintln!("{}║{} {}Not yet:{} fixture params, built-in fixtures, plugins        {}║{}", yellow, reset, cyan, reset, yellow, reset);
+    eprintln!("{}║{}                                                                {}║{}", yellow, reset, yellow, reset);
+    eprintln!("{}║{} To use full rustest features, change imports to:            {}║{}", yellow, reset, yellow, reset);
+    eprintln!("{}║{} {}from rustest import fixture, mark, parametrize, ...{}        {}║{}", yellow, reset, cyan, reset, yellow, reset);
+    eprintln!("{}╚════════════════════════════════════════════════════════════════╝{}", yellow, reset);
+    eprintln!();
+
+    Ok(())
+}
+
 /// Check if a directory is a virtual environment by detecting marker files.
 ///
 /// This mimics pytest's `_in_venv()` function, which checks for:
@@ -102,6 +139,11 @@ pub fn discover_tests(
 
     // Setup sys.path to enable imports like pytest does
     setup_python_path(py, &canonical_paths)?;
+
+    // If pytest compatibility mode is enabled, inject the pytest shim
+    if config.pytest_compat {
+        inject_pytest_compat_shim(py)?;
+    }
 
     let py_glob = build_file_glob()?;
     let md_glob = if config.enable_codeblocks {
