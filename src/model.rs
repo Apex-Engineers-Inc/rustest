@@ -243,6 +243,7 @@ pub struct RunConfiguration {
 }
 
 impl RunConfiguration {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pattern: Option<String>,
         mark_expr: Option<String>,

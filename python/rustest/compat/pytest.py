@@ -133,8 +133,13 @@ def fixture(
         )
         raise NotImplementedError(msg)
 
-    # Map to rustest fixture
-    return _rustest_fixture(func, scope=scope, autouse=autouse)
+    # Map to rustest fixture - handle both @pytest.fixture and @pytest.fixture()
+    if func is not None:
+        # Called as @pytest.fixture (without parentheses)
+        return _rustest_fixture(func, scope=scope, autouse=autouse)
+    else:
+        # Called as @pytest.fixture(...) (with parentheses)
+        return _rustest_fixture(scope=scope, autouse=autouse)  # type: ignore[return-value]
 
 
 # Direct mappings - these already have identical signatures
@@ -177,7 +182,7 @@ class _PytestMarkCompat:
         This is the @pytest.mark.skip() decorator which should skip the test.
         Maps to rustest's skip() decorator.
         """
-        return _rustest_skip(reason=reason)
+        return _rustest_skip(reason=reason)  # type: ignore[return-value]
 
     @property
     def skipif(self) -> Any:

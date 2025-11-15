@@ -51,7 +51,8 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
         } else {
             content_width - 1 - text.len() // 1 for leading space
         };
-        eprintln!("{}{}{}{}{}",
+        eprintln!(
+            "{}{}{}{}{}",
             style("║").yellow(),
             if text.is_empty() { "" } else { " " },
             text,
@@ -62,7 +63,8 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
 
     // Print banner
     eprintln!();
-    eprintln!("{}{}{}",
+    eprintln!(
+        "{}{}{}",
         style("╔").yellow(),
         style("═".repeat(content_width)).yellow(),
         style("╗").yellow()
@@ -71,7 +73,8 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     // Centered title
     let title = "RUSTEST PYTEST COMPATIBILITY MODE";
     let title_padding = (content_width - title.len()) / 2;
-    eprintln!("{}{}{}{}{}",
+    eprintln!(
+        "{}{}{}{}{}",
         style("║").yellow(),
         " ".repeat(title_padding),
         title,
@@ -79,7 +82,8 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
         style("║").yellow()
     );
 
-    eprintln!("{}{}{}",
+    eprintln!(
+        "{}{}{}",
         style("╠").yellow(),
         style("═".repeat(content_width)).yellow(),
         style("╣").yellow()
@@ -94,7 +98,8 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     print_line("For full features, use native rustest:");
     print_line("  from rustest import fixture, mark, ...");
 
-    eprintln!("{}{}{}",
+    eprintln!(
+        "{}{}{}",
         style("╚").yellow(),
         style("═".repeat(content_width)).yellow(),
         style("╝").yellow()
