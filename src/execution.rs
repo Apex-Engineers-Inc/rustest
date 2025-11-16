@@ -18,6 +18,7 @@ use crate::model::{
     invalid_test_definition, Fixture, FixtureScope, ParameterMap, PyRunReport, PyTestResult,
     RunConfiguration, TestCase, TestModule,
 };
+use crate::output::{OutputConfig, OutputRenderer, SpinnerDisplay};
 
 /// Manages teardown for generator fixtures across different scopes.
 struct TeardownCollector {
@@ -68,10 +69,31 @@ pub fn run_collected_tests(
     let mut failed = 0;
     let mut skipped = 0;
 
+    // Create output renderer based on configuration
+    let output_config = OutputConfig::from_run_config(config);
+    let mut renderer: Box<dyn OutputRenderer> = Box::new(SpinnerDisplay::new(
+        output_config.use_colors,
+        output_config.ascii_mode,
+    ));
+
+    // Calculate totals for progress tracking
+    let total_files = modules.len();
+    let total_tests: usize = modules.iter().map(|m| m.tests.len()).sum();
+    renderer.start_suite(total_files, total_tests);
+
     // Fixture context lives for the entire test run
     let mut context = FixtureContext::new();
 
     for module in modules.iter() {
+        // Track per-file statistics
+        let file_start = Instant::now();
+        let mut file_passed = 0;
+        let mut file_failed = 0;
+        let mut file_skipped = 0;
+
+        // Notify renderer that this file is starting
+        renderer.start_file(module);
+
         // Reset module-scoped caches for this module
         context.module_cache.clear();
 
@@ -91,12 +113,30 @@ pub fn run_collected_tests(
             for test in tests {
                 let result = run_single_test(py, module, test, config, &mut context)?;
                 let is_failed = result.status == "failed";
+
+                // Update global and per-file counters
                 match result.status.as_str() {
-                    "passed" => passed += 1,
-                    "failed" => failed += 1,
-                    "skipped" => skipped += 1,
-                    _ => failed += 1,
+                    "passed" => {
+                        passed += 1;
+                        file_passed += 1;
+                    }
+                    "failed" => {
+                        failed += 1;
+                        file_failed += 1;
+                    }
+                    "skipped" => {
+                        skipped += 1;
+                        file_skipped += 1;
+                    }
+                    _ => {
+                        failed += 1;
+                        file_failed += 1;
+                    }
                 }
+
+                // Notify renderer of test completion
+                renderer.test_completed(&result);
+
                 results.push(result);
 
                 // Check for fail-fast mode: exit immediately on first failure
@@ -106,10 +146,20 @@ pub fn run_collected_tests(
                     finalize_generators(py, &mut context.teardowns.module);
                     finalize_generators(py, &mut context.teardowns.session);
 
-                    let duration = start.elapsed().as_secs_f64();
+                    let duration = start.elapsed();
                     let total = passed + failed + skipped;
-                    let report =
-                        PyRunReport::new(total, passed, failed, skipped, duration, results);
+
+                    // Notify renderer of early exit
+                    renderer.finish_suite(total, passed, failed, skipped, duration);
+
+                    let report = PyRunReport::new(
+                        total,
+                        passed,
+                        failed,
+                        skipped,
+                        duration.as_secs_f64(),
+                        results,
+                    );
 
                     // Write cache before returning
                     write_failed_tests_cache(&report)?;
@@ -131,13 +181,35 @@ pub fn run_collected_tests(
 
         // Module-scoped fixtures are dropped here - run teardowns
         finalize_generators(py, &mut context.teardowns.module);
+
+        // Notify renderer that this file is complete
+        let file_duration = file_start.elapsed();
+        renderer.file_completed(
+            &module.path.to_string_lossy(),
+            file_duration,
+            file_passed,
+            file_failed,
+            file_skipped,
+        );
     }
 
     // Session-scoped fixtures are dropped here - run teardowns
     finalize_generators(py, &mut context.teardowns.session);
-    let duration = start.elapsed().as_secs_f64();
+
+    let duration = start.elapsed();
     let total = passed + failed + skipped;
-    let report = PyRunReport::new(total, passed, failed, skipped, duration, results);
+
+    // Notify renderer that the entire suite is complete
+    renderer.finish_suite(total, passed, failed, skipped, duration);
+
+    let report = PyRunReport::new(
+        total,
+        passed,
+        failed,
+        skipped,
+        duration.as_secs_f64(),
+        results,
+    );
 
     // Write cache after all tests complete
     write_failed_tests_cache(&report)?;

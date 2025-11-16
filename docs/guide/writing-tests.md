@@ -182,15 +182,14 @@ When you run rustest, you'll see clean, informative output:
 ```
 ✓✓✓⊘✗
 
-======================================================================
-FAILURES
-======================================================================
+test_broken_feature (test_example.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError
 
-test_broken_feature (/path/to/test_example.py)
-----------------------------------------------------------------------
-AssertionError: Expected 5, got 4
+  Expected: 5
+  Received: 4
 
-5 tests: 3 passed, 1 failed, 1 skipped in 0.009s
+✗ 5 tests: 3 passed, 1 failed, 1 skipped in 0.01s
 ```
 
 **Output symbols:**
