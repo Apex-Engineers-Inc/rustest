@@ -133,5 +133,3 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called
     return 0 if report.failed == 0 else 1
-
-
