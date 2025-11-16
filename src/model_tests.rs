@@ -18,6 +18,7 @@ mod tests {
                 vec!["param1".to_string(), "param2".to_string()],
                 FixtureScope::Function,
                 false,
+                false,
             );
 
             assert_eq!(fixture.name, "test_fixture");
@@ -83,8 +84,19 @@ mod tests {
 
     #[test]
     fn test_run_configuration_new_with_defaults() {
-        let config =
-            RunConfiguration::new(None, None, None, true, true, LastFailedMode::None, false);
+        let config = RunConfiguration::new(
+            None,
+            None,
+            None,
+            true,
+            true,
+            LastFailedMode::None,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
 
         assert!(config.pattern.is_none());
         assert!(config.mark_expr.is_none());
@@ -102,6 +114,10 @@ mod tests {
             true,
             LastFailedMode::None,
             false,
+            false,
+            false,
+            false,
+            false,
         );
 
         assert_eq!(config.pattern, Some("test_.*".to_string()));
@@ -118,6 +134,10 @@ mod tests {
             true,
             true,
             LastFailedMode::None,
+            false,
+            false,
+            false,
+            false,
             false,
         );
         let cloned = config.clone();
