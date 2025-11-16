@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2025-11-16
+
+### Added
+
+- **Rust-Based Output Formatting**: Complete rewrite of output formatting system using Rust for enhanced performance and responsiveness
+  - Real-time file spinner output with progress indicators during test execution
+  - All output formatting now implemented in Rust for faster rendering
+  - Phase 1: Real-time spinner output for file processing feedback
+  - Phase 2 & 3: Complete error formatting pipeline in Rust with Python cleanup
+
+- **Pytest Compatibility Mode**: Enhanced pytest compatibility for running tests
+  - Improved compatibility with pytest's test discovery and execution patterns
+
+### Changed
+
+- Output formatting pipeline is now entirely Rust-based for improved performance
+- Reorganized and optimized project structure with improved documentation
+- Cleaned up temporary exploration files and proof-of-concept examples
+
+### Fixed
+
+- Fixed tests and linting issues following output formatting implementation
+
 ## [0.10.0] - 2025-11-12
 
 ### Added
