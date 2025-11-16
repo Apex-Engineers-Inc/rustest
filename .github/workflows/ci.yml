@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   test:
     name: Test Python ${{ matrix.python-version }}
@@ -84,6 +87,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -102,6 +108,25 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --all-extras
+
+      - name: Auto-fix Python formatting with ruff
+        run: uv run --no-project ruff format python
+
+      - name: Auto-fix Python linting with ruff
+        run: uv run --no-project ruff check --fix python
+
+      - name: Auto-fix Rust formatting
+        run: cargo fmt
+
+      - name: Commit and push formatting changes
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if ! git diff --staged --quiet; then
+            git commit -m "Auto-fix formatting and linting"
+            git push
+          fi
 
       - name: Check Python formatting with ruff
         run: uv run --no-project ruff format --check python
