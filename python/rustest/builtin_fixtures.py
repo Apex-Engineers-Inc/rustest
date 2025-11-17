@@ -346,28 +346,30 @@ def request() -> Any:
 
     # Emit warning about limited support
     warnings.warn(
-        "\n"
-        "╔════════════════════════════════════════════════════════════════════════════╗\n"
-        "║              RUSTEST PYTEST-COMPAT: REQUEST FIXTURE WARNING               ║\n"
-        "╠════════════════════════════════════════════════════════════════════════════╣\n"
-        "║ The 'request' fixture has LIMITED support in rustest pytest-compat mode.  ║\n"
-        "║                                                                            ║\n"
-        "║ ✓ Type annotations work: request: pytest.FixtureRequest                   ║\n"
-        "║ ✓ Basic usage works: request.scope returns 'function'                     ║\n"
-        "║                                                                            ║\n"
-        "║ ✗ Most attributes return None:                                            ║\n"
-        "║   - request.param (for parametrized fixtures)                             ║\n"
-        "║   - request.node, request.function, request.cls, request.module           ║\n"
-        "║   - request.config, request.fixturename                                   ║\n"
-        "║   - Methods: addfinalizer(), getfixturevalue()                            ║\n"
-        "║                                                                            ║\n"
-        "║ If your fixtures depend on these values, they may not work correctly.     ║\n"
-        "║                                                                            ║\n"
-        "║ For full pytest features, consider using pytest directly, or migrate      ║\n"
-        "║ to native rustest (without --pytest-compat flag).                         ║\n"
-        "╚════════════════════════════════════════════════════════════════════════════╝",
+        (
+            "\n"
+            "╔════════════════════════════════════════════════════════════════════════════╗\n"
+            "║              RUSTEST PYTEST-COMPAT: REQUEST FIXTURE WARNING               ║\n"
+            "╠════════════════════════════════════════════════════════════════════════════╣\n"
+            "║ The 'request' fixture has LIMITED support in rustest pytest-compat mode.  ║\n"
+            "║                                                                            ║\n"
+            "║ ✓ Type annotations work: request: pytest.FixtureRequest                   ║\n"
+            "║ ✓ Basic usage works: request.scope returns 'function'                     ║\n"
+            "║                                                                            ║\n"
+            "║ ✗ Most attributes return None:                                            ║\n"
+            "║   - request.param (for parametrized fixtures)                             ║\n"
+            "║   - request.node, request.function, request.cls, request.module           ║\n"
+            "║   - request.config, request.fixturename                                   ║\n"
+            "║   - Methods: addfinalizer(), getfixturevalue()                            ║\n"
+            "║                                                                            ║\n"
+            "║ If your fixtures depend on these values, they may not work correctly.     ║\n"
+            "║                                                                            ║\n"
+            "║ For full pytest features, consider using pytest directly, or migrate      ║\n"
+            "║ to native rustest (without --pytest-compat flag).                         ║\n"
+            "╚════════════════════════════════════════════════════════════════════════════╝"
+        ),
         UserWarning,
-        stacklevel=2
+        stacklevel=2,
     )
 
     return FixtureRequest()

@@ -131,6 +131,7 @@ class FixtureRequest:
 
     def __init__(self) -> None:
         """Initialize a FixtureRequest stub with default/None values."""
+        super().__init__()
         self.param: Any = None
         self.fixturename: str | None = None
         self.scope: str = "function"
