@@ -13,6 +13,7 @@ Supported pytest features:
 - @pytest.mark.asyncio (from pytest-asyncio plugin)
 - pytest.raises()
 - pytest.approx()
+- pytest.FixtureRequest (for type annotations)
 - Built-in fixtures: tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, monkeypatch
 
 Not supported (with clear error messages):
@@ -62,10 +63,54 @@ __all__ = [
     "param",
     "warns",
     "deprecated_call",
+    "FixtureRequest",
 ]
 
 # Type variable for generic functions
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+class FixtureRequest:
+    """
+    Pytest-compatible FixtureRequest stub for type annotations.
+
+    This is a minimal implementation to support type hints in fixtures that use
+    the request parameter. In pytest, FixtureRequest provides access to the
+    requesting test context.
+
+    Note: rustest --pytest-compat mode has limited support for the request
+    fixture. This class is primarily provided for type annotation compatibility.
+
+    Common attributes in pytest.FixtureRequest:
+        - param: Parameter value (for parametrized fixtures)
+        - node: Test node object
+        - function: Test function
+        - cls: Test class
+        - module: Test module
+        - config: Pytest config
+        - fixturename: Name of the fixture
+        - scope: Scope of the fixture
+
+    Example:
+        @pytest.fixture
+        def my_fixture(request: pytest.FixtureRequest):
+            # Type annotation works for compatibility
+            return request.param  # May not work in rustest compat mode
+    """
+
+    def __init__(self) -> None:
+        """Initialize a FixtureRequest stub."""
+        self.param: Any = None
+        self.fixturename: str | None = None
+        self.scope: str = "function"
+        self.node: Any = None
+        self.function: Any = None
+        self.cls: Any = None
+        self.module: Any = None
+        self.config: Any = None
+
+    def __repr__(self) -> str:
+        return f"<FixtureRequest (rustest compat stub)>"
 
 
 def fixture(
