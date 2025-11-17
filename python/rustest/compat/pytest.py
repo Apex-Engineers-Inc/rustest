@@ -13,7 +13,8 @@ Supported pytest features:
 - @pytest.mark.asyncio (from pytest-asyncio plugin)
 - pytest.raises()
 - pytest.approx()
-- pytest.FixtureRequest (for type annotations)
+- Type annotations: pytest.FixtureRequest, pytest.MonkeyPatch, pytest.TmpPathFactory,
+  pytest.TmpDirFactory, pytest.ExceptionInfo
 - Built-in fixtures: tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, monkeypatch, request
 
 Note: The request fixture is a basic stub with limited functionality. Many attributes
@@ -52,8 +53,10 @@ from rustest.decorators import (
     skip as _rustest_skip,
     mark as _rustest_mark,
     raises as _rustest_raises,
+    ExceptionInfo,
 )
 from rustest.approx import approx as _rustest_approx
+from rustest.builtin_fixtures import MonkeyPatch, TmpPathFactory, TmpDirFactory
 
 __all__ = [
     "fixture",
@@ -66,6 +69,10 @@ __all__ = [
     "warns",
     "deprecated_call",
     "FixtureRequest",
+    "MonkeyPatch",
+    "TmpPathFactory",
+    "TmpDirFactory",
+    "ExceptionInfo",
 ]
 
 # Type variable for generic functions
