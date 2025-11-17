@@ -1088,6 +1088,73 @@ fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<Mark>> {
     Ok(marks)
 }
 
+/// Load parent __init__.py files to ensure package structure is initialized.
+/// This is necessary for relative imports to work correctly.
+fn ensure_parent_packages_loaded(py: Python<'_>, path: &Path) -> PyResult<()> {
+    let mut parent = path.parent();
+    let mut package_path = Vec::new();
+
+    // Collect all parent directories with __init__.py files
+    while let Some(dir) = parent {
+        let init_file = dir.join("__init__.py");
+        if init_file.exists() {
+            if let Some(name) = dir.file_name().and_then(|value| value.to_str()) {
+                package_path.push((name.to_string(), init_file));
+            }
+            parent = dir.parent();
+        } else {
+            break;
+        }
+    }
+
+    // Reverse to load from top-level package down to nearest parent
+    package_path.reverse();
+
+    let sys = py.import("sys")?;
+    let modules: Bound<'_, PyDict> = sys.getattr("modules")?.cast_into()?;
+    let importlib = py.import("importlib.util")?;
+
+    // Build and load each parent package
+    let mut current_package = Vec::new();
+    for (name, init_path) in package_path {
+        current_package.push(name.clone());
+        let package_name = current_package.join(".");
+
+        // Check if package is already loaded
+        if modules.contains(&package_name)? {
+            continue;
+        }
+
+        // Load the __init__.py file for this package
+        let path_str = init_path.to_string_lossy();
+        let spec = importlib.call_method1(
+            "spec_from_file_location",
+            (package_name.as_str(), path_str.as_ref()),
+        )?;
+        let loader = spec.getattr("loader")?;
+
+        if !loader.is_none() {
+            let module = importlib.call_method1("module_from_spec", (&spec,))?;
+
+            // Set __package__ for the __init__.py module
+            if current_package.len() > 1 {
+                let parent_package = current_package[..current_package.len() - 1].join(".");
+                module.setattr("__package__", parent_package)?;
+            } else {
+                module.setattr("__package__", package_name.as_str())?;
+            }
+
+            // Add to sys.modules before executing
+            modules.set_item(package_name.as_str(), &module)?;
+
+            // Execute the __init__.py file
+            loader.call_method1("exec_module", (&module,))?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Load the Python module from disk.
 fn load_python_module<'py>(
     py: Python<'py>,
@@ -1095,6 +1162,9 @@ fn load_python_module<'py>(
     module_name: &str,
     package: Option<&str>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    // Ensure parent packages are loaded for relative imports to work
+    ensure_parent_packages_loaded(py, path)?;
+
     let importlib = py.import("importlib.util")?;
     let path_str = path.to_string_lossy();
     let spec =
