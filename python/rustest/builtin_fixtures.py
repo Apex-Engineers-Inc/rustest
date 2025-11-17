@@ -297,6 +297,42 @@ def monkeypatch() -> Iterator[MonkeyPatch]:
         patch.undo()
 
 
+@fixture(scope="function")
+def request() -> Any:
+    """Pytest-compatible request fixture stub.
+
+    This is a minimal implementation of the pytest request fixture to support
+    basic pytest compatibility mode. It provides a FixtureRequest-like object
+    with limited functionality.
+
+    Note: This stub has limited capabilities compared to pytest's request fixture.
+    Many attributes will be None or have default values. This is primarily provided
+    for code compatibility, not full functionality.
+
+    In pytest, the request fixture provides:
+        - request.param: Parameter value for parametrized fixtures
+        - request.node: Test node object
+        - request.function: Test function
+        - request.cls: Test class
+        - request.module: Test module
+        - request.config: Pytest config
+        - request.fixturename: Name of the fixture
+        - request.scope: Scope of the fixture
+
+    Example:
+        @pytest.fixture
+        def my_fixture(request):
+            # Basic usage works
+            print(f"Fixture scope: {request.scope}")
+            # Advanced features may not work in rustest compat mode
+            return "value"
+    """
+    # Import here to avoid circular dependency
+    from rustest.compat.pytest import FixtureRequest
+
+    return FixtureRequest()
+
+
 __all__ = [
     "MonkeyPatch",
     "TmpDirFactory",
@@ -306,4 +342,5 @@ __all__ = [
     "tmpdir_factory",
     "tmp_path",
     "tmp_path_factory",
+    "request",
 ]

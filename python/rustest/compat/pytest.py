@@ -14,11 +14,13 @@ Supported pytest features:
 - pytest.raises()
 - pytest.approx()
 - pytest.FixtureRequest (for type annotations)
-- Built-in fixtures: tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, monkeypatch
+- Built-in fixtures: tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, monkeypatch, request
+
+Note: The request fixture is a basic stub with limited functionality. Many attributes
+will have default/None values. It's provided for compatibility, not full pytest features.
 
 Not supported (with clear error messages):
 - Fixture params (@pytest.fixture(params=[...]))
-- request fixture
 - Some built-in fixtures (capsys, capfd, caplog, etc.)
 - Assertion rewriting
 - Other pytest plugins
