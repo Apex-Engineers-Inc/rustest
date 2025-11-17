@@ -305,30 +305,70 @@ def request() -> Any:
     basic pytest compatibility mode. It provides a FixtureRequest-like object
     with limited functionality.
 
-    Note: This stub has limited capabilities compared to pytest's request fixture.
+    **IMPORTANT LIMITATIONS:**
+    This stub has limited capabilities compared to pytest's request fixture.
     Many attributes will be None or have default values. This is primarily provided
     for code compatibility, not full functionality.
 
-    In pytest, the request fixture provides:
-        - request.param: Parameter value for parametrized fixtures
-        - request.node: Test node object
-        - request.function: Test function
-        - request.cls: Test class
-        - request.module: Test module
-        - request.config: Pytest config
-        - request.fixturename: Name of the fixture
-        - request.scope: Scope of the fixture
+    **What works:**
+        - Type annotations: request: pytest.FixtureRequest
+        - Basic attribute access: request.scope (returns "function")
+        - Code that checks for the fixture's existence
+
+    **What does NOT work:**
+        - request.param: Always None (parametrized fixtures not fully supported)
+        - request.node: Always None (test node context not available)
+        - request.function: Always None (test function context not available)
+        - request.cls: Always None (test class context not available)
+        - request.module: Always None (test module context not available)
+        - request.config: Always None (pytest config not available)
+        - request.fixturename: Always None
+        - Methods like request.addfinalizer(), request.getfixturevalue()
+
+    If your code relies on these attributes/methods having real values, it may
+    not work correctly in rustest pytest-compat mode.
 
     Example:
         @pytest.fixture
         def my_fixture(request):
-            # Basic usage works
-            print(f"Fixture scope: {request.scope}")
-            # Advanced features may not work in rustest compat mode
-            return "value"
+            # This works (basic attribute access)
+            print(f"Fixture scope: {request.scope}")  # prints "function"
+
+            # This will be None (not supported)
+            if request.param:  # Always False/None
+                return request.param
+
+            return "default_value"
     """
     # Import here to avoid circular dependency
+    import warnings
     from rustest.compat.pytest import FixtureRequest
+
+    # Emit warning about limited support
+    warnings.warn(
+        "\n"
+        "╔════════════════════════════════════════════════════════════════════════════╗\n"
+        "║              RUSTEST PYTEST-COMPAT: REQUEST FIXTURE WARNING               ║\n"
+        "╠════════════════════════════════════════════════════════════════════════════╣\n"
+        "║ The 'request' fixture has LIMITED support in rustest pytest-compat mode.  ║\n"
+        "║                                                                            ║\n"
+        "║ ✓ Type annotations work: request: pytest.FixtureRequest                   ║\n"
+        "║ ✓ Basic usage works: request.scope returns 'function'                     ║\n"
+        "║                                                                            ║\n"
+        "║ ✗ Most attributes return None:                                            ║\n"
+        "║   - request.param (for parametrized fixtures)                             ║\n"
+        "║   - request.node, request.function, request.cls, request.module           ║\n"
+        "║   - request.config, request.fixturename                                   ║\n"
+        "║   - Methods: addfinalizer(), getfixturevalue()                            ║\n"
+        "║                                                                            ║\n"
+        "║ If your fixtures depend on these values, they may not work correctly.     ║\n"
+        "║                                                                            ║\n"
+        "║ For full pytest features, consider using pytest directly, or migrate      ║\n"
+        "║ to native rustest (without --pytest-compat flag).                         ║\n"
+        "╚════════════════════════════════════════════════════════════════════════════╝",
+        UserWarning,
+        stacklevel=2
+    )
 
     return FixtureRequest()
 

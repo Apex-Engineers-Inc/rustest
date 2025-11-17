@@ -80,28 +80,50 @@ class FixtureRequest:
     the request parameter. In pytest, FixtureRequest provides access to the
     requesting test context.
 
-    Note: rustest --pytest-compat mode has limited support for the request
-    fixture. This class is primarily provided for type annotation compatibility.
+    **IMPORTANT LIMITATIONS:**
+    This is a STUB implementation with very limited functionality. Most attributes
+    return None or default values. Methods raise NotImplementedError with helpful
+    messages.
 
-    Common attributes in pytest.FixtureRequest:
-        - param: Parameter value (for parametrized fixtures)
-        - node: Test node object
-        - function: Test function
-        - cls: Test class
-        - module: Test module
-        - config: Pytest config
-        - fixturename: Name of the fixture
-        - scope: Scope of the fixture
+    **Supported (basic compatibility):**
+        - Type annotations: request: pytest.FixtureRequest ✓
+        - Attribute access without errors ✓
+        - request.scope returns "function" ✓
+
+    **NOT Supported (returns None or raises NotImplementedError):**
+        - request.param: Always None
+        - request.node, function, cls, module, config: Always None
+        - request.fixturename: Always None
+        - request.addfinalizer(): Raises NotImplementedError
+        - request.getfixturevalue(): Raises NotImplementedError
+        - request.applymarker(): Raises NotImplementedError
+        - request.raiseerror(): Raises NotImplementedError
+
+    Common pytest.FixtureRequest attributes:
+        - param: Parameter value (for parametrized fixtures) - ALWAYS None
+        - node: Test node object - ALWAYS None
+        - function: Test function - ALWAYS None
+        - cls: Test class - ALWAYS None
+        - module: Test module - ALWAYS None
+        - config: Pytest config - ALWAYS None
+        - fixturename: Name of the fixture - ALWAYS None
+        - scope: Scope of the fixture - Returns "function"
 
     Example:
         @pytest.fixture
         def my_fixture(request: pytest.FixtureRequest):
-            # Type annotation works for compatibility
-            return request.param  # May not work in rustest compat mode
+            # Type annotation works ✓
+            print(f"Scope: {request.scope}")  # Prints "function" ✓
+
+            # These will be None (not supported)
+            if request.param:  # Always None
+                return request.param
+
+            return "default_value"
     """
 
     def __init__(self) -> None:
-        """Initialize a FixtureRequest stub."""
+        """Initialize a FixtureRequest stub with default/None values."""
         self.param: Any = None
         self.fixturename: str | None = None
         self.scope: str = "function"
@@ -111,8 +133,110 @@ class FixtureRequest:
         self.module: Any = None
         self.config: Any = None
 
+    def addfinalizer(self, finalizer: Callable[[], None]) -> None:
+        """
+        Add a finalizer to be called after the test.
+
+        NOT SUPPORTED in rustest pytest-compat mode.
+
+        In pytest, this would register a function to be called during teardown.
+        Rustest does not support this functionality in compat mode.
+
+        Raises:
+            NotImplementedError: Always raised with helpful message
+
+        Workaround:
+            Use fixture teardown with yield instead:
+
+                @pytest.fixture
+                def my_fixture():
+                    resource = setup()
+                    yield resource
+                    teardown(resource)  # This runs after the test
+        """
+        msg = (
+            "request.addfinalizer() is not supported in rustest pytest-compat mode.\n"
+            "\n"
+            "Workaround: Use fixture teardown with yield:\n"
+            "  @pytest.fixture\n"
+            "  def my_fixture():\n"
+            "      resource = setup()\n"
+            "      yield resource\n"
+            "      teardown(resource)  # Runs after test\n"
+            "\n"
+            "For full pytest features, use pytest directly or migrate to native rustest."
+        )
+        raise NotImplementedError(msg)
+
+    def getfixturevalue(self, name: str) -> Any:
+        """
+        Get the value of another fixture by name.
+
+        NOT SUPPORTED in rustest pytest-compat mode.
+
+        In pytest, this dynamically retrieves fixture values. Rustest does not
+        support this functionality in compat mode.
+
+        Args:
+            name: Name of the fixture to retrieve
+
+        Raises:
+            NotImplementedError: Always raised with helpful message
+
+        Workaround:
+            Declare the fixture as a parameter instead:
+
+                @pytest.fixture
+                def my_fixture(other_fixture):  # Instead of getfixturevalue
+                    return other_fixture
+        """
+        msg = (
+            "request.getfixturevalue() is not supported in rustest pytest-compat mode.\n"
+            "\n"
+            f"Workaround: Declare '{name}' as a fixture parameter:\n"
+            "  @pytest.fixture\n"
+            f"  def my_fixture({name}):\n"
+            f"      # Use {name} directly\n"
+            f"      return {name}\n"
+            "\n"
+            "For full pytest features, use pytest directly or migrate to native rustest."
+        )
+        raise NotImplementedError(msg)
+
+    def applymarker(self, marker: Any) -> None:
+        """
+        Apply a marker to the test.
+
+        NOT SUPPORTED in rustest pytest-compat mode.
+
+        Raises:
+            NotImplementedError: Always raised with helpful message
+        """
+        msg = (
+            "request.applymarker() is not supported in rustest pytest-compat mode.\n"
+            "\n"
+            "For full pytest features, use pytest directly or migrate to native rustest."
+        )
+        raise NotImplementedError(msg)
+
+    def raiseerror(self, msg: str | None) -> None:
+        """
+        Raise an error with the given message.
+
+        NOT SUPPORTED in rustest pytest-compat mode.
+
+        Raises:
+            NotImplementedError: Always raised with helpful message
+        """
+        error_msg = (
+            "request.raiseerror() is not supported in rustest pytest-compat mode.\n"
+            "\n"
+            "For full pytest features, use pytest directly or migrate to native rustest."
+        )
+        raise NotImplementedError(error_msg)
+
     def __repr__(self) -> str:
-        return f"<FixtureRequest (rustest compat stub)>"
+        return "<FixtureRequest (rustest compat stub - limited functionality)>"
 
 
 def fixture(
