@@ -85,6 +85,7 @@ __all__ = [
     "Function",
     "Module",
     "Class",
+    "FixtureDef",
 ]
 
 # Type variable for generic functions
@@ -370,6 +371,22 @@ class Class(Collector):
 
     def __repr__(self) -> str:
         return "<Class (rustest compat stub)>"
+
+
+class FixtureDef:
+    """
+    Stub for pytest.FixtureDef - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode. This is a stub to allow
+    pytest plugins like pytest_asyncio to import without errors.
+    """
+
+    def __init__(self) -> None:
+        """Initialize FixtureDef stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<FixtureDef (rustest compat stub)>"
 
 
 class TestReport:
