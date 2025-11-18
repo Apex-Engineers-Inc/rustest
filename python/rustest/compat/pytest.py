@@ -285,11 +285,11 @@ def fixture(
     Supported:
         - scope: function/class/module/session
         - autouse: True/False
+        - name: Override fixture name
 
     Not supported (will raise NotImplementedError):
         - params: Use @pytest.mark.parametrize on the test instead
         - ids: Not needed without params
-        - name: Use function name
 
     Examples:
         @pytest.fixture
@@ -305,6 +305,10 @@ def fixture(
         @pytest.fixture(autouse=True)
         def setup():
             setup_environment()
+
+        @pytest.fixture(name="db")
+        def _database_fixture():
+            return Database()
     """
     # Validate unsupported parameters
     unsupported = []
@@ -315,8 +319,6 @@ def fixture(
         pass
     elif ids is not None:
         unsupported.append("ids")
-    if name is not None:
-        unsupported.append("name")
 
     if unsupported:
         features = ", ".join(unsupported)
@@ -325,7 +327,6 @@ def fixture(
             f"\n"
             f"Workarounds:\n"
             f"  - params: Use @pytest.mark.parametrize() on your test function instead\n"
-            f"  - name: Just use the function name\n"
             f"\n"
             f"Note: Built-in fixtures (tmp_path, tmpdir, monkeypatch) are fully supported!\n"
             f"\n"
@@ -336,10 +337,10 @@ def fixture(
     # Map to rustest fixture - handle both @pytest.fixture and @pytest.fixture()
     if func is not None:
         # Called as @pytest.fixture (without parentheses)
-        return _rustest_fixture(func, scope=scope, autouse=autouse)
+        return _rustest_fixture(func, scope=scope, autouse=autouse, name=name)
     else:
         # Called as @pytest.fixture(...) (with parentheses)
-        return _rustest_fixture(scope=scope, autouse=autouse)  # type: ignore[return-value]
+        return _rustest_fixture(scope=scope, autouse=autouse, name=name)  # type: ignore[return-value]
 
 
 # Direct mappings - these already have identical signatures

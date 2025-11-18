@@ -17,13 +17,13 @@ VALID_SCOPES = frozenset(["function", "class", "module", "session"])
 
 @overload
 def fixture(
-    func: Callable[P, R], *, scope: str = "function", autouse: bool = False
+    func: Callable[P, R], *, scope: str = "function", autouse: bool = False, name: str | None = None
 ) -> Callable[P, R]: ...
 
 
 @overload
 def fixture(
-    *, scope: str = "function", autouse: bool = False
+    *, scope: str = "function", autouse: bool = False, name: str | None = None
 ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
@@ -32,6 +32,7 @@ def fixture(
     *,
     scope: str = "function",
     autouse: bool = False,
+    name: str | None = None,
 ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """Mark a function as a fixture with a specific scope.
 
@@ -44,6 +45,7 @@ def fixture(
             - "session": Shared across all tests in the session
         autouse: If True, the fixture will be automatically used by all tests
             in its scope without needing to be explicitly requested (default: False)
+        name: Override the fixture name (default: use the function name)
 
     Usage:
         @fixture
@@ -58,6 +60,11 @@ def fixture(
         def setup_fixture():
             # This fixture will run automatically before each test
             setup_environment()
+
+        @fixture(name="db")
+        def _database_fixture():
+            # This fixture is available as "db", not "_database_fixture"
+            return Database()
     """
     if scope not in VALID_SCOPES:
         valid = ", ".join(sorted(VALID_SCOPES))
@@ -68,6 +75,8 @@ def fixture(
         setattr(f, "__rustest_fixture__", True)
         setattr(f, "__rustest_fixture_scope__", scope)
         setattr(f, "__rustest_fixture_autouse__", autouse)
+        if name is not None:
+            setattr(f, "__rustest_fixture_name__", name)
         return f
 
     # Support both @fixture and @fixture(scope="...")
