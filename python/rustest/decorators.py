@@ -12,7 +12,7 @@ S = TypeVar("S")
 TFunc = TypeVar("TFunc", bound=Callable[..., Any])
 
 # Valid fixture scopes
-VALID_SCOPES = frozenset(["function", "class", "module", "session"])
+VALID_SCOPES = frozenset(["function", "class", "module", "package", "session"])
 
 
 @overload
@@ -42,6 +42,7 @@ def fixture(
             - "function": New instance for each test function (default)
             - "class": Shared across all test methods in a class
             - "module": Shared across all tests in a module
+            - "package": Shared across all tests in a package
             - "session": Shared across all tests in the session
         autouse: If True, the fixture will be automatically used by all tests
             in its scope without needing to be explicitly requested (default: False)
