@@ -73,6 +73,18 @@ __all__ = [
     "TmpPathFactory",
     "TmpDirFactory",
     "ExceptionInfo",
+    # Pytest internals for plugin compatibility (pytest_asyncio, etc.)
+    "Config",
+    "Parser",
+    "Item",
+    "Session",
+    "Collector",
+    "TestReport",
+    "TerminalReporter",
+    "hookimpl",
+    "Function",
+    "Module",
+    "Class",
 ]
 
 # Type variable for generic functions
@@ -245,6 +257,168 @@ class FixtureRequest:
 
     def __repr__(self) -> str:
         return "<FixtureRequest (rustest compat stub - limited functionality)>"
+
+
+# Pytest plugin API stubs for compatibility with pytest plugins (pytest_asyncio, etc.)
+# These are minimal stubs that allow plugins to import them without errors
+
+
+class Config:
+    """
+    Stub for pytest.Config - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode. This is a stub to allow
+    pytest plugins like pytest_asyncio to import without errors.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Config stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<Config (rustest compat stub)>"
+
+
+class Parser:
+    """
+    Stub for pytest.Parser - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Parser stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<Parser (rustest compat stub)>"
+
+
+class Item:
+    """
+    Stub for pytest.Item - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Item stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<Item (rustest compat stub)>"
+
+
+class Function(Item):
+    """
+    Stub for pytest.Function - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __repr__(self) -> str:
+        return "<Function (rustest compat stub)>"
+
+
+class Session:
+    """
+    Stub for pytest.Session - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Session stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<Session (rustest compat stub)>"
+
+
+class Collector:
+    """
+    Stub for pytest.Collector - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __init__(self) -> None:
+        """Initialize Collector stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<Collector (rustest compat stub)>"
+
+
+class Module(Collector):
+    """
+    Stub for pytest.Module - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __repr__(self) -> str:
+        return "<Module (rustest compat stub)>"
+
+
+class Class(Collector):
+    """
+    Stub for pytest.Class - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __repr__(self) -> str:
+        return "<Class (rustest compat stub)>"
+
+
+class TestReport:
+    """
+    Stub for pytest.TestReport - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __init__(self) -> None:
+        """Initialize TestReport stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<TestReport (rustest compat stub)>"
+
+
+class TerminalReporter:
+    """
+    Stub for pytest.TerminalReporter - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode.
+    """
+
+    def __init__(self) -> None:
+        """Initialize TerminalReporter stub."""
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return "<TerminalReporter (rustest compat stub)>"
+
+
+def hookimpl(*args: Any, **kwargs: Any) -> Any:
+    """
+    Stub for pytest.hookimpl decorator - used by pytest plugins.
+
+    NOT FUNCTIONAL in rustest pytest-compat mode. Returns a no-op decorator
+    that simply returns the function unchanged.
+    """
+
+    def decorator(func: Any) -> Any:
+        return func
+
+    if len(args) == 1 and callable(args[0]) and not kwargs:
+        # Called as @hookimpl without parentheses
+        return args[0]
+    else:
+        # Called as @hookimpl(...) with arguments
+        return decorator
 
 
 def fixture(
