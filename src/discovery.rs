@@ -94,9 +94,9 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     print_line("Supported: fixtures, parametrize, marks, approx");
     print_line("Built-ins: tmp_path, tmpdir, monkeypatch, request");
     print_line("");
-    print_line("⚠ Plugin APIs are mocked (non-functional):");
-    print_line("  pytest_asyncio and other plugins can import,");
-    print_line("  but advanced features won't work.");
+    print_line("NOTE: Plugin APIs are stubbed (non-functional).");
+    print_line("pytest_asyncio and other plugins can import,");
+    print_line("but advanced plugin features won't work.");
     print_line("");
     print_line("For full features, use native rustest:");
     print_line("  from rustest import fixture, mark, ...");
