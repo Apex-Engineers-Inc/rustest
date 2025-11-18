@@ -626,3 +626,50 @@ def deprecated_call(*args: Any, **kwargs: Any) -> Any:
 
 # Module-level version to match pytest
 __version__ = "rustest-compat"
+
+# Cache for dynamically generated stub classes
+_dynamic_stubs: dict[str, type] = {}
+
+
+def __getattr__(name: str) -> Any:
+    """
+    Dynamically provide stub classes for any pytest attribute not explicitly defined.
+
+    This allows pytest plugins (like pytest_asyncio) to import any pytest internal
+    without errors, while these remain non-functional stubs.
+
+    This is the recommended Python 3.7+ way to handle "catch-all" module imports.
+    """
+    # Check if we've already created this stub
+    if name in _dynamic_stubs:
+        return _dynamic_stubs[name]
+
+    # Don't intercept private attributes or special methods
+    if name.startswith("_"):
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    # Create a stub class dynamically
+    def stub_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def stub_repr(self: Any) -> str:
+        return f"<{name} (rustest compat stub)>"
+
+    stub_class = type(
+        name,
+        (),
+        {
+            "__doc__": (
+                f"Dynamically generated stub for pytest.{name}.\n\n"
+                f"NOT FUNCTIONAL in rustest pytest-compat mode. This stub exists\n"
+                f"to allow pytest plugins to import without errors."
+            ),
+            "__init__": stub_init,
+            "__repr__": stub_repr,
+            "__module__": __name__,
+        },
+    )
+
+    # Cache it so subsequent imports get the same class
+    _dynamic_stubs[name] = stub_class
+    return stub_class
