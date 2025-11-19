@@ -15,8 +15,8 @@ use pyo3::types::PyTuple;
 
 use crate::cache;
 use crate::model::{
-    invalid_test_definition, Fixture, FixtureScope, ParameterMap, PyRunReport, PyTestResult,
-    RunConfiguration, TestCase, TestModule,
+    invalid_test_definition, to_relative_path, Fixture, FixtureScope, ParameterMap, PyRunReport,
+    PyTestResult, RunConfiguration, TestCase, TestModule,
 };
 use crate::output::{OutputConfig, OutputRenderer, SpinnerDisplay};
 
@@ -202,7 +202,7 @@ pub fn run_collected_tests(
         // Notify renderer that this file is complete
         let file_duration = file_start.elapsed();
         renderer.file_completed(
-            &module.path.to_string_lossy(),
+            &to_relative_path(&module.path),
             file_duration,
             file_passed,
             file_failed,
@@ -248,7 +248,7 @@ fn run_single_test(
     if let Some(reason) = &test_case.skip_reason {
         return Ok(PyTestResult::skipped(
             test_case.display_name.clone(),
-            test_case.path.display().to_string(),
+            to_relative_path(&test_case.path),
             0.0,
             reason.clone(),
             test_case.mark_names(),
@@ -259,7 +259,7 @@ fn run_single_test(
     let outcome = execute_test_case(py, module, test_case, config, context);
     let duration = start.elapsed().as_secs_f64();
     let name = test_case.display_name.clone();
-    let path = test_case.path.display().to_string();
+    let path = to_relative_path(&test_case.path);
 
     match outcome {
         Ok(success) => Ok(PyTestResult::passed(

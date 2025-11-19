@@ -291,4 +291,59 @@ mod tests {
             assert!(test_case.display_name.contains("[5-10]"));
         });
     }
+
+    #[test]
+    fn test_to_relative_path_within_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let test_path = cwd.join("tests").join("test_file.py");
+
+        let result = to_relative_path(&test_path);
+
+        // Should start with separator and contain the relative path
+        assert!(result.starts_with(std::path::MAIN_SEPARATOR));
+        assert!(result.contains("tests"));
+        assert!(result.contains("test_file.py"));
+        // Should NOT contain the full cwd path
+        assert!(!result.contains(cwd.to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_to_relative_path_outside_cwd() {
+        // Path that's definitely not under cwd
+        let test_path = if cfg!(windows) {
+            PathBuf::from("C:\\some\\other\\path\\test.py")
+        } else {
+            PathBuf::from("/some/other/path/test.py")
+        };
+
+        let result = to_relative_path(&test_path);
+
+        // Should return the full path since it's not under cwd
+        assert_eq!(result, test_path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_to_relative_path_cwd_itself() {
+        let cwd = std::env::current_dir().unwrap();
+
+        let result = to_relative_path(&cwd);
+
+        // Should return "." for the cwd itself
+        assert_eq!(result, ".");
+    }
+
+    #[test]
+    fn test_to_relative_path_nested_directory() {
+        let cwd = std::env::current_dir().unwrap();
+        let test_path = cwd.join("src").join("output").join("spinner_display.rs");
+
+        let result = to_relative_path(&test_path);
+
+        // Should contain the nested path components
+        assert!(result.contains("src"));
+        assert!(result.contains("output"));
+        assert!(result.contains("spinner_display.rs"));
+        // Should start with separator
+        assert!(result.starts_with(std::path::MAIN_SEPARATOR));
+    }
 }

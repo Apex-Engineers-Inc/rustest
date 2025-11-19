@@ -5,7 +5,7 @@
 //! we ensure that the control flow is easy to follow for developers who may not
 //! have much Rust experience yet.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use indexmap::IndexMap;
@@ -427,4 +427,24 @@ impl ModuleIdGenerator {
 /// side.
 pub fn invalid_test_definition(message: impl Into<String>) -> PyErr {
     PyValueError::new_err(message.into())
+}
+
+/// Convert an absolute path to a relative path from the current working directory.
+///
+/// This makes the output more readable by showing paths relative to the project root
+/// instead of full absolute paths like `\\?\C:\Users\...`.
+pub fn to_relative_path(path: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(relative) = path.strip_prefix(&cwd) {
+            // Return with leading separator for clarity
+            let relative_str = relative.to_string_lossy();
+            if relative_str.is_empty() {
+                return ".".to_string();
+            }
+            // Use platform-specific separator for display
+            return format!("{}{}", std::path::MAIN_SEPARATOR, relative_str);
+        }
+    }
+    // Fallback to full path if we can't make it relative
+    path.to_string_lossy().to_string()
 }
