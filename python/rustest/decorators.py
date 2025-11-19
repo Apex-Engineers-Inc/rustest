@@ -15,6 +15,22 @@ TFunc = TypeVar("TFunc", bound=Callable[..., Any])
 VALID_SCOPES = frozenset(["function", "class", "module", "package", "session"])
 
 
+class ParameterSet:
+    """Represents a single parameter set for pytest.param().
+
+    This class holds the values for a parametrized test case along with
+    optional id and marks metadata.
+    """
+
+    def __init__(self, values: tuple[Any, ...], id: str | None = None, marks: Any = None):
+        self.values = values
+        self.id = id
+        self.marks = marks  # Currently not used, but stored for future support
+
+    def __repr__(self) -> str:
+        return f"ParameterSet(values={self.values!r}, id={self.id!r})"
+
+
 @overload
 def fixture(
     func: Callable[P, R], *, scope: str = "function", autouse: bool = False, name: str | None = None
@@ -159,24 +175,36 @@ def _build_cases(
         raise ValueError(msg)
 
     for index, case in enumerate(values):
+        # Handle ParameterSet objects (from pytest.param())
+        param_set_id: str | None = None
+        if isinstance(case, ParameterSet):
+            param_set_id = case.id
+            case = case.values  # Extract the actual values
+            # If it's a single value tuple, unwrap it for consistency
+            if len(case) == 1:
+                case = case[0]
+
         # Mappings are only treated as parameter mappings when there are multiple parameters
         # For single parameters, dicts/mappings are treated as values
         if isinstance(case, Mapping) and len(names) > 1:
             data = {name: case[name] for name in names}
-        elif isinstance(case, tuple) and len(case) == len(names):
-            # Tuples are unpacked to match parameter names (pytest convention)
+        elif isinstance(case, (tuple, list)) and len(case) == len(names):
+            # Tuples and lists are unpacked to match parameter names (pytest convention)
             # This handles both single and multiple parameters
             data = {name: case[pos] for pos, name in enumerate(names)}
         else:
             # Everything else is treated as a single value
-            # This includes: primitives, lists (even if len==names), dicts (single param), objects
+            # This includes: primitives, dicts (single param), objects
             if len(names) == 1:
                 data = {names[0]: case}
             else:
                 raise ValueError("Parametrized value does not match argument names")
 
         # Generate case ID
-        if ids is None:
+        # Priority: ParameterSet id > ids parameter > auto-generated
+        if param_set_id is not None:
+            case_id = param_set_id
+        elif ids is None:
             case_id = f"case_{index}"
         elif ids_is_callable:
             # Call the function on the case value to get the ID

@@ -54,6 +54,7 @@ from rustest.decorators import (
     mark as _rustest_mark,
     raises as _rustest_raises,
     ExceptionInfo,
+    ParameterSet,
 )
 from rustest.approx import approx as _rustest_approx
 from rustest.builtin_fixtures import MonkeyPatch, TmpPathFactory, TmpDirFactory
@@ -68,6 +69,7 @@ __all__ = [
     "param",
     "warns",
     "deprecated_call",
+    "importorskip",
     "FixtureRequest",
     "MonkeyPatch",
     "TmpPathFactory",
@@ -405,30 +407,40 @@ class _PytestMarkCompat:
 mark = _PytestMarkCompat()
 
 
-def param(*values: Any, **kwargs: Any) -> Any:
+def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any) -> ParameterSet:
     """
-    Pytest's param() for parametrize is not directly supported.
+    Create a parameter set for use in @pytest.mark.parametrize.
 
-    In pytest, you can do:
-        @pytest.mark.parametrize("x", [
-            pytest.param(1, marks=pytest.mark.skip),
-            pytest.param(2),
+    This function allows you to specify custom test IDs for individual
+    parameter sets:
+
+        @pytest.mark.parametrize("x,y", [
+            pytest.param(1, 2, id="small"),
+            pytest.param(100, 200, id="large"),
         ])
 
-    Rustest doesn't support per-parameter marks yet. This function
-    raises a helpful error.
+    Args:
+        *values: The parameter values for this test case
+        id: Optional custom test ID for this parameter set
+        marks: Optional marks to apply (currently ignored with a warning)
+
+    Returns:
+        A ParameterSet object that will be handled by parametrize
+
+    Note:
+        The 'marks' parameter is accepted but not yet functional.
+        Tests with marks will run normally but marks won't be applied.
     """
-    msg = (
-        "rustest --pytest-compat mode doesn't support pytest.param() yet.\n"
-        "\n"
-        "This feature allows marking individual parameter sets, which\n"
-        "rustest doesn't support yet. You can work around this by:\n"
-        "  1. Splitting into separate test functions\n"
-        "  2. Using conditional skips inside the test\n"
-        "\n"
-        "To use full rustest features, change 'import pytest' to 'from rustest import fixture, mark, ...'."
-    )
-    raise NotImplementedError(msg)
+    if marks is not None:
+        import warnings
+        warnings.warn(
+            "pytest.param() marks are not yet supported in rustest pytest-compat mode. "
+            "The test will run but marks will be ignored.",
+            UserWarning,
+            stacklevel=2
+        )
+
+    return ParameterSet(values=values, id=id, marks=marks)
 
 
 def warns(*args: Any, **kwargs: Any) -> Any:
@@ -453,6 +465,70 @@ def deprecated_call(*args: Any, **kwargs: Any) -> Any:
     """Pytest's deprecated_call() is not supported."""
     msg = "rustest --pytest-compat mode doesn't support pytest.deprecated_call()."
     raise NotImplementedError(msg)
+
+
+def importorskip(
+    modname: str,
+    minversion: str | None = None,
+    reason: str | None = None,
+    *,
+    exc_type: type[ImportError] = ImportError,
+) -> Any:
+    """
+    Import and return the requested module, or skip the test if unavailable.
+
+    This function attempts to import a module and returns it if successful.
+    If the import fails or the version is too old, the current test is skipped.
+
+    Args:
+        modname: The name of the module to import
+        minversion: Minimum required version string (compared with pkg.__version__)
+        reason: Custom reason message to display when skipping
+        exc_type: The exception type to catch (default: ImportError)
+
+    Returns:
+        The imported module
+
+    Example:
+        numpy = pytest.importorskip("numpy")
+        pandas = pytest.importorskip("pandas", minversion="1.0")
+    """
+    import importlib
+
+    __tracebackhide__ = True
+
+    compile(modname, "", "eval")  # Validate module name syntax
+
+    try:
+        mod = importlib.import_module(modname)
+    except exc_type as exc:
+        if reason is None:
+            reason = f"could not import {modname!r}: {exc}"
+        _rustest_skip(reason=reason)
+        raise  # This line won't be reached due to skip, but satisfies type checker
+
+    if minversion is not None:
+        mod_version = getattr(mod, "__version__", None)
+        if mod_version is None:
+            if reason is None:
+                reason = f"module {modname!r} has no __version__ attribute"
+            _rustest_skip(reason=reason)
+        else:
+            # Simple version comparison (works for most common cases)
+            from packaging.version import Version
+            try:
+                if Version(mod_version) < Version(minversion):
+                    if reason is None:
+                        reason = f"module {modname!r} has version {mod_version}, required is {minversion}"
+                    _rustest_skip(reason=reason)
+            except Exception:
+                # Fallback to string comparison if packaging fails
+                if mod_version < minversion:
+                    if reason is None:
+                        reason = f"module {modname!r} has version {mod_version}, required is {minversion}"
+                    _rustest_skip(reason=reason)
+
+    return mod
 
 
 # Module-level version to match pytest
