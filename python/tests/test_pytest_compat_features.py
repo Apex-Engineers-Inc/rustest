@@ -12,24 +12,23 @@ This module tests the pytest compatibility features including:
 from __future__ import annotations
 
 import warnings
-from unittest.mock import patch
 
 import pytest
 
 from rustest.compat.pytest import (
-    WarningsChecker,
     warns,
     deprecated_call,
     param,
     importorskip,
 )
 from rustest.decorators import parametrize, ParameterSet, _build_cases
-from rustest.builtin_fixtures import CaptureFixture, capsys, capfd
+from rustest.builtin_fixtures import CaptureFixture
 
 
 # =============================================================================
 # Tests for pytest.warns()
 # =============================================================================
+
 
 class TestWarns:
     """Tests for the warns() context manager."""
@@ -124,6 +123,7 @@ class TestDeprecatedCall:
 # Tests for capsys and capfd fixtures
 # =============================================================================
 
+
 class TestCaptureFixture:
     """Tests for the CaptureFixture class."""
 
@@ -182,6 +182,7 @@ class TestCaptureFixture:
     def test_capture_fixture_restores_streams(self):
         """Test that CaptureFixture restores original streams."""
         import sys
+
         original_stdout = sys.stdout
         original_stderr = sys.stderr
 
@@ -196,6 +197,7 @@ class TestCaptureFixture:
 # =============================================================================
 # Tests for pytest.param()
 # =============================================================================
+
 
 class TestPytestParam:
     """Tests for pytest.param() functionality."""
@@ -219,17 +221,21 @@ class TestPytestParam:
         """Test that param() with marks emits a warning."""
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = param(1, marks="some_mark")
+            _ = param(1, marks="some_mark")
 
             assert len(w) == 1
             assert "marks are not yet supported" in str(w[0].message)
 
     def test_param_in_parametrize(self):
         """Test that param() works with parametrize decorator."""
-        @parametrize("x,y", [
-            param(1, 2, id="small"),
-            param(10, 20, id="large"),
-        ])
+
+        @parametrize(
+            "x,y",
+            [
+                param(1, 2, id="small"),
+                param(10, 20, id="large"),
+            ],
+        )
         def dummy_test(x, y):
             pass
 
@@ -252,6 +258,7 @@ class TestPytestParam:
 # Tests for list parametrize (lists treated as tuples)
 # =============================================================================
 
+
 class TestListParametrize:
     """Tests for list values in parametrize being treated as tuples."""
 
@@ -271,11 +278,15 @@ class TestListParametrize:
 
     def test_mixed_list_tuple_values(self):
         """Test parametrize with mixed list and tuple values."""
-        @parametrize("a,b,c", [
-            [1, 2, 3],      # List
-            (4, 5, 6),      # Tuple
-            [7, 8, 9],      # List
-        ])
+
+        @parametrize(
+            "a,b,c",
+            [
+                [1, 2, 3],  # List
+                (4, 5, 6),  # Tuple
+                [7, 8, 9],  # List
+            ],
+        )
         def dummy_test(a, b, c):
             pass
 
@@ -298,9 +309,13 @@ class TestListParametrize:
 
     def test_nested_list_in_parameters(self):
         """Test that nested lists work correctly."""
-        @parametrize("x,y", [
-            [[1, 2], [3, 4]],  # Outer list unpacked, inner lists are values
-        ])
+
+        @parametrize(
+            "x,y",
+            [
+                [[1, 2], [3, 4]],  # Outer list unpacked, inner lists are values
+            ],
+        )
         def dummy_test(x, y):
             pass
 
@@ -312,6 +327,7 @@ class TestListParametrize:
 # Tests for pytest.importorskip()
 # =============================================================================
 
+
 class TestImportorskip:
     """Tests for importorskip() functionality."""
 
@@ -321,6 +337,7 @@ class TestImportorskip:
         os_module = importorskip("os")
 
         import os
+
         assert os_module is os
 
     def test_importorskip_with_missing_module(self):
@@ -348,6 +365,7 @@ class TestImportorskip:
 # =============================================================================
 # Tests for ParameterSet in _build_cases
 # =============================================================================
+
 
 class TestParameterSetInBuildCases:
     """Tests for ParameterSet handling in _build_cases."""
@@ -391,15 +409,20 @@ class TestParameterSetInBuildCases:
 # Integration tests
 # =============================================================================
 
+
 class TestPytestCompatIntegration:
     """Integration tests for pytest-compat features working together."""
 
     def test_param_with_list_values(self):
         """Test param() containing list values."""
-        @parametrize("items", [
-            param([1, 2, 3], id="list_123"),
-            param([4, 5], id="list_45"),
-        ])
+
+        @parametrize(
+            "items",
+            [
+                param([1, 2, 3], id="list_123"),
+                param([4, 5], id="list_45"),
+            ],
+        )
         def dummy_test(items):
             pass
 
