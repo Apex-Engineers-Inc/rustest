@@ -19,6 +19,9 @@ use pyo3::types::{PyDict, PyList};
 pub type ParameterMap = IndexMap<String, Py<PyAny>>;
 
 /// The scope of a fixture determines when it is created and destroyed.
+///
+/// The order of variants matters for the derived `Ord` implementation:
+/// Function < Class < Module < Package < Session
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum FixtureScope {
     /// Created once per test function (default).
@@ -28,6 +31,8 @@ pub enum FixtureScope {
     Class,
     /// Shared across all tests in a module.
     Module,
+    /// Shared across all tests in a package (directory with __init__.py).
+    Package,
     /// Shared across all tests in the entire session.
     Session,
 }
@@ -39,6 +44,7 @@ impl FixtureScope {
             "function" => Ok(FixtureScope::Function),
             "class" => Ok(FixtureScope::Class),
             "module" => Ok(FixtureScope::Module),
+            "package" => Ok(FixtureScope::Package),
             "session" => Ok(FixtureScope::Session),
             _ => Err(format!("Invalid fixture scope: {}", s)),
         }
