@@ -5,7 +5,7 @@
 
 use super::formatter::ErrorFormatter;
 use super::renderer::OutputRenderer;
-use crate::model::{PyTestResult, TestCase, TestModule};
+use crate::model::{to_relative_path, PyTestResult, TestCase, TestModule};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
@@ -87,7 +87,7 @@ impl OutputRenderer for SpinnerDisplay {
     fn start_file(&mut self, module: &TestModule) {
         let pb = self.multi.add(ProgressBar::new(module.tests.len() as u64));
         pb.set_style(self.spinner_style());
-        let path_str = module.path.to_string_lossy().to_string();
+        let path_str = to_relative_path(&module.path);
         pb.set_message(path_str.clone());
         pb.enable_steady_tick(Duration::from_millis(100));
         self.spinners.insert(path_str, pb);
