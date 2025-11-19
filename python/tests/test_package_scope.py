@@ -8,12 +8,9 @@ but reset when moving to a different package.
 import os
 import tempfile
 
-import pytest
-
 from rustest import run
 
 
-@pytest.mark.skip(reason="Requires Rust code rebuild with maturin develop")
 class TestPackageScopeBasic:
     """Basic tests for package-scoped fixtures."""
 
@@ -169,7 +166,6 @@ def test_in_pkg_b(pkg_resource):
             assert result.failed == 0
 
 
-@pytest.mark.skip(reason="Requires Rust code rebuild with maturin develop")
 class TestPackageScopeDependencies:
     """Tests for package-scoped fixture dependencies."""
 
@@ -278,7 +274,6 @@ def test_valid_dependency(func_value):
             assert result.failed == 0
 
 
-@pytest.mark.skip(reason="Requires Rust code rebuild with maturin develop")
 class TestPackageScopeAutouse:
     """Tests for package-scoped autouse fixtures."""
 
@@ -332,7 +327,6 @@ def test_third():
             assert result.failed == 0
 
 
-@pytest.mark.skip(reason="Requires Rust code rebuild with maturin develop")
 class TestPackageScopeNested:
     """Tests for package scope with nested packages."""
 
@@ -386,7 +380,6 @@ def test_in_child(pkg_fixture):
             assert result.failed == 0
 
 
-@pytest.mark.skip(reason="Requires Rust code rebuild with maturin develop")
 class TestPackageScopeWithOtherScopes:
     """Tests for package scope interacting with other scopes."""
 
