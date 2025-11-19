@@ -203,8 +203,8 @@ def test_package_depends_on_session(pkg_value):
             assert result.passed == 1
             assert result.failed == 0
 
-    def test_module_cannot_depend_on_package(self):
-        """Module-scoped fixtures cannot depend on package-scoped fixtures (narrower scope)."""
+    def test_module_can_depend_on_package(self):
+        """Module-scoped fixtures can depend on package-scoped fixtures (narrower on broader)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             pkg_a = os.path.join(tmpdir, "pkg_a")
             os.makedirs(pkg_a)
@@ -223,21 +223,21 @@ def pkg_value():
 
 @fixture(scope="module")
 def mod_value(pkg_value):
-    # This should fail - module scope is narrower than package
+    # This is valid - narrower scope can depend on broader scope
     return pkg_value + 1
 """)
 
-            test_file = os.path.join(pkg_a, "test_invalid.py")
+            test_file = os.path.join(pkg_a, "test_valid.py")
             with open(test_file, "w") as f:
                 f.write("""
-def test_invalid_dependency(mod_value):
+def test_valid_dependency(mod_value):
     assert mod_value == 101
 """)
 
             result = run(paths=[pkg_a])
-            # Should fail due to scope mismatch
-            assert result.failed == 1
-            assert "ScopeMismatch" in str(result.results[0].error)
+            # Should pass - narrower scope can depend on broader scope
+            assert result.passed == 1
+            assert result.failed == 0
 
     def test_function_can_depend_on_package(self):
         """Function-scoped fixtures can depend on package-scoped fixtures."""
@@ -286,12 +286,20 @@ class TestPackageScopeAutouse:
             with open(os.path.join(pkg_a, "__init__.py"), "w") as f:
                 f.write("")
 
+            # Create a shared state module that can be imported
+            shared_module = os.path.join(pkg_a, "shared_state.py")
+            with open(shared_module, "w") as f:
+                f.write("""
+setup_count = {"value": 0}
+""")
+
             conftest = os.path.join(pkg_a, "conftest.py")
             with open(conftest, "w") as f:
-                f.write("""
+                f.write(f"""
+import sys
+sys.path.insert(0, "{pkg_a}")
 from rustest import fixture
-
-setup_count = {"value": 0}
+from shared_state import setup_count
 
 @fixture(scope="package", autouse=True)
 def auto_setup():
@@ -302,8 +310,10 @@ def auto_setup():
             # Create two test files in the same package
             test_mod1 = os.path.join(pkg_a, "test_mod1.py")
             with open(test_mod1, "w") as f:
-                f.write("""
-from conftest import setup_count
+                f.write(f"""
+import sys
+sys.path.insert(0, "{pkg_a}")
+from shared_state import setup_count
 
 def test_first():
     assert setup_count["value"] == 1
@@ -314,8 +324,10 @@ def test_second():
 
             test_mod2 = os.path.join(pkg_a, "test_mod2.py")
             with open(test_mod2, "w") as f:
-                f.write("""
-from conftest import setup_count
+                f.write(f"""
+import sys
+sys.path.insert(0, "{pkg_a}")
+from shared_state import setup_count
 
 def test_third():
     # Still same package, so autouse fixture only ran once
