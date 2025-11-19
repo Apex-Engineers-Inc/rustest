@@ -1,0 +1,84 @@
+[project]
+site_name = "rustest"
+site_description = "Rust-powered pytest-compatible test runner - ~2x faster test execution"
+site_url = "https://apex-engineers-inc.github.io/rustest"
+repo_url = "https://github.com/Apex-Engineers-Inc/rustest"
+repo_name = "Apex-Engineers-Inc/rustest"
+edit_uri = "edit/main/docs/"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting Started" = [
+    { "Installation" = "getting-started/installation.md" },
+    { "Quick Start" = "getting-started/quickstart.md" }
+  ]},
+  { "User Guide" = [
+    { "Writing Tests" = "guide/writing-tests.md" },
+    { "Project Structure & Imports" = "guide/project-structure.md" },
+    { "Fixtures" = "guide/fixtures.md" },
+    { "Parametrization" = "guide/parametrization.md" },
+    { "Marks & Skipping" = "guide/marks.md" },
+    { "Async Testing" = "guide/async-testing.md" },
+    { "Test Classes" = "guide/test-classes.md" },
+    { "Assertion Helpers" = "guide/assertions.md" },
+    { "Markdown Testing" = "guide/markdown-testing.md" },
+    { "CLI Usage" = "guide/cli.md" },
+    { "Python API" = "guide/python-api.md" }
+  ]},
+  { "API Reference" = [
+    { "Overview" = "api/overview.md" },
+    { "Decorators" = "api/decorators.md" },
+    { "Test Execution" = "api/core.md" },
+    { "Reporting" = "api/reporting.md" },
+    { "Assertion Utilities" = "api/approx.md" }
+  ]},
+  { "Advanced" = [
+    { "Performance" = "advanced/performance.md" },
+    { "Comparison with pytest" = "advanced/comparison.md" },
+    { "Development" = "advanced/development.md" }
+  ]},
+  { "Changelog" = "changelog.md" }
+]
+
+[project.theme]
+favicon = "assets/logo-icon.svg"
+logo = "assets/logo-icon.svg"
+
+features = [
+  "navigation.instant",
+  "navigation.tracking",
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.expand",
+  "navigation.top",
+  "search.suggest",
+  "search.highlight",
+  "content.code.copy",
+  "content.code.annotate",
+  "toc.follow"
+]
+
+icon = { repo = "fontawesome/brands/github" }
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "deep orange"
+accent = "orange"
+toggle = { icon = "lucide/sun", name = "Switch to dark mode" }
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "deep orange"
+accent = "orange"
+toggle = { icon = "lucide/moon", name = "Switch to light mode" }
+
+[project.markdown]
+extensions = [
+  "admonition",
+  "tables",
+  "attr_list",
+  "md_in_html",
+  { toc = { permalink = true } }
+]
