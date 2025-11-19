@@ -57,7 +57,14 @@ from rustest.decorators import (
     ParameterSet,
 )
 from rustest.approx import approx as _rustest_approx
-from rustest.builtin_fixtures import MonkeyPatch, TmpPathFactory, TmpDirFactory
+from rustest.builtin_fixtures import (
+    CaptureFixture,
+    MonkeyPatch,
+    TmpPathFactory,
+    TmpDirFactory,
+    capsys,
+    capfd,
+)
 
 __all__ = [
     "fixture",
@@ -70,11 +77,14 @@ __all__ = [
     "warns",
     "deprecated_call",
     "importorskip",
+    "CaptureFixture",
     "FixtureRequest",
     "MonkeyPatch",
     "TmpPathFactory",
     "TmpDirFactory",
     "ExceptionInfo",
+    "capsys",
+    "capfd",
     # Pytest plugin decorator
     "hookimpl",
 ]
@@ -443,28 +453,136 @@ def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any)
     return ParameterSet(values=values, id=id, marks=marks)
 
 
-def warns(*args: Any, **kwargs: Any) -> Any:
+class WarningsChecker:
+    """Context manager for capturing and checking warnings.
+
+    This implements pytest.warns() functionality for rustest.
     """
-    Pytest's warns() context manager is not supported.
 
-    Rustest focuses on test failures and exceptions. Warning capture
-    is not currently supported.
+    def __init__(
+        self,
+        expected_warning: type[Warning] | tuple[type[Warning], ...] | None = None,
+        match: str | None = None,
+    ):
+        self.expected_warning = expected_warning
+        self.match = match
+        self._records: list[Any] = []
+        self._catch_warnings: Any = None
+
+    def __enter__(self) -> list[Any]:
+        import warnings
+        self._catch_warnings = warnings.catch_warnings(record=True)
+        self._records = self._catch_warnings.__enter__()
+        # Cause all warnings to always be triggered
+        warnings.simplefilter("always")
+        return self._records
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._catch_warnings is not None:
+            self._catch_warnings.__exit__(exc_type, exc_val, exc_tb)
+
+        # If there was an exception, don't check warnings
+        if exc_type is not None:
+            return
+
+        # If no expected warning specified, just return the records
+        if self.expected_warning is None:
+            return
+
+        # Check that at least one matching warning was raised
+        matching_warnings = []
+        for record in self._records:
+            # Check warning type
+            if isinstance(self.expected_warning, tuple):
+                type_matches = issubclass(record.category, self.expected_warning)
+            else:
+                type_matches = issubclass(record.category, self.expected_warning)
+
+            if not type_matches:
+                continue
+
+            # Check message match if specified
+            if self.match is not None:
+                import re
+                message_str = str(record.message)
+                if not re.search(self.match, message_str):
+                    continue
+
+            matching_warnings.append(record)
+
+        if not matching_warnings:
+            # Build error message
+            if self.expected_warning is None:
+                expected_str = "any warning"
+            elif isinstance(self.expected_warning, tuple):
+                expected_str = " or ".join(w.__name__ for w in self.expected_warning)
+            else:
+                expected_str = self.expected_warning.__name__
+
+            if self.match:
+                expected_str += f" matching {self.match!r}"
+
+            if self._records:
+                actual = ", ".join(f"{r.category.__name__}({r.message!s})" for r in self._records)
+                msg = f"Expected {expected_str} but got: {actual}"
+            else:
+                msg = f"Expected {expected_str} but no warnings were raised"
+
+            raise AssertionError(msg)
+
+
+def warns(
+    expected_warning: type[Warning] | tuple[type[Warning], ...] | None = None,
+    *,
+    match: str | None = None,
+) -> WarningsChecker:
     """
-    msg = (
-        "rustest --pytest-compat mode doesn't support pytest.warns().\n"
-        "\n"
-        "Use Python's warnings module directly if needed:\n"
-        "  import warnings\n"
-        "  with warnings.catch_warnings(record=True) as w:\n"
-        "      # your code\n"
-    )
-    raise NotImplementedError(msg)
+    Context manager to capture and assert warnings.
+
+    This function can be used as a context manager to check that certain
+    warnings are raised during execution.
+
+    Args:
+        expected_warning: The expected warning class(es), or None to capture all
+        match: Optional regex pattern to match against the warning message
+
+    Returns:
+        A context manager that yields a list of captured warnings
+
+    Examples:
+        # Check that a DeprecationWarning is raised
+        with pytest.warns(DeprecationWarning):
+            some_deprecated_function()
+
+        # Check warning message matches pattern
+        with pytest.warns(UserWarning, match="must be positive"):
+            function_with_warning(-1)
+
+        # Capture all warnings without asserting
+        with pytest.warns() as record:
+            some_code()
+        assert len(record) == 2
+    """
+    return WarningsChecker(expected_warning, match)
 
 
-def deprecated_call(*args: Any, **kwargs: Any) -> Any:
-    """Pytest's deprecated_call() is not supported."""
-    msg = "rustest --pytest-compat mode doesn't support pytest.deprecated_call()."
-    raise NotImplementedError(msg)
+def deprecated_call(*, match: str | None = None) -> WarningsChecker:
+    """
+    Context manager to check that a deprecation warning is raised.
+
+    This is a convenience wrapper around warns(DeprecationWarning).
+
+    Args:
+        match: Optional regex pattern to match against the warning message
+
+    Returns:
+        A context manager that yields a list of captured warnings
+
+    Example:
+        with pytest.deprecated_call():
+            some_deprecated_function()
+    """
+    return WarningsChecker((DeprecationWarning, PendingDeprecationWarning), match)
 
 
 def importorskip(

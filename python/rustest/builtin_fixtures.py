@@ -375,10 +375,112 @@ def request() -> Any:
     return FixtureRequest()
 
 
+class CaptureFixture:
+    """Fixture to capture stdout and stderr.
+
+    This implements pytest's capsys fixture functionality.
+    """
+
+    def __init__(self) -> None:
+        self._capture_out: list[str] = []
+        self._capture_err: list[str] = []
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        self._capturing = False
+
+    def _start_capture(self) -> None:
+        """Start capturing stdout and stderr."""
+        import io
+        self._stdout_buffer = io.StringIO()
+        self._stderr_buffer = io.StringIO()
+        sys.stdout = self._stdout_buffer
+        sys.stderr = self._stderr_buffer
+        self._capturing = True
+
+    def _stop_capture(self) -> None:
+        """Stop capturing and restore original streams."""
+        if self._capturing:
+            sys.stdout = self._original_stdout
+            sys.stderr = self._original_stderr
+            self._capturing = False
+
+    def readouterr(self) -> tuple[str, str]:
+        """Read and reset the captured output.
+
+        Returns:
+            A tuple of (out, err) strings containing the captured output.
+        """
+        if not self._capturing:
+            return ("", "")
+
+        out = self._stdout_buffer.getvalue()
+        err = self._stderr_buffer.getvalue()
+
+        # Reset the buffers
+        import io
+        self._stdout_buffer = io.StringIO()
+        self._stderr_buffer = io.StringIO()
+        sys.stdout = self._stdout_buffer
+        sys.stderr = self._stderr_buffer
+
+        return (out, err)
+
+    def __enter__(self) -> "CaptureFixture":
+        self._start_capture()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self._stop_capture()
+
+
+@fixture
+def capsys() -> Generator[CaptureFixture, None, None]:
+    """
+    Enable text capturing of stdout and stderr.
+
+    The captured output is made available via capsys.readouterr() which
+    returns a (out, err) tuple. out and err are strings containing the
+    captured output.
+
+    Example:
+        def test_output(capsys):
+            print("hello")
+            captured = capsys.readouterr()
+            assert captured.out == "hello\\n"
+    """
+    capture = CaptureFixture()
+    capture._start_capture()
+    try:
+        yield capture
+    finally:
+        capture._stop_capture()
+
+
+@fixture
+def capfd() -> Generator[CaptureFixture, None, None]:
+    """
+    Enable text capturing of stdout and stderr at file descriptor level.
+
+    Note: This is currently an alias for capsys in rustest.
+    The captured output is made available via capfd.readouterr().
+    """
+    # For simplicity, capfd is implemented the same as capsys
+    # A true file descriptor capture would require more complex handling
+    capture = CaptureFixture()
+    capture._start_capture()
+    try:
+        yield capture
+    finally:
+        capture._stop_capture()
+
+
 __all__ = [
+    "CaptureFixture",
     "MonkeyPatch",
     "TmpDirFactory",
     "TmpPathFactory",
+    "capsys",
+    "capfd",
     "monkeypatch",
     "tmpdir",
     "tmpdir_factory",
