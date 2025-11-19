@@ -100,9 +100,29 @@ def parametrize(
     arg_names: str | Sequence[str],
     values: Sequence[Sequence[object] | Mapping[str, object]],
     *,
-    ids: Sequence[str] | None = None,
+    ids: Sequence[str] | Callable[[Any], str | None] | None = None,
+    indirect: bool | Sequence[str] = False,
 ) -> Callable[[Callable[Q, S]], Callable[Q, S]]:
-    """Parametrise a test function."""
+    """Parametrise a test function.
+
+    Args:
+        arg_names: Parameter name(s) as a string or sequence
+        values: Parameter values for each test case
+        ids: Test IDs - either a list of strings or a callable
+        indirect: If True, pass values to fixtures instead of test.
+                  Note: indirect parametrization has limited support in rustest.
+    """
+    # Note: indirect parametrization is accepted but has limited support
+    # The values are still passed as test parameters
+    if indirect:
+        import warnings
+
+        warnings.warn(
+            "indirect parametrization has limited support in rustest. "
+            "Parameters will be passed directly to the test function.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     normalized_names = _normalize_arg_names(arg_names)
 
