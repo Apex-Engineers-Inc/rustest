@@ -945,6 +945,55 @@ def test_with_context_manager() -> None:
 !!! tip "Automatic Cleanup"
     All monkeypatch changes are automatically reverted after each test, even if the test fails. This ensures test isolation and prevents side effects from affecting other tests.
 
+### capsys - Capturing stdout and stderr
+
+The `capsys` fixture captures output to stdout and stderr during test execution:
+
+```python
+def test_print_output(capsys) -> None:
+    """Capture and verify printed output."""
+    print("Hello, World!")
+    print("Error message", file=sys.stderr)
+
+    captured = capsys.readouterr()
+    assert captured.out == "Hello, World!\n"
+    assert captured.err == "Error message\n"
+
+def test_multiple_captures(capsys) -> None:
+    """Capture output multiple times in one test."""
+    print("first")
+    out1, _ = capsys.readouterr()
+
+    print("second")
+    out2, _ = capsys.readouterr()
+
+    assert out1 == "first\n"
+    assert out2 == "second\n"
+```
+
+The `readouterr()` method returns a tuple of `(out, err)` strings and resets the capture buffers. This is useful for testing functions that produce output.
+
+!!! tip "Capture Resets on Read"
+    Each call to `readouterr()` clears the captured output, so you can capture different sections of output during a single test.
+
+### capfd - File Descriptor Level Capture
+
+The `capfd` fixture provides similar functionality to `capsys` but captures at the file descriptor level:
+
+```python
+def test_fd_capture(capfd) -> None:
+    """Capture output at file descriptor level."""
+    import os
+    os.write(1, b"direct to stdout")
+
+    captured = capfd.readouterr()
+    assert "direct to stdout" in captured.out
+```
+
+!!! note "When to Use capfd vs capsys"
+    Use `capsys` for most Python output testing (print, sys.stdout.write).
+    Use `capfd` when you need to capture output written directly to file descriptors (e.g., from C extensions or subprocess output).
+
 ### Combining Built-in Fixtures
 
 You can combine multiple built-in fixtures in your tests:
