@@ -127,10 +127,14 @@ def _normalize_arg_names(arg_names: str | Sequence[str]) -> tuple[str, ...]:
 def _build_cases(
     names: tuple[str, ...],
     values: Sequence[Sequence[object] | Mapping[str, object]],
-    ids: Sequence[str] | None,
+    ids: Sequence[str] | Callable[[Any], str | None] | None,
 ) -> tuple[dict[str, object], ...]:
     case_payloads: list[dict[str, object]] = []
-    if ids is not None and len(ids) != len(values):
+
+    # Handle callable ids (e.g., ids=str)
+    ids_is_callable = callable(ids)
+
+    if ids is not None and not ids_is_callable and len(ids) != len(values):
         msg = "ids must match the number of value sets"
         raise ValueError(msg)
 
@@ -150,7 +154,17 @@ def _build_cases(
                 data = {names[0]: case}
             else:
                 raise ValueError("Parametrized value does not match argument names")
-        case_id = ids[index] if ids is not None else f"case_{index}"
+
+        # Generate case ID
+        if ids is None:
+            case_id = f"case_{index}"
+        elif ids_is_callable:
+            # Call the function on the case value to get the ID
+            generated_id = ids(case)
+            case_id = str(generated_id) if generated_id is not None else f"case_{index}"
+        else:
+            case_id = ids[index]
+
         case_payloads.append({"id": case_id, "values": data})
     return tuple(case_payloads)
 
