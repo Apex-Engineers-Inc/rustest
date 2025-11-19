@@ -443,11 +443,12 @@ def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any)
     """
     if marks is not None:
         import warnings
+
         warnings.warn(
             "pytest.param() marks are not yet supported in rustest pytest-compat mode. "
             "The test will run but marks will be ignored.",
             UserWarning,
-            stacklevel=2
+            stacklevel=2,
         )
 
     return ParameterSet(values=values, id=id, marks=marks)
@@ -471,6 +472,7 @@ class WarningsChecker:
 
     def __enter__(self) -> list[Any]:
         import warnings
+
         self._catch_warnings = warnings.catch_warnings(record=True)
         self._records = self._catch_warnings.__enter__()
         # Cause all warnings to always be triggered
@@ -504,6 +506,7 @@ class WarningsChecker:
             # Check message match if specified
             if self.match is not None:
                 import re
+
                 message_str = str(record.message)
                 if not re.search(self.match, message_str):
                     continue
@@ -634,6 +637,7 @@ def importorskip(
         else:
             # Simple version comparison (works for most common cases)
             from packaging.version import Version
+
             try:
                 if Version(mod_version) < Version(minversion):
                     if reason is None:

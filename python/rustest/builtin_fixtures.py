@@ -391,6 +391,7 @@ class CaptureFixture:
     def _start_capture(self) -> None:
         """Start capturing stdout and stderr."""
         import io
+
         self._stdout_buffer = io.StringIO()
         self._stderr_buffer = io.StringIO()
         sys.stdout = self._stdout_buffer
@@ -418,6 +419,7 @@ class CaptureFixture:
 
         # Reset the buffers
         import io
+
         self._stdout_buffer = io.StringIO()
         self._stderr_buffer = io.StringIO()
         sys.stdout = self._stdout_buffer
