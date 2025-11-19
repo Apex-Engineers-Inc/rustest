@@ -234,8 +234,8 @@ class TestPytestParam:
             pass
 
         # Check that the test was decorated with parametrize data
-        assert hasattr(dummy_test, "_rustest_parametrize")
-        cases = dummy_test._rustest_parametrize
+        assert hasattr(dummy_test, "__rustest_parametrization__")
+        cases = dummy_test.__rustest_parametrization__
         assert len(cases) == 2
         assert cases[0]["id"] == "small"
         assert cases[1]["id"] == "large"
@@ -279,7 +279,7 @@ class TestListParametrize:
         def dummy_test(a, b, c):
             pass
 
-        cases = dummy_test._rustest_parametrize
+        cases = dummy_test.__rustest_parametrization__
         assert len(cases) == 3
         assert cases[0]["values"] == {"a": 1, "b": 2, "c": 3}
         assert cases[1]["values"] == {"a": 4, "b": 5, "c": 6}
@@ -304,7 +304,7 @@ class TestListParametrize:
         def dummy_test(x, y):
             pass
 
-        cases = dummy_test._rustest_parametrize
+        cases = dummy_test.__rustest_parametrization__
         assert cases[0]["values"] == {"x": [1, 2], "y": [3, 4]}
 
 
@@ -403,7 +403,7 @@ class TestPytestCompatIntegration:
         def dummy_test(items):
             pass
 
-        cases = dummy_test._rustest_parametrize
+        cases = dummy_test.__rustest_parametrization__
         assert cases[0]["values"] == {"items": [1, 2, 3]}
         assert cases[1]["values"] == {"items": [4, 5]}
 
