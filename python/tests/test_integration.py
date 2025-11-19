@@ -17,20 +17,16 @@ ensure_rust_stub()
 class TestIntegration:
     """Integration tests that verify end-to-end functionality."""
 
-    @pytest.fixture(autouse=True)
-    def setup_temp_dir(self, tmp_path: Path) -> None:
-        """Set up test fixtures."""
-        self.temp_dir = str(tmp_path)
-
-    def _write_test_file(self, filename: str, content: str) -> Path:
+    def _write_test_file(self, temp_dir: Path, filename: str, content: str) -> Path:
         """Write a test file to the temp directory."""
-        path = Path(self.temp_dir) / filename
+        path = temp_dir / filename
         path.write_text(content)
         return path
 
-    def test_run_with_passing_tests(self) -> None:
+    def test_run_with_passing_tests(self, tmp_path: Path) -> None:
         """Test running a simple passing test."""
         self._write_test_file(
+            tmp_path,
             "test_simple.py",
             """
 def test_pass():
@@ -39,7 +35,7 @@ def test_pass():
         )
 
         try:
-            report = run(paths=[self.temp_dir])
+            report = run(paths=[str(tmp_path)])
             assert isinstance(report, RunReport)
             assert report.passed == 1
             assert report.failed == 0
@@ -48,9 +44,10 @@ def test_pass():
             # If rust module is not available, skip this test
             pytest.skip("Rust module not available")
 
-    def test_run_with_multiple_tests(self) -> None:
+    def test_run_with_multiple_tests(self, tmp_path: Path) -> None:
         """Test running multiple tests in one file."""
         self._write_test_file(
+            tmp_path,
             "test_multiple.py",
             """
 def test_one():
@@ -65,15 +62,16 @@ def test_three():
         )
 
         try:
-            report = run(paths=[self.temp_dir])
+            report = run(paths=[str(tmp_path)])
             assert report.total == 3
             assert report.passed == 3
         except Exception:
             pytest.skip("Rust module not available")
 
-    def test_run_with_pattern_filter(self) -> None:
+    def test_run_with_pattern_filter(self, tmp_path: Path) -> None:
         """Test pattern filtering."""
         self._write_test_file(
+            tmp_path,
             "test_pattern.py",
             """
 def test_alpha():
@@ -88,15 +86,16 @@ def test_gamma():
         )
 
         try:
-            report = run(paths=[self.temp_dir], pattern="alpha")
+            report = run(paths=[str(tmp_path)], pattern="alpha")
             # Should only match test_alpha
             assert report.total >= 0
         except Exception:
             pytest.skip("Rust module not available")
 
-    def test_run_without_capture_output(self) -> None:
+    def test_run_without_capture_output(self, tmp_path: Path) -> None:
         """Test running tests without capturing output."""
         self._write_test_file(
+            tmp_path,
             "test_output.py",
             """
 def test_with_print():
@@ -106,7 +105,7 @@ def test_with_print():
         )
 
         try:
-            report = run(paths=[self.temp_dir], capture_output=False)
+            report = run(paths=[str(tmp_path)], capture_output=False)
             assert report.passed == 1
             # When capture_output is False, stdout should not be captured
             if report.results:
@@ -114,9 +113,10 @@ def test_with_print():
         except Exception:
             pytest.skip("Rust module not available")
 
-    def test_cli_main_with_passing_tests(self) -> None:
+    def test_cli_main_with_passing_tests(self, tmp_path: Path) -> None:
         """Test CLI main function with passing tests."""
         self._write_test_file(
+            tmp_path,
             "test_cli_pass.py",
             """
 def test_success():
@@ -127,7 +127,7 @@ def test_success():
         buffer = io.StringIO()
         try:
             with redirect_stdout(buffer):
-                exit_code = cli.main([self.temp_dir])
+                exit_code = cli.main([str(tmp_path)])
             assert exit_code == 0
         except Exception:
             pytest.skip("Rust module not available")
@@ -229,9 +229,10 @@ def test_success():
         assert failed_tests[0].name == "test_fail"
         assert skipped_tests[0].name == "test_skip"
 
-    def test_run_with_worker_count(self) -> None:
+    def test_run_with_worker_count(self, tmp_path: Path) -> None:
         """Test running tests with specific worker count."""
         self._write_test_file(
+            tmp_path,
             "test_workers.py",
             """
 def test_one():
@@ -243,14 +244,14 @@ def test_two():
         )
 
         try:
-            report = run(paths=[self.temp_dir], workers=2)
+            report = run(paths=[str(tmp_path)], workers=2)
             assert report.total == 2
         except Exception:
             pytest.skip("Rust module not available")
 
-    def test_empty_test_directory(self) -> None:
+    def test_empty_test_directory(self, tmp_path: Path) -> None:
         """Test running tests in an empty directory."""
-        empty_dir = Path(self.temp_dir) / "empty"
+        empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
 
         try:
@@ -261,9 +262,10 @@ def test_two():
         except Exception:
             pytest.skip("Rust module not available")
 
-    def test_multiple_test_files(self) -> None:
+    def test_multiple_test_files(self, tmp_path: Path) -> None:
         """Test running tests from multiple files."""
         self._write_test_file(
+            tmp_path,
             "test_file1.py",
             """
 def test_from_file1():
@@ -271,6 +273,7 @@ def test_from_file1():
 """,
         )
         self._write_test_file(
+            tmp_path,
             "test_file2.py",
             """
 def test_from_file2():
@@ -279,7 +282,7 @@ def test_from_file2():
         )
 
         try:
-            report = run(paths=[self.temp_dir])
+            report = run(paths=[str(tmp_path)])
             assert report.total >= 2
         except Exception:
             pytest.skip("Rust module not available")
