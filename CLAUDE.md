@@ -236,3 +236,96 @@ The CI workflow (`ci.yml`) runs all checks across Python 3.10-3.14. **ALL must p
 - Main docs: `docs/` (MkDocs with Material theme, Zensical compatible)
 - Build locally: `mkdocs serve`
 - API reference auto-generated from docstrings
+
+### Documentation Code Blocks
+
+**CRITICAL**: All Python code blocks in documentation are tested as executable code in CI.
+
+#### Testing Documentation
+Python code blocks in the following files are automatically tested:
+- `README.md`
+- `docs/guide/writing-tests.md`
+- `docs/guide/fixtures.md`
+- `docs/guide/assertions.md`
+- `docs/guide/test-classes.md`
+
+#### Writing Testable Code Blocks
+
+**Default Behavior**: All Python code blocks are executed as tests unless marked otherwise.
+
+```python
+# This will be executed and must work
+from rustest import fixture
+
+@fixture
+def sample():
+    return "test"
+
+def test_example(sample):
+    assert sample == "test"
+```
+
+#### Skipping Code Blocks
+
+Use `<!--pytest.mark.skip-->` to skip code blocks that are examples only:
+
+```markdown
+<!--pytest.mark.skip-->
+```python
+# This is an example that won't be executed
+assert value == expected  # These variables don't need to exist
+```
+```
+
+#### Guidelines for Documentation Code
+
+1. **Make code executable**: All code blocks should be valid, runnable Python unless explicitly skipped
+2. **Import everything needed**: Include all imports in the code block
+3. **Use complete examples**: Provide full context so the code can execute standalone
+4. **Skip conceptual examples**: Use `<!--pytest.mark.skip-->` for pseudo-code or incomplete snippets
+5. **Test before committing**: Run `uv run pytest README.md --codeblocks` locally
+
+#### Testing Documentation Locally
+
+```bash
+# Test all documentation code blocks
+uv run pytest README.md --codeblocks
+uv run pytest docs/guide/writing-tests.md --codeblocks
+uv run pytest docs/guide/fixtures.md --codeblocks
+uv run pytest docs/guide/assertions.md --codeblocks
+uv run pytest docs/guide/test-classes.md --codeblocks
+
+# Or test with rustest
+uv run python -m rustest README.md
+uv run python -m rustest docs/guide/fixtures.md -v
+```
+
+#### Common Patterns
+
+**Good - Executable example:**
+```python
+from rustest import fixture
+
+@fixture
+def database():
+    return {"connected": True}
+
+def test_connection(database):
+    assert database["connected"] is True
+```
+
+**Needs skip marker - Pseudo-code:**
+```markdown
+<!--pytest.mark.skip-->
+```python
+# Conceptual example
+result = expensive_operation()
+if not result.is_valid():
+    fail("Operation failed")
+```
+```
+
+**Why This Matters**: Testing documentation ensures:
+- Examples actually work and don't mislead users
+- Breaking changes to the API are caught immediately
+- Documentation stays in sync with the codebase
