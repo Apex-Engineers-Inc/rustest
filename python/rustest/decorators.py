@@ -34,13 +34,24 @@ class ParameterSet:
 
 @overload
 def fixture(
-    func: Callable[P, R], *, scope: str = "function", autouse: bool = False, name: str | None = None
+    func: Callable[P, R],
+    *,
+    scope: str = "function",
+    autouse: bool = False,
+    name: str | None = None,
+    params: Sequence[Any] | None = None,
+    ids: Sequence[str] | Callable[[Any], str | None] | None = None,
 ) -> Callable[P, R]: ...
 
 
 @overload
 def fixture(
-    *, scope: str = "function", autouse: bool = False, name: str | None = None
+    *,
+    scope: str = "function",
+    autouse: bool = False,
+    name: str | None = None,
+    params: Sequence[Any] | None = None,
+    ids: Sequence[str] | Callable[[Any], str | None] | None = None,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
@@ -50,6 +61,8 @@ def fixture(
     scope: str = "function",
     autouse: bool = False,
     name: str | None = None,
+    params: Sequence[Any] | None = None,
+    ids: Sequence[str] | Callable[[Any], str | None] | None = None,
 ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """Mark a function as a fixture with a specific scope.
 
@@ -64,6 +77,11 @@ def fixture(
         autouse: If True, the fixture will be automatically used by all tests
             in its scope without needing to be explicitly requested (default: False)
         name: Override the fixture name (default: use the function name)
+        params: Optional list of parameter values. The fixture will be called
+            once for each parameter, and tests using this fixture will be run
+            once for each parameter value. Access the current value via request.param.
+        ids: Optional list of string IDs or a callable to generate IDs for each
+            parameter value. If not provided, IDs are auto-generated.
 
     Usage:
         @fixture
@@ -83,6 +101,16 @@ def fixture(
         def _database_fixture():
             # This fixture is available as "db", not "_database_fixture"
             return Database()
+
+        @fixture(params=[1, 2, 3])
+        def number(request):
+            # This fixture will provide values 1, 2, 3 to tests
+            return request.param
+
+        @fixture(params=["mysql", "postgres"], ids=["MySQL", "PostgreSQL"])
+        def database(request):
+            # Tests will run with both database types
+            return create_db(request.param)
     """
     if scope not in VALID_SCOPES:
         valid = ", ".join(sorted(VALID_SCOPES))
@@ -95,12 +123,107 @@ def fixture(
         setattr(f, "__rustest_fixture_autouse__", autouse)
         if name is not None:
             setattr(f, "__rustest_fixture_name__", name)
+
+        # Handle fixture parametrization
+        if params is not None:
+            # Build parameter cases with IDs
+            param_cases = _build_fixture_params(params, ids)
+            setattr(f, "__rustest_fixture_params__", param_cases)
+
         return f
 
     # Support both @fixture and @fixture(scope="...")
     if func is not None:
         return decorator(func)
     return decorator
+
+
+def _build_fixture_params(
+    params: Sequence[Any],
+    ids: Sequence[str] | Callable[[Any], str | None] | None,
+) -> list[dict[str, Any]]:
+    """Build fixture parameter cases with IDs.
+
+    Args:
+        params: The parameter values
+        ids: Optional IDs for each parameter value
+
+    Returns:
+        A list of dicts with 'id' and 'value' keys
+    """
+    cases: list[dict[str, Any]] = []
+    ids_is_callable = callable(ids)
+
+    if ids is not None and not ids_is_callable:
+        if len(ids) != len(params):
+            msg = "ids must match the number of params"
+            raise ValueError(msg)
+
+    for index, param_value in enumerate(params):
+        # Handle ParameterSet objects (from pytest.param())
+        param_set_id: str | None = None
+        actual_value: Any = param_value
+        if isinstance(param_value, ParameterSet):
+            param_set_id = param_value.id
+            # For fixture params, we expect a single value
+            actual_value = param_value.values[0] if len(param_value.values) == 1 else param_value.values
+
+        # Generate case ID
+        # Priority: ParameterSet id > ids parameter > auto-generated
+        if param_set_id is not None:
+            case_id = param_set_id
+        elif ids is None:
+            # Auto-generate ID based on value representation
+            case_id = _generate_param_id(actual_value, index)
+        elif ids_is_callable:
+            generated_id = ids(actual_value)
+            case_id = str(generated_id) if generated_id is not None else _generate_param_id(actual_value, index)
+        else:
+            case_id = ids[index]
+
+        cases.append({"id": case_id, "value": actual_value})
+
+    return cases
+
+
+def _generate_param_id(value: Any, index: int) -> str:
+    """Generate a readable ID for a parameter value.
+
+    Args:
+        value: The parameter value
+        index: The index of the parameter
+
+    Returns:
+        A string ID for the parameter
+    """
+    # Try to generate a readable ID from the value
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        # Truncate long strings
+        if len(value) <= 20:
+            return value
+        return f"{value[:17]}..."
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return "empty"
+        # Try to create a short representation
+        items = [_generate_param_id(v, 0) for v in value[:3]]
+        result = "-".join(items)
+        if len(value) > 3:
+            result += f"-...({len(value)})"
+        return result
+    if isinstance(value, dict):
+        if len(value) == 0:
+            return "empty_dict"
+        return f"dict({len(value)})"
+
+    # Fallback to index-based ID
+    return f"param{index}"
 
 
 def skip(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:

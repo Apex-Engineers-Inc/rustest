@@ -5,7 +5,7 @@
 //! because the interaction with Python's reflection facilities can otherwise be
 //! tricky to follow.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
@@ -21,8 +21,8 @@ use walkdir::WalkDir;
 use crate::cache;
 use crate::mark_expr::MarkExpr;
 use crate::model::{
-    invalid_test_definition, Fixture, FixtureScope, LastFailedMode, Mark, ModuleIdGenerator,
-    ParameterMap, RunConfiguration, TestCase, TestModule,
+    invalid_test_definition, Fixture, FixtureParam, FixtureScope, LastFailedMode, Mark,
+    ModuleIdGenerator, ParameterMap, RunConfiguration, TestCase, TestModule,
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
@@ -316,8 +316,19 @@ fn load_conftest_fixtures(
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
             let autouse = extract_fixture_autouse(&value)?;
-            fixtures.insert(
-                name.clone(),
+            let params = extract_fixture_params(&value)?;
+
+            let fixture = if let Some(params) = params {
+                Fixture::with_params(
+                    name.clone(),
+                    value.clone().unbind(),
+                    extract_parameters(py, &value)?,
+                    scope,
+                    is_generator,
+                    autouse,
+                    params,
+                )
+            } else {
                 Fixture::new(
                     name.clone(),
                     value.clone().unbind(),
@@ -325,8 +336,9 @@ fn load_conftest_fixtures(
                     scope,
                     is_generator,
                     autouse,
-                ),
-            );
+                )
+            };
+            fixtures.insert(name.clone(), fixture);
         }
     }
 
@@ -396,17 +408,29 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
             let autouse = extract_fixture_autouse(&value)?;
-            fixtures.insert(
-                name.clone(),
-                Fixture::new(
-                    name,
+            let params = extract_fixture_params(&value)?;
+
+            let fixture = if let Some(params) = params {
+                Fixture::with_params(
+                    name.clone(),
                     value.clone().unbind(),
                     extract_parameters(py, &value)?,
                     scope,
                     is_generator,
                     autouse,
-                ),
-            );
+                    params,
+                )
+            } else {
+                Fixture::new(
+                    name.clone(),
+                    value.clone().unbind(),
+                    extract_parameters(py, &value)?,
+                    scope,
+                    is_generator,
+                    autouse,
+                )
+            };
+            fixtures.insert(name, fixture);
         }
     }
 
@@ -453,10 +477,13 @@ fn collect_from_file(
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let (module_fixtures, mut tests) = inspect_module(py, path, &module_dict)?;
+    let (module_fixtures, tests) = inspect_module(py, path, &module_dict)?;
 
     // Merge conftest fixtures with the module's own fixtures
     let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
+
+    // Expand tests for parametrized fixtures
+    let mut tests = expand_tests_for_parametrized_fixtures(py, tests, &fixtures)?;
 
     if let Some(pattern) = &config.pattern {
         tests.retain(|case| test_matches_pattern(case, pattern));
@@ -517,6 +544,7 @@ fn collect_from_markdown(
             skip_reason: None,
             marks: vec![codeblock_mark],
             class_name: None,
+            fixture_param_indices: IndexMap::new(),
         });
     }
 
@@ -644,8 +672,19 @@ fn inspect_module(
                 let scope = extract_fixture_scope(&value)?;
                 let is_generator = is_generator_function(py, &value)?;
                 let autouse = extract_fixture_autouse(&value)?;
-                fixtures.insert(
-                    name.clone(),
+                let params = extract_fixture_params(&value)?;
+
+                let fixture = if let Some(params) = params {
+                    Fixture::with_params(
+                        name.clone(),
+                        value.clone().unbind(),
+                        extract_parameters(py, &value)?,
+                        scope,
+                        is_generator,
+                        autouse,
+                        params,
+                    )
+                } else {
                     Fixture::new(
                         name.clone(),
                         value.clone().unbind(),
@@ -653,8 +692,9 @@ fn inspect_module(
                         scope,
                         is_generator,
                         autouse,
-                    ),
-                );
+                    )
+                };
+                fixtures.insert(name.clone(), fixture);
                 continue;
             }
 
@@ -678,6 +718,7 @@ fn inspect_module(
                     skip_reason: skip_reason.clone(),
                     marks: marks.clone(),
                     class_name: None,
+                    fixture_param_indices: IndexMap::new(),
                 });
             } else {
                 for (case_id, values) in param_cases {
@@ -692,6 +733,7 @@ fn inspect_module(
                         skip_reason: skip_reason.clone(),
                         marks: marks.clone(),
                         class_name: None,
+                        fixture_param_indices: IndexMap::new(),
                     });
                 }
             }
@@ -717,6 +759,140 @@ fn inspect_module(
     }
 
     Ok((fixtures, tests))
+}
+
+/// Recursively collect all parametrized fixtures in a fixture's dependency chain.
+fn collect_parametrized_fixtures<'a>(
+    name: &str,
+    fixtures: &'a IndexMap<String, Fixture>,
+    param_fixtures: &mut Vec<(&'a String, &'a Vec<FixtureParam>)>,
+    visited: &mut HashSet<String>,
+) {
+    // Skip if already visited (avoid infinite loops)
+    if visited.contains(name) {
+        return;
+    }
+    visited.insert(name.to_string());
+
+    if let Some(fixture) = fixtures.get(name) {
+        // If this fixture is parametrized, add it to the list
+        if let Some(params) = &fixture.params {
+            // Get a stable reference to the fixture name from the map
+            for (fixture_name, f) in fixtures.iter() {
+                if fixture_name == name {
+                    if let Some(p) = &f.params {
+                        param_fixtures.push((fixture_name, p));
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Recursively check this fixture's dependencies
+        for dep_name in &fixture.parameters {
+            collect_parametrized_fixtures(dep_name, fixtures, param_fixtures, visited);
+        }
+    }
+}
+
+/// Expand tests based on parametrized fixtures.
+/// For each test that uses a parametrized fixture, create multiple test cases -
+/// one for each parameter value.
+fn expand_tests_for_parametrized_fixtures(
+    py: Python<'_>,
+    tests: Vec<TestCase>,
+    fixtures: &IndexMap<String, Fixture>,
+) -> PyResult<Vec<TestCase>> {
+    let mut expanded_tests = Vec::new();
+
+    for test in tests {
+        // Find all parametrized fixtures in the dependency chain (recursive)
+        let mut param_fixtures: Vec<(&String, &Vec<FixtureParam>)> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+
+        // Collect all parametrized fixtures from test parameters and their dependencies
+        for param_name in &test.parameters {
+            collect_parametrized_fixtures(param_name, fixtures, &mut param_fixtures, &mut visited);
+        }
+
+        if param_fixtures.is_empty() {
+            // No parametrized fixtures, keep the test as-is
+            expanded_tests.push(test);
+            continue;
+        }
+
+        // Generate the cartesian product of all parametrized fixture values
+        let combinations = generate_param_combinations(&param_fixtures);
+
+        for (combo_ids, combo_indices) in combinations {
+            // Build the new display name
+            let fixture_id_suffix = combo_ids.join("-");
+            let new_display_name = if test.display_name.contains('[') {
+                // Already has test parametrization, append fixture params
+                let base = test.display_name.trim_end_matches(']');
+                format!("{}-{}]", base, fixture_id_suffix)
+            } else {
+                format!("{}[{}]", test.display_name, fixture_id_suffix)
+            };
+
+            // Build fixture_param_indices map
+            let mut fixture_param_indices = test.fixture_param_indices.clone();
+            for (fixture_name, param_idx) in combo_indices {
+                fixture_param_indices.insert(fixture_name, param_idx);
+            }
+
+            // Clone parameter_values with Python context
+            let mut cloned_param_values = ParameterMap::new();
+            for (key, value) in &test.parameter_values {
+                cloned_param_values.insert(key.clone(), value.clone_ref(py));
+            }
+
+            expanded_tests.push(TestCase {
+                name: test.name.clone(),
+                display_name: new_display_name,
+                path: test.path.clone(),
+                callable: test.callable.clone_ref(py),
+                parameters: test.parameters.clone(),
+                parameter_values: cloned_param_values,
+                skip_reason: test.skip_reason.clone(),
+                marks: test.marks.iter().map(|m| m.clone_with_py(py)).collect(),
+                class_name: test.class_name.clone(),
+                fixture_param_indices,
+            });
+        }
+    }
+
+    Ok(expanded_tests)
+}
+
+/// Generate the cartesian product of parametrized fixture values.
+/// Returns a vector of (ids, indices) tuples.
+fn generate_param_combinations(
+    param_fixtures: &[(&String, &Vec<FixtureParam>)],
+) -> Vec<(Vec<String>, Vec<(String, usize)>)> {
+    if param_fixtures.is_empty() {
+        return vec![(Vec::new(), Vec::new())];
+    }
+
+    let mut result = vec![(Vec::new(), Vec::new())];
+
+    for (fixture_name, params) in param_fixtures {
+        let mut new_result = Vec::new();
+        for (ids, indices) in &result {
+            for (param_idx, param) in params.iter().enumerate() {
+                let mut new_ids = ids.clone();
+                new_ids.push(param.id.clone());
+
+                let mut new_indices = indices.clone();
+                new_indices.push(((*fixture_name).clone(), param_idx));
+
+                new_result.push((new_ids, new_indices));
+            }
+        }
+        result = new_result;
+    }
+
+    result
 }
 
 /// Check if a class name follows the pytest-style test class naming convention.
@@ -777,6 +953,7 @@ fn discover_unittest_class_tests(
                 skip_reason: None,
                 marks: Vec::new(),
                 class_name: Some(class_name.to_string()),
+                fixture_param_indices: IndexMap::new(),
             });
         }
     }
@@ -866,6 +1043,7 @@ fn discover_plain_class_tests_and_fixtures(
                     skip_reason,
                     marks,
                     class_name: Some(class_name.to_string()),
+                    fixture_param_indices: IndexMap::new(),
                 });
             } else {
                 // Handle parametrized test methods
@@ -881,6 +1059,7 @@ fn discover_plain_class_tests_and_fixtures(
                         skip_reason: skip_reason.clone(),
                         marks: marks.clone(),
                         class_name: Some(class_name.to_string()),
+                        fixture_param_indices: IndexMap::new(),
                     });
                 }
             }
@@ -990,6 +1169,38 @@ fn extract_fixture_autouse(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     match value.getattr("__rustest_fixture_autouse__") {
         Ok(flag) => flag.is_truthy(),
         Err(_) => Ok(false),
+    }
+}
+
+/// Extract fixture parametrization values, if any.
+fn extract_fixture_params(value: &Bound<'_, PyAny>) -> PyResult<Option<Vec<FixtureParam>>> {
+    let Ok(attr) = value.getattr("__rustest_fixture_params__") else {
+        return Ok(None);
+    };
+
+    let sequence: Bound<'_, PySequence> = attr.cast_into()?;
+    let mut params = Vec::new();
+
+    for element in sequence.try_iter()? {
+        let element = element?;
+        let param_dict: Bound<'_, PyDict> = element.cast_into()?;
+
+        let id = param_dict
+            .get_item("id")?
+            .ok_or_else(|| invalid_test_definition("Missing id in fixture param"))?;
+        let id: String = id.extract()?;
+
+        let value = param_dict
+            .get_item("value")?
+            .ok_or_else(|| invalid_test_definition("Missing value in fixture param"))?;
+
+        params.push(FixtureParam::new(id, value.unbind()));
+    }
+
+    if params.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(params))
     }
 }
 

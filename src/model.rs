@@ -18,6 +18,27 @@ use pyo3::types::{PyDict, PyList};
 /// the argument list for a test function.
 pub type ParameterMap = IndexMap<String, Py<PyAny>>;
 
+/// Represents a single parameter value for a parametrized fixture.
+#[derive(Debug)]
+pub struct FixtureParam {
+    pub id: String,
+    pub value: Py<PyAny>,
+}
+
+impl FixtureParam {
+    pub fn new(id: String, value: Py<PyAny>) -> Self {
+        Self { id, value }
+    }
+
+    /// Clone the param with a Python context.
+    pub fn clone_with_py(&self, py: Python<'_>) -> Self {
+        Self {
+            id: self.id.clone(),
+            value: self.value.clone_ref(py),
+        }
+    }
+}
+
 /// The scope of a fixture determines when it is created and destroyed.
 ///
 /// The order of variants matters for the derived `Ord` implementation:
@@ -121,6 +142,8 @@ pub struct Fixture {
     pub scope: FixtureScope,
     pub is_generator: bool,
     pub autouse: bool,
+    /// Optional parametrization values for the fixture.
+    pub params: Option<Vec<FixtureParam>>,
 }
 
 impl Fixture {
@@ -139,7 +162,34 @@ impl Fixture {
             scope,
             is_generator,
             autouse,
+            params: None,
         }
+    }
+
+    /// Create a fixture with parametrization.
+    pub fn with_params(
+        name: String,
+        callable: Py<PyAny>,
+        parameters: Vec<String>,
+        scope: FixtureScope,
+        is_generator: bool,
+        autouse: bool,
+        params: Vec<FixtureParam>,
+    ) -> Self {
+        Self {
+            name,
+            callable,
+            parameters,
+            scope,
+            is_generator,
+            autouse,
+            params: Some(params),
+        }
+    }
+
+    /// Check if this fixture is parametrized.
+    pub fn is_parametrized(&self) -> bool {
+        self.params.is_some() && !self.params.as_ref().unwrap().is_empty()
     }
 
     /// Clone the fixture with a Python context.
@@ -151,6 +201,7 @@ impl Fixture {
             scope: self.scope,
             is_generator: self.is_generator,
             autouse: self.autouse,
+            params: self.params.as_ref().map(|p| p.iter().map(|fp| fp.clone_with_py(py)).collect()),
         }
     }
 }
@@ -168,6 +219,9 @@ pub struct TestCase {
     pub marks: Vec<Mark>,
     /// The class name if this test is part of a test class (for class-scoped fixtures).
     pub class_name: Option<String>,
+    /// Fixture parameter indices for parametrized fixtures.
+    /// Maps fixture name to the parameter index to use.
+    pub fixture_param_indices: IndexMap<String, usize>,
 }
 
 impl TestCase {

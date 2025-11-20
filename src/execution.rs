@@ -312,6 +312,7 @@ fn execute_test_case(
         &mut context.module_cache,
         &mut context.class_cache,
         &mut context.teardowns,
+        &test_case.fixture_param_indices,
     );
 
     // Resolve autouse fixtures first
@@ -396,6 +397,10 @@ struct FixtureResolver<'py> {
     function_teardowns: Vec<Py<PyAny>>,
     stack: HashSet<String>,
     parameters: &'py ParameterMap,
+    /// Maps fixture name to the parameter index to use for parametrized fixtures.
+    fixture_param_indices: &'py IndexMap<String, usize>,
+    /// Current fixture param values being resolved, for request.param support.
+    current_fixture_param: Option<Py<PyAny>>,
 }
 
 impl<'py> FixtureResolver<'py> {
@@ -409,6 +414,7 @@ impl<'py> FixtureResolver<'py> {
         module_cache: &'py mut IndexMap<String, Py<PyAny>>,
         class_cache: &'py mut IndexMap<String, Py<PyAny>>,
         teardowns: &'py mut TeardownCollector,
+        fixture_param_indices: &'py IndexMap<String, usize>,
     ) -> Self {
         Self {
             py,
@@ -422,6 +428,8 @@ impl<'py> FixtureResolver<'py> {
             function_teardowns: Vec::new(),
             stack: HashSet::new(),
             parameters,
+            fixture_param_indices,
+            current_fixture_param: None,
         }
     }
 
@@ -431,20 +439,43 @@ impl<'py> FixtureResolver<'py> {
             return Ok(value.clone_ref(self.py));
         }
 
+        // Special handling for "request" fixture - create with current param value
+        if name == "request" {
+            return self.create_request_fixture();
+        }
+
+        // Check if this is a parametrized fixture and get the cache key
+        let (cache_key, param_value) = if let Some(&param_idx) = self.fixture_param_indices.get(name) {
+            if let Some(fixture) = self.fixtures.get(name) {
+                if let Some(params) = &fixture.params {
+                    let param = &params[param_idx];
+                    // Use a cache key that includes the parameter index for parametrized fixtures
+                    let key = format!("{}[{}]", name, param_idx);
+                    (key, Some(param.value.clone_ref(self.py)))
+                } else {
+                    (name.to_string(), None)
+                }
+            } else {
+                (name.to_string(), None)
+            }
+        } else {
+            (name.to_string(), None)
+        };
+
         // Check all caches in order: function -> class -> module -> package -> session
-        if let Some(value) = self.function_cache.get(name) {
+        if let Some(value) = self.function_cache.get(&cache_key) {
             return Ok(value.clone_ref(self.py));
         }
-        if let Some(value) = self.class_cache.get(name) {
+        if let Some(value) = self.class_cache.get(&cache_key) {
             return Ok(value.clone_ref(self.py));
         }
-        if let Some(value) = self.module_cache.get(name) {
+        if let Some(value) = self.module_cache.get(&cache_key) {
             return Ok(value.clone_ref(self.py));
         }
-        if let Some(value) = self.package_cache.get(name) {
+        if let Some(value) = self.package_cache.get(&cache_key) {
             return Ok(value.clone_ref(self.py));
         }
-        if let Some(value) = self.session_cache.get(name) {
+        if let Some(value) = self.session_cache.get(&cache_key) {
             return Ok(value.clone_ref(self.py));
         }
 
@@ -453,6 +484,10 @@ impl<'py> FixtureResolver<'py> {
             .fixtures
             .get(name)
             .ok_or_else(|| invalid_test_definition(format!("Unknown fixture '{}'.", name)))?;
+
+        // Set current fixture param for request.param access
+        let previous_param = self.current_fixture_param.take();
+        self.current_fixture_param = param_value;
 
         // Detect circular dependencies
         if !self.stack.insert(fixture.name.clone()) {
@@ -464,7 +499,11 @@ impl<'py> FixtureResolver<'py> {
 
         // Validate scope ordering: higher-scoped fixtures cannot depend on lower-scoped ones
         // This check happens during resolution of dependencies
+        // Note: Skip validation for "request" as it's special and adapts to the requesting fixture's scope
         for param in fixture.parameters.iter() {
+            if param == "request" {
+                continue; // Skip scope validation for request fixture
+            }
             if let Some(dep_fixture) = self.fixtures.get(param) {
                 self.validate_scope_dependency(fixture, dep_fixture)?;
             }
@@ -521,27 +560,31 @@ impl<'py> FixtureResolver<'py> {
 
         self.stack.remove(&fixture.name);
 
+        // Restore previous fixture param
+        self.current_fixture_param = previous_param;
+
         // Store in the appropriate cache based on scope
+        // Use cache_key which includes param index for parametrized fixtures
         match fixture.scope {
             FixtureScope::Session => {
                 self.session_cache
-                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+                    .insert(cache_key, result.clone_ref(self.py));
             }
             FixtureScope::Package => {
                 self.package_cache
-                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+                    .insert(cache_key, result.clone_ref(self.py));
             }
             FixtureScope::Module => {
                 self.module_cache
-                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+                    .insert(cache_key, result.clone_ref(self.py));
             }
             FixtureScope::Class => {
                 self.class_cache
-                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+                    .insert(cache_key, result.clone_ref(self.py));
             }
             FixtureScope::Function => {
                 self.function_cache
-                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+                    .insert(cache_key, result.clone_ref(self.py));
             }
         }
 
@@ -595,6 +638,27 @@ impl<'py> FixtureResolver<'py> {
         }
 
         Ok(())
+    }
+
+    /// Create a request fixture with the current param value.
+    fn create_request_fixture(&self) -> PyResult<Py<PyAny>> {
+        // Import the FixtureRequest class from rustest.compat.pytest
+        let compat = self.py.import("rustest.compat.pytest")?;
+        let fixture_request_class = compat.getattr("FixtureRequest")?;
+
+        // Create the FixtureRequest with the current param value
+        let param = if let Some(ref param) = self.current_fixture_param {
+            param.clone_ref(self.py)
+        } else {
+            self.py.None()
+        };
+
+        // Call FixtureRequest(param=param_value)
+        let kwargs = pyo3::types::PyDict::new(self.py);
+        kwargs.set_item("param", param)?;
+        let request = fixture_request_class.call((), Some(&kwargs))?;
+
+        Ok(request.unbind())
     }
 }
 
