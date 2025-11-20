@@ -985,16 +985,15 @@ The `capfd` fixture provides similar functionality to `capsys` but captures at t
 ```python
 def test_fd_capture(capfd) -> None:
     """Capture output at file descriptor level."""
-    import os
-    os.write(1, b"direct to stdout")
+    print("captured by capfd")
 
     captured = capfd.readouterr()
-    assert "direct to stdout" in captured.out
+    assert "captured by capfd" in captured.out
 ```
 
 !!! note "When to Use capfd vs capsys"
     Use `capsys` for most Python output testing (print, sys.stdout.write).
-    Use `capfd` when you need to capture output written directly to file descriptors (e.g., from C extensions or subprocess output).
+    Use `capfd` when you need to capture output written directly to file descriptors (e.g., from C extensions or subprocess output). Note: rustest's `capfd` is currently implemented as an alias for `capsys`.
 
 ### Combining Built-in Fixtures
 
