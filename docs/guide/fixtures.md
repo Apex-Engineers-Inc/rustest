@@ -912,19 +912,16 @@ def test_change_directory(monkeypatch, tmp_path: Path) -> None:
 #### Patching Module Functions
 
 ```python
-import requests
+import json
 
 def test_patch_module_function(monkeypatch) -> None:
     """Patch a function in an imported module."""
-    def mock_get(*args, **kwargs):
-        class Response:
-            status_code = 200
-            text = '{"result": "success"}'
-        return Response()
+    def mock_loads(*args, **kwargs):
+        return {"result": "mocked"}
 
-    monkeypatch.setattr(requests, "get", mock_get)
-    response = requests.get("https://api.example.com")
-    assert response.status_code == 200
+    monkeypatch.setattr(json, "loads", mock_loads)
+    result = json.loads('{"key": "value"}')
+    assert result == {"result": "mocked"}
 ```
 
 #### Using the Context Manager
