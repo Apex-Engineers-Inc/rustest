@@ -165,18 +165,35 @@ poe unit      # Run example tests
 ### All Changes
 - `uv run pre-commit run --all-files` - Run complete check suite
 
+### Tests (ALL must pass)
+- `cargo test` - Rust unit tests
+- `uv run pytest python/tests -v` - Python unit tests (via pytest)
+- `uv run pytest tests/ examples/tests/ -v` - Integration tests (via pytest)
+- `uv run python -m rustest tests/ examples/tests/ -v` - Integration tests (via rustest)
+- Documentation code blocks - README and docs Python examples are tested
+
 **CI will fail if ANY of the following exist**:
 - Type errors (basedpyright)
 - Formatting issues (cargo fmt, ruff format)
 - Linting errors (clippy, ruff check)
 - Compile errors (cargo build)
+- **Test failures** (pytest, rustest, or documentation code blocks)
 
 ## Testing Requirements
 
-When adding new features:
+**CRITICAL**: ALL tests must pass for CI to succeed.
+
+### Test Execution
+Tests are run through multiple runners to ensure compatibility:
+1. **pytest** - Standard Python test runner
+2. **rustest** - The project's own test runner
+3. **Documentation tests** - Python code blocks in README.md and docs/
+
+### When Adding Features
 - Add unit tests in `python/tests/`
 - Add integration tests in `tests/` if needed
-- Ensure tests pass with both `pytest` and `rustest`
+- Ensure tests pass with **both pytest and rustest**
+- If adding code examples to documentation, ensure they are valid and testable
 - Update documentation if adding user-facing features
 
 ## Common Patterns
@@ -200,12 +217,19 @@ When adding new features:
 
 ## CI/CD Pipeline
 
-The CI workflow (`ci.yml`) runs:
-- Python tests on 3.10-3.14
-- Integration tests with both pytest and rustest
-- README and docs code block testing
-- Formatting and linting checks
-- Type checking with basedpyright
+The CI workflow (`ci.yml`) runs all checks across Python 3.10-3.14. **ALL must pass**:
+
+### Tests
+- Python unit tests via pytest
+- Integration tests via **both pytest and rustest**
+- README.md Python code block validation
+- Documentation code block validation
+
+### Code Quality
+- Formatting checks (cargo fmt, ruff format)
+- Linting (clippy, ruff check)
+- Type checking (basedpyright)
+- Rust compilation
 
 ## Documentation
 
