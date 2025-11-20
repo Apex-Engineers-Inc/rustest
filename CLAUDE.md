@@ -149,13 +149,27 @@ poe unit      # Run example tests
 
 ## Pre-commit Requirements
 
-**CRITICAL**: Before any commit, ensure:
+**CRITICAL**: Before any commit, ALL of the following must pass. CI will fail otherwise:
 
-1. **Rust changes**: Run `cargo fmt` and `cargo clippy --lib -- -D warnings`
-2. **Python changes**: Run `uv run ruff format python` and `uv run ruff check python`
-3. **All changes**: Run `uv run pre-commit run --all-files`
+### Rust Changes
+- `cargo fmt` - Format code
+- `cargo fmt --check` - Verify formatting passes
+- `cargo clippy --lib -- -D warnings` - No lint warnings
+- `cargo build` - Must compile without errors
 
-CI will fail if formatting or linting checks don't pass.
+### Python Changes
+- `uv run ruff format python` - Format code
+- `uv run ruff check python` - No lint errors
+- `uv run basedpyright python` - **ALL type checks must pass**
+
+### All Changes
+- `uv run pre-commit run --all-files` - Run complete check suite
+
+**CI will fail if ANY of the following exist**:
+- Type errors (basedpyright)
+- Formatting issues (cargo fmt, ruff format)
+- Linting errors (clippy, ruff check)
+- Compile errors (cargo build)
 
 ## Testing Requirements
 
@@ -195,6 +209,6 @@ The CI workflow (`ci.yml`) runs:
 
 ## Documentation
 
-- Main docs: `docs/` (MkDocs with Zensical theme)
+- Main docs: `docs/` (MkDocs with Material theme, Zensical compatible)
 - Build locally: `mkdocs serve`
 - API reference auto-generated from docstrings
