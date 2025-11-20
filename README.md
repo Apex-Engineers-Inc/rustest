@@ -124,15 +124,15 @@ Running rustest's comprehensive test suite demonstrates both the performance gai
 
 | Test Runner | Test Count | Wall Clock | Speedup | Notes |
 |-------------|------------|------------|---------|-------|
-| pytest      | 519 tests  | 1.48–1.54s | 1.0x (baseline) | With pytest-asyncio plugin |
-| rustest     | 502 tests  | 0.09–0.10s | **~15.2x faster** | **Built-in async & fixture parametrization** |
+| pytest      | 457 tests  | 1.95–2.04s | 1.0x (baseline) | With pytest-asyncio plugin |
+| rustest     | 497 tests  | 0.54–0.58s | **~3.6x faster** | **Built-in async & fixture parametrization** |
 
 **Key Points:**
-- **Both test runners support the same features** - rustest's test suite uses `from rustest import fixture, mark` but runs seamlessly with pytest thanks to automatic import compatibility
-- **Rustest is ~15× faster** on the same test workload without requiring external plugins
+- **Shared test suite compatibility** - 457 tests use `from rustest import fixture, mark` but run seamlessly with both pytest and rustest thanks to conftest.py automatic import compatibility
+- **Rustest is ~3.6× faster** on the same test workload without requiring external plugins
 - **pytest requires pytest-asyncio plugin** for async support; rustest has it built-in
 - **Both support fixture parametrization** - rustest natively, pytest through standard `@pytest.fixture(params=[...])`
-- The conftest.py provides automatic pytest compatibility, allowing tests written with rustest decorators to run with pytest
+- rustest includes 40 additional tests for its pytest compatibility layer that only run with rustest
 
 This demonstrates rustest's design philosophy: provide pytest-compatible APIs with significantly better performance and built-in features.
 
