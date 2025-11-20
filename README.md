@@ -31,8 +31,8 @@ The `--pytest-compat` mode intercepts `import pytest` statements and provides ru
 - ✅ Works with existing `@pytest.fixture`, `@pytest.mark.*`, `@pytest.mark.parametrize()`
 - ✅ **Fixture parametrization**: `@pytest.fixture(params=[...])` with `request.param`
 - ✅ Supports `pytest.param()` with custom IDs
-- ✅ Built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd`, `request`
-- ✅ Handles `pytest.raises()`, `pytest.approx()`, `@pytest.mark.asyncio`
+- ✅ Built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `request`
+- ✅ Handles `pytest.raises()`, `pytest.fail()`, `pytest.approx()`, `@pytest.mark.asyncio`
 - ✅ Warning capture: `pytest.warns()`, `pytest.deprecated_call()`
 - ✅ Module skipping: `pytest.importorskip()`
 - ✅ No code changes required — just run and compare!
@@ -45,10 +45,13 @@ The `--pytest-compat` mode intercepts `import pytest` statements and provides ru
 ╠════════════════════════════════════════════════════════════╣
 ║ Running pytest tests with rustest.                         ║
 ║                                                            ║
-║ Supported: fixtures, parametrize, marks, approx            ║
-║ Built-ins: tmp_path, tmpdir, monkeypatch, capsys, request  ║
-║ Fixture params: @fixture(params=[...]) with request.param  ║
-║ Not yet: caplog                                            ║
+║ Supported: fixtures, parametrize, marks, approx, fail      ║
+║ Built-ins: tmp_path, tmpdir, monkeypatch, capsys, capfd,   ║
+║            caplog, cache, request                          ║
+║                                                            ║
+║ NOTE: Plugin APIs are stubbed (non-functional).            ║
+║ pytest_asyncio and other plugins can import,               ║
+║ but advanced plugin features won't work.                   ║
 ║                                                            ║
 ║ For full features, use native rustest:                     ║
 ║   from rustest import fixture, mark, ...                   ║
@@ -70,7 +73,7 @@ Once you see the performance gains, migrate to native rustest imports for the fu
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
 - 🧮 Built-in `approx()` helper for tolerant numeric comparisons
 - 🪤 `raises()` context manager for precise exception assertions
-- 🛠️ **Built-in fixtures**: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd` (pytest-compatible)
+- 🛠️ **Built-in fixtures**: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache` (pytest-compatible)
 - 📦 Easy installation with pip/uv, or try instantly with uvx/pipx
 - ⚡ Low-overhead execution keeps small suites feeling instant
 - 🐛 **Crystal-clear error messages** that make debugging effortless
@@ -374,7 +377,8 @@ Rustest implements the 20% of pytest features that cover 80% of use cases, with 
 
 ✅ **Supported:**
 - Core features: Fixtures, **fixture parametrization**, test parametrization, marks, test classes, conftest.py, markdown testing
-- Built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd`, `request`
+- Built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `request`
+- Test utilities: `pytest.raises()`, `pytest.fail()`, `pytest.approx()`, `pytest.warns()`
 - Async testing: `@mark.asyncio` (pytest-asyncio compatible)
 - **Pytest compatibility mode**: Run existing pytest tests with `--pytest-compat` (no code changes!)
 
