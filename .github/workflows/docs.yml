@@ -1,10 +1,8 @@
 name: Deploy Documentation
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+  workflow_call:  # Called by publish.yml after successful PyPI release
+  workflow_dispatch:  # Manual trigger for rebuilding docs
 
 permissions:
   contents: read
