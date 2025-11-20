@@ -120,19 +120,21 @@ Our integration suite remains a great proxy for day-to-day use and still shows a
 
 ### Rustest's own test suite (~500 tests)
 
-Running rustest's comprehensive test suite demonstrates both the performance gains and native feature support:
+Running rustest's comprehensive test suite demonstrates both the performance gains and compatibility:
 
 | Test Runner | Test Count | Wall Clock | Speedup | Notes |
 |-------------|------------|------------|---------|-------|
-| pytest      | 351 tests  | 0.61–0.67s | 1.0x (baseline) | Excludes async & fixture parametrization tests* |
-| rustest     | 497 tests  | 0.08–0.09s | **~7.6x faster** | **Full test suite with all features** |
+| pytest      | 519 tests  | 1.48–1.54s | 1.0x (baseline) | With pytest-asyncio plugin |
+| rustest     | 502 tests  | 0.09–0.10s | **~15.2x faster** | **Built-in async & fixture parametrization** |
 
-**\*pytest requires additional plugins** (pytest-asyncio) and doesn't natively support fixture parametrization. Rustest includes built-in support for:
-- **Async testing** with `@mark.asyncio` (no plugins needed)
-- **Fixture parametrization** with pytest-compatible API (`@fixture(params=[...])`)
-- All standard pytest features (fixtures, marks, parametrization)
+**Key Points:**
+- **Both test runners support the same features** - rustest's test suite uses `from rustest import fixture, mark` but runs seamlessly with pytest thanks to automatic import compatibility
+- **Rustest is ~15× faster** on the same test workload without requiring external plugins
+- **pytest requires pytest-asyncio plugin** for async support; rustest has it built-in
+- **Both support fixture parametrization** - rustest natively, pytest through standard `@pytest.fixture(params=[...])`
+- The conftest.py provides automatic pytest compatibility, allowing tests written with rustest decorators to run with pytest
 
-On the shared subset of 351 tests, rustest runs **~7.6× faster** than pytest while supporting 146 additional tests natively.
+This demonstrates rustest's design philosophy: provide pytest-compatible APIs with significantly better performance and built-in features.
 
 ### Large parametrized stress test
 
