@@ -445,8 +445,7 @@ def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any)
         import warnings
 
         warnings.warn(
-            "pytest.param() marks are not yet supported in rustest pytest-compat mode. "
-            "The test will run but marks will be ignored.",
+            "pytest.param() marks are not yet supported in rustest pytest-compat mode. The test will run but marks will be ignored.",
             UserWarning,
             stacklevel=2,
         )
@@ -465,6 +464,7 @@ class WarningsChecker:
         expected_warning: type[Warning] | tuple[type[Warning], ...] | None = None,
         match: str | None = None,
     ):
+        super().__init__()
         self.expected_warning = expected_warning
         self.match = match
         self._records: list[Any] = []
@@ -515,9 +515,7 @@ class WarningsChecker:
 
         if not matching_warnings:
             # Build error message
-            if self.expected_warning is None:
-                expected_str = "any warning"
-            elif isinstance(self.expected_warning, tuple):
+            if isinstance(self.expected_warning, tuple):
                 expected_str = " or ".join(w.__name__ for w in self.expected_warning)
             else:
                 expected_str = self.expected_warning.__name__
@@ -636,7 +634,7 @@ def importorskip(
             _rustest_skip(reason=reason)
         else:
             # Simple version comparison (works for most common cases)
-            from packaging.version import Version
+            from packaging.version import Version  # type: ignore[import-not-found]
 
             try:
                 if Version(mod_version) < Version(minversion):

@@ -23,6 +23,7 @@ class ParameterSet:
     """
 
     def __init__(self, values: tuple[Any, ...], id: str | None = None, marks: Any = None):
+        super().__init__()
         self.values = values
         self.id = id
         self.marks = marks  # Currently not used, but stored for future support
@@ -134,8 +135,7 @@ def parametrize(
         import warnings
 
         warnings.warn(
-            "indirect parametrization has limited support in rustest. "
-            "Parameters will be passed directly to the test function.",
+            "indirect parametrization has limited support in rustest. Parameters will be passed directly to the test function.",
             UserWarning,
             stacklevel=2,
         )

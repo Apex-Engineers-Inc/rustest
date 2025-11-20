@@ -37,7 +37,8 @@ nav = [
     { "Comparison with pytest" = "advanced/comparison.md" },
     { "Development" = "advanced/development.md" }
   ]},
-  { "Changelog" = "changelog.md" }
+  { "Changelog" = "CHANGELOG.md" },
+  { "Migration Guide" = "migration-guide.md" }
 ]
 
 [project.theme]
