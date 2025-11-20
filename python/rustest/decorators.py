@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ParamSpec, TypeVar, overload
+from typing import Any, ParamSpec, TypeVar, cast, overload
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -114,7 +114,7 @@ def skip(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]
 
 def parametrize(
     arg_names: str | Sequence[str],
-    values: Sequence[Sequence[object] | Mapping[str, object]],
+    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet],
     *,
     ids: Sequence[str] | Callable[[Any], str | None] | None = None,
     indirect: bool | Sequence[str] = False,
@@ -162,7 +162,7 @@ def _normalize_arg_names(arg_names: str | Sequence[str]) -> tuple[str, ...]:
 
 def _build_cases(
     names: tuple[str, ...],
-    values: Sequence[Sequence[object] | Mapping[str, object]],
+    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet],
     ids: Sequence[str] | Callable[[Any], str | None] | None,
 ) -> tuple[dict[str, object], ...]:
     case_payloads: list[dict[str, object]] = []
@@ -170,33 +170,35 @@ def _build_cases(
     # Handle callable ids (e.g., ids=str)
     ids_is_callable = callable(ids)
 
-    if ids is not None and not ids_is_callable and len(ids) != len(values):
-        msg = "ids must match the number of value sets"
-        raise ValueError(msg)
+    if ids is not None and not ids_is_callable:
+        if len(cast(Sequence[str], ids)) != len(values):
+            msg = "ids must match the number of value sets"
+            raise ValueError(msg)
 
     for index, case in enumerate(values):
         # Handle ParameterSet objects (from pytest.param())
         param_set_id: str | None = None
+        actual_case: Any = case
         if isinstance(case, ParameterSet):
             param_set_id = case.id
-            case = case.values  # Extract the actual values
+            actual_case = case.values  # Extract the actual values
             # If it's a single value tuple, unwrap it for consistency
-            if len(case) == 1:
-                case = case[0]
+            if len(actual_case) == 1:
+                actual_case = actual_case[0]
 
         # Mappings are only treated as parameter mappings when there are multiple parameters
         # For single parameters, dicts/mappings are treated as values
-        if isinstance(case, Mapping) and len(names) > 1:
-            data = {name: case[name] for name in names}
-        elif isinstance(case, (tuple, list)) and len(case) == len(names):
+        if isinstance(actual_case, Mapping) and len(names) > 1:
+            data = {name: actual_case[name] for name in names}
+        elif isinstance(actual_case, (tuple, list)) and len(actual_case) == len(names):
             # Tuples and lists are unpacked to match parameter names (pytest convention)
             # This handles both single and multiple parameters
-            data = {name: case[pos] for pos, name in enumerate(names)}
+            data = {name: actual_case[pos] for pos, name in enumerate(names)}
         else:
             # Everything else is treated as a single value
             # This includes: primitives, dicts (single param), objects
             if len(names) == 1:
-                data = {names[0]: case}
+                data = {names[0]: actual_case}
             else:
                 raise ValueError("Parametrized value does not match argument names")
 
@@ -208,10 +210,10 @@ def _build_cases(
             case_id = f"case_{index}"
         elif ids_is_callable:
             # Call the function on the case value to get the ID
-            generated_id = ids(case)
+            generated_id = cast(Callable[[Any], str | None], ids)(actual_case)
             case_id = str(generated_id) if generated_id is not None else f"case_{index}"
         else:
-            case_id = ids[index]
+            case_id = cast(Sequence[str], ids)[index]
 
         case_payloads.append({"id": case_id, "values": data})
     return tuple(case_payloads)
