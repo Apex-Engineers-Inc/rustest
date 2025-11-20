@@ -1,0 +1,200 @@
+# CLAUDE.md
+
+This file provides guidance for Claude Code when working with the rustest codebase.
+
+## Project Overview
+
+**rustest** is a Rust-powered pytest-compatible test runner focused on raw performance. It delivers massive speedups (8.5x average, up to 19x faster) while maintaining familiar pytest ergonomics.
+
+- **Languages**: Rust (core engine) + Python (user API/CLI)
+- **Build System**: Maturin (PyO3 bridge for Rust-Python integration)
+- **Python Support**: 3.10 - 3.14
+- **License**: MIT
+
+## Project Structure
+
+```
+src/                          # Rust core (rustest-core crate)
+├── lib.rs                    # Main entry point, PyO3 module
+├── discovery.rs              # Fast test file discovery
+├── execution.rs              # Test execution engine
+├── model.rs                  # Data structures (TestCase, Fixture, etc.)
+├── python_support.rs         # Rust-Python bridge
+├── mark_expr.rs              # Mark expression parsing
+├── cache.rs                  # Caching logic
+└── output/                   # Output formatting
+
+python/rustest/               # Python package (user API)
+├── __init__.py               # Public API exports
+├── __main__.py               # CLI entry point
+├── decorators.py             # @fixture, @parametrize, @mark, etc.
+├── builtin_fixtures.py       # tmp_path, tmpdir, monkeypatch, capsys, capfd, request
+├── cli.py                    # Command-line interface
+├── core.py                   # Wrapper around Rust layer
+├── approx.py                 # Numeric comparison helper
+└── compat/pytest.py          # pytest compatibility layer
+
+python/tests/                 # Python unit tests
+tests/                        # Integration test suite
+examples/tests/               # Example test suite
+docs/                         # MkDocs documentation
+```
+
+## Development Commands
+
+### Initial Setup
+```bash
+uv sync --all-extras          # Install dependencies
+uv run maturin develop        # Build Rust extension
+```
+
+### Building
+```bash
+uv run maturin develop        # Rebuild Rust extension after changes
+poe dev                       # Alias for above
+poe build                     # Build package for distribution
+```
+
+### Testing
+```bash
+# Python unit tests
+uv run poe pytests
+uv run pytest python/tests -v
+
+# Integration tests
+uv run pytest tests/ examples/tests/ -v
+
+# Run with rustest itself
+uv run python -m rustest tests/ examples/tests/ -v
+
+# Rust tests
+cargo test
+
+# Example tests
+uv run rustest examples/tests/
+```
+
+### Formatting (REQUIRED before commits)
+```bash
+# Rust - ALWAYS run for Rust changes
+cargo fmt
+cargo fmt --check             # Verify formatting
+
+# Python - ALWAYS run for Python changes
+uv run ruff format python
+uv run ruff format --check python
+```
+
+### Linting
+```bash
+# Rust
+cargo clippy --lib -- -D warnings
+
+# Python
+uv run ruff check python
+uv run basedpyright python    # Type checking
+```
+
+### Pre-commit (runs all checks)
+```bash
+uv run pre-commit install     # One-time setup
+uv run pre-commit run --all-files
+```
+
+### Task Runner Shortcuts
+```bash
+poe dev       # Rebuild Rust extension
+poe pytests   # Run Python tests
+poe lint      # Check Python style
+poe typecheck # Type check Python
+poe fmt       # Format Rust
+poe unit      # Run example tests
+```
+
+## Code Style and Conventions
+
+### Rust
+- Follow standard Rust conventions (rustfmt)
+- Use `cargo clippy` with `-D warnings` (treat warnings as errors)
+- Document public APIs with doc comments
+- Use `rayon` for parallelization where appropriate
+
+### Python
+- Follow Ruff formatting and linting rules
+- Use type hints everywhere (checked by basedpyright)
+- Public API is exported from `python/rustest/__init__.py`
+- Decorators go in `decorators.py`, fixtures in `builtin_fixtures.py`
+
+## Architecture Notes
+
+### Hybrid Design
+1. **Rust Core** (`src/`) - High-performance engine for:
+   - Test discovery (globset, regex)
+   - Test execution (rayon for parallelization)
+   - Result formatting
+
+2. **Python Layer** (`python/rustest/`) - User-friendly API for:
+   - Decorators (`@fixture`, `@parametrize`, `@mark`)
+   - Built-in fixtures
+   - CLI interface
+   - pytest compatibility
+
+3. **PyO3/Maturin Bridge** - Compiled Rust exposed as `rustest.rust` module
+
+### Key Entry Points
+- CLI: `python -m rustest` → `__main__.py` → `cli.py:main()`
+- Python API: `from rustest import fixture, mark, parametrize`
+- Test Discovery: `src/discovery.rs:discover_tests()`
+- Test Execution: `src/execution.rs:run_collected_tests()`
+
+## Pre-commit Requirements
+
+**CRITICAL**: Before any commit, ensure:
+
+1. **Rust changes**: Run `cargo fmt` and `cargo clippy --lib -- -D warnings`
+2. **Python changes**: Run `uv run ruff format python` and `uv run ruff check python`
+3. **All changes**: Run `uv run pre-commit run --all-files`
+
+CI will fail if formatting or linting checks don't pass.
+
+## Testing Requirements
+
+When adding new features:
+- Add unit tests in `python/tests/`
+- Add integration tests in `tests/` if needed
+- Ensure tests pass with both `pytest` and `rustest`
+- Update documentation if adding user-facing features
+
+## Common Patterns
+
+### Adding a new decorator
+1. Implement in `python/rustest/decorators.py`
+2. Export from `python/rustest/__init__.py`
+3. Add tests in `python/tests/test_decorators.py`
+4. Update type hints in `python/rustest/rust.pyi` if Rust interaction needed
+
+### Adding a new built-in fixture
+1. Implement in `python/rustest/builtin_fixtures.py`
+2. Register in the fixtures registry
+3. Add tests in `python/tests/test_builtin_fixtures.py`
+
+### Modifying Rust core
+1. Make changes in `src/`
+2. Run `cargo test` for Rust tests
+3. Run `uv run maturin develop` to rebuild
+4. Run Python tests to verify integration
+
+## CI/CD Pipeline
+
+The CI workflow (`ci.yml`) runs:
+- Python tests on 3.10-3.14
+- Integration tests with both pytest and rustest
+- README and docs code block testing
+- Formatting and linting checks
+- Type checking with basedpyright
+
+## Documentation
+
+- Main docs: `docs/` (MkDocs with Zensical theme)
+- Build locally: `mkdocs serve`
+- API reference auto-generated from docstrings
