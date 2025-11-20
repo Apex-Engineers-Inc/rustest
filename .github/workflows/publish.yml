@@ -112,3 +112,12 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish --check-url https://pypi.org/simple --trusted-publishing always dist/*
+
+  deploy-docs:
+    name: Deploy Documentation
+    needs: publish
+    uses: ./.github/workflows/docs.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
