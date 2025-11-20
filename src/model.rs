@@ -201,7 +201,10 @@ impl Fixture {
             scope: self.scope,
             is_generator: self.is_generator,
             autouse: self.autouse,
-            params: self.params.as_ref().map(|p| p.iter().map(|fp| fp.clone_with_py(py)).collect()),
+            params: self
+                .params
+                .as_ref()
+                .map(|p| p.iter().map(|fp| fp.clone_with_py(py)).collect()),
         }
     }
 }

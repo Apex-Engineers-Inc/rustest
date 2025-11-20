@@ -445,22 +445,23 @@ impl<'py> FixtureResolver<'py> {
         }
 
         // Check if this is a parametrized fixture and get the cache key
-        let (cache_key, param_value) = if let Some(&param_idx) = self.fixture_param_indices.get(name) {
-            if let Some(fixture) = self.fixtures.get(name) {
-                if let Some(params) = &fixture.params {
-                    let param = &params[param_idx];
-                    // Use a cache key that includes the parameter index for parametrized fixtures
-                    let key = format!("{}[{}]", name, param_idx);
-                    (key, Some(param.value.clone_ref(self.py)))
+        let (cache_key, param_value) =
+            if let Some(&param_idx) = self.fixture_param_indices.get(name) {
+                if let Some(fixture) = self.fixtures.get(name) {
+                    if let Some(params) = &fixture.params {
+                        let param = &params[param_idx];
+                        // Use a cache key that includes the parameter index for parametrized fixtures
+                        let key = format!("{}[{}]", name, param_idx);
+                        (key, Some(param.value.clone_ref(self.py)))
+                    } else {
+                        (name.to_string(), None)
+                    }
                 } else {
                     (name.to_string(), None)
                 }
             } else {
                 (name.to_string(), None)
-            }
-        } else {
-            (name.to_string(), None)
-        };
+            };
 
         // Check all caches in order: function -> class -> module -> package -> session
         if let Some(value) = self.function_cache.get(&cache_key) {

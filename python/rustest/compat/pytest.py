@@ -328,7 +328,9 @@ def fixture(
     # Map to rustest fixture - handle both @pytest.fixture and @pytest.fixture()
     if func is not None:
         # Called as @pytest.fixture (without parentheses)
-        return _rustest_fixture(func, scope=scope, autouse=autouse, name=name, params=params, ids=ids)
+        return _rustest_fixture(
+            func, scope=scope, autouse=autouse, name=name, params=params, ids=ids
+        )
     else:
         # Called as @pytest.fixture(...) (with parentheses)
         return _rustest_fixture(scope=scope, autouse=autouse, name=name, params=params, ids=ids)  # type: ignore[return-value]

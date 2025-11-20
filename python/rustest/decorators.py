@@ -166,7 +166,9 @@ def _build_fixture_params(
         if isinstance(param_value, ParameterSet):
             param_set_id = param_value.id
             # For fixture params, we expect a single value
-            actual_value = param_value.values[0] if len(param_value.values) == 1 else param_value.values
+            actual_value = (
+                param_value.values[0] if len(param_value.values) == 1 else param_value.values
+            )
 
         # Generate case ID
         # Priority: ParameterSet id > ids parameter > auto-generated
@@ -177,7 +179,11 @@ def _build_fixture_params(
             case_id = _generate_param_id(actual_value, index)
         elif ids_is_callable:
             generated_id = ids(actual_value)
-            case_id = str(generated_id) if generated_id is not None else _generate_param_id(actual_value, index)
+            case_id = (
+                str(generated_id)
+                if generated_id is not None
+                else _generate_param_id(actual_value, index)
+            )
         else:
             case_id = ids[index]
 
