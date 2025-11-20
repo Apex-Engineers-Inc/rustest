@@ -357,38 +357,42 @@ def test_feature_availability():
 ### When to Use fail() vs assert
 
 - **Use `assert`** for straightforward conditions:
-  <!--pytest.mark.skip-->
-  ```python
-  assert value == expected
-  assert result is not None
-  ```
+
+<!--pytest.mark.skip-->
+```
+assert value == expected
+assert result is not None
+```
 
 - **Use `fail()`** for complex conditional logic:
-  <!--pytest.mark.skip-->
-  ```python
-  if complex_condition_1 or complex_condition_2:
-      fail("Detailed explanation of what went wrong")
-  ```
+
+<!--pytest.mark.skip-->
+```
+if complex_condition_1 or complex_condition_2:
+    fail("Detailed explanation of what went wrong")
+```
 
 - **Use `fail()`** for early returns with clear messages:
-  <!--pytest.mark.skip-->
-  ```python
-  result = expensive_operation()
-  if result.is_error():
-      fail(f"Operation failed early: {result.error}")
-  # Continue with more tests...
-  ```
+
+<!--pytest.mark.skip-->
+```
+result = expensive_operation()
+if result.is_error():
+    fail(f"Operation failed early: {result.error}")
+# Continue with more tests...
+```
 
 !!! tip "Clear Failure Messages"
     Always include descriptive messages with `fail()` to make debugging easier:
-    <!--pytest.mark.skip-->
-    ```python
-    # Good - describes what went wrong
-    fail(f"Expected user {user_id} to exist, but not found in database")
 
-    # Less helpful - generic message
-    fail("Test failed")
-    ```
+<!--pytest.mark.skip-->
+```
+# Good - describes what went wrong
+fail(f"Expected user {user_id} to exist, but not found in database")
+
+# Less helpful - generic message
+fail("Test failed")
+```
 
 ## The warns() Context Manager
 
