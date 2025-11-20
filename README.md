@@ -29,8 +29,11 @@ pipx run rustest --pytest-compat tests/
 The `--pytest-compat` mode intercepts `import pytest` statements and provides rustest implementations transparently:
 
 - ✅ Works with existing `@pytest.fixture`, `@pytest.mark.*`, `@pytest.mark.parametrize()`
-- ✅ Supports built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`
+- ✅ Supports `pytest.param()` with custom IDs
+- ✅ Built-in fixtures: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd`, `request`
 - ✅ Handles `pytest.raises()`, `pytest.approx()`, `@pytest.mark.asyncio`
+- ✅ Warning capture: `pytest.warns()`, `pytest.deprecated_call()`
+- ✅ Module skipping: `pytest.importorskip()`
 - ✅ No code changes required — just run and compare!
 
 **Example output:**
@@ -42,8 +45,8 @@ The `--pytest-compat` mode intercepts `import pytest` statements and provides ru
 ║ Running pytest tests with rustest.                         ║
 ║                                                            ║
 ║ Supported: fixtures, parametrize, marks, approx            ║
-║ Built-ins: tmp_path, tmpdir, monkeypatch                   ║
-║ Not yet: fixture params, some builtins                     ║
+║ Built-ins: tmp_path, tmpdir, monkeypatch, capsys, request  ║
+║ Not yet: fixture params, caplog                            ║
 ║                                                            ║
 ║ For full features, use native rustest:                     ║
 ║   from rustest import fixture, mark, ...                   ║
@@ -65,7 +68,7 @@ Once you see the performance gains, migrate to native rustest imports for the fu
 - 🎯 Simple, clean API—if you know pytest, you already know rustest
 - 🧮 Built-in `approx()` helper for tolerant numeric comparisons
 - 🪤 `raises()` context manager for precise exception assertions
-- 🛠️ **Built-in fixtures**: `tmp_path`, `tmpdir`, `monkeypatch` (pytest-compatible)
+- 🛠️ **Built-in fixtures**: `tmp_path`, `tmpdir`, `monkeypatch`, `capsys`, `capfd` (pytest-compatible)
 - 📦 Easy installation with pip/uv, or try instantly with uvx/pipx
 - ⚡ Low-overhead execution keeps small suites feeling instant
 - 🐛 **Crystal-clear error messages** that make debugging effortless

@@ -1,8 +1,8 @@
-# Changelog
+# Migration Guide
 
-For the complete, authoritative changelog with all version history and details, see the [main CHANGELOG.md](CHANGELOG.md).
+This page includes migration guides, upcoming features, and historical context for upgrading rustest.
 
-This page includes migration guides and historical context for upgrading rustest.
+For the complete changelog with all version history, see the [Changelog](CHANGELOG.md).
 
 ## Upcoming Features
 
@@ -16,7 +16,7 @@ Planned features for future releases:
 
 See our [GitHub issues](https://github.com/Apex-Engineers-Inc/rustest/issues) for the full roadmap.
 
-## Migration Guide
+## Version Upgrades
 
 ### Migrating from 0.4.x to 0.5.0
 

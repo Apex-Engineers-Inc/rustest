@@ -12,18 +12,35 @@ S = TypeVar("S")
 TFunc = TypeVar("TFunc", bound=Callable[..., Any])
 
 # Valid fixture scopes
-VALID_SCOPES = frozenset(["function", "class", "module", "session"])
+VALID_SCOPES = frozenset(["function", "class", "module", "package", "session"])
+
+
+class ParameterSet:
+    """Represents a single parameter set for pytest.param().
+
+    This class holds the values for a parametrized test case along with
+    optional id and marks metadata.
+    """
+
+    def __init__(self, values: tuple[Any, ...], id: str | None = None, marks: Any = None):
+        super().__init__()
+        self.values = values
+        self.id = id
+        self.marks = marks  # Currently not used, but stored for future support
+
+    def __repr__(self) -> str:
+        return f"ParameterSet(values={self.values!r}, id={self.id!r})"
 
 
 @overload
 def fixture(
-    func: Callable[P, R], *, scope: str = "function", autouse: bool = False
+    func: Callable[P, R], *, scope: str = "function", autouse: bool = False, name: str | None = None
 ) -> Callable[P, R]: ...
 
 
 @overload
 def fixture(
-    *, scope: str = "function", autouse: bool = False
+    *, scope: str = "function", autouse: bool = False, name: str | None = None
 ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
@@ -32,6 +49,7 @@ def fixture(
     *,
     scope: str = "function",
     autouse: bool = False,
+    name: str | None = None,
 ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """Mark a function as a fixture with a specific scope.
 
@@ -41,9 +59,11 @@ def fixture(
             - "function": New instance for each test function (default)
             - "class": Shared across all test methods in a class
             - "module": Shared across all tests in a module
+            - "package": Shared across all tests in a package
             - "session": Shared across all tests in the session
         autouse: If True, the fixture will be automatically used by all tests
             in its scope without needing to be explicitly requested (default: False)
+        name: Override the fixture name (default: use the function name)
 
     Usage:
         @fixture
@@ -58,6 +78,11 @@ def fixture(
         def setup_fixture():
             # This fixture will run automatically before each test
             setup_environment()
+
+        @fixture(name="db")
+        def _database_fixture():
+            # This fixture is available as "db", not "_database_fixture"
+            return Database()
     """
     if scope not in VALID_SCOPES:
         valid = ", ".join(sorted(VALID_SCOPES))
@@ -68,6 +93,8 @@ def fixture(
         setattr(f, "__rustest_fixture__", True)
         setattr(f, "__rustest_fixture_scope__", scope)
         setattr(f, "__rustest_fixture_autouse__", autouse)
+        if name is not None:
+            setattr(f, "__rustest_fixture_name__", name)
         return f
 
     # Support both @fixture and @fixture(scope="...")
@@ -88,11 +115,30 @@ def skip(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]
 
 def parametrize(
     arg_names: str | Sequence[str],
-    values: Sequence[Sequence[object] | Mapping[str, object]],
+    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet],
     *,
-    ids: Sequence[str] | None = None,
+    ids: Sequence[str] | Callable[[Any], str | None] | None = None,
+    indirect: bool | Sequence[str] = False,
 ) -> Callable[[Callable[Q, S]], Callable[Q, S]]:
-    """Parametrise a test function."""
+    """Parametrise a test function.
+
+    Args:
+        arg_names: Parameter name(s) as a string or sequence
+        values: Parameter values for each test case
+        ids: Test IDs - either a list of strings or a callable
+        indirect: If True, pass values to fixtures instead of test.
+                  Note: indirect parametrization has limited support in rustest.
+    """
+    # Note: indirect parametrization is accepted but has limited support
+    # The values are still passed as test parameters
+    if indirect:
+        import warnings
+
+        warnings.warn(
+            "indirect parametrization has limited support in rustest. Parameters will be passed directly to the test function.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     normalized_names = _normalize_arg_names(arg_names)
 
@@ -116,31 +162,60 @@ def _normalize_arg_names(arg_names: str | Sequence[str]) -> tuple[str, ...]:
 
 def _build_cases(
     names: tuple[str, ...],
-    values: Sequence[Sequence[object] | Mapping[str, object]],
-    ids: Sequence[str] | None,
+    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet],
+    ids: Sequence[str] | Callable[[Any], str | None] | None,
 ) -> tuple[dict[str, object], ...]:
     case_payloads: list[dict[str, object]] = []
-    if ids is not None and len(ids) != len(values):
-        msg = "ids must match the number of value sets"
-        raise ValueError(msg)
+
+    # Handle callable ids (e.g., ids=str)
+    ids_is_callable = callable(ids)
+
+    if ids is not None and not ids_is_callable:
+        if len(ids) != len(values):
+            msg = "ids must match the number of value sets"
+            raise ValueError(msg)
 
     for index, case in enumerate(values):
+        # Handle ParameterSet objects (from pytest.param())
+        param_set_id: str | None = None
+        actual_case: Any = case
+        if isinstance(case, ParameterSet):
+            param_set_id = case.id
+            actual_case = case.values  # Extract the actual values
+            # If it's a single value tuple, unwrap it for consistency
+            if len(actual_case) == 1:
+                actual_case = actual_case[0]
+
         # Mappings are only treated as parameter mappings when there are multiple parameters
         # For single parameters, dicts/mappings are treated as values
-        if isinstance(case, Mapping) and len(names) > 1:
-            data = {name: case[name] for name in names}
-        elif isinstance(case, tuple) and len(case) == len(names):
-            # Tuples are unpacked to match parameter names (pytest convention)
+        data: dict[str, Any]
+        if isinstance(actual_case, Mapping) and len(names) > 1:
+            data = {name: actual_case[name] for name in names}
+        elif isinstance(actual_case, (tuple, list)) and len(actual_case) == len(names):
+            # Tuples and lists are unpacked to match parameter names (pytest convention)
             # This handles both single and multiple parameters
-            data = {name: case[pos] for pos, name in enumerate(names)}
+            data = {name: actual_case[pos] for pos, name in enumerate(names)}
         else:
             # Everything else is treated as a single value
-            # This includes: primitives, lists (even if len==names), dicts (single param), objects
+            # This includes: primitives, dicts (single param), objects
             if len(names) == 1:
-                data = {names[0]: case}
+                data = {names[0]: actual_case}
             else:
                 raise ValueError("Parametrized value does not match argument names")
-        case_id = ids[index] if ids is not None else f"case_{index}"
+
+        # Generate case ID
+        # Priority: ParameterSet id > ids parameter > auto-generated
+        if param_set_id is not None:
+            case_id = param_set_id
+        elif ids is None:
+            case_id = f"case_{index}"
+        elif ids_is_callable:
+            # Call the function on the case value to get the ID
+            generated_id = ids(actual_case)
+            case_id = str(generated_id) if generated_id is not None else f"case_{index}"
+        else:
+            case_id = ids[index]
+
         case_payloads.append({"id": case_id, "values": data})
     return tuple(case_payloads)
 

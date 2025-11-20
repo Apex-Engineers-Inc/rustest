@@ -1,5 +1,7 @@
 """Builtin fixtures that mirror a subset of pytest's default fixtures."""
 
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import importlib
@@ -12,9 +14,17 @@ from collections.abc import Generator, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Iterator, cast
+from typing import TYPE_CHECKING, Any, Iterator, NamedTuple, cast
 
 from .decorators import fixture
+
+
+class CaptureResult(NamedTuple):
+    """Result of capturing stdout and stderr."""
+
+    out: str
+    err: str
+
 
 py: ModuleType | None
 try:  # pragma: no cover - optional dependency at runtime
@@ -297,13 +307,201 @@ def monkeypatch() -> Iterator[MonkeyPatch]:
         patch.undo()
 
 
+@fixture(scope="function")
+def request() -> Any:
+    """Pytest-compatible request fixture stub.
+
+    This is a minimal implementation of the pytest request fixture to support
+    basic pytest compatibility mode. It provides a FixtureRequest-like object
+    with limited functionality.
+
+    **IMPORTANT LIMITATIONS:**
+    This stub has limited capabilities compared to pytest's request fixture.
+    Many attributes will be None or have default values. This is primarily provided
+    for code compatibility, not full functionality.
+
+    **What works:**
+        - Type annotations: request: pytest.FixtureRequest
+        - Basic attribute access: request.scope (returns "function")
+        - Code that checks for the fixture's existence
+
+    **What does NOT work:**
+        - request.param: Always None (parametrized fixtures not fully supported)
+        - request.node: Always None (test node context not available)
+        - request.function: Always None (test function context not available)
+        - request.cls: Always None (test class context not available)
+        - request.module: Always None (test module context not available)
+        - request.config: Always None (pytest config not available)
+        - request.fixturename: Always None
+        - Methods like request.addfinalizer(), request.getfixturevalue()
+
+    If your code relies on these attributes/methods having real values, it may
+    not work correctly in rustest pytest-compat mode.
+
+    Example:
+        @pytest.fixture
+        def my_fixture(request):
+            # This works (basic attribute access)
+            print(f"Fixture scope: {request.scope}")  # prints "function"
+
+            # This will be None (not supported)
+            if request.param:  # Always False/None
+                return request.param
+
+            return "default_value"
+    """
+    # Import here to avoid circular dependency
+    import warnings
+    from rustest.compat.pytest import FixtureRequest
+
+    # Emit warning about limited support
+    warnings.warn(
+        (
+            "\n"
+            "╔════════════════════════════════════════════════════════════════════════════╗\n"
+            "║              RUSTEST PYTEST-COMPAT: REQUEST FIXTURE WARNING               ║\n"
+            "╠════════════════════════════════════════════════════════════════════════════╣\n"
+            "║ The 'request' fixture has LIMITED support in rustest pytest-compat mode.  ║\n"
+            "║                                                                            ║\n"
+            "║ ✓ Type annotations work: request: pytest.FixtureRequest                   ║\n"
+            "║ ✓ Basic usage works: request.scope returns 'function'                     ║\n"
+            "║                                                                            ║\n"
+            "║ ✗ Most attributes return None:                                            ║\n"
+            "║   - request.param (for parametrized fixtures)                             ║\n"
+            "║   - request.node, request.function, request.cls, request.module           ║\n"
+            "║   - request.config, request.fixturename                                   ║\n"
+            "║   - Methods: addfinalizer(), getfixturevalue()                            ║\n"
+            "║                                                                            ║\n"
+            "║ If your fixtures depend on these values, they may not work correctly.     ║\n"
+            "║                                                                            ║\n"
+            "║ For full pytest features, consider using pytest directly, or migrate      ║\n"
+            "║ to native rustest (without --pytest-compat flag).                         ║\n"
+            "╚════════════════════════════════════════════════════════════════════════════╝"
+        ),
+        UserWarning,
+        stacklevel=2,
+    )
+
+    return FixtureRequest()
+
+
+class CaptureFixture:
+    """Fixture to capture stdout and stderr.
+
+    This implements pytest's capsys fixture functionality.
+    """
+
+    def __init__(self) -> None:
+        import io
+
+        super().__init__()
+        self._capture_out: list[str] = []
+        self._capture_err: list[str] = []
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        self._capturing = False
+        self._stdout_buffer: io.StringIO = io.StringIO()
+        self._stderr_buffer: io.StringIO = io.StringIO()
+
+    def start_capture(self) -> None:
+        """Start capturing stdout and stderr."""
+        import io
+
+        self._stdout_buffer = io.StringIO()
+        self._stderr_buffer = io.StringIO()
+        sys.stdout = self._stdout_buffer
+        sys.stderr = self._stderr_buffer
+        self._capturing = True
+
+    def stop_capture(self) -> None:
+        """Stop capturing and restore original streams."""
+        if self._capturing:
+            sys.stdout = self._original_stdout
+            sys.stderr = self._original_stderr
+            self._capturing = False
+
+    def readouterr(self) -> CaptureResult:
+        """Read and reset the captured output.
+
+        Returns:
+            A CaptureResult with out and err attributes containing the captured output.
+        """
+        if not self._capturing:
+            return CaptureResult("", "")
+
+        out = self._stdout_buffer.getvalue()
+        err = self._stderr_buffer.getvalue()
+
+        # Reset the buffers
+        import io
+
+        self._stdout_buffer = io.StringIO()
+        self._stderr_buffer = io.StringIO()
+        sys.stdout = self._stdout_buffer
+        sys.stderr = self._stderr_buffer
+
+        return CaptureResult(out, err)
+
+    def __enter__(self) -> "CaptureFixture":
+        self.start_capture()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.stop_capture()
+
+
+@fixture
+def capsys() -> Generator[CaptureFixture, None, None]:
+    """
+    Enable text capturing of stdout and stderr.
+
+    The captured output is made available via capsys.readouterr() which
+    returns a (out, err) tuple. out and err are strings containing the
+    captured output.
+
+    Example:
+        def test_output(capsys):
+            print("hello")
+            captured = capsys.readouterr()
+            assert captured.out == "hello\\n"
+    """
+    capture = CaptureFixture()
+    capture.start_capture()
+    try:
+        yield capture
+    finally:
+        capture.stop_capture()
+
+
+@fixture
+def capfd() -> Generator[CaptureFixture, None, None]:
+    """
+    Enable text capturing of stdout and stderr at file descriptor level.
+
+    Note: This is currently an alias for capsys in rustest.
+    The captured output is made available via capfd.readouterr().
+    """
+    # For simplicity, capfd is implemented the same as capsys
+    # A true file descriptor capture would require more complex handling
+    capture = CaptureFixture()
+    capture.start_capture()
+    try:
+        yield capture
+    finally:
+        capture.stop_capture()
+
+
 __all__ = [
+    "CaptureFixture",
     "MonkeyPatch",
     "TmpDirFactory",
     "TmpPathFactory",
+    "capsys",
+    "capfd",
     "monkeypatch",
     "tmpdir",
     "tmpdir_factory",
     "tmp_path",
     "tmp_path_factory",
+    "request",
 ]

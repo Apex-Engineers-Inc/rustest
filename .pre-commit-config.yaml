@@ -39,6 +39,8 @@ repos:
         pass_filenames: false
         additional_dependencies:
           - basedpyright>=1.19
+          - packaging>=20.0
+          - py>=1.11
 
   # Rust formatting with cargo fmt
   - repo: local
@@ -68,6 +70,7 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: ^mkdocs\.yml$
       - id: check-toml
       - id: check-merge-conflict
       - id: check-case-conflict

@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="pytest_compat",
         help="Enable pytest compatibility mode - allows running existing pytest tests without modifying imports.",
     )
-    _ = parser.set_defaults(
+    parser.set_defaults(
         capture_output=True,
         color=True,
         enable_codeblocks=True,

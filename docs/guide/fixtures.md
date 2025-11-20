@@ -912,19 +912,16 @@ def test_change_directory(monkeypatch, tmp_path: Path) -> None:
 #### Patching Module Functions
 
 ```python
-import requests
+import json
 
 def test_patch_module_function(monkeypatch) -> None:
     """Patch a function in an imported module."""
-    def mock_get(*args, **kwargs):
-        class Response:
-            status_code = 200
-            text = '{"result": "success"}'
-        return Response()
+    def mock_loads(*args, **kwargs):
+        return {"result": "mocked"}
 
-    monkeypatch.setattr(requests, "get", mock_get)
-    response = requests.get("https://api.example.com")
-    assert response.status_code == 200
+    monkeypatch.setattr(json, "loads", mock_loads)
+    result = json.loads('{"key": "value"}')
+    assert result == {"result": "mocked"}
 ```
 
 #### Using the Context Manager
@@ -944,6 +941,56 @@ def test_with_context_manager() -> None:
 
 !!! tip "Automatic Cleanup"
     All monkeypatch changes are automatically reverted after each test, even if the test fails. This ensures test isolation and prevents side effects from affecting other tests.
+
+### capsys - Capturing stdout and stderr
+
+The `capsys` fixture captures output to stdout and stderr during test execution:
+
+```python
+import sys
+
+def test_print_output(capsys) -> None:
+    """Capture and verify printed output."""
+    print("Hello, World!")
+    print("Error message", file=sys.stderr)
+
+    captured = capsys.readouterr()
+    assert captured.out == "Hello, World!\n"
+    assert captured.err == "Error message\n"
+
+def test_multiple_captures(capsys) -> None:
+    """Capture output multiple times in one test."""
+    print("first")
+    out1, _ = capsys.readouterr()
+
+    print("second")
+    out2, _ = capsys.readouterr()
+
+    assert out1 == "first\n"
+    assert out2 == "second\n"
+```
+
+The `readouterr()` method returns a tuple of `(out, err)` strings and resets the capture buffers. This is useful for testing functions that produce output.
+
+!!! tip "Capture Resets on Read"
+    Each call to `readouterr()` clears the captured output, so you can capture different sections of output during a single test.
+
+### capfd - File Descriptor Level Capture
+
+The `capfd` fixture provides similar functionality to `capsys` but captures at the file descriptor level:
+
+```python
+def test_fd_capture(capfd) -> None:
+    """Capture output at file descriptor level."""
+    print("captured by capfd")
+
+    captured = capfd.readouterr()
+    assert "captured by capfd" in captured.out
+```
+
+!!! note "When to Use capfd vs capsys"
+    Use `capsys` for most Python output testing (print, sys.stdout.write).
+    Use `capfd` when you need to capture output written directly to file descriptors (e.g., from C extensions or subprocess output). Note: rustest's `capfd` is currently implemented as an alias for `capsys`.
 
 ### Combining Built-in Fixtures
 

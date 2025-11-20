@@ -260,6 +260,84 @@ def test_division_by_zero():
         1 / 0
 ```
 
+## The warns() Context Manager
+
+The `warns()` context manager allows you to test that your code emits expected warnings.
+
+### Basic Usage
+
+```python
+import warnings
+import pytest
+
+def test_deprecation_warning():
+    with pytest.warns(DeprecationWarning):
+        warnings.warn("This is deprecated", DeprecationWarning)
+
+def test_user_warning():
+    with pytest.warns(UserWarning):
+        warnings.warn("Check your input", UserWarning)
+```
+
+### Pattern Matching
+
+Verify the warning message matches a pattern:
+
+```python
+def test_warning_message():
+    with pytest.warns(UserWarning, match="must be positive"):
+        warnings.warn("Value must be positive", UserWarning)
+
+def test_regex_match():
+    with pytest.warns(DeprecationWarning, match=r"use \w+ instead"):
+        warnings.warn("use new_function instead", DeprecationWarning)
+```
+
+### Capturing Multiple Warnings
+
+```python
+def test_capture_warnings():
+    with pytest.warns(UserWarning) as record:
+        warnings.warn("first warning", UserWarning)
+        warnings.warn("second warning", UserWarning)
+
+    assert len(record) == 2
+    assert "first" in str(record[0].message)
+    assert "second" in str(record[1].message)
+
+def test_capture_all_warnings():
+    with pytest.warns() as record:  # No type specified captures all
+        warnings.warn("user warning", UserWarning)
+        warnings.warn("deprecation", DeprecationWarning)
+
+    assert len(record) == 2
+```
+
+### Multiple Warning Types
+
+```python
+def test_multiple_types():
+    with pytest.warns((UserWarning, DeprecationWarning)):
+        warnings.warn("some warning", UserWarning)
+```
+
+## The deprecated_call() Context Manager
+
+A convenience wrapper for testing deprecation warnings:
+
+```python
+def test_deprecated_function():
+    with pytest.deprecated_call():
+        warnings.warn("old function", DeprecationWarning)
+
+def test_deprecated_with_match():
+    with pytest.deprecated_call(match="use new_api"):
+        warnings.warn("use new_api instead", DeprecationWarning)
+```
+
+!!! note "deprecated_call vs warns"
+    `deprecated_call()` is equivalent to `warns((DeprecationWarning, PendingDeprecationWarning))`. Use it for clearer intent when specifically testing deprecation warnings.
+
 ## Best Practices
 
 ### Use Appropriate Tolerances

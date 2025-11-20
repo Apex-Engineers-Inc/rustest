@@ -73,7 +73,9 @@ def test_fixture_invalid_scope():
 
 def test_fixture_invalid_scope_message():
     """Test that error message lists valid scopes."""
-    with pytest.raises(ValueError, match="Must be one of: class, function, module, session"):
+    with pytest.raises(
+        ValueError, match="Must be one of: class, function, module, package, session"
+    ):
 
         @fixture(scope="wrong")
         def my_fixture():
@@ -163,7 +165,7 @@ def test_all_valid_scopes():
     """Test that all documented scopes are valid."""
     from rustest.decorators import VALID_SCOPES
 
-    assert VALID_SCOPES == frozenset(["function", "class", "module", "session"])
+    assert VALID_SCOPES == frozenset(["function", "class", "module", "package", "session"])
 
     for scope in VALID_SCOPES:
 

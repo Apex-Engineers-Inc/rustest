@@ -23,6 +23,7 @@ use crate::output::{OutputConfig, OutputRenderer, SpinnerDisplay};
 /// Manages teardown for generator fixtures across different scopes.
 struct TeardownCollector {
     session: Vec<Py<PyAny>>,
+    package: Vec<Py<PyAny>>,
     module: Vec<Py<PyAny>>,
     class: Vec<Py<PyAny>>,
 }
@@ -31,6 +32,7 @@ impl TeardownCollector {
     fn new() -> Self {
         Self {
             session: Vec::new(),
+            package: Vec::new(),
             module: Vec::new(),
             class: Vec::new(),
         }
@@ -40,18 +42,23 @@ impl TeardownCollector {
 /// Manages fixture caches and teardowns for different scopes.
 struct FixtureContext {
     session_cache: IndexMap<String, Py<PyAny>>,
+    package_cache: IndexMap<String, Py<PyAny>>,
     module_cache: IndexMap<String, Py<PyAny>>,
     class_cache: IndexMap<String, Py<PyAny>>,
     teardowns: TeardownCollector,
+    /// Track the current package to detect package transitions
+    current_package: Option<String>,
 }
 
 impl FixtureContext {
     fn new() -> Self {
         Self {
             session_cache: IndexMap::new(),
+            package_cache: IndexMap::new(),
             module_cache: IndexMap::new(),
             class_cache: IndexMap::new(),
             teardowns: TeardownCollector::new(),
+            current_package: None,
         }
     }
 }
@@ -93,6 +100,15 @@ pub fn run_collected_tests(
 
         // Notify renderer that this file is starting
         renderer.start_file(module);
+
+        // Check for package boundary transition
+        let module_package = extract_package_name(&module.path);
+        if context.current_package.as_ref() != Some(&module_package) {
+            // Package changed - run teardowns and clear cache
+            finalize_generators(py, &mut context.teardowns.package);
+            context.package_cache.clear();
+            context.current_package = Some(module_package);
+        }
 
         // Reset module-scoped caches for this module
         context.module_cache.clear();
@@ -144,6 +160,7 @@ pub fn run_collected_tests(
                     // Clean up fixtures before returning early
                     finalize_generators(py, &mut context.teardowns.class);
                     finalize_generators(py, &mut context.teardowns.module);
+                    finalize_generators(py, &mut context.teardowns.package);
                     finalize_generators(py, &mut context.teardowns.session);
 
                     let duration = start.elapsed();
@@ -192,6 +209,9 @@ pub fn run_collected_tests(
             file_skipped,
         );
     }
+
+    // Package-scoped fixtures are dropped here - run teardowns for last package
+    finalize_generators(py, &mut context.teardowns.package);
 
     // Session-scoped fixtures are dropped here - run teardowns
     finalize_generators(py, &mut context.teardowns.session);
@@ -288,6 +308,7 @@ fn execute_test_case(
         &module.fixtures,
         &test_case.parameter_values,
         &mut context.session_cache,
+        &mut context.package_cache,
         &mut context.module_cache,
         &mut context.class_cache,
         &mut context.teardowns,
@@ -357,6 +378,7 @@ fn execute_test_case(
 ///
 /// The resolver works with a cascading cache system:
 /// - Session cache: shared across all tests
+/// - Package cache: shared across all tests in a package
 /// - Module cache: shared across all tests in a module
 /// - Class cache: shared across all tests in a class
 /// - Function cache: per-test, created fresh each time
@@ -366,6 +388,7 @@ struct FixtureResolver<'py> {
     py: Python<'py>,
     fixtures: &'py IndexMap<String, Fixture>,
     session_cache: &'py mut IndexMap<String, Py<PyAny>>,
+    package_cache: &'py mut IndexMap<String, Py<PyAny>>,
     module_cache: &'py mut IndexMap<String, Py<PyAny>>,
     class_cache: &'py mut IndexMap<String, Py<PyAny>>,
     function_cache: IndexMap<String, Py<PyAny>>,
@@ -376,11 +399,13 @@ struct FixtureResolver<'py> {
 }
 
 impl<'py> FixtureResolver<'py> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'py>,
         fixtures: &'py IndexMap<String, Fixture>,
         parameters: &'py ParameterMap,
         session_cache: &'py mut IndexMap<String, Py<PyAny>>,
+        package_cache: &'py mut IndexMap<String, Py<PyAny>>,
         module_cache: &'py mut IndexMap<String, Py<PyAny>>,
         class_cache: &'py mut IndexMap<String, Py<PyAny>>,
         teardowns: &'py mut TeardownCollector,
@@ -389,6 +414,7 @@ impl<'py> FixtureResolver<'py> {
             py,
             fixtures,
             session_cache,
+            package_cache,
             module_cache,
             class_cache,
             function_cache: IndexMap::new(),
@@ -405,7 +431,7 @@ impl<'py> FixtureResolver<'py> {
             return Ok(value.clone_ref(self.py));
         }
 
-        // Check all caches in order: function -> class -> module -> session
+        // Check all caches in order: function -> class -> module -> package -> session
         if let Some(value) = self.function_cache.get(name) {
             return Ok(value.clone_ref(self.py));
         }
@@ -413,6 +439,9 @@ impl<'py> FixtureResolver<'py> {
             return Ok(value.clone_ref(self.py));
         }
         if let Some(value) = self.module_cache.get(name) {
+            return Ok(value.clone_ref(self.py));
+        }
+        if let Some(value) = self.package_cache.get(name) {
             return Ok(value.clone_ref(self.py));
         }
         if let Some(value) = self.session_cache.get(name) {
@@ -466,6 +495,9 @@ impl<'py> FixtureResolver<'py> {
                 FixtureScope::Session => {
                     self.teardowns.session.push(generator);
                 }
+                FixtureScope::Package => {
+                    self.teardowns.package.push(generator);
+                }
                 FixtureScope::Module => {
                     self.teardowns.module.push(generator);
                 }
@@ -493,6 +525,10 @@ impl<'py> FixtureResolver<'py> {
         match fixture.scope {
             FixtureScope::Session => {
                 self.session_cache
+                    .insert(fixture.name.clone(), result.clone_ref(self.py));
+            }
+            FixtureScope::Package => {
+                self.package_cache
                     .insert(fixture.name.clone(), result.clone_ref(self.py));
             }
             FixtureScope::Module => {
@@ -548,6 +584,7 @@ impl<'py> FixtureResolver<'py> {
             if self.function_cache.contains_key(&name)
                 || self.class_cache.contains_key(&name)
                 || self.module_cache.contains_key(&name)
+                || self.package_cache.contains_key(&name)
                 || self.session_cache.contains_key(&name)
             {
                 continue;
@@ -711,6 +748,19 @@ fn extract_comparison_values(
     }
 
     Ok(None)
+}
+
+/// Extract the package name from a test file path.
+///
+/// The package is determined by the parent directory of the test file.
+/// For example:
+/// - `tests/pkg_a/test_mod1.py` -> `tests/pkg_a`
+/// - `tests/pkg_a/sub/test_mod2.py` -> `tests/pkg_a/sub`
+/// - `test_root.py` -> `` (empty string for root level)
+fn extract_package_name(path: &std::path::Path) -> String {
+    path.parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Finalize generator fixtures by running their teardown code.
