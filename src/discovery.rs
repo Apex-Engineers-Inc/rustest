@@ -776,7 +776,7 @@ fn collect_parametrized_fixtures<'a>(
 
     if let Some(fixture) = fixtures.get(name) {
         // If this fixture is parametrized, add it to the list
-        if let Some(params) = &fixture.params {
+        if fixture.params.is_some() {
             // Get a stable reference to the fixture name from the map
             for (fixture_name, f) in fixtures.iter() {
                 if fixture_name == name {
@@ -865,11 +865,14 @@ fn expand_tests_for_parametrized_fixtures(
     Ok(expanded_tests)
 }
 
+/// Type alias for parameter combinations: (IDs, fixture indices).
+type ParamCombination = (Vec<String>, Vec<(String, usize)>);
+
 /// Generate the cartesian product of parametrized fixture values.
 /// Returns a vector of (ids, indices) tuples.
 fn generate_param_combinations(
     param_fixtures: &[(&String, &Vec<FixtureParam>)],
-) -> Vec<(Vec<String>, Vec<(String, usize)>)> {
+) -> Vec<ParamCombination> {
     if param_fixtures.is_empty() {
         return vec![(Vec::new(), Vec::new())];
     }

@@ -188,6 +188,7 @@ impl Fixture {
     }
 
     /// Check if this fixture is parametrized.
+    #[allow(dead_code)]
     pub fn is_parametrized(&self) -> bool {
         self.params.is_some() && !self.params.as_ref().unwrap().is_empty()
     }

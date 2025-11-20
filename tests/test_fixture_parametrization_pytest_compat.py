@@ -3,6 +3,19 @@
 This file uses pytest-style imports to test compatibility mode.
 """
 
+import sys
+
+# Skip this entire module when running with pytest (conftest.py monkey patches rustest)
+# This test file is specifically for testing rustest's pytest compatibility layer
+if "_pytest" in sys.modules:
+    try:
+        # Try to import rustest.compat - if it fails, we're running with pytest
+        from rustest.compat import pytest as _test_import
+    except (ImportError, ModuleNotFoundError):
+        # We're running with pytest and conftest has monkey-patched rustest
+        import pytest
+        pytest.skip("This test file requires rustest.compat module (rustest-only)", allow_module_level=True)
+
 # Use rustest's pytest compatibility layer
 from rustest.compat import pytest
 
