@@ -12,7 +12,14 @@ from collections.abc import Generator, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Iterator, cast
+from typing import TYPE_CHECKING, Any, Iterator, NamedTuple, cast
+
+
+class CaptureResult(NamedTuple):
+    """Result of capturing stdout and stderr."""
+
+    out: str
+    err: str
 
 from .decorators import fixture
 
@@ -405,14 +412,14 @@ class CaptureFixture:
             sys.stderr = self._original_stderr
             self._capturing = False
 
-    def readouterr(self) -> tuple[str, str]:
+    def readouterr(self) -> CaptureResult:
         """Read and reset the captured output.
 
         Returns:
-            A tuple of (out, err) strings containing the captured output.
+            A CaptureResult with out and err attributes containing the captured output.
         """
         if not self._capturing:
-            return ("", "")
+            return CaptureResult("", "")
 
         out = self._stdout_buffer.getvalue()
         err = self._stderr_buffer.getvalue()
@@ -425,7 +432,7 @@ class CaptureFixture:
         sys.stdout = self._stdout_buffer
         sys.stderr = self._stderr_buffer
 
-        return (out, err)
+        return CaptureResult(out, err)
 
     def __enter__(self) -> "CaptureFixture":
         self._start_capture()

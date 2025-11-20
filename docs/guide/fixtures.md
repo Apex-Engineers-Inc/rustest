@@ -950,6 +950,8 @@ def test_with_context_manager() -> None:
 The `capsys` fixture captures output to stdout and stderr during test execution:
 
 ```python
+import sys
+
 def test_print_output(capsys) -> None:
     """Capture and verify printed output."""
     print("Hello, World!")
