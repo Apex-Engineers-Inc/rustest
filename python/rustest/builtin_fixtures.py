@@ -26,7 +26,7 @@ class CaptureResult(NamedTuple):
 
 py: ModuleType | None
 try:  # pragma: no cover - optional dependency at runtime
-    import py as _py_module  # type: ignore[import-not-found]
+    import py as _py_module
 except Exception:  # pragma: no cover - import error reported at fixture usage time
     py = None
 else:
@@ -34,7 +34,7 @@ else:
 
 if TYPE_CHECKING:
     try:  # pragma: no cover - typing-only import
-        from py import path as _py_path  # type: ignore[import-not-found]
+        from py import path as _py_path
     except ImportError:
         PyPathLocal = Any
     else:

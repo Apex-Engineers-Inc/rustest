@@ -634,7 +634,7 @@ def importorskip(
             _rustest_skip(reason=reason)
         else:
             # Simple version comparison (works for most common cases)
-            from packaging.version import Version  # type: ignore[import-not-found]
+            from packaging.version import Version
 
             try:
                 if Version(mod_version) < Version(minversion):
