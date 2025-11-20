@@ -76,7 +76,6 @@ strictDictionaryInference = true
 strictSetInference = true
 strictParameterNoneValue = true
 reportMissingTypeStubs = false
-reportMissingImports = false
 reportImportCycles = false
 reportUnknownVariableType = "warning"
 reportUnknownMemberType = "warning"

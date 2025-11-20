@@ -188,6 +188,7 @@ def _build_cases(
 
         # Mappings are only treated as parameter mappings when there are multiple parameters
         # For single parameters, dicts/mappings are treated as values
+        data: dict[str, Any]
         if isinstance(actual_case, Mapping) and len(names) > 1:
             data = {name: actual_case[name] for name in names}
         elif isinstance(actual_case, (tuple, list)) and len(actual_case) == len(names):

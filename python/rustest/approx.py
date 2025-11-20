@@ -103,7 +103,7 @@ class approx:
             if not (
                 isinstance(actual, Sequence)
                 and not isinstance(actual, (str, bytes, bytearray))
-                and type(actual) is type(expected)
+                and type(actual) is type(expected)  # pyright: ignore[reportUnknownArgumentType]
             ):
                 return False
             actual_sequence = cast(Sequence[ApproxValue], actual)

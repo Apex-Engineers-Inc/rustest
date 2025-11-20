@@ -42,6 +42,8 @@ Usage:
         assert value > 0
 """
 
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from typing import Any, Callable, TypeVar
@@ -323,7 +325,7 @@ def fixture(
             return Database()
     """
     # Validate unsupported parameters
-    unsupported = []
+    unsupported: list[str] = []
     if params is not None:
         unsupported.append("params")
     if ids is not None and params is None:
@@ -492,7 +494,7 @@ class WarningsChecker:
             return
 
         # Check that at least one matching warning was raised
-        matching_warnings = []
+        matching_warnings: list[Any] = []
         for record in self._records:
             # Check warning type
             if isinstance(self.expected_warning, tuple):

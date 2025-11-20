@@ -1,5 +1,7 @@
 """Builtin fixtures that mirror a subset of pytest's default fixtures."""
 
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import importlib
