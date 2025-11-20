@@ -992,6 +992,248 @@ def test_fd_capture(capfd) -> None:
     Use `capsys` for most Python output testing (print, sys.stdout.write).
     Use `capfd` when you need to capture output written directly to file descriptors (e.g., from C extensions or subprocess output). Note: rustest's `capfd` is currently implemented as an alias for `capsys`.
 
+### caplog - Capturing Logging Output
+
+The `caplog` fixture captures messages logged via Python's `logging` module during test execution:
+
+```python
+import logging
+
+def test_logging_output(caplog) -> None:
+    """Capture and verify logging messages."""
+    logging.info("This is an info message")
+    logging.warning("This is a warning")
+    logging.error("This is an error")
+
+    # Check all messages were captured
+    assert len(caplog.records) == 3
+    assert caplog.records[0].levelname == "INFO"
+    assert caplog.records[1].levelname == "WARNING"
+    assert caplog.records[2].levelname == "ERROR"
+
+def test_log_messages(caplog) -> None:
+    """Access captured log messages as strings."""
+    logging.info("User logged in")
+    logging.warning("Low disk space")
+
+    assert caplog.messages == ["User logged in", "Low disk space"]
+    assert "Low disk space" in caplog.text
+```
+
+#### Filtering by Log Level
+
+Control which log levels are captured:
+
+```python
+import logging
+
+def test_log_levels(caplog) -> None:
+    """Only capture WARNING and above."""
+    caplog.set_level(logging.WARNING)
+
+    logging.debug("Debug message")  # Not captured
+    logging.info("Info message")    # Not captured
+    logging.warning("Warning")      # Captured
+    logging.error("Error")          # Captured
+
+    assert len(caplog.records) == 2
+    assert caplog.messages == ["Warning", "Error"]
+
+def test_with_at_level_context(caplog) -> None:
+    """Temporarily change log level."""
+    logging.info("Before context")
+
+    with caplog.at_level(logging.ERROR):
+        logging.warning("Not captured in context")
+        logging.error("Captured in context")
+
+    logging.info("After context")
+
+    # All INFO+ messages captured except the WARNING
+    assert len(caplog.records) == 3
+    assert "Captured in context" in caplog.messages
+    assert "Not captured in context" not in caplog.messages
+```
+
+#### Accessing Log Records
+
+The `caplog` fixture provides multiple ways to access captured logs:
+
+```python
+import logging
+
+def test_log_record_details(caplog) -> None:
+    """Access detailed log record information."""
+    logger = logging.getLogger("myapp")
+    logger.info("Application started")
+    logger.error("Connection failed", exc_info=True)
+
+    # Access raw LogRecord objects
+    assert len(caplog.records) == 2
+    assert caplog.records[0].name == "myapp"
+    assert caplog.records[0].levelno == logging.INFO
+
+    # Get (name, level, message) tuples
+    assert caplog.record_tuples[0] == ("myapp", logging.INFO, "Application started")
+
+    # Get just the messages
+    assert "Application started" in caplog.messages
+
+    # Get all messages as single text
+    assert "Connection failed" in caplog.text
+```
+
+#### Clearing Captured Logs
+
+Clear logs mid-test to isolate different phases:
+
+```python
+import logging
+
+def test_log_clearing(caplog) -> None:
+    """Clear logs between test phases."""
+    logging.info("Phase 1")
+    assert len(caplog.records) == 1
+
+    caplog.clear()
+    assert len(caplog.records) == 0
+
+    logging.info("Phase 2")
+    assert caplog.messages == ["Phase 2"]  # Only Phase 2 remains
+```
+
+!!! tip "Testing Logging Behavior"
+    The `caplog` fixture is essential for:
+    - Verifying that your code logs expected messages
+    - Testing log levels (debug, info, warning, error)
+    - Ensuring sensitive data isn't accidentally logged
+    - Testing error handling that relies on logging
+
+### cache - Persistent Cache Between Test Runs
+
+The `cache` fixture provides a persistent cache that survives across test sessions, useful for storing expensive computation results or implementing features like `--lf` (last-failed):
+
+```python
+def test_expensive_computation(cache) -> None:
+    """Cache expensive computation results."""
+    result = cache.get("myapp/computation_result")
+
+    if result is None:
+        # Expensive operation only runs once
+        result = sum(range(1_000_000))
+        cache.set("myapp/computation_result", result)
+
+    assert result > 0
+
+def test_version_tracking(cache) -> None:
+    """Track application version across runs."""
+    version = cache.get("myapp/version", "1.0.0")
+    assert version >= "1.0.0"
+
+    # Update for next run
+    cache.set("myapp/version", "1.1.0")
+```
+
+#### Cache Operations
+
+The cache supports multiple access patterns:
+
+```python
+def test_cache_operations(cache) -> None:
+    """Different ways to use the cache."""
+    # Key-value access
+    cache.set("user/settings", {"theme": "dark", "language": "en"})
+    settings = cache.get("user/settings")
+    assert settings["theme"] == "dark"
+
+    # Dict-style access
+    cache["app/counter"] = 42
+    assert cache["app/counter"] == 42
+
+    # Check key existence
+    assert "app/counter" in cache
+    assert "nonexistent" not in cache
+
+    # Default values
+    value = cache.get("missing/key", default="fallback")
+    assert value == "fallback"
+```
+
+#### Cache Storage
+
+The cache stores data in `.rustest_cache/` directory as JSON:
+
+```python
+def test_cache_data_types(cache) -> None:
+    """Cache supports JSON-serializable types."""
+    # Primitives
+    cache.set("string", "hello")
+    cache.set("number", 42)
+    cache.set("boolean", True)
+    cache.set("null", None)
+
+    # Collections
+    cache.set("list", [1, 2, 3])
+    cache.set("dict", {"a": 1, "b": 2})
+    cache.set("nested", {"users": [{"id": 1, "name": "Alice"}]})
+
+    # All values persist across test runs
+    assert cache.get("string") == "hello"
+    assert cache.get("nested")["users"][0]["name"] == "Alice"
+```
+
+#### Creating Cache Directories
+
+The cache can create subdirectories for storing files:
+
+```python
+from pathlib import Path
+
+def test_cache_directories(cache) -> None:
+    """Create directories within cache."""
+    # Create a cache subdirectory
+    data_dir = cache.mkdir("test_data")
+    assert isinstance(data_dir, Path)
+    assert data_dir.exists()
+
+    # Use it for test files
+    (data_dir / "config.json").write_text('{"key": "value"}')
+    assert (data_dir / "config.json").read_text() == '{"key": "value"}'
+```
+
+#### Cache Keys Convention
+
+Use forward slashes to organize cache keys hierarchically:
+
+```python
+def test_cache_key_organization(cache) -> None:
+    """Organize cache with namespaced keys."""
+    # Application-specific namespace
+    cache.set("myapp/version", "2.0.0")
+    cache.set("myapp/config/theme", "dark")
+
+    # Test-specific namespace
+    cache.set("test/results/last_run", {"passed": 42, "failed": 3})
+    cache.set("test/results/previous_run", {"passed": 40, "failed": 5})
+
+    assert cache.get("myapp/version") == "2.0.0"
+    assert cache.get("test/results/last_run")["passed"] == 42
+```
+
+!!! tip "Cache Use Cases"
+    The cache fixture is perfect for:
+    - Storing expensive computation results
+    - Implementing `--lf` (last-failed) functionality
+    - Tracking test execution history
+    - Caching build artifacts or test data
+    - Persisting state between test sessions
+
+!!! warning "Cache Cleanup"
+    The cache persists between test runs by design. To clear the cache:
+    ```bash
+    rm -rf .rustest_cache/
+    ```
+
 ### Combining Built-in Fixtures
 
 You can combine multiple built-in fixtures in your tests:

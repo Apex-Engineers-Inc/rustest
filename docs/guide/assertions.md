@@ -1,6 +1,6 @@
 # Assertion Helpers
 
-Rustest provides helpful utilities for common assertions: `approx()` for numeric comparisons and `raises()` for exception testing.
+Rustest provides helpful utilities for common assertions: `approx()` for numeric comparisons, `raises()` for exception testing, and `fail()` for explicit test failures.
 
 ## The approx() Function
 
@@ -246,10 +246,10 @@ def test_type_error():
 
 ## Combining Assertion Helpers
 
-Use `approx()` and `raises()` together:
+Use `approx()`, `raises()`, and `fail()` together:
 
 ```python
-from rustest import approx, raises
+from rustest import approx, raises, fail
 
 def test_division_result():
     result = 10 / 3
@@ -258,7 +258,133 @@ def test_division_result():
 def test_division_by_zero():
     with raises(ZeroDivisionError, match="division by zero"):
         1 / 0
+
+def test_complex_validation():
+    data = load_data()
+
+    if not data:
+        fail("No data returned from load_data()")
+
+    # Validate numeric values with tolerance
+    assert data["value"] == approx(10.0, abs=0.1)
+
+    # Ensure error handling works
+    with raises(ValueError, match="invalid"):
+        process_invalid_data()
 ```
+
+## The fail() Function
+
+The `fail()` function explicitly fails a test with a custom message. It's useful for conditional test failures where a simple assert statement isn't sufficient.
+
+### Basic Usage
+
+```python
+from rustest import fail
+
+def test_conditional_validation():
+    data = load_data()
+
+    if not is_valid(data):
+        fail("Data validation failed")
+
+    # Test continues only if data is valid
+    process_data(data)
+```
+
+### With Detailed Messages
+
+Provide context about why the test failed:
+
+```python
+def test_operation_result():
+    result = complex_operation()
+
+    if result.status == "error":
+        fail(f"Operation failed: {result.error_message}")
+
+    if result.value < 0:
+        fail(f"Expected positive value, got {result.value}")
+
+    assert result.value > 0
+```
+
+### Real-World Examples
+
+#### State Validation
+
+```python
+def test_database_state():
+    db = connect_to_database()
+
+    if not db.is_connected():
+        fail("Database connection failed")
+
+    if db.table_count() == 0:
+        fail("No tables found in database")
+
+    assert db.table_exists("users")
+```
+
+#### Multi-Step Verification
+
+```python
+def test_user_workflow():
+    user = create_user("test@example.com")
+
+    if user is None:
+        fail("Failed to create user")
+
+    if not user.email_verified:
+        fail(f"Expected verified email, but user {user.id} is not verified")
+
+    # Continue with test...
+    assert user.can_login()
+```
+
+#### Test Preconditions
+
+```python
+def test_feature_availability():
+    if not feature_flags.is_enabled("new_feature"):
+        fail("Feature flag 'new_feature' is not enabled")
+
+    # Test the new feature
+    result = use_new_feature()
+    assert result is not None
+```
+
+### When to Use fail() vs assert
+
+- **Use `assert`** for straightforward conditions:
+  ```python
+  assert value == expected
+  assert result is not None
+  ```
+
+- **Use `fail()`** for complex conditional logic:
+  ```python
+  if complex_condition_1 or complex_condition_2:
+      fail("Detailed explanation of what went wrong")
+  ```
+
+- **Use `fail()`** for early returns with clear messages:
+  ```python
+  result = expensive_operation()
+  if result.is_error():
+      fail(f"Operation failed early: {result.error}")
+  # Continue with more tests...
+  ```
+
+!!! tip "Clear Failure Messages"
+    Always include descriptive messages with `fail()` to make debugging easier:
+    ```python
+    # Good - describes what went wrong
+    fail(f"Expected user {user_id} to exist, but not found in database")
+
+    # Less helpful - generic message
+    fail("Test failed")
+    ```
 
 ## The warns() Context Manager
 
