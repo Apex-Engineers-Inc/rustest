@@ -13,11 +13,15 @@ mark = decorators.mark
 parametrize = decorators.parametrize
 raises = decorators.raises
 skip = decorators.skip
+fail = decorators.fail
+Failed = decorators.Failed
 
 __all__ = [
+    "Failed",
     "RunReport",
     "TestResult",
     "approx",
+    "fail",
     "fixture",
     "main",
     "mark",

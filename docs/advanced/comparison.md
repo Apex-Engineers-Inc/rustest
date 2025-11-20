@@ -18,8 +18,23 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | Fixture scopes (function/class/module/session) | ✅ | ✅ | Full support for all scopes |
 | Yield fixtures (setup/teardown) | ✅ | ✅ | Full support with cleanup |
 | Fixture methods within test classes | ✅ | ✅ | Define fixtures as class methods |
-| Fixture parametrization | ✅ | ✅ | `@fixture(params=[...])` with request.param |
+| Fixture parametrization | ✅ | ✅ | Full support with `@fixture(params=[...])` and `request.param` |
 | `conftest.py` | ✅ | ✅ | Shared fixtures across test files |
+| **Built-in Fixtures** |
+| `tmp_path` / `tmp_path_factory` | ✅ | ✅ | Temporary directories with pathlib.Path |
+| `tmpdir` / `tmpdir_factory` | ✅ | ✅ | Legacy py.path support |
+| `monkeypatch` | ✅ | ✅ | Patch attributes, env vars, dict items |
+| `capsys` / `capfd` | ✅ | ✅ | Capture stdout/stderr |
+| `caplog` | ✅ | ✅ | Capture logging output |
+| `cache` | ✅ | ✅ | Persistent cache between test runs |
+| `request` | ✅ | ✅ | Access to fixture parameters and metadata |
+| **Test Utilities** |
+| `pytest.raises()` | ✅ | ✅ | Exception assertion context manager |
+| `pytest.fail()` | ✅ | ✅ | Explicitly fail a test |
+| `pytest.approx()` | ✅ | ✅ | Numeric comparison with tolerance |
+| `pytest.warns()` | ✅ | ✅ | Warning assertion context manager |
+| `pytest.deprecated_call()` | ✅ | ✅ | Check for deprecation warnings |
+| `pytest.importorskip()` | ✅ | ✅ | Skip if module unavailable |
 | **Parametrization** |
 | `@parametrize` decorator | ✅ | ✅ | Full support with custom IDs |
 | Multiple parameter sets | ✅ | ✅ | |
@@ -293,7 +308,6 @@ Planned rustest features to increase pytest compatibility:
 - 🚧 Mark-based filtering (`-m`)
 - 🚧 JUnit XML output
 - 🚧 Parallel test execution
-- 🚧 Fixture parametrization
 - 🚧 HTML reports
 
 Features not planned:

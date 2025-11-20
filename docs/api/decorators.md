@@ -64,6 +64,14 @@ def test_with_args():
 
 ::: rustest.decorators.ExceptionInfo
 
+## fail
+
+::: rustest.decorators.fail
+
+### Failed
+
+::: rustest.decorators.Failed
+
 ## Examples
 
 ### Fixture with Scope
@@ -116,6 +124,29 @@ from rustest import raises
 def test_validation():
     with raises(ValueError, match="Email cannot be empty"):
         validate_email("")
+```
+
+### Explicit Test Failure
+
+```python
+from rustest import fail
+
+def test_conditional_logic():
+    data = load_data()
+
+    if not is_valid(data):
+        fail("Data validation failed")
+
+    # Test continues only if data is valid
+    process_data(data)
+
+def test_complex_validation():
+    result = complex_operation()
+
+    if result.status == "error":
+        fail(f"Operation failed: {result.error_message}")
+
+    assert result.value > 0
 ```
 
 ### Async Testing
