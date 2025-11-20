@@ -55,15 +55,21 @@ from rustest.decorators import (
     skip as _rustest_skip,
     mark as _rustest_mark,
     raises as _rustest_raises,
+    fail as _rustest_fail,
+    Failed as _rustest_Failed,
     ExceptionInfo,
     ParameterSet,
 )
 from rustest.approx import approx as _rustest_approx
 from rustest.builtin_fixtures import (
+    Cache,
     CaptureFixture,
+    LogCaptureFixture,
     MonkeyPatch,
     TmpPathFactory,
     TmpDirFactory,
+    cache,
+    caplog,
     capsys,
     capfd,
 )
@@ -74,17 +80,23 @@ __all__ = [
     "mark",
     "skip",
     "raises",
+    "fail",
+    "Failed",
     "approx",
     "param",
     "warns",
     "deprecated_call",
     "importorskip",
+    "Cache",
     "CaptureFixture",
+    "LogCaptureFixture",
     "FixtureRequest",
     "MonkeyPatch",
     "TmpPathFactory",
     "TmpDirFactory",
     "ExceptionInfo",
+    "cache",
+    "caplog",
     "capsys",
     "capfd",
     # Pytest plugin decorator
@@ -341,6 +353,8 @@ parametrize = _rustest_parametrize
 raises = _rustest_raises
 approx = _rustest_approx
 skip = _rustest_skip
+fail = _rustest_fail
+Failed = _rustest_Failed
 
 
 class _PytestMarkCompat:

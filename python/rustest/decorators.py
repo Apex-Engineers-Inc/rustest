@@ -777,3 +777,45 @@ def raises(
         assert "oops" in str(exc_info.value)
     """
     return RaisesContext(exc_type, match=match)
+
+
+class Failed(Exception):
+    """Exception raised by fail() to mark a test as failed."""
+
+    pass
+
+
+def fail(reason: str = "", pytrace: bool = True) -> None:
+    """Explicitly fail the current test with the given message.
+
+    This function immediately raises an exception to fail the test,
+    similar to pytest.fail(). It's useful for conditional test failures
+    where a simple assert is not sufficient.
+
+    Args:
+        reason: The failure message to display
+        pytrace: If False, hide the Python traceback (not implemented in rustest,
+                 kept for pytest compatibility)
+
+    Raises:
+        Failed: Always raised to fail the test
+
+    Usage:
+        def test_validation():
+            data = load_data()
+            if not is_valid(data):
+                fail("Data validation failed")
+
+        def test_conditional():
+            if some_condition:
+                fail("Condition should not be true")
+            assert something_else
+
+        # With detailed message
+        def test_complex():
+            result = complex_operation()
+            if result.status == "error":
+                fail(f"Operation failed: {result.error_message}")
+    """
+    __tracebackhide__ = True
+    raise Failed(reason)

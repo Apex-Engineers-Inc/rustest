@@ -448,11 +448,347 @@ def capfd() -> Generator[CaptureFixture, None, None]:
         capture.stop_capture()
 
 
+class LogRecord(NamedTuple):
+    """A captured log record."""
+
+    name: str
+    levelno: int
+    levelname: str
+    message: str
+    pathname: str
+    lineno: int
+    exc_info: Any
+
+
+class LogCaptureFixture:
+    """Fixture to capture logging output.
+
+    This implements pytest's caplog fixture functionality for capturing
+    and inspecting log messages during test execution.
+    """
+
+    def __init__(self) -> None:
+        import logging
+
+        super().__init__()
+        self._records: list[logging.LogRecord] = []
+        self._handler: logging.Handler | None = None
+        self._old_level: int | None = None
+        self._logger = logging.getLogger()
+
+    def start_capture(self) -> None:
+        """Start capturing log messages."""
+        import logging
+
+        class ListHandler(logging.Handler):
+            """Handler that collects log records in a list."""
+
+            def __init__(self, records: list[logging.LogRecord]) -> None:
+                super().__init__()
+                self.records = records
+
+            def emit(self, record: logging.LogRecord) -> None:
+                self.records.append(record)
+
+        self._handler = ListHandler(self._records)
+        self._handler.setLevel(logging.DEBUG)
+        self._logger.addHandler(self._handler)
+        self._old_level = self._logger.level
+        # Set to DEBUG to capture all messages
+        self._logger.setLevel(logging.DEBUG)
+
+    def stop_capture(self) -> None:
+        """Stop capturing log messages."""
+        if self._handler is not None:
+            self._logger.removeHandler(self._handler)
+            if self._old_level is not None:
+                self._logger.setLevel(self._old_level)
+            self._handler = None
+
+    @property
+    def records(self) -> list[Any]:
+        """Access to the captured log records.
+
+        Returns:
+            A list of logging.LogRecord objects.
+        """
+        return self._records
+
+    @property
+    def record_tuples(self) -> list[tuple[str, int, str]]:
+        """Get captured log records as tuples of (name, level, message).
+
+        Returns:
+            A list of tuples with (logger_name, level, message).
+        """
+        return [(r.name, r.levelno, r.getMessage()) for r in self._records]
+
+    @property
+    def messages(self) -> list[str]:
+        """Get captured log messages as strings.
+
+        Returns:
+            A list of log message strings.
+        """
+        return [r.getMessage() for r in self._records]
+
+    @property
+    def text(self) -> str:
+        """Get all captured log messages as a single text string.
+
+        Returns:
+            All log messages joined with newlines.
+        """
+        return "\n".join(self.messages)
+
+    def clear(self) -> None:
+        """Clear all captured log records."""
+        self._records.clear()
+
+    def set_level(self, level: int | str, logger: str | None = None) -> None:
+        """Set the minimum log level to capture.
+
+        Args:
+            level: The log level (e.g., logging.INFO, "INFO", 20)
+            logger: Optional logger name to set level for (default: root logger)
+        """
+        import logging
+
+        if isinstance(level, str):
+            level = getattr(logging, level.upper())
+
+        if logger is None:
+            target_logger = self._logger
+        else:
+            target_logger = logging.getLogger(logger)
+
+        target_logger.setLevel(level)
+
+    @contextmanager
+    def at_level(
+        self, level: int | str, logger: str | None = None
+    ) -> Generator["LogCaptureFixture", None, None]:
+        """Context manager to temporarily set the log level.
+
+        Args:
+            level: The log level to set
+            logger: Optional logger name (default: root logger)
+
+        Usage:
+            with caplog.at_level(logging.INFO):
+                # Only INFO and above will be captured here
+                logging.debug("not captured")
+                logging.info("captured")
+        """
+        import logging
+
+        if isinstance(level, str):
+            level = getattr(logging, level.upper())
+
+        if logger is None:
+            target_logger = self._logger
+        else:
+            target_logger = logging.getLogger(logger)
+
+        old_level = target_logger.level
+        target_logger.setLevel(level)
+        try:
+            yield self
+        finally:
+            target_logger.setLevel(old_level)
+
+    def __enter__(self) -> "LogCaptureFixture":
+        self.start_capture()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.stop_capture()
+
+
+@fixture
+def caplog() -> Generator[LogCaptureFixture, None, None]:
+    """
+    Enable capturing of logging output.
+
+    The captured logging is made available via the fixture's attributes:
+    - caplog.records: List of logging.LogRecord objects
+    - caplog.record_tuples: List of (name, level, message) tuples
+    - caplog.messages: List of message strings
+    - caplog.text: All messages as a single string
+
+    Example:
+        def test_logging(caplog):
+            import logging
+            logging.info("hello")
+            assert "hello" in caplog.text
+            assert caplog.records[0].levelname == "INFO"
+
+        def test_logging_level(caplog):
+            import logging
+            with caplog.at_level(logging.WARNING):
+                logging.info("not captured")
+                logging.warning("captured")
+            assert len(caplog.records) == 1
+    """
+    capture = LogCaptureFixture()
+    capture.start_capture()
+    try:
+        yield capture
+    finally:
+        capture.stop_capture()
+
+
+class Cache:
+    """Cache fixture for storing values between test runs.
+
+    This implements pytest's cache fixture functionality for persisting
+    data across test sessions. Data is stored in .rustest_cache/ directory.
+    """
+
+    def __init__(self, cache_dir: Path) -> None:
+        super().__init__()
+        self._cache_dir = cache_dir
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache_file = self._cache_dir / "cache.json"
+        self._data: dict[str, Any] = {}
+        self._load()
+
+    def _load(self) -> None:
+        """Load cache data from disk."""
+        if self._cache_file.exists():
+            try:
+                import json
+
+                with open(self._cache_file) as f:
+                    self._data = json.load(f)
+            except Exception:
+                # If cache is corrupted, start fresh
+                self._data = {}
+
+    def _save(self) -> None:
+        """Save cache data to disk."""
+        try:
+            import json
+
+            with open(self._cache_file, "w") as f:
+                json.dump(self._data, f, indent=2)
+        except Exception:
+            # Silently ignore save errors
+            pass
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a value from the cache.
+
+        Args:
+            key: The cache key (should use "/" as separator, e.g., "myapp/version")
+            default: Default value if key not found
+
+        Returns:
+            The cached value or default if not found
+        """
+        return self._data.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a value in the cache.
+
+        Args:
+            key: The cache key (should use "/" as separator, e.g., "myapp/version")
+            value: The value to cache (must be JSON-serializable)
+        """
+        self._data[key] = value
+        self._save()
+
+    def mkdir(self, name: str) -> Path:
+        """Create and return a directory inside the cache directory.
+
+        Args:
+            name: Name of the directory to create
+
+        Returns:
+            Path to the created directory
+        """
+        dir_path = self._cache_dir / name
+        dir_path.mkdir(parents=True, exist_ok=True)
+        return dir_path
+
+    def makedir(self, name: str) -> Any:
+        """Create and return a py.path.local directory inside cache.
+
+        This is for pytest compatibility (uses py.path instead of pathlib).
+
+        Args:
+            name: Name of the directory to create
+
+        Returns:
+            py.path.local object for the directory
+        """
+        if py is None:  # pragma: no cover
+            raise RuntimeError("py library is required for makedir()")
+        dir_path = self.mkdir(name)
+        return py.path.local(dir_path)
+
+    def __contains__(self, key: str) -> bool:
+        """Check if a key exists in the cache."""
+        return key in self._data
+
+    def __getitem__(self, key: str) -> Any:
+        """Get a value from the cache (dict-style access)."""
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Set a value in the cache (dict-style access)."""
+        self.set(key, value)
+
+
+@fixture(scope="session")
+def cache() -> Cache:
+    """
+    Provide access to a cache object that can persist between test sessions.
+
+    The cache stores data in .rustest_cache/ directory and survives across
+    test runs. This is useful for storing expensive computation results,
+    version information, or implementing features like --lf (last-failed).
+
+    The cache provides dict-like access and key/value methods:
+    - cache.get(key, default=None): Get a value
+    - cache.set(key, value): Set a value
+    - cache[key]: Dict-style get
+    - cache[key] = value: Dict-style set
+    - key in cache: Check if key exists
+
+    Cache keys should use "/" as separator (e.g., "myapp/version").
+
+    Example:
+        def test_expensive_computation(cache):
+            result = cache.get("myapp/result")
+            if result is None:
+                result = expensive_computation()
+                cache.set("myapp/result", result)
+            assert result > 0
+
+        def test_cache_version(cache):
+            version = cache.get("myapp/version", "1.0.0")
+            assert version >= "1.0.0"
+    """
+    # Find a suitable cache directory
+    # Try current directory first, fall back to temp
+    try:
+        cache_dir = Path.cwd() / ".rustest_cache"
+    except Exception:
+        cache_dir = Path(tempfile.gettempdir()) / ".rustest_cache"
+
+    return Cache(cache_dir)
+
+
 __all__ = [
+    "Cache",
     "CaptureFixture",
+    "LogCaptureFixture",
     "MonkeyPatch",
     "TmpDirFactory",
     "TmpPathFactory",
+    "cache",
+    "caplog",
     "capsys",
     "capfd",
     "monkeypatch",
