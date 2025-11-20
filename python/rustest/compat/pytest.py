@@ -97,24 +97,17 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 class FixtureRequest:
     """
-    Pytest-compatible FixtureRequest stub for type annotations.
+    Pytest-compatible FixtureRequest for fixture parametrization.
 
-    This is a minimal implementation to support type hints in fixtures that use
-    the request parameter. In pytest, FixtureRequest provides access to the
-    requesting test context.
+    This implementation provides access to fixture parameter values via
+    request.param for parametrized fixtures.
 
-    **IMPORTANT LIMITATIONS:**
-    This is a STUB implementation with very limited functionality. Most attributes
-    return None or default values. Methods raise NotImplementedError with helpful
-    messages.
-
-    **Supported (basic compatibility):**
-        - Type annotations: request: pytest.FixtureRequest ✓
-        - Attribute access without errors ✓
-        - request.scope returns "function" ✓
+    **Supported:**
+        - Type annotations: request: pytest.FixtureRequest
+        - request.param: Current parameter value for parametrized fixtures
+        - request.scope: Returns "function"
 
     **NOT Supported (returns None or raises NotImplementedError):**
-        - request.param: Always None
         - request.node, function, cls, module, config: Always None
         - request.fixturename: Always None
         - request.addfinalizer(): Raises NotImplementedError
@@ -123,32 +116,34 @@ class FixtureRequest:
         - request.raiseerror(): Raises NotImplementedError
 
     Common pytest.FixtureRequest attributes:
-        - param: Parameter value (for parametrized fixtures) - ALWAYS None
-        - node: Test node object - ALWAYS None
-        - function: Test function - ALWAYS None
-        - cls: Test class - ALWAYS None
-        - module: Test module - ALWAYS None
-        - config: Pytest config - ALWAYS None
-        - fixturename: Name of the fixture - ALWAYS None
+        - param: Parameter value (for parametrized fixtures) - SUPPORTED
+        - node: Test node object - Always None
+        - function: Test function - Always None
+        - cls: Test class - Always None
+        - module: Test module - Always None
+        - config: Pytest config - Always None
+        - fixturename: Name of the fixture - Always None
         - scope: Scope of the fixture - Returns "function"
 
     Example:
-        @pytest.fixture
-        def my_fixture(request: pytest.FixtureRequest):
-            # Type annotation works ✓
-            print(f"Scope: {request.scope}")  # Prints "function" ✓
+        @pytest.fixture(params=[1, 2, 3])
+        def number(request: pytest.FixtureRequest):
+            # request.param contains the current parameter value
+            return request.param
 
-            # These will be None (not supported)
-            if request.param:  # Always None
-                return request.param
-
-            return "default_value"
+        @pytest.fixture(params=["mysql", "postgres"], ids=["MySQL", "PG"])
+        def database(request):
+            return create_db(request.param)
     """
 
-    def __init__(self) -> None:
-        """Initialize a FixtureRequest stub with default/None values."""
+    def __init__(self, param: Any = None) -> None:
+        """Initialize a FixtureRequest with the given param value.
+
+        Args:
+            param: The parameter value for parametrized fixtures
+        """
         super().__init__()
-        self.param: Any = None
+        self.param: Any = param
         self.fixturename: str | None = None
         self.scope: str = "function"
         self.node: Any = None
@@ -294,16 +289,14 @@ def fixture(
     """
     Pytest-compatible fixture decorator.
 
-    Maps to rustest.fixture with validation for unsupported features.
+    Maps to rustest.fixture with full support for fixture parametrization.
 
     Supported:
         - scope: function/class/module/session
         - autouse: True/False
         - name: Override fixture name
-
-    Not supported (will raise NotImplementedError):
-        - params: Use @pytest.mark.parametrize on the test instead
-        - ids: Not needed without params
+        - params: List of parameter values for fixture parametrization
+        - ids: Custom IDs for each parameter value
 
     Examples:
         @pytest.fixture
@@ -323,38 +316,24 @@ def fixture(
         @pytest.fixture(name="db")
         def _database_fixture():
             return Database()
+
+        @pytest.fixture(params=[1, 2, 3])
+        def number(request):
+            return request.param
+
+        @pytest.fixture(params=["mysql", "postgres"], ids=["MySQL", "PostgreSQL"])
+        def database_type(request):
+            return request.param
     """
-    # Validate unsupported parameters
-    unsupported: list[str] = []
-    if params is not None:
-        unsupported.append("params")
-    if ids is not None and params is None:
-        # ids without params doesn't make sense anyway
-        pass
-    elif ids is not None:
-        unsupported.append("ids")
-
-    if unsupported:
-        features = ", ".join(unsupported)
-        msg = (
-            f"rustest --pytest-compat mode doesn't support fixture {features}.\n"
-            f"\n"
-            f"Workarounds:\n"
-            f"  - params: Use @pytest.mark.parametrize() on your test function instead\n"
-            f"\n"
-            f"Note: Built-in fixtures (tmp_path, tmpdir, monkeypatch) are fully supported!\n"
-            f"\n"
-            f"To use full rustest features, change 'import pytest' to 'from rustest import fixture, mark, ...'."
-        )
-        raise NotImplementedError(msg)
-
     # Map to rustest fixture - handle both @pytest.fixture and @pytest.fixture()
     if func is not None:
         # Called as @pytest.fixture (without parentheses)
-        return _rustest_fixture(func, scope=scope, autouse=autouse, name=name)
+        return _rustest_fixture(
+            func, scope=scope, autouse=autouse, name=name, params=params, ids=ids
+        )
     else:
         # Called as @pytest.fixture(...) (with parentheses)
-        return _rustest_fixture(scope=scope, autouse=autouse, name=name)  # type: ignore[return-value]
+        return _rustest_fixture(scope=scope, autouse=autouse, name=name, params=params, ids=ids)  # type: ignore[return-value]
 
 
 # Direct mappings - these already have identical signatures

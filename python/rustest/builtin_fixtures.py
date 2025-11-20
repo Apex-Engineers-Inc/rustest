@@ -309,78 +309,35 @@ def monkeypatch() -> Iterator[MonkeyPatch]:
 
 @fixture(scope="function")
 def request() -> Any:
-    """Pytest-compatible request fixture stub.
+    """Pytest-compatible request fixture for fixture parametrization.
 
-    This is a minimal implementation of the pytest request fixture to support
-    basic pytest compatibility mode. It provides a FixtureRequest-like object
-    with limited functionality.
+    This fixture provides access to the current fixture parameter value via
+    request.param when using parametrized fixtures.
 
-    **IMPORTANT LIMITATIONS:**
-    This stub has limited capabilities compared to pytest's request fixture.
-    Many attributes will be None or have default values. This is primarily provided
-    for code compatibility, not full functionality.
-
-    **What works:**
+    **Supported:**
+        - request.param: Current parameter value for parametrized fixtures
+        - request.scope: Returns "function"
         - Type annotations: request: pytest.FixtureRequest
-        - Basic attribute access: request.scope (returns "function")
-        - Code that checks for the fixture's existence
 
-    **What does NOT work:**
-        - request.param: Always None (parametrized fixtures not fully supported)
-        - request.node: Always None (test node context not available)
-        - request.function: Always None (test function context not available)
-        - request.cls: Always None (test class context not available)
-        - request.module: Always None (test module context not available)
-        - request.config: Always None (pytest config not available)
-        - request.fixturename: Always None
-        - Methods like request.addfinalizer(), request.getfixturevalue()
-
-    If your code relies on these attributes/methods having real values, it may
-    not work correctly in rustest pytest-compat mode.
+    **Not supported (returns None or raises NotImplementedError):**
+        - request.node, function, cls, module, config
+        - request.fixturename
+        - Methods: addfinalizer(), getfixturevalue()
 
     Example:
-        @pytest.fixture
-        def my_fixture(request):
-            # This works (basic attribute access)
-            print(f"Fixture scope: {request.scope}")  # prints "function"
+        @fixture(params=[1, 2, 3])
+        def number(request):
+            return request.param
 
-            # This will be None (not supported)
-            if request.param:  # Always False/None
-                return request.param
-
-            return "default_value"
+        @fixture(params=["mysql", "postgres"], ids=["MySQL", "PostgreSQL"])
+        def database(request):
+            return create_db(request.param)
     """
-    # Import here to avoid circular dependency
-    import warnings
+    # NOTE: This fixture is not directly called in normal usage.
+    # Instead, the Rust execution engine creates FixtureRequest objects
+    # with the appropriate param value and injects them directly.
+    # This fixture definition exists for fallback and API compatibility.
     from rustest.compat.pytest import FixtureRequest
-
-    # Emit warning about limited support
-    warnings.warn(
-        (
-            "\n"
-            "╔════════════════════════════════════════════════════════════════════════════╗\n"
-            "║              RUSTEST PYTEST-COMPAT: REQUEST FIXTURE WARNING               ║\n"
-            "╠════════════════════════════════════════════════════════════════════════════╣\n"
-            "║ The 'request' fixture has LIMITED support in rustest pytest-compat mode.  ║\n"
-            "║                                                                            ║\n"
-            "║ ✓ Type annotations work: request: pytest.FixtureRequest                   ║\n"
-            "║ ✓ Basic usage works: request.scope returns 'function'                     ║\n"
-            "║                                                                            ║\n"
-            "║ ✗ Most attributes return None:                                            ║\n"
-            "║   - request.param (for parametrized fixtures)                             ║\n"
-            "║   - request.node, request.function, request.cls, request.module           ║\n"
-            "║   - request.config, request.fixturename                                   ║\n"
-            "║   - Methods: addfinalizer(), getfixturevalue()                            ║\n"
-            "║                                                                            ║\n"
-            "║ If your fixtures depend on these values, they may not work correctly.     ║\n"
-            "║                                                                            ║\n"
-            "║ For full pytest features, consider using pytest directly, or migrate      ║\n"
-            "║ to native rustest (without --pytest-compat flag).                         ║\n"
-            "╚════════════════════════════════════════════════════════════════════════════╝"
-        ),
-        UserWarning,
-        stacklevel=2,
-    )
 
     return FixtureRequest()
 
