@@ -18,7 +18,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | Fixture scopes (function/class/module/session) | ✅ | ✅ | Full support for all scopes |
 | Yield fixtures (setup/teardown) | ✅ | ✅ | Full support with cleanup |
 | Fixture methods within test classes | ✅ | ✅ | Define fixtures as class methods |
-| Fixture parametrization | ✅ | 🚧 | Planned |
+| Fixture parametrization | ✅ | ✅ | `@fixture(params=[...])` with request.param |
 | `conftest.py` | ✅ | ✅ | Shared fixtures across test files |
 | **Parametrization** |
 | `@parametrize` decorator | ✅ | ✅ | Full support with custom IDs |
@@ -41,9 +41,9 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | JUnit XML output | ✅ | 🚧 | Planned |
 | HTML reports | ✅ (`pytest-html`) | 🚧 | Planned |
 | **Advanced Features** |
-| Plugins | ✅ | ❌ | Not planned (keeps rustest simple) |
-| Hooks | ✅ | ❌ | Not planned |
-| Custom collectors | ✅ | ❌ | Not planned |
+| Plugins | ✅ | ❌ | Not supported by design ([see why](pytest-plugins.md)) |
+| Hooks | ✅ | ❌ | Not supported by design |
+| Custom collectors | ✅ | ❌ | Not supported by design |
 | **Developer Experience** |
 | Fully typed Python API | ⚠️ | ✅ | rustest uses `basedpyright` strict mode |
 | Fast CI/CD runs | ⚠️ | ✅ | 8.5× average speedup (peaks at 19×) for dramatically shorter feedback loops |
@@ -74,7 +74,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 
 ✅ **Use pytest when:**
 
-- You need pytest plugins (pytest-django, pytest-asyncio, etc.)
+- You need pytest plugins (pytest-django, pytest-cov, etc.) - [see plugin migration guide](pytest-plugins.md)
 - You rely on advanced pytest features (hooks, custom collectors)
 - You have complex existing pytest infrastructure
 - You need detailed assertion introspection
@@ -320,6 +320,7 @@ Both are excellent tools! Rustest aims to complement pytest by providing a faste
 
 ## See Also
 
+- [Pytest Plugins](pytest-plugins.md) - Migration guide for popular pytest plugins
 - [Performance](performance.md) - Detailed performance analysis
 - [Getting Started](../getting-started/quickstart.md) - Try rustest
 - [Development](development.md) - Contribute to rustest

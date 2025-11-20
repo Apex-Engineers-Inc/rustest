@@ -8,10 +8,11 @@ For the complete changelog with all version history, see the [Changelog](CHANGEL
 
 Planned features for future releases:
 
-- **Parallel execution**: Run tests across multiple cores
+- **Parallel execution control**: CLI options to control worker count (`-j`, `--workers`)
 - **JUnit XML output**: Generate JUnit-compatible test reports
 - **HTML reports**: Generate HTML test reports
-- **Fixture parametrization**: Parametrize fixtures like pytest
+- **Coverage integration**: Built-in coverage reporting
+- **Test timeouts**: Built-in timeout support with `@mark.timeout()`
 - **Better error messages**: More helpful assertion failure messages
 
 See our [GitHub issues](https://github.com/Apex-Engineers-Inc/rustest/issues) for the full roadmap.
@@ -86,6 +87,8 @@ from rustest import fixture, parametrize, mark, approx, raises
 
 # Everything else stays the same!
 ```
+
+**Using pytest plugins?** See our comprehensive [Pytest Plugin Migration Guide](advanced/pytest-plugins.md) for concrete steps to migrate from the top 10 most popular pytest plugins.
 
 See [Comparison with pytest](advanced/comparison.md) for details.
 

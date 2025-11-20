@@ -105,6 +105,7 @@ nav:
   - Advanced:
     - Performance: advanced/performance.md
     - Comparison with pytest: advanced/comparison.md
+    - Pytest Plugins: advanced/pytest-plugins.md
     - Development: advanced/development.md
   - Changelog: CHANGELOG.md
   - Migration Guide: migration-guide.md
