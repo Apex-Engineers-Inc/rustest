@@ -14,6 +14,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, NamedTuple, cast
 
+from .decorators import fixture
+
 
 class CaptureResult(NamedTuple):
     """Result of capturing stdout and stderr."""
@@ -21,7 +23,6 @@ class CaptureResult(NamedTuple):
     out: str
     err: str
 
-from .decorators import fixture
 
 py: ModuleType | None
 try:  # pragma: no cover - optional dependency at runtime
@@ -389,13 +390,18 @@ class CaptureFixture:
     """
 
     def __init__(self) -> None:
+        import io
+
+        super().__init__()
         self._capture_out: list[str] = []
         self._capture_err: list[str] = []
         self._original_stdout = sys.stdout
         self._original_stderr = sys.stderr
         self._capturing = False
+        self._stdout_buffer: io.StringIO = io.StringIO()
+        self._stderr_buffer: io.StringIO = io.StringIO()
 
-    def _start_capture(self) -> None:
+    def start_capture(self) -> None:
         """Start capturing stdout and stderr."""
         import io
 
@@ -405,7 +411,7 @@ class CaptureFixture:
         sys.stderr = self._stderr_buffer
         self._capturing = True
 
-    def _stop_capture(self) -> None:
+    def stop_capture(self) -> None:
         """Stop capturing and restore original streams."""
         if self._capturing:
             sys.stdout = self._original_stdout
@@ -435,11 +441,11 @@ class CaptureFixture:
         return CaptureResult(out, err)
 
     def __enter__(self) -> "CaptureFixture":
-        self._start_capture()
+        self.start_capture()
         return self
 
     def __exit__(self, *args: Any) -> None:
-        self._stop_capture()
+        self.stop_capture()
 
 
 @fixture
@@ -458,11 +464,11 @@ def capsys() -> Generator[CaptureFixture, None, None]:
             assert captured.out == "hello\\n"
     """
     capture = CaptureFixture()
-    capture._start_capture()
+    capture.start_capture()
     try:
         yield capture
     finally:
-        capture._stop_capture()
+        capture.stop_capture()
 
 
 @fixture
@@ -476,11 +482,11 @@ def capfd() -> Generator[CaptureFixture, None, None]:
     # For simplicity, capfd is implemented the same as capsys
     # A true file descriptor capture would require more complex handling
     capture = CaptureFixture()
-    capture._start_capture()
+    capture.start_capture()
     try:
         yield capture
     finally:
-        capture._stop_capture()
+        capture.stop_capture()
 
 
 __all__ = [

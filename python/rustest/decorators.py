@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ParamSpec, TypeVar, cast, overload
+from typing import Any, ParamSpec, TypeVar, overload
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -171,7 +171,7 @@ def _build_cases(
     ids_is_callable = callable(ids)
 
     if ids is not None and not ids_is_callable:
-        if len(cast(Sequence[str], ids)) != len(values):
+        if len(ids) != len(values):
             msg = "ids must match the number of value sets"
             raise ValueError(msg)
 
@@ -210,10 +210,10 @@ def _build_cases(
             case_id = f"case_{index}"
         elif ids_is_callable:
             # Call the function on the case value to get the ID
-            generated_id = cast(Callable[[Any], str | None], ids)(actual_case)
+            generated_id = ids(actual_case)
             case_id = str(generated_id) if generated_id is not None else f"case_{index}"
         else:
-            case_id = cast(Sequence[str], ids)[index]
+            case_id = ids[index]
 
         case_payloads.append({"id": case_id, "values": data})
     return tuple(case_payloads)

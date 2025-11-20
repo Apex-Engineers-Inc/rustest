@@ -130,12 +130,12 @@ class TestCaptureFixture:
     def test_capture_fixture_captures_stdout(self):
         """Test that CaptureFixture captures stdout."""
         capture = CaptureFixture()
-        capture._start_capture()
+        capture.start_capture()
 
         print("hello stdout")
         out, err = capture.readouterr()
 
-        capture._stop_capture()
+        capture.stop_capture()
 
         assert out == "hello stdout\n"
         assert err == ""
@@ -145,12 +145,12 @@ class TestCaptureFixture:
         import sys
 
         capture = CaptureFixture()
-        capture._start_capture()
+        capture.start_capture()
 
         print("hello stderr", file=sys.stderr)
         out, err = capture.readouterr()
 
-        capture._stop_capture()
+        capture.stop_capture()
 
         assert out == ""
         assert err == "hello stderr\n"
@@ -158,7 +158,7 @@ class TestCaptureFixture:
     def test_capture_fixture_resets_on_readouterr(self):
         """Test that readouterr resets the capture buffers."""
         capture = CaptureFixture()
-        capture._start_capture()
+        capture.start_capture()
 
         print("first")
         out1, _ = capture.readouterr()
@@ -166,7 +166,7 @@ class TestCaptureFixture:
         print("second")
         out2, _ = capture.readouterr()
 
-        capture._stop_capture()
+        capture.stop_capture()
 
         assert out1 == "first\n"
         assert out2 == "second\n"
@@ -187,8 +187,8 @@ class TestCaptureFixture:
         original_stderr = sys.stderr
 
         capture = CaptureFixture()
-        capture._start_capture()
-        capture._stop_capture()
+        capture.start_capture()
+        capture.stop_capture()
 
         assert sys.stdout is original_stdout
         assert sys.stderr is original_stderr
