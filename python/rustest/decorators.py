@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ParamSpec, TypeVar, overload
+from typing import Any, ParamSpec, TypeVar, overload, cast
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -215,18 +215,20 @@ def _generate_param_id(value: Any, index: int) -> str:
             return value
         return f"{value[:17]}..."
     if isinstance(value, (list, tuple)):
-        if len(value) == 0:
+        seq_value = cast(list[Any] | tuple[Any, ...], value)
+        if len(seq_value) == 0:
             return "empty"
         # Try to create a short representation
-        items = [_generate_param_id(v, 0) for v in value[:3]]
+        items = [_generate_param_id(v, 0) for v in seq_value[:3]]
         result = "-".join(items)
-        if len(value) > 3:
-            result += f"-...({len(value)})"
+        if len(seq_value) > 3:
+            result += f"-...({len(seq_value)})"
         return result
     if isinstance(value, dict):
-        if len(value) == 0:
+        dict_value = cast(dict[Any, Any], value)
+        if len(dict_value) == 0:
             return "empty_dict"
-        return f"dict({len(value)})"
+        return f"dict({len(dict_value)})"
 
     # Fallback to index-based ID
     return f"param{index}"
@@ -331,10 +333,18 @@ def _build_cases(
         data: dict[str, Any]
         if isinstance(actual_case, Mapping) and len(names) > 1:
             data = {name: actual_case[name] for name in names}
-        elif isinstance(actual_case, (tuple, list)) and len(actual_case) == len(names):
-            # Tuples and lists are unpacked to match parameter names (pytest convention)
-            # This handles both single and multiple parameters
-            data = {name: actual_case[pos] for pos, name in enumerate(names)}
+        elif isinstance(actual_case, (tuple, list)):
+            seq_case = cast(tuple[Any, ...] | list[Any], actual_case)
+            if len(seq_case) == len(names):
+                # Tuples and lists are unpacked to match parameter names (pytest convention)
+                # This handles both single and multiple parameters
+                data = {name: seq_case[pos] for pos, name in enumerate(names)}
+            else:
+                # Length mismatch
+                if len(names) == 1:
+                    data = {names[0]: actual_case}
+                else:
+                    raise ValueError("Parametrized value does not match argument names")
         else:
             # Everything else is treated as a single value
             # This includes: primitives, dicts (single param), objects

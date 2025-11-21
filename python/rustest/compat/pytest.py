@@ -46,7 +46,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, TypedDict, cast
 
 # Import rustest's actual implementations
 from rustest.decorators import (
@@ -116,6 +116,14 @@ __all__ = [
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+class MarkerDict(TypedDict):
+    """Type definition for marker dictionaries."""
+
+    name: str
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+
 class Node:
     """
     Pytest-compatible Node object representing a test or collection node.
@@ -147,7 +155,7 @@ class Node:
         self,
         name: str = "",
         nodeid: str = "",
-        markers: list[dict[str, Any]] | None = None,
+        markers: list[MarkerDict] | None = None,
         config: Any = None,
     ) -> None:
         """Initialize a Node.
@@ -161,7 +169,7 @@ class Node:
         super().__init__()
         self.name: str = name
         self.nodeid: str = nodeid
-        self._markers: list[dict[str, Any]] = markers or []
+        self._markers: list[MarkerDict] = markers or []
         self.config: Any = config
         self.parent: Any = None
         self.session: Any = None
@@ -208,32 +216,41 @@ class Node:
             request.node.add_marker("slow")
             request.node.add_marker(pytest.mark.xfail(reason="known bug"))
         """
+        marker_dict: MarkerDict
+
         # Handle string markers
         if isinstance(marker, str):
             marker_dict = {"name": marker, "args": (), "kwargs": {}}
         # Handle ParameterSet/MarkDecorator objects
         elif hasattr(marker, "__rustest_marks__"):
             # This is a decorated object with marks
-            marks = getattr(marker, "__rustest_marks__", [])
+            marks: list[Any] = getattr(marker, "__rustest_marks__", [])
             for mark in marks:
                 if append:
                     self._markers.append(mark)
                 else:
                     self._markers.insert(0, mark)
                 # Add to keywords
-                if "name" in mark:
-                    self.keywords[mark["name"]] = True
+                if "name" in mark and isinstance(mark.get("name"), str):
+                    name_str: str = mark["name"]
+                    self.keywords[name_str] = True
             return
         # Handle mark objects with name/args/kwargs
         elif hasattr(marker, "name"):
             marker_dict = {
-                "name": marker.name,
+                "name": str(marker.name),
                 "args": getattr(marker, "args", ()),
                 "kwargs": getattr(marker, "kwargs", {}),
             }
         # Handle dict markers directly
         elif isinstance(marker, dict):
-            marker_dict = marker
+            # Validate and normalize the dict
+            # Type ignores needed for untyped dict from external sources
+            marker_dict = {
+                "name": str(marker.get("name", "")),  # type: ignore[arg-type]
+                "args": cast(tuple[Any, ...], marker.get("args", ())),  # type: ignore[reportUnknownMemberType]
+                "kwargs": cast(dict[str, Any], marker.get("kwargs", {})),  # type: ignore[reportUnknownMemberType]
+            }
         else:
             # Unknown marker type - try to extract what we can
             marker_dict = {"name": str(marker), "args": (), "kwargs": {}}
@@ -244,10 +261,9 @@ class Node:
             self._markers.insert(0, marker_dict)
 
         # Add to keywords
-        if "name" in marker_dict:
-            name = marker_dict["name"]
-            if isinstance(name, str):
-                self.keywords[name] = True
+        name = marker_dict["name"]
+        if name:  # name is now guaranteed to be str
+            self.keywords[name] = True
 
     def listextrakeywords(self) -> set[str]:
         """Return a set of extra keywords/markers for this node.
@@ -493,7 +509,7 @@ class FixtureRequest:
         self,
         param: Any = None,
         node_name: str = "",
-        node_markers: list[dict[str, Any]] | None = None,
+        node_markers: list[MarkerDict] | None = None,
         config_options: dict[str, Any] | None = None,
     ) -> None:
         """Initialize a FixtureRequest.
