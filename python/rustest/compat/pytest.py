@@ -98,6 +98,8 @@ __all__ = [
     "CaptureFixture",
     "LogCaptureFixture",
     "FixtureRequest",
+    "Node",
+    "Config",
     "MonkeyPatch",
     "TmpPathFactory",
     "TmpDirFactory",
@@ -114,6 +116,318 @@ __all__ = [
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+class Node:
+    """
+    Pytest-compatible Node object representing a test or collection node.
+
+    This provides basic node information for compatibility with pytest fixtures
+    that access request.node.
+
+    **Supported:**
+        - node.name: Test/node name
+        - node.nodeid: Full test identifier
+        - node.get_closest_marker(name): Get marker by name
+        - node.add_marker(marker): Add marker to node
+        - node.keywords: Dictionary of keywords/markers
+
+    **Limited Support:**
+        - node.parent: Always None (not implemented)
+        - node.session: Always None (not implemented)
+        - node.config: Returns associated Config object if available
+
+    Example:
+        def test_example(request):
+            assert request.node.name == "test_example"
+            marker = request.node.get_closest_marker("skip")
+            if marker:
+                pytest.skip(marker.kwargs.get("reason", ""))
+    """
+
+    def __init__(
+        self,
+        name: str = "",
+        nodeid: str = "",
+        markers: list[dict[str, Any]] | None = None,
+        config: Any = None,
+    ) -> None:
+        """Initialize a Node.
+
+        Args:
+            name: Name of the test/node
+            nodeid: Full identifier for the test (e.g., "tests/test_foo.py::test_bar")
+            markers: List of marker dictionaries
+            config: Associated Config object
+        """
+        super().__init__()
+        self.name: str = name
+        self.nodeid: str = nodeid
+        self._markers: list[dict[str, Any]] = markers or []
+        self.config: Any = config
+        self.parent: Any = None
+        self.session: Any = None
+        # Keywords dict for pytest compatibility
+        self.keywords: dict[str, Any] = {}
+        # Add markers to keywords
+        for marker in self._markers:
+            if "name" in marker:
+                self.keywords[marker["name"]] = True
+
+    def get_closest_marker(self, name: str) -> Any:
+        """Get the closest marker with the given name.
+
+        Args:
+            name: Name of the marker to retrieve
+
+        Returns:
+            A marker object with args and kwargs attributes, or None if not found
+
+        Example:
+            skip_marker = request.node.get_closest_marker("skip")
+            if skip_marker:
+                reason = skip_marker.kwargs.get("reason", "")
+        """
+        # Find the first marker with the given name
+        for marker in reversed(self._markers):  # Start from most recently added
+            if marker.get("name") == name:
+                # Return a simple object with args and kwargs attributes
+                return _MarkerInfo(
+                    name=name,
+                    args=marker.get("args", ()),
+                    kwargs=marker.get("kwargs", {}),
+                )
+        return None
+
+    def add_marker(self, marker: Any, append: bool = True) -> None:
+        """Add a marker to this node.
+
+        Args:
+            marker: Marker to add (can be string name or marker object)
+            append: If True, append to markers list; if False, prepend
+
+        Example:
+            request.node.add_marker("slow")
+            request.node.add_marker(pytest.mark.xfail(reason="known bug"))
+        """
+        # Handle string markers
+        if isinstance(marker, str):
+            marker_dict = {"name": marker, "args": (), "kwargs": {}}
+        # Handle ParameterSet/MarkDecorator objects
+        elif hasattr(marker, "__rustest_marks__"):
+            # This is a decorated object with marks
+            marks = getattr(marker, "__rustest_marks__", [])
+            for mark in marks:
+                if append:
+                    self._markers.append(mark)
+                else:
+                    self._markers.insert(0, mark)
+                # Add to keywords
+                if "name" in mark:
+                    self.keywords[mark["name"]] = True
+            return
+        # Handle mark objects with name/args/kwargs
+        elif hasattr(marker, "name"):
+            marker_dict = {
+                "name": marker.name,
+                "args": getattr(marker, "args", ()),
+                "kwargs": getattr(marker, "kwargs", {}),
+            }
+        # Handle dict markers directly
+        elif isinstance(marker, dict):
+            marker_dict = marker
+        else:
+            # Unknown marker type - try to extract what we can
+            marker_dict = {"name": str(marker), "args": (), "kwargs": {}}
+
+        if append:
+            self._markers.append(marker_dict)
+        else:
+            self._markers.insert(0, marker_dict)
+
+        # Add to keywords
+        if "name" in marker_dict:
+            self.keywords[marker_dict["name"]] = True
+
+    def listextrakeywords(self) -> set[str]:
+        """Return a set of extra keywords/markers for this node.
+
+        Returns:
+            Set of marker/keyword names
+        """
+        return set(self.keywords.keys())
+
+
+class _MarkerInfo:
+    """Simple marker info object returned by get_closest_marker()."""
+
+    def __init__(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        self.name = name
+        self.args = args
+        self.kwargs = kwargs
+
+    def __repr__(self) -> str:
+        return f"Mark(name={self.name!r}, args={self.args!r}, kwargs={self.kwargs!r})"
+
+
+class Config:
+    """
+    Pytest-compatible Config object for accessing test configuration.
+
+    This provides basic configuration access for compatibility with pytest
+    fixtures that access request.config.
+
+    **Supported:**
+        - config.getoption(name, default=None): Get command-line option value
+        - config.getini(name): Get configuration value from pytest.ini/setup.cfg/tox.ini
+        - config.rootpath: Root directory path (always returns current directory)
+        - config.inipath: Path to config file (always None in rustest)
+
+    **Limited Support:**
+        - config.pluginmanager: Stub PluginManager (minimal functionality)
+        - config.option: Namespace with option values
+
+    **Not Supported:**
+        - Advanced plugin configuration
+        - Hook specifications
+
+    Example:
+        def test_example(request):
+            verbose = request.config.getoption("verbose", default=0)
+            if verbose > 1:
+                print("Running in verbose mode")
+    """
+
+    def __init__(
+        self, options: dict[str, Any] | None = None, ini_values: dict[str, Any] | None = None
+    ) -> None:
+        """Initialize a Config.
+
+        Args:
+            options: Dictionary of command-line options
+            ini_values: Dictionary of ini configuration values
+        """
+        super().__init__()
+        self._options: dict[str, Any] = options or {}
+        self._ini_values: dict[str, Any] = ini_values or {}
+
+        # Create option namespace for compatibility
+        self.option = _OptionNamespace(self._options)
+
+        # Stub pluginmanager
+        self.pluginmanager = _PluginManagerStub()
+
+        # Paths
+        from pathlib import Path
+
+        self.rootpath: Path = Path.cwd()
+        self.inipath: Path | None = None
+
+    def getoption(self, name: str, default: Any = None, skip: bool = False) -> Any:
+        """Get command-line option value.
+
+        Args:
+            name: Option name (e.g., "verbose", "capture", "tb")
+            default: Default value if option not found
+            skip: If True and option not found, skip the test
+
+        Returns:
+            Option value or default
+
+        Example:
+            verbose = request.config.getoption("verbose", default=0)
+        """
+        # Remove leading dashes from option name
+        clean_name = name.lstrip("-")
+
+        value = self._options.get(clean_name, default)
+
+        if skip and value == default and clean_name not in self._options:
+            # Import skip function from rustest
+            from rustest.decorators import skip as skip_test
+
+            skip_test(f"Option '{name}' not found")
+
+        return value
+
+    def getini(self, name: str) -> Any:
+        """Get configuration value from pytest.ini/setup.cfg/tox.ini.
+
+        Args:
+            name: Configuration option name
+
+        Returns:
+            Configuration value (default empty string/list if not found)
+
+        Example:
+            testpaths = request.config.getini("testpaths")
+        """
+        value = self._ini_values.get(name)
+
+        # Return appropriate default based on common ini values
+        if value is None:
+            # Common list-type ini values
+            if name in {
+                "testpaths",
+                "python_files",
+                "python_classes",
+                "python_functions",
+                "markers",
+                "filterwarnings",
+            }:
+                return []
+            # Common string-type ini values
+            return ""
+
+        return value
+
+    def addinivalue_line(self, name: str, line: str) -> None:
+        """Add a line to an ini-file option.
+
+        This is a no-op in rustest for compatibility.
+
+        Args:
+            name: Option name
+            line: Line to add
+        """
+        # No-op for compatibility
+        pass
+
+
+class _OptionNamespace:
+    """Namespace object for accessing options as attributes."""
+
+    def __init__(self, options: dict[str, Any]) -> None:
+        self._options = options
+
+    def __getattr__(self, name: str) -> Any:
+        return self._options.get(name)
+
+    def __repr__(self) -> str:
+        return f"Namespace({self._options})"
+
+
+class _PluginManagerStub:
+    """Stub PluginManager for basic compatibility."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._plugins: list[Any] = []
+
+    def get_plugin(self, name: str) -> Any:
+        """Get plugin by name (always returns None)."""
+        return None
+
+    def hasplugin(self, name: str) -> bool:
+        """Check if plugin is registered (always returns False)."""
+        return False
+
+    def register(self, plugin: Any, name: str | None = None) -> None:
+        """Register a plugin (no-op for compatibility)."""
+        pass
+
+    def __repr__(self) -> str:
+        return "<PluginManager (stub)>"
+
+
 class FixtureRequest:
     """
     Pytest-compatible FixtureRequest for fixture parametrization.
@@ -124,52 +438,86 @@ class FixtureRequest:
     **Supported:**
         - Type annotations: request: pytest.FixtureRequest
         - request.param: Current parameter value for parametrized fixtures
-        - request.scope: Returns "function"
+        - request.scope: Fixture scope (default: "function")
+        - request.node: Test node object with marker access
+        - request.config: Configuration object with option access
+
+    **Limited Support:**
+        - request.node.get_closest_marker(name): Get marker by name
+        - request.node.add_marker(marker): Add marker to node
+        - request.config.getoption(name): Get command-line option
+        - request.config.getini(name): Get ini configuration value
 
     **NOT Supported (returns None or raises NotImplementedError):**
-        - request.node, function, cls, module, config: Always None
+        - request.function, cls, module: Always None
         - request.fixturename: Always None
         - request.addfinalizer(): Raises NotImplementedError
         - request.getfixturevalue(): Raises NotImplementedError
-        - request.applymarker(): Raises NotImplementedError
-        - request.raiseerror(): Raises NotImplementedError
 
     Common pytest.FixtureRequest attributes:
         - param: Parameter value (for parametrized fixtures) - SUPPORTED
-        - node: Test node object - Always None
+        - node: Test node object - SUPPORTED (basic functionality)
+        - config: Pytest config - SUPPORTED (basic functionality)
         - function: Test function - Always None
         - cls: Test class - Always None
         - module: Test module - Always None
-        - config: Pytest config - Always None
         - fixturename: Name of the fixture - Always None
         - scope: Scope of the fixture - Returns "function"
 
     Example:
         @pytest.fixture(params=[1, 2, 3])
         def number(request: pytest.FixtureRequest):
-            # request.param contains the current parameter value
+            # Access parameter value
             return request.param
 
-        @pytest.fixture(params=["mysql", "postgres"], ids=["MySQL", "PG"])
-        def database(request):
-            return create_db(request.param)
+        @pytest.fixture
+        def conditional_fixture(request):
+            # Check for markers
+            marker = request.node.get_closest_marker("slow")
+            if marker:
+                pytest.skip("Skipping slow test")
+
+            # Access configuration
+            verbose = request.config.getoption("verbose", default=0)
+            if verbose > 1:
+                print(f"Test: {request.node.name}")
+
+            return "fixture_value"
     """
 
-    def __init__(self, param: Any = None) -> None:
-        """Initialize a FixtureRequest with the given param value.
+    def __init__(
+        self,
+        param: Any = None,
+        node_name: str = "",
+        node_markers: list[dict[str, Any]] | None = None,
+        config_options: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize a FixtureRequest.
 
         Args:
             param: The parameter value for parametrized fixtures
+            node_name: Name of the test node
+            node_markers: List of markers applied to the node
+            config_options: Dictionary of configuration options
         """
         super().__init__()
         self.param: Any = param
         self.fixturename: str | None = None
         self.scope: str = "function"
-        self.node: Any = None
+
+        # Create Config and Node objects
+        self.config: Config = Config(options=config_options)
+        self.node: Node = Node(
+            name=node_name,
+            nodeid=node_name,  # Use name as nodeid for now
+            markers=node_markers,
+            config=self.config,
+        )
+
+        # These remain unsupported
         self.function: Any = None
         self.cls: Any = None
         self.module: Any = None
-        self.config: Any = None
 
     def addfinalizer(self, finalizer: Callable[[], None]) -> None:
         """
