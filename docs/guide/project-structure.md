@@ -6,7 +6,7 @@ Understanding how rustest discovers and configures Python import paths is essent
 
 **Rustest automatically sets up `sys.path` so your tests can import project code**, just like pytest. You don't need to manually set `PYTHONPATH` or configure import paths.
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # In your tests - this just works!
 from mypackage import my_function
@@ -55,7 +55,7 @@ myproject/
 
 With this setup, `rustest` will automatically add `myproject/src/` to `sys.path`, allowing your tests to import:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from mypackage import module
 ```
@@ -102,7 +102,7 @@ pythonpath = ["src"]
 - `myproject/` (project root, auto-detected)
 
 **Your tests can import:**
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from mypackage import module1
 from mypackage.module2 import SomeClass
@@ -128,7 +128,7 @@ myproject/
 - `myproject/` (project root)
 
 **Your tests can import:**
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from mypackage import module1
 from mypackage.module2 import SomeClass
@@ -179,7 +179,7 @@ pythonpath = ["src", "lib"]
 ```
 
 Results in:
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 sys.path = [
     '/path/to/myproject/src',   # From configuration
@@ -220,7 +220,7 @@ If found, `src/` is also added to `sys.path`.
 
 All discovered directories are prepended to `sys.path` (added to the beginning):
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 sys.path = [
     '/path/to/myproject/src',  # From config or auto-detected
@@ -254,7 +254,7 @@ myproject/
 
 **This works!** Since `src/` is added to `sys.path`, you can import any package:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from package1 import module
 from package2 import another
@@ -322,7 +322,7 @@ rustest project2/tests/
    ```
 
 2. **Are you using the right import?**
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
    ```python
    # Correct for src/mypackage/module.py
    from mypackage.module import function
@@ -332,7 +332,7 @@ rustest project2/tests/
    ```
 
 3. **Check what's in sys.path:**
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
    ```python
    def test_debug_path():
        import sys
@@ -371,7 +371,7 @@ This is **rarely an issue anymore** since rustest now reads `pyproject.toml` con
    ```
 
 3. **`conftest.py` with path manipulation:**
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
    ```python
    # conftest.py
    import sys
@@ -385,7 +385,7 @@ This is **rarely an issue anymore** since rustest now reads `pyproject.toml` con
 
 This suggests you're relying on the current working directory instead of proper imports:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Bad - depends on current directory
 import sys
@@ -414,7 +414,7 @@ Stick to the src-layout or flat-layout patterns shown above. These work with rus
 
 ### ✅ DO: Use Absolute Imports
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Good
 from mypackage.module import function
@@ -433,7 +433,7 @@ myproject/
 
 ### ❌ DON'T: Manipulate sys.path Manually
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Don't do this in test files
 import sys
@@ -444,7 +444,7 @@ Rustest handles this automatically. Manual path manipulation is error-prone.
 
 ### ❌ DON'T: Use Relative Paths
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Don't do this
 import sys
@@ -469,7 +469,7 @@ myproject/
 ```
 
 Then import them:
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from tests.helpers.utils import helper_function
 ```
@@ -498,7 +498,7 @@ For those interested in the technical details:
 - Tests work the same regardless of where you run `rustest` from
 
 **Can I see what paths were added?**
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 def test_show_paths():
     import sys

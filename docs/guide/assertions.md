@@ -358,7 +358,7 @@ def test_feature_availability():
 
 - **Use `assert`** for straightforward conditions:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 assert value == expected
 assert result is not None
@@ -366,7 +366,7 @@ assert result is not None
 
 - **Use `fail()`** for complex conditional logic:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 if complex_condition_1 or complex_condition_2:
     fail("Detailed explanation of what went wrong")
@@ -374,7 +374,7 @@ if complex_condition_1 or complex_condition_2:
 
 - **Use `fail()`** for early returns with clear messages:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 result = expensive_operation()
 if result.is_error():
@@ -385,7 +385,7 @@ if result.is_error():
 !!! tip "Clear Failure Messages"
     Always include descriptive messages with `fail()` to make debugging easier:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 # Good - describes what went wrong
 fail(f"Expected user {user_id} to exist, but not found in database")

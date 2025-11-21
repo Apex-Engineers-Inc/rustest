@@ -601,8 +601,10 @@ fn extract_python_code_blocks(content: &str) -> Vec<(String, usize, bool)> {
         let trimmed = line.trim();
 
         // Check for skip marker before code blocks
+        // Support both rustest and pytest variants for compatibility
         if !in_code_block
-            && (trimmed.contains("<!--pytest.mark.skip-->")
+            && (trimmed.contains("<!--rustest.mark.skip-->")
+                || trimmed.contains("<!--pytest.mark.skip-->")
                 || trimmed.contains("<!--pytest-codeblocks:skip-->"))
         {
             has_skip_marker = true;

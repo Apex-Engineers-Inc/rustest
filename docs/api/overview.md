@@ -105,7 +105,7 @@ print(f"{report.passed}/{report.total} passed")
 
 All public APIs include full type annotations for use with type checkers like mypy, pyright, or basedpyright:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from rustest import run, RunReport
 from typing import Optional

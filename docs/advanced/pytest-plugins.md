@@ -308,7 +308,7 @@ async def test_with_async_fixture(async_database):
 
 **Common patterns**:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from unittest.mock import patch, MagicMock, call
 
@@ -325,7 +325,7 @@ def test_multiple_patches():
         pass  # Test code here
 ```
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Spy on methods
 def test_spy():

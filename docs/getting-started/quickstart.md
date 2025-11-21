@@ -20,7 +20,7 @@ def test_string_operations() -> None:
 
 Run your tests with the `rustest` command:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 rustest
 ```
@@ -126,7 +126,7 @@ def test_database_integration() -> None:
 
 ### Basic Usage
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 # Run all tests in current directory
 rustest

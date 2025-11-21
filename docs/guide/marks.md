@@ -398,7 +398,7 @@ Use the `-m` flag to run only tests matching a mark expression:
 
 ### Basic Mark Filtering
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 # Run only slow tests
 rustest -m "slow"
@@ -412,7 +412,7 @@ rustest -m "unit"
 
 ### Negation
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 # Run all tests except slow ones
 rustest -m "not slow"
@@ -425,7 +425,7 @@ rustest -m "not integration"
 
 Combine multiple mark filters with `and` and `or`:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 # Run tests marked as both slow AND integration
 rustest -m "slow and integration"
@@ -441,7 +441,7 @@ rustest -m "slow and not integration"
 
 Use parentheses for complex boolean logic:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 # Run tests that are either (slow or fast) but not integration
 rustest -m "(slow or fast) and not integration"
@@ -454,7 +454,7 @@ rustest -m "(critical or smoke) and not slow"
 
 You can combine mark filtering with test name pattern matching:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 # Run slow database tests
 rustest -m "slow" -k "database"
@@ -465,7 +465,7 @@ rustest -m "integration" -k "api"
 
 ### Common Filtering Patterns
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 # Fast feedback loop - run only fast unit tests
 rustest -m "unit and not slow"

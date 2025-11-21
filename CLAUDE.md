@@ -267,37 +267,37 @@ def test_example(sample):
 
 #### Skipping Code Blocks
 
-Use `<!--pytest.mark.skip-->` to skip code blocks that are examples only:
+Use `<!--rustest.mark.skip-->` to skip code blocks that are examples only:
 
 ```markdown
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # This is an example that won't be executed
 assert value == expected  # These variables don't need to exist
 ```
 ```
 
+!!! note "pytest compatibility"
+    For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+
 #### Guidelines for Documentation Code
 
 1. **Make code executable**: All code blocks should be valid, runnable Python unless explicitly skipped
 2. **Import everything needed**: Include all imports in the code block
 3. **Use complete examples**: Provide full context so the code can execute standalone
-4. **Skip conceptual examples**: Use `<!--pytest.mark.skip-->` for pseudo-code or incomplete snippets
-5. **Test before committing**: Run `uv run pytest README.md --codeblocks` locally
+4. **Skip conceptual examples**: Use `<!--rustest.mark.skip-->` for pseudo-code or incomplete snippets
+5. **Test before committing**: Run `uv run python -m rustest README.md` locally
 
 #### Testing Documentation Locally
 
 ```bash
 # Test all documentation code blocks
-uv run pytest README.md --codeblocks
-uv run pytest docs/guide/writing-tests.md --codeblocks
-uv run pytest docs/guide/fixtures.md --codeblocks
-uv run pytest docs/guide/assertions.md --codeblocks
-uv run pytest docs/guide/test-classes.md --codeblocks
-
-# Or test with rustest
 uv run python -m rustest README.md
 uv run python -m rustest docs/guide/fixtures.md -v
+
+# Test entire directories
+uv run python -m rustest docs/guide/
+uv run python -m rustest README.md docs/guide/ docs/api/
 ```
 
 #### Common Patterns
@@ -316,7 +316,7 @@ def test_connection(database):
 
 **Needs skip marker - Pseudo-code:**
 ```markdown
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Conceptual example
 result = expensive_operation()

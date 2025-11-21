@@ -242,7 +242,7 @@ report = run(paths=["tests"])
 
 ### Testing Specific Files
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -406,7 +406,7 @@ if report.failed > 0:
 
 ### Use Pattern Filtering
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Good - filter tests programmatically
 report = run(paths=["tests"], pattern="integration")
@@ -418,7 +418,7 @@ integration_tests = [r for r in report.results if "integration" in r.name]
 
 ### Capture Output Appropriately
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # In CI - capture output
 report = run(paths=["tests"], capture_output=True)

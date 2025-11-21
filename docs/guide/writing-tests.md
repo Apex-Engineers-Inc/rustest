@@ -12,7 +12,7 @@ Rustest automatically discovers tests by looking for:
 
 ### Example Directory Structure
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 my_project/
 ├── src/
@@ -178,7 +178,7 @@ See [Fixtures](fixtures.md) for more information.
 
 When you run rustest, you'll see clean, informative output:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 ✓✓✓⊘✗
 
@@ -201,12 +201,12 @@ test_broken_feature (test_example.py)
 
 For more detailed output showing test names and timing, use the `-v` or `--verbose` flag:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 rustest -v
 ```
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 /home/user/project/test_example.py
   ✓ test_basic_assertion 0ms
@@ -229,7 +229,7 @@ Verbose mode shows:
 
 By default, rustest captures stdout/stderr. To see print statements during test execution:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```bash
 rustest --no-capture
 ```
