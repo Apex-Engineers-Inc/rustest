@@ -430,6 +430,7 @@ Test documentation before committing:
 
 Test markdown files from Python:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 

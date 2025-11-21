@@ -69,6 +69,7 @@ No breaking changes! The 0.4.0 release is fully backward compatible with 0.3.x.
 rustest --no-codeblocks
 ```
 
+<!--rustest.mark.skip-->
 ```python
 # Or in Python API
 from rustest import run

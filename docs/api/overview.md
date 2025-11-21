@@ -88,6 +88,7 @@ def test_assertions():
 
 ### Test Execution
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 

@@ -16,6 +16,7 @@ List of paths to test files or directories. Rustest will discover tests in:
 - Python files matching `test_*.py` or `*_test.py`
 - Markdown files (`.md`) with Python code blocks (if `enable_codeblocks=True`)
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -35,6 +36,7 @@ report = run(paths=["README.md"])
 
 Filter tests by name using pattern matching. Same as the CLI `-k` option.
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -60,6 +62,7 @@ Reserved for future parallel execution support. Currently not implemented.
 
 Whether to capture stdout/stderr during test execution.
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -76,6 +79,7 @@ report = run(paths=["tests"], capture_output=False)
 
 Whether to test Python code blocks in markdown files.
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 

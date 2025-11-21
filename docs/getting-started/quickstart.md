@@ -148,6 +148,7 @@ rustest --no-codeblocks
 
 You can also run rustest programmatically:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 

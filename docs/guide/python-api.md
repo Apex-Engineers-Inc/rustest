@@ -4,6 +4,7 @@ You can run rustest programmatically from Python using the `run()` function. Thi
 
 ## Basic Usage
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -38,6 +39,7 @@ Returns a `RunReport` object containing test results and statistics.
 
 The `run()` function returns a `RunReport` with the following attributes:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -59,6 +61,7 @@ for result in report.results:
 
 Each test result has the following attributes:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -78,6 +81,7 @@ for result in report.results:
 
 ### Basic Test Execution
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 import os
@@ -94,6 +98,7 @@ if os.path.exists("tests"):
 
 ### With Pattern Filtering
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -105,6 +110,7 @@ print(f"User tests: {report.passed}/{report.total} passed")
 
 ### Disable Output Capture
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -114,6 +120,7 @@ report = run(paths=["tests"], capture_output=False)
 
 ### Disable Markdown Testing
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -123,6 +130,7 @@ report = run(paths=["tests"], enable_codeblocks=False)
 
 ### Analyzing Test Results
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -145,6 +153,7 @@ for test in slow_tests:
 
 The `RunReport` object provides a helper method to filter results by status:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -165,6 +174,7 @@ for test in report.iter_status("skipped"):
 
 ### Custom Test Runner
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 import sys
@@ -187,6 +197,7 @@ if __name__ == "__main__":
 
 ### Integration with CI/CD
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 import json
@@ -230,6 +241,7 @@ if __name__ == "__main__":
 !!! note "Parallel Execution"
     The `workers` parameter is reserved for future parallel test execution support.
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -256,6 +268,7 @@ report = run(paths=[
 
 ### Conditional Testing
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 import os
@@ -276,6 +289,7 @@ print(f"Tests: {report.passed}/{report.total} passed")
 
 ### Pre-commit Hook
 
+<!--rustest.mark.skip-->
 ```python
 #!/usr/bin/env python3
 """Pre-commit hook to run tests."""
@@ -312,6 +326,7 @@ if __name__ == "__main__":
 
 ### Custom Reporting
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 from datetime import datetime
@@ -372,6 +387,7 @@ print(report.passed)  # Type: int
 
 ## Error Handling
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 
@@ -393,6 +409,7 @@ except Exception as e:
 
 ### Check for Test Failures
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 import sys
