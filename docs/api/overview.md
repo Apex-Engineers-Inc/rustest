@@ -52,7 +52,7 @@ def my_fixture():
 def test_function(arg1, arg2):
     assert arg1 < arg2
 
-@skip("Not implemented yet")
+@mark.skip(reason="Not implemented yet")
 def test_skip():
     pass
 
