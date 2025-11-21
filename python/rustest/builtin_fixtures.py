@@ -846,17 +846,17 @@ class MockerFixture:
 
             def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 """Equivalent to mock.patch()."""
-                p = mock.patch(*args, **kwargs)
-                mocked = p.start()
+                p = mock.patch(*args, **kwargs)  # type: ignore[misc]
+                mocked = p.start()  # type: ignore[misc]
                 fixture._patches.append(p)
-                return mocked
+                return mocked  # type: ignore[no-any-return]
 
             def object(self, *args: Any, **kwargs: Any) -> Any:
                 """Equivalent to mock.patch.object()."""
-                p = mock.patch.object(*args, **kwargs)
-                mocked = p.start()
+                p = mock.patch.object(*args, **kwargs)  # type: ignore[misc]
+                mocked = p.start()  # type: ignore[misc]
                 fixture._patches.append(p)
-                return mocked
+                return mocked  # type: ignore[no-any-return]
 
             def multiple(self, *args: Any, **kwargs: Any) -> Any:
                 """Equivalent to mock.patch.multiple()."""
