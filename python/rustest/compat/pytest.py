@@ -245,7 +245,9 @@ class Node:
 
         # Add to keywords
         if "name" in marker_dict:
-            self.keywords[marker_dict["name"]] = True
+            name = marker_dict["name"]
+            if isinstance(name, str):
+                self.keywords[name] = True
 
     def listextrakeywords(self) -> set[str]:
         """Return a set of extra keywords/markers for this node.
@@ -260,6 +262,7 @@ class _MarkerInfo:
     """Simple marker info object returned by get_closest_marker()."""
 
     def __init__(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        super().__init__()
         self.name = name
         self.args = args
         self.kwargs = kwargs
@@ -396,6 +399,7 @@ class _OptionNamespace:
     """Namespace object for accessing options as attributes."""
 
     def __init__(self, options: dict[str, Any]) -> None:
+        super().__init__()
         self._options = options
 
     def __getattr__(self, name: str) -> Any:

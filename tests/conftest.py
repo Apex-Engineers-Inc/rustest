@@ -77,6 +77,7 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
         compat_module.fixture = _fixture
         compat_module.parametrize = _parametrize
         compat_module.skip = _skip
+        compat_module.skip_decorator = _skip  # Alias for compatibility
         compat_module.mark = pytest.mark
 
         # Inject rustest compatibility shim immediately at import time
