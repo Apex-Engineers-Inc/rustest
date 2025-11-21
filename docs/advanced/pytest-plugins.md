@@ -308,6 +308,7 @@ async def test_with_async_fixture(async_database):
 
 **Common patterns**:
 
+<!--pytest.mark.skip-->
 ```python
 from unittest.mock import patch, MagicMock, call
 
@@ -315,14 +316,17 @@ from unittest.mock import patch, MagicMock, call
 def test_patch():
     with patch('requests.get') as mock_get:
         mock_get.return_value.status_code = 200
-        # Test code here
+        pass  # Test code here
 
 # Multiple patches
 def test_multiple_patches():
     with patch('module.func1') as mock1, \
          patch('module.func2') as mock2:
-        # Test code here
+        pass  # Test code here
+```
 
+<!--pytest.mark.skip-->
+```python
 # Spy on methods
 def test_spy():
     obj = MyClass()
