@@ -1234,6 +1234,130 @@ def test_cache_key_organization(cache) -> None:
     rm -rf .rustest_cache/
     ```
 
+### mocker - Mocking and Test Doubles
+
+The `mocker` fixture provides a pytest-mock compatible API for creating mocks, stubs, and spies in your tests. It wraps Python's `unittest.mock` module with automatic cleanup.
+
+```python
+import os
+
+def test_basic_mocking(mocker):
+    """Patch a function with a mock."""
+    mock_remove = mocker.patch('os.remove')
+    os.remove('/tmp/test.txt')
+    mock_remove.assert_called_once_with('/tmp/test.txt')
+
+def test_mock_with_return_value(mocker):
+    """Mock with a specific return value."""
+    mock_exists = mocker.patch('os.path.exists', return_value=True)
+    result = os.path.exists('/nonexistent')
+    assert result is True
+    mock_exists.assert_called_once_with('/nonexistent')
+
+def test_spy_on_method(mocker):
+    """Spy on a method while preserving its behavior."""
+    class Calculator:
+        def add(self, a, b):
+            return a + b
+
+    calc = Calculator()
+    spy = mocker.spy(calc, 'add')
+    result = calc.add(2, 3)
+
+    # Original behavior is preserved
+    assert result == 5
+    # But we can verify the call
+    spy.assert_called_once_with(2, 3)
+
+def test_stub_for_callbacks(mocker):
+    """Create a stub that accepts any arguments."""
+    callback = mocker.stub(name='callback')
+
+    # Use the stub in your code
+    callback('arg1', 'arg2')
+    callback.assert_called_once_with('arg1', 'arg2')
+
+def test_direct_mock_creation(mocker):
+    """Create mocks directly for complete control."""
+    mock_obj = mocker.MagicMock()
+    mock_obj.method.return_value = 'result'
+    assert mock_obj.method() == 'result'
+    mock_obj.method.assert_called_once()
+```
+
+!!! tip "pytest-mock Compatibility"
+    The `mocker` fixture is designed to be API-compatible with [pytest-mock](https://pytest-mock.readthedocs.io/), making it easy to migrate tests from pytest to rustest.
+
+**Main patching methods:**
+
+- `mocker.patch(target)` - Patch an object or module
+- `mocker.patch.object(target, attr)` - Patch an attribute
+- `mocker.patch.multiple(target, **kwargs)` - Patch multiple attributes
+- `mocker.patch.dict(target, values)` - Patch a dictionary
+
+**Utility methods:**
+
+- `mocker.spy(obj, name)` - Spy on a method while calling through
+- `mocker.stub(name=None)` - Create a stub that accepts any arguments
+- `mocker.async_stub(name=None)` - Create an async stub
+
+**Management methods:**
+
+- `mocker.resetall()` - Reset all mocks
+- `mocker.stopall()` - Stop all patches
+- `mocker.stop(mock)` - Stop a specific patch
+
+**Direct access to mock classes:**
+
+- `mocker.Mock`, `mocker.MagicMock`, `mocker.AsyncMock`
+- `mocker.PropertyMock`, `mocker.NonCallableMock`
+- `mocker.ANY`, `mocker.call`, `mocker.sentinel`
+- `mocker.mock_open`, `mocker.seal`
+
+```python
+def test_advanced_mocking(mocker):
+    """Advanced mocking patterns."""
+    # Mock open() to simulate file reading
+    m = mocker.mock_open(read_data='file content')
+    mocker.patch('builtins.open', m)
+
+    with open('/tmp/test.txt') as f:
+        content = f.read()
+
+    assert content == 'file content'
+
+def test_any_matcher(mocker):
+    """Use ANY to match any argument."""
+    mock_fn = mocker.Mock()
+    mock_fn('test', 123)
+    # Don't care about the second argument
+    mock_fn.assert_called_once_with('test', mocker.ANY)
+
+def test_call_tracking(mocker):
+    """Track multiple calls."""
+    mock_fn = mocker.Mock()
+    mock_fn(1, 2)
+    mock_fn(3, 4)
+
+    assert mock_fn.call_args_list == [
+        mocker.call(1, 2),
+        mocker.call(3, 4)
+    ]
+
+def test_reset_mocks(mocker):
+    """Reset mocks between test phases."""
+    mock_fn = mocker.Mock(return_value=42)
+    result = mock_fn()
+    assert result == 42
+
+    # Reset all mocks
+    mocker.resetall()
+    mock_fn.assert_not_called()
+```
+
+!!! note "Automatic Cleanup"
+    All patches and mocks are automatically cleaned up after the test completes. You don't need to manually call `stop()` or `restore()`.
+
 ### Combining Built-in Fixtures
 
 You can combine multiple built-in fixtures in your tests:

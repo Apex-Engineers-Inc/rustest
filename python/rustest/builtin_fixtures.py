@@ -780,10 +780,346 @@ def cache() -> Cache:
     return Cache(cache_dir)
 
 
+class MockerFixture:
+    """Fixture for mocking that provides pytest-mock compatible API.
+
+    This fixture wraps Python's unittest.mock module and provides automatic
+    cleanup of all patches and mocks after the test completes. It's designed
+    to be API-compatible with pytest-mock's mocker fixture.
+
+    The fixture provides:
+    - mocker.patch(): Patch objects and modules
+    - mocker.patch.object(): Patch object attributes
+    - mocker.patch.multiple(): Patch multiple attributes
+    - mocker.patch.dict(): Patch dictionaries
+    - mocker.spy(): Spy on function calls
+    - mocker.stub(): Create stub functions
+    - mocker.Mock, mocker.MagicMock, etc.: Direct access to mock classes
+    """
+
+    def __init__(self) -> None:
+        from unittest import mock
+
+        super().__init__()
+        self._patches: list[Any] = []
+        self._mocks: list[Any] = []
+        self._mock_module = mock
+
+        # Wrap Mock classes to track them for resetall()
+        self.Mock = self._make_mock_wrapper(mock.Mock)
+        self.MagicMock = self._make_mock_wrapper(mock.MagicMock)
+        self.PropertyMock = self._make_mock_wrapper(mock.PropertyMock)
+        self.AsyncMock = self._make_mock_wrapper(mock.AsyncMock)
+        self.NonCallableMock = self._make_mock_wrapper(mock.NonCallableMock)
+        self.NonCallableMagicMock = self._make_mock_wrapper(mock.NonCallableMagicMock)
+
+        # Expose other mock utilities directly (these don't need wrapping)
+        self.ANY = mock.ANY
+        self.DEFAULT = mock.DEFAULT
+        self.call = mock.call
+        self.sentinel = mock.sentinel
+        self.mock_open = mock.mock_open
+        self.seal = mock.seal
+
+        # Create nested patcher class for patch.object, patch.multiple, etc.
+        self.patch = self._make_patcher()
+
+    def _make_mock_wrapper(self, mock_class: Any) -> Any:
+        """Wrap a mock class to track instances for resetall()."""
+        fixture = self
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            mock_obj = mock_class(*args, **kwargs)
+            fixture._mocks.append(mock_obj)
+            return mock_obj
+
+        return wrapper
+
+    def _make_patcher(self) -> Any:
+        """Create a patcher object with methods for different patch types."""
+        from unittest import mock
+
+        fixture = self
+
+        class _Patcher:
+            """Nested patcher class that provides patch.object, patch.multiple, etc."""
+
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
+                """Equivalent to mock.patch()."""
+                p = mock.patch(*args, **kwargs)
+                mocked = p.start()
+                fixture._patches.append(p)
+                return mocked
+
+            def object(self, *args: Any, **kwargs: Any) -> Any:
+                """Equivalent to mock.patch.object()."""
+                p = mock.patch.object(*args, **kwargs)
+                mocked = p.start()
+                fixture._patches.append(p)
+                return mocked
+
+            def multiple(self, *args: Any, **kwargs: Any) -> Any:
+                """Equivalent to mock.patch.multiple()."""
+                p = mock.patch.multiple(*args, **kwargs)
+                mocked = p.start()
+                fixture._patches.append(p)
+                return mocked
+
+            def dict(self, *args: Any, **kwargs: Any) -> Any:
+                """Equivalent to mock.patch.dict()."""
+                p = mock.patch.dict(*args, **kwargs)
+                mocked = p.start()
+                fixture._patches.append(p)
+                return mocked
+
+        return _Patcher()
+
+    def spy(self, obj: Any, name: str) -> Any:
+        """Create a spy that wraps an existing function/method.
+
+        The spy will call through to the original function while recording
+        all calls. Useful for verifying that a function was called without
+        changing its behavior.
+
+        Args:
+            obj: The object containing the method to spy on
+            name: The name of the method to spy on
+
+        Returns:
+            A MagicMock that wraps the original method
+
+        Example:
+            class Calculator:
+                def add(self, a, b):
+                    return a + b
+
+            def test_spy(mocker):
+                calc = Calculator()
+                spy = mocker.spy(calc, 'add')
+                result = calc.add(2, 3)
+                assert result == 5
+                spy.assert_called_once_with(2, 3)
+        """
+        from unittest import mock
+
+        original = getattr(obj, name)
+
+        # Create a wrapper that calls through to the original
+        spy_mock = mock.MagicMock(side_effect=original)
+
+        # Patch the object with our spy
+        p = mock.patch.object(obj, name, spy_mock)
+        p.start()
+        self._patches.append(p)
+
+        # Store spy metadata (pytest-mock compatibility)
+        spy_mock.spy_return = None
+        spy_mock.spy_exception = None
+
+        return spy_mock
+
+    def stub(self, name: str | None = None) -> Any:
+        """Create a stub function that accepts any arguments.
+
+        Stubs are useful for callbacks and other scenarios where you need
+        a function that does nothing but can be verified for calls.
+
+        Args:
+            name: Optional name for the stub (for better error messages)
+
+        Returns:
+            A MagicMock configured as a stub
+
+        Example:
+            def test_callback(mocker):
+                callback = mocker.stub(name='callback')
+                process_data(callback)
+                callback.assert_called_once()
+        """
+        from unittest import mock
+
+        stub_mock = mock.MagicMock(name=name)
+        self._mocks.append(stub_mock)
+        return stub_mock
+
+    def async_stub(self, name: str | None = None) -> Any:
+        """Create an async stub function.
+
+        Similar to stub() but for async functions.
+
+        Args:
+            name: Optional name for the stub
+
+        Returns:
+            An AsyncMock configured as a stub
+
+        Example:
+            async def test_async_callback(mocker):
+                callback = mocker.async_stub(name='async_callback')
+                await process_async(callback)
+                callback.assert_called_once()
+        """
+        from unittest import mock
+
+        stub_mock = mock.AsyncMock(name=name)
+        self._mocks.append(stub_mock)
+        return stub_mock
+
+    def resetall(self, *, return_value: bool = False, side_effect: bool = False) -> None:
+        """Reset all mocks created by this fixture.
+
+        Args:
+            return_value: If True, also reset return_value
+            side_effect: If True, also reset side_effect
+
+        Example:
+            def test_multiple_calls(mocker):
+                mock_fn = mocker.Mock(return_value=42)
+                assert mock_fn() == 42
+                mock_fn.assert_called_once()
+
+                mocker.resetall()
+                mock_fn.assert_not_called()
+        """
+        for mock_obj in self._mocks:
+            mock_obj.reset_mock(return_value=return_value, side_effect=side_effect)
+
+        # Reset mocks from patches
+        for patch in self._patches:
+            try:
+                # Access the mock object from the patch
+                if hasattr(patch, "new") and hasattr(patch.new, "reset_mock"):
+                    patch.new.reset_mock(return_value=return_value, side_effect=side_effect)
+            except Exception:  # pragma: no cover
+                # Some patches might not have accessible mocks
+                pass
+
+    def stopall(self) -> None:
+        """Stop all patches started by this fixture.
+
+        This is called automatically during cleanup but can be called
+        manually if needed.
+
+        Example:
+            def test_manual_stop(mocker):
+                mock_fn = mocker.patch('os.remove')
+                mocker.stopall()
+                # Patches are now stopped
+        """
+        for patch in reversed(self._patches):
+            try:
+                patch.stop()
+            except Exception:  # pragma: no cover
+                # Patch might already be stopped
+                pass
+        self._patches.clear()
+
+    def stop(self, mock_obj: Any) -> None:
+        """Stop a specific patch by its mock object.
+
+        Args:
+            mock_obj: The mock object returned by patch() or spy()
+
+        Example:
+            def test_selective_stop(mocker):
+                mock1 = mocker.patch('os.remove')
+                mock2 = mocker.patch('os.path.exists')
+
+                mocker.stop(mock1)
+                # mock1 is stopped, mock2 is still active
+        """
+        # Find and stop the patch associated with this mock
+        for i, patch in enumerate(self._patches):
+            try:
+                if hasattr(patch, "new") and patch.new is mock_obj:
+                    patch.stop()
+                    self._patches.pop(i)
+                    return
+            except Exception:  # pragma: no cover
+                continue
+
+        # If not found in patches, try to stop it directly
+        if hasattr(mock_obj, "stop"):
+            try:
+                mock_obj.stop()
+            except Exception:  # pragma: no cover
+                pass
+
+
+@fixture
+def mocker() -> Generator[MockerFixture, None, None]:
+    """
+    Fixture for mocking that provides pytest-mock compatible API.
+
+    The mocker fixture provides a thin wrapper around Python's unittest.mock
+    with automatic cleanup. It's designed to be API-compatible with pytest-mock.
+
+    **Main patching methods:**
+        - mocker.patch(target, **kwargs): Patch an object
+        - mocker.patch.object(target, attr, **kwargs): Patch an attribute
+        - mocker.patch.multiple(target, **kwargs): Patch multiple attributes
+        - mocker.patch.dict(target, values, **kwargs): Patch a dictionary
+
+    **Utility methods:**
+        - mocker.spy(obj, name): Spy on a method while calling through
+        - mocker.stub(name=None): Create a stub that accepts any arguments
+        - mocker.async_stub(name=None): Create an async stub
+
+    **Management methods:**
+        - mocker.resetall(): Reset all mocks
+        - mocker.stopall(): Stop all patches
+        - mocker.stop(mock): Stop a specific patch
+
+    **Direct access to mock classes:**
+        - mocker.Mock, mocker.MagicMock, mocker.AsyncMock
+        - mocker.PropertyMock, mocker.NonCallableMock
+        - mocker.ANY, mocker.call, mocker.sentinel
+        - mocker.mock_open, mocker.seal
+
+    Example:
+        def test_basic_mocking(mocker):
+            # Patch a function
+            mock_remove = mocker.patch('os.remove')
+            os.remove('/tmp/file')
+            mock_remove.assert_called_once_with('/tmp/file')
+
+        def test_spy(mocker):
+            # Spy on a method
+            obj = MyClass()
+            spy = mocker.spy(obj, 'method')
+            result = obj.method(42)
+            spy.assert_called_once_with(42)
+
+        def test_stub(mocker):
+            # Create a stub for callbacks
+            callback = mocker.stub(name='callback')
+            process_with_callback(callback)
+            callback.assert_called()
+
+        def test_mock_return_value(mocker):
+            # Mock with return value
+            mock_fn = mocker.patch('my_module.expensive_function')
+            mock_fn.return_value = 42
+            assert my_module.expensive_function() == 42
+
+        def test_direct_mock_usage(mocker):
+            # Use Mock classes directly
+            mock_obj = mocker.MagicMock()
+            mock_obj.method.return_value = 'result'
+            assert mock_obj.method() == 'result'
+    """
+    m = MockerFixture()
+    try:
+        yield m
+    finally:
+        m.stopall()
+
+
 __all__ = [
     "Cache",
     "CaptureFixture",
     "LogCaptureFixture",
+    "MockerFixture",
     "MonkeyPatch",
     "TmpDirFactory",
     "TmpPathFactory",
@@ -791,6 +1127,7 @@ __all__ = [
     "caplog",
     "capsys",
     "capfd",
+    "mocker",
     "monkeypatch",
     "tmpdir",
     "tmpdir_factory",
