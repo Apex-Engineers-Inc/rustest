@@ -248,8 +248,9 @@ def skip_decorator(reason: str | None = None) -> Callable[[Callable[P, R]], Call
 
 def parametrize(
     arg_names: str | Sequence[str],
-    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet],
+    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
     *,
+    argvalues: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
     ids: Sequence[str] | Callable[[Any], str | None] | None = None,
     indirect: bool | Sequence[str] = False,
 ) -> Callable[[Callable[Q, S]], Callable[Q, S]]:
@@ -257,11 +258,17 @@ def parametrize(
 
     Args:
         arg_names: Parameter name(s) as a string or sequence
-        values: Parameter values for each test case
+        values: Parameter values for each test case (rustest style)
+        argvalues: Parameter values for each test case (pytest style, alias for values)
         ids: Test IDs - either a list of strings or a callable
         indirect: If True, pass values to fixtures instead of test.
                   Note: indirect parametrization has limited support in rustest.
     """
+    # Support both 'values' (rustest style) and 'argvalues' (pytest style)
+    actual_values = argvalues if argvalues is not None else values
+    if actual_values is None:
+        msg = "parametrize() requires either 'values' or 'argvalues' parameter"
+        raise TypeError(msg)
     # Note: indirect parametrization is accepted but has limited support
     # The values are still passed as test parameters
     if indirect:
@@ -276,7 +283,7 @@ def parametrize(
     normalized_names = _normalize_arg_names(arg_names)
 
     def decorator(func: Callable[Q, S]) -> Callable[Q, S]:
-        cases = _build_cases(normalized_names, values, ids)
+        cases = _build_cases(normalized_names, actual_values, ids)
         setattr(func, "__rustest_parametrization__", cases)
         return func
 
