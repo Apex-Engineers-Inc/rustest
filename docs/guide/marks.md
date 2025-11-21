@@ -4,20 +4,22 @@ Marks allow you to categorize and organize your tests. You can use marks to skip
 
 ## Skipping Tests
 
-### Using @skip
+### Using skip() Function
 
-Skip tests that aren't ready or are temporarily broken:
+Skip tests dynamically at runtime:
 
 ```python
 from rustest import skip
+import sys
 
-@skip("Feature not implemented yet")
 def test_future_feature() -> None:
+    skip("Feature not implemented yet")
     assert False  # This won't run
 
-@skip()
-def test_temporarily_disabled() -> None:
-    assert False
+def test_platform_specific() -> None:
+    if sys.platform == "win32":
+        skip("Not supported on Windows")
+    # Test code here
 ```
 
 ### Using @mark.skip
@@ -36,18 +38,31 @@ def test_also_skipped() -> None:
     assert False
 ```
 
-### Conditional Skipping
+### Conditional Skipping with Decorator
 
-Skip tests based on runtime conditions:
+Use `@mark.skip` for conditional skipping at decoration time:
+
+```python
+import os
+from rustest import mark
+
+should_skip = not os.getenv("RUN_EXPENSIVE_TESTS")
+
+@mark.skip(reason="Expensive test - set RUN_EXPENSIVE_TESTS=1") if should_skip else lambda f: f
+def test_expensive_operation() -> None:
+    # This runs only if RUN_EXPENSIVE_TESTS is set
+    pass
+```
+
+Or use the `skip()` function for runtime conditional skipping:
 
 ```python
 import os
 from rustest import skip
 
-should_skip = not os.getenv("RUN_EXPENSIVE_TESTS")
-
-@skip("Expensive test - set RUN_EXPENSIVE_TESTS=1" if should_skip else None)
 def test_expensive_operation() -> None:
+    if not os.getenv("RUN_EXPENSIVE_TESTS"):
+        skip("Expensive test - set RUN_EXPENSIVE_TESTS=1")
     # This runs only if RUN_EXPENSIVE_TESTS is set
     pass
 ```
@@ -597,25 +612,27 @@ tests/
     └── test_workflows.py
 ```
 
-## Skip vs Mark.skip
+## Skip Function vs @mark.skip Decorator
 
-Both approaches work identically:
+Use `skip()` for dynamic runtime skipping and `@mark.skip` for decorator-based skipping:
 
 ```python
 from rustest import skip, mark
+import os
 
-# Using @skip
-@skip("Not ready")
-def test_a():
-    pass
+# Using skip() function - for runtime conditional skipping
+def test_a() -> None:
+    if not os.getenv("FEATURE_READY"):
+        skip("Not ready")
+    # Test code here - only runs if FEATURE_READY is set
 
-# Using @mark.skip
+# Using @mark.skip decorator - for decoration-time skipping
 @mark.skip(reason="Not ready")
-def test_b():
+def test_b() -> None:
     pass
 ```
 
-Choose whichever style you prefer. The `@skip` decorator is more concise, while `@mark.skip` is consistent with other marks.
+Use `skip()` when you need to check runtime conditions, and use `@mark.skip` when you know at decoration time that a test should be skipped.
 
 ## Next Steps
 
