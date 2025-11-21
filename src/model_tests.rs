@@ -40,6 +40,7 @@ mod tests {
                 skip_reason: None,
                 marks: vec![],
                 class_name: None,
+                fixture_param_indices: IndexMap::new(),
             };
 
             let unique_id = test_case.unique_id();
@@ -62,6 +63,7 @@ mod tests {
                 skip_reason: Some("Not implemented yet".to_string()),
                 marks: vec![],
                 class_name: None,
+                fixture_param_indices: IndexMap::new(),
             };
 
             assert_eq!(
@@ -284,6 +286,7 @@ mod tests {
                 skip_reason: None,
                 marks: vec![],
                 class_name: None,
+                fixture_param_indices: IndexMap::new(),
             };
 
             assert_eq!(test_case.parameters.len(), 2);

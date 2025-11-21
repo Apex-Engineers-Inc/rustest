@@ -519,13 +519,19 @@ fn collect_from_markdown(
     let mut tests = Vec::new();
     let code_blocks = extract_python_code_blocks(&content);
 
-    for (index, code) in code_blocks.into_iter().enumerate() {
-        // Create a test name based on the block index
-        let test_name = format!("codeblock_{}", index);
-        let display_name = format!("{}[{}]", path.display(), test_name);
+    for (index, (code, line_number)) in code_blocks.into_iter().enumerate() {
+        // Create a test name that includes the line number for clarity
+        let test_name = format!("codeblock_{}_line_{}", index, line_number);
+        // Create a display name that looks like: path.md::codeblock_0::line_15
+        let display_name = format!(
+            "{}::codeblock_{}::line_{}",
+            path.display(),
+            index,
+            line_number
+        );
 
         // Create a Python callable that executes the code block
-        let callable = create_codeblock_callable(py, &code)?;
+        let callable = create_codeblock_callable(py, &code, path, line_number)?;
 
         // Create codeblock mark
         let codeblock_mark = Mark::new(
@@ -571,28 +577,31 @@ fn collect_from_markdown(
 }
 
 /// Extract Python code blocks from markdown content.
-/// Returns a vector of Python code strings.
-fn extract_python_code_blocks(content: &str) -> Vec<String> {
+/// Returns a vector of tuples containing (code, line_number) where line_number
+/// is the line where the code block starts (the ``` line).
+fn extract_python_code_blocks(content: &str) -> Vec<(String, usize)> {
     let mut code_blocks = Vec::new();
     let mut in_code_block = false;
     let mut current_block = String::new();
     let mut block_language = String::new();
+    let mut block_start_line = 0;
 
-    for line in content.lines() {
+    for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
         if let Some(stripped) = trimmed.strip_prefix("```") {
             if in_code_block {
                 // End of code block
                 if block_language == "python" {
-                    code_blocks.push(current_block.clone());
+                    code_blocks.push((current_block.clone(), block_start_line));
                 }
                 current_block.clear();
                 block_language.clear();
                 in_code_block = false;
             } else {
-                // Start of code block
+                // Start of code block (line numbers are 1-based)
                 in_code_block = true;
+                block_start_line = line_num + 1;
                 // Extract the language identifier
                 block_language = stripped.trim().to_lowercase();
             }
@@ -609,13 +618,22 @@ fn extract_python_code_blocks(content: &str) -> Vec<String> {
 }
 
 /// Create a Python callable that executes a code block.
-fn create_codeblock_callable(py: Python<'_>, code: &str) -> PyResult<Py<PyAny>> {
+fn create_codeblock_callable(
+    py: Python<'_>,
+    code: &str,
+    file_path: &Path,
+    line_number: usize,
+) -> PyResult<Py<PyAny>> {
     // Create a wrapper function that executes the code block
+    // Include the original markdown location as a comment for better error messages
     let wrapper_code = format!(
         r#"
+# Code block from {} (line {})
 def run_codeblock():
 {}
 "#,
+        file_path.display(),
+        line_number,
         // Indent the code block by 4 spaces
         code.lines()
             .map(|line| format!("    {}", line))
@@ -624,11 +642,18 @@ def run_codeblock():
     );
 
     let namespace = PyDict::new(py);
-    let code_cstr = CString::new(wrapper_code).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
-    })?;
 
-    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
+    // Use compile with a descriptive filename for better tracebacks
+    let filename = format!("{}:L{}", file_path.display(), line_number);
+    let compile_result =
+        py.import("builtins")?
+            .getattr("compile")?
+            .call1((wrapper_code, filename, "exec"))?;
+
+    py.import("builtins")?
+        .getattr("exec")?
+        .call1((compile_result, &namespace))?;
+
     let run_codeblock = namespace
         .get_item("run_codeblock")?
         .ok_or_else(|| invalid_test_definition("Failed to create codeblock callable"))?;
