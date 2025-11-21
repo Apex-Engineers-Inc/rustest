@@ -976,7 +976,7 @@ def importorskip(
     except exc_type as exc:
         if reason is None:
             reason = f"could not import {modname!r}: {exc}"
-        _rustest_skip(reason=reason)
+        _rustest_skip_function(reason=reason)
         raise  # This line won't be reached due to skip, but satisfies type checker
 
     if minversion is not None:
@@ -984,7 +984,7 @@ def importorskip(
         if mod_version is None:
             if reason is None:
                 reason = f"module {modname!r} has no __version__ attribute"
-            _rustest_skip(reason=reason)
+            _rustest_skip_function(reason=reason)
         else:
             # Simple version comparison (works for most common cases)
             from packaging.version import Version
@@ -993,13 +993,13 @@ def importorskip(
                 if Version(mod_version) < Version(minversion):
                     if reason is None:
                         reason = f"module {modname!r} has version {mod_version}, required is {minversion}"
-                    _rustest_skip(reason=reason)
+                    _rustest_skip_function(reason=reason)
             except Exception:
                 # Fallback to string comparison if packaging fails
                 if mod_version < minversion:
                     if reason is None:
                         reason = f"module {modname!r} has version {mod_version}, required is {minversion}"
-                    _rustest_skip(reason=reason)
+                    _rustest_skip_function(reason=reason)
 
     return mod
 
