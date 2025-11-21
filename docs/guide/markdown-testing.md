@@ -357,6 +357,7 @@ assert x == 1
 
 ### Test Important Features
 
+<!--rustest.mark.skip-->
 ```python
 # Good - demonstrates key functionality
 from mylib import DataProcessor
