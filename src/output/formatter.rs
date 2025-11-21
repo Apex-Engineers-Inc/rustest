@@ -39,6 +39,22 @@ impl ErrorFormatter {
         // Parse the error message
         let parsed = self.parse_traceback(message);
 
+        // Show file location for codeblocks before error type
+        if let Some((file_path, line_num, _failing_line)) = &parsed.location {
+            // Check if this is a codeblock (filename contains :L)
+            if file_path.contains(":L") {
+                if self.use_colors {
+                    output.push_str(&format!(
+                        "  {} {}\n\n",
+                        style("at").dim(),
+                        style(format!("{}:{}", file_path, line_num)).cyan()
+                    ));
+                } else {
+                    output.push_str(&format!("  at {}:{}\n\n", file_path, line_num));
+                }
+            }
+        }
+
         // Show error type and message
         if let Some((error_type, error_msg)) = &parsed.error {
             let header = if let Some(msg) = error_msg {
@@ -55,11 +71,13 @@ impl ErrorFormatter {
             output.push('\n');
         }
 
-        // Show code context if available
+        // Show code context if available (but skip for codeblocks with :L notation)
         if let Some((file_path, line_num, failing_line)) = &parsed.location {
-            if let Some(context) = self.get_code_context(file_path, *line_num, 3) {
-                output.push_str(&self.format_code_context(&context, *line_num, failing_line));
-                output.push('\n');
+            if !file_path.contains(":L") {
+                if let Some(context) = self.get_code_context(file_path, *line_num, 3) {
+                    output.push_str(&self.format_code_context(&context, *line_num, failing_line));
+                    output.push('\n');
+                }
             }
         }
 

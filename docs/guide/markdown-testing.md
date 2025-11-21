@@ -69,6 +69,23 @@ Output:
 3 tests: 3 passed in 0.003s
 ```
 
+## Skipping Code Blocks
+
+Sometimes you want to include example code that shouldn't be executed. Use HTML comments to skip specific blocks:
+
+```markdown
+<!--rustest.mark.skip-->
+```python
+# This example won't be executed
+result = some_external_api()
+```
+```
+
+The skip marker must appear **directly before** the code block (no blank lines in between).
+
+!!! note "pytest compatibility"
+    For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+
 ## Disabling Markdown Testing
 
 If you don't want to test markdown files, disable it with `--no-codeblocks`:
@@ -340,6 +357,7 @@ assert x == 1
 
 ### Test Important Features
 
+<!--rustest.mark.skip-->
 ```python
 # Good - demonstrates key functionality
 from mylib import DataProcessor
@@ -413,6 +431,7 @@ Test documentation before committing:
 
 Test markdown files from Python:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import run
 

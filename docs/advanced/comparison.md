@@ -110,7 +110,7 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 
 Most pytest test suites can switch to rustest with minimal changes:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # pytest code
 from pytest import fixture, parametrize, mark, approx, raises
@@ -149,7 +149,7 @@ def test_double(value, expected):
 
 #### Import Statements
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # pytest
 import pytest
@@ -190,7 +190,7 @@ rustest tests/
 
 For gradual migration, you can use both in the same project:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # tests/conftest.py
 try:
@@ -206,7 +206,7 @@ except ImportError:
 
 Both support the same fixture features:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Works identically in both
 from rustest import fixture  # or from pytest import fixture
@@ -224,7 +224,7 @@ def database():
 
 Both use the same syntax:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Works identically in both
 from rustest import parametrize  # or from pytest import parametrize
@@ -240,7 +240,7 @@ def test_values(x, y):
 
 Both support custom marks:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Works identically in both
 from rustest import mark  # or from pytest import mark
@@ -257,7 +257,7 @@ def test_expensive():
 
 Both provide `approx()` and `raises()`:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Works identically in both
 from rustest import approx, raises  # or from pytest import approx, raises
@@ -273,7 +273,7 @@ def test_comparison():
 
 Both support the same class structure:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # Works identically in both
 class TestMath:

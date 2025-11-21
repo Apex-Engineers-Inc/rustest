@@ -289,7 +289,7 @@ fn run(paths: Vec<String>, ...) -> PyResult<PyRunReport> {
 }
 ```
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # ...can be called from Python:
 from rustest.rust import run

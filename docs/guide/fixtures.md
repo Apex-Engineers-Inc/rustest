@@ -387,7 +387,7 @@ class TestQueries:
 
 Create a `conftest.py` file to share fixtures across multiple test files:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # conftest.py
 from rustest import fixture
@@ -407,7 +407,7 @@ def api_client():
 
 All test files in the same directory (and subdirectories) can use these fixtures:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # test_users.py
 def test_get_user(api_client, database):
@@ -420,7 +420,7 @@ def test_get_user(api_client, database):
 
 Rustest supports nested `conftest.py` files in subdirectories:
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```
 tests/
 ├── conftest.py          # Root fixtures
@@ -430,7 +430,7 @@ tests/
     └── test_api.py
 ```
 
-<!--pytest.mark.skip-->
+<!--rustest.mark.skip-->
 ```python
 # tests/conftest.py
 from rustest import fixture
