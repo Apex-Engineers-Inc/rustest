@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from .helpers import ensure_rust_stub
-from rustest import fixture, mark, parametrize, skip
+from rustest import fixture, mark, parametrize, skip_decorator
 
 ensure_rust_stub()
 
@@ -20,14 +20,14 @@ class TestFixtureDecorator:
 
 class TestSkipDecorator:
     def test_skip_attaches_reason(self) -> None:
-        @skip("because we can")
+        @skip_decorator("because we can")
         def test_func() -> None:
             raise AssertionError("should not run")
 
         assert getattr(test_func, "__rustest_skip__") == "because we can"
 
     def test_skip_uses_default_reason(self) -> None:
-        @skip()
+        @skip_decorator()
         def test_func() -> None:
             raise AssertionError("should not run")
 

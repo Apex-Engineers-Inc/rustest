@@ -438,3 +438,324 @@ class TestPytestCompatIntegration:
 
         with deprecated_call(match="old"):
             warnings.warn("old function", DeprecationWarning)
+
+
+# =============================================================================
+# Tests for new pytest compatibility features
+# =============================================================================
+
+
+class TestSkipifSignatures:
+    """Tests for pytest.mark.skipif() with different signature forms."""
+
+    def test_skipif_with_keyword_reason(self):
+        """Test skipif with reason as keyword argument."""
+        import sys
+        from rustest.decorators import mark
+
+        # This is the modern pytest style
+        @mark.skipif(sys.platform == "nonexistent", reason="Never skips")
+        def dummy_test():
+            pass
+
+        # Check that the mark was applied
+        marks = getattr(dummy_test, "__rustest_marks__", [])
+        assert len(marks) == 1
+        assert marks[0]["name"] == "skipif"
+        assert marks[0]["kwargs"]["reason"] == "Never skips"
+
+    def test_skipif_with_positional_reason(self):
+        """Test skipif with reason as positional argument (older pytest style)."""
+        import sys
+        from rustest.decorators import mark
+
+        # This is the older pytest style - should also work
+        @mark.skipif(sys.platform == "nonexistent", "Never skips")
+        def dummy_test():
+            pass
+
+        # Check that the mark was applied with the reason
+        marks = getattr(dummy_test, "__rustest_marks__", [])
+        assert len(marks) == 1
+        assert marks[0]["name"] == "skipif"
+        assert marks[0]["kwargs"]["reason"] == "Never skips"
+
+    def test_skipif_false_condition(self):
+        """Test that skipif with False condition doesn't skip."""
+        from rustest.decorators import mark
+
+        @mark.skipif(False, reason="Should not skip")
+        def dummy_test():
+            return "executed"
+
+        # Test should not be skipped
+        result = dummy_test()
+        assert result == "executed"
+
+
+class TestSkipFunction:
+    """Tests for pytest.skip() function for dynamic skipping."""
+
+    def test_skip_function_exists(self):
+        """Test that skip function exists in pytest compat."""
+        from rustest.compat.pytest import skip
+
+        assert callable(skip)
+
+    def test_skip_function_raises_skipped(self):
+        """Test that skip() raises Skipped exception."""
+        from rustest.compat.pytest import skip, Skipped
+
+        with pytest.raises(Skipped):
+            skip("Test skipped dynamically")
+
+    def test_skip_function_with_reason(self):
+        """Test that skip() includes the reason in the exception."""
+        from rustest.compat.pytest import skip, Skipped
+
+        try:
+            skip("Custom skip reason")
+        except Skipped as e:
+            assert "Custom skip reason" in str(e)
+
+    def test_skip_function_in_conditional(self):
+        """Test skip() in conditional logic."""
+        from rustest.compat.pytest import skip
+
+        condition = False
+        if condition:
+            skip("Should not be reached")
+
+        # If we get here, skip wasn't called
+        assert True
+
+    def test_skip_exception_type_exported(self):
+        """Test that Skipped exception is exported."""
+        from rustest.compat.pytest import Skipped
+
+        assert issubclass(Skipped, Exception)
+
+
+class TestXFailFunction:
+    """Tests for pytest.xfail() function for expected failures."""
+
+    def test_xfail_function_exists(self):
+        """Test that xfail function exists in pytest compat."""
+        from rustest.compat.pytest import xfail
+
+        assert callable(xfail)
+
+    def test_xfail_function_raises_xfailed(self):
+        """Test that xfail() raises XFailed exception."""
+        from rustest.compat.pytest import xfail, XFailed
+
+        with pytest.raises(XFailed):
+            xfail("Test expected to fail")
+
+    def test_xfail_function_with_reason(self):
+        """Test that xfail() includes the reason in the exception."""
+        from rustest.compat.pytest import xfail, XFailed
+
+        try:
+            xfail("Known bug in backend")
+        except XFailed as e:
+            assert "Known bug" in str(e)
+
+    def test_xfail_function_in_conditional(self):
+        """Test xfail() in conditional logic."""
+        from rustest.compat.pytest import xfail
+        import sys
+
+        if sys.version_info < (3, 0):  # This is False for us
+            xfail("Would fail on Python 2")
+
+        # If we get here, xfail wasn't called
+        assert True
+
+    def test_xfail_exception_type_exported(self):
+        """Test that XFailed exception is exported."""
+        from rustest.compat.pytest import XFailed
+
+        assert issubclass(XFailed, Exception)
+
+
+class TestFailFunction:
+    """Tests for pytest.fail() function."""
+
+    def test_fail_function_exists(self):
+        """Test that fail function exists."""
+        from rustest.compat.pytest import fail
+
+        assert callable(fail)
+
+    def test_fail_function_raises_failed(self):
+        """Test that fail() raises Failed exception."""
+        from rustest.compat.pytest import fail, Failed
+
+        with pytest.raises(Failed):
+            fail("Test failed explicitly")
+
+    def test_fail_function_with_reason(self):
+        """Test that fail() includes the reason in the exception."""
+        from rustest.compat.pytest import fail, Failed
+
+        try:
+            fail("Validation error occurred")
+        except Failed as e:
+            assert "Validation error" in str(e)
+
+    def test_fail_in_conditional(self):
+        """Test fail() in conditional logic."""
+        from rustest.compat.pytest import fail
+
+        data_valid = True
+        if not data_valid:
+            fail("Data validation failed")
+
+        # If we get here, fail wasn't called
+        assert True
+
+
+class TestAllExceptionTypesExported:
+    """Test that all exception types are properly exported."""
+
+    def test_all_exceptions_accessible_from_pytest(self):
+        """Test that all exception types are accessible via pytest compat."""
+        from rustest.compat import pytest as pytest_compat
+
+        assert hasattr(pytest_compat, "Failed")
+        assert hasattr(pytest_compat, "Skipped")
+        assert hasattr(pytest_compat, "XFailed")
+
+    def test_exceptions_are_exceptions(self):
+        """Test that all exception types inherit from Exception."""
+        from rustest.compat.pytest import Failed, Skipped, XFailed
+
+        assert issubclass(Failed, Exception)
+        assert issubclass(Skipped, Exception)
+        assert issubclass(XFailed, Exception)
+
+    def test_exceptions_have_distinct_types(self):
+        """Test that exception types are distinct."""
+        from rustest.compat.pytest import Failed, Skipped, XFailed
+
+        assert Failed is not Skipped
+        assert Failed is not XFailed
+        assert Skipped is not XFailed
+
+
+class TestAsyncioDecorator:
+    """Tests for @mark.asyncio decorator compatibility."""
+
+    def test_asyncio_decorator_on_async_function(self):
+        """Test that @mark.asyncio works with async functions."""
+        from rustest.decorators import mark
+        import asyncio
+
+        @mark.asyncio
+        async def async_test():
+            await asyncio.sleep(0)
+            return "async_result"
+
+        # The decorated function should have the asyncio mark
+        marks = getattr(async_test, "__rustest_marks__", [])
+        assert len(marks) >= 1
+        # Check if any mark has name "asyncio"
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+
+    def test_asyncio_decorator_on_non_async_function(self):
+        """Test that @mark.asyncio accepts non-async functions for pytest compat."""
+        from rustest.decorators import mark
+
+        # This should NOT raise TypeError (pytest compatibility)
+        @mark.asyncio
+        def sync_test():
+            return "sync_result"
+
+        # Test should be marked with asyncio
+        marks = getattr(sync_test, "__rustest_marks__", [])
+        assert len(marks) >= 1
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+
+        # Test should still run normally
+        result = sync_test()
+        assert result == "sync_result"
+
+    def test_asyncio_decorator_with_loop_scope(self):
+        """Test @mark.asyncio with loop_scope parameter."""
+        from rustest.decorators import mark
+
+        @mark.asyncio(loop_scope="function")
+        def sync_with_scope():
+            return "scoped"
+
+        # Check that the mark includes loop_scope
+        marks = getattr(sync_with_scope, "__rustest_marks__", [])
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+        # Check kwargs contains loop_scope
+        assert asyncio_marks[0].get("kwargs", {}).get("loop_scope") == "function"
+
+    def test_asyncio_decorator_on_class(self):
+        """Test that @mark.asyncio can be applied to classes."""
+        from rustest.decorators import mark
+
+        # Classes should be supported - mark is applied to class
+        @mark.asyncio
+        class TestClass:
+            async def test_method(self):
+                return "async"
+
+            def test_sync_method(self):
+                return "sync"
+
+        # Class should have the asyncio mark
+        marks = getattr(TestClass, "__rustest_marks__", [])
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+
+    def test_asyncio_mark_applied_correctly_sync(self):
+        """Test that asyncio mark is correctly applied to sync functions."""
+        from rustest.decorators import mark
+
+        @mark.asyncio
+        def regular_test():
+            pass
+
+        # Verify mark structure
+        marks = getattr(regular_test, "__rustest_marks__", [])
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) == 1
+
+        mark_data = asyncio_marks[0]
+        assert mark_data["name"] == "asyncio"
+        assert "kwargs" in mark_data
+
+    def test_asyncio_decorator_preserves_function_metadata(self):
+        """Test that @mark.asyncio preserves function name and docstring."""
+        from rustest.decorators import mark
+
+        @mark.asyncio
+        def test_with_metadata():
+            """Test function docstring."""
+            pass
+
+        assert test_with_metadata.__name__ == "test_with_metadata"
+        assert test_with_metadata.__doc__ == "Test function docstring."
+
+    def test_asyncio_decorator_multiple_marks(self):
+        """Test that @mark.asyncio can be combined with other marks."""
+        from rustest.decorators import mark
+
+        @mark.asyncio
+        @mark.slow
+        def test_multi_marked():
+            return "marked"
+
+        marks = getattr(test_multi_marked, "__rustest_marks__", [])
+        mark_names = [m.get("name") for m in marks]
+
+        assert "asyncio" in mark_names
+        assert "slow" in mark_names

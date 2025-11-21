@@ -11,7 +11,7 @@ This test file covers:
 8. Yield fixtures with class scope
 """
 
-from rustest import fixture, parametrize, skip, mark
+from rustest import fixture, parametrize, skip_decorator as skip, mark
 
 # Track fixture calls to verify proper scoping
 fixture_calls = {}

@@ -1,6 +1,6 @@
 """Test file with skip decorators."""
 
-from rustest import skip, parametrize
+from rustest import skip_decorator as skip, parametrize
 
 
 @skip()

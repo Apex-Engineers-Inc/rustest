@@ -9,7 +9,7 @@ This test file covers edge cases and special scenarios:
 6. Classes with attributes
 """
 
-from rustest import fixture, parametrize, skip, mark
+from rustest import fixture, parametrize, skip_decorator as skip, mark
 
 
 # ============================================================================

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ParamSpec, TypeVar, overload
+from typing import Any, ParamSpec, TypeVar, overload, cast
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -215,25 +215,31 @@ def _generate_param_id(value: Any, index: int) -> str:
             return value
         return f"{value[:17]}..."
     if isinstance(value, (list, tuple)):
-        if len(value) == 0:
+        seq_value = cast(list[Any] | tuple[Any, ...], value)
+        if len(seq_value) == 0:
             return "empty"
         # Try to create a short representation
-        items = [_generate_param_id(v, 0) for v in value[:3]]
+        items = [_generate_param_id(v, 0) for v in seq_value[:3]]
         result = "-".join(items)
-        if len(value) > 3:
-            result += f"-...({len(value)})"
+        if len(seq_value) > 3:
+            result += f"-...({len(seq_value)})"
         return result
     if isinstance(value, dict):
-        if len(value) == 0:
+        dict_value = cast(dict[Any, Any], value)
+        if len(dict_value) == 0:
             return "empty_dict"
-        return f"dict({len(value)})"
+        return f"dict({len(dict_value)})"
 
     # Fallback to index-based ID
     return f"param{index}"
 
 
-def skip(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Skip a test or fixture."""
+def skip_decorator(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Skip a test or fixture (decorator form).
+
+    This is the decorator version used as @skip(reason="...") or via @mark.skip.
+    For the function version that raises Skipped, see skip() function.
+    """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         setattr(func, "__rustest_skip__", reason or "skipped via rustest.skip")
@@ -244,8 +250,9 @@ def skip(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]
 
 def parametrize(
     arg_names: str | Sequence[str],
-    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet],
+    values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
     *,
+    argvalues: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
     ids: Sequence[str] | Callable[[Any], str | None] | None = None,
     indirect: bool | Sequence[str] = False,
 ) -> Callable[[Callable[Q, S]], Callable[Q, S]]:
@@ -253,11 +260,17 @@ def parametrize(
 
     Args:
         arg_names: Parameter name(s) as a string or sequence
-        values: Parameter values for each test case
+        values: Parameter values for each test case (rustest style)
+        argvalues: Parameter values for each test case (pytest style, alias for values)
         ids: Test IDs - either a list of strings or a callable
         indirect: If True, pass values to fixtures instead of test.
                   Note: indirect parametrization has limited support in rustest.
     """
+    # Support both 'values' (rustest style) and 'argvalues' (pytest style)
+    actual_values = argvalues if argvalues is not None else values
+    if actual_values is None:
+        msg = "parametrize() requires either 'values' or 'argvalues' parameter"
+        raise TypeError(msg)
     # Note: indirect parametrization is accepted but has limited support
     # The values are still passed as test parameters
     if indirect:
@@ -272,7 +285,7 @@ def parametrize(
     normalized_names = _normalize_arg_names(arg_names)
 
     def decorator(func: Callable[Q, S]) -> Callable[Q, S]:
-        cases = _build_cases(normalized_names, values, ids)
+        cases = _build_cases(normalized_names, actual_values, ids)
         setattr(func, "__rustest_parametrization__", cases)
         return func
 
@@ -320,10 +333,18 @@ def _build_cases(
         data: dict[str, Any]
         if isinstance(actual_case, Mapping) and len(names) > 1:
             data = {name: actual_case[name] for name in names}
-        elif isinstance(actual_case, (tuple, list)) and len(actual_case) == len(names):
-            # Tuples and lists are unpacked to match parameter names (pytest convention)
-            # This handles both single and multiple parameters
-            data = {name: actual_case[pos] for pos, name in enumerate(names)}
+        elif isinstance(actual_case, (tuple, list)):
+            seq_case = cast(tuple[Any, ...] | list[Any], actual_case)
+            if len(seq_case) == len(names):
+                # Tuples and lists are unpacked to match parameter names (pytest convention)
+                # This handles both single and multiple parameters
+                data = {name: seq_case[pos] for pos, name in enumerate(names)}
+            else:
+                # Length mismatch
+                if len(names) == 1:
+                    data = {names[0]: actual_case}
+                else:
+                    raise ValueError("Parametrized value does not match argument names")
         else:
             # Everything else is treated as a single value
             # This includes: primitives, dicts (single param), objects
@@ -425,8 +446,10 @@ class MarkGenerator:
                 await another_async_operation()
 
         Note:
-            This decorator should only be applied to async functions (coroutines).
-            Applying it to regular functions will raise a TypeError.
+            This decorator works best with async functions (coroutines), which will
+            be automatically wrapped to run in an asyncio event loop. For pytest
+            compatibility, it can also be applied to regular functions (the mark
+            will be recorded but the function runs normally without asyncio).
         """
         import asyncio
         import inspect
@@ -453,10 +476,12 @@ class MarkGenerator:
                     setattr(marked_class, name, wrapped_method)
                 return marked_class
 
-            # Validate that the function is a coroutine
+            # Check if the function is a coroutine
             if not inspect.iscoroutinefunction(f):
-                msg = f"@mark.asyncio can only be applied to async functions or test classes, but '{f.__name__}' is not async"
-                raise TypeError(msg)
+                # For pytest compatibility, allow marking non-async functions
+                # Just apply the mark without wrapping
+                mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
+                return mark_decorator(f)
 
             # Store the asyncio mark
             mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
@@ -510,21 +535,28 @@ class MarkGenerator:
     def skipif(
         self,
         condition: bool | str,
-        *,
         reason: str | None = None,
+        *,
+        _kw_reason: str | None = None,
     ) -> MarkDecorator:
         """Skip test if condition is true.
 
         Args:
             condition: Boolean or string condition to evaluate
-            reason: Explanation for why the test is skipped
+            reason: Explanation for why the test is skipped (positional or keyword)
 
         Usage:
+            # Both forms are supported (pytest compatibility):
             @mark.skipif(sys.platform == "win32", reason="Not supported on Windows")
+            @mark.skipif(sys.platform == "win32", "Not supported on Windows")
             def test_unix_only():
                 pass
         """
-        return MarkDecorator("skipif", (condition,), {"reason": reason})
+        # Support both positional and keyword-only 'reason' for pytest compatibility
+        # Some older pytest code uses: skipif(condition, reason) with positional
+        # Modern pytest uses: skipif(condition, reason="...") with keyword-only
+        actual_reason = _kw_reason if _kw_reason is not None else reason
+        return MarkDecorator("skipif", (condition,), {"reason": actual_reason})
 
     def xfail(
         self,
@@ -819,3 +851,77 @@ def fail(reason: str = "", pytrace: bool = True) -> None:
     """
     __tracebackhide__ = True
     raise Failed(reason)
+
+
+class Skipped(Exception):
+    """Exception raised by skip() to dynamically skip a test."""
+
+    pass
+
+
+def skip(reason: str = "", allow_module_level: bool = False) -> None:
+    """Skip the current test or module dynamically.
+
+    This function raises an exception to skip the test at runtime,
+    similar to pytest.skip(). It's useful for conditional test skipping
+    based on runtime conditions.
+
+    Args:
+        reason: The reason why the test is being skipped
+        allow_module_level: If True, allow calling skip() at module level
+                           (not fully implemented in rustest)
+
+    Raises:
+        Skipped: Always raised to skip the test
+
+    Usage:
+        def test_requires_linux():
+            import sys
+            if sys.platform != "linux":
+                skip("Only runs on Linux")
+            # Test code here
+
+        def test_conditional_skip():
+            import subprocess
+            result = subprocess.run(["which", "docker"], capture_output=True)
+            if result.returncode != 0:
+                skip("Docker not available")
+            # Docker tests here
+    """
+    __tracebackhide__ = True
+    raise Skipped(reason)
+
+
+class XFailed(Exception):
+    """Exception raised by xfail() to mark a test as expected to fail."""
+
+    pass
+
+
+def xfail(reason: str = "") -> None:
+    """Mark the current test as expected to fail dynamically.
+
+    This function raises an exception to mark the test as an expected failure
+    at runtime, similar to pytest.xfail(). The test will still run but its
+    failure won't count against the test suite.
+
+    Args:
+        reason: The reason why the test is expected to fail
+
+    Raises:
+        XFailed: Always raised to mark the test as xfail
+
+    Usage:
+        def test_known_bug():
+            import sys
+            if sys.version_info < (3, 11):
+                xfail("Known bug in Python < 3.11")
+            # Test code that fails on older Python
+
+        def test_experimental_feature():
+            if not feature_complete():
+                xfail("Feature not yet complete")
+            # Test code here
+    """
+    __tracebackhide__ = True
+    raise XFailed(reason)

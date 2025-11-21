@@ -28,13 +28,22 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | `caplog` | ✅ | ✅ | Capture logging output |
 | `cache` | ✅ | ✅ | Persistent cache between test runs |
 | `request` | ✅ | ✅ | Access to fixture parameters and metadata |
+| `request.param` | ✅ | ✅ | Parameter value for parametrized fixtures |
+| `request.node` | ✅ | ✅ | Test metadata, markers (name, nodeid, get_closest_marker, add_marker, keywords) |
+| `request.config` | ✅ | ✅ | Configuration access (getoption, getini, option namespace) |
 | **Test Utilities** |
 | `pytest.raises()` | ✅ | ✅ | Exception assertion context manager |
+| `pytest.skip()` | ✅ | ✅ | Dynamically skip a test |
+| `pytest.xfail()` | ✅ | ✅ | Mark test as expected to fail |
 | `pytest.fail()` | ✅ | ✅ | Explicitly fail a test |
 | `pytest.approx()` | ✅ | ✅ | Numeric comparison with tolerance |
 | `pytest.warns()` | ✅ | ✅ | Warning assertion context manager |
 | `pytest.deprecated_call()` | ✅ | ✅ | Check for deprecation warnings |
 | `pytest.importorskip()` | ✅ | ✅ | Skip if module unavailable |
+| **Async Support** |
+| `@pytest.mark.asyncio` | ✅ (plugin) | ✅ | Built-in async test support (no plugin needed) |
+| Async fixtures | ✅ (plugin) | ✅ | Native support for async fixture functions |
+| Event loop scopes | ✅ (plugin) | ✅ | Loop scope control (function, module, session) |
 | **Parametrization** |
 | `@parametrize` decorator | ✅ | ✅ | Full support with custom IDs |
 | Multiple parameter sets | ✅ | ✅ | |
