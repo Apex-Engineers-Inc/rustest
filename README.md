@@ -14,11 +14,13 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 <!--pytest.mark.skip-->
 ```bash
-# Using uvx (recommended - no installation needed!)
-uvx rustest --pytest-compat tests/
+# Using uv
+uv add rustest
+uv run rustest --pytest-compat tests/
 
-# Or using pipx
-pipx run rustest --pytest-compat tests/
+# Or using pip
+pip install rustest
+python -m rustest --pytest-compat tests/
 ```
 
 **That's it!** The `--pytest-compat` flag lets you run your existing pytest tests with rustest **without changing a single line of code**. See the speedup immediately, then decide if you want to migrate.
