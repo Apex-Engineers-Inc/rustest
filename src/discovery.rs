@@ -519,7 +519,7 @@ fn collect_from_markdown(
     let mut tests = Vec::new();
     let code_blocks = extract_python_code_blocks(&content);
 
-    for (index, (code, line_number)) in code_blocks.into_iter().enumerate() {
+    for (index, (code, line_number, should_skip)) in code_blocks.into_iter().enumerate() {
         // Create a test name that includes the line number for clarity
         let test_name = format!("codeblock_{}_line_{}", index, line_number);
         // Create a display name that looks like: path.md::codeblock_0::line_15
@@ -540,6 +540,13 @@ fn collect_from_markdown(
             PyDict::new(py).unbind(),
         );
 
+        // Set skip reason if marker was present
+        let skip_reason = if should_skip {
+            Some("Skipped via HTML comment marker".to_string())
+        } else {
+            None
+        };
+
         tests.push(TestCase {
             name: test_name.clone(),
             display_name,
@@ -547,7 +554,7 @@ fn collect_from_markdown(
             callable,
             parameters: Vec::new(),
             parameter_values: ParameterMap::new(),
-            skip_reason: None,
+            skip_reason,
             marks: vec![codeblock_mark],
             class_name: None,
             fixture_param_indices: IndexMap::new(),
@@ -577,27 +584,42 @@ fn collect_from_markdown(
 }
 
 /// Extract Python code blocks from markdown content.
-/// Returns a vector of tuples containing (code, line_number) where line_number
-/// is the line where the code block starts (the ``` line).
-fn extract_python_code_blocks(content: &str) -> Vec<(String, usize)> {
+/// Returns a vector of tuples containing (code, line_number, should_skip) where:
+/// - code: the Python code
+/// - line_number: the line where the code block starts (the ``` line)
+/// - should_skip: true if <!--pytest.mark.skip--> appears before the block
+fn extract_python_code_blocks(content: &str) -> Vec<(String, usize, bool)> {
     let mut code_blocks = Vec::new();
     let mut in_code_block = false;
     let mut current_block = String::new();
     let mut block_language = String::new();
     let mut block_start_line = 0;
+    let mut has_skip_marker = false;
+    let mut last_line_was_comment = false;
 
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
+
+        // Check for skip marker before code blocks
+        if !in_code_block
+            && (trimmed.contains("<!--pytest.mark.skip-->")
+                || trimmed.contains("<!--pytest-codeblocks:skip-->"))
+        {
+            has_skip_marker = true;
+            last_line_was_comment = true;
+            continue;
+        }
 
         if let Some(stripped) = trimmed.strip_prefix("```") {
             if in_code_block {
                 // End of code block
                 if block_language == "python" {
-                    code_blocks.push((current_block.clone(), block_start_line));
+                    code_blocks.push((current_block.clone(), block_start_line, has_skip_marker));
                 }
                 current_block.clear();
                 block_language.clear();
                 in_code_block = false;
+                has_skip_marker = false;
             } else {
                 // Start of code block (line numbers are 1-based)
                 in_code_block = true;
@@ -611,7 +633,12 @@ fn extract_python_code_blocks(content: &str) -> Vec<(String, usize)> {
                 current_block.push('\n');
             }
             current_block.push_str(line);
+        } else if !last_line_was_comment {
+            // Reset skip marker if we encounter a non-comment, non-code-block line
+            has_skip_marker = false;
         }
+
+        last_line_was_comment = false;
     }
 
     code_blocks

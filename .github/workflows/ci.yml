@@ -43,10 +43,7 @@ jobs:
         run: .venv/bin/python -m rustest tests/ examples/tests/ -v
 
       - name: Test documentation code blocks with rustest
-        run: .venv/bin/python -m rustest README.md docs/guide/{writing-tests,fixtures,assertions,test-classes,parametrization,marks,async-testing}.md docs/getting-started/quickstart.md docs/api/{approx,decorators,overview}.md
-
-      - name: Test documentation code blocks with pytest-codeblocks
-        run: .venv/bin/pytest --codeblocks README.md docs/guide/{writing-tests,fixtures,assertions,test-classes,python-api,parametrization,marks,async-testing}.md docs/getting-started/quickstart.md docs/api/{approx,decorators,overview}.md
+        run: .venv/bin/python -m rustest README.md docs/guide/ docs/getting-started/ docs/api/
 
   lint:
     name: Lint and Format
