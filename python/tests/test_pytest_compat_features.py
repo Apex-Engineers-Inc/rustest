@@ -642,3 +642,120 @@ class TestAllExceptionTypesExported:
         assert Failed is not Skipped
         assert Failed is not XFailed
         assert Skipped is not XFailed
+
+
+class TestAsyncioDecorator:
+    """Tests for @mark.asyncio decorator compatibility."""
+
+    def test_asyncio_decorator_on_async_function(self):
+        """Test that @mark.asyncio works with async functions."""
+        from rustest.decorators import mark
+        import asyncio
+
+        @mark.asyncio
+        async def async_test():
+            await asyncio.sleep(0)
+            return "async_result"
+
+        # The decorated function should have the asyncio mark
+        marks = getattr(async_test, "__rustest_marks__", [])
+        assert len(marks) >= 1
+        # Check if any mark has name "asyncio"
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+
+    def test_asyncio_decorator_on_non_async_function(self):
+        """Test that @mark.asyncio accepts non-async functions for pytest compat."""
+        from rustest.decorators import mark
+
+        # This should NOT raise TypeError (pytest compatibility)
+        @mark.asyncio
+        def sync_test():
+            return "sync_result"
+
+        # Test should be marked with asyncio
+        marks = getattr(sync_test, "__rustest_marks__", [])
+        assert len(marks) >= 1
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+
+        # Test should still run normally
+        result = sync_test()
+        assert result == "sync_result"
+
+    def test_asyncio_decorator_with_loop_scope(self):
+        """Test @mark.asyncio with loop_scope parameter."""
+        from rustest.decorators import mark
+
+        @mark.asyncio(loop_scope="function")
+        def sync_with_scope():
+            return "scoped"
+
+        # Check that the mark includes loop_scope
+        marks = getattr(sync_with_scope, "__rustest_marks__", [])
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+        # Check kwargs contains loop_scope
+        assert asyncio_marks[0].get("kwargs", {}).get("loop_scope") == "function"
+
+    def test_asyncio_decorator_on_class(self):
+        """Test that @mark.asyncio can be applied to classes."""
+        from rustest.decorators import mark
+
+        # Classes should be supported - mark is applied to class
+        @mark.asyncio
+        class TestClass:
+            async def test_method(self):
+                return "async"
+
+            def test_sync_method(self):
+                return "sync"
+
+        # Class should have the asyncio mark
+        marks = getattr(TestClass, "__rustest_marks__", [])
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) >= 1
+
+    def test_asyncio_mark_applied_correctly_sync(self):
+        """Test that asyncio mark is correctly applied to sync functions."""
+        from rustest.decorators import mark
+
+        @mark.asyncio
+        def regular_test():
+            pass
+
+        # Verify mark structure
+        marks = getattr(regular_test, "__rustest_marks__", [])
+        asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+        assert len(asyncio_marks) == 1
+
+        mark_data = asyncio_marks[0]
+        assert mark_data["name"] == "asyncio"
+        assert "kwargs" in mark_data
+
+    def test_asyncio_decorator_preserves_function_metadata(self):
+        """Test that @mark.asyncio preserves function name and docstring."""
+        from rustest.decorators import mark
+
+        @mark.asyncio
+        def test_with_metadata():
+            """Test function docstring."""
+            pass
+
+        assert test_with_metadata.__name__ == "test_with_metadata"
+        assert test_with_metadata.__doc__ == "Test function docstring."
+
+    def test_asyncio_decorator_multiple_marks(self):
+        """Test that @mark.asyncio can be combined with other marks."""
+        from rustest.decorators import mark
+
+        @mark.asyncio
+        @mark.slow
+        def test_multi_marked():
+            return "marked"
+
+        marks = getattr(test_multi_marked, "__rustest_marks__", [])
+        mark_names = [m.get("name") for m in marks]
+
+        assert "asyncio" in mark_names
+        assert "slow" in mark_names

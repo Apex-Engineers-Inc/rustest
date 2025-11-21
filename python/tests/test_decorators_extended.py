@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from .helpers import ensure_rust_stub
-from rustest import fixture, parametrize, skip
+from rustest import fixture, parametrize, skip_decorator
 
 ensure_rust_stub()
 
@@ -56,7 +56,7 @@ class TestExtendedFixture:
 
 class TestExtendedSkip:
     def test_skip_with_empty_string_reason(self) -> None:
-        @skip("")
+        @skip_decorator("")
         def test_func() -> None:
             pass
 
@@ -66,7 +66,7 @@ class TestExtendedSkip:
     def test_skip_with_multiline_reason(self) -> None:
         reason = "This is a\nmultiline\nreason"
 
-        @skip(reason)
+        @skip_decorator(reason)
         def test_func() -> None:
             pass
 
@@ -75,14 +75,14 @@ class TestExtendedSkip:
     def test_skip_with_special_characters(self) -> None:
         reason = "Special chars: @#$%^&*(){}[]"
 
-        @skip(reason)
+        @skip_decorator(reason)
         def test_func() -> None:
             pass
 
         assert getattr(test_func, "__rustest_skip__") == reason
 
     def test_skip_preserves_function_attributes(self) -> None:
-        @skip("reason")
+        @skip_decorator("reason")
         def test_with_attrs() -> None:
             """Docstring here."""
             pass
@@ -202,7 +202,7 @@ class TestExtendedParametrize:
 
 class TestCombinedDecorators:
     def test_skip_and_parametrize_together(self) -> None:
-        @skip("not ready")
+        @skip_decorator("not ready")
         @parametrize("x", [(1,), (2,)])
         def test_func(x: int) -> int:
             return x

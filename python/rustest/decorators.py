@@ -436,8 +436,10 @@ class MarkGenerator:
                 await another_async_operation()
 
         Note:
-            This decorator should only be applied to async functions (coroutines).
-            Applying it to regular functions will raise a TypeError.
+            This decorator works best with async functions (coroutines), which will
+            be automatically wrapped to run in an asyncio event loop. For pytest
+            compatibility, it can also be applied to regular functions (the mark
+            will be recorded but the function runs normally without asyncio).
         """
         import asyncio
         import inspect
@@ -464,10 +466,12 @@ class MarkGenerator:
                     setattr(marked_class, name, wrapped_method)
                 return marked_class
 
-            # Validate that the function is a coroutine
+            # Check if the function is a coroutine
             if not inspect.iscoroutinefunction(f):
-                msg = f"@mark.asyncio can only be applied to async functions or test classes, but '{f.__name__}' is not async"
-                raise TypeError(msg)
+                # For pytest compatibility, allow marking non-async functions
+                # Just apply the mark without wrapping
+                mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
+                return mark_decorator(f)
 
             # Store the asyncio mark
             mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})

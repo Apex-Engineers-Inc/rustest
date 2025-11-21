@@ -43,13 +43,20 @@ def test_asyncio_mark_invalid_scope():
 
 
 def test_asyncio_mark_on_sync_function():
-    """Test that @mark.asyncio raises TypeError on sync functions."""
+    """Test that @mark.asyncio accepts sync functions for pytest compatibility."""
 
-    with pytest.raises(TypeError, match="can only be applied to async functions"):
+    # For pytest compatibility, this should NOT raise - just apply the mark
+    @mark.asyncio
+    def test_sync_func():
+        return "sync_result"
 
-        @mark.asyncio
-        def test_sync_func():
-            pass
+    # Verify the mark was applied
+    marks = getattr(test_sync_func, "__rustest_marks__", [])
+    asyncio_marks = [m for m in marks if m.get("name") == "asyncio"]
+    assert len(asyncio_marks) >= 1
+
+    # Verify function runs normally
+    assert test_sync_func() == "sync_result"
 
 
 def test_asyncio_mark_wraps_function():
