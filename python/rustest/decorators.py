@@ -232,8 +232,12 @@ def _generate_param_id(value: Any, index: int) -> str:
     return f"param{index}"
 
 
-def skip(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Skip a test or fixture."""
+def skip_decorator(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Skip a test or fixture (decorator form).
+
+    This is the decorator version used as @skip(reason="...") or via @mark.skip.
+    For the function version that raises Skipped, see skip() function.
+    """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         setattr(func, "__rustest_skip__", reason or "skipped via rustest.skip")
@@ -510,21 +514,28 @@ class MarkGenerator:
     def skipif(
         self,
         condition: bool | str,
-        *,
         reason: str | None = None,
+        *,
+        _kw_reason: str | None = None,
     ) -> MarkDecorator:
         """Skip test if condition is true.
 
         Args:
             condition: Boolean or string condition to evaluate
-            reason: Explanation for why the test is skipped
+            reason: Explanation for why the test is skipped (positional or keyword)
 
         Usage:
+            # Both forms are supported (pytest compatibility):
             @mark.skipif(sys.platform == "win32", reason="Not supported on Windows")
+            @mark.skipif(sys.platform == "win32", "Not supported on Windows")
             def test_unix_only():
                 pass
         """
-        return MarkDecorator("skipif", (condition,), {"reason": reason})
+        # Support both positional and keyword-only 'reason' for pytest compatibility
+        # Some older pytest code uses: skipif(condition, reason) with positional
+        # Modern pytest uses: skipif(condition, reason="...") with keyword-only
+        actual_reason = _kw_reason if _kw_reason is not None else reason
+        return MarkDecorator("skipif", (condition,), {"reason": actual_reason})
 
     def xfail(
         self,
@@ -819,3 +830,77 @@ def fail(reason: str = "", pytrace: bool = True) -> None:
     """
     __tracebackhide__ = True
     raise Failed(reason)
+
+
+class Skipped(Exception):
+    """Exception raised by skip() to dynamically skip a test."""
+
+    pass
+
+
+def skip(reason: str = "", allow_module_level: bool = False) -> None:
+    """Skip the current test or module dynamically.
+
+    This function raises an exception to skip the test at runtime,
+    similar to pytest.skip(). It's useful for conditional test skipping
+    based on runtime conditions.
+
+    Args:
+        reason: The reason why the test is being skipped
+        allow_module_level: If True, allow calling skip() at module level
+                           (not fully implemented in rustest)
+
+    Raises:
+        Skipped: Always raised to skip the test
+
+    Usage:
+        def test_requires_linux():
+            import sys
+            if sys.platform != "linux":
+                skip("Only runs on Linux")
+            # Test code here
+
+        def test_conditional_skip():
+            import subprocess
+            result = subprocess.run(["which", "docker"], capture_output=True)
+            if result.returncode != 0:
+                skip("Docker not available")
+            # Docker tests here
+    """
+    __tracebackhide__ = True
+    raise Skipped(reason)
+
+
+class XFailed(Exception):
+    """Exception raised by xfail() to mark a test as expected to fail."""
+
+    pass
+
+
+def xfail(reason: str = "") -> None:
+    """Mark the current test as expected to fail dynamically.
+
+    This function raises an exception to mark the test as an expected failure
+    at runtime, similar to pytest.xfail(). The test will still run but its
+    failure won't count against the test suite.
+
+    Args:
+        reason: The reason why the test is expected to fail
+
+    Raises:
+        XFailed: Always raised to mark the test as xfail
+
+    Usage:
+        def test_known_bug():
+            import sys
+            if sys.version_info < (3, 11):
+                xfail("Known bug in Python < 3.11")
+            # Test code that fails on older Python
+
+        def test_experimental_feature():
+            if not feature_complete():
+                xfail("Feature not yet complete")
+            # Test code here
+    """
+    __tracebackhide__ = True
+    raise XFailed(reason)

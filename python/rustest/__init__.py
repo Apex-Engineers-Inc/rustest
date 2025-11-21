@@ -12,14 +12,20 @@ fixture = decorators.fixture
 mark = decorators.mark
 parametrize = decorators.parametrize
 raises = decorators.raises
-skip = decorators.skip
+skip = decorators.skip  # Function version that raises Skipped
+skip_decorator = decorators.skip_decorator  # Decorator version (use via @mark.skip)
 fail = decorators.fail
 Failed = decorators.Failed
+Skipped = decorators.Skipped
+XFailed = decorators.XFailed
+xfail = decorators.xfail
 
 __all__ = [
     "Failed",
     "RunReport",
+    "Skipped",
     "TestResult",
+    "XFailed",
     "approx",
     "fail",
     "fixture",
@@ -29,4 +35,5 @@ __all__ = [
     "raises",
     "run",
     "skip",
+    "xfail",
 ]

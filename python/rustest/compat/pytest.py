@@ -52,11 +52,15 @@ from typing import Any, Callable, TypeVar
 from rustest.decorators import (
     fixture as _rustest_fixture,
     parametrize as _rustest_parametrize,
-    skip as _rustest_skip,
+    skip_decorator as _rustest_skip_decorator,
     mark as _rustest_mark,
     raises as _rustest_raises,
     fail as _rustest_fail,
     Failed as _rustest_Failed,
+    Skipped as _rustest_Skipped,
+    XFailed as _rustest_XFailed,
+    xfail as _rustest_xfail,
+    skip as _rustest_skip_function,
     ExceptionInfo,
     ParameterSet,
 )
@@ -79,9 +83,12 @@ __all__ = [
     "parametrize",
     "mark",
     "skip",
+    "xfail",
     "raises",
     "fail",
     "Failed",
+    "Skipped",
+    "XFailed",
     "approx",
     "param",
     "warns",
@@ -352,9 +359,12 @@ def fixture(
 parametrize = _rustest_parametrize
 raises = _rustest_raises
 approx = _rustest_approx
-skip = _rustest_skip
+skip = _rustest_skip_function  # pytest.skip() function (raises Skipped)
 fail = _rustest_fail
 Failed = _rustest_Failed
+Skipped = _rustest_Skipped
+XFailed = _rustest_XFailed
+xfail = _rustest_xfail
 
 
 class _PytestMarkCompat:
@@ -388,9 +398,9 @@ class _PytestMarkCompat:
         """Mark test as skipped.
 
         This is the @pytest.mark.skip() decorator which should skip the test.
-        Maps to rustest's skip() decorator.
+        Maps to rustest's skip_decorator().
         """
-        return _rustest_skip(reason=reason)  # type: ignore[return-value]
+        return _rustest_skip_decorator(reason=reason)  # type: ignore[return-value]
 
     @property
     def skipif(self) -> Any:
