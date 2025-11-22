@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from .core import run
+from .core import run, watch
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="pytest_compat",
         help="Enable pytest compatibility mode - allows running existing pytest tests without modifying imports.",
     )
+    _ = parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch for file changes and re-run affected tests.",
+    )
     parser.set_defaults(
         capture_output=True,
         color=True,
@@ -100,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
         failed_first=False,
         fail_fast=False,
         pytest_compat=False,
+        watch=False,
     )
     return parser
 
@@ -107,6 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Handle watch mode
+    if args.watch:
+        report = watch(
+            paths=list(args.paths),
+            pattern=args.pattern,
+            workers=args.workers,
+            capture_output=args.capture_output,
+        )
+        return 0 if report.failed == 0 else 1
 
     # Determine last_failed_mode
     if args.last_failed:

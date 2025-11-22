@@ -6,7 +6,7 @@ from . import decorators
 from .approx import approx
 from .cli import main
 from .reporting import RunReport, TestResult
-from .core import run
+from .core import run, watch
 
 fixture = decorators.fixture
 mark = decorators.mark
@@ -35,5 +35,6 @@ __all__ = [
     "raises",
     "run",
     "skip",
+    "watch",
     "xfail",
 ]

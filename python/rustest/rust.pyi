@@ -41,3 +41,12 @@ def run(
 ) -> PyRunReport:
     """Execute tests and return a report."""
     ...
+
+def watch(
+    paths: list[str],
+    pattern: str | None,
+    workers: int | None,
+    capture_output: bool,
+) -> PyRunReport:
+    """Run tests in watch mode and return a report."""
+    ...
