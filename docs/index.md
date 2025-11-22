@@ -12,6 +12,8 @@ Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to p
 
 - :material-rocket-launch: **8.5× average speedup** over pytest on the benchmark matrix (reaching 19× on 5k-test suites)
 - :material-check-circle: Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
+- :material-refresh: **Built-in async support** with `@mark.asyncio` (like pytest-asyncio, no plugin needed)
+- :material-theater: **Built-in mocking** with `mocker` fixture (pytest-mock compatible, no plugin needed)
 - :material-magnify: Automatic test discovery (`test_*.py` and `*_test.py` files)
 - :material-file-document: **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
 - :material-bullseye-arrow: Simple, clean API—if you know pytest, you already know rustest
