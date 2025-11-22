@@ -254,7 +254,7 @@ def parametrize(
     *,
     argvalues: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
     ids: Sequence[str] | Callable[[Any], str | None] | None = None,
-    indirect: bool | Sequence[str] = False,
+    indirect: bool | Sequence[str] | str = False,
 ) -> Callable[[Callable[Q, S]], Callable[Q, S]]:
     """Parametrise a test function.
 
@@ -263,30 +263,38 @@ def parametrize(
         values: Parameter values for each test case (rustest style)
         argvalues: Parameter values for each test case (pytest style, alias for values)
         ids: Test IDs - either a list of strings or a callable
-        indirect: If True, pass values to fixtures instead of test.
-                  Note: indirect parametrization has limited support in rustest.
+        indirect: Controls which parameters should be resolved as fixtures:
+            - False (default): All parameters are direct values
+            - True: All parameters are passed to fixtures with matching names
+            - ["param1", "param2"]: Only specified parameters are passed to fixtures
+            - "param1": Single parameter passed to fixture
+
+            When a parameter is indirect, its value is treated as a fixture name,
+            and that fixture is resolved and its value used for the test.
+
+            Example:
+                @fixture
+                def my_data():
+                    return {"value": 42}
+
+                @parametrize("data", ["my_data"], indirect=True)
+                def test_example(data):
+                    assert data["value"] == 42
     """
     # Support both 'values' (rustest style) and 'argvalues' (pytest style)
     actual_values = argvalues if argvalues is not None else values
     if actual_values is None:
         msg = "parametrize() requires either 'values' or 'argvalues' parameter"
         raise TypeError(msg)
-    # Note: indirect parametrization is accepted but has limited support
-    # The values are still passed as test parameters
-    if indirect:
-        import warnings
-
-        warnings.warn(
-            "indirect parametrization has limited support in rustest. Parameters will be passed directly to the test function.",
-            UserWarning,
-            stacklevel=2,
-        )
 
     normalized_names = _normalize_arg_names(arg_names)
+    normalized_indirect = _normalize_indirect(indirect, normalized_names)
 
     def decorator(func: Callable[Q, S]) -> Callable[Q, S]:
         cases = _build_cases(normalized_names, actual_values, ids)
         setattr(func, "__rustest_parametrization__", cases)
+        if normalized_indirect:
+            setattr(func, "__rustest_parametrization_indirect__", normalized_indirect)
         return func
 
     return decorator
@@ -300,6 +308,39 @@ def _normalize_arg_names(arg_names: str | Sequence[str]) -> tuple[str, ...]:
             raise ValueError(msg)
         return tuple(parts)
     return tuple(arg_names)
+
+
+def _normalize_indirect(
+    indirect: bool | Sequence[str] | str, param_names: tuple[str, ...]
+) -> list[str]:
+    """Normalize the indirect parameter to a list of parameter names.
+
+    Args:
+        indirect: The indirect value from parametrize
+        param_names: All parameter names from the parametrization
+
+    Returns:
+        A list of parameter names that should be treated as indirect (fixture references)
+
+    Raises:
+        ValueError: If an indirect parameter name is not in param_names
+    """
+    if indirect is False:
+        return []
+    if indirect is True:
+        return list(param_names)
+    if isinstance(indirect, str):
+        if indirect not in param_names:
+            msg = f"indirect parameter '{indirect}' not found in parametrize argument names {param_names}"
+            raise ValueError(msg)
+        return [indirect]
+    # It's a sequence of strings
+    indirect_list = list(indirect)
+    for param in indirect_list:
+        if param not in param_names:
+            msg = f"indirect parameter '{param}' not found in parametrize argument names {param_names}"
+            raise ValueError(msg)
+    return indirect_list
 
 
 def _build_cases(

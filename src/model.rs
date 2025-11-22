@@ -226,6 +226,9 @@ pub struct TestCase {
     /// Fixture parameter indices for parametrized fixtures.
     /// Maps fixture name to the parameter index to use.
     pub fixture_param_indices: IndexMap<String, usize>,
+    /// Parameters that should be resolved as fixture references (indirect parametrization).
+    /// Contains the parameter names that are marked as indirect.
+    pub indirect_params: Vec<String>,
 }
 
 impl TestCase {
