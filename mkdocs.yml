@@ -81,15 +81,29 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - New to Testing:
+    - Why Automated Testing?: new-to-testing/why-test.md
+    - Your First Test: new-to-testing/first-test.md
+    - Testing Basics: new-to-testing/testing-basics.md
+    - Making Tests Reusable: new-to-testing/fixtures.md
+    - Testing Multiple Cases: new-to-testing/parametrization.md
+    - Organizing Your Tests: new-to-testing/organizing.md
+  - Coming from pytest:
+    - Overview: from-pytest/index.md
+    - Feature Comparison: from-pytest/comparison.md
+    - 5-Minute Migration: from-pytest/migration.md
+    - Plugin Replacement Guide: from-pytest/plugins.md
+    - Coverage Integration: from-pytest/coverage.md
+    - Known Limitations: from-pytest/limitations.md
   - Getting Started:
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quickstart.md
-  - User Guide:
+  - Core Guide:
     - Writing Tests: guide/writing-tests.md
     - Project Structure & Imports: guide/project-structure.md
     - Fixtures: guide/fixtures.md
     - Parametrization: guide/parametrization.md
-    - Marks & Skipping: guide/marks.md
+    - Marks & Filtering: guide/marks.md
     - Async Testing: guide/async-testing.md
     - Test Classes: guide/test-classes.md
     - Assertion Helpers: guide/assertions.md
@@ -104,8 +118,6 @@ nav:
     - Assertion Utilities: api/approx.md
   - Advanced:
     - Performance: advanced/performance.md
-    - Comparison with pytest: advanced/comparison.md
-    - Pytest Plugins: advanced/pytest-plugins.md
+    - Pytest Compatibility: advanced/pytest-compat.md
     - Development: advanced/development.md
   - Changelog: CHANGELOG.md
-  - Migration Guide: migration-guide.md

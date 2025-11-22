@@ -1,85 +1,231 @@
-# Overview
+# rustest
 
-<div style="text-align: center; margin-bottom: 2rem;">
+<div align="center" style="margin-bottom: 2rem;">
   <img src="assets/logo.svg" alt="rustest logo" style="height: 300px; width: 300px;">
 </div>
 
-**Rust-powered pytest-compatible test runner**
+<div align="center">
 
-Rustest (pronounced like Russ-Test) is a Rust-powered test runner that aims to provide the most common pytest ergonomics with a focus on raw performance. Get **massive speedups (8.5× average, up to 19× faster)** with familiar syntax and minimal setup.
-
-## Why rustest?
-
-- :material-rocket-launch: **8.5× average speedup** over pytest on the benchmark matrix (reaching 19× on 5k-test suites)
-- :material-check-circle: Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
-- :material-refresh: **Built-in async support** with `@mark.asyncio` (like pytest-asyncio, no plugin needed)
-- :material-theater: **Built-in mocking** with `mocker` fixture (pytest-mock compatible, no plugin needed)
-- :material-magnify: Automatic test discovery (`test_*.py` and `*_test.py` files)
-- :material-file-document: **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
-- :material-bullseye-arrow: Simple, clean API—if you know pytest, you already know rustest
-- :material-calculator: Built-in `approx()` helper for tolerant numeric comparisons across scalars, collections, and complex numbers
-- :material-bug-check: `raises()` context manager for precise exception assertions with optional message matching
-- :material-package-variant: Easy installation with pip or uv
-- :material-lightning-bolt: Low-overhead execution keeps small suites feeling instant
-
-## Quick Example
-
-```python
-from rustest import fixture, parametrize, mark, approx, raises
-
-@fixture
-def numbers() -> list[int]:
-    return [1, 2, 3, 4, 5]
-
-def test_sum(numbers: list[int]) -> None:
-    assert sum(numbers) == approx(15)
-
-@parametrize("value,expected", [(2, 4), (3, 9), (4, 16)])
-def test_square(value: int, expected: int) -> None:
-    assert value ** 2 == expected
-
-@mark.slow
-def test_expensive_operation() -> None:
-    result = sum(range(1000000))
-    assert result > 0
-
-def test_division_by_zero() -> None:
-    with raises(ZeroDivisionError, match="division by zero"):
-        1 / 0
-```
-
-Run your tests:
+**Fast, Familiar Python Testing**
+Rust-powered test runner with pytest-compatible API
 
 ```bash
-rustest
+pip install rustest
 ```
 
-## Performance
+</div>
 
-Rustest is designed for speed. The benchmark matrix generates identical pytest and rustest suites ranging from 1 to 5,000 tests and runs each command five times. Rustest delivers an **8.5× average speedup** and hits **19× faster** execution on the largest suite:
+---
 
-| Test Count | pytest (mean) | rustest (mean) | Speedup | pytest tests/s | rustest tests/s |
-|-----------:|--------------:|---------------:|--------:|----------------:|-----------------:|
-|          1 |       0.428s |        0.116s |    3.68x |             2.3 |              8.6 |
-|          5 |       0.428s |        0.120s |    3.56x |            11.7 |             41.6 |
-|         20 |       0.451s |        0.116s |    3.88x |            44.3 |            171.7 |
-|        100 |       0.656s |        0.133s |    4.93x |           152.4 |            751.1 |
-|        500 |       1.206s |        0.146s |    8.29x |           414.4 |           3436.1 |
-|      1,000 |       1.854s |        0.171s |   10.83x |           539.4 |           5839.4 |
-|      2,000 |       3.343s |        0.243s |   13.74x |           598.3 |           8219.9 |
-|      5,000 |       7.811s |        0.403s |   19.37x |           640.2 |          12399.7 |
+## Which describes you?
 
-**What to expect:** tiny suites (≤20 tests) still run **~3–4× faster**, growing suites around 100–500 tests see **~5–8× speedups**, and large suites with 1,000+ tests jump to **~11–19× faster** execution.
+<div class="grid cards" markdown>
 
-Our integration suite (~200 tests) remains a great proxy for day-to-day development and continues to show **~2.1× wall-clock speedups**. See the [Performance](advanced/performance.md) page for breakdowns, methodology, and replication instructions.
+-   :seedling: **New to Testing**
 
-## Next Steps
+    ---
 
-- [Installation](getting-started/installation.md) - Install rustest
-- [Quick Start](getting-started/quickstart.md) - Write your first tests
-- [User Guide](guide/writing-tests.md) - Learn about fixtures, parametrization, and more
-- [API Reference](api/overview.md) - Complete API documentation
+    **Learn why automated testing helps you write better code**
 
-## License
+    Testing catches bugs before your users do. We'll show you how to:
 
-rustest is distributed under the terms of the MIT license.
+    - Write your first test in 5 minutes
+    - Catch errors automatically
+    - Make code changes with confidence
+    - Build better software faster
+
+    **No experience needed.** We'll teach you everything from scratch in a friendly, approachable way.
+
+    [:octicons-arrow-right-24: Start Learning](new-to-testing/why-test.md)
+
+-   :rocket: **Coming from pytest**
+
+    ---
+
+    **Speed up your test suite — 8.5× faster on average**
+
+    Same decorators you know. Dramatically faster execution.
+
+    **What you get:**
+
+    - ✅ Drop-in compatible: `@fixture`, `@parametrize`, `@mark`
+    - ✅ Built-in async support (no pytest-asyncio plugin)
+    - ✅ Built-in mocking (no pytest-mock plugin)
+    - ✅ Simple coverage integration (no plugin dance)
+    - ✅ 5-minute migration for most projects
+
+    **Try it now:**
+    ```bash
+    rustest --pytest-compat tests/
+    ```
+
+    [:octicons-arrow-right-24: See Feature Comparison](from-pytest/comparison.md){ .md-button .md-button--primary }
+    [:octicons-arrow-right-24: Quick Migration Guide](from-pytest/migration.md){ .md-button }
+
+</div>
+
+---
+
+## :thought_balloon: Why Rustest Exists
+
+!!! quote ""
+    **Short version:** Python testing is too slow. We can do better.
+
+**Longer version:** I love pytest—the API is elegant, fixtures are powerful, and good tests make better code. But if you've used **vitest** or **bun test** in JavaScript/TypeScript, you know what fast testing feels like:
+
+- Tests run in milliseconds, not seconds
+- You get instant feedback on every save
+- TDD becomes enjoyable, not tedious
+- You stay in flow instead of context-switching
+
+**Why doesn't Python have this?**
+
+Rustest brings that experience to Python. Same pytest API you know, backed by Rust's performance. Fast tests aren't just convenient—they change how you develop.
+
+!!! success "Our Philosophy"
+    **Pytest nailed the API. Rustest brings the speed.**
+
+---
+
+## See It In Action
+
+```python
+from rustest import fixture, parametrize, mark
+
+@fixture
+def database():
+    db = Database()
+    yield db
+    db.close()
+
+@parametrize("username,expected", [
+    ("alice", "alice@example.com"),
+    ("bob", "bob@example.com"),
+])
+def test_user_email(database, username, expected):
+    user = database.get_user(username)
+    assert user.email == expected
+
+@mark.asyncio
+async def test_async_api():
+    response = await fetch_data()
+    assert response.status == 200
+```
+
+**Run with:** `rustest`
+
+**Output:**
+```
+✓✓✓
+
+3 tests: 3 passed in 0.015s
+```
+
+---
+
+## :chart_with_upwards_trend: Performance That Scales
+
+| Suite Size | Speedup |
+|-----------|---------|
+| **Small** (< 20 tests) | **3-4× faster** |
+| **Medium** (100-500 tests) | **5-8× faster** |
+| **Large** (1,000+ tests) | **11-19× faster** |
+
+[:octicons-arrow-right-24: View Full Performance Analysis](advanced/performance.md)
+
+---
+
+## Production Ready
+
+<div class="grid cards" markdown>
+
+-   :white_check_mark: MIT Licensed
+-   :white_check_mark: Python 3.10-3.14
+-   :white_check_mark: Active Development
+
+-   :white_check_mark: Built-in async support
+-   :white_check_mark: Built-in mocking
+-   :white_check_mark: No plugin dependencies
+
+-   :white_check_mark: pytest-compatible
+-   :white_check_mark: Crystal-clear errors
+-   :white_check_mark: Markdown testing
+
+</div>
+
+---
+
+## Choose Your Path
+
+=== "For Beginners"
+
+    **Start from the beginning and learn testing fundamentals:**
+
+    - [Why Automated Testing?](new-to-testing/why-test.md) — Learn the fundamentals
+    - [Your First Test](new-to-testing/first-test.md) — Get started in 5 minutes
+    - [Testing Basics](new-to-testing/testing-basics.md) — Core concepts explained
+    - [Making Tests Reusable](new-to-testing/fixtures.md) — Introduction to fixtures
+    - [Testing Multiple Cases](new-to-testing/parametrization.md) — Parametrization made simple
+    - [Organizing Your Tests](new-to-testing/organizing.md) — Structure and best practices
+
+=== "For pytest Users"
+
+    **Get up to speed quickly:**
+
+    - [Feature Comparison](from-pytest/comparison.md) — Complete feature compatibility table
+    - [5-Minute Migration](from-pytest/migration.md) — Get running in minutes
+    - [Plugin Replacement Guide](from-pytest/plugins.md) — Built-in alternatives to pytest plugins
+    - [Coverage Integration](from-pytest/coverage.md) — Simple coverage.py integration
+    - [Known Limitations](from-pytest/limitations.md) — What's not supported (yet)
+
+=== "For Everyone"
+
+    **Complete reference documentation:**
+
+    - [Writing Tests](guide/writing-tests.md) — Test functions, classes, and structure
+    - [Fixtures](guide/fixtures.md) — Complete fixtures reference
+    - [Parametrization](guide/parametrization.md) — Advanced parametrization techniques
+    - [Marks & Filtering](guide/marks.md) — Organizing and filtering tests
+    - [Assertions](guide/assertions.md) — Assertion helpers and best practices
+    - [CLI Reference](guide/cli.md) — Command-line options
+    - [API Reference](api/overview.md) — Complete API documentation
+
+---
+
+## Community & Contributing
+
+<div class="grid cards" markdown>
+
+-   :material-github: **GitHub Repository**
+
+    ---
+
+    Star us, report issues, contribute code
+
+    [:octicons-arrow-right-24: Apex-Engineers-Inc/rustest](https://github.com/Apex-Engineers-Inc/rustest)
+
+-   :material-bug: **Issue Tracker**
+
+    ---
+
+    Found a bug? Have a feature request?
+
+    [:octicons-arrow-right-24: Report an Issue](https://github.com/Apex-Engineers-Inc/rustest/issues)
+
+-   :material-book-open-variant: **Contributing Guide**
+
+    ---
+
+    Help make rustest even better
+
+    [:octicons-arrow-right-24: Development Guide](advanced/development.md)
+
+-   :material-license: **License**
+
+    ---
+
+    MIT License — Free and open source
+
+    [:octicons-arrow-right-24: View License](https://github.com/Apex-Engineers-Inc/rustest/blob/main/LICENSE)
+
+</div>

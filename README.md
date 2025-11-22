@@ -76,23 +76,44 @@ Once you see the performance gains, migrate to native rustest imports for the fu
 
 </details>
 
+## 💭 Why Rustest Exists
+
+**Short version:** Python testing is too slow. We can do better.
+
+**Longer version:** I love pytest—the API is elegant, fixtures are powerful, and good tests make better code. But if you've used **vitest** or **bun test** in JavaScript/TypeScript, you know what fast testing feels like:
+
+- Tests run in milliseconds, not seconds
+- You get instant feedback on every save
+- TDD becomes enjoyable, not tedious
+- You stay in flow instead of context-switching
+
+**Why doesn't Python have this?**
+
+Rustest brings that experience to Python. Same pytest API you know, backed by Rust's performance. Fast tests aren't just convenient—they change how you develop.
+
+**Pytest nailed the API. Rustest brings the speed.**
+
 ## Why rustest?
 
-- 🚀 **8.5× average speedup** over pytest on the synthetic benchmark matrix (peaking at 19× on 5k-test suites)
-- 🧪 **Pytest compatibility mode** — Run existing pytest tests without code changes (`--pytest-compat`)
-- ✅ Familiar `@fixture`, `@parametrize`, `@skip`, and `@mark` decorators
-- 🔄 **Built-in async support** with `@mark.asyncio` (like pytest-asyncio, no plugin needed)
-- 🎭 **Built-in mocking** with `mocker` fixture (pytest-mock compatible API, no plugin needed)
-- 🔍 Automatic test discovery (`test_*.py` and `*_test.py` files)
-- 📝 **Built-in markdown code block testing** (like pytest-codeblocks, but faster)
-- 🎯 Simple, clean API—if you know pytest, you already know rustest
-- 🧮 Built-in `approx()` helper for tolerant numeric comparisons
-- 🪤 `raises()`, `skip()`, `xfail()`, `fail()` for test control
-- 🛠️ **Built-in fixtures**: `tmp_path`, `tmpdir`, `monkeypatch`, `mocker`, `capsys`, `capfd`, `caplog`, `cache`, `request`
-- 📊 **Request object**: `request.node` for test metadata/markers, `request.config` for options
-- 📦 Easy installation with pip/uv, or try instantly with uvx/pipx
-- ⚡ Low-overhead execution keeps small suites feeling instant
-- 🐛 **Crystal-clear error messages** that make debugging effortless
+### For pytest Users: Same API, Better Performance
+
+- 🚀 **8.5× average speedup** over pytest (peaking at 19× on large suites)
+- 🧪 **Drop-in compatibility** — Use `--pytest-compat` to run existing tests unchanged
+- ✅ **Same decorators**: `@fixture`, `@parametrize`, `@mark` — you already know these
+- 🔄 **Built-in async** — No pytest-asyncio plugin needed, just `@mark.asyncio`
+- 🎭 **Built-in mocking** — No pytest-mock plugin needed, `mocker` fixture works out of the box
+- 📊 **Simple coverage** — Works seamlessly with coverage.py ([guide](https://apex-engineers-inc.github.io/rustest/from-pytest/coverage/))
+- 🔍 **No plugin dependencies** — Common features built-in, less to maintain
+- 📝 **Built-in markdown testing** — Test code blocks in docs (like pytest-codeblocks)
+- 🐛 **Crystal-clear errors** — Vitest-style output makes debugging effortless
+
+### For Everyone
+
+- 🎯 Simple API—if you know pytest, you already know rustest
+- 🧮 Built-in `approx()`, `raises()`, `skip()`, `xfail()`, `fail()` helpers
+- 🛠️ **Rich built-in fixtures**: `tmp_path`, `tmpdir`, `monkeypatch`, `mocker`, `capsys`, `capfd`, `caplog`, `cache`, `request`
+- 📦 Easy installation: `pip install rustest` or `uv add rustest`
+- ⚡ Low-overhead keeps small suites feeling instant
 
 ## Performance
 
@@ -358,32 +379,29 @@ rustest --no-capture
 
 **[📚 Full Documentation](https://apex-engineers-inc.github.io/rustest)**
 
-### Getting Started
-- [Installation](https://apex-engineers-inc.github.io/rustest/getting-started/installation/)
-- [Quick Start](https://apex-engineers-inc.github.io/rustest/getting-started/quickstart/)
+### Choose Your Learning Path
 
-### User Guide
-- [Writing Tests](https://apex-engineers-inc.github.io/rustest/guide/writing-tests/)
-- [Fixtures](https://apex-engineers-inc.github.io/rustest/guide/fixtures/)
-- [Parametrization](https://apex-engineers-inc.github.io/rustest/guide/parametrization/)
-- [Marks & Skipping](https://apex-engineers-inc.github.io/rustest/guide/marks/)
-- [Test Classes](https://apex-engineers-inc.github.io/rustest/guide/test-classes/)
-- [Assertion Helpers](https://apex-engineers-inc.github.io/rustest/guide/assertions/)
-- [Markdown Testing](https://apex-engineers-inc.github.io/rustest/guide/markdown-testing/)
-- [CLI Usage](https://apex-engineers-inc.github.io/rustest/guide/cli/)
-- [Python API](https://apex-engineers-inc.github.io/rustest/guide/python-api/)
+**New to Testing:**
+- [Why Automated Testing?](https://apex-engineers-inc.github.io/rustest/new-to-testing/why-test/) — Learn the fundamentals
+- [Your First Test](https://apex-engineers-inc.github.io/rustest/new-to-testing/first-test/) — Get started in 5 minutes
+- [Testing Basics](https://apex-engineers-inc.github.io/rustest/new-to-testing/testing-basics/) — Core concepts explained
+- [Complete Beginner Guide](https://apex-engineers-inc.github.io/rustest/new-to-testing/fixtures/) — Progress through all topics
 
-### API Reference
-- [API Overview](https://apex-engineers-inc.github.io/rustest/api/overview/)
-- [Decorators](https://apex-engineers-inc.github.io/rustest/api/decorators/)
-- [Test Execution](https://apex-engineers-inc.github.io/rustest/api/core/)
-- [Reporting](https://apex-engineers-inc.github.io/rustest/api/reporting/)
-- [Assertion Utilities](https://apex-engineers-inc.github.io/rustest/api/approx/)
+**Coming from pytest:**
+- [Feature Comparison Table](https://apex-engineers-inc.github.io/rustest/from-pytest/comparison/) — What works, what doesn't
+- [5-Minute Migration](https://apex-engineers-inc.github.io/rustest/from-pytest/migration/) — Get running in minutes
+- [Plugin Replacement Guide](https://apex-engineers-inc.github.io/rustest/from-pytest/plugins/) — Built-in alternatives
+- [Coverage Integration](https://apex-engineers-inc.github.io/rustest/from-pytest/coverage/) — Simple coverage.py integration
+- [Known Limitations](https://apex-engineers-inc.github.io/rustest/from-pytest/limitations/) — What's not supported (yet)
 
-### Advanced Topics
-- [Performance](https://apex-engineers-inc.github.io/rustest/advanced/performance/)
-- [Comparison with pytest](https://apex-engineers-inc.github.io/rustest/advanced/comparison/)
-- [Development Guide](https://apex-engineers-inc.github.io/rustest/advanced/development/)
+### Core Reference (Everyone)
+- [Writing Tests](https://apex-engineers-inc.github.io/rustest/guide/writing-tests/) — Test functions, classes, and structure
+- [Fixtures](https://apex-engineers-inc.github.io/rustest/guide/fixtures/) — Complete fixtures reference
+- [Parametrization](https://apex-engineers-inc.github.io/rustest/guide/parametrization/) — Advanced parametrization
+- [Marks & Filtering](https://apex-engineers-inc.github.io/rustest/guide/marks/) — Organizing tests
+- [Assertions](https://apex-engineers-inc.github.io/rustest/guide/assertions/) — Assertion helpers
+- [CLI Usage](https://apex-engineers-inc.github.io/rustest/guide/cli/) — Command-line options
+- [API Reference](https://apex-engineers-inc.github.io/rustest/api/overview/) — Complete API docs
 
 ## Feature Comparison with pytest
 
