@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Fixture `name` parameter**: Fixtures can now be registered under a different name than their function name
+  - Use `@fixture(name="client")` to make `client_fixture()` accessible as `client` in tests
+  - Improves pytest compatibility and test readability
+  - Useful for following naming conventions while keeping parameter names clean
+
+- **Full indirect parametrization support**: Complete implementation of pytest's `indirect` parameter
+  - Support for `indirect=["param1", "param2"]` (list of parameter names)
+  - Support for `indirect=True` (all parameters)
+  - Support for `indirect="param"` (single parameter)
+  - Support for `indirect=False` (default, all direct values)
+  - Enables fixture-based parametrization without `pytest-lazy-fixtures` plugin
+  - Parameters marked as indirect are resolved as fixture references
+
+### Fixed
+
+- Type checking error with unnecessary type ignore comment in builtin_fixtures.py
+
 ## [0.8.2] - 2025-11-11
 
 ### Fixed

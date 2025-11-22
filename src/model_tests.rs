@@ -41,6 +41,7 @@ mod tests {
                 marks: vec![],
                 class_name: None,
                 fixture_param_indices: IndexMap::new(),
+                indirect_params: vec![],
             };
 
             let unique_id = test_case.unique_id();
@@ -64,6 +65,7 @@ mod tests {
                 marks: vec![],
                 class_name: None,
                 fixture_param_indices: IndexMap::new(),
+                indirect_params: vec![],
             };
 
             assert_eq!(
@@ -287,6 +289,7 @@ mod tests {
                 marks: vec![],
                 class_name: None,
                 fixture_param_indices: IndexMap::new(),
+                indirect_params: vec![],
             };
 
             assert_eq!(test_case.parameters.len(), 2);
