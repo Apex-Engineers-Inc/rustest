@@ -727,10 +727,11 @@ fn inspect_module(
                 let is_generator = is_generator_function(py, &value)?;
                 let autouse = extract_fixture_autouse(&value)?;
                 let params = extract_fixture_params(&value)?;
+                let fixture_name = extract_fixture_name(&value, &name)?;
 
                 let fixture = if let Some(params) = params {
                     Fixture::with_params(
-                        name.clone(),
+                        fixture_name.clone(),
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
                         scope,
@@ -740,7 +741,7 @@ fn inspect_module(
                     )
                 } else {
                     Fixture::new(
-                        name.clone(),
+                        fixture_name.clone(),
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
                         scope,
@@ -748,7 +749,7 @@ fn inspect_module(
                         autouse,
                     )
                 };
-                fixtures.insert(name.clone(), fixture);
+                fixtures.insert(fixture_name, fixture);
                 continue;
             }
 
@@ -1051,6 +1052,7 @@ fn discover_plain_class_tests_and_fixtures(
             let scope = extract_fixture_scope(&method)?;
             let is_generator = is_generator_function(py, &method)?;
             let autouse = extract_fixture_autouse(&method)?;
+            let fixture_name = extract_fixture_name(&method, &name)?;
 
             // Extract parameters (excluding 'self')
             let all_params = extract_parameters(py, &method)?;
@@ -1060,9 +1062,9 @@ fn discover_plain_class_tests_and_fixtures(
             let fixture_callable = create_plain_class_method_runner(py, cls, &name)?;
 
             fixtures.insert(
-                name.clone(),
+                fixture_name.clone(),
                 Fixture::new(
-                    name.clone(),
+                    fixture_name,
                     fixture_callable,
                     parameters,
                     scope,
@@ -1226,6 +1228,15 @@ fn extract_fixture_autouse(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     match value.getattr("__rustest_fixture_autouse__") {
         Ok(flag) => flag.is_truthy(),
         Err(_) => Ok(false),
+    }
+}
+
+/// Extract the fixture name from __rustest_fixture_name__ attribute,
+/// falling back to the provided default name if not specified.
+fn extract_fixture_name(value: &Bound<'_, PyAny>, default_name: &str) -> PyResult<String> {
+    match string_attribute(value, "__rustest_fixture_name__")? {
+        Some(name) => Ok(name),
+        None => Ok(default_name.to_string()),
     }
 }
 
