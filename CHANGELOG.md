@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2025-11-22
+
+### Changed
+
+- **Major Documentation Simplification**: Streamlined README to provide a concise, high-level overview of rustest
+  - Condensed verbose sections (Why Rustest Exists, pytest compatibility details) into brief bullet points
+  - Simplified performance benchmarks section - reduced from 4 detailed tables to 1 summary table with link to full analysis
+  - Removed redundant detailed error message examples - now briefly mentioned with link to documentation
+  - Streamlined Quick Start section - reduced example code and focused on essential commands
+  - Simplified Documentation section - replaced detailed learning path lists with 4 key documentation links
+  - Reduced overall README length by ~60% while maintaining all essential information
+  - All detailed content remains available in the comprehensive documentation site
+
+### Removed
+
+- Removed verbose "Why Rustest Exists" philosophy section (concept integrated into "Why Rustest?" bullets)
+- Removed detailed --pytest-compat collapsible section (deferred to migration guide)
+- Removed extensive performance benchmark tables and explanations (summarized with link to docs)
+- Removed detailed error message formatting examples (mentioned briefly with link to docs)
+- Removed granular installation options and try-before-install section (simplified to essential commands)
+- Removed detailed documentation learning paths (replaced with key links)
+- Removed detailed feature comparison table (replaced with link to full comparison)
+- Removed detailed contributing setup commands (deferred to development guide)
+
 ## [0.12.0] - 2025-11-21
 
 ### Added
