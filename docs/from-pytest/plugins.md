@@ -132,7 +132,7 @@ exclude_lines = [
 
 **What it does**: Parallel and distributed test execution
 
-**Migration strategy**: rustest uses **Rayon for built-in parallelism**
+**Migration strategy**: **Not yet available** - parallel execution is planned for future releases
 
 === "With pytest-xdist"
     ```bash
@@ -143,33 +143,31 @@ exclude_lines = [
 
 === "With rustest"
     ```bash
-    # Parallel execution is built into rustest
-    rustest tests/  # Already parallel by default!
+    # Tests currently run sequentially
+    rustest tests/
 
-    # Control parallelism (planned feature)
-    # rustest -j 4 tests/      # Coming soon
-    # rustest -j auto tests/   # Coming soon
+    # Parallel execution planned for future release
+    # rustest -n 4 tests/      # Not yet available
+    # rustest -n auto tests/   # Not yet available
     ```
 
-**Current status**: rustest uses Rayon for parallel test execution automatically. Fine-grained control over worker count is a planned feature.
+**Current status**: Tests run **sequentially** in rustest. Parallel execution is a planned feature.
 
-!!! info "Built-in parallelism"
-    rustest's Rust core uses Rayon for work-stealing parallelism, which is often **more efficient** than pytest-xdist's process-based parallelism. You get parallel execution without needing a plugin!
+!!! warning "Not Yet Implemented"
+    Rustest does **not** currently run tests in parallel. However, it's still **8.5× faster than pytest on average** even when running sequentially.
 
-**Limitations**:
+    **Why it's still faster:** Rust eliminates Python's overhead in test discovery, fixture resolution, and module imports. For most projects, sequential rustest outperforms parallel pytest-xdist.
 
-- Cannot currently control the number of workers (uses all available cores)
-- No distributed testing across multiple machines
-- No load balancing modes (loadscope, loadfile, etc.)
+**If you need parallelization today**:
 
-**Workaround for controlling parallelism**:
+Keep using pytest-xdist! It's a great tool. Or use both:
 
 ```bash
-# Limit CPU usage with taskset (Linux)
-taskset -c 0-3 rustest tests/  # Use only CPUs 0-3
+# Fast sequential tests with rustest
+rustest tests/unit/
 
-# Or set RAYON_NUM_THREADS environment variable
-RAYON_NUM_THREADS=4 rustest tests/
+# Slow integration tests in parallel with pytest
+pytest -n auto tests/integration/
 ```
 
 ---
