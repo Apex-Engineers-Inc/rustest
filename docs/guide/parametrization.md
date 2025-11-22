@@ -150,6 +150,91 @@ def test_multiply(multiplier: int, value: int, expected: int) -> None:
     assert multiplier * value == expected
 ```
 
+## Indirect Parametrization
+
+The `indirect` parameter allows you to use fixture references in parametrization. When a parameter is marked as indirect, its value is treated as a fixture name, and that fixture is resolved:
+
+### Using `indirect` with a List
+
+Specify which parameters should be resolved as fixtures:
+
+```python
+from rustest import fixture, parametrize
+
+@fixture
+def data_1():
+    return {"value": 42, "name": "first"}
+
+@fixture
+def data_2():
+    return {"value": 100, "name": "second"}
+
+@parametrize("data_fixture, multiplier", [
+    ("data_1", 2),
+    ("data_2", 3),
+], indirect=["data_fixture"])
+def test_with_indirect(data_fixture: dict, multiplier: int) -> None:
+    # data_fixture is resolved as a fixture
+    # multiplier is used as a direct value
+    result = data_fixture["value"] * multiplier
+    assert result in [84, 300]  # 42*2 or 100*3
+```
+
+### Using `indirect=True`
+
+Mark all parameters as indirect:
+
+```python
+from rustest import fixture, parametrize
+
+@fixture
+def dataset_a():
+    return [1, 2, 3]
+
+@fixture
+def dataset_b():
+    return [4, 5, 6]
+
+@parametrize("data", ["dataset_a", "dataset_b"], indirect=True)
+def test_all_positive(data: list) -> None:
+    # Both 'dataset_a' and 'dataset_b' strings are resolved as fixtures
+    assert all(x > 0 for x in data)
+```
+
+### Single Parameter as Indirect
+
+Use a string to mark one parameter:
+
+```python
+from rustest import fixture, parametrize
+
+@fixture
+def config_dev():
+    return {"env": "dev", "debug": True}
+
+@fixture
+def config_prod():
+    return {"env": "prod", "debug": False}
+
+@parametrize("config, expected_env", [
+    ("config_dev", "dev"),
+    ("config_prod", "prod"),
+], indirect="config")
+def test_environment(config: dict, expected_env: str) -> None:
+    assert config["env"] == expected_env
+```
+
+### Why Use Indirect Parametrization?
+
+Indirect parametrization is the standard pytest pattern for parametrizing with fixtures. It's useful when:
+
+- **Testing with different configurations**: Use different fixture instances for each test case
+- **Complex setup per parameter**: Each fixture can have its own setup/teardown logic
+- **Fixture reuse**: Same fixtures used in parametrization can be used directly in other tests
+- **Type safety**: IDE autocomplete works with fixture names
+
+This replaces the need for third-party plugins like `pytest-lazy-fixtures`.
+
 ## Complex Parameter Values
 
 ### Using Dictionaries

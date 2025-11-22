@@ -22,6 +22,49 @@ def test_user_name(sample_user: dict) -> None:
 
 When rustest sees that a test function has a parameter, it looks for a fixture with that name and automatically injects it.
 
+## Renaming Fixtures
+
+Sometimes you want to use a different name for your fixture than the function name. The `name` parameter allows you to specify the fixture name:
+
+```python
+from rustest import fixture
+
+@fixture(name="user")
+def user_fixture() -> dict:
+    """This fixture is accessible as 'user', not 'user_fixture'."""
+    return {"id": 1, "name": "Alice"}
+
+def test_user_id(user: dict) -> None:
+    # Use 'user' as the parameter name
+    assert user["id"] == 1
+
+def test_user_name(user: dict) -> None:
+    assert user["name"] == "Alice"
+```
+
+This is particularly useful for:
+
+- **Following naming conventions**: Keep function names descriptive (`client_fixture`) while using short parameter names (`client`)
+- **Avoiding name conflicts**: Use different internal names while exposing a standard fixture name
+- **Improving test readability**: Use natural parameter names in your tests
+
+```python
+from rustest import fixture
+
+# pytest compatibility example
+@fixture(name="db", scope="session")
+def database_connection():
+    """Accessible as 'db' in tests."""
+    conn = create_database_connection()
+    yield conn
+    conn.close()
+
+def test_query(db):
+    # Clean, short parameter name
+    result = db.execute("SELECT 1")
+    assert result == 1
+```
+
 ## Fixture Scopes
 
 Fixtures support different scopes to control when they are created and destroyed:

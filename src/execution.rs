@@ -313,6 +313,7 @@ fn execute_test_case(
         &mut context.class_cache,
         &mut context.teardowns,
         &test_case.fixture_param_indices,
+        &test_case.indirect_params,
     );
 
     // Resolve autouse fixtures first
@@ -401,6 +402,8 @@ struct FixtureResolver<'py> {
     fixture_param_indices: &'py IndexMap<String, usize>,
     /// Current fixture param values being resolved, for request.param support.
     current_fixture_param: Option<Py<PyAny>>,
+    /// Parameter names that should be resolved as fixture references (indirect parametrization).
+    indirect_params: &'py [String],
 }
 
 impl<'py> FixtureResolver<'py> {
@@ -415,6 +418,7 @@ impl<'py> FixtureResolver<'py> {
         class_cache: &'py mut IndexMap<String, Py<PyAny>>,
         teardowns: &'py mut TeardownCollector,
         fixture_param_indices: &'py IndexMap<String, usize>,
+        indirect_params: &'py [String],
     ) -> Self {
         Self {
             py,
@@ -430,12 +434,21 @@ impl<'py> FixtureResolver<'py> {
             parameters,
             fixture_param_indices,
             current_fixture_param: None,
+            indirect_params,
         }
     }
 
     fn resolve_argument(&mut self, name: &str) -> PyResult<Py<PyAny>> {
         // First check if it's a parametrized value
         if let Some(value) = self.parameters.get(name) {
+            // If this parameter is indirect, treat its value as a fixture name
+            if self.indirect_params.contains(&name.to_string()) {
+                // Extract the fixture name from the parameter value
+                let fixture_name: String = value.bind(self.py).extract()?;
+                // Resolve the fixture by its name (recursive call without the parameter)
+                return self.resolve_argument(&fixture_name);
+            }
+            // Otherwise, return the value directly
             return Ok(value.clone_ref(self.py));
         }
 

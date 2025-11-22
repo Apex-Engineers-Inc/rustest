@@ -36,7 +36,7 @@ else:
 
 if TYPE_CHECKING:
     try:  # pragma: no cover - typing-only import
-        from py import path as _py_path  # type: ignore[reportMissingModuleSource]
+        from py import path as _py_path
     except ImportError:
         PyPathLocal = Any
     else:

@@ -558,6 +558,7 @@ fn collect_from_markdown(
             marks: vec![codeblock_mark],
             class_name: None,
             fixture_param_indices: IndexMap::new(),
+            indirect_params: Vec::new(),
         });
     }
 
@@ -727,10 +728,11 @@ fn inspect_module(
                 let is_generator = is_generator_function(py, &value)?;
                 let autouse = extract_fixture_autouse(&value)?;
                 let params = extract_fixture_params(&value)?;
+                let fixture_name = extract_fixture_name(&value, &name)?;
 
                 let fixture = if let Some(params) = params {
                     Fixture::with_params(
-                        name.clone(),
+                        fixture_name.clone(),
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
                         scope,
@@ -740,7 +742,7 @@ fn inspect_module(
                     )
                 } else {
                     Fixture::new(
-                        name.clone(),
+                        fixture_name.clone(),
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
                         scope,
@@ -748,7 +750,7 @@ fn inspect_module(
                         autouse,
                     )
                 };
-                fixtures.insert(name.clone(), fixture);
+                fixtures.insert(fixture_name, fixture);
                 continue;
             }
 
@@ -760,6 +762,7 @@ fn inspect_module(
             let skip_reason = string_attribute(&value, "__rustest_skip__")?;
             let param_cases = collect_parametrization(py, &value)?;
             let marks = collect_marks(&value)?;
+            let indirect_params = extract_indirect_params(&value)?;
 
             if param_cases.is_empty() {
                 tests.push(TestCase {
@@ -773,6 +776,7 @@ fn inspect_module(
                     marks: marks.clone(),
                     class_name: None,
                     fixture_param_indices: IndexMap::new(),
+                    indirect_params: indirect_params.clone(),
                 });
             } else {
                 for (case_id, values) in param_cases {
@@ -788,6 +792,7 @@ fn inspect_module(
                         marks: marks.clone(),
                         class_name: None,
                         fixture_param_indices: IndexMap::new(),
+                        indirect_params: indirect_params.clone(),
                     });
                 }
             }
@@ -912,6 +917,7 @@ fn expand_tests_for_parametrized_fixtures(
                 marks: test.marks.iter().map(|m| m.clone_with_py(py)).collect(),
                 class_name: test.class_name.clone(),
                 fixture_param_indices,
+                indirect_params: test.indirect_params.clone(),
             });
         }
     }
@@ -1011,6 +1017,7 @@ fn discover_unittest_class_tests(
                 marks: Vec::new(),
                 class_name: Some(class_name.to_string()),
                 fixture_param_indices: IndexMap::new(),
+                indirect_params: Vec::new(),
             });
         }
     }
@@ -1051,6 +1058,7 @@ fn discover_plain_class_tests_and_fixtures(
             let scope = extract_fixture_scope(&method)?;
             let is_generator = is_generator_function(py, &method)?;
             let autouse = extract_fixture_autouse(&method)?;
+            let fixture_name = extract_fixture_name(&method, &name)?;
 
             // Extract parameters (excluding 'self')
             let all_params = extract_parameters(py, &method)?;
@@ -1060,9 +1068,9 @@ fn discover_plain_class_tests_and_fixtures(
             let fixture_callable = create_plain_class_method_runner(py, cls, &name)?;
 
             fixtures.insert(
-                name.clone(),
+                fixture_name.clone(),
                 Fixture::new(
-                    name.clone(),
+                    fixture_name,
                     fixture_callable,
                     parameters,
                     scope,
@@ -1085,6 +1093,7 @@ fn discover_plain_class_tests_and_fixtures(
             let skip_reason = string_attribute(&method, "__rustest_skip__")?;
             let marks = collect_marks(&method)?;
             let param_cases = collect_parametrization(py, &method)?;
+            let indirect_params = extract_indirect_params(&method)?;
 
             // Create a callable that instantiates the class and calls the method with fixtures
             let test_callable = create_plain_class_method_runner(py, cls, &name)?;
@@ -1101,6 +1110,7 @@ fn discover_plain_class_tests_and_fixtures(
                     marks,
                     class_name: Some(class_name.to_string()),
                     fixture_param_indices: IndexMap::new(),
+                    indirect_params: indirect_params.clone(),
                 });
             } else {
                 // Handle parametrized test methods
@@ -1117,6 +1127,7 @@ fn discover_plain_class_tests_and_fixtures(
                         marks: marks.clone(),
                         class_name: Some(class_name.to_string()),
                         fixture_param_indices: IndexMap::new(),
+                        indirect_params: indirect_params.clone(),
                     });
                 }
             }
@@ -1229,6 +1240,15 @@ fn extract_fixture_autouse(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     }
 }
 
+/// Extract the fixture name from __rustest_fixture_name__ attribute,
+/// falling back to the provided default name if not specified.
+fn extract_fixture_name(value: &Bound<'_, PyAny>, default_name: &str) -> PyResult<String> {
+    match string_attribute(value, "__rustest_fixture_name__")? {
+        Some(name) => Ok(name),
+        None => Ok(default_name.to_string()),
+    }
+}
+
 /// Extract fixture parametrization values, if any.
 fn extract_fixture_params(value: &Bound<'_, PyAny>) -> PyResult<Option<Vec<FixtureParam>>> {
     let Ok(attr) = value.getattr("__rustest_fixture_params__") else {
@@ -1317,6 +1337,22 @@ fn collect_parametrization(
         parametrized.push((case_id, parameters));
     }
     Ok(parametrized)
+}
+
+/// Extract the list of indirect parameters from a test function.
+/// Returns parameter names that should be resolved as fixture references.
+fn extract_indirect_params(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    let Ok(attr) = value.getattr("__rustest_parametrization_indirect__") else {
+        return Ok(Vec::new());
+    };
+    let sequence: Bound<'_, PySequence> = attr.cast_into()?;
+    let mut indirect_params = Vec::new();
+    for element in sequence.try_iter()? {
+        let element = element?;
+        let param_name: String = element.extract()?;
+        indirect_params.push(param_name);
+    }
+    Ok(indirect_params)
 }
 
 /// Collect mark information attached to a test function.

@@ -174,3 +174,26 @@ def test_all_valid_scopes():
             return 42
 
         assert test_fixture.__rustest_fixture_scope__ == scope
+
+
+def test_fixture_with_custom_name():
+    """Test that @fixture(name='...') sets the __rustest_fixture_name__ attribute."""
+
+    @fixture(name="custom_name")
+    def original_fixture_name():
+        return 42
+
+    assert original_fixture_name.__rustest_fixture__ is True
+    assert hasattr(original_fixture_name, "__rustest_fixture_name__")
+    assert original_fixture_name.__rustest_fixture_name__ == "custom_name"
+
+
+def test_fixture_without_custom_name():
+    """Test that fixtures without name parameter don't have __rustest_fixture_name__."""
+
+    @fixture
+    def my_fixture():
+        return 42
+
+    assert my_fixture.__rustest_fixture__ is True
+    assert not hasattr(my_fixture, "__rustest_fixture_name__")

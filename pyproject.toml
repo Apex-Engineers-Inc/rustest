@@ -99,6 +99,8 @@ rustest = { path = "." }
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 python_files = ["test_*.py", "*_test.py", "pytest_*.py"]
+# Ignore tests that use rustest-specific features not compatible with pytest
+addopts = "--ignore=tests/test_indirect_parametrization.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
