@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2025-11-22
+
+### Added
+
+- **pytest-mock Compatible Mocker Fixture**: Comprehensive mocking support built-in, no pytest-mock dependency needed
+  - `mocker.patch()` - Patch objects and modules
+  - `mocker.patch.object()` - Patch object attributes
+  - `mocker.patch.multiple()` - Patch multiple attributes
+  - `mocker.patch.dict()` - Patch dictionaries
+  - `mocker.spy()` - Spy on method calls while preserving behavior
+  - `mocker.stub()` and `mocker.async_stub()` - Create stub functions
+  - Direct access to `Mock`, `MagicMock`, `AsyncMock`, etc.
+  - Automatic cleanup of all patches after test completion
+  - Full pytest-mock API compatibility for easy migration
+
+- **Indirect Parametrization**: Full support for fixture-based parametrization without pytest-lazy-fixtures plugin
+  - `indirect` parameter accepts: `False` (default), `True`, `["param1", "param2"]`, or `"param"`
+  - When `indirect=True`, parameter values are treated as fixture names and resolved
+  - Enables clean patterns for fixture-based test variations
+  - Example: `@parametrize("data", ["fixture1", "fixture2"], indirect=True)`
+
+- **Fixture Renaming**: Support for `name` parameter in `@fixture()` decorator
+  - Register fixtures under different names: `@fixture(name="client") def client_fixture(): ...`
+  - Access fixture as "client" in tests instead of "client_fixture"
+  - Full pytest compatibility for fixture naming patterns
+
+- **Comprehensive Documentation Restructure**: Dual-audience documentation for beginners and pytest users
+  - **New to Testing** section: Beginner-friendly progressive guides (why test, first test, basics, fixtures, parametrization, organizing)
+  - **Coming from pytest** section: Migration guides, feature comparison, plugin replacements, coverage integration, limitations
+  - Enhanced home page with split-column Material Design cards for each audience
+  - Coverage.py integration guide with CI/CD examples
+  - Plugin replacement guide showing built-in alternatives
+  - Honest assessment of unsupported features and trade-offs
+
+### Changed
+
+- **README Simplification**: Streamlined README to provide a concise, high-level overview
+  - Condensed verbose sections into brief bullet points
+  - Simplified performance benchmarks - reduced from 4 detailed tables to 1 summary table with link to full analysis
+  - Streamlined Quick Start section with focused examples
+  - Replaced detailed learning path lists with 4 key documentation links
+  - Reduced overall README length by ~60% while maintaining all essential information
+  - All detailed content remains available in comprehensive documentation site
+
 ## [0.12.0] - 2025-11-21
 
 ### Added

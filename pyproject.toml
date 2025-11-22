@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustest"
-version = "0.12.0"
+version = "0.13.0"
 description = "Rust powered pytest-compatible runner"
 readme = "README.md"
 requires-python = ">=3.10"
