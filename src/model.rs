@@ -141,18 +141,23 @@ pub struct Fixture {
     pub parameters: Vec<String>,
     pub scope: FixtureScope,
     pub is_generator: bool,
+    pub is_async: bool,
+    pub is_async_generator: bool,
     pub autouse: bool,
     /// Optional parametrization values for the fixture.
     pub params: Option<Vec<FixtureParam>>,
 }
 
 impl Fixture {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         callable: Py<PyAny>,
         parameters: Vec<String>,
         scope: FixtureScope,
         is_generator: bool,
+        is_async: bool,
+        is_async_generator: bool,
         autouse: bool,
     ) -> Self {
         Self {
@@ -161,18 +166,23 @@ impl Fixture {
             parameters,
             scope,
             is_generator,
+            is_async,
+            is_async_generator,
             autouse,
             params: None,
         }
     }
 
     /// Create a fixture with parametrization.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_params(
         name: String,
         callable: Py<PyAny>,
         parameters: Vec<String>,
         scope: FixtureScope,
         is_generator: bool,
+        is_async: bool,
+        is_async_generator: bool,
         autouse: bool,
         params: Vec<FixtureParam>,
     ) -> Self {
@@ -182,6 +192,8 @@ impl Fixture {
             parameters,
             scope,
             is_generator,
+            is_async,
+            is_async_generator,
             autouse,
             params: Some(params),
         }
@@ -201,6 +213,8 @@ impl Fixture {
             parameters: self.parameters.clone(),
             scope: self.scope,
             is_generator: self.is_generator,
+            is_async: self.is_async,
+            is_async_generator: self.is_async_generator,
             autouse: self.autouse,
             params: self
                 .params

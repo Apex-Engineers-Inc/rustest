@@ -19,10 +19,16 @@ mod tests {
                 FixtureScope::Function,
                 false,
                 false,
+                false,
+                false,
             );
 
             assert_eq!(fixture.name, "test_fixture");
             assert_eq!(fixture.parameters, vec!["param1", "param2"]);
+            assert_eq!(fixture.scope, FixtureScope::Function);
+            assert!(!fixture.is_generator);
+            assert!(!fixture.is_async);
+            assert!(!fixture.is_async_generator);
         });
     }
 
