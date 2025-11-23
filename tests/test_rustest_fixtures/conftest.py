@@ -10,7 +10,7 @@ import pytest
 # Rustest-native approach (preferred)
 # This is clearer than pytest_plugins - it explicitly states it's for fixtures,
 # not for loading actual pytest plugins (which rustest doesn't support)
-rustest_fixtures = "fixtures_module"
+rustest_fixtures = "rustest_fixtures_module"
 
 
 @pytest.fixture
