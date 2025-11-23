@@ -196,7 +196,9 @@ pub fn discover_tests(
     }
 
     let py_glob = build_file_glob()?;
-    let md_glob = if config.enable_codeblocks {
+    // Disable markdown code blocks in pytest-compat mode by default
+    // to avoid syntax errors from documentation examples
+    let md_glob = if config.enable_codeblocks && !config.pytest_compat {
         Some(build_markdown_glob()?)
     } else {
         None
@@ -315,6 +317,8 @@ fn load_conftest_fixtures(
         if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
+            let is_async = is_async_function(py, &value)?;
+            let is_async_generator = is_async_generator_function(py, &value)?;
             let autouse = extract_fixture_autouse(&value)?;
             let params = extract_fixture_params(&value)?;
 
@@ -325,6 +329,8 @@ fn load_conftest_fixtures(
                     extract_parameters(py, &value)?,
                     scope,
                     is_generator,
+                    is_async,
+                    is_async_generator,
                     autouse,
                     params,
                 )
@@ -335,6 +341,8 @@ fn load_conftest_fixtures(
                     extract_parameters(py, &value)?,
                     scope,
                     is_generator,
+                    is_async,
+                    is_async_generator,
                     autouse,
                 )
             };
@@ -407,6 +415,8 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
         if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
+            let is_async = is_async_function(py, &value)?;
+            let is_async_generator = is_async_generator_function(py, &value)?;
             let autouse = extract_fixture_autouse(&value)?;
             let params = extract_fixture_params(&value)?;
 
@@ -417,6 +427,8 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
                     extract_parameters(py, &value)?,
                     scope,
                     is_generator,
+                    is_async,
+                    is_async_generator,
                     autouse,
                     params,
                 )
@@ -427,6 +439,8 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
                     extract_parameters(py, &value)?,
                     scope,
                     is_generator,
+                    is_async,
+                    is_async_generator,
                     autouse,
                 )
             };
@@ -726,6 +740,8 @@ fn inspect_module(
             if is_fixture(&value)? {
                 let scope = extract_fixture_scope(&value)?;
                 let is_generator = is_generator_function(py, &value)?;
+                let is_async = is_async_function(py, &value)?;
+                let is_async_generator = is_async_generator_function(py, &value)?;
                 let autouse = extract_fixture_autouse(&value)?;
                 let params = extract_fixture_params(&value)?;
                 let fixture_name = extract_fixture_name(&value, &name)?;
@@ -737,6 +753,8 @@ fn inspect_module(
                         extract_parameters(py, &value)?,
                         scope,
                         is_generator,
+                        is_async,
+                        is_async_generator,
                         autouse,
                         params,
                     )
@@ -747,6 +765,8 @@ fn inspect_module(
                         extract_parameters(py, &value)?,
                         scope,
                         is_generator,
+                        is_async,
+                        is_async_generator,
                         autouse,
                     )
                 };
@@ -1057,6 +1077,8 @@ fn discover_plain_class_tests_and_fixtures(
             // Extract fixture metadata
             let scope = extract_fixture_scope(&method)?;
             let is_generator = is_generator_function(py, &method)?;
+            let is_async = is_async_function(py, &method)?;
+            let is_async_generator = is_async_generator_function(py, &method)?;
             let autouse = extract_fixture_autouse(&method)?;
             let fixture_name = extract_fixture_name(&method, &name)?;
 
@@ -1075,6 +1097,8 @@ fn discover_plain_class_tests_and_fixtures(
                     parameters,
                     scope,
                     is_generator,
+                    is_async,
+                    is_async_generator,
                     autouse,
                 ),
             );
@@ -1222,6 +1246,20 @@ fn is_generator_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<b
     let inspect = py.import("inspect")?;
     let is_gen = inspect.call_method1("isgeneratorfunction", (value,))?;
     is_gen.is_truthy()
+}
+
+/// Check if a function is an async coroutine function.
+fn is_async_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let inspect = py.import("inspect")?;
+    let is_coro = inspect.call_method1("iscoroutinefunction", (value,))?;
+    is_coro.is_truthy()
+}
+
+/// Check if a function is an async generator function (contains async + yield).
+fn is_async_generator_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let inspect = py.import("inspect")?;
+    let is_async_gen = inspect.call_method1("isasyncgenfunction", (value,))?;
+    is_async_gen.is_truthy()
 }
 
 /// Extract the scope of a fixture, defaulting to "function" if not specified.

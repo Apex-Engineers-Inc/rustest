@@ -344,7 +344,21 @@ fn execute_test_case(
     let call_result = call_with_capture(py, config.capture_output, || {
         let args_tuple = PyTuple::new(py, &call_args)?;
         let callable = test_case.callable.bind(py);
-        callable.call1(args_tuple).map(|value| value.unbind())
+        let result = callable.call1(args_tuple)?;
+
+        // Check if the result is a coroutine (async test function)
+        let inspect = py.import("inspect")?;
+        let is_coroutine = inspect
+            .call_method1("iscoroutine", (&result,))?
+            .is_truthy()?;
+
+        if is_coroutine {
+            // Run the coroutine using asyncio.run()
+            let asyncio = py.import("asyncio")?;
+            Ok(asyncio.call_method1("run", (&result,))?.unbind())
+        } else {
+            Ok(result.unbind())
+        }
     });
 
     let (result, stdout, stderr) = match call_result {
@@ -532,7 +546,43 @@ impl<'py> FixtureResolver<'py> {
 
         // Execute the fixture
         let args_tuple = PyTuple::new(self.py, &args)?;
-        let result = if fixture.is_generator {
+        let result = if fixture.is_async_generator {
+            // For async generator fixtures: call to get async generator, then call anext() to get yielded value
+            let async_generator = fixture
+                .callable
+                .bind(self.py)
+                .call1(args_tuple)
+                .map(|value| value.unbind())?;
+
+            // Call anext() on the async generator using asyncio to get the yielded value
+            let asyncio = self.py.import("asyncio")?;
+            let anext_builtin = self.py.import("builtins")?.getattr("anext")?;
+            let coro = anext_builtin.call1((&async_generator.bind(self.py),))?;
+
+            // Run the coroutine in an event loop
+            let yielded_value = asyncio.call_method1("run", (coro,))?.unbind();
+
+            // Store the async generator in the appropriate teardown list
+            match fixture.scope {
+                FixtureScope::Session => {
+                    self.teardowns.session.push(async_generator);
+                }
+                FixtureScope::Package => {
+                    self.teardowns.package.push(async_generator);
+                }
+                FixtureScope::Module => {
+                    self.teardowns.module.push(async_generator);
+                }
+                FixtureScope::Class => {
+                    self.teardowns.class.push(async_generator);
+                }
+                FixtureScope::Function => {
+                    self.function_teardowns.push(async_generator);
+                }
+            }
+
+            yielded_value
+        } else if fixture.is_generator {
             // For generator fixtures: call to get generator, then call next() to get yielded value
             let generator = fixture
                 .callable
@@ -563,6 +613,19 @@ impl<'py> FixtureResolver<'py> {
             }
 
             yielded_value
+        } else if fixture.is_async {
+            // For async fixtures: call to get coroutine, then await it using asyncio.run()
+            let coro = fixture
+                .callable
+                .bind(self.py)
+                .call1(args_tuple)
+                .map(|value| value.unbind())?;
+
+            // Run the coroutine in an event loop
+            let asyncio = self.py.import("asyncio")?;
+            asyncio
+                .call_method1("run", (&coro.bind(self.py),))?
+                .unbind()
         } else {
             // For regular fixtures: call and use the return value directly
             fixture
@@ -842,16 +905,41 @@ fn extract_package_name(path: &std::path::Path) -> String {
 }
 
 /// Finalize generator fixtures by running their teardown code.
-/// This calls next() on each generator, which will execute the code after yield.
-/// The generator will raise StopIteration when complete, which we catch and ignore.
+/// This calls next() on each generator (or anext() for async generators),
+/// which will execute the code after yield.
+/// The generator will raise StopIteration (or StopAsyncIteration) when complete, which we catch and ignore.
 fn finalize_generators(py: Python<'_>, generators: &mut Vec<Py<PyAny>>) {
     // Process generators in reverse order (LIFO) to match pytest behavior
     for generator in generators.drain(..).rev() {
-        let result = generator.bind(py).call_method0("__next__");
-        // Ignore StopIteration (expected) and log other errors
+        let gen_bound = generator.bind(py);
+
+        // Check if this is an async generator by checking if it has __anext__ method
+        let is_async_gen = gen_bound.hasattr("__anext__").unwrap_or(false);
+
+        let result = if is_async_gen {
+            // For async generators, use anext() and asyncio.run()
+            match py.import("builtins").and_then(|builtins| {
+                let anext = builtins.getattr("anext")?;
+                let coro = anext.call1((gen_bound,))?;
+
+                // Run the coroutine in an event loop
+                let asyncio = py.import("asyncio")?;
+                asyncio.call_method1("run", (coro,))
+            }) {
+                Ok(_) => Ok(()),
+                Err(err) => Err(err),
+            }
+        } else {
+            // For sync generators, use __next__()
+            gen_bound.call_method0("__next__").map(|_| ())
+        };
+
+        // Ignore StopIteration/StopAsyncIteration (expected) and log other errors
         if let Err(err) = result {
-            // Check if it's StopIteration - that's expected and OK
-            if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py) {
+            // Check if it's StopIteration or StopAsyncIteration - that's expected and OK
+            if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py)
+                && !err.is_instance_of::<pyo3::exceptions::PyStopAsyncIteration>(py)
+            {
                 // For other exceptions, we could log them, but for now we'll ignore
                 // to avoid breaking the test run. In pytest, teardown errors are collected
                 // but don't stop other teardowns from running.
