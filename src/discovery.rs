@@ -1045,6 +1045,74 @@ fn discover_unittest_class_tests(
     Ok(tests)
 }
 
+/// Combine class-level and method-level parametrizations.
+///
+/// When both class and method have parametrizations, this creates the Cartesian product
+/// of all parameter combinations, matching pytest's behavior.
+///
+/// # Examples:
+///
+/// - Class params: [(x=1), (x=2)]
+/// - Method params: [(y=10), (y=20)]
+/// - Result: [(x=1,y=10), (x=1,y=20), (x=2,y=10), (x=2,y=20)]
+fn combine_parametrizations(
+    py: Python<'_>,
+    class_params: &[(String, ParameterMap)],
+    method_params: &[(String, ParameterMap)],
+) -> PyResult<Vec<(String, ParameterMap)>> {
+    // If neither has parametrizations, return empty
+    if class_params.is_empty() && method_params.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // If only class has parametrizations, return them
+    if method_params.is_empty() {
+        let mut result = Vec::new();
+        for (class_id, class_values) in class_params {
+            let mut cloned_values = ParameterMap::new();
+            for (key, value) in class_values {
+                cloned_values.insert(key.clone(), value.clone_ref(py));
+            }
+            result.push((class_id.clone(), cloned_values));
+        }
+        return Ok(result);
+    }
+
+    // If only method has parametrizations, return them
+    if class_params.is_empty() {
+        let mut result = Vec::new();
+        for (method_id, method_values) in method_params {
+            let mut cloned_values = ParameterMap::new();
+            for (key, value) in method_values {
+                cloned_values.insert(key.clone(), value.clone_ref(py));
+            }
+            result.push((method_id.clone(), cloned_values));
+        }
+        return Ok(result);
+    }
+
+    // Both have parametrizations - create Cartesian product
+    let mut result = Vec::new();
+    for (class_id, class_values) in class_params {
+        for (method_id, method_values) in method_params {
+            // Combine the parameter values
+            let mut combined_values = ParameterMap::new();
+            for (key, value) in class_values {
+                combined_values.insert(key.clone(), value.clone_ref(py));
+            }
+            for (key, value) in method_values {
+                combined_values.insert(key.clone(), value.clone_ref(py));
+            }
+
+            // Combine the IDs
+            let combined_id = format!("{}-{}", class_id, method_id);
+            result.push((combined_id, combined_values));
+        }
+    }
+
+    Ok(result)
+}
+
 /// Discover test methods and fixture methods in a plain pytest-style test class.
 /// Returns both fixtures defined in the class and the test cases.
 fn discover_plain_class_tests_and_fixtures(
@@ -1056,6 +1124,9 @@ fn discover_plain_class_tests_and_fixtures(
     let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
     let inspect = py.import("inspect")?;
+
+    // Extract class-level parametrization (if any)
+    let class_param_cases = collect_parametrization(py, cls)?;
 
     // Get all members of the class
     let members = inspect.call_method1("getmembers", (cls,))?;
@@ -1116,13 +1187,17 @@ fn discover_plain_class_tests_and_fixtures(
             // Extract metadata
             let skip_reason = string_attribute(&method, "__rustest_skip__")?;
             let marks = collect_marks(&method)?;
-            let param_cases = collect_parametrization(py, &method)?;
+            let method_param_cases = collect_parametrization(py, &method)?;
             let indirect_params = extract_indirect_params(&method)?;
+
+            // Combine class-level and method-level parametrization
+            let combined_param_cases =
+                combine_parametrizations(py, &class_param_cases, &method_param_cases)?;
 
             // Create a callable that instantiates the class and calls the method with fixtures
             let test_callable = create_plain_class_method_runner(py, cls, &name)?;
 
-            if param_cases.is_empty() {
+            if combined_param_cases.is_empty() {
                 tests.push(TestCase {
                     name: name.clone(),
                     display_name,
@@ -1138,7 +1213,7 @@ fn discover_plain_class_tests_and_fixtures(
                 });
             } else {
                 // Handle parametrized test methods
-                for (case_id, values) in param_cases {
+                for (case_id, values) in combined_param_cases {
                     let param_display_name = format!("{}::{}[{}]", class_name, name, case_id);
                     tests.push(TestCase {
                         name: name.clone(),

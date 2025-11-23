@@ -110,11 +110,14 @@ impl OutputRenderer for SpinnerDisplay {
                 self.failed += 1;
 
                 // Format and display the error immediately
+                // Use suspend() to temporarily hide spinners while printing
                 if let Some(ref message) = result.message {
                     let formatted =
                         self.formatter
                             .format_failure(&result.name, &result.path, message);
-                    let _ = self.multi.println(&formatted);
+                    self.multi.suspend(|| {
+                        eprintln!("{}", formatted);
+                    });
                 }
             }
             "skipped" => self.skipped += 1,
@@ -197,6 +200,8 @@ impl OutputRenderer for SpinnerDisplay {
     }
 
     fn println(&self, message: &str) {
-        let _ = self.multi.println(message);
+        self.multi.suspend(|| {
+            eprintln!("{}", message);
+        });
     }
 }
