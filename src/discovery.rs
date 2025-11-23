@@ -296,18 +296,24 @@ fn discover_conftest_files(
     Ok(())
 }
 
-/// Load fixtures from pytest_plugins modules.
+/// Load fixtures from external modules (rustest_fixtures or pytest_plugins).
 ///
-/// This implements pytest's pytest_plugins feature, which allows loading fixtures
-/// from external Python modules. It's NOT about supporting a plugin ecosystem - just
-/// importing fixtures from other Python files.
+/// Rustest supports loading fixtures from external Python modules via:
+/// - `rustest_fixtures` (preferred, rustest-specific, clear naming)
+/// - `pytest_plugins` (pytest compatibility, despite the name it only loads fixture modules)
 ///
-/// Example:
-///   # conftest.py
-///   pytest_plugins = ["my_fixtures"]  # or "my_fixtures" as a string
+/// This is NOT about supporting pytest's plugin ecosystem (pluggy hooks, entry points, etc.)
+/// - just importing Python modules and extracting their @fixture decorated functions.
+///
+/// Examples:
+///   # conftest.py (rustest native - preferred)
+///   rustest_fixtures = ["my_fixtures"]  # or "my_fixtures" as a string
+///
+///   # conftest.py (pytest compatibility)
+///   pytest_plugins = ["my_fixtures"]  # works but confusing name
 ///
 ///   # my_fixtures.py
-///   @pytest.fixture
+///   @pytest.fixture  # or @rustest.fixture
 ///   def my_fixture():
 ///       return "value"
 fn load_pytest_plugins_fixtures(
@@ -428,8 +434,20 @@ fn load_conftest_fixtures(
     let isfunction = inspect.getattr("isfunction")?;
     let mut fixtures = IndexMap::new();
 
-    // First, load fixtures from pytest_plugins if defined
-    if let Ok(Some(plugins)) = module_dict.get_item("pytest_plugins") {
+    // Load fixtures from external modules
+    // Priority: rustest_fixtures (preferred) > pytest_plugins (compatibility)
+    let fixture_modules = if let Ok(Some(modules)) = module_dict.get_item("rustest_fixtures") {
+        // Preferred: rustest_fixtures (clear, explicit naming)
+        Some(modules)
+    } else if let Ok(Some(modules)) = module_dict.get_item("pytest_plugins") {
+        // Fallback: pytest_plugins (for pytest compatibility)
+        // Note: Despite the name, this only loads fixture modules, not actual pytest plugins
+        Some(modules)
+    } else {
+        None
+    };
+
+    if let Some(plugins) = fixture_modules {
         // Get the conftest directory for importing modules
         let conftest_dir = path.parent().unwrap_or(path);
         load_pytest_plugins_fixtures(
