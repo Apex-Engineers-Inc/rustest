@@ -492,6 +492,95 @@ def api_url(base_config):  # Can depend on parent fixtures
 
 Child fixtures can override parent fixtures with the same name.
 
+### Loading Fixtures from External Modules
+
+For better organization, you can split fixtures into separate Python modules and load them via `conftest.py` using the `rustest_fixtures` field:
+
+<!--rustest.mark.skip-->
+```
+project/
+├── tests/
+│   ├── conftest.py           # Loads fixture modules
+│   ├── fixtures/
+│   │   ├── database.py       # Database fixtures
+│   │   ├── api.py           # API client fixtures
+│   │   └── users.py         # User-related fixtures
+│   ├── test_users.py
+│   └── test_api.py
+```
+
+**conftest.py:**
+```python
+# Load fixture modules using rustest_fixtures (preferred)
+rustest_fixtures = ["fixtures.database", "fixtures.api", "fixtures.users"]
+
+# Or load a single module
+rustest_fixtures = "fixtures.database"
+
+# For pytest compatibility, pytest_plugins also works but is less clear
+pytest_plugins = ["fixtures.database"]  # Works but confusing name
+```
+
+**fixtures/database.py:**
+```python
+from rustest import fixture
+
+@fixture(scope="session")
+def database():
+    """Shared database connection."""
+    db = setup_database()
+    yield db
+    db.cleanup()
+
+@fixture
+def db_session(database):
+    """Transaction-scoped database session."""
+    session = database.create_session()
+    yield session
+    session.rollback()
+```
+
+**fixtures/users.py:**
+```python
+from rustest import fixture
+
+@fixture
+def user(db_session):
+    """Create a test user."""
+    user = db_session.create_user(name="Test User")
+    return user
+
+@fixture
+def admin_user(db_session):
+    """Create an admin user."""
+    user = db_session.create_user(name="Admin", role="admin")
+    return user
+```
+
+**test_users.py:**
+```python
+# All fixtures from loaded modules are automatically available
+def test_user_creation(user):
+    assert user.name == "Test User"
+
+def test_admin_privileges(admin_user):
+    assert admin_user.role == "admin"
+```
+
+!!! tip "rustest_fixtures vs pytest_plugins"
+    - **`rustest_fixtures`** (preferred) - Clear, explicit naming for fixture modules
+    - **`pytest_plugins`** (compatibility) - Works but implies plugin support (which rustest doesn't provide)
+
+    Both load the same way - just Python module imports and fixture extraction. No actual pytest plugin system is involved.
+
+!!! note "What This Is NOT"
+    This feature loads **fixture modules**, not pytest plugins. Rustest does not support:
+    - pytest's pluggy hook system
+    - setuptools entry points (`pytest11`)
+    - Advanced plugin features (pytest-cov, pytest-django, etc.)
+
+    It simply imports Python modules and registers their `@fixture` decorated functions.
+
 ## Fixture Methods in Test Classes
 
 You can define fixtures as methods within test classes:

@@ -3,6 +3,44 @@
 !!! warning "Pytest plugins are not supported"
     rustest **does not support pytest plugins** and this is an intentional design decision. This page explains why and provides concrete migration strategies for the most popular pytest plugins.
 
+## Important Distinction: Fixture Modules vs Plugins
+
+Before diving into plugins, it's important to understand the difference:
+
+### ✅ Fixture Modules (SUPPORTED)
+
+rustest **DOES support** loading fixtures from external Python modules:
+
+```python
+# conftest.py
+rustest_fixtures = "my_fixtures"  # Preferred: clear naming
+# or
+pytest_plugins = "my_fixtures"    # Compatibility: confusing name but works
+```
+
+This feature:
+- ✅ Imports Python modules
+- ✅ Extracts `@fixture` decorated functions
+- ✅ Registers them globally
+- ✅ **NOT** a plugin system - just module imports
+
+See the [Fixtures guide](../guide/fixtures.md#loading-fixtures-from-external-modules) for details.
+
+### ❌ Pytest Plugins (NOT SUPPORTED)
+
+rustest **DOES NOT support** actual pytest plugins:
+
+- ❌ pluggy hook system (pytest_configure, pytest_collection_modifyitems, etc.)
+- ❌ setuptools entry points (`pytest11`)
+- ❌ Plugin packages from PyPI (pytest-django, pytest-cov, etc.)
+- ❌ Hook wrappers and hook ordering (tryfirst, trylast)
+
+**The distinction:**
+- **`pytest_plugins` in conftest.py**: Just imports fixture modules (misleading name!)
+- **Actual pytest plugins**: Full hook-based plugins (not supported)
+
+This page covers the latter - actual pytest plugins from PyPI.
+
 ## Why rustest Doesn't Support Plugins
 
 ### The Technical Reasons
