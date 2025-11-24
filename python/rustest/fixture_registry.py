@@ -79,10 +79,11 @@ def resolve_fixture(name: str, _executed_fixtures: dict[str, Any] | None = None)
 
     # Check if it's async (either async function or async generator)
     if inspect.iscoroutinefunction(fixture_func) or inspect.isasyncgenfunction(fixture_func):
-        raise NotImplementedError(
-            f"Fixture '{name}' is async. request.getfixturevalue() currently only supports "
-            f"synchronous fixtures. Async fixtures work normally when injected as test parameters. "
-            f"Use direct fixture injection instead of getfixturevalue() for async fixtures."
+        # Skip the test with a clear explanation using rustest's skip mechanism
+        from rustest.decorators import Skipped
+
+        raise Skipped(
+            f"Fixture '{name}' is async. request.getfixturevalue() only supports synchronous fixtures. Async fixtures work perfectly when injected as test parameters - use direct injection instead: def test_something({name}): ..."
         )
 
     # Get fixture parameters

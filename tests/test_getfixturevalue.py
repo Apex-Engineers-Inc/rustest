@@ -68,31 +68,35 @@ async def async_generator_fixture():
 
 
 def test_getfixturevalue_async_generator(request):
-    """Test that async generator fixtures raise NotImplementedError with helpful message.
+    """Test that async generator fixtures skip the test with a helpful message.
 
-    This test verifies that getfixturevalue() raises a clear error for async fixtures,
-    explaining that they work fine with direct injection but not with getfixturevalue().
+    This test verifies that getfixturevalue() skips tests that try to use async fixtures,
+    with a clear message explaining that they work fine with direct injection.
 
-    Note: Async fixtures work perfectly when injected as test parameters - this error
-    only occurs when trying to use them with the getfixturevalue() method.
+    Note: Async fixtures work perfectly when injected as test parameters - they're only
+    skipped when accessed via getfixturevalue().
     """
     import os
     # Skip if running with pure pytest (detected via PYTEST_CURRENT_TEST env var)
     if "PYTEST_CURRENT_TEST" in os.environ:
         pytest.skip(
-            "Skipping: This test verifies rustest's getfixturevalue() raises NotImplementedError "
-            "for async generator fixtures. Pure pytest handles async fixtures natively, so this "
+            "Skipping: This test verifies rustest's getfixturevalue() skip behavior "
+            "for async fixtures. Pure pytest handles async fixtures natively, so this "
             "behavior only applies when running with rustest --pytest-compat mode."
         )
 
-    with pytest.raises(NotImplementedError) as exc_info:
+    # Attempt to use getfixturevalue() with an async fixture
+    # This should raise Skipped exception with a helpful message
+    from rustest.decorators import Skipped
+
+    with pytest.raises(Skipped) as exc_info:
         request.getfixturevalue("async_generator_fixture")
 
-    error_msg = str(exc_info.value)
-    # Verify the error message explains the limitation clearly
-    assert "async" in error_msg.lower()
-    assert "async_generator_fixture" in error_msg
-    assert "direct fixture injection" in error_msg.lower() or "injected as test parameters" in error_msg.lower()
+    # Verify the skip message explains the limitation clearly
+    skip_msg = str(exc_info.value)
+    assert "async" in skip_msg.lower()
+    assert "async_generator_fixture" in skip_msg
+    assert "direct injection" in skip_msg.lower() or "injected as test parameters" in skip_msg.lower()
 
 
 # Parametrized tests using getfixturevalue
