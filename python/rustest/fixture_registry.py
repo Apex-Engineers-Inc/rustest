@@ -103,13 +103,18 @@ def resolve_fixture(name: str, _executed_fixtures: dict[str, Any] | None = None)
     # Resolve dependencies recursively
     resolved_args = {}
     for param_name in params:
-        if param_name in _fixture_registry:
-            # This parameter is itself a fixture - resolve it recursively
+        # Use get_fixture() which has lock protection, instead of checking registry directly
+        try:
+            # Try to get the fixture (thread-safe with lock)
+            get_fixture(param_name)
+            # It's a fixture - resolve it recursively
             resolved_args[param_name] = resolve_fixture(param_name, _executed_fixtures)
-        elif param_name == "request":
-            # Skip 'request' parameter - will be handled by caller
-            # For now, we pass None
-            resolved_args[param_name] = None
+        except ValueError:
+            # Not a fixture - skip it
+            # Special handling for 'request' parameter
+            if param_name == "request":
+                # Skip 'request' parameter - will be handled by caller
+                resolved_args[param_name] = None
 
     # Execute the fixture
     result = fixture_func(**resolved_args)
