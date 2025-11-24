@@ -3,9 +3,20 @@ Tests demonstrating rustest_fixtures usage.
 
 This test file uses fixtures loaded via the rustest_fixtures field
 in conftest.py, which is the preferred rustest-native approach.
+
+NOTE: These tests only work with rustest, not pytest, because pytest
+doesn't recognize the rustest_fixtures field in conftest.py.
 """
 
+import sys
 import pytest
+
+# Skip all tests in this module when running with pytest
+# The rustest_fixtures feature is rustest-specific
+pytestmark = pytest.mark.skipif(
+    "_pytest" in sys.modules,
+    reason="rustest_fixtures feature only works with rustest, not pytest"
+)
 
 
 def test_rustest_native_fixture(rustest_native_fixture):

@@ -7,6 +7,7 @@ Tests for:
 - Issue #3: Event loop teardown warnings
 """
 
+import sys
 import pytest
 
 
@@ -45,6 +46,10 @@ def test_local_conftest_fixture(local_conftest_fixture):
 # ============================================================================
 
 
+@pytest.mark.skipif(
+    "_pytest" in sys.modules,
+    reason="applymarker skip behavior is rustest-specific"
+)
 def test_applymarker_skip(request):
     """Test Issue #2: request.applymarker() with skip marker."""
     # This should skip the test
@@ -60,6 +65,10 @@ def test_applymarker_no_skip(request):
     assert True
 
 
+@pytest.mark.skipif(
+    "_pytest" in sys.modules,
+    reason="applymarker skipif behavior is rustest-specific"
+)
 def test_applymarker_skipif_true(request):
     """Test Issue #2: request.applymarker() with skipif when condition is True."""
     condition = True
