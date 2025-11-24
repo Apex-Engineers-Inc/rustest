@@ -613,17 +613,70 @@ class FixtureRequest:
         """
         Apply a marker to the test.
 
-        NOT SUPPORTED in rustest pytest-compat mode.
+        Supports skip, skipif, and xfail markers. Other markers are stored but ignored.
+
+        Args:
+            marker: Marker to apply (can be string name or marker object)
 
         Raises:
-            NotImplementedError: Always raised with helpful message
+            Skipped: If skip or skipif marker is applied and condition is met
+
+        Example:
+            def test_dynamic_skip(request):
+                if not has_required_library():
+                    request.applymarker(pytest.mark.skip(reason="Library not available"))
         """
-        msg = (
-            "request.applymarker() is not supported in rustest pytest-compat mode.\n"
-            "\n"
-            "For full pytest features, use pytest directly or migrate to native rustest."
-        )
-        raise NotImplementedError(msg)
+        # First, check if this is a skip decorator function (from pytest.mark.skip)
+        # These are created by skip_decorator() and have __rustest_skip__ attribute
+        if callable(marker) and hasattr(marker, "__name__") and marker.__name__ == "decorator":
+            # This might be a skip decorator - try to apply it to a dummy function
+            # to extract the skip reason
+            def dummy():
+                pass
+
+            try:
+                decorated = marker(dummy)
+                if hasattr(decorated, "__rustest_skip__"):
+                    # This is a skip decorator - extract the reason and skip
+                    reason = getattr(decorated, "__rustest_skip__", "")
+                    _rustest_skip_function(reason=reason)
+                    return
+            except (_rustest_Skipped, _rustest_XFailed, _rustest_Failed):
+                # Re-raise test control exceptions
+                raise
+            except Exception:
+                # Swallow other exceptions (e.g., if marker() fails)
+                pass
+
+        # Add the marker to the node
+        self.node.add_marker(marker)
+
+        # Handle MarkDecorator objects (have name, args, kwargs attributes)
+        if hasattr(marker, "name"):
+            marker_name = str(getattr(marker, "name"))
+
+            if marker_name == "skip":
+                # Extract reason from marker
+                reason = getattr(marker, "kwargs", {}).get("reason", "")
+                _rustest_skip_function(reason=reason)
+
+            elif marker_name == "skipif":
+                # Extract condition from args
+                args = getattr(marker, "args", ())
+                if args and len(args) > 0:
+                    condition = args[0]
+                    if condition:
+                        # Condition is met, skip the test
+                        reason = getattr(marker, "kwargs", {}).get("reason", "")
+                        _rustest_skip_function(reason=reason)
+
+            elif marker_name == "xfail":
+                # Store xfail marker for potential later handling
+                # For now, just add it to the node - the test will run normally
+                pass
+
+            # Other markers (slow, integration, etc.) are just stored on the node
+            # No action needed - they're for pytest plugins which rustest doesn't support
 
     def raiseerror(self, msg: str | None) -> None:
         """

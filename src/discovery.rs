@@ -296,6 +296,130 @@ fn discover_conftest_files(
     Ok(())
 }
 
+/// Load fixtures from external modules (rustest_fixtures or pytest_plugins).
+///
+/// Rustest supports loading fixtures from external Python modules via:
+/// - `rustest_fixtures` (preferred, rustest-specific, clear naming)
+/// - `pytest_plugins` (pytest compatibility, despite the name it only loads fixture modules)
+///
+/// This is NOT about supporting pytest's plugin ecosystem (pluggy hooks, entry points, etc.)
+/// - just importing Python modules and extracting their @fixture decorated functions.
+///
+/// Examples:
+///   # conftest.py (rustest native - preferred)
+///   rustest_fixtures = ["my_fixtures"]  # or "my_fixtures" as a string
+///
+///   # conftest.py (pytest compatibility)
+///   pytest_plugins = ["my_fixtures"]  # works but confusing name
+///
+///   # my_fixtures.py
+///   @pytest.fixture  # or @rustest.fixture
+///   def my_fixture():
+///       return "value"
+fn load_pytest_plugins_fixtures(
+    py: Python<'_>,
+    pytest_plugins: &Bound<'_, PyAny>,
+    _inspect: &Bound<'_, PyAny>,
+    isfunction: &Bound<'_, PyAny>,
+    fixtures: &mut IndexMap<String, Fixture>,
+    conftest_dir: &Path,
+) -> PyResult<()> {
+    // Parse pytest_plugins - can be a string or list of strings
+    let plugin_names: Vec<String> = if let Ok(plugin_str) = pytest_plugins.extract::<String>() {
+        // Single string: pytest_plugins = "my_fixtures"
+        vec![plugin_str]
+    } else if let Ok(plugin_list) = pytest_plugins.extract::<Vec<String>>() {
+        // List of strings: pytest_plugins = ["my_fixtures", "other_fixtures"]
+        plugin_list
+    } else {
+        // Invalid format - skip silently for compatibility
+        return Ok(());
+    };
+
+    // Temporarily add conftest directory to sys.path for importing modules
+    // This allows importing modules from the same directory as conftest.py
+    let sys = py.import("sys")?;
+    let sys_path: Bound<'_, PyAny> = sys.getattr("path")?;
+    let conftest_dir_str = conftest_dir.to_string_lossy().to_string();
+
+    // Insert the conftest directory at the beginning of sys.path
+    sys_path.call_method1("insert", (0, conftest_dir_str.clone()))?;
+
+    // Import each module and extract fixtures
+    let importlib = py.import("importlib")?;
+    let import_module = importlib.getattr("import_module")?;
+
+    for module_name in plugin_names {
+        // Import the module
+        let plugin_module = match import_module.call1((module_name.as_str(),)) {
+            Ok(module) => module,
+            Err(e) => {
+                // If import fails, print a warning but continue
+                eprintln!(
+                    "Warning: Failed to import pytest plugin module '{}': {}",
+                    module_name, e
+                );
+                continue;
+            }
+        };
+
+        // Get the module's __dict__
+        let plugin_dict: Bound<'_, PyDict> = match plugin_module.getattr("__dict__") {
+            Ok(dict) => dict.cast_into()?,
+            Err(_) => continue,
+        };
+
+        // Extract fixtures from the plugin module
+        for (name_obj, value) in plugin_dict.iter() {
+            let name: String = match name_obj.extract() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            // Check if it's a function and a fixture
+            if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
+                let scope = extract_fixture_scope(&value)?;
+                let is_generator = is_generator_function(py, &value)?;
+                let is_async = is_async_function(py, &value)?;
+                let is_async_generator = is_async_generator_function(py, &value)?;
+                let autouse = extract_fixture_autouse(&value)?;
+                let params = extract_fixture_params(&value)?;
+
+                let fixture = if let Some(params) = params {
+                    Fixture::with_params(
+                        name.clone(),
+                        value.clone().unbind(),
+                        extract_parameters(py, &value)?,
+                        scope,
+                        is_generator,
+                        is_async,
+                        is_async_generator,
+                        autouse,
+                        params,
+                    )
+                } else {
+                    Fixture::new(
+                        name.clone(),
+                        value.clone().unbind(),
+                        extract_parameters(py, &value)?,
+                        scope,
+                        is_generator,
+                        is_async,
+                        is_async_generator,
+                        autouse,
+                    )
+                };
+                fixtures.insert(name.clone(), fixture);
+            }
+        }
+    }
+
+    // Remove the conftest directory from sys.path
+    sys_path.call_method1("remove", (conftest_dir_str,))?;
+
+    Ok(())
+}
+
 /// Load fixtures from a conftest.py file.
 fn load_conftest_fixtures(
     py: Python<'_>,
@@ -310,6 +434,33 @@ fn load_conftest_fixtures(
     let isfunction = inspect.getattr("isfunction")?;
     let mut fixtures = IndexMap::new();
 
+    // Load fixtures from external modules
+    // Priority: rustest_fixtures (preferred) > pytest_plugins (compatibility)
+    let fixture_modules = if let Ok(Some(modules)) = module_dict.get_item("rustest_fixtures") {
+        // Preferred: rustest_fixtures (clear, explicit naming)
+        Some(modules)
+    } else if let Ok(Some(modules)) = module_dict.get_item("pytest_plugins") {
+        // Fallback: pytest_plugins (for pytest compatibility)
+        // Note: Despite the name, this only loads fixture modules, not actual pytest plugins
+        Some(modules)
+    } else {
+        None
+    };
+
+    if let Some(plugins) = fixture_modules {
+        // Get the conftest directory for importing modules
+        let conftest_dir = path.parent().unwrap_or(path);
+        load_pytest_plugins_fixtures(
+            py,
+            &plugins,
+            &inspect,
+            &isfunction,
+            &mut fixtures,
+            conftest_dir,
+        )?;
+    }
+
+    // Then load fixtures from the conftest module itself
     for (name_obj, value) in module_dict.iter() {
         let name: String = name_obj.extract()?;
 
