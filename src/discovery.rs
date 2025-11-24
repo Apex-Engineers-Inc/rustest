@@ -642,7 +642,7 @@ fn collect_from_file(
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let (module_fixtures, tests) = inspect_module(py, path, &module_dict)?;
+    let (module_fixtures, tests) = inspect_module(py, path, &module_dict, config.pytest_compat)?;
 
     // Merge conftest fixtures with the module's own fixtures
     let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
@@ -876,6 +876,7 @@ fn inspect_module(
     py: Python<'_>,
     path: &Path,
     module_dict: &Bound<'_, PyDict>,
+    pytest_compat: bool,
 ) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
     let inspect = py.import("inspect")?;
     let isfunction = inspect.getattr("isfunction")?;
@@ -930,7 +931,13 @@ fn inspect_module(
             }
 
             let parameters = extract_parameters(py, &value)?;
-            let skip_reason = string_attribute(&value, "__rustest_skip__")?;
+            let mut skip_reason = string_attribute(&value, "__rustest_skip__")?;
+
+            // Check for @patch decorator if not already skipped
+            if skip_reason.is_none() {
+                skip_reason = check_for_patch_decorator(py, &value, pytest_compat)?;
+            }
+
             let param_cases = collect_parametrization(py, &value)?;
             let marks = collect_marks(&value)?;
             let indirect_params = extract_indirect_params(&value)?;
@@ -977,8 +984,13 @@ fn inspect_module(
             } else if is_plain_test_class(&name) {
                 // Plain pytest-style test class support
                 // Extract both test methods and fixture methods from the class
-                let (class_fixtures, class_tests) =
-                    discover_plain_class_tests_and_fixtures(py, path, &name, &value)?;
+                let (class_fixtures, class_tests) = discover_plain_class_tests_and_fixtures(
+                    py,
+                    path,
+                    &name,
+                    &value,
+                    pytest_compat,
+                )?;
                 // Merge class fixtures into module fixtures
                 for (fixture_name, fixture) in class_fixtures {
                     fixtures.insert(fixture_name, fixture);
@@ -1271,6 +1283,7 @@ fn discover_plain_class_tests_and_fixtures(
     path: &Path,
     class_name: &str,
     cls: &Bound<'_, PyAny>,
+    pytest_compat: bool,
 ) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
     let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
@@ -1336,7 +1349,13 @@ fn discover_plain_class_tests_and_fixtures(
             let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
 
             // Extract metadata
-            let skip_reason = string_attribute(&method, "__rustest_skip__")?;
+            let mut skip_reason = string_attribute(&method, "__rustest_skip__")?;
+
+            // Check for @patch decorator if not already skipped
+            if skip_reason.is_none() {
+                skip_reason = check_for_patch_decorator(py, &method, pytest_compat)?;
+            }
+
             let marks = collect_marks(&method)?;
             let method_param_cases = collect_parametrization(py, &method)?;
             let indirect_params = extract_indirect_params(&method)?;
@@ -1557,6 +1576,67 @@ fn string_attribute(value: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<Str
         }
         Err(_) => Ok(None),
     }
+}
+
+/// Check if a test function uses @patch decorator from unittest.mock.
+///
+/// Returns a skip reason if @patch is detected, None otherwise.
+fn check_for_patch_decorator(
+    _py: Python<'_>,
+    func: &Bound<'_, PyAny>,
+    pytest_compat: bool,
+) -> PyResult<Option<String>> {
+    // Only check in pytest-compat mode
+    if !pytest_compat {
+        return Ok(None);
+    }
+
+    // Check if the function has __wrapped__ attribute (indicates decorators)
+    // The @patch decorator from unittest.mock wraps functions
+    let mut current = func.clone();
+    let mut depth = 0;
+    const MAX_DEPTH: usize = 10; // Prevent infinite loops
+
+    while depth < MAX_DEPTH {
+        // Check if this is a patch object by looking for common patch attributes
+        if let Ok(patch_attribute) = current.getattr("attribute") {
+            // Has 'attribute' - likely a patch object
+            if let Ok(target) = current.getattr("target") {
+                // Has both 'attribute' and 'target' - definitely a patch mock
+                let _ = (patch_attribute, target); // Use variables
+                return Ok(Some(
+                    "@patch decorator not supported. Use monkeypatch fixture instead. \
+                     See documentation for migration examples."
+                        .to_string(),
+                ));
+            }
+        }
+
+        // Check for patchings attribute (used by unittest.mock)
+        if let Ok(patchings) = current.getattr("patchings") {
+            // Check if patchings is a non-empty list
+            if let Ok(list) = patchings.cast_into::<PyList>() {
+                if !list.is_empty() {
+                    return Ok(Some(
+                        "@patch decorator not supported. Use monkeypatch fixture instead. \
+                         See documentation for migration examples."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Try to unwrap to next level
+        match current.getattr("__wrapped__") {
+            Ok(wrapped) => {
+                current = wrapped;
+                depth += 1;
+            }
+            Err(_) => break,
+        }
+    }
+
+    Ok(None)
 }
 
 /// Extract the parameter names from a Python callable.

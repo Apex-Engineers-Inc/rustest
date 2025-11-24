@@ -34,13 +34,13 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run Python unit tests with pytest
-        run: .venv/bin/pytest python/tests -v
+        run: .venv/bin/pytest python/tests -v -ra
 
       - name: Run all integration tests with pytest
-        run: .venv/bin/pytest tests/ examples/tests/ -v
+        run: .venv/bin/pytest tests/ examples/tests/ -v -ra
 
       - name: Run all integration tests with rustest
-        run: .venv/bin/python -m rustest tests/ examples/tests/ -v
+        run: .venv/bin/python -m rustest tests/ examples/tests/ --pytest-compat -v
 
       - name: Test documentation code blocks with rustest
         run: .venv/bin/python -m rustest README.md docs/guide/ docs/getting-started/ docs/api/
