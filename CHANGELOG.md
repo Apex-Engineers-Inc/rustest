@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2025-11-24
+
+### Added
+
+- **Request Fixture Value Support**: Implemented `request.getfixturevalue()` for dynamic fixture resolution
+  - Global fixture registry for runtime fixture lookup
+  - Supports fixture dependencies and per-test caching
+  - Clear error messages for async fixtures (use direct injection instead)
+  - Fixes ~250 test failures in production pytest codebases
+  - Thread-safe fixture registry access with proper locking
+
+- **External Fixture Module Loading**: Support for loading fixtures from external Python modules
+  - `rustest_fixtures` field in conftest.py (preferred, clear naming)
+  - `pytest_plugins` field for backwards compatibility
+  - Import fixtures from separate Python files for better organization
+  - Supports all fixture types (sync, async, scoped, parametrized)
+  - NOT a full plugin system - just simple Python module imports
+
+- **Dynamic Marker Application**: Implemented `request.applymarker()` for runtime marker application
+  - Apply markers conditionally based on fixture values or runtime conditions
+  - Supports skip, skipif, xfail, and custom markers
+  - Proper exception handling for test control flow (Skipped, XFailed, Failed)
+  - Enables ~52 previously failing tests in production codebases
+
+- **Class-level Parametrization**: Full support for `@parametrize` decorator on test classes
+  - Parametrize all test methods in a class with the same parameters
+  - Cartesian product expansion when combined with method-level parametrization
+  - Matches pytest behavior for class and method parameter combinations
+
+- **Documentation Enhancements**: Comprehensive fixture organization guides
+  - New section on loading fixtures from external modules
+  - Clear comparison between rustest_fixtures (preferred) and pytest_plugins (compat)
+  - Clarification that this is NOT about pytest's plugin ecosystem
+  - Examples showing directory structure and practical usage patterns
+
+### Changed
+
+- Skipped tests are now correctly counted as "skipped" instead of "failed"
+  - Improved UX with accurate test categorization
+  - Proper detection of both `rustest.decorators.Skipped` and `pytest.skip.Exception`
+
+### Fixed
+
+- **Error Message Display**: Fixed critical bug where error messages weren't shown for failing tests
+  - Used `MultiProgress::suspend()` to properly display errors while progress bars are active
+  - Errors now show: test name, file location, error type, code context, expected vs actual values
+  - Users can now see WHY tests failed, not just that they failed
+
+- **Async Fixture Support**: Implemented full async fixture support in pytest-compat mode
+  - Async coroutine fixtures properly awaited using `asyncio.run()`
+  - Async generator fixtures use `anext()` instead of `__next__()`
+  - Async test functions automatically detected and awaited
+  - Proper teardown handling for both sync and async generators
+  - Mixed sync/async fixture dependency chains fully supported
+
+- **Markdown Code Block Discovery**: Disabled markdown file discovery in pytest-compat mode
+  - Prevents syntax errors from documentation examples
+  - Markdown code blocks only discovered in rustest native mode
+  - Improves compatibility with pytest test suites
+
+- **@patch Decorator Handling**: Auto-skip tests using `@patch` decorator in pytest-compat mode
+  - Clear skip message: "@patch decorator not supported. Use monkeypatch fixture instead."
+  - Prevents confusing "Unknown fixture" errors
+  - Points users to the monkeypatch alternative with migration examples
+
 ## [0.13.0] - 2025-11-22
 
 ### Added
