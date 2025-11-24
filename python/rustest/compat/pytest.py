@@ -539,6 +539,9 @@ class FixtureRequest:
         self.cls: Any = None
         self.module: Any = None
 
+        # Cache for executed fixtures (per-test)
+        self._executed_fixtures: dict[str, Any] = {}
+
     def addfinalizer(self, finalizer: Callable[[], None]) -> None:
         """
         Add a finalizer to be called after the test.
@@ -578,36 +581,46 @@ class FixtureRequest:
         """
         Get the value of another fixture by name.
 
-        NOT SUPPORTED in rustest pytest-compat mode.
-
-        In pytest, this dynamically retrieves fixture values. Rustest does not
-        support this functionality in compat mode.
+        This method dynamically loads and executes fixtures at runtime by name.
+        Fixture dependencies are resolved recursively, and results are cached
+        per test execution.
 
         Args:
             name: Name of the fixture to retrieve
 
+        Returns:
+            The fixture value
+
         Raises:
-            NotImplementedError: Always raised with helpful message
+            ValueError: If the fixture is not found
+            NotImplementedError: If the fixture is async (not yet supported)
 
-        Workaround:
-            Declare the fixture as a parameter instead:
+        Example:
+            @pytest.fixture
+            def user():
+                return {"name": "Alice"}
 
-                @pytest.fixture
-                def my_fixture(other_fixture):  # Instead of getfixturevalue
-                    return other_fixture
+            def test_dynamic(request):
+                user = request.getfixturevalue("user")
+                assert user["name"] == "Alice"
         """
-        msg = (
-            "request.getfixturevalue() is not supported in rustest pytest-compat mode.\n"
-            "\n"
-            f"Workaround: Declare '{name}' as a fixture parameter:\n"
-            "  @pytest.fixture\n"
-            f"  def my_fixture({name}):\n"
-            f"      # Use {name} directly\n"
-            f"      return {name}\n"
-            "\n"
-            "For full pytest features, use pytest directly or migrate to native rustest."
-        )
-        raise NotImplementedError(msg)
+        # Check cache first
+        if name in self._executed_fixtures:
+            return self._executed_fixtures[name]
+
+        # Import and use the fixture registry
+        from rustest.fixture_registry import resolve_fixture
+
+        try:
+            # Resolve the fixture (handles dependencies and caching)
+            result = resolve_fixture(name, self._executed_fixtures)
+            return result
+        except ValueError as e:
+            # Fixture not found
+            raise ValueError(f"fixture '{name}' not found") from e
+        except NotImplementedError:
+            # Async fixture
+            raise
 
     def applymarker(self, marker: Any) -> None:
         """

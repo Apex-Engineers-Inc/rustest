@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyDict, PyTuple};
 
 use crate::cache;
 use crate::model::{
@@ -270,15 +270,56 @@ fn run_single_test(
             success.stderr,
             test_case.mark_names(),
         )),
-        Err(failure) => Ok(PyTestResult::failed(
-            name,
-            path,
-            duration,
-            failure.message,
-            failure.stdout,
-            failure.stderr,
-            test_case.mark_names(),
-        )),
+        Err(failure) => {
+            // Check if this is a skip exception
+            if is_skip_exception(&failure.message) {
+                // Extract skip reason from the message
+                let reason = extract_skip_reason(&failure.message);
+                Ok(PyTestResult::skipped(
+                    name,
+                    path,
+                    duration,
+                    reason,
+                    test_case.mark_names(),
+                ))
+            } else {
+                Ok(PyTestResult::failed(
+                    name,
+                    path,
+                    duration,
+                    failure.message,
+                    failure.stdout,
+                    failure.stderr,
+                    test_case.mark_names(),
+                ))
+            }
+        }
+    }
+}
+
+/// Check if an error message indicates a skipped test.
+///
+/// Detects both `rustest.decorators.Skipped` and `pytest.skip.Exception`.
+fn is_skip_exception(message: &str) -> bool {
+    message.contains("rustest.decorators.Skipped") || message.contains("pytest.skip.Exception")
+}
+
+/// Extract the skip reason from a skip exception message.
+///
+/// Parses the exception message to extract the reason text.
+fn extract_skip_reason(message: &str) -> String {
+    // Try to extract reason from exception message
+    // Format: "rustest.decorators.Skipped: reason text"
+    if let Some(pos) = message.find("Skipped: ") {
+        let reason = &message[pos + 9..]; // Skip "Skipped: "
+                                          // Take the first line of the reason
+        reason.lines().next().unwrap_or(reason).to_string()
+    } else if let Some(pos) = message.find("skip.Exception: ") {
+        let reason = &message[pos + 16..]; // Skip "skip.Exception: "
+        reason.lines().next().unwrap_or(reason).to_string()
+    } else {
+        // Fallback: use the entire message
+        message.lines().next().unwrap_or(message).to_string()
     }
 }
 
@@ -293,6 +334,27 @@ struct TestCallFailure {
     message: String,
     stdout: Option<String>,
     stderr: Option<String>,
+}
+
+/// Populate the Python fixture registry for getfixturevalue() support.
+///
+/// This makes all fixtures available to the Python-side getfixturevalue() method
+/// by registering them in a global registry that can be accessed from Python.
+fn populate_fixture_registry(py: Python<'_>, fixtures: &IndexMap<String, Fixture>) -> PyResult<()> {
+    let registry_module = py.import("rustest.fixture_registry")?;
+    let register_fixtures = registry_module.getattr("register_fixtures")?;
+
+    // Create a dictionary mapping fixture names to their callables
+    let fixtures_dict = PyDict::new(py);
+    for (name, fixture) in fixtures.iter() {
+        let callable = fixture.callable.bind(py);
+        fixtures_dict.set_item(name, callable)?;
+    }
+
+    // Register the fixtures
+    register_fixtures.call1((fixtures_dict,))?;
+
+    Ok(())
 }
 
 /// Execute a test case and return either success metadata or failure details.
@@ -315,6 +377,16 @@ fn execute_test_case(
         &test_case.fixture_param_indices,
         &test_case.indirect_params,
     );
+
+    // Populate Python fixture registry for getfixturevalue() support
+    if let Err(err) = populate_fixture_registry(py, &module.fixtures) {
+        let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+        return Err(TestCallFailure {
+            message,
+            stdout: None,
+            stderr: None,
+        });
+    }
 
     // Resolve autouse fixtures first
     if let Err(err) = resolver.resolve_autouse_fixtures() {
