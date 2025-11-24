@@ -77,7 +77,11 @@ def test_getfixturevalue_async_generator(request):
     import os
     # Skip if running with pure pytest (detected via PYTEST_CURRENT_TEST env var)
     if "PYTEST_CURRENT_TEST" in os.environ:
-        pytest.skip("Tests rustest's getfixturevalue() error handling, not pytest's")
+        pytest.skip(
+            "Skipping: This test verifies rustest's getfixturevalue() raises NotImplementedError "
+            "for async generator fixtures. Pure pytest handles async fixtures natively, so this "
+            "behavior only applies when running with rustest --pytest-compat mode."
+        )
 
     with pytest.raises(NotImplementedError) as exc_info:
         request.getfixturevalue("async_generator_fixture")
