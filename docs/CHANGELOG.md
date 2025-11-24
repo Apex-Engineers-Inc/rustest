@@ -5,22 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.14.0] - 2025-11-24
+
+### Added
+
+- **Request Fixture Value Support**: Implemented `request.getfixturevalue()` for dynamic fixture resolution
+  - Global fixture registry for runtime fixture lookup
+  - Supports fixture dependencies and per-test caching
+  - Clear error messages for async fixtures (use direct injection instead)
+  - Fixes ~250 test failures in production pytest codebases
+
+- **External Fixture Module Loading**: Support for loading fixtures from external Python modules
+  - `rustest_fixtures` field in conftest.py (preferred, clear naming)
+  - `pytest_plugins` field for backwards compatibility
+  - Import fixtures from separate Python files for better organization
+  - NOT a full plugin system - just simple Python module imports
+
+- **Dynamic Marker Application**: Implemented `request.applymarker()` for runtime marker application
+  - Apply markers conditionally based on fixture values or runtime conditions
+  - Supports skip, skipif, xfail, and custom markers
+  - Enables ~52 previously failing tests in production codebases
+
+- **Class-level Parametrization**: Full support for `@parametrize` decorator on test classes
+  - Parametrize all test methods in a class with the same parameters
+  - Cartesian product expansion when combined with method-level parametrization
+
+### Fixed
+
+- **Error Message Display**: Fixed critical bug where error messages weren't shown for failing tests
+  - Errors now show: test name, file location, error type, code context, expected vs actual values
+
+- **Async Fixture Support**: Implemented full async fixture support in pytest-compat mode
+  - Async coroutine fixtures properly awaited using `asyncio.run()`
+  - Async generator fixtures use `anext()` instead of `__next__()`
+  - Mixed sync/async fixture dependency chains fully supported
+
+- **Markdown Code Block Discovery**: Disabled markdown file discovery in pytest-compat mode
+  - Prevents syntax errors from documentation examples
+
+- **@patch Decorator Handling**: Auto-skip tests using `@patch` decorator in pytest-compat mode
+  - Clear skip message pointing users to monkeypatch alternative
+
+- Skipped tests now correctly counted as "skipped" instead of "failed"
+
+## [0.13.0] - 2025-11-22
 
 ### Added
 
 - **Fixture `name` parameter**: Fixtures can now be registered under a different name than their function name
   - Use `@fixture(name="client")` to make `client_fixture()` accessible as `client` in tests
-  - Improves pytest compatibility and test readability
-  - Useful for following naming conventions while keeping parameter names clean
 
 - **Full indirect parametrization support**: Complete implementation of pytest's `indirect` parameter
   - Support for `indirect=["param1", "param2"]` (list of parameter names)
   - Support for `indirect=True` (all parameters)
-  - Support for `indirect="param"` (single parameter)
-  - Support for `indirect=False` (default, all direct values)
   - Enables fixture-based parametrization without `pytest-lazy-fixtures` plugin
-  - Parameters marked as indirect are resolved as fixture references
+
+- **pytest-mock Compatible Mocker Fixture**: Comprehensive mocking support built-in
+  - `mocker.patch()`, `mocker.spy()`, `mocker.stub()`, etc.
+  - Full pytest-mock API compatibility
 
 ### Fixed
 
