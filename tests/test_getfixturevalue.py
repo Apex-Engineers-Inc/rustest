@@ -61,6 +61,30 @@ def test_getfixturevalue_unknown_fixture(request):
         request.getfixturevalue("nonexistent")
 
 
+@pytest.fixture
+async def async_generator_fixture():
+    """Async generator fixture for testing error handling."""
+    yield "async_value"
+
+
+def test_getfixturevalue_async_generator(request):
+    """Test that async generator fixtures raise NotImplementedError.
+
+    This test only applies to rustest's getfixturevalue() implementation.
+    When running with pure pytest, we skip it because pytest's native
+    getfixturevalue() handles async fixtures differently.
+    """
+    import os
+    # Skip if running with pure pytest (detected via PYTEST_CURRENT_TEST env var)
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        pytest.skip("Tests rustest's getfixturevalue() error handling, not pytest's")
+
+    with pytest.raises(NotImplementedError) as exc_info:
+        request.getfixturevalue("async_generator_fixture")
+    assert "async" in str(exc_info.value).lower()
+    assert "async_generator_fixture" in str(exc_info.value)
+
+
 # Parametrized tests using getfixturevalue
 MODEL_FIXTURES = [
     ("simple_fixture", "hello"),
