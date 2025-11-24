@@ -1,6 +1,11 @@
-"""Tests for request.getfixturevalue() functionality."""
+"""Tests for request.getfixturevalue() functionality.
 
+These tests require pytest-compat mode (--pytest-compat flag) or pytest itself.
+"""
+
+import sys
 import pytest
+
 
 
 @pytest.fixture

@@ -1,19 +1,14 @@
 """Test that @patch decorator is auto-skipped with helpful message.
 
 These tests are designed to verify rustest's auto-skip behavior for @patch.
-When running with pytest, these tests would fail, so we skip them.
+In pytest-compat mode (--pytest-compat flag), tests with @patch decorators
+are automatically skipped with a helpful message suggesting monkeypatch instead.
+When running with pure pytest, the @patch decorators work normally.
 """
 
 import sys
 import pytest
 from unittest.mock import patch, MagicMock
-
-# Skip all tests in this file when running with pytest
-# These tests are meant to verify rustest's @patch auto-skip behavior
-pytestmark = pytest.mark.skipif(
-    "_pytest" in sys.modules,
-    reason="These tests verify rustest's @patch auto-skip behavior, not meant for pytest"
-)
 
 
 def some_function():
@@ -26,14 +21,14 @@ def test_normal_pass():
     assert True
 
 
-@patch("tests.test_patch_decorator.some_function")
+@patch(__name__ + ".some_function")
 def test_with_patch_decorator(mock_func):
     """Test using @patch decorator - should be auto-skipped."""
     mock_func.return_value = "mocked"
     assert some_function() == "mocked"
 
 
-@patch("tests.test_patch_decorator.some_function")
+@patch(__name__ + ".some_function")
 @patch("builtins.open")
 def test_with_multiple_patches(mock_open, mock_func):
     """Test using multiple @patch decorators - should be auto-skipped."""
@@ -48,7 +43,7 @@ class TestPatchInClass:
         """Normal test in class - should pass."""
         assert True
 
-    @patch("tests.test_patch_decorator.some_function")
+    @patch(__name__ + ".some_function")
     def test_with_patch_in_class(self, mock_func):
         """Test with @patch in class - should be auto-skipped."""
         mock_func.return_value = "mocked"

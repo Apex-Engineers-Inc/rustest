@@ -80,8 +80,7 @@ def resolve_fixture(name: str, _executed_fixtures: dict[str, Any] | None = None)
     # Check if it's async
     if inspect.iscoroutinefunction(fixture_func):
         raise NotImplementedError(
-            f"Fixture '{name}' is async. "
-            "request.getfixturevalue() currently only supports sync fixtures."
+            f"Fixture '{name}' is async. request.getfixturevalue() currently only supports sync fixtures."
         )
 
     # Get fixture parameters
