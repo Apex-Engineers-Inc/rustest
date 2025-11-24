@@ -32,13 +32,15 @@ use crate::python_support::{setup_python_path, PyPaths};
 /// When tests do `import pytest`, they'll get our compatibility shim which maps pytest's
 /// API to rustest's implementations.
 fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
-    // Import our compatibility module
+    // Import our compatibility modules
     let compat_module = py.import("rustest.compat.pytest")?;
+    let pytest_asyncio_module = py.import("rustest.compat.pytest_asyncio")?;
 
-    // Inject it as 'pytest' in sys.modules
+    // Inject them into sys.modules
     let sys = py.import("sys")?;
     let sys_modules: Bound<'_, PyDict> = sys.getattr("modules")?.cast_into()?;
     sys_modules.set_item("pytest", compat_module)?;
+    sys_modules.set_item("pytest_asyncio", pytest_asyncio_module)?;
 
     // Print a banner to inform the user they're in compatibility mode
     let box_width = 62;
@@ -93,10 +95,10 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     print_line("");
     print_line("Supported: fixtures, parametrize, marks, approx");
     print_line("Built-ins: tmp_path, tmpdir, monkeypatch, request");
+    print_line("pytest_asyncio: Translated to native async support");
     print_line("");
-    print_line("NOTE: Plugin APIs are stubbed (non-functional).");
-    print_line("pytest_asyncio and other plugins can import,");
-    print_line("but advanced plugin features won't work.");
+    print_line("NOTE: Other plugin APIs are stubbed (non-functional).");
+    print_line("pytest-asyncio fixtures work via rustest native async.");
     print_line("");
     print_line("For full features, use native rustest:");
     print_line("  from rustest import fixture, mark, ...");
@@ -1292,7 +1294,33 @@ fn discover_plain_class_tests_and_fixtures(
     // Extract class-level parametrization (if any)
     let class_param_cases = collect_parametrization(py, cls)?;
 
-    // Get all members of the class
+    // First pass: collect autouse fixture methods that need to run on the test instance
+    let members_for_autouse = inspect.call_method1("getmembers", (cls,))?;
+    let mut autouse_method_names = Vec::new();
+
+    for member in members_for_autouse.try_iter()? {
+        let member = member?;
+        let name: String = member.get_item(0)?.extract()?;
+        let method = member.get_item(1)?;
+
+        if name.starts_with("__") {
+            continue;
+        }
+
+        // Check if it's an autouse fixture method
+        if is_callable(&method)? && is_fixture(&method)? {
+            let autouse = extract_fixture_autouse(&method)?;
+            let scope = extract_fixture_scope(&method)?;
+
+            // Only function-scoped autouse fixtures should run on the test instance
+            // Higher-scoped fixtures are shared and shouldn't be instance-specific
+            if autouse && scope == FixtureScope::Function {
+                autouse_method_names.push(name.clone());
+            }
+        }
+    }
+
+    // Second pass: process all members
     let members = inspect.call_method1("getmembers", (cls,))?;
 
     for member in members.try_iter()? {
@@ -1316,6 +1344,11 @@ fn discover_plain_class_tests_and_fixtures(
             let is_async_generator = is_async_generator_function(py, &method)?;
             let autouse = extract_fixture_autouse(&method)?;
             let fixture_name = extract_fixture_name(&method, &name)?;
+
+            // Skip function-scoped autouse fixtures - they'll be handled by the test callable
+            if autouse && scope == FixtureScope::Function {
+                continue;
+            }
 
             // Extract parameters (excluding 'self')
             let all_params = extract_parameters(py, &method)?;
@@ -1364,8 +1397,13 @@ fn discover_plain_class_tests_and_fixtures(
             let combined_param_cases =
                 combine_parametrizations(py, &class_param_cases, &method_param_cases)?;
 
-            // Create a callable that instantiates the class and calls the method with fixtures
-            let test_callable = create_plain_class_method_runner(py, cls, &name)?;
+            // Create a callable that instantiates the class, runs autouse fixtures, and calls the method
+            let test_callable = create_plain_class_method_runner_with_autouse(
+                py,
+                cls,
+                &name,
+                &autouse_method_names,
+            )?;
 
             if combined_param_cases.is_empty() {
                 tests.push(TestCase {
@@ -1463,6 +1501,50 @@ def run_test(*args, **kwargs):
     return test_method(*args, **kwargs)
 "#,
         method_name
+    );
+
+    let namespace = PyDict::new(py);
+    namespace.set_item("test_class", cls)?;
+
+    let code_cstr = CString::new(code).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
+    })?;
+    // Use the same dict for both globals and locals to ensure proper variable resolution
+    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
+    let run_test = namespace.get_item("run_test")?.unwrap();
+
+    Ok(run_test.unbind())
+}
+
+/// Create a callable that instantiates a plain test class, runs autouse fixtures, and then runs a specific test method.
+/// This ensures that autouse fixtures and the test method run on the same instance.
+fn create_plain_class_method_runner_with_autouse(
+    py: Python<'_>,
+    cls: &Bound<'_, PyAny>,
+    method_name: &str,
+    autouse_methods: &[String],
+) -> PyResult<Py<PyAny>> {
+    // Build code to call each autouse fixture method
+    let autouse_calls = autouse_methods
+        .iter()
+        .map(|name| format!("    getattr(test_instance, '{}')()", name))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Create a wrapper function that:
+    // 1. Instantiates the test class (without arguments)
+    // 2. Calls all autouse fixture methods on that instance
+    // 3. Gets the test method
+    // 4. Calls the method with provided fixtures (as *args)
+    let code = format!(
+        r#"
+def run_test(*args, **kwargs):
+    test_instance = test_class()
+{}
+    test_method = getattr(test_instance, '{}')
+    return test_method(*args, **kwargs)
+"#,
+        autouse_calls, method_name
     );
 
     let namespace = PyDict::new(py);
