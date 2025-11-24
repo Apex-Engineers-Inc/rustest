@@ -1582,7 +1582,7 @@ fn string_attribute(value: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<Str
 ///
 /// Returns a skip reason if @patch is detected, None otherwise.
 fn check_for_patch_decorator(
-    py: Python<'_>,
+    _py: Python<'_>,
     func: &Bound<'_, PyAny>,
     pytest_compat: bool,
 ) -> PyResult<Option<String>> {
@@ -1615,7 +1615,7 @@ fn check_for_patch_decorator(
         // Check for patchings attribute (used by unittest.mock)
         if let Ok(patchings) = current.getattr("patchings") {
             // Check if patchings is a non-empty list
-            if let Ok(list) = patchings.downcast::<PyList>() {
+            if let Ok(list) = patchings.cast_into::<PyList>() {
                 if !list.is_empty() {
                     return Ok(Some(
                         "@patch decorator not supported. Use monkeypatch fixture instead. \
