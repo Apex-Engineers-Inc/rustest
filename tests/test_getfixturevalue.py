@@ -68,11 +68,13 @@ async def async_generator_fixture():
 
 
 def test_getfixturevalue_async_generator(request):
-    """Test that async generator fixtures raise NotImplementedError.
+    """Test that async generator fixtures raise NotImplementedError with helpful message.
 
-    This test only applies to rustest's getfixturevalue() implementation.
-    When running with pure pytest, we skip it because pytest's native
-    getfixturevalue() handles async fixtures differently.
+    This test verifies that getfixturevalue() raises a clear error for async fixtures,
+    explaining that they work fine with direct injection but not with getfixturevalue().
+
+    Note: Async fixtures work perfectly when injected as test parameters - this error
+    only occurs when trying to use them with the getfixturevalue() method.
     """
     import os
     # Skip if running with pure pytest (detected via PYTEST_CURRENT_TEST env var)
@@ -85,8 +87,12 @@ def test_getfixturevalue_async_generator(request):
 
     with pytest.raises(NotImplementedError) as exc_info:
         request.getfixturevalue("async_generator_fixture")
-    assert "async" in str(exc_info.value).lower()
-    assert "async_generator_fixture" in str(exc_info.value)
+
+    error_msg = str(exc_info.value)
+    # Verify the error message explains the limitation clearly
+    assert "async" in error_msg.lower()
+    assert "async_generator_fixture" in error_msg
+    assert "direct fixture injection" in error_msg.lower() or "injected as test parameters" in error_msg.lower()
 
 
 # Parametrized tests using getfixturevalue
