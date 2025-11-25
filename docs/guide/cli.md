@@ -184,19 +184,18 @@ rustest test_workflow.py
 ```
 ✓✓✗✓✗
 
+FAILURES
 test_failing_1 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: Math is broken
-
   → assert 2 + 2 == 5, "Math is broken"
 
 test_failing_2 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: String doesn't start with x
-
   → assert "world".startswith("x"), "String doesn't start with x"
 
-✗ 5 tests: 3 passed, 2 failed, 0 skipped in 0.00s
+✗ 5/5 3 passing, 2 failed (1ms)
 ```
 
 ```bash
@@ -207,19 +206,18 @@ rustest test_workflow.py --lf
 ```
 ✗✗
 
+FAILURES
 test_failing_1 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: Math is broken
-
   → assert 2 + 2 == 5, "Math is broken"
 
 test_failing_2 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: String doesn't start with x
-
   → assert "world".startswith("x"), "String doesn't start with x"
 
-✗ 2 tests: 0 passed, 2 failed, 0 skipped in 0.00s
+✗ 2/2 2 failed (1ms)
 ```
 
 !!! tip "Cache Location"
@@ -237,19 +235,18 @@ rustest test_workflow.py --ff
 ```
 ✗✗✓✓✓
 
+FAILURES
 test_failing_1 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: Math is broken
-
   → assert 2 + 2 == 5, "Math is broken"
 
 test_failing_2 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: String doesn't start with x
-
   → assert "world".startswith("x"), "String doesn't start with x"
 
-✗ 5 tests: 3 passed, 2 failed, 0 skipped in 0.00s
+✗ 5/5 3 passing, 2 failed (1ms)
 ```
 
 Notice the output shows `✗✗✓✓✓` - failed tests run first!
@@ -266,13 +263,13 @@ rustest test_workflow.py -x
 ```
 ✓✓✗
 
+FAILURES
 test_failing_1 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: Math is broken
-
   → assert 2 + 2 == 5, "Math is broken"
 
-✗ 3 tests: 2 passed, 1 failed, 0 skipped in 0.00s
+✗ 3/3 2 passing, 1 failed (1ms)
 ```
 
 Only 3 tests ran instead of all 5 - execution stopped after the first failure!
@@ -289,13 +286,13 @@ rustest test_workflow.py --ff -x
 ```
 ✗
 
+FAILURES
 test_failing_1 (test_workflow.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError: Math is broken
-
   → assert 2 + 2 == 5, "Math is broken"
 
-✗ 1 tests: 0 passed, 1 failed, 0 skipped in 0.00s
+✗ 1/1 1 failed (1ms)
 ```
 
 Only the first failed test ran! This is extremely fast for iterative development.
@@ -342,7 +339,7 @@ rustest --verbose
 ```
 ✓✓✓⊘✗
 
-5 tests: 3 passed, 1 failed, 1 skipped in 0.003s
+✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
 ```
 
 **Verbose output:**
@@ -353,9 +350,13 @@ rustest --verbose
   ✓ test_multiplication 0ms
   ⊘ test_future_feature 0ms
   ✗ test_division_error 2ms
-    AssertionError: Expected 5, got 4
 
-5 tests: 3 passed, 1 failed, 1 skipped in 0.003s
+FAILURES
+test_division_error (test_math.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: Expected 5, got 4
+
+✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
 ```
 
 !!! tip "Output Symbols"

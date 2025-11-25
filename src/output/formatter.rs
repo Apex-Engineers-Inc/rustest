@@ -23,7 +23,6 @@ impl ErrorFormatter {
         let mut output = String::new();
 
         // Header with test name and path
-        output.push('\n');
         if self.use_colors {
             output.push_str(&format!(
                 "{} {}\n",
@@ -45,12 +44,12 @@ impl ErrorFormatter {
             if file_path.contains(":L") {
                 if self.use_colors {
                     output.push_str(&format!(
-                        "  {} {}\n\n",
+                        "  {} {}\n",
                         style("at").dim(),
                         style(format!("{}:{}", file_path, line_num)).cyan()
                     ));
                 } else {
-                    output.push_str(&format!("  at {}:{}\n\n", file_path, line_num));
+                    output.push_str(&format!("  at {}:{}\n", file_path, line_num));
                 }
             }
         }
@@ -68,7 +67,6 @@ impl ErrorFormatter {
             } else {
                 output.push_str(&format!("✗ {}\n", header));
             }
-            output.push('\n');
         }
 
         // Show code context if available (but skip for codeblocks with :L notation)
@@ -76,7 +74,6 @@ impl ErrorFormatter {
             if !file_path.contains(":L") {
                 if let Some(context) = self.get_code_context(file_path, *line_num, 3) {
                     output.push_str(&self.format_code_context(&context, *line_num, failing_line));
-                    output.push('\n');
                 }
             }
         }
@@ -84,13 +81,11 @@ impl ErrorFormatter {
         // Show expected/received values if available
         if let Some((expected, actual)) = &parsed.assertion_values {
             output.push_str(&self.format_assertion_values(expected, actual));
-            output.push('\n');
         }
 
         // If we didn't get structured data, just show the raw message
         if parsed.error.is_none() {
             output.push_str(message);
-            output.push('\n');
         }
 
         output

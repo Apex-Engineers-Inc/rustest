@@ -509,17 +509,33 @@ pub fn invalid_test_definition(message: impl Into<String>) -> PyErr {
 /// This makes the output more readable by showing paths relative to the project root
 /// instead of full absolute paths like `\\?\C:\Users\...`.
 pub fn to_relative_path(path: &Path) -> String {
+    // Normalize the path - handle Windows extended-length path prefix (\\?\)
+    let path_str = path.to_string_lossy();
+    let normalized_path = if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+        // Remove the \\?\ prefix for Windows extended-length paths
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    };
+
     if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(relative) = path.strip_prefix(&cwd) {
-            // Return with leading separator for clarity
+        // Also normalize the cwd for Windows
+        let cwd_str = cwd.to_string_lossy();
+        let normalized_cwd = if let Some(stripped) = cwd_str.strip_prefix(r"\\?\") {
+            PathBuf::from(stripped)
+        } else {
+            cwd
+        };
+
+        if let Ok(relative) = normalized_path.strip_prefix(&normalized_cwd) {
             let relative_str = relative.to_string_lossy();
             if relative_str.is_empty() {
                 return ".".to_string();
             }
-            // Use platform-specific separator for display
-            return format!("{}{}", std::path::MAIN_SEPARATOR, relative_str);
+            // Return without leading separator for cleaner display
+            return relative_str.to_string();
         }
     }
-    // Fallback to full path if we can't make it relative
-    path.to_string_lossy().to_string()
+    // Fallback to normalized path (without \\?\ prefix)
+    normalized_path.to_string_lossy().to_string()
 }

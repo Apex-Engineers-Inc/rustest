@@ -299,9 +299,16 @@ fn run_single_test(
 
 /// Check if an error message indicates a skipped test.
 ///
-/// Detects both `rustest.decorators.Skipped` and `pytest.skip.Exception`.
+/// Detects `rustest.decorators.Skipped`, `pytest.skip.Exception`, and common skip patterns.
 fn is_skip_exception(message: &str) -> bool {
-    message.contains("rustest.decorators.Skipped") || message.contains("pytest.skip.Exception")
+    // Check for the full module path in traceback
+    message.contains("rustest.decorators.Skipped")
+        || message.contains("pytest.skip.Exception")
+        // Also check for the exception type at line start (common traceback format)
+        || message.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("Skipped:") || trimmed.ends_with(".Skipped")
+        })
 }
 
 /// Extract the skip reason from a skip exception message.
@@ -920,43 +927,56 @@ fn enrich_assertion_error(
 
 /// Extract the actual comparison values from local variables
 fn extract_comparison_values(
-    _py: Python<'_>,
+    py: Python<'_>,
     assertion: &str,
     locals: &pyo3::Bound<'_, pyo3::PyAny>,
 ) -> PyResult<Option<(String, String)>> {
     use regex::Regex;
 
-    // Match patterns like: assert x == y, assert a != b, etc.
-    let re = Regex::new(r"assert\s+(\w+)\s*(==|!=|>|<|>=|<=)\s+(\w+)").unwrap();
+    // Match patterns like: assert x == y, assert a != b, assert response.status_code == 404, etc.
+    // Uses a more flexible pattern to capture attribute access and complex expressions
+    let re = Regex::new(r"assert\s+(.+?)\s*(==|!=|>|<|>=|<=)\s*(.+)").unwrap();
 
     if let Some(caps) = re.captures(assertion) {
-        let left_var = &caps[1];
-        let right_var = &caps[3];
+        let left_expr = caps[1].trim();
+        let right_expr = caps[3].trim();
         let operator = &caps[2];
 
-        // Try to get the values from locals
-        // Check if the variables exist, then get their values
-        if locals.contains(left_var).unwrap_or(false) && locals.contains(right_var).unwrap_or(false)
-        {
-            match (locals.get_item(left_var), locals.get_item(right_var)) {
-                (Ok(left), Ok(right)) => {
-                    let left_repr = left.repr()?.to_string();
-                    let right_repr = right.repr()?.to_string();
-
-                    // For == comparisons, left is actual, right is expected (by convention)
-                    // For comparison operators (>, <, >=, <=), left is the value being tested,
-                    // right is the threshold/expected value
-                    return Ok(match operator {
-                        "==" => Some((right_repr, left_repr)), // (expected, actual)
-                        "!=" => Some((left_repr, right_repr)), // Show both sides
-                        ">=" | "<=" | ">" | "<" => Some((right_repr, left_repr)), // (threshold, actual)
-                        _ => Some((left_repr, right_repr)),
-                    });
-                }
-                _ => {
-                    // Could not get the values
+        // Try to evaluate both expressions in the locals context
+        let eval_expr = |expr: &str| -> Option<String> {
+            // First try direct variable lookup for simple cases
+            if let Ok(true) = locals.contains(expr) {
+                if let Ok(val) = locals.get_item(expr) {
+                    return val.repr().ok().map(|r| r.to_string());
                 }
             }
+
+            // For complex expressions (e.g., response.status_code), try eval
+            #[allow(deprecated)]
+            let locals_dict: Option<&pyo3::Bound<'_, pyo3::types::PyDict>> = locals.downcast().ok();
+            match locals_dict.and_then(|d| {
+                py.eval(&std::ffi::CString::new(expr).ok()?, Some(d), None)
+                    .ok()
+            }) {
+                Some(val) => val.repr().ok().map(|r| r.to_string()),
+                None => None,
+            }
+        };
+
+        // Try to evaluate both sides
+        let left_val = eval_expr(left_expr);
+        let right_val = eval_expr(right_expr);
+
+        if let (Some(left_repr), Some(right_repr)) = (left_val, right_val) {
+            // For == comparisons, left is actual, right is expected (by convention)
+            // For comparison operators (>, <, >=, <=), left is the value being tested,
+            // right is the threshold/expected value
+            return Ok(match operator {
+                "==" => Some((right_repr, left_repr)), // (expected, actual)
+                "!=" => Some((left_repr, right_repr)), // Show both sides
+                ">=" | "<=" | ">" | "<" => Some((right_repr, left_repr)), // (threshold, actual)
+                _ => Some((left_repr, right_repr)),
+            });
         }
     }
 
