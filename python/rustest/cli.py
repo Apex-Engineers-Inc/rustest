@@ -132,4 +132,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called
-    return 0 if report.failed == 0 else 1
+
+    # Exit codes match pytest:
+    # 0 = all tests passed
+    # 1 = some tests failed
+    # 2 = collection errors (syntax errors, import errors, etc.)
+    if len(report.collection_errors) > 0:
+        return 2
+    elif report.failed > 0:
+        return 1
+    else:
+        return 0

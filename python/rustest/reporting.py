@@ -36,6 +36,21 @@ class TestResult:
 
 
 @dataclass(slots=True)
+class CollectionError:
+    """Error that occurred during test collection (e.g., syntax error, import error)."""
+
+    path: str
+    message: str
+
+    @classmethod
+    def from_py(cls, error: rust.CollectionError) -> "CollectionError":
+        return cls(
+            path=error.path,
+            message=error.message,
+        )
+
+
+@dataclass(slots=True)
 class RunReport:
     """Aggregate statistics for an entire test session."""
 
@@ -45,6 +60,7 @@ class RunReport:
     skipped: int
     duration: float
     results: tuple[TestResult, ...]
+    collection_errors: tuple[CollectionError, ...]
 
     @classmethod
     def from_py(cls, report: rust.PyRunReport) -> "RunReport":
@@ -55,6 +71,9 @@ class RunReport:
             skipped=report.skipped,
             duration=report.duration,
             results=tuple(TestResult.from_py(result) for result in report.results),
+            collection_errors=tuple(
+                CollectionError.from_py(error) for error in report.collection_errors
+            ),
         )
 
     def iter_status(self, status: str) -> Iterable[TestResult]:

@@ -21,8 +21,9 @@ use walkdir::WalkDir;
 use crate::cache;
 use crate::mark_expr::MarkExpr;
 use crate::model::{
-    invalid_test_definition, Fixture, FixtureParam, FixtureScope, LastFailedMode, Mark,
-    ModuleIdGenerator, ParameterMap, RunConfiguration, TestCase, TestModule,
+    invalid_test_definition, to_relative_path, CollectionError, Fixture, FixtureParam,
+    FixtureScope, LastFailedMode, Mark, ModuleIdGenerator, ParameterMap, RunConfiguration,
+    TestCase, TestModule,
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
@@ -182,11 +183,14 @@ fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
 /// modules, each bundling the fixtures and tests that were defined in the
 /// corresponding Python file.  This makes it straightforward for the execution
 /// pipeline to run tests while still having quick access to fixtures.
+///
+/// Returns a tuple of (modules, collection_errors) where collection_errors
+/// contains any errors that occurred during test collection (e.g., syntax errors).
 pub fn discover_tests(
     py: Python<'_>,
     paths: &PyPaths,
     config: &RunConfiguration,
-) -> PyResult<Vec<TestModule>> {
+) -> PyResult<(Vec<TestModule>, Vec<CollectionError>)> {
     let canonical_paths = paths.materialise()?;
 
     // Setup sys.path to enable imports like pytest does
@@ -206,6 +210,7 @@ pub fn discover_tests(
         None
     };
     let mut modules = Vec::new();
+    let mut collection_errors = Vec::new();
     let module_ids = ModuleIdGenerator::default();
 
     // First, discover all conftest.py files and their fixtures
@@ -238,17 +243,28 @@ pub fn discover_tests(
                 let file = entry.into_path();
                 if file.is_file() {
                     if py_glob.is_match(&file) {
-                        if let Some(module) =
-                            collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)?
+                        match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)
                         {
-                            modules.push(module);
+                            Ok(Some(module)) => modules.push(module),
+                            Ok(None) => {}
+                            Err(err) => {
+                                let error_msg = format_collection_error(py, &err);
+                                collection_errors
+                                    .push(CollectionError::new(to_relative_path(&file), error_msg));
+                            }
                         }
                     } else if let Some(ref md_glob_set) = md_glob {
                         if md_glob_set.is_match(&file) {
-                            if let Some(module) =
-                                collect_from_markdown(py, &file, config, &conftest_fixtures)?
-                            {
-                                modules.push(module);
+                            match collect_from_markdown(py, &file, config, &conftest_fixtures) {
+                                Ok(Some(module)) => modules.push(module),
+                                Ok(None) => {}
+                                Err(err) => {
+                                    let error_msg = format_collection_error(py, &err);
+                                    collection_errors.push(CollectionError::new(
+                                        to_relative_path(&file),
+                                        error_msg,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -256,17 +272,25 @@ pub fn discover_tests(
             }
         } else if path.is_file() {
             if py_glob.is_match(&path) {
-                if let Some(module) =
-                    collect_from_file(py, &path, config, &module_ids, &conftest_fixtures)?
-                {
-                    modules.push(module);
+                match collect_from_file(py, &path, config, &module_ids, &conftest_fixtures) {
+                    Ok(Some(module)) => modules.push(module),
+                    Ok(None) => {}
+                    Err(err) => {
+                        let error_msg = format_collection_error(py, &err);
+                        collection_errors
+                            .push(CollectionError::new(to_relative_path(&path), error_msg));
+                    }
                 }
             } else if let Some(ref md_glob_set) = md_glob {
                 if md_glob_set.is_match(&path) {
-                    if let Some(module) =
-                        collect_from_markdown(py, &path, config, &conftest_fixtures)?
-                    {
-                        modules.push(module);
+                    match collect_from_markdown(py, &path, config, &conftest_fixtures) {
+                        Ok(Some(module)) => modules.push(module),
+                        Ok(None) => {}
+                        Err(err) => {
+                            let error_msg = format_collection_error(py, &err);
+                            collection_errors
+                                .push(CollectionError::new(to_relative_path(&path), error_msg));
+                        }
                     }
                 }
             }
@@ -278,7 +302,23 @@ pub fn discover_tests(
         apply_last_failed_filter(&mut modules, config)?;
     }
 
-    Ok(modules)
+    Ok((modules, collection_errors))
+}
+
+/// Format a collection error for display.
+fn format_collection_error(py: Python<'_>, error: &PyErr) -> String {
+    // Try to get a formatted traceback using Python's traceback module
+    let format_result: Result<String, _> = (|| {
+        let traceback_module = py.import("traceback")?;
+        let formatted = traceback_module.call_method1(
+            "format_exception",
+            (error.get_type(py), error.value(py), error.traceback(py)),
+        )?;
+        let lines: Vec<String> = formatted.extract()?;
+        Ok(lines.join(""))
+    })();
+
+    format_result.unwrap_or_else(|_: PyErr| error.to_string())
 }
 
 /// Discover all conftest.py files in a directory tree and load their fixtures.

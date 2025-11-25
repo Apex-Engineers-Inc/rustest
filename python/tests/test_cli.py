@@ -33,6 +33,7 @@ class TestCli:
             skipped=0,
             duration=0.1,
             results=(result,),
+            collection_errors=(),
         )
 
         with patch("rustest.cli.run", return_value=report) as mock_run:
