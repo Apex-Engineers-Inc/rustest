@@ -118,7 +118,7 @@ async def test_async_api():
 ```
 ✓✓✓
 
-3 tests: 3 passed in 0.015s
+✓ 3/3 3 passing (15ms)
 ```
 
 ---

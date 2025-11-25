@@ -182,14 +182,14 @@ When you run rustest, you'll see clean, informative output:
 ```
 ✓✓✓⊘✗
 
+FAILURES
 test_broken_feature (test_example.py)
 ──────────────────────────────────────────────────────────────────────
 ✗ AssertionError
-
   Expected: 5
   Received: 4
 
-✗ 5 tests: 3 passed, 1 failed, 1 skipped in 0.01s
+✗ 5/5 3 passing, 1 failed, 1 skipped (10ms)
 ```
 
 **Output symbols:**
@@ -214,9 +214,13 @@ rustest -v
   ✓ test_list_operations 0ms
   ⊘ test_future_feature 0ms
   ✗ test_broken_feature 2ms
-    AssertionError: Expected 5, got 4
 
-5 tests: 3 passed, 1 failed, 1 skipped in 0.003s
+FAILURES
+test_broken_feature (test_example.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: Expected 5, got 4
+
+✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
 ```
 
 Verbose mode shows:

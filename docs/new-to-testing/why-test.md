@@ -55,7 +55,7 @@ Now you can run this test anytime:
 $ rustest
 ✓
 
-1 test: 1 passed in 0.001s
+✓ 1/1 1 passing (1ms)
 ```
 
 **In one second, your computer verified your code works.** No clicking, no manual checking—just instant feedback.
@@ -112,11 +112,14 @@ Instead of manually testing everything, you get instant feedback:
 $ rustest
 ✓✓✓✗✓
 
-5 tests: 4 passed, 1 failed in 0.015s
-
-FAILED test_login.py::test_login_with_invalid_password
+FAILURES
+test_login_with_invalid_password (test_login.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError
   Expected: "Invalid password"
   Received: "User not found"
+
+✗ 5/5 4 passing, 1 failed (15ms)
 ```
 
 You immediately see what broke and where.

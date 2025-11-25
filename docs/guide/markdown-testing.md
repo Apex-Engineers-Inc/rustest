@@ -62,11 +62,9 @@ rustest example.md
 Output:
 
 ```
-  PASSED   0.001s example.md::block_0
-  PASSED   0.001s example.md::block_1
-  PASSED   0.002s example.md::block_2
+✓✓✓
 
-3 tests: 3 passed in 0.003s
+✓ 3/3 3 passing (3ms)
 ```
 
 ## Skipping Code Blocks

@@ -47,7 +47,7 @@ You should see:
 ```
 ✓
 
-1 test: 1 passed in 0.001s
+✓ 1/1 1 passing (1ms)
 ```
 
 **Congratulations!** 🎉 You just wrote and ran your first automated test!
@@ -75,22 +75,19 @@ def test_addition():
 Run `rustest` again:
 
 ```
-✗
+FAILURES
+test_addition (test_math.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError: assert 4 == 5
 
-1 test: 0 passed, 1 failed in 0.001s
+  Expected: 5
+  Received: 4
 
-FAILED test_math.py::test_addition
-
-Code:
     def test_addition():
         result = 2 + 2
       → assert result == 5
 
-E   AssertionError: assert 4 == 5
-E   Expected: 5
-E   Received: 4
-
-─ test_math.py:3
+✗ 1/1 1 failed (1ms)
 ```
 
 Rustest shows you:
@@ -137,7 +134,7 @@ Run `rustest`:
 ```
 ✓✓✓
 
-3 tests: 3 passed in 0.002s
+✓ 3/3 3 passing (2ms)
 ```
 
 **Three passing tests!** Now you're testing real code.

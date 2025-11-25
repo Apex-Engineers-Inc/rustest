@@ -74,7 +74,7 @@ When you run this:
 ```
 ✓✓
 
-2 tests: 2 passed in 0.001s
+✓ 2/2 2 passing (1ms)
 ```
 
 Each `✓` represents one parameter set!
@@ -273,12 +273,15 @@ When a parametrized test fails, rustest shows you which case failed:
 ```
 ✓✓✗✓
 
-4 tests: 3 passed, 1 failed in 0.002s
-
-FAILED test_math.py::test_add[case_2]
+FAILURES
+test_add[case_2] (test_math.py)
+──────────────────────────────────────────────────────────────────────
+✗ AssertionError
   Parameters: a=5, b=3, expected=7
   Expected: 7
   Received: 8
+
+✗ 4/4 3 passing, 1 failed (2ms)
 ```
 
 This makes it easy to identify and fix the specific failing case.

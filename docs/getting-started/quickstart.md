@@ -30,7 +30,7 @@ You should see output like this:
 ```
 ✓✓
 
-2 tests: 2 passed, 0 failed, 0 skipped in 0.000s
+✓ 2/2 2 passing (1ms)
 ```
 
 Each `✓` represents a passing test. Failed tests show as `✗` with detailed error information.
@@ -42,7 +42,7 @@ Each `✓` represents a passing test. Failed tests show as `✗` with detailed e
       ✓ test_simple_addition 0ms
       ✓ test_string_operations 1ms
 
-    2 tests: 2 passed, 0 failed, 0 skipped in 0.001s
+    ✓ 2/2 2 passing (1ms)
     ```
 
 ## 3. Using Fixtures
@@ -84,7 +84,7 @@ This will run three separate test cases, showing three checkmarks in the output:
 ```
 ✓✓✓
 
-3 tests: 3 passed, 0 failed, 0 skipped in 0.000s
+✓ 3/3 3 passing (1ms)
 ```
 
 ## 5. Assertion Helpers
