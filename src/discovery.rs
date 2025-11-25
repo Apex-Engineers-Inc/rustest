@@ -867,6 +867,11 @@ fn extract_python_code_blocks(content: &str) -> Vec<(String, usize, bool)> {
 }
 
 /// Create a Python callable that executes a code block.
+///
+/// If the code block has syntax errors or other compilation issues, this returns
+/// a callable that will raise the error when executed, rather than failing
+/// during test discovery. This allows all tests to be collected and the error
+/// to be reported as a test failure.
 fn create_codeblock_callable(
     py: Python<'_>,
     code: &str,
@@ -894,20 +899,101 @@ def run_codeblock():
 
     // Use compile with a descriptive filename for better tracebacks
     let filename = format!("{}:L{}", file_path.display(), line_number);
-    let compile_result =
-        py.import("builtins")?
-            .getattr("compile")?
-            .call1((wrapper_code, filename, "exec"))?;
+
+    // Try to compile and execute the code block
+    // If this fails (e.g., syntax error), create a callable that raises the error
+    let compile_result = py.import("builtins")?.getattr("compile")?.call1((
+        wrapper_code.clone(),
+        filename.clone(),
+        "exec",
+    ));
+
+    match compile_result {
+        Ok(compiled) => {
+            // Compilation succeeded, try to execute to define the function
+            let exec_result = py
+                .import("builtins")?
+                .getattr("exec")?
+                .call1((compiled, &namespace));
+
+            match exec_result {
+                Ok(_) => {
+                    // Successfully defined the function
+                    let run_codeblock = namespace.get_item("run_codeblock")?.ok_or_else(|| {
+                        invalid_test_definition("Failed to create codeblock callable")
+                    })?;
+                    Ok(run_codeblock.unbind())
+                }
+                Err(exec_err) => {
+                    // Exec failed, create error-raising callable
+                    create_error_callable(py, &exec_err, &filename)
+                }
+            }
+        }
+        Err(compile_err) => {
+            // Compilation failed (e.g., syntax error), create error-raising callable
+            create_error_callable(py, &compile_err, &filename)
+        }
+    }
+}
+
+/// Create a Python callable that raises an error when called.
+///
+/// This is used to defer error reporting from discovery time to test execution time,
+/// allowing other tests to run even when one code block has errors.
+fn create_error_callable(py: Python<'_>, error: &PyErr, filename: &str) -> PyResult<Py<PyAny>> {
+    // Format the error message, preserving the original traceback if possible
+    let error_message = format_python_error(py, error);
+
+    // Escape the error message for safe inclusion in Python code
+    let escaped_message = error_message
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+
+    // Create a function that raises a RuntimeError with the original error details
+    let error_raiser_code = format!(
+        r#"
+def run_codeblock():
+    raise RuntimeError("Error in code block {filename}:\n{escaped_message}")
+"#,
+        filename = filename,
+        escaped_message = escaped_message
+    );
+
+    let namespace = PyDict::new(py);
 
     py.import("builtins")?
-        .getattr("exec")?
-        .call1((compile_result, &namespace))?;
+        .getattr("compile")?
+        .call1((error_raiser_code.clone(), "<error_raiser>", "exec"))
+        .and_then(|compiled| {
+            py.import("builtins")?
+                .getattr("exec")?
+                .call1((compiled, &namespace))
+        })?;
 
     let run_codeblock = namespace
         .get_item("run_codeblock")?
-        .ok_or_else(|| invalid_test_definition("Failed to create codeblock callable"))?;
+        .ok_or_else(|| invalid_test_definition("Failed to create error callable"))?;
 
     Ok(run_codeblock.unbind())
+}
+
+/// Format a Python error for display.
+fn format_python_error(py: Python<'_>, error: &PyErr) -> String {
+    // Try to get a formatted traceback using Python's traceback module
+    let format_result: Result<String, _> = (|| {
+        let traceback_module = py.import("traceback")?;
+        let formatted = traceback_module.call_method1(
+            "format_exception",
+            (error.get_type(py), error.value(py), error.traceback(py)),
+        )?;
+        let lines: Vec<String> = formatted.extract()?;
+        Ok(lines.join(""))
+    })();
+
+    format_result.unwrap_or_else(|_: PyErr| error.to_string())
 }
 
 /// Determine whether a test case should be kept for the provided pattern.
