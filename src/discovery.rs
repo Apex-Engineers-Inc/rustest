@@ -214,7 +214,13 @@ pub fn discover_tests(
         if path.is_dir() {
             discover_conftest_files(py, path, &mut conftest_fixtures, &module_ids)?;
         } else if path.is_file() {
-            // Also check for conftest.py in the directory of a single file
+            // For single test files, discover conftest.py in parent directories
+            // This ensures fixtures from ancestor conftest.py files are available
+            // (e.g., session-scoped fixtures in root conftest.py)
+            discover_parent_conftest_files(py, path, &mut conftest_fixtures, &module_ids)?;
+
+            // Also discover conftest.py files in subdirectories of the test file's directory
+            // This handles cases where fixtures are defined in sibling directories
             if let Some(parent) = path.parent() {
                 discover_conftest_files(py, parent, &mut conftest_fixtures, &module_ids)?;
             }
@@ -295,6 +301,52 @@ fn discover_conftest_files(
             }
         }
     }
+    Ok(())
+}
+
+/// Discover conftest.py files in parent directories when running a single test file.
+///
+/// When a user runs a test file in a nested directory structure like:
+///   tests/test_api/test_nested.py
+///
+/// Pytest looks for conftest.py in all parent directories up to the project root:
+///   tests/test_api/conftest.py
+///   tests/conftest.py
+///   conftest.py
+///
+/// This function walks UP the directory tree to find these conftest.py files,
+/// ensuring session-scoped fixtures and other conftest fixtures are available
+/// even when running deeply nested test files.
+fn discover_parent_conftest_files(
+    py: Python<'_>,
+    test_file: &Path,
+    conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
+    module_ids: &ModuleIdGenerator,
+) -> PyResult<()> {
+    // Start from the test file's parent directory
+    let mut current_dir = match test_file.parent() {
+        Some(dir) => dir,
+        None => return Ok(()),
+    };
+
+    // Walk up the directory tree looking for conftest.py files
+    loop {
+        let conftest_path = current_dir.join("conftest.py");
+        if conftest_path.is_file() {
+            // Only load if we haven't already loaded it
+            if !conftest_map.contains_key(current_dir) {
+                let fixtures = load_conftest_fixtures(py, &conftest_path, module_ids)?;
+                conftest_map.insert(current_dir.to_path_buf(), fixtures);
+            }
+        }
+
+        // Move to parent directory
+        match current_dir.parent() {
+            Some(parent) => current_dir = parent,
+            None => break, // Reached filesystem root
+        }
+    }
+
     Ok(())
 }
 
