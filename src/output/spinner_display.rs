@@ -11,6 +11,22 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// Format duration with appropriate units (ms or s) and optional color
+fn format_duration(duration: Duration, use_colors: bool) -> String {
+    let millis = duration.as_millis();
+    let duration_str = if millis < 1000 {
+        format!("({}ms)", millis)
+    } else {
+        format!("({:.2}s)", duration.as_secs_f64())
+    };
+
+    if use_colors {
+        format!("{}", style(duration_str).dim())
+    } else {
+        duration_str
+    }
+}
+
 /// Spinner display showing file-level progress
 pub struct SpinnerDisplay {
     multi: MultiProgress,
@@ -21,6 +37,8 @@ pub struct SpinnerDisplay {
     passed: usize,
     failed: usize,
     skipped: usize,
+    /// Collect failures to display at the end
+    deferred_failures: Vec<(String, String, String)>, // (name, path, message)
 }
 
 impl SpinnerDisplay {
@@ -35,6 +53,7 @@ impl SpinnerDisplay {
             passed: 0,
             failed: 0,
             skipped: 0,
+            deferred_failures: Vec::new(),
         }
     }
 
@@ -103,21 +122,19 @@ impl OutputRenderer for SpinnerDisplay {
             pb.inc(1);
         }
 
-        // Update overall counters and show failures immediately
+        // Update overall counters
         match result.status.as_str() {
             "passed" => self.passed += 1,
             "failed" => {
                 self.failed += 1;
 
-                // Format and display the error immediately
-                // Use suspend() to temporarily hide spinners while printing
+                // Defer error output to the end
                 if let Some(ref message) = result.message {
-                    let formatted =
-                        self.formatter
-                            .format_failure(&result.name, &result.path, message);
-                    self.multi.suspend(|| {
-                        eprintln!("{}", formatted);
-                    });
+                    self.deferred_failures.push((
+                        result.name.clone(),
+                        result.path.clone(),
+                        message.clone(),
+                    ));
                 }
             }
             "skipped" => self.skipped += 1,
@@ -135,14 +152,35 @@ impl OutputRenderer for SpinnerDisplay {
     ) {
         if let Some(pb) = self.spinners.remove(path) {
             let symbol = self.format_symbol(failed);
+            let total = passed + failed;
+            let time_str = format_duration(duration, self.use_colors);
+
+            // Build the status parts conditionally
+            let mut status_parts = Vec::new();
+            if passed > 0 {
+                if self.use_colors {
+                    status_parts.push(format!("{}", style(format!("{} passing", passed)).green()));
+                } else {
+                    status_parts.push(format!("{} passing", passed));
+                }
+            }
+            if failed > 0 {
+                if self.use_colors {
+                    status_parts.push(format!("{}", style(format!("{} failed", failed)).red()));
+                } else {
+                    status_parts.push(format!("{} failed", failed));
+                }
+            }
+
+            let status_str = if status_parts.is_empty() {
+                "0 tests".to_string()
+            } else {
+                status_parts.join(", ")
+            };
 
             pb.finish_with_message(format!(
-                "{} {} - {} passed, {} failed ({:.2}s)",
-                symbol,
-                path,
-                passed,
-                failed,
-                duration.as_secs_f64()
+                "{} {} - {}/{} {} {}",
+                symbol, path, total, total, status_str, time_str
             ));
         }
     }
@@ -155,48 +193,72 @@ impl OutputRenderer for SpinnerDisplay {
         skipped: usize,
         duration: Duration,
     ) {
+        // Print deferred failures at the end
+        if !self.deferred_failures.is_empty() {
+            eprintln!();
+            if self.use_colors {
+                eprintln!("{}", style("FAILURES").red().bold());
+            } else {
+                eprintln!("FAILURES");
+            }
+
+            for (name, path, message) in &self.deferred_failures {
+                let formatted = self.formatter.format_failure(name, path, message);
+                eprintln!("{}", formatted);
+            }
+        }
+
         // Print summary line
         eprintln!();
 
-        let summary = if failed > 0 {
+        let time_str = format_duration(duration, self.use_colors);
+
+        // Build summary with conditional parts
+        let mut parts = Vec::new();
+        if passed > 0 {
             if self.use_colors {
-                format!(
-                    "{} {} tests: {} passed, {} failed, {} skipped in {:.2}s",
-                    style("✗").red(),
-                    total,
-                    style(passed).green(),
-                    style(failed).red(),
-                    style(skipped).yellow(),
-                    duration.as_secs_f64()
-                )
+                parts.push(format!("{}", style(format!("{} passing", passed)).green()));
             } else {
-                format!(
-                    "✗ {} tests: {} passed, {} failed, {} skipped in {:.2}s",
-                    total,
-                    passed,
-                    failed,
-                    skipped,
-                    duration.as_secs_f64()
-                )
+                parts.push(format!("{} passing", passed));
             }
-        } else if self.use_colors {
-            format!(
-                "{} {} tests: {} passed in {:.2}s",
-                style("✓").green(),
-                total,
-                style(passed).green(),
-                duration.as_secs_f64()
-            )
+        }
+        if failed > 0 {
+            if self.use_colors {
+                parts.push(format!("{}", style(format!("{} failed", failed)).red()));
+            } else {
+                parts.push(format!("{} failed", failed));
+            }
+        }
+        if skipped > 0 {
+            if self.use_colors {
+                parts.push(format!(
+                    "{}",
+                    style(format!("{} skipped", skipped)).yellow()
+                ));
+            } else {
+                parts.push(format!("{} skipped", skipped));
+            }
+        }
+
+        let status_str = if parts.is_empty() {
+            "0 tests".to_string()
         } else {
-            format!(
-                "✓ {} tests: {} passed in {:.2}s",
-                total,
-                passed,
-                duration.as_secs_f64()
-            )
+            parts.join(", ")
         };
 
-        eprintln!("{}", summary);
+        let symbol = if failed > 0 {
+            if self.use_colors {
+                format!("{}", style("✗").red())
+            } else {
+                "✗".to_string()
+            }
+        } else if self.use_colors {
+            format!("{}", style("✓").green())
+        } else {
+            "✓".to_string()
+        };
+
+        eprintln!("{} {}/{} {} {}", symbol, total, total, status_str, time_str);
     }
 
     fn println(&self, message: &str) {
