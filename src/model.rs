@@ -373,6 +373,8 @@ pub struct PyRunReport {
     pub duration: f64,
     #[pyo3(get)]
     pub results: Vec<PyTestResult>,
+    #[pyo3(get)]
+    pub collection_errors: Vec<CollectionError>,
 }
 
 impl PyRunReport {
@@ -383,6 +385,7 @@ impl PyRunReport {
         skipped: usize,
         duration: f64,
         results: Vec<PyTestResult>,
+        collection_errors: Vec<CollectionError>,
     ) -> Self {
         Self {
             total,
@@ -391,6 +394,7 @@ impl PyRunReport {
             skipped,
             duration,
             results,
+            collection_errors,
         }
     }
 }
@@ -481,6 +485,26 @@ impl PyTestResult {
             stderr,
             marks,
         }
+    }
+}
+
+/// Represents an error that occurred during test collection.
+///
+/// This is used to report errors that prevented tests from being collected,
+/// such as syntax errors in Python files or markdown code blocks. Unlike test
+/// failures, collection errors prevent the test from even being defined.
+#[pyclass(module = "rustest.rust")]
+#[derive(Clone)]
+pub struct CollectionError {
+    #[pyo3(get)]
+    pub path: String,
+    #[pyo3(get)]
+    pub message: String,
+}
+
+impl CollectionError {
+    pub fn new(path: String, message: String) -> Self {
+        Self { path, message }
     }
 }
 

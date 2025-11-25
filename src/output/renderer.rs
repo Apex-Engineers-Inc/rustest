@@ -1,6 +1,6 @@
 //! Output renderer trait and mode selection
 
-use crate::model::{PyTestResult, RunConfiguration, TestCase, TestModule};
+use crate::model::{CollectionError, PyTestResult, RunConfiguration, TestCase, TestModule};
 use std::time::Duration;
 
 /// Output display mode
@@ -33,6 +33,9 @@ impl OutputMode {
 
 /// Trait for rendering test execution progress
 pub trait OutputRenderer {
+    /// Called when a collection error occurs (syntax error, import error, etc.)
+    fn collection_error(&mut self, error: &CollectionError);
+
     /// Called when discovery completes with total counts
     fn start_suite(&mut self, total_files: usize, total_tests: usize);
 
@@ -63,6 +66,7 @@ pub trait OutputRenderer {
         passed: usize,
         failed: usize,
         skipped: usize,
+        errors: usize,
         duration: Duration,
     );
 

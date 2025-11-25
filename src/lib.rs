@@ -22,7 +22,7 @@ mod python_support_tests;
 
 use discovery::discover_tests;
 use execution::run_collected_tests;
-use model::{LastFailedMode, PyRunReport, RunConfiguration};
+use model::{CollectionError, LastFailedMode, PyRunReport, RunConfiguration};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
@@ -61,8 +61,8 @@ fn run(
         no_color,
     );
     let input_paths = PyPaths::from_vec(paths);
-    let collected = discover_tests(py, &input_paths, &config)?;
-    let report = run_collected_tests(py, &collected, &config)?;
+    let (collected, collection_errors) = discover_tests(py, &input_paths, &config)?;
+    let report = run_collected_tests(py, &collected, &collection_errors, &config)?;
     Ok(report)
 }
 
@@ -70,6 +70,7 @@ fn run(
 #[pymodule]
 fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunReport>()?;
+    m.add_class::<CollectionError>()?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
     Ok(())
 }

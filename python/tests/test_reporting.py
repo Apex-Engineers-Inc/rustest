@@ -26,6 +26,7 @@ class TestReportingConversion:
             skipped=0,
             duration=0.123,
             results=[py_result],
+            collection_errors=[],
         )
 
         report = RunReport.from_py(py_report)
@@ -64,6 +65,7 @@ class TestReportingConversion:
             skipped=0,
             duration=0.03,
             results=(passed, failed),
+            collection_errors=(),
         )
 
         failures = list(report.iter_status("failed"))

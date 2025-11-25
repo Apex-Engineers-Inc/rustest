@@ -15,6 +15,12 @@ class PyTestResult:
     stdout: str | None
     stderr: str | None
 
+class CollectionError:
+    """Error that occurred during test collection (e.g., syntax error, import error)."""
+
+    path: str
+    message: str
+
 class PyRunReport:
     """Test run report from the Rust extension."""
 
@@ -24,6 +30,7 @@ class PyRunReport:
     skipped: int
     duration: float
     results: list[PyTestResult]
+    collection_errors: list[CollectionError]
 
 def run(
     paths: Sequence[str],

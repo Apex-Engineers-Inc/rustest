@@ -21,8 +21,9 @@ use walkdir::WalkDir;
 use crate::cache;
 use crate::mark_expr::MarkExpr;
 use crate::model::{
-    invalid_test_definition, Fixture, FixtureParam, FixtureScope, LastFailedMode, Mark,
-    ModuleIdGenerator, ParameterMap, RunConfiguration, TestCase, TestModule,
+    invalid_test_definition, to_relative_path, CollectionError, Fixture, FixtureParam,
+    FixtureScope, LastFailedMode, Mark, ModuleIdGenerator, ParameterMap, RunConfiguration,
+    TestCase, TestModule,
 };
 use crate::python_support::{setup_python_path, PyPaths};
 
@@ -182,11 +183,14 @@ fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
 /// modules, each bundling the fixtures and tests that were defined in the
 /// corresponding Python file.  This makes it straightforward for the execution
 /// pipeline to run tests while still having quick access to fixtures.
+///
+/// Returns a tuple of (modules, collection_errors) where collection_errors
+/// contains any errors that occurred during test collection (e.g., syntax errors).
 pub fn discover_tests(
     py: Python<'_>,
     paths: &PyPaths,
     config: &RunConfiguration,
-) -> PyResult<Vec<TestModule>> {
+) -> PyResult<(Vec<TestModule>, Vec<CollectionError>)> {
     let canonical_paths = paths.materialise()?;
 
     // Setup sys.path to enable imports like pytest does
@@ -206,6 +210,7 @@ pub fn discover_tests(
         None
     };
     let mut modules = Vec::new();
+    let mut collection_errors = Vec::new();
     let module_ids = ModuleIdGenerator::default();
 
     // First, discover all conftest.py files and their fixtures
@@ -238,17 +243,28 @@ pub fn discover_tests(
                 let file = entry.into_path();
                 if file.is_file() {
                     if py_glob.is_match(&file) {
-                        if let Some(module) =
-                            collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)?
+                        match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)
                         {
-                            modules.push(module);
+                            Ok(Some(module)) => modules.push(module),
+                            Ok(None) => {}
+                            Err(err) => {
+                                let error_msg = format_collection_error(py, &err);
+                                collection_errors
+                                    .push(CollectionError::new(to_relative_path(&file), error_msg));
+                            }
                         }
                     } else if let Some(ref md_glob_set) = md_glob {
                         if md_glob_set.is_match(&file) {
-                            if let Some(module) =
-                                collect_from_markdown(py, &file, config, &conftest_fixtures)?
-                            {
-                                modules.push(module);
+                            match collect_from_markdown(py, &file, config, &conftest_fixtures) {
+                                Ok(Some(module)) => modules.push(module),
+                                Ok(None) => {}
+                                Err(err) => {
+                                    let error_msg = format_collection_error(py, &err);
+                                    collection_errors.push(CollectionError::new(
+                                        to_relative_path(&file),
+                                        error_msg,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -256,17 +272,25 @@ pub fn discover_tests(
             }
         } else if path.is_file() {
             if py_glob.is_match(&path) {
-                if let Some(module) =
-                    collect_from_file(py, &path, config, &module_ids, &conftest_fixtures)?
-                {
-                    modules.push(module);
+                match collect_from_file(py, &path, config, &module_ids, &conftest_fixtures) {
+                    Ok(Some(module)) => modules.push(module),
+                    Ok(None) => {}
+                    Err(err) => {
+                        let error_msg = format_collection_error(py, &err);
+                        collection_errors
+                            .push(CollectionError::new(to_relative_path(&path), error_msg));
+                    }
                 }
             } else if let Some(ref md_glob_set) = md_glob {
                 if md_glob_set.is_match(&path) {
-                    if let Some(module) =
-                        collect_from_markdown(py, &path, config, &conftest_fixtures)?
-                    {
-                        modules.push(module);
+                    match collect_from_markdown(py, &path, config, &conftest_fixtures) {
+                        Ok(Some(module)) => modules.push(module),
+                        Ok(None) => {}
+                        Err(err) => {
+                            let error_msg = format_collection_error(py, &err);
+                            collection_errors
+                                .push(CollectionError::new(to_relative_path(&path), error_msg));
+                        }
                     }
                 }
             }
@@ -278,7 +302,23 @@ pub fn discover_tests(
         apply_last_failed_filter(&mut modules, config)?;
     }
 
-    Ok(modules)
+    Ok((modules, collection_errors))
+}
+
+/// Format a collection error for display.
+fn format_collection_error(py: Python<'_>, error: &PyErr) -> String {
+    // Try to get a formatted traceback using Python's traceback module
+    let format_result: Result<String, _> = (|| {
+        let traceback_module = py.import("traceback")?;
+        let formatted = traceback_module.call_method1(
+            "format_exception",
+            (error.get_type(py), error.value(py), error.traceback(py)),
+        )?;
+        let lines: Vec<String> = formatted.extract()?;
+        Ok(lines.join(""))
+    })();
+
+    format_result.unwrap_or_else(|_: PyErr| error.to_string())
 }
 
 /// Discover all conftest.py files in a directory tree and load their fixtures.
@@ -867,11 +907,6 @@ fn extract_python_code_blocks(content: &str) -> Vec<(String, usize, bool)> {
 }
 
 /// Create a Python callable that executes a code block.
-///
-/// If the code block has syntax errors or other compilation issues, this returns
-/// a callable that will raise the error when executed, rather than failing
-/// during test discovery. This allows all tests to be collected and the error
-/// to be reported as a test failure.
 fn create_codeblock_callable(
     py: Python<'_>,
     code: &str,
@@ -899,101 +934,20 @@ def run_codeblock():
 
     // Use compile with a descriptive filename for better tracebacks
     let filename = format!("{}:L{}", file_path.display(), line_number);
-
-    // Try to compile and execute the code block
-    // If this fails (e.g., syntax error), create a callable that raises the error
-    let compile_result = py.import("builtins")?.getattr("compile")?.call1((
-        wrapper_code.clone(),
-        filename.clone(),
-        "exec",
-    ));
-
-    match compile_result {
-        Ok(compiled) => {
-            // Compilation succeeded, try to execute to define the function
-            let exec_result = py
-                .import("builtins")?
-                .getattr("exec")?
-                .call1((compiled, &namespace));
-
-            match exec_result {
-                Ok(_) => {
-                    // Successfully defined the function
-                    let run_codeblock = namespace.get_item("run_codeblock")?.ok_or_else(|| {
-                        invalid_test_definition("Failed to create codeblock callable")
-                    })?;
-                    Ok(run_codeblock.unbind())
-                }
-                Err(exec_err) => {
-                    // Exec failed, create error-raising callable
-                    create_error_callable(py, &exec_err, &filename)
-                }
-            }
-        }
-        Err(compile_err) => {
-            // Compilation failed (e.g., syntax error), create error-raising callable
-            create_error_callable(py, &compile_err, &filename)
-        }
-    }
-}
-
-/// Create a Python callable that raises an error when called.
-///
-/// This is used to defer error reporting from discovery time to test execution time,
-/// allowing other tests to run even when one code block has errors.
-fn create_error_callable(py: Python<'_>, error: &PyErr, filename: &str) -> PyResult<Py<PyAny>> {
-    // Format the error message, preserving the original traceback if possible
-    let error_message = format_python_error(py, error);
-
-    // Escape the error message for safe inclusion in Python code
-    let escaped_message = error_message
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
-
-    // Create a function that raises a RuntimeError with the original error details
-    let error_raiser_code = format!(
-        r#"
-def run_codeblock():
-    raise RuntimeError("Error in code block {filename}:\n{escaped_message}")
-"#,
-        filename = filename,
-        escaped_message = escaped_message
-    );
-
-    let namespace = PyDict::new(py);
+    let compile_result =
+        py.import("builtins")?
+            .getattr("compile")?
+            .call1((wrapper_code, filename, "exec"))?;
 
     py.import("builtins")?
-        .getattr("compile")?
-        .call1((error_raiser_code.clone(), "<error_raiser>", "exec"))
-        .and_then(|compiled| {
-            py.import("builtins")?
-                .getattr("exec")?
-                .call1((compiled, &namespace))
-        })?;
+        .getattr("exec")?
+        .call1((compile_result, &namespace))?;
 
     let run_codeblock = namespace
         .get_item("run_codeblock")?
-        .ok_or_else(|| invalid_test_definition("Failed to create error callable"))?;
+        .ok_or_else(|| invalid_test_definition("Failed to create codeblock callable"))?;
 
     Ok(run_codeblock.unbind())
-}
-
-/// Format a Python error for display.
-fn format_python_error(py: Python<'_>, error: &PyErr) -> String {
-    // Try to get a formatted traceback using Python's traceback module
-    let format_result: Result<String, _> = (|| {
-        let traceback_module = py.import("traceback")?;
-        let formatted = traceback_module.call_method1(
-            "format_exception",
-            (error.get_type(py), error.value(py), error.traceback(py)),
-        )?;
-        let lines: Vec<String> = formatted.extract()?;
-        Ok(lines.join(""))
-    })();
-
-    format_result.unwrap_or_else(|_: PyErr| error.to_string())
 }
 
 /// Determine whether a test case should be kept for the provided pattern.

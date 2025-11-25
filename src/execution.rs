@@ -15,8 +15,8 @@ use pyo3::types::{PyDict, PyTuple};
 
 use crate::cache;
 use crate::model::{
-    invalid_test_definition, to_relative_path, Fixture, FixtureScope, ParameterMap, PyRunReport,
-    PyTestResult, RunConfiguration, TestCase, TestModule,
+    invalid_test_definition, to_relative_path, CollectionError, Fixture, FixtureScope,
+    ParameterMap, PyRunReport, PyTestResult, RunConfiguration, TestCase, TestModule,
 };
 use crate::output::{OutputConfig, OutputRenderer, SpinnerDisplay};
 
@@ -68,6 +68,7 @@ impl FixtureContext {
 pub fn run_collected_tests(
     py: Python<'_>,
     modules: &[TestModule],
+    collection_errors: &[CollectionError],
     config: &RunConfiguration,
 ) -> PyResult<PyRunReport> {
     let start = Instant::now();
@@ -82,6 +83,11 @@ pub fn run_collected_tests(
         output_config.use_colors,
         output_config.ascii_mode,
     ));
+
+    // Display collection errors before running tests (like pytest does)
+    for error in collection_errors {
+        renderer.collection_error(error);
+    }
 
     // Calculate totals for progress tracking
     let total_files = modules.len();
@@ -167,7 +173,14 @@ pub fn run_collected_tests(
                     let total = passed + failed + skipped;
 
                     // Notify renderer of early exit
-                    renderer.finish_suite(total, passed, failed, skipped, duration);
+                    renderer.finish_suite(
+                        total,
+                        passed,
+                        failed,
+                        skipped,
+                        collection_errors.len(),
+                        duration,
+                    );
 
                     let report = PyRunReport::new(
                         total,
@@ -176,6 +189,7 @@ pub fn run_collected_tests(
                         skipped,
                         duration.as_secs_f64(),
                         results,
+                        collection_errors.to_vec(),
                     );
 
                     // Write cache before returning
@@ -220,7 +234,14 @@ pub fn run_collected_tests(
     let total = passed + failed + skipped;
 
     // Notify renderer that the entire suite is complete
-    renderer.finish_suite(total, passed, failed, skipped, duration);
+    renderer.finish_suite(
+        total,
+        passed,
+        failed,
+        skipped,
+        collection_errors.len(),
+        duration,
+    );
 
     let report = PyRunReport::new(
         total,
@@ -229,6 +250,7 @@ pub fn run_collected_tests(
         skipped,
         duration.as_secs_f64(),
         results,
+        collection_errors.to_vec(),
     );
 
     // Write cache after all tests complete

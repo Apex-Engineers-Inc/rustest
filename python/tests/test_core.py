@@ -25,6 +25,7 @@ class TestCoreRun:
             skipped=0,
             duration=0.05,
             results=[dummy_result],
+            collection_errors=[],
         )
 
         captured_args: dict[str, object] = {}

@@ -170,6 +170,7 @@ def test_success():
             skipped=0,
             duration=0.1,
             results=(result,),
+            collection_errors=(),
         )
 
         assert report.total == 1
@@ -216,6 +217,7 @@ def test_success():
             skipped=1,
             duration=0.2,
             results=(passed, failed, skipped),
+            collection_errors=(),
         )
 
         passed_tests = list(report.iter_status("passed"))

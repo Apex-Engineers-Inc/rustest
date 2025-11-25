@@ -5,7 +5,7 @@
 
 use super::formatter::ErrorFormatter;
 use super::renderer::OutputRenderer;
-use crate::model::{to_relative_path, PyTestResult, TestCase, TestModule};
+use crate::model::{to_relative_path, CollectionError, PyTestResult, TestCase, TestModule};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
@@ -39,6 +39,8 @@ pub struct SpinnerDisplay {
     skipped: usize,
     /// Collect failures to display at the end
     deferred_failures: Vec<(String, String, String)>, // (name, path, message)
+    /// Collect collection errors to display at the end
+    collection_errors: Vec<(String, String)>, // (path, message)
 }
 
 impl SpinnerDisplay {
@@ -54,6 +56,7 @@ impl SpinnerDisplay {
             failed: 0,
             skipped: 0,
             deferred_failures: Vec::new(),
+            collection_errors: Vec::new(),
         }
     }
 
@@ -99,6 +102,12 @@ impl SpinnerDisplay {
 }
 
 impl OutputRenderer for SpinnerDisplay {
+    fn collection_error(&mut self, error: &CollectionError) {
+        // Store collection errors to display at the end (like pytest does)
+        self.collection_errors
+            .push((error.path.clone(), error.message.clone()));
+    }
+
     fn start_suite(&mut self, _total_files: usize, _total_tests: usize) {
         // No-op for spinner mode - we don't show overall progress
     }
@@ -191,8 +200,33 @@ impl OutputRenderer for SpinnerDisplay {
         passed: usize,
         failed: usize,
         skipped: usize,
+        errors: usize,
         duration: Duration,
     ) {
+        // Print collection errors first (like pytest does with "ERRORS" section)
+        if !self.collection_errors.is_empty() {
+            eprintln!();
+            if self.use_colors {
+                eprintln!("{}", style("ERRORS").red().bold());
+            } else {
+                eprintln!("ERRORS");
+            }
+
+            for (path, message) in &self.collection_errors {
+                // Print header like pytest
+                eprintln!(
+                    "{}",
+                    style(format!("ERROR collecting {}", path)).red().bold()
+                );
+                eprintln!("{}", style("─".repeat(70)).dim());
+                // Print the error message (may contain traceback)
+                for line in message.lines() {
+                    eprintln!("{}", line);
+                }
+                eprintln!();
+            }
+        }
+
         // Print deferred failures at the end
         if !self.deferred_failures.is_empty() {
             eprintln!();
@@ -239,6 +273,13 @@ impl OutputRenderer for SpinnerDisplay {
                 parts.push(format!("{} skipped", skipped));
             }
         }
+        if errors > 0 {
+            if self.use_colors {
+                parts.push(format!("{}", style(format!("{} error", errors)).red()));
+            } else {
+                parts.push(format!("{} error", errors));
+            }
+        }
 
         let status_str = if parts.is_empty() {
             "0 tests".to_string()
@@ -246,7 +287,8 @@ impl OutputRenderer for SpinnerDisplay {
             parts.join(", ")
         };
 
-        let symbol = if failed > 0 {
+        // Symbol is red if there are failures OR errors
+        let symbol = if failed > 0 || errors > 0 {
             if self.use_colors {
                 format!("{}", style("✗").red())
             } else {
