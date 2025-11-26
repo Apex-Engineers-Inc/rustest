@@ -7,6 +7,14 @@ Note: Class-based autouse fixtures with dependencies are not currently supported
 in the same way as pytest. Module-level autouse fixtures work correctly.
 """
 
+import sys
+
+# Skip this entire module when running with pytest
+# These tests use rustest's async fixtures which require rustest runner
+if "_pytest" in sys.modules and "rustest" in sys.modules:
+    import pytest
+    pytest.skip("This test file requires rustest runner (rustest-only tests)", allow_module_level=True)
+
 from rustest import fixture, mark
 
 
