@@ -348,9 +348,10 @@ impl Clone for RunConfiguration {
             verbose: self.verbose,
             ascii: self.ascii,
             no_color: self.no_color,
-            event_callback: self.event_callback.as_ref().map(|cb| {
-                pyo3::Python::with_gil(|py| cb.clone_ref(py))
-            }),
+            event_callback: self
+                .event_callback
+                .as_ref()
+                .map(|cb| pyo3::Python::with_gil(|py| cb.clone_ref(py))),
         }
     }
 }

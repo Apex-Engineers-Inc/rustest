@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 from rich.live import Live
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-from rich.text import Text
 
 if TYPE_CHECKING:
     from rustest.rust import (
