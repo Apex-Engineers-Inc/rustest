@@ -492,9 +492,7 @@ class MarkGenerator:
             compatibility, it can also be applied to regular functions (the mark
             will be recorded but the function runs normally without asyncio).
         """
-        import asyncio
         import inspect
-        from functools import wraps
 
         valid_scopes = {"function", "class", "module", "session"}
         if loop_scope not in valid_scopes:
