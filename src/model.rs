@@ -226,6 +226,7 @@ impl Fixture {
                 .params
                 .as_ref()
                 .map(|p| p.iter().map(|fp| fp.clone_with_py(py)).collect()),
+            class_name: self.class_name.clone(),
         }
     }
 }
