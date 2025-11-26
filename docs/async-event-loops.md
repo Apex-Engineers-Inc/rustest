@@ -2,7 +2,7 @@
 
 ## For Newcomers to Async Programming
 
-If you're new to async programming in Python, this guide will help you understand how rustest handles asynchronous tests and fixtures.
+If you're new to async programming in Python, this guide will help you understand how rustest handles asynchronous tests and fixtures with smart loop scope detection.
 
 ### What is an Event Loop?
 
