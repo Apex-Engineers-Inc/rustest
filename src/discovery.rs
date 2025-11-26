@@ -490,6 +490,7 @@ fn load_pytest_plugins_fixtures(
                         is_async_generator,
                         autouse,
                         params,
+                        None,
                     )
                 } else {
                     Fixture::new(
@@ -501,6 +502,7 @@ fn load_pytest_plugins_fixtures(
                         is_async,
                         is_async_generator,
                         autouse,
+                        None,
                     )
                 };
                 fixtures.insert(name.clone(), fixture);
@@ -578,6 +580,7 @@ fn load_conftest_fixtures(
                     is_async_generator,
                     autouse,
                     params,
+                    None,
                 )
             } else {
                 Fixture::new(
@@ -589,6 +592,7 @@ fn load_conftest_fixtures(
                     is_async,
                     is_async_generator,
                     autouse,
+                    None,
                 )
             };
             fixtures.insert(name.clone(), fixture);
@@ -676,6 +680,7 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
                     is_async_generator,
                     autouse,
                     params,
+                    None,
                 )
             } else {
                 Fixture::new(
@@ -687,6 +692,7 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
                     is_async,
                     is_async_generator,
                     autouse,
+                    None,
                 )
             };
             fixtures.insert(name, fixture);
@@ -1003,6 +1009,7 @@ fn inspect_module(
                         is_async_generator,
                         autouse,
                         params,
+                        None,
                     )
                 } else {
                     Fixture::new(
@@ -1014,6 +1021,7 @@ fn inspect_module(
                         is_async,
                         is_async_generator,
                         autouse,
+                        None,
                     )
                 };
                 fixtures.insert(fixture_name, fixture);
