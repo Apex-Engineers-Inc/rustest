@@ -1386,33 +1386,7 @@ fn discover_plain_class_tests_and_fixtures(
     // Extract class-level parametrization (if any)
     let class_param_cases = collect_parametrization(py, cls)?;
 
-    // First pass: collect autouse fixture methods that need to run on the test instance
-    let members_for_autouse = inspect.call_method1("getmembers", (cls,))?;
-    let mut autouse_method_names = Vec::new();
-
-    for member in members_for_autouse.try_iter()? {
-        let member = member?;
-        let name: String = member.get_item(0)?.extract()?;
-        let method = member.get_item(1)?;
-
-        if name.starts_with("__") {
-            continue;
-        }
-
-        // Check if it's an autouse fixture method
-        if is_callable(&method)? && is_fixture(&method)? {
-            let autouse = extract_fixture_autouse(&method)?;
-            let scope = extract_fixture_scope(&method)?;
-
-            // Only function-scoped autouse fixtures should run on the test instance
-            // Higher-scoped fixtures are shared and shouldn't be instance-specific
-            if autouse && scope == FixtureScope::Function {
-                autouse_method_names.push(name.clone());
-            }
-        }
-    }
-
-    // Second pass: process all members
+    // Process all members
     let members = inspect.call_method1("getmembers", (cls,))?;
 
     for member in members.try_iter()? {
@@ -1436,11 +1410,6 @@ fn discover_plain_class_tests_and_fixtures(
             let is_async_generator = is_async_generator_function(py, &method)?;
             let autouse = extract_fixture_autouse(&method)?;
             let fixture_name = extract_fixture_name(&method, &name)?;
-
-            // Skip function-scoped autouse fixtures - they'll be handled by the test callable
-            if autouse && scope == FixtureScope::Function {
-                continue;
-            }
 
             // Extract parameters (excluding 'self')
             let all_params = extract_parameters(py, &method)?;
@@ -1489,13 +1458,9 @@ fn discover_plain_class_tests_and_fixtures(
             let combined_param_cases =
                 combine_parametrizations(py, &class_param_cases, &method_param_cases)?;
 
-            // Create a callable that instantiates the class, runs autouse fixtures, and calls the method
-            let test_callable = create_plain_class_method_runner_with_autouse(
-                py,
-                cls,
-                &name,
-                &autouse_method_names,
-            )?;
+            // Create a callable that instantiates the class and calls the method
+            // Autouse fixtures will be resolved by the fixture system
+            let test_callable = create_plain_class_method_runner(py, cls, &name)?;
 
             if combined_param_cases.is_empty() {
                 tests.push(TestCase {
