@@ -1429,6 +1429,7 @@ fn discover_plain_class_tests_and_fixtures(
                     is_async,
                     is_async_generator,
                     autouse,
+                    Some(class_name.to_string()),
                 ),
             );
             continue;
@@ -1558,50 +1559,6 @@ def run_test(*args, **kwargs):
     return test_method(*args, **kwargs)
 "#,
         method_name
-    );
-
-    let namespace = PyDict::new(py);
-    namespace.set_item("test_class", cls)?;
-
-    let code_cstr = CString::new(code).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
-    })?;
-    // Use the same dict for both globals and locals to ensure proper variable resolution
-    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
-    let run_test = namespace.get_item("run_test")?.unwrap();
-
-    Ok(run_test.unbind())
-}
-
-/// Create a callable that instantiates a plain test class, runs autouse fixtures, and then runs a specific test method.
-/// This ensures that autouse fixtures and the test method run on the same instance.
-fn create_plain_class_method_runner_with_autouse(
-    py: Python<'_>,
-    cls: &Bound<'_, PyAny>,
-    method_name: &str,
-    autouse_methods: &[String],
-) -> PyResult<Py<PyAny>> {
-    // Build code to call each autouse fixture method
-    let autouse_calls = autouse_methods
-        .iter()
-        .map(|name| format!("    getattr(test_instance, '{}')()", name))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Create a wrapper function that:
-    // 1. Instantiates the test class (without arguments)
-    // 2. Calls all autouse fixture methods on that instance
-    // 3. Gets the test method
-    // 4. Calls the method with provided fixtures (as *args)
-    let code = format!(
-        r#"
-def run_test(*args, **kwargs):
-    test_instance = test_class()
-{}
-    test_method = getattr(test_instance, '{}')
-    return test_method(*args, **kwargs)
-"#,
-        autouse_calls, method_name
     );
 
     let namespace = PyDict::new(py);

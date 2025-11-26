@@ -467,6 +467,7 @@ fn execute_test_case(
         &mut context.package_event_loop,
         &mut context.module_event_loop,
         &mut context.class_event_loop,
+        test_case.class_name.as_deref(),
     );
 
     // Populate Python fixture registry for getfixturevalue() support
@@ -595,6 +596,8 @@ struct FixtureResolver<'py> {
     module_event_loop: &'py mut Option<Py<PyAny>>,
     class_event_loop: &'py mut Option<Py<PyAny>>,
     function_event_loop: Option<Py<PyAny>>,
+    /// Current test's class name (for filtering class-scoped autouse fixtures)
+    test_class_name: Option<&'py str>,
 }
 
 impl<'py> FixtureResolver<'py> {
@@ -614,6 +617,7 @@ impl<'py> FixtureResolver<'py> {
         package_event_loop: &'py mut Option<Py<PyAny>>,
         module_event_loop: &'py mut Option<Py<PyAny>>,
         class_event_loop: &'py mut Option<Py<PyAny>>,
+        test_class_name: Option<&'py str>,
     ) -> Self {
         Self {
             py,
@@ -635,6 +639,7 @@ impl<'py> FixtureResolver<'py> {
             module_event_loop,
             class_event_loop,
             function_event_loop: None,
+            test_class_name,
         }
     }
 
@@ -884,11 +889,21 @@ impl<'py> FixtureResolver<'py> {
     /// Resolve all autouse fixtures appropriate for the current test.
     /// Autouse fixtures are automatically executed without needing to be explicitly requested.
     fn resolve_autouse_fixtures(&mut self) -> PyResult<()> {
-        // Collect all autouse fixtures
+        // Collect all autouse fixtures that match the current test's class
         let autouse_fixtures: Vec<String> = self
             .fixtures
             .iter()
-            .filter(|(_, fixture)| fixture.autouse)
+            .filter(|(_, fixture)| {
+                if !fixture.autouse {
+                    return false;
+                }
+                // If fixture has a class_name, it should only run for tests in that class
+                match (&fixture.class_name, &self.test_class_name) {
+                    (Some(fixture_class), Some(test_class)) => fixture_class == test_class,
+                    (None, _) => true, // Module-level autouse fixtures run for all tests
+                    (Some(_), None) => false, // Class fixture shouldn't run for non-class tests
+                }
+            })
             .map(|(name, _)| name.clone())
             .collect();
 
@@ -1224,35 +1239,28 @@ fn write_failed_tests_cache(report: &PyRunReport) -> PyResult<()> {
 /// Close an event loop if it exists, properly cleaning up pending tasks.
 fn close_event_loop(py: Python<'_>, event_loop: &mut Option<Py<PyAny>>) {
     if let Some(loop_obj) = event_loop.take() {
-        let result = py.allow_threads(|| {
-            Python::with_gil(|py| {
-                let loop_bound = loop_obj.bind(py);
+        let loop_bound = loop_obj.bind(py);
 
-                // Check if loop is already closed
-                let is_closed = loop_bound
-                    .call_method0("is_closed")
-                    .and_then(|v| v.extract::<bool>())
-                    .unwrap_or(true);
+        // Check if loop is already closed
+        let is_closed = loop_bound
+            .call_method0("is_closed")
+            .and_then(|v| v.extract::<bool>())
+            .unwrap_or(true);
 
-                if !is_closed {
-                    // Cancel pending tasks
-                    if let Ok(asyncio) = py.import("asyncio") {
-                        if let Ok(tasks) = asyncio.call_method1("all_tasks", (loop_bound,)) {
-                            if let Ok(task_list) = tasks.extract::<Vec<Py<PyAny>>>() {
-                                for task in task_list {
-                                    let _ = task.bind(py).call_method0("cancel");
-                                }
-                            }
+        if !is_closed {
+            // Cancel pending tasks
+            if let Ok(asyncio) = py.import("asyncio") {
+                if let Ok(tasks) = asyncio.call_method1("all_tasks", (loop_bound,)) {
+                    if let Ok(task_list) = tasks.extract::<Vec<Py<PyAny>>>() {
+                        for task in task_list {
+                            let _ = task.bind(py).call_method0("cancel");
                         }
                     }
-
-                    // Close the loop
-                    let _ = loop_bound.call_method0("close");
                 }
-            })
-        });
+            }
 
-        // Ignore errors during cleanup
-        let _ = result;
+            // Close the loop
+            let _ = loop_bound.call_method0("close");
+        }
     }
 }

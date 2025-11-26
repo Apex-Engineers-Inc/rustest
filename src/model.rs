@@ -146,6 +146,8 @@ pub struct Fixture {
     pub autouse: bool,
     /// Optional parametrization values for the fixture.
     pub params: Option<Vec<FixtureParam>>,
+    /// Optional class name for class-based fixtures (to scope autouse fixtures correctly).
+    pub class_name: Option<String>,
 }
 
 impl Fixture {
@@ -159,6 +161,7 @@ impl Fixture {
         is_async: bool,
         is_async_generator: bool,
         autouse: bool,
+        class_name: Option<String>,
     ) -> Self {
         Self {
             name,
@@ -170,6 +173,7 @@ impl Fixture {
             is_async_generator,
             autouse,
             params: None,
+            class_name,
         }
     }
 
@@ -185,6 +189,7 @@ impl Fixture {
         is_async_generator: bool,
         autouse: bool,
         params: Vec<FixtureParam>,
+        class_name: Option<String>,
     ) -> Self {
         Self {
             name,
@@ -196,6 +201,7 @@ impl Fixture {
             is_async_generator,
             autouse,
             params: Some(params),
+            class_name,
         }
     }
 
