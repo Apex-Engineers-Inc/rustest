@@ -27,7 +27,7 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
@@ -43,6 +43,7 @@ fn run(
     verbose: bool,
     ascii: bool,
     no_color: bool,
+    event_callback: Option<Py<PyAny>>,
 ) -> PyResult<PyRunReport> {
     let last_failed_mode = LastFailedMode::from_str(last_failed_mode)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -59,6 +60,7 @@ fn run(
         verbose,
         ascii,
         no_color,
+        event_callback,
     );
     let input_paths = PyPaths::from_vec(paths);
     let (collected, collection_errors) = discover_tests(py, &input_paths, &config)?;
@@ -69,9 +71,23 @@ fn run(
 /// Entry point for the Python extension module.
 #[pymodule]
 fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    use output::{
+        CollectionErrorEvent, FileCompletedEvent, FileStartedEvent, SuiteCompletedEvent,
+        SuiteStartedEvent, TestCompletedEvent,
+    };
+
     m.add_class::<PyRunReport>()?;
     m.add_class::<CollectionError>()?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+
+    // Event types for event stream consumers
+    m.add_class::<FileStartedEvent>()?;
+    m.add_class::<TestCompletedEvent>()?;
+    m.add_class::<FileCompletedEvent>()?;
+    m.add_class::<SuiteStartedEvent>()?;
+    m.add_class::<SuiteCompletedEvent>()?;
+    m.add_class::<CollectionErrorEvent>()?;
+
     Ok(())
 }
 

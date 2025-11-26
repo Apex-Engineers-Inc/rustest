@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
     "typing-extensions>=4.15",
+    "rich>=13.0.0",
 ]
 scripts = { rustest = "rustest.__main__:main" }
 

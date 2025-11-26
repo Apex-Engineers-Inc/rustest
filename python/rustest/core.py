@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from . import rust
+from .event_router import EventRouter
+from .renderers import RichRenderer
 from .reporting import RunReport
 
 
@@ -39,6 +41,12 @@ def run(
         ascii: Use ASCII characters instead of Unicode symbols for output
         no_color: Disable colored output
     """
+    # Set up event routing with rich terminal renderer
+    router = EventRouter()
+    rich_renderer = RichRenderer(use_colors=not no_color)
+    router.subscribe(rich_renderer)
+
+    # Run tests with event callback
     raw_report = rust.run(
         paths=list(paths),
         pattern=pattern,
@@ -52,5 +60,6 @@ def run(
         verbose=verbose,
         ascii=ascii,
         no_color=no_color,
+        event_callback=router.emit,
     )
     return RunReport.from_py(raw_report)

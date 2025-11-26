@@ -317,7 +317,7 @@ impl LastFailedMode {
 }
 
 /// Configuration coming from Python.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RunConfiguration {
     pub pattern: Option<String>,
     pub mark_expr: Option<String>,
@@ -331,6 +331,28 @@ pub struct RunConfiguration {
     pub verbose: bool,
     pub ascii: bool,
     pub no_color: bool,
+    pub event_callback: Option<pyo3::Py<pyo3::PyAny>>,
+}
+
+impl Clone for RunConfiguration {
+    fn clone(&self) -> Self {
+        Self {
+            pattern: self.pattern.clone(),
+            mark_expr: self.mark_expr.clone(),
+            worker_count: self.worker_count,
+            capture_output: self.capture_output,
+            enable_codeblocks: self.enable_codeblocks,
+            last_failed_mode: self.last_failed_mode.clone(),
+            fail_fast: self.fail_fast,
+            pytest_compat: self.pytest_compat,
+            verbose: self.verbose,
+            ascii: self.ascii,
+            no_color: self.no_color,
+            event_callback: self.event_callback.as_ref().map(|cb| {
+                pyo3::Python::with_gil(|py| cb.clone_ref(py))
+            }),
+        }
+    }
 }
 
 impl RunConfiguration {
@@ -347,6 +369,7 @@ impl RunConfiguration {
         verbose: bool,
         ascii: bool,
         no_color: bool,
+        event_callback: Option<pyo3::Py<pyo3::PyAny>>,
     ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
@@ -361,6 +384,7 @@ impl RunConfiguration {
             verbose,
             ascii,
             no_color,
+            event_callback,
         }
     }
 }
