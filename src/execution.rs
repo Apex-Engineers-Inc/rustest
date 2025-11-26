@@ -898,8 +898,8 @@ impl<'py> FixtureResolver<'py> {
                     return false;
                 }
                 // If fixture has a class_name, it should only run for tests in that class
-                match (&fixture.class_name, &self.test_class_name) {
-                    (Some(fixture_class), Some(test_class)) => fixture_class == test_class,
+                match (&fixture.class_name, self.test_class_name) {
+                    (Some(fixture_class), Some(test_class)) => fixture_class.as_str() == test_class,
                     (None, _) => true, // Module-level autouse fixtures run for all tests
                     (Some(_), None) => false, // Class fixture shouldn't run for non-class tests
                 }
