@@ -59,17 +59,24 @@ def test_asyncio_mark_on_sync_function():
     assert test_sync_func() == "sync_result"
 
 
-def test_asyncio_mark_wraps_function():
-    """Test that @mark.asyncio wraps the async function correctly."""
+def test_asyncio_mark_preserves_async_nature():
+    """Test that @mark.asyncio preserves the async nature of functions."""
 
     @mark.asyncio
     async def test_func(x, y):
         await asyncio.sleep(0.001)
         return x + y
 
-    # The wrapper should be callable and return the result
+    # The decorator should NOT wrap the function - it should remain a coroutine function
+    import inspect
+    assert inspect.iscoroutinefunction(test_func)
+
+    # Calling it should return a coroutine object
     result = test_func(1, 2)
-    assert result == 3
+    assert inspect.iscoroutine(result)
+
+    # Clean up the coroutine to avoid warnings
+    result.close()
 
 
 def test_asyncio_mark_preserves_function_name():
@@ -100,24 +107,35 @@ def test_asyncio_mark_on_class():
     marks = TestAsyncClass.__rustest_marks__
     assert marks[0]["name"] == "asyncio"
 
-    # Check that async methods were wrapped
-    instance = TestAsyncClass()
-    result1 = instance.test_method_one()
-    result2 = instance.test_method_two()
-    assert result1 == 1
-    assert result2 == 2
+    # Check that async methods have the mark too
+    assert hasattr(TestAsyncClass.test_method_one, "__rustest_marks__")
+    assert hasattr(TestAsyncClass.test_method_two, "__rustest_marks__")
+
+    # Methods should still be coroutine functions
+    import inspect
+    assert inspect.iscoroutinefunction(TestAsyncClass.test_method_one)
+    assert inspect.iscoroutinefunction(TestAsyncClass.test_method_two)
 
 
-def test_asyncio_mark_handles_exceptions():
-    """Test that @mark.asyncio properly propagates exceptions."""
+def test_asyncio_mark_does_not_execute():
+    """Test that @mark.asyncio does not execute the function.
+
+    The decorator only applies metadata. Execution is handled by rustest's
+    test runner, which will use the loop_scope metadata for smart detection.
+    """
 
     @mark.asyncio
     async def test_func():
         await asyncio.sleep(0.001)
         raise ValueError("test error")
 
-    with pytest.raises(ValueError, match="test error"):
-        test_func()
+    # Calling the function should return a coroutine, not execute it
+    import inspect
+    result = test_func()
+    assert inspect.iscoroutine(result)
+
+    # Clean up
+    result.close()
 
 
 def test_asyncio_mark_with_all_scopes():
@@ -134,64 +152,71 @@ def test_asyncio_mark_with_all_scopes():
         assert marks[0]["kwargs"]["loop_scope"] == scope
 
 
-def test_asyncio_mark_executes_async_code():
-    """Test that async code actually executes."""
-    counter = {"value": 0}
+def test_asyncio_mark_returns_coroutine():
+    """Test that decorated async functions return coroutines."""
 
     @mark.asyncio
     async def test_func():
         await asyncio.sleep(0.001)
-        counter["value"] = 42
+        return 42
 
-    test_func()
-    assert counter["value"] == 42
-
-
-def test_asyncio_mark_with_multiple_awaits():
-    """Test that multiple awaits work correctly."""
-
-    async def async_add(x, y):
-        await asyncio.sleep(0.001)
-        return x + y
-
-    @mark.asyncio
-    async def test_func():
-        result1 = await async_add(1, 2)
-        result2 = await async_add(3, 4)
-        return result1 + result2
-
+    # Should return a coroutine object
+    import inspect
     result = test_func()
-    assert result == 10
+    assert inspect.iscoroutine(result)
+
+    # Clean up
+    result.close()
 
 
-def test_asyncio_mark_with_gather():
-    """Test that asyncio.gather works within marked functions."""
+def test_asyncio_mark_with_parameters():
+    """Test that decorated functions can accept parameters."""
 
-    async def async_double(x):
+    @mark.asyncio
+    async def test_func(x, y, z=10):
         await asyncio.sleep(0.001)
-        return x * 2
+        return x + y + z
+
+    # Should still be a coroutine function that accepts parameters
+    import inspect
+    assert inspect.iscoroutinefunction(test_func)
+
+    result = test_func(1, 2, z=3)
+    assert inspect.iscoroutine(result)
+
+    # Clean up
+    result.close()
+
+
+def test_asyncio_mark_idempotent():
+    """Test that applying the mark multiple times doesn't break anything."""
 
     @mark.asyncio
-    async def test_func():
-        results = await asyncio.gather(async_double(1), async_double(2), async_double(3))
-        return results
-
-    result = test_func()
-    assert result == [2, 4, 6]
-
-
-def test_asyncio_mark_cleans_up_loop():
-    """Test that event loop is properly cleaned up."""
-
-    @mark.asyncio
+    @mark.asyncio  # Apply twice
     async def test_func():
         await asyncio.sleep(0.001)
         return True
 
-    # Run multiple times to ensure cleanup works
-    for _ in range(3):
-        result = test_func()
-        assert result is True
+    # Should still work (though will have duplicate marks)
+    import inspect
+    assert inspect.iscoroutinefunction(test_func)
+
+    result = test_func()
+    assert inspect.iscoroutine(result)
+
+    # Clean up
+    result.close()
+
+
+def test_asyncio_mark_default_loop_scope():
+    """Test that default loop_scope is 'function'."""
+
+    @mark.asyncio
+    async def test_func():
+        pass
+
+    marks = test_func.__rustest_marks__
+    assert marks[0]["kwargs"]["loop_scope"] == "function"
 
 
 def test_asyncio_combined_with_other_marks():
