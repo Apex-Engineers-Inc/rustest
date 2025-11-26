@@ -18,6 +18,7 @@ from .builtin_fixtures import MockerFixture as MockerFixture
 from .builtin_fixtures import MonkeyPatch as MonkeyPatch
 from .builtin_fixtures import TmpDirFactory as TmpDirFactory
 from .builtin_fixtures import TmpPathFactory as TmpPathFactory
+from .compat.pytest import FixtureRequest as FixtureRequest
 
 # Re-export decorator utility types
 from .decorators import ExceptionInfo as ExceptionInfo
@@ -53,6 +54,7 @@ __all__ = [
     "Cache",
     "CaptureFixture",
     "CaptureResult",
+    "FixtureRequest",
     "LogCaptureFixture",
     "LogRecord",
     "MockerFixture",
