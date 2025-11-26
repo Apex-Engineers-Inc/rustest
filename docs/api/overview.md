@@ -115,6 +115,58 @@ def run_tests(path: str, pattern: Optional[str] = None) -> RunReport:
     return run(paths=[path], pattern=pattern)
 ```
 
+### Fixture Type Annotations
+
+Rustest exports type classes for all built-in fixtures, allowing you to add type hints to your test functions and fixtures:
+
+<!--rustest.mark.skip-->
+```python
+from rustest import (
+    fixture,
+    FixtureRequest,    # For request fixture
+    MonkeyPatch,       # For monkeypatch fixture
+    TmpPathFactory,    # For tmp_path_factory fixture
+    Cache,             # For cache fixture
+    CaptureFixture,    # For capsys/capfd fixtures
+    LogCaptureFixture, # For caplog fixture
+    MockerFixture,     # For mocker fixture
+)
+from pathlib import Path
+
+@fixture
+def database(tmp_path: Path, monkeypatch: MonkeyPatch):
+    """Fixture with type-annotated parameters."""
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    return create_database(db_path)
+
+@fixture(params=["sqlite", "postgres"])
+def db_type(request: FixtureRequest) -> str:
+    """Parametrized fixture with type annotation."""
+    return request.param
+
+def test_with_fixtures(
+    database,
+    capsys: CaptureFixture,
+    cache: Cache,
+    mocker: MockerFixture,
+):
+    """Test with multiple type-annotated fixtures."""
+    print("Database initialized")
+    captured = capsys.readouterr()
+    assert "initialized" in captured.out
+```
+
+**Available fixture types:**
+- `FixtureRequest` - For `request` fixture (parametrized fixtures)
+- `MonkeyPatch` - For `monkeypatch` fixture
+- `TmpPathFactory` - For `tmp_path_factory` fixture
+- `TmpDirFactory` - For `tmpdir_factory` fixture
+- `Cache` - For `cache` fixture
+- `CaptureFixture` - For `capsys` and `capfd` fixtures
+- `LogCaptureFixture` - For `caplog` fixture
+- `MockerFixture` - For `mocker` fixture
+
 ## Next Steps
 
 - [Decorators](decorators.md) - Detailed decorator documentation

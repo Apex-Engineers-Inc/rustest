@@ -316,10 +316,10 @@ class TestUserService:
 **1. Logging and Monitoring**
 
 ```python
-import rustest
+from rustest import fixture, FixtureRequest
 
-@rustest.fixture(autouse=True)
-def test_logging(request):
+@fixture(autouse=True)
+def test_logging(request: FixtureRequest):
     """Log test start and end."""
     print(f"Starting test: {request.node.name}")
     yield
@@ -1489,6 +1489,120 @@ def test_reset_mocks(mocker):
 
 !!! note "Automatic Cleanup"
     All patches and mocks are automatically cleaned up after the test completes. You don't need to manually call `stop()` or `restore()`.
+
+### request - Accessing Test Metadata and Parameters
+
+The `request` fixture provides access to test metadata, configuration, and parameter values for parametrized fixtures. It's automatically available in all fixtures and tests.
+
+#### Type Annotation
+
+Use the `FixtureRequest` type for type hints:
+
+```python
+from rustest import fixture, FixtureRequest
+
+@fixture
+def my_fixture(request: FixtureRequest):
+    """Fixture with type-annotated request parameter."""
+    print(f"Running test: {request.node.name}")
+    return "data"
+```
+
+#### Parametrized Fixtures
+
+The most common use of `request` is to access parameter values in parametrized fixtures:
+
+```python
+from rustest import fixture, FixtureRequest
+
+@fixture(params=[1, 2, 3])
+def number(request: FixtureRequest) -> int:
+    """Fixture that provides multiple values."""
+    return request.param
+
+def test_numbers(number: int):
+    """This test runs three times with different values."""
+    assert number in [1, 2, 3]
+```
+
+#### Custom Parameter IDs
+
+You can provide custom IDs for better test output:
+
+```python
+from rustest import fixture, FixtureRequest
+
+@fixture(params=["sqlite", "postgres", "mysql"], ids=["SQLite", "PostgreSQL", "MySQL"])
+def database_type(request: FixtureRequest) -> str:
+    """Parametrized fixture with custom test IDs."""
+    return request.param
+
+def test_database(database_type: str):
+    """Test ID will show which database type is being tested."""
+    assert database_type in ["sqlite", "postgres", "mysql"]
+```
+
+#### Accessing Test Node Information
+
+The `request.node` attribute provides test metadata:
+
+```python
+from rustest import fixture, FixtureRequest
+
+@fixture(autouse=True)
+def log_test_info(request: FixtureRequest):
+    """Log test information automatically."""
+    print(f"Running: {request.node.name}")
+    print(f"Node ID: {request.node.nodeid}")
+    yield
+    print(f"Finished: {request.node.name}")
+```
+
+#### Checking for Markers
+
+Use `request.node` to check test markers:
+
+```python
+from rustest import fixture, mark, FixtureRequest
+
+@fixture
+def database(request: FixtureRequest):
+    """Setup different databases based on markers."""
+    if request.node.get_closest_marker("integration"):
+        # Use real database for integration tests
+        return setup_real_database()
+    # Use mock for unit tests
+    return setup_mock_database()
+
+@mark.integration
+def test_with_real_db(database):
+    """This test gets a real database."""
+    assert database.is_connected()
+
+def test_with_mock_db(database):
+    """This test gets a mock database."""
+    assert database.is_mock()
+```
+
+#### Accessing Configuration
+
+The `request.config` attribute provides access to test configuration:
+
+```python
+from rustest import fixture, FixtureRequest
+
+@fixture
+def api_client(request: FixtureRequest):
+    """Create API client with configuration."""
+    # Access command-line options
+    base_url = request.config.getoption("--api-url", default="http://localhost")
+    verbose = request.config.getoption("verbose", default=0)
+
+    if verbose > 1:
+        print(f"Connecting to: {base_url}")
+
+    return create_client(base_url)
+```
 
 ### Combining Built-in Fixtures
 
