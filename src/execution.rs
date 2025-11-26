@@ -444,6 +444,31 @@ fn populate_fixture_registry(py: Python<'_>, fixtures: &IndexMap<String, Fixture
     Ok(())
 }
 
+/// Extract the loop_scope from a test's asyncio mark, if present.
+/// Returns the loop_scope as a FixtureScope, defaulting to Function if not specified.
+fn get_loop_scope_from_marks(py: Python<'_>, test_case: &TestCase) -> FixtureScope {
+    for mark in &test_case.marks {
+        if mark.is_named("asyncio") {
+            if let Some(loop_scope_value) = mark.get_kwarg(py, "loop_scope") {
+                if let Ok(loop_scope_str) = loop_scope_value.bind(py).extract::<String>() {
+                    // Convert loop_scope string to FixtureScope
+                    return match loop_scope_str.as_str() {
+                        "session" => FixtureScope::Session,
+                        "package" => FixtureScope::Package,
+                        "module" => FixtureScope::Module,
+                        "class" => FixtureScope::Class,
+                        "function" | _ => FixtureScope::Function,
+                    };
+                }
+            }
+            // asyncio mark found but no loop_scope specified, default to function
+            return FixtureScope::Function;
+        }
+    }
+    // No asyncio mark, default to function scope
+    FixtureScope::Function
+}
+
 /// Execute a test case and return either success metadata or failure details.
 fn execute_test_case(
     py: Python<'_>,
@@ -452,6 +477,9 @@ fn execute_test_case(
     config: &RunConfiguration,
     context: &mut FixtureContext,
 ) -> Result<TestCallSuccess, TestCallFailure> {
+    // Extract loop_scope from test marks (for async tests)
+    let test_loop_scope = get_loop_scope_from_marks(py, test_case);
+
     let mut resolver = FixtureResolver::new(
         py,
         &module.fixtures,
@@ -468,6 +496,7 @@ fn execute_test_case(
         &mut context.module_event_loop,
         &mut context.class_event_loop,
         test_case.class_name.as_deref(),
+        test_loop_scope,
     );
 
     // Populate Python fixture registry for getfixturevalue() support
@@ -602,6 +631,8 @@ struct FixtureResolver<'py> {
     function_event_loop: Option<Py<PyAny>>,
     /// Current test's class name (for filtering class-scoped autouse fixtures)
     test_class_name: Option<&'py str>,
+    /// Loop scope for the current test (from @mark.asyncio(loop_scope="..."))
+    test_loop_scope: FixtureScope,
 }
 
 impl<'py> FixtureResolver<'py> {
@@ -622,6 +653,7 @@ impl<'py> FixtureResolver<'py> {
         module_event_loop: &'py mut Option<Py<PyAny>>,
         class_event_loop: &'py mut Option<Py<PyAny>>,
         test_class_name: Option<&'py str>,
+        test_loop_scope: FixtureScope,
     ) -> Self {
         Self {
             py,
@@ -644,6 +676,7 @@ impl<'py> FixtureResolver<'py> {
             class_event_loop,
             function_event_loop: None,
             test_class_name,
+            test_loop_scope,
         }
     }
 
@@ -932,221 +965,55 @@ impl<'py> FixtureResolver<'py> {
 
     /// Get or create an event loop for the given scope.
     ///
-    /// This method ensures that async fixtures reuse event loops from broader scopes
-    /// when available, preventing "Task got Future attached to a different loop" errors.
+    /// This matches pytest-asyncio's behavior where each scope has its own event loop.
+    /// - function scope: new loop for each test (default)
+    /// - class scope: shared loop for all tests in a class
+    /// - module scope: shared loop for all tests in a module
+    /// - session scope: shared loop for entire test session
     ///
-    /// Strategy:
-    /// 1. Check if an event loop already exists at this scope - if so, reuse it
-    /// 2. Otherwise, check if event loops exist at broader scopes and reuse them
-    /// 3. Only create a new event loop if none exists at this or broader scopes
-    /// 4. Store the loop reference at the requested scope for caching
-    ///
-    /// This ensures that all async operations within a session/package/module/class
-    /// share the same event loop, enabling fixtures and tests to interact correctly.
+    /// The test's loop_scope (from @mark.asyncio) determines which loop is used.
+    /// Async fixtures run in the same loop as the test resolving them.
     fn get_or_create_event_loop(&mut self, scope: FixtureScope) -> PyResult<Py<PyAny>> {
-        // Helper to check if a loop is open
-        let is_loop_open = |loop_obj: &Py<PyAny>| -> PyResult<bool> {
+        // Get the appropriate event loop slot for this scope
+        let event_loop_opt = match scope {
+            FixtureScope::Session => &mut *self.session_event_loop,
+            FixtureScope::Package => &mut *self.package_event_loop,
+            FixtureScope::Module => &mut *self.module_event_loop,
+            FixtureScope::Class => &mut *self.class_event_loop,
+            FixtureScope::Function => &mut self.function_event_loop,
+        };
+
+        // Check if a loop already exists at this scope and is still open
+        if let Some(ref loop_obj) = event_loop_opt {
             let is_closed = loop_obj
                 .bind(self.py)
                 .call_method0("is_closed")?
                 .extract::<bool>()?;
-            Ok(!is_closed)
-        };
-
-        // First check if a loop already exists at this scope
-        let existing_loop = match scope {
-            FixtureScope::Session => self.session_event_loop.as_ref(),
-            FixtureScope::Package => self.package_event_loop.as_ref(),
-            FixtureScope::Module => self.module_event_loop.as_ref(),
-            FixtureScope::Class => self.class_event_loop.as_ref(),
-            FixtureScope::Function => self.function_event_loop.as_ref(),
-        };
-
-        if let Some(loop_obj) = existing_loop {
-            if is_loop_open(loop_obj)? {
+            if !is_closed {
                 return Ok(loop_obj.clone_ref(self.py));
             }
         }
 
-        // No loop at this scope, try to reuse from broader scopes
-        // Check in order: session -> package -> module -> class
-
-        let reused_loop = if !matches!(scope, FixtureScope::Session) {
-            // Try session loop first
-            if let Some(ref loop_obj) = self.session_event_loop {
-                if is_loop_open(loop_obj)? {
-                    Some(loop_obj.clone_ref(self.py))
-                } else {
-                    None
-                }
-            } else if matches!(
-                scope,
-                FixtureScope::Package
-                    | FixtureScope::Module
-                    | FixtureScope::Class
-                    | FixtureScope::Function
-            ) {
-                // Try package loop
-                if let Some(ref loop_obj) = self.package_event_loop {
-                    if is_loop_open(loop_obj)? {
-                        Some(loop_obj.clone_ref(self.py))
-                    } else {
-                        None
-                    }
-                } else if matches!(
-                    scope,
-                    FixtureScope::Module | FixtureScope::Class | FixtureScope::Function
-                ) {
-                    // Try module loop
-                    if let Some(ref loop_obj) = self.module_event_loop {
-                        if is_loop_open(loop_obj)? {
-                            Some(loop_obj.clone_ref(self.py))
-                        } else {
-                            None
-                        }
-                    } else if matches!(scope, FixtureScope::Class | FixtureScope::Function) {
-                        // Try class loop
-                        if let Some(ref loop_obj) = self.class_event_loop {
-                            if is_loop_open(loop_obj)? {
-                                Some(loop_obj.clone_ref(self.py))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // If we found a reusable loop, cache it and return
-        if let Some(loop_obj) = reused_loop {
-            // Cache the loop at this scope for faster future access
-            match scope {
-                FixtureScope::Session => {
-                    *self.session_event_loop = Some(loop_obj.clone_ref(self.py))
-                }
-                FixtureScope::Package => {
-                    *self.package_event_loop = Some(loop_obj.clone_ref(self.py))
-                }
-                FixtureScope::Module => *self.module_event_loop = Some(loop_obj.clone_ref(self.py)),
-                FixtureScope::Class => *self.class_event_loop = Some(loop_obj.clone_ref(self.py)),
-                FixtureScope::Function => {
-                    self.function_event_loop = Some(loop_obj.clone_ref(self.py))
-                }
-            }
-            return Ok(loop_obj);
-        }
-
-        // No existing loop found anywhere, create a new one
+        // Create a new event loop for this scope
         let asyncio = self.py.import("asyncio")?;
         let new_loop = asyncio.call_method0("new_event_loop")?.unbind();
         asyncio.call_method1("set_event_loop", (&new_loop.bind(self.py),))?;
 
-        // Store it at the requested scope
-        match scope {
-            FixtureScope::Session => *self.session_event_loop = Some(new_loop.clone_ref(self.py)),
-            FixtureScope::Package => *self.package_event_loop = Some(new_loop.clone_ref(self.py)),
-            FixtureScope::Module => *self.module_event_loop = Some(new_loop.clone_ref(self.py)),
-            FixtureScope::Class => *self.class_event_loop = Some(new_loop.clone_ref(self.py)),
-            FixtureScope::Function => self.function_event_loop = Some(new_loop.clone_ref(self.py)),
-        }
+        // Store it for reuse within this scope
+        *event_loop_opt = Some(new_loop.clone_ref(self.py));
 
         Ok(new_loop)
     }
 
     /// Get or create an event loop for running async tests.
     ///
-    /// This method ensures that tests reuse existing event loops from async fixtures,
-    /// preventing "Task got Future attached to a different loop" errors.
+    /// Uses the test's loop_scope (from @mark.asyncio(loop_scope="...")) to determine
+    /// which event loop to use. This matches pytest-asyncio's behavior.
     ///
-    /// The strategy is:
-    /// 1. If a session event loop exists (from session-scoped async fixtures), use it
-    /// 2. Otherwise, if a package event loop exists, use it
-    /// 3. Otherwise, if a module event loop exists, use it
-    /// 4. Otherwise, if a class event loop exists, use it
-    /// 5. Otherwise, create a new function-scoped event loop
-    ///
-    /// This ensures that async tests share the same event loop as any async fixtures
-    /// they depend on, avoiding event loop mismatch errors.
+    /// Default loop_scope is "function", which creates a new loop for each test.
     fn get_or_create_test_event_loop(&mut self) -> PyResult<Py<PyAny>> {
-        // Try to reuse existing event loop from widest scope to narrowest
-        // This ensures tests can interact with async resources from any fixture scope
-
-        // Check session event loop first
-        if let Some(ref loop_obj) = *self.session_event_loop {
-            let is_closed = loop_obj
-                .bind(self.py)
-                .call_method0("is_closed")?
-                .extract::<bool>()?;
-            if !is_closed {
-                return Ok(loop_obj.clone_ref(self.py));
-            }
-        }
-
-        // Check package event loop
-        if let Some(ref loop_obj) = *self.package_event_loop {
-            let is_closed = loop_obj
-                .bind(self.py)
-                .call_method0("is_closed")?
-                .extract::<bool>()?;
-            if !is_closed {
-                return Ok(loop_obj.clone_ref(self.py));
-            }
-        }
-
-        // Check module event loop
-        if let Some(ref loop_obj) = *self.module_event_loop {
-            let is_closed = loop_obj
-                .bind(self.py)
-                .call_method0("is_closed")?
-                .extract::<bool>()?;
-            if !is_closed {
-                return Ok(loop_obj.clone_ref(self.py));
-            }
-        }
-
-        // Check class event loop
-        if let Some(ref loop_obj) = *self.class_event_loop {
-            let is_closed = loop_obj
-                .bind(self.py)
-                .call_method0("is_closed")?
-                .extract::<bool>()?;
-            if !is_closed {
-                return Ok(loop_obj.clone_ref(self.py));
-            }
-        }
-
-        // No existing loop found, create a function-scoped one
-        // This is stored locally in the resolver and will be cleaned up after the test
-        if let Some(ref loop_obj) = self.function_event_loop {
-            let is_closed = loop_obj
-                .bind(self.py)
-                .call_method0("is_closed")?
-                .extract::<bool>()?;
-            if !is_closed {
-                return Ok(loop_obj.clone_ref(self.py));
-            }
-        }
-
-        // Create a new event loop for this test
-        let asyncio = self.py.import("asyncio")?;
-        let new_loop = asyncio.call_method0("new_event_loop")?.unbind();
-        asyncio.call_method1("set_event_loop", (&new_loop.bind(self.py),))?;
-
-        // Store it in the function event loop
-        self.function_event_loop = Some(new_loop.clone_ref(self.py));
-
-        Ok(new_loop)
+        // Use the test's specified loop_scope
+        self.get_or_create_event_loop(self.test_loop_scope)
     }
 
     /// Create a request fixture with the current param value.
