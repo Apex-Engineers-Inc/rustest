@@ -69,6 +69,7 @@ def test_asyncio_mark_preserves_async_nature():
 
     # The decorator should NOT wrap the function - it should remain a coroutine function
     import inspect
+
     assert inspect.iscoroutinefunction(test_func)
 
     # Calling it should return a coroutine object
@@ -113,6 +114,7 @@ def test_asyncio_mark_on_class():
 
     # Methods should still be coroutine functions
     import inspect
+
     assert inspect.iscoroutinefunction(TestAsyncClass.test_method_one)
     assert inspect.iscoroutinefunction(TestAsyncClass.test_method_two)
 
@@ -131,6 +133,7 @@ def test_asyncio_mark_does_not_execute():
 
     # Calling the function should return a coroutine, not execute it
     import inspect
+
     result = test_func()
     assert inspect.iscoroutine(result)
 
@@ -162,6 +165,7 @@ def test_asyncio_mark_returns_coroutine():
 
     # Should return a coroutine object
     import inspect
+
     result = test_func()
     assert inspect.iscoroutine(result)
 
@@ -179,6 +183,7 @@ def test_asyncio_mark_with_parameters():
 
     # Should still be a coroutine function that accepts parameters
     import inspect
+
     assert inspect.iscoroutinefunction(test_func)
 
     result = test_func(1, 2, z=3)
@@ -199,6 +204,7 @@ def test_asyncio_mark_idempotent():
 
     # Should still work (though will have duplicate marks)
     import inspect
+
     assert inspect.iscoroutinefunction(test_func)
 
     result = test_func()
