@@ -445,28 +445,113 @@ fn populate_fixture_registry(py: Python<'_>, fixtures: &IndexMap<String, Fixture
 }
 
 /// Extract the loop_scope from a test's asyncio mark, if present.
-/// Returns the loop_scope as a FixtureScope, defaulting to Function if not specified.
-fn get_loop_scope_from_marks(py: Python<'_>, test_case: &TestCase) -> FixtureScope {
+/// Returns Some(scope) if explicitly specified, None otherwise.
+fn get_explicit_loop_scope_from_marks(
+    py: Python<'_>,
+    test_case: &TestCase,
+) -> Option<FixtureScope> {
     for mark in &test_case.marks {
         if mark.is_named("asyncio") {
             if let Some(loop_scope_value) = mark.get_kwarg(py, "loop_scope") {
                 if let Ok(loop_scope_str) = loop_scope_value.bind(py).extract::<String>() {
                     // Convert loop_scope string to FixtureScope
-                    return match loop_scope_str.as_str() {
+                    return Some(match loop_scope_str.as_str() {
                         "session" => FixtureScope::Session,
                         "package" => FixtureScope::Package,
                         "module" => FixtureScope::Module,
                         "class" => FixtureScope::Class,
-                        "function" | _ => FixtureScope::Function,
-                    };
+                        _ => FixtureScope::Function,
+                    });
                 }
             }
-            // asyncio mark found but no loop_scope specified, default to function
-            return FixtureScope::Function;
+            // asyncio mark found but no loop_scope specified
+            return None;
         }
     }
-    // No asyncio mark, default to function scope
-    FixtureScope::Function
+    // No asyncio mark found
+    None
+}
+
+/// Analyze test's fixture dependencies to find the widest async fixture scope.
+/// This enables automatic loop scope detection based on what fixtures the test uses.
+///
+/// Returns the widest scope of any async fixture used by the test, or Function if none.
+fn detect_required_loop_scope_from_fixtures(
+    fixtures: &IndexMap<String, Fixture>,
+    test_params: &[String],
+) -> FixtureScope {
+    let mut widest_scope = FixtureScope::Function;
+    let mut visited = HashSet::new();
+
+    // Recursively analyze fixture dependencies
+    for param in test_params {
+        analyze_fixture_scope(fixtures, param, &mut widest_scope, &mut visited);
+    }
+
+    widest_scope
+}
+
+/// Recursively analyze a fixture and its dependencies to find async fixtures.
+fn analyze_fixture_scope(
+    fixtures: &IndexMap<String, Fixture>,
+    fixture_name: &str,
+    widest_scope: &mut FixtureScope,
+    visited: &mut HashSet<String>,
+) {
+    // Avoid infinite recursion
+    if visited.contains(fixture_name) {
+        return;
+    }
+    visited.insert(fixture_name.to_string());
+
+    if let Some(fixture) = fixtures.get(fixture_name) {
+        // If this is an async fixture, check if its scope is wider
+        if (fixture.is_async || fixture.is_async_generator)
+            && is_scope_wider(&fixture.scope, widest_scope)
+        {
+            *widest_scope = fixture.scope;
+        }
+
+        // Recursively analyze this fixture's dependencies
+        for dep in &fixture.parameters {
+            analyze_fixture_scope(fixtures, dep, widest_scope, visited);
+        }
+    }
+}
+
+/// Check if scope_a is wider than scope_b.
+fn is_scope_wider(scope_a: &FixtureScope, scope_b: &FixtureScope) -> bool {
+    let order = |s: &FixtureScope| match s {
+        FixtureScope::Function => 0,
+        FixtureScope::Class => 1,
+        FixtureScope::Module => 2,
+        FixtureScope::Package => 3,
+        FixtureScope::Session => 4,
+    };
+    order(scope_a) > order(scope_b)
+}
+
+/// Determine the appropriate loop scope for a test.
+///
+/// Strategy (matching pytest-asyncio with smart defaults):
+/// 1. If @mark.asyncio(loop_scope="...") is explicit, use that
+/// 2. Otherwise, analyze fixture dependencies to find widest async fixture scope
+/// 3. Default to function scope if no async fixtures are used
+///
+/// This provides automatic compatibility: tests using session async fixtures
+/// automatically share the session loop without explicit configuration.
+fn determine_test_loop_scope(
+    py: Python<'_>,
+    test_case: &TestCase,
+    fixtures: &IndexMap<String, Fixture>,
+) -> FixtureScope {
+    // Check for explicit loop_scope mark first
+    if let Some(explicit_scope) = get_explicit_loop_scope_from_marks(py, test_case) {
+        return explicit_scope;
+    }
+
+    // Analyze fixture dependencies to find required scope
+    detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters)
 }
 
 /// Execute a test case and return either success metadata or failure details.
@@ -477,8 +562,8 @@ fn execute_test_case(
     config: &RunConfiguration,
     context: &mut FixtureContext,
 ) -> Result<TestCallSuccess, TestCallFailure> {
-    // Extract loop_scope from test marks (for async tests)
-    let test_loop_scope = get_loop_scope_from_marks(py, test_case);
+    // Determine loop scope: explicit mark or smart detection based on fixture dependencies
+    let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures);
 
     let mut resolver = FixtureResolver::new(
         py,
@@ -782,8 +867,9 @@ impl<'py> FixtureResolver<'py> {
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Get or create event loop for this scope
-            let event_loop = self.get_or_create_event_loop(fixture.scope)?;
+            // Use the test's loop scope for all fixtures (pytest-asyncio behavior)
+            // All async operations in a test (fixtures + test) share the same loop
+            let event_loop = self.get_or_create_event_loop(self.test_loop_scope)?;
 
             // Call anext() on the async generator to get the yielded value
             let anext_builtin = self.py.import("builtins")?.getattr("anext")?;
@@ -854,8 +940,9 @@ impl<'py> FixtureResolver<'py> {
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Get or create event loop for this scope
-            let event_loop = self.get_or_create_event_loop(fixture.scope)?;
+            // Use the test's loop scope for all fixtures (pytest-asyncio behavior)
+            // All async operations in a test (fixtures + test) share the same loop
+            let event_loop = self.get_or_create_event_loop(self.test_loop_scope)?;
 
             // Run the coroutine in the scoped event loop
             event_loop
