@@ -48,6 +48,11 @@ struct FixtureContext {
     teardowns: TeardownCollector,
     /// Track the current package to detect package transitions
     current_package: Option<String>,
+    /// Event loops for different scopes (for async fixtures)
+    session_event_loop: Option<Py<PyAny>>,
+    package_event_loop: Option<Py<PyAny>>,
+    module_event_loop: Option<Py<PyAny>>,
+    class_event_loop: Option<Py<PyAny>>,
 }
 
 impl FixtureContext {
@@ -59,6 +64,10 @@ impl FixtureContext {
             class_cache: IndexMap::new(),
             teardowns: TeardownCollector::new(),
             current_package: None,
+            session_event_loop: None,
+            package_event_loop: None,
+            module_event_loop: None,
+            class_event_loop: None,
         }
     }
 }
@@ -111,13 +120,19 @@ pub fn run_collected_tests(
         let module_package = extract_package_name(&module.path);
         if context.current_package.as_ref() != Some(&module_package) {
             // Package changed - run teardowns and clear cache
-            finalize_generators(py, &mut context.teardowns.package);
+            finalize_generators(
+                py,
+                &mut context.teardowns.package,
+                context.package_event_loop.as_ref(),
+            );
             context.package_cache.clear();
+            close_event_loop(py, &mut context.package_event_loop);
             context.current_package = Some(module_package);
         }
 
         // Reset module-scoped caches for this module
         context.module_cache.clear();
+        close_event_loop(py, &mut context.module_event_loop);
 
         // Group tests by class for class-scoped fixtures
         let mut tests_by_class: IndexMap<Option<String>, Vec<&TestCase>> = IndexMap::new();
@@ -164,10 +179,30 @@ pub fn run_collected_tests(
                 // Check for fail-fast mode: exit immediately on first failure
                 if config.fail_fast && is_failed {
                     // Clean up fixtures before returning early
-                    finalize_generators(py, &mut context.teardowns.class);
-                    finalize_generators(py, &mut context.teardowns.module);
-                    finalize_generators(py, &mut context.teardowns.package);
-                    finalize_generators(py, &mut context.teardowns.session);
+                    finalize_generators(
+                        py,
+                        &mut context.teardowns.class,
+                        context.class_event_loop.as_ref(),
+                    );
+                    close_event_loop(py, &mut context.class_event_loop);
+                    finalize_generators(
+                        py,
+                        &mut context.teardowns.module,
+                        context.module_event_loop.as_ref(),
+                    );
+                    close_event_loop(py, &mut context.module_event_loop);
+                    finalize_generators(
+                        py,
+                        &mut context.teardowns.package,
+                        context.package_event_loop.as_ref(),
+                    );
+                    close_event_loop(py, &mut context.package_event_loop);
+                    finalize_generators(
+                        py,
+                        &mut context.teardowns.session,
+                        context.session_event_loop.as_ref(),
+                    );
+                    close_event_loop(py, &mut context.session_event_loop);
 
                     let duration = start.elapsed();
                     let total = passed + failed + skipped;
@@ -202,16 +237,29 @@ pub fn run_collected_tests(
                 // Class-scoped fixtures should NOT be shared across plain function tests
                 if test.class_name.is_none() {
                     context.class_cache.clear();
-                    finalize_generators(py, &mut context.teardowns.class);
+                    finalize_generators(
+                        py,
+                        &mut context.teardowns.class,
+                        context.class_event_loop.as_ref(),
+                    );
                 }
             }
 
             // Class-scoped fixtures are dropped here - run teardowns
-            finalize_generators(py, &mut context.teardowns.class);
+            finalize_generators(
+                py,
+                &mut context.teardowns.class,
+                context.class_event_loop.as_ref(),
+            );
+            close_event_loop(py, &mut context.class_event_loop);
         }
 
         // Module-scoped fixtures are dropped here - run teardowns
-        finalize_generators(py, &mut context.teardowns.module);
+        finalize_generators(
+            py,
+            &mut context.teardowns.module,
+            context.module_event_loop.as_ref(),
+        );
 
         // Notify renderer that this file is complete
         let file_duration = file_start.elapsed();
@@ -225,10 +273,20 @@ pub fn run_collected_tests(
     }
 
     // Package-scoped fixtures are dropped here - run teardowns for last package
-    finalize_generators(py, &mut context.teardowns.package);
+    finalize_generators(
+        py,
+        &mut context.teardowns.package,
+        context.package_event_loop.as_ref(),
+    );
+    close_event_loop(py, &mut context.package_event_loop);
 
     // Session-scoped fixtures are dropped here - run teardowns
-    finalize_generators(py, &mut context.teardowns.session);
+    finalize_generators(
+        py,
+        &mut context.teardowns.session,
+        context.session_event_loop.as_ref(),
+    );
+    close_event_loop(py, &mut context.session_event_loop);
 
     let duration = start.elapsed();
     let total = passed + failed + skipped;
@@ -405,6 +463,11 @@ fn execute_test_case(
         &mut context.teardowns,
         &test_case.fixture_param_indices,
         &test_case.indirect_params,
+        &mut context.session_event_loop,
+        &mut context.package_event_loop,
+        &mut context.module_event_loop,
+        &mut context.class_event_loop,
+        test_case.class_name.as_deref(),
     );
 
     // Populate Python fixture registry for getfixturevalue() support
@@ -466,7 +529,11 @@ fn execute_test_case(
         Ok(value) => value,
         Err(err) => {
             // Clean up function-scoped fixtures before returning
-            finalize_generators(py, &mut resolver.function_teardowns);
+            finalize_generators(
+                py,
+                &mut resolver.function_teardowns,
+                resolver.function_event_loop.as_ref(),
+            );
             return Err(TestCallFailure {
                 message: err.to_string(),
                 stdout: None,
@@ -476,7 +543,11 @@ fn execute_test_case(
     };
 
     // Clean up function-scoped fixtures after test completes
-    finalize_generators(py, &mut resolver.function_teardowns);
+    finalize_generators(
+        py,
+        &mut resolver.function_teardowns,
+        resolver.function_event_loop.as_ref(),
+    );
 
     match result {
         Ok(_) => Ok(TestCallSuccess { stdout, stderr }),
@@ -519,6 +590,14 @@ struct FixtureResolver<'py> {
     current_fixture_param: Option<Py<PyAny>>,
     /// Parameter names that should be resolved as fixture references (indirect parametrization).
     indirect_params: &'py [String],
+    /// Event loops for different scopes (for async fixtures)
+    session_event_loop: &'py mut Option<Py<PyAny>>,
+    package_event_loop: &'py mut Option<Py<PyAny>>,
+    module_event_loop: &'py mut Option<Py<PyAny>>,
+    class_event_loop: &'py mut Option<Py<PyAny>>,
+    function_event_loop: Option<Py<PyAny>>,
+    /// Current test's class name (for filtering class-scoped autouse fixtures)
+    test_class_name: Option<&'py str>,
 }
 
 impl<'py> FixtureResolver<'py> {
@@ -534,6 +613,11 @@ impl<'py> FixtureResolver<'py> {
         teardowns: &'py mut TeardownCollector,
         fixture_param_indices: &'py IndexMap<String, usize>,
         indirect_params: &'py [String],
+        session_event_loop: &'py mut Option<Py<PyAny>>,
+        package_event_loop: &'py mut Option<Py<PyAny>>,
+        module_event_loop: &'py mut Option<Py<PyAny>>,
+        class_event_loop: &'py mut Option<Py<PyAny>>,
+        test_class_name: Option<&'py str>,
     ) -> Self {
         Self {
             py,
@@ -550,6 +634,12 @@ impl<'py> FixtureResolver<'py> {
             fixture_param_indices,
             current_fixture_param: None,
             indirect_params,
+            session_event_loop,
+            package_event_loop,
+            module_event_loop,
+            class_event_loop,
+            function_event_loop: None,
+            test_class_name,
         }
     }
 
@@ -655,13 +745,18 @@ impl<'py> FixtureResolver<'py> {
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Call anext() on the async generator using asyncio to get the yielded value
-            let asyncio = self.py.import("asyncio")?;
+            // Get or create event loop for this scope
+            let event_loop = self.get_or_create_event_loop(fixture.scope)?;
+
+            // Call anext() on the async generator to get the yielded value
             let anext_builtin = self.py.import("builtins")?.getattr("anext")?;
             let coro = anext_builtin.call1((&async_generator.bind(self.py),))?;
 
-            // Run the coroutine in an event loop
-            let yielded_value = asyncio.call_method1("run", (coro,))?.unbind();
+            // Run the coroutine in the scoped event loop
+            let yielded_value = event_loop
+                .bind(self.py)
+                .call_method1("run_until_complete", (coro,))?
+                .unbind();
 
             // Store the async generator in the appropriate teardown list
             match fixture.scope {
@@ -715,17 +810,20 @@ impl<'py> FixtureResolver<'py> {
 
             yielded_value
         } else if fixture.is_async {
-            // For async fixtures: call to get coroutine, then await it using asyncio.run()
+            // For async fixtures: call to get coroutine, then await it using the scoped event loop
             let coro = fixture
                 .callable
                 .bind(self.py)
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Run the coroutine in an event loop
-            let asyncio = self.py.import("asyncio")?;
-            asyncio
-                .call_method1("run", (&coro.bind(self.py),))?
+            // Get or create event loop for this scope
+            let event_loop = self.get_or_create_event_loop(fixture.scope)?;
+
+            // Run the coroutine in the scoped event loop
+            event_loop
+                .bind(self.py)
+                .call_method1("run_until_complete", (&coro.bind(self.py),))?
                 .unbind()
         } else {
             // For regular fixtures: call and use the return value directly
@@ -791,11 +889,21 @@ impl<'py> FixtureResolver<'py> {
     /// Resolve all autouse fixtures appropriate for the current test.
     /// Autouse fixtures are automatically executed without needing to be explicitly requested.
     fn resolve_autouse_fixtures(&mut self) -> PyResult<()> {
-        // Collect all autouse fixtures
+        // Collect all autouse fixtures that match the current test's class
         let autouse_fixtures: Vec<String> = self
             .fixtures
             .iter()
-            .filter(|(_, fixture)| fixture.autouse)
+            .filter(|(_, fixture)| {
+                if !fixture.autouse {
+                    return false;
+                }
+                // If fixture has a class_name, it should only run for tests in that class
+                match (&fixture.class_name, self.test_class_name) {
+                    (Some(fixture_class), Some(test_class)) => fixture_class.as_str() == test_class,
+                    (None, _) => true, // Module-level autouse fixtures run for all tests
+                    (Some(_), None) => false, // Class fixture shouldn't run for non-class tests
+                }
+            })
             .map(|(name, _)| name.clone())
             .collect();
 
@@ -816,6 +924,41 @@ impl<'py> FixtureResolver<'py> {
         }
 
         Ok(())
+    }
+
+    /// Get or create an event loop for the given scope.
+    /// This ensures that session/package/module/class-scoped async fixtures
+    /// reuse the same event loop, avoiding "Event loop is closed" errors.
+    fn get_or_create_event_loop(&mut self, scope: FixtureScope) -> PyResult<Py<PyAny>> {
+        let event_loop_opt = match scope {
+            FixtureScope::Session => &mut self.session_event_loop,
+            FixtureScope::Package => &mut self.package_event_loop,
+            FixtureScope::Module => &mut self.module_event_loop,
+            FixtureScope::Class => &mut self.class_event_loop,
+            FixtureScope::Function => &mut self.function_event_loop,
+        };
+
+        if let Some(loop_obj) = event_loop_opt {
+            // Check if the loop is still open
+            let is_closed = loop_obj
+                .bind(self.py)
+                .call_method0("is_closed")?
+                .extract::<bool>()?;
+
+            if !is_closed {
+                return Ok(loop_obj.clone_ref(self.py));
+            }
+        }
+
+        // Create a new event loop
+        let asyncio = self.py.import("asyncio")?;
+        let new_loop = asyncio.call_method0("new_event_loop")?.unbind();
+        asyncio.call_method1("set_event_loop", (&new_loop.bind(self.py),))?;
+
+        // Store it for reuse
+        *event_loop_opt = Some(new_loop.clone_ref(self.py));
+
+        Ok(new_loop)
     }
 
     /// Create a request fixture with the current param value.
@@ -1022,7 +1165,12 @@ fn extract_package_name(path: &std::path::Path) -> String {
 /// This calls next() on each generator (or anext() for async generators),
 /// which will execute the code after yield.
 /// The generator will raise StopIteration (or StopAsyncIteration) when complete, which we catch and ignore.
-fn finalize_generators(py: Python<'_>, generators: &mut Vec<Py<PyAny>>) {
+/// For async generators, use the provided event loop if available; otherwise get the running loop or create one.
+fn finalize_generators(
+    py: Python<'_>,
+    generators: &mut Vec<Py<PyAny>>,
+    event_loop: Option<&Py<PyAny>>,
+) {
     // Process generators in reverse order (LIFO) to match pytest behavior
     for generator in generators.drain(..).rev() {
         let gen_bound = generator.bind(py);
@@ -1031,14 +1179,22 @@ fn finalize_generators(py: Python<'_>, generators: &mut Vec<Py<PyAny>>) {
         let is_async_gen = gen_bound.hasattr("__anext__").unwrap_or(false);
 
         let result = if is_async_gen {
-            // For async generators, use anext() and asyncio.run()
+            // For async generators, use anext() with the scoped event loop
             match py.import("builtins").and_then(|builtins| {
                 let anext = builtins.getattr("anext")?;
                 let coro = anext.call1((gen_bound,))?;
 
-                // Run the coroutine in an event loop
-                let asyncio = py.import("asyncio")?;
-                asyncio.call_method1("run", (coro,))
+                // Use the provided event loop or get/create one
+                if let Some(loop_obj) = event_loop {
+                    // Use the scoped event loop
+                    loop_obj
+                        .bind(py)
+                        .call_method1("run_until_complete", (coro,))
+                } else {
+                    // Fallback to asyncio.run() if no event loop is provided
+                    let asyncio = py.import("asyncio")?;
+                    asyncio.call_method1("run", (coro,))
+                }
             }) {
                 Ok(_) => Ok(()),
                 Err(err) => Err(err),
@@ -1078,4 +1234,33 @@ fn write_failed_tests_cache(report: &PyRunReport) -> PyResult<()> {
     cache::write_last_failed(&failed_tests)?;
 
     Ok(())
+}
+
+/// Close an event loop if it exists, properly cleaning up pending tasks.
+fn close_event_loop(py: Python<'_>, event_loop: &mut Option<Py<PyAny>>) {
+    if let Some(loop_obj) = event_loop.take() {
+        let loop_bound = loop_obj.bind(py);
+
+        // Check if loop is already closed
+        let is_closed = loop_bound
+            .call_method0("is_closed")
+            .and_then(|v| v.extract::<bool>())
+            .unwrap_or(true);
+
+        if !is_closed {
+            // Cancel pending tasks
+            if let Ok(asyncio) = py.import("asyncio") {
+                if let Ok(tasks) = asyncio.call_method1("all_tasks", (loop_bound,)) {
+                    if let Ok(task_list) = tasks.extract::<Vec<Py<PyAny>>>() {
+                        for task in task_list {
+                            let _ = task.bind(py).call_method0("cancel");
+                        }
+                    }
+                }
+            }
+
+            // Close the loop
+            let _ = loop_bound.call_method0("close");
+        }
+    }
 }
