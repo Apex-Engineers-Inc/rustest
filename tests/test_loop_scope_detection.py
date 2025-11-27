@@ -1,16 +1,15 @@
 """Test loop scope detection logic.
 
 NOTE: This file tests rustest-native async loop scope detection.
-Run without --pytest-compat flag.
+These tests should ONLY run with rustest, not pytest.
 """
 
 import sys
 
-# These tests require rustest native mode
-if "--pytest-compat" in sys.argv:
-    # Skip entire module in pytest-compat mode
+# These tests require rustest native mode - skip with pytest
+if "__pytest_main__" in sys.modules or "_pytest" in sys.modules or "--pytest-compat" in sys.argv:
     import pytest
-    pytest.skip("Requires native rustest mode", allow_module_level=True)
+    pytest.skip("Requires rustest runner (tests rustest-specific loop scope detection)", allow_module_level=True)
 
 from rustest import fixture, mark
 
