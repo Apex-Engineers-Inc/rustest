@@ -39,8 +39,12 @@ jobs:
       - name: Run all integration tests with pytest
         run: .venv/bin/pytest tests/ examples/tests/ -v -ra
 
-      - name: Run all integration tests with rustest
+      - name: Run all integration tests with rustest (native mode)
+        run: .venv/bin/python -m rustest tests/ examples/tests/ -v
+
+      - name: Run pytest-compat mode verification (compatibility testing)
         run: .venv/bin/python -m rustest tests/ examples/tests/ --pytest-compat -v
+        continue-on-error: false  # This will fail if pytest-compat has issues
 
       - name: Test documentation code blocks with rustest
         run: .venv/bin/python -m rustest README.md docs/guide/ docs/getting-started/ docs/api/
