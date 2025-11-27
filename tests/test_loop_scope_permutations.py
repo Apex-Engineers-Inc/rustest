@@ -9,15 +9,19 @@ Test Strategy:
 3. Mixed fixture scopes (widest wins)
 4. Class-based tests with loop scopes
 5. Sync fixtures don't affect loop scope
+
+NOTE: This file tests rustest-native async loop scope detection.
+Run without --pytest-compat flag.
 """
 
 import sys
 import asyncio
 
-# Skip when running with pytest
-if "_pytest" in sys.modules and "rustest" in sys.modules:
+# These tests require rustest native mode
+if "--pytest-compat" in sys.argv:
+    # Skip entire module in pytest-compat mode
     import pytest
-    pytest.skip("This test file requires rustest runner", allow_module_level=True)
+    pytest.skip("Requires native rustest mode", allow_module_level=True)
 
 from rustest import fixture, mark
 
