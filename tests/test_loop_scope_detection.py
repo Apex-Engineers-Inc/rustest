@@ -7,7 +7,8 @@ These tests should ONLY run with rustest, not pytest.
 import sys
 
 # These tests require rustest native mode - skip with pytest
-if "__pytest_main__" in sys.modules or "_pytest" in sys.modules or "--pytest-compat" in sys.argv:
+# Check if pytest is the command being run (not just a dependency)
+if "pytest" in sys.argv[0] or "--pytest-compat" in sys.argv:
     import pytest
     pytest.skip("Requires rustest runner (tests rustest-specific loop scope detection)", allow_module_level=True)
 
