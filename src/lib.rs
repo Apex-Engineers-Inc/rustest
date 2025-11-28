@@ -122,7 +122,13 @@ mod tests {
             .join(name)
     }
 
-    fn run_discovery(py: Python<'_>, path: &Path) -> Vec<crate::model::TestModule> {
+    fn run_discovery(
+        py: Python<'_>,
+        path: &Path,
+    ) -> (
+        Vec<crate::model::TestModule>,
+        Vec<crate::model::CollectionError>,
+    ) {
         let config = RunConfiguration::new(
             None,
             None,
@@ -146,7 +152,7 @@ mod tests {
             ensure_python_package_on_path(py);
             let file_path = sample_test_module("test_basic.py");
 
-            let modules = run_discovery(py, &file_path);
+            let (modules, _collection_errors) = run_discovery(py, &file_path);
             assert_eq!(modules.len(), 1);
             let module = &modules[0];
             assert_eq!(module.tests.len(), 1);
@@ -174,10 +180,11 @@ mod tests {
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
-            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
+            let (modules, collection_errors) =
+                discover_tests(py, &paths, &config).expect("discovery should succeed");
             assert_eq!(modules.len(), 1);
-            let report =
-                run_collected_tests(py, &modules, &config).expect("execution should succeed");
+            let report = run_collected_tests(py, &modules, &collection_errors, &config)
+                .expect("execution should succeed");
             assert_eq!(report.total, 1);
             assert_eq!(report.passed, 1);
             assert_eq!(report.failed, 0);
@@ -207,9 +214,10 @@ mod tests {
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
-            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
-            let report =
-                run_collected_tests(py, &modules, &config).expect("execution should succeed");
+            let (modules, collection_errors) =
+                discover_tests(py, &paths, &config).expect("discovery should succeed");
+            let report = run_collected_tests(py, &modules, &collection_errors, &config)
+                .expect("execution should succeed");
 
             assert_eq!(report.total, 3);
             assert_eq!(report.passed, 3);
@@ -261,7 +269,8 @@ mod tests {
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
-            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
+            let (modules, _collection_errors) =
+                discover_tests(py, &paths, &config).expect("discovery should succeed");
 
             // No modules should match the pattern
             assert_eq!(modules.len(), 0);
@@ -274,7 +283,7 @@ mod tests {
             ensure_python_package_on_path(py);
             let dir_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
 
-            let modules = run_discovery(py, &dir_path);
+            let (modules, _collection_errors) = run_discovery(py, &dir_path);
             // Should discover all test files in the directory
             assert!(modules.len() >= 3);
         });
@@ -300,9 +309,10 @@ mod tests {
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
-            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
-            let report =
-                run_collected_tests(py, &modules, &config).expect("execution should succeed");
+            let (modules, collection_errors) =
+                discover_tests(py, &paths, &config).expect("discovery should succeed");
+            let report = run_collected_tests(py, &modules, &collection_errors, &config)
+                .expect("execution should succeed");
 
             // Output should not be captured
             assert_eq!(report.results[0].stdout, None);
@@ -319,7 +329,7 @@ mod tests {
             let temp_dir = std::env::temp_dir().join("rustest_empty");
             std::fs::create_dir_all(&temp_dir).unwrap();
 
-            let modules = run_discovery(py, &temp_dir);
+            let (modules, _collection_errors) = run_discovery(py, &temp_dir);
             assert_eq!(modules.len(), 0);
 
             // Cleanup
@@ -371,9 +381,10 @@ mod tests {
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
-            let modules = discover_tests(py, &paths, &config).expect("discovery should succeed");
-            let report =
-                run_collected_tests(py, &modules, &config).expect("execution should succeed");
+            let (modules, collection_errors) =
+                discover_tests(py, &paths, &config).expect("discovery should succeed");
+            let report = run_collected_tests(py, &modules, &collection_errors, &config)
+                .expect("execution should succeed");
 
             // Verify statistics are consistent
             assert_eq!(report.total, report.passed + report.failed + report.skipped);

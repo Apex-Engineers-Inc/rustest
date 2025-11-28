@@ -492,9 +492,7 @@ class MarkGenerator:
             compatibility, it can also be applied to regular functions (the mark
             will be recorded but the function runs normally without asyncio).
         """
-        import asyncio
         import inspect
-        from functools import wraps
 
         valid_scopes = {"function", "class", "module", "session"}
         if loop_scope not in valid_scopes:
@@ -509,64 +507,19 @@ class MarkGenerator:
                 mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
                 marked_class = mark_decorator(f)
 
-                # Wrap all async methods in the class
+                # Apply the mark to all async methods in the class as well
                 for name, method in inspect.getmembers(
                     marked_class, predicate=inspect.iscoroutinefunction
                 ):
-                    wrapped_method = _wrap_async_function(method, loop_scope)
-                    setattr(marked_class, name, wrapped_method)
+                    # Apply the mark to the method so it carries loop_scope metadata
+                    marked_method = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})(method)
+                    setattr(marked_class, name, marked_method)
                 return marked_class
 
-            # Check if the function is a coroutine
-            if not inspect.iscoroutinefunction(f):
-                # For pytest compatibility, allow marking non-async functions
-                # Just apply the mark without wrapping
-                mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
-                return mark_decorator(f)
-
-            # Store the asyncio mark
+            # For both async and sync functions, just apply the mark
+            # The Rust layer will handle event loop management based on loop_scope
             mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
-            marked_f = mark_decorator(f)
-
-            # Wrap the async function to run it synchronously
-            return _wrap_async_function(marked_f, loop_scope)
-
-        def _wrap_async_function(f: Callable[..., Any], loop_scope: str) -> Callable[..., Any]:
-            """Wrap an async function to run it synchronously in an event loop."""
-
-            @wraps(f)
-            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                # Get or create event loop based on scope
-                # For now, we'll always create a new loop - scope handling will be
-                # implemented in a future enhancement via fixtures
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    # Run the coroutine in the event loop
-                    # Get the original async function
-                    original_func = getattr(f, "__wrapped__", f)
-                    coro = original_func(*args, **kwargs)
-                    return loop.run_until_complete(coro)
-                finally:
-                    # Clean up the loop
-                    try:
-                        # Cancel any pending tasks
-                        pending = asyncio.all_tasks(loop)
-                        for task in pending:
-                            task.cancel()
-                        # Run the loop one more time to let tasks finish cancellation
-                        if pending:
-                            loop.run_until_complete(
-                                asyncio.gather(*pending, return_exceptions=True)
-                            )
-                    except Exception:
-                        pass
-                    finally:
-                        loop.close()
-
-            # Store reference to original async function
-            sync_wrapper.__wrapped__ = f
-            return sync_wrapper
+            return mark_decorator(f)
 
         # Support both @mark.asyncio and @mark.asyncio(loop_scope="...")
         if func is not None:

@@ -11,7 +11,7 @@ import sys
 
 # Skip this entire module when running with pytest
 # The conftest.py uses rustest fixtures which require rustest runner
-if "_pytest" in sys.modules and "rustest" in sys.modules:
+if "pytest" in sys.argv[0]:
     import pytest
     pytest.skip("This test file requires rustest runner (rustest-only tests)", allow_module_level=True)
 

@@ -8,11 +8,7 @@ import sys
 # Skip this entire module when running with pytest
 # This test file is specifically for testing rustest's pytest compatibility layer
 # and must be run with rustest itself, not pytest
-if "_pytest" in sys.modules and "rustest" in sys.modules:
-    # We're running with pytest and rustest is already imported
-    # This means conftest.py's monkey-patching didn't happen
-    # (conftest only patches if rustest is NOT in sys.modules)
-    # So the fixtures won't be available to pytest - skip the entire module
+if "pytest" in sys.argv[0]:
     import pytest
     pytest.skip("This test file requires rustest runner (rustest-only tests)", allow_module_level=True)
 
