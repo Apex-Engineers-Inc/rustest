@@ -17,9 +17,10 @@ These tests should ONLY run with rustest, not pytest.
 import sys
 import asyncio
 
-# These tests require rustest native mode - skip with pytest
-# Check if pytest is the command being run (not just a dependency)
-if "pytest" in sys.argv[0] or "--pytest-compat" in sys.argv:
+# Skip when running with actual pytest (not pytest-compat mode)
+# In pytest-compat mode, rustest's pytest.skip() doesn't handle allow_module_level properly,
+# so we only check for actual pytest here
+if "pytest" in sys.argv[0]:
     import pytest
     pytest.skip("Requires rustest runner (tests rustest-specific loop scope detection)", allow_module_level=True)
 

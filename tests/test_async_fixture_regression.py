@@ -11,8 +11,7 @@ import sys
 
 # Skip this entire module when running with pytest
 # These tests use rustest's async fixtures which require rustest runner
-# Check if pytest is the command being run (not just a dependency)
-if "pytest" in sys.argv[0] or "--pytest-compat" in sys.argv:
+if "pytest" in sys.argv[0]:
     import pytest
     pytest.skip("This test file requires rustest runner (rustest-only tests)", allow_module_level=True)
 

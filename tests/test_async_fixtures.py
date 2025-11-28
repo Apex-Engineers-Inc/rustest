@@ -8,8 +8,7 @@ import sys
 # Skip this entire module when running with pytest
 # This test file is specifically for testing rustest's pytest compatibility layer
 # and must be run with rustest itself, not pytest
-# Check if pytest is the command being run (not just a dependency)
-if "pytest" in sys.argv[0] or "--pytest-compat" in sys.argv:
+if "pytest" in sys.argv[0]:
     import pytest
 
     pytest.skip(
