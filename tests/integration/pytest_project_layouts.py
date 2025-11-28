@@ -17,7 +17,7 @@ import pytest
 
 def run_rustest(project_dir):
     """Run rustest on a project directory and return result."""
-    cmd = [sys.executable, "-m", "rustest", str(project_dir / "tests"), "--no-color"]
+    cmd = [sys.executable, "-m", "rustest", str(project_dir / "tests"), "--color", "never"]
     result = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True)
     return result
 

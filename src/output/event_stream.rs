@@ -32,7 +32,7 @@ impl EventStreamRenderer {
     /// Events are PyO3 classes, so they can be passed directly to Python
     fn emit_file_started(&self, event: FileStartedEvent) {
         if let Some(callback) = &self.callback {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
                     eprintln!("Error in event callback: {}", e);
                 }
@@ -42,7 +42,7 @@ impl EventStreamRenderer {
 
     fn emit_test_completed(&self, event: TestCompletedEvent) {
         if let Some(callback) = &self.callback {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
                     eprintln!("Error in event callback: {}", e);
                 }
@@ -52,7 +52,7 @@ impl EventStreamRenderer {
 
     fn emit_file_completed(&self, event: FileCompletedEvent) {
         if let Some(callback) = &self.callback {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
                     eprintln!("Error in event callback: {}", e);
                 }
@@ -62,7 +62,7 @@ impl EventStreamRenderer {
 
     fn emit_suite_started(&self, event: SuiteStartedEvent) {
         if let Some(callback) = &self.callback {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
                     eprintln!("Error in event callback: {}", e);
                 }
@@ -72,7 +72,7 @@ impl EventStreamRenderer {
 
     fn emit_suite_completed(&self, event: SuiteCompletedEvent) {
         if let Some(callback) = &self.callback {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
                     eprintln!("Error in event callback: {}", e);
                 }
@@ -82,7 +82,7 @@ impl EventStreamRenderer {
 
     fn emit_collection_error(&self, event: CollectionErrorEvent) {
         if let Some(callback) = &self.callback {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
                     eprintln!("Error in event callback: {}", e);
                 }

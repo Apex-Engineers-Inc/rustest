@@ -342,7 +342,7 @@ impl Clone for RunConfiguration {
             worker_count: self.worker_count,
             capture_output: self.capture_output,
             enable_codeblocks: self.enable_codeblocks,
-            last_failed_mode: self.last_failed_mode.clone(),
+            last_failed_mode: self.last_failed_mode,
             fail_fast: self.fail_fast,
             pytest_compat: self.pytest_compat,
             verbose: self.verbose,
@@ -351,7 +351,7 @@ impl Clone for RunConfiguration {
             event_callback: self
                 .event_callback
                 .as_ref()
-                .map(|cb| pyo3::Python::with_gil(|py| cb.clone_ref(py))),
+                .map(|cb| pyo3::Python::attach(|py| cb.clone_ref(py))),
         }
     }
 }
