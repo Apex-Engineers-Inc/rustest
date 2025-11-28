@@ -37,24 +37,27 @@ class TestCli:
             collection_errors=(),
         )
 
-        with patch("rustest.cli.run", return_value=report) as mock_run:
-            exit_code = cli.main(["tests"])
+        # Clear CI environment variables to simulate local environment
+        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
+        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
+            with patch("rustest.cli.run", return_value=report) as mock_run:
+                exit_code = cli.main(["tests"])
 
-        mock_run.assert_called_once_with(
-            paths=["tests"],
-            pattern=None,
-            mark_expr=None,
-            workers=None,
-            capture_output=True,
-            enable_codeblocks=True,
-            last_failed_mode="none",
-            fail_fast=False,
-            pytest_compat=False,
-            verbose=False,
-            ascii=False,
-            no_color=False,
-        )
-        assert exit_code == 0
+            mock_run.assert_called_once_with(
+                paths=["tests"],
+                pattern=None,
+                mark_expr=None,
+                workers=None,
+                capture_output=True,
+                enable_codeblocks=True,
+                last_failed_mode="none",
+                fail_fast=False,
+                pytest_compat=False,
+                verbose=False,
+                ascii=False,
+                no_color=False,
+            )
+            assert exit_code == 0
 
     def test_main_surfaces_rust_errors(self) -> None:
         def raising_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
