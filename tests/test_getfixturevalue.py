@@ -6,9 +6,14 @@ These tests require pytest-compat mode (--pytest-compat flag) or pytest itself.
 import sys
 import pytest
 
-# Skip if running with rustest in native mode (not pytest or pytest-compat)
-if "pytest" not in sys.argv[0] and "--pytest-compat" not in sys.argv:
-    pytest.skip("Requires pytest or rustest --pytest-compat mode", allow_module_level=True)
+# Create a conditional skip decorator for tests that require pytest or pytest-compat mode
+_needs_pytest_compat = "pytest" not in sys.argv[0] and "--pytest-compat" not in sys.argv
+
+def _skip_if_native_mode(func):
+    """Decorator to skip tests when running rustest in native mode."""
+    if _needs_pytest_compat:
+        return pytest.mark.skip(reason="Requires pytest or rustest --pytest-compat mode")(func)
+    return func
 
 
 
@@ -30,12 +35,14 @@ def fixture_with_dependency(simple_fixture):
     return f"{simple_fixture}_world"
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_basic(request):
     """Test basic getfixturevalue functionality."""
     value = request.getfixturevalue("simple_fixture")
     assert value == "hello"
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_multiple(request):
     """Test calling getfixturevalue multiple times."""
     value1 = request.getfixturevalue("simple_fixture")
@@ -44,6 +51,7 @@ def test_getfixturevalue_multiple(request):
     assert value2 == 42
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_cached(request):
     """Test that getfixturevalue caches results."""
     value1 = request.getfixturevalue("simple_fixture")
@@ -52,12 +60,14 @@ def test_getfixturevalue_cached(request):
     assert value1 is value2
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_with_dependency(request):
     """Test getfixturevalue with fixtures that have dependencies."""
     value = request.getfixturevalue("fixture_with_dependency")
     assert value == "hello_world"
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_unknown_fixture(request):
     """Test that requesting an unknown fixture raises an error."""
     # Different error types for pytest vs rustest
@@ -71,6 +81,7 @@ async def async_generator_fixture():
     yield "async_value"
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_async_generator(request):
     """Test that async generator fixtures raise NotImplementedError with helpful message.
 
@@ -114,6 +125,7 @@ MODEL_FIXTURES = [
 
 
 @pytest.mark.parametrize("fixture_name,expected", MODEL_FIXTURES)
+@_skip_if_native_mode
 def test_parametrized_getfixturevalue(request, fixture_name, expected):
     """Test using getfixturevalue in parametrized tests."""
     value = request.getfixturevalue(fixture_name)
@@ -147,6 +159,7 @@ MODEL_CONFIGS = [
 
 
 @pytest.mark.parametrize("fixture_name,expected_type,expected_value", MODEL_CONFIGS)
+@_skip_if_native_mode
 def test_model_types(request, fixture_name, expected_type, expected_value):
     """Test multiple model types using getfixturevalue.
 
@@ -168,6 +181,7 @@ def generator_fixture():
     resource["initialized"] = False
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_generator(request):
     """Test that getfixturevalue works with generator fixtures."""
     value = request.getfixturevalue("generator_fixture")
@@ -193,6 +207,7 @@ def level3(level2):
     return f"{level2}_level3"
 
 
+@_skip_if_native_mode
 def test_getfixturevalue_nested_deps(request):
     """Test getfixturevalue with deeply nested dependencies."""
     value = request.getfixturevalue("level3")
@@ -200,6 +215,7 @@ def test_getfixturevalue_nested_deps(request):
 
 
 # Test combining normal fixture injection with getfixturevalue
+@_skip_if_native_mode
 def test_mixed_fixture_usage(request, simple_fixture):
     """Test using both normal fixture injection and getfixturevalue."""
     # simple_fixture is injected normally
@@ -214,12 +230,14 @@ def test_mixed_fixture_usage(request, simple_fixture):
 class TestGetFixtureValueInClass:
     """Test getfixturevalue in class-based tests."""
 
+    @_skip_if_native_mode
     def test_in_class(self, request):
         """Test getfixturevalue works in class methods."""
         value = request.getfixturevalue("simple_fixture")
         assert value == "hello"
 
     @pytest.mark.parametrize("fixture_name", ["simple_fixture", "another_fixture"])
+    @_skip_if_native_mode
     def test_parametrized_in_class(self, request, fixture_name):
         """Test parametrized getfixturevalue in class methods."""
         value = request.getfixturevalue(fixture_name)
