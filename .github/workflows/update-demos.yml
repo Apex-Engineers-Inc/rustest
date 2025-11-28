@@ -25,6 +25,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install VHS dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Install VHS
         run: |
           wget -q https://github.com/charmbracelet/vhs/releases/download/v0.7.2/vhs_0.7.2_amd64.deb
