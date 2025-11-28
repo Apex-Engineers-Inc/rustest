@@ -81,7 +81,7 @@ def run(
 
     # Set up event routing with rich terminal renderer
     router = EventRouter()
-    rich_renderer = RichRenderer(use_colors=not no_color)
+    rich_renderer = RichRenderer(use_colors=not no_color, use_ascii=ascii)
     router.subscribe(rich_renderer)
 
     # Run tests with event callback

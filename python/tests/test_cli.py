@@ -86,31 +86,37 @@ class TestCliArguments:
         args = parser.parse_args(["--ascii"])
         assert args.ascii is True
 
-    def test_no_color_flag(self) -> None:
-        """Test --no-color flag is parsed correctly."""
-        parser = cli.build_parser()
-        args = parser.parse_args(["--no-color"])
-        assert args.color is False
-
-    def test_color_auto_detect_by_default(self) -> None:
-        """Test color is None by default (auto-detect)."""
+    def test_color_auto_by_default(self) -> None:
+        """Test color is auto by default."""
         parser = cli.build_parser()
         args = parser.parse_args([])
-        assert args.color is None
+        assert args.color == "auto"
 
-    def test_color_flag(self) -> None:
-        """Test --color flag forces colors on."""
+    def test_color_always(self) -> None:
+        """Test --color always forces colors on."""
         parser = cli.build_parser()
-        args = parser.parse_args(["--color"])
-        assert args.color is True
+        args = parser.parse_args(["--color", "always"])
+        assert args.color == "always"
+
+    def test_color_never(self) -> None:
+        """Test --color never disables colors."""
+        parser = cli.build_parser()
+        args = parser.parse_args(["--color", "never"])
+        assert args.color == "never"
+
+    def test_color_auto_explicit(self) -> None:
+        """Test --color auto explicitly."""
+        parser = cli.build_parser()
+        args = parser.parse_args(["--color", "auto"])
+        assert args.color == "auto"
 
     def test_combined_flags(self) -> None:
         """Test multiple flags can be combined."""
         parser = cli.build_parser()
-        args = parser.parse_args(["-v", "--ascii", "--no-color"])
+        args = parser.parse_args(["-v", "--ascii", "--color", "never"])
         assert args.verbose is True
         assert args.ascii is True
-        assert args.color is False
+        assert args.color == "never"
 
 
 class TestCIDetection:
@@ -199,8 +205,8 @@ class TestCIDetection:
             # Should have no_color=False (colors enabled) locally
             assert mock_run.call_args.kwargs["no_color"] is False
 
-    def test_color_flag_overrides_ci_detection(self) -> None:
-        """Test that --color flag overrides CI detection."""
+    def test_color_always_overrides_ci_detection(self) -> None:
+        """Test that --color always overrides CI detection."""
         report = RunReport(
             total=0,
             passed=0,
@@ -213,7 +219,7 @@ class TestCIDetection:
 
         with patch.dict(os.environ, {"CI": "true"}):
             with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--color"])
+                cli.main(["--color", "always"])
 
-            # Should have no_color=False even in CI when --color is passed
+            # Should have no_color=False even in CI when --color always is passed
             assert mock_run.call_args.kwargs["no_color"] is False

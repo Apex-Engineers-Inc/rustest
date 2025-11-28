@@ -94,19 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use ASCII characters instead of Unicode symbols for output.",
     )
-    color_group = parser.add_mutually_exclusive_group()
-    _ = color_group.add_argument(
+    _ = parser.add_argument(
         "--color",
-        dest="color",
-        action="store_true",
-        default=None,
-        help="Force colored output (overrides CI detection).",
-    )
-    _ = color_group.add_argument(
-        "--no-color",
-        dest="color",
-        action="store_false",
-        help="Disable colored output.",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="When to use colored output: auto (default, detect CI), always, or never.",
     )
     _ = parser.add_argument(
         "--no-codeblocks",
@@ -164,14 +156,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         last_failed_mode = "none"
 
-    # Auto-detect CI environment for color output
-    # If user didn't explicitly set --color or --no-color, auto-detect
-    if args.color is None:
-        # Default to colors enabled, unless we detect CI
+    # Determine color mode
+    if args.color == "auto":
+        # Auto-detect: colors enabled locally, disabled in CI
         use_color = not is_ci_environment()
-    else:
-        # User explicitly set --color or --no-color, respect their choice
-        use_color = args.color
+    elif args.color == "always":
+        use_color = True
+    else:  # "never"
+        use_color = False
 
     report = run(
         paths=list(args.paths),

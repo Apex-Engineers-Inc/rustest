@@ -43,15 +43,17 @@ class RichRenderer:
     but calls are serialized by the GIL. Rich's Live is also thread-safe.
     """
 
-    def __init__(self, *, use_colors: bool = True) -> None:
+    def __init__(self, *, use_colors: bool = True, use_ascii: bool = False) -> None:
         """Initialize the rich renderer.
 
         Args:
             use_colors: Whether to use colored output
+            use_ascii: Whether to use ASCII characters instead of Unicode symbols
         """
         super().__init__()
         self.console = Console(force_terminal=use_colors, file=sys.stderr)
         self.use_colors = use_colors
+        self.use_ascii = use_ascii
 
         # Progress bar for file execution
         self.progress = Progress(
@@ -162,12 +164,20 @@ class RichRenderer:
         task_id = self.file_tasks.get(event.file_path)
 
         if task_id is not None:
+            # Select symbols based on ASCII mode
+            if self.use_ascii:
+                pass_symbol = "PASS"
+                fail_symbol = "FAIL"
+            else:
+                pass_symbol = "✓"
+                fail_symbol = "✗"
+
             # Update description to show completion status
             if event.failed > 0:
-                symbol = "✗" if not self.use_colors else "[red]✗[/red]"
+                symbol = fail_symbol if not self.use_colors else f"[red]{fail_symbol}[/red]"
                 color = "red"
             else:
-                symbol = "✓" if not self.use_colors else "[green]✓[/green]"
+                symbol = pass_symbol if not self.use_colors else f"[green]{pass_symbol}[/green]"
                 color = "green"
 
             # Format duration
@@ -193,6 +203,18 @@ class RichRenderer:
             self.live.stop()
             self._started = False
 
+        # Select symbols and separators based on ASCII mode
+        if self.use_ascii:
+            separator = "-" * 70
+            pass_symbol = "PASS"
+            fail_symbol = "FAIL"
+            skip_symbol = "SKIP"
+        else:
+            separator = "─" * 70
+            pass_symbol = "✓"
+            fail_symbol = "✗"
+            skip_symbol = "⊘"
+
         # Print collection errors
         if self.collection_errors:
             self.console.print()
@@ -201,7 +223,7 @@ class RichRenderer:
 
             for path, message in self.collection_errors:
                 self.console.print(f"[bold red]ERROR collecting {path}[/bold red]")
-                self.console.print("[dim]" + "─" * 70 + "[/dim]")
+                self.console.print(f"[dim]{separator}[/dim]")
                 self.console.print(message)
                 self.console.print()
 
@@ -216,7 +238,7 @@ class RichRenderer:
                 test_name = test_id.split("::")[-1] if "::" in test_id else test_id
 
                 self.console.print(f"[bold]{test_name}[/bold] [dim]({file_path})[/dim]")
-                self.console.print("[dim]" + "─" * 70 + "[/dim]")
+                self.console.print(f"[dim]{separator}[/dim]")
                 self.console.print(message)
                 self.console.print()
 
@@ -232,11 +254,11 @@ class RichRenderer:
         # Build summary parts
         parts = []
         if event.passed > 0:
-            parts.append(f"[green]✓ {event.passed} passed[/green]")
+            parts.append(f"[green]{pass_symbol} {event.passed} passed[/green]")
         if event.failed > 0:
-            parts.append(f"[red]✗ {event.failed} failed[/red]")
+            parts.append(f"[red]{fail_symbol} {event.failed} failed[/red]")
         if event.skipped > 0:
-            parts.append(f"[yellow]⊘ {event.skipped} skipped[/yellow]")
+            parts.append(f"[yellow]{skip_symbol} {event.skipped} skipped[/yellow]")
         if event.errors > 0:
             parts.append(f"[red]{event.errors} error[/red]")
 
