@@ -18,7 +18,7 @@ use crate::model::{
     invalid_test_definition, to_relative_path, CollectionError, Fixture, FixtureScope,
     ParameterMap, PyRunReport, PyTestResult, RunConfiguration, TestCase, TestModule,
 };
-use crate::output::{OutputConfig, OutputRenderer, SpinnerDisplay};
+use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDisplay};
 
 /// Manages teardown for generator fixtures across different scopes.
 struct TeardownCollector {
@@ -88,10 +88,17 @@ pub fn run_collected_tests(
 
     // Create output renderer based on configuration
     let output_config = OutputConfig::from_run_config(config);
-    let mut renderer: Box<dyn OutputRenderer> = Box::new(SpinnerDisplay::new(
-        output_config.use_colors,
-        output_config.ascii_mode,
-    ));
+    let mut renderer: Box<dyn OutputRenderer> = if let Some(ref callback) = config.event_callback {
+        // Use event stream renderer when callback is provided
+        let callback_clone = callback.clone_ref(py);
+        Box::new(EventStreamRenderer::new(Some(callback_clone)))
+    } else {
+        // Fall back to default spinner display
+        Box::new(SpinnerDisplay::new(
+            output_config.use_colors,
+            output_config.ascii_mode,
+        ))
+    };
 
     // Display collection errors before running tests (like pytest does)
     for error in collection_errors {

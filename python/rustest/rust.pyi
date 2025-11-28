@@ -4,6 +4,59 @@ from __future__ import annotations
 
 from typing import Sequence
 
+# Event classes
+class SuiteStartedEvent:
+    """Event emitted when test suite starts."""
+
+    total_files: int
+    total_tests: int
+    timestamp: float
+
+class SuiteCompletedEvent:
+    """Event emitted when test suite completes."""
+
+    passed: int
+    failed: int
+    skipped: int
+    errors: int
+    duration: float
+    timestamp: float
+
+class FileStartedEvent:
+    """Event emitted when a test file starts."""
+
+    file_path: str
+    total_tests: int
+    timestamp: float
+
+class FileCompletedEvent:
+    """Event emitted when a test file completes."""
+
+    file_path: str
+    passed: int
+    failed: int
+    skipped: int
+    duration: float
+    timestamp: float
+
+class TestCompletedEvent:
+    """Event emitted when a test completes."""
+
+    test_id: str
+    file_path: str
+    test_name: str
+    status: str
+    duration: float
+    message: str | None
+    timestamp: float
+
+class CollectionErrorEvent:
+    """Event emitted when a collection error occurs."""
+
+    path: str
+    message: str
+    timestamp: float
+
 class PyTestResult:
     """Individual test result from the Rust extension."""
 
@@ -45,6 +98,7 @@ def run(
     verbose: bool,
     ascii: bool,
     no_color: bool,
+    event_callback: object | None = None,
 ) -> PyRunReport:
     """Execute tests and return a report."""
     ...

@@ -21,6 +21,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
 
             assert_eq!(fixture.name, "test_fixture");
@@ -161,7 +162,8 @@ mod tests {
     fn test_py_run_report_new() {
         Python::with_gil(|_py| {
             let results = vec![];
-            let report = PyRunReport::new(10, 8, 1, 1, 1.5, results);
+            let collection_errors = vec![];
+            let report = PyRunReport::new(10, 8, 1, 1, 1.5, results, collection_errors);
 
             assert_eq!(report.total, 10);
             assert_eq!(report.passed, 8);

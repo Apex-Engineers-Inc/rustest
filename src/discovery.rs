@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use console::style;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
@@ -32,6 +31,8 @@ use crate::python_support::{setup_python_path, PyPaths};
 /// This allows existing pytest test files to work with rustest without any code changes.
 /// When tests do `import pytest`, they'll get our compatibility shim which maps pytest's
 /// API to rustest's implementations.
+///
+/// Note: The compatibility mode banner is printed by Python (using rich) before tests run.
 fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     // Import our compatibility modules
     let compat_module = py.import("rustest.compat.pytest")?;
@@ -42,75 +43,6 @@ fn inject_pytest_compat_shim(py: Python<'_>) -> PyResult<()> {
     let sys_modules: Bound<'_, PyDict> = sys.getattr("modules")?.cast_into()?;
     sys_modules.set_item("pytest", compat_module)?;
     sys_modules.set_item("pytest_asyncio", pytest_asyncio_module)?;
-
-    // Print a banner to inform the user they're in compatibility mode
-    let box_width = 62;
-    let content_width = box_width - 2;
-
-    // Helper to print a line with borders and padding
-    let print_line = |text: &str| {
-        let padding = if text.is_empty() {
-            content_width
-        } else {
-            content_width - 1 - text.len() // 1 for leading space
-        };
-        eprintln!(
-            "{}{}{}{}{}",
-            style("║").yellow(),
-            if text.is_empty() { "" } else { " " },
-            text,
-            " ".repeat(padding),
-            style("║").yellow()
-        );
-    };
-
-    // Print banner
-    eprintln!();
-    eprintln!(
-        "{}{}{}",
-        style("╔").yellow(),
-        style("═".repeat(content_width)).yellow(),
-        style("╗").yellow()
-    );
-
-    // Centered title
-    let title = "RUSTEST PYTEST COMPATIBILITY MODE";
-    let title_padding = (content_width - title.len()) / 2;
-    eprintln!(
-        "{}{}{}{}{}",
-        style("║").yellow(),
-        " ".repeat(title_padding),
-        title,
-        " ".repeat(content_width - title.len() - title_padding),
-        style("║").yellow()
-    );
-
-    eprintln!(
-        "{}{}{}",
-        style("╠").yellow(),
-        style("═".repeat(content_width)).yellow(),
-        style("╣").yellow()
-    );
-
-    print_line("Running pytest tests with rustest.");
-    print_line("");
-    print_line("Supported: fixtures, parametrize, marks, approx");
-    print_line("Built-ins: tmp_path, tmpdir, monkeypatch, request");
-    print_line("pytest_asyncio: Translated to native async support");
-    print_line("");
-    print_line("NOTE: Other plugin APIs are stubbed (non-functional).");
-    print_line("pytest-asyncio fixtures work via rustest native async.");
-    print_line("");
-    print_line("For full features, use native rustest:");
-    print_line("  from rustest import fixture, mark, ...");
-
-    eprintln!(
-        "{}{}{}",
-        style("╚").yellow(),
-        style("═".repeat(content_width)).yellow(),
-        style("╝").yellow()
-    );
-    eprintln!();
 
     Ok(())
 }
