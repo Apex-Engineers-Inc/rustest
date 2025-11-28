@@ -3,10 +3,17 @@
 //! This module handles all terminal output for rustest, providing
 //! real-time feedback during test execution.
 
+mod event_stream;
+mod events;
 mod formatter;
 mod renderer;
 mod spinner_display;
 
+pub use event_stream::EventStreamRenderer;
+pub use events::{
+    CollectionErrorEvent, FileCompletedEvent, FileStartedEvent, SuiteCompletedEvent,
+    SuiteStartedEvent, TestCompletedEvent,
+};
 pub use renderer::{OutputMode, OutputRenderer};
 pub use spinner_display::SpinnerDisplay;
 

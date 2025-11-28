@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
     "typing-extensions>=4.15",
+    "rich>=13.0.0",
 ]
 scripts = { rustest = "rustest.__main__:main" }
 
@@ -63,6 +64,7 @@ lint = "uv run --with dev ruff check python"
 typecheck = "uv run --with dev basedpyright python"
 pytests = "uv run pytest python/tests -v"
 unit = "uv run rustest examples/tests/"
+demos = "bash scripts/generate-demos.sh"
 
 [tool.ruff]
 line-length = 100

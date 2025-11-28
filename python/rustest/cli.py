@@ -3,9 +3,50 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 
 from .core import run
+
+
+def is_ci_environment() -> bool:
+    """Detect if running in a CI environment.
+
+    Checks for common CI environment variables across all major providers:
+    - GitHub Actions
+    - GitLab CI
+    - CircleCI
+    - Travis CI
+    - Jenkins
+    - Azure Pipelines
+    - Bitbucket Pipelines
+    - TeamCity
+    - And many others
+
+    Returns:
+        True if running in CI, False otherwise
+    """
+    # Check for common CI environment variables
+    # This is the most reliable method across all CI providers
+    ci_vars = [
+        "CI",  # Generic CI indicator (GitHub Actions, Travis, CircleCI, GitLab)
+        "CONTINUOUS_INTEGRATION",  # Travis CI, CircleCI
+        "GITHUB_ACTIONS",  # GitHub Actions
+        "GITLAB_CI",  # GitLab CI
+        "CIRCLECI",  # CircleCI
+        "TRAVIS",  # Travis CI
+        "JENKINS_HOME",  # Jenkins
+        "JENKINS_URL",  # Jenkins
+        "BUILDKITE",  # Buildkite
+        "DRONE",  # Drone CI
+        "TEAMCITY_VERSION",  # TeamCity
+        "TF_BUILD",  # Azure Pipelines
+        "BITBUCKET_BUILD_NUMBER",  # Bitbucket Pipelines
+        "CODEBUILD_BUILD_ID",  # AWS CodeBuild
+        "APPVEYOR",  # AppVeyor
+    ]
+
+    return any(os.getenv(var) for var in ci_vars)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,10 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use ASCII characters instead of Unicode symbols for output.",
     )
     _ = parser.add_argument(
-        "--no-color",
-        dest="color",
-        action="store_false",
-        help="Disable colored output.",
+        "--color",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="When to use colored output: auto (default, detect CI), always, or never.",
     )
     _ = parser.add_argument(
         "--no-codeblocks",
@@ -94,7 +135,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.set_defaults(
         capture_output=True,
-        color=True,
         enable_codeblocks=True,
         last_failed=False,
         failed_first=False,
@@ -116,6 +156,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         last_failed_mode = "none"
 
+    # Determine color mode
+    if args.color == "auto":
+        # Auto-detect: colors enabled locally, disabled in CI
+        use_color = not is_ci_environment()
+    elif args.color == "always":
+        use_color = True
+    else:  # "never"
+        use_color = False
+
     report = run(
         paths=list(args.paths),
         pattern=args.pattern,
@@ -128,7 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pytest_compat=args.pytest_compat,
         verbose=args.verbose,
         ascii=args.ascii,
-        no_color=not args.color,
+        no_color=not use_color,
     )
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called
