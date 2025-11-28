@@ -248,6 +248,49 @@ def skip_decorator(reason: str | None = None) -> Callable[[Callable[P, R]], Call
     return decorator
 
 
+def _cross_product_cases(
+    existing: tuple[dict[str, object], ...],
+    new: tuple[dict[str, object], ...],
+) -> tuple[dict[str, object], ...]:
+    """Create cross-product of two sets of parametrization cases.
+
+    When multiple @parametrize decorators are applied, this creates the
+    cartesian product of all parameter combinations, matching pytest behavior.
+
+    Args:
+        existing: Existing parametrization cases from previous decorators
+        new: New parametrization cases from current decorator
+
+    Returns:
+        Combined cases representing all combinations
+
+    Example:
+        existing = [{"id": "a1", "values": {"a": 1}}, {"id": "a2", "values": {"a": 2}}]
+        new = [{"id": "b1", "values": {"b": 10}}, {"id": "b2", "values": {"b": 20}}]
+        result = [
+            {"id": "a1-b1", "values": {"a": 1, "b": 10}},
+            {"id": "a1-b2", "values": {"a": 1, "b": 20}},
+            {"id": "a2-b1", "values": {"a": 2, "b": 10}},
+            {"id": "a2-b2", "values": {"a": 2, "b": 20}},
+        ]
+    """
+    combined: list[dict[str, object]] = []
+
+    for existing_case in existing:
+        for new_case in new:
+            # Merge the parameter values from both cases
+            combined_values = {}
+            combined_values.update(existing_case["values"])  # type: ignore[arg-type]
+            combined_values.update(new_case["values"])  # type: ignore[arg-type]
+
+            # Combine the IDs with a hyphen separator
+            combined_id = f"{existing_case['id']}-{new_case['id']}"
+
+            combined.append({"id": combined_id, "values": combined_values})
+
+    return tuple(combined)
+
+
 def parametrize(
     arg_names: str | Sequence[str],
     values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
@@ -291,10 +334,25 @@ def parametrize(
     normalized_indirect = _normalize_indirect(indirect, normalized_names)
 
     def decorator(func: Callable[Q, S]) -> Callable[Q, S]:
-        cases = _build_cases(normalized_names, actual_values, ids)
-        setattr(func, "__rustest_parametrization__", cases)
+        new_cases = _build_cases(normalized_names, actual_values, ids)
+
+        # Check if there are already parametrizations from previous decorators
+        existing_cases = getattr(func, "__rustest_parametrization__", None)
+
+        if existing_cases:
+            # Create cross-product of existing and new cases
+            combined_cases = _cross_product_cases(existing_cases, new_cases)
+            setattr(func, "__rustest_parametrization__", combined_cases)
+        else:
+            # First parametrize decorator
+            setattr(func, "__rustest_parametrization__", new_cases)
+
+        # Handle indirect params - merge with existing
         if normalized_indirect:
-            setattr(func, "__rustest_parametrization_indirect__", normalized_indirect)
+            existing_indirect = getattr(func, "__rustest_parametrization_indirect__", [])
+            combined_indirect = list(existing_indirect) + normalized_indirect
+            setattr(func, "__rustest_parametrization_indirect__", combined_indirect)
+
         return func
 
     return decorator
