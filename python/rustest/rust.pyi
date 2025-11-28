@@ -7,12 +7,14 @@ from typing import Sequence
 # Event classes
 class SuiteStartedEvent:
     """Event emitted when test suite starts."""
+
     total_files: int
     total_tests: int
     timestamp: float
 
 class SuiteCompletedEvent:
     """Event emitted when test suite completes."""
+
     passed: int
     failed: int
     skipped: int
@@ -22,12 +24,14 @@ class SuiteCompletedEvent:
 
 class FileStartedEvent:
     """Event emitted when a test file starts."""
+
     file_path: str
     total_tests: int
     timestamp: float
 
 class FileCompletedEvent:
     """Event emitted when a test file completes."""
+
     file_path: str
     passed: int
     failed: int
@@ -37,6 +41,7 @@ class FileCompletedEvent:
 
 class TestCompletedEvent:
     """Event emitted when a test completes."""
+
     test_id: str
     file_path: str
     test_name: str
@@ -47,6 +52,7 @@ class TestCompletedEvent:
 
 class CollectionErrorEvent:
     """Event emitted when a collection error occurs."""
+
     path: str
     message: str
     timestamp: float
