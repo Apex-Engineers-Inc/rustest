@@ -6,6 +6,10 @@ These tests require pytest-compat mode (--pytest-compat flag) or pytest itself.
 import sys
 import pytest
 
+# Skip if running with rustest in native mode (not pytest or pytest-compat)
+if "pytest" not in sys.argv[0] and "--pytest-compat" not in sys.argv:
+    pytest.skip("Requires pytest or rustest --pytest-compat mode", allow_module_level=True)
+
 
 
 @pytest.fixture

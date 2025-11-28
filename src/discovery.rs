@@ -972,6 +972,11 @@ fn inspect_module(
                 skip_reason = check_for_patch_decorator(py, &value, pytest_compat)?;
             }
 
+            // Check for @pytest.mark.skip decorator if not already skipped
+            if skip_reason.is_none() {
+                skip_reason = check_for_pytest_skip_mark(py, &value)?;
+            }
+
             let param_cases = collect_parametrization(py, &value)?;
             let marks = collect_marks(&value)?;
             let indirect_params = extract_indirect_params(&value)?;
@@ -1391,6 +1396,11 @@ fn discover_plain_class_tests_and_fixtures(
                 skip_reason = check_for_patch_decorator(py, &method, pytest_compat)?;
             }
 
+            // Check for @pytest.mark.skip decorator if not already skipped
+            if skip_reason.is_none() {
+                skip_reason = check_for_pytest_skip_mark(py, &method)?;
+            }
+
             let marks = collect_marks(&method)?;
             let method_param_cases = collect_parametrization(py, &method)?;
             let indirect_params = extract_indirect_params(&method)?;
@@ -1617,16 +1627,13 @@ fn string_attribute(value: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<Str
 /// Check if a test function uses @patch decorator from unittest.mock.
 ///
 /// Returns a skip reason if @patch is detected, None otherwise.
+/// This check runs in all modes (not just pytest-compat) to prevent
+/// confusing "Unknown fixture" errors.
 fn check_for_patch_decorator(
     _py: Python<'_>,
     func: &Bound<'_, PyAny>,
-    pytest_compat: bool,
+    _pytest_compat: bool,
 ) -> PyResult<Option<String>> {
-    // Only check in pytest-compat mode
-    if !pytest_compat {
-        return Ok(None);
-    }
-
     // Check if the function has __wrapped__ attribute (indicates decorators)
     // The @patch decorator from unittest.mock wraps functions
     let mut current = func.clone();
@@ -1669,6 +1676,51 @@ fn check_for_patch_decorator(
                 depth += 1;
             }
             Err(_) => break,
+        }
+    }
+
+    Ok(None)
+}
+
+/// Check if a test function has @pytest.mark.skip decorator.
+///
+/// Returns a skip reason if @pytest.mark.skip is detected, None otherwise.
+/// This handles the case where tests use pytest marks directly without
+/// --pytest-compat mode.
+fn check_for_pytest_skip_mark(
+    _py: Python<'_>,
+    func: &Bound<'_, PyAny>,
+) -> PyResult<Option<String>> {
+    // Check for pytestmark attribute (set by pytest decorators)
+    let Ok(pytestmark) = func.getattr("pytestmark") else {
+        return Ok(None);
+    };
+
+    // pytestmark can be a single mark or a list of marks
+    let marks: Vec<Bound<'_, PyAny>> = if pytestmark.is_instance_of::<PyList>() {
+        pytestmark.extract()?
+    } else {
+        vec![pytestmark]
+    };
+
+    // Check each mark
+    for mark in marks {
+        // Get mark name
+        if let Ok(name) = mark.getattr("name") {
+            if let Ok(name_str) = name.extract::<String>() {
+                if name_str == "skip" {
+                    // Extract reason from kwargs
+                    if let Ok(kwargs) = mark.getattr("kwargs") {
+                        if let Ok(reason) = kwargs.get_item("reason") {
+                            if let Ok(reason_str) = reason.extract::<String>() {
+                                return Ok(Some(reason_str));
+                            }
+                        }
+                    }
+                    // No reason provided, use default
+                    return Ok(Some("Skipped via pytest.mark.skip".to_string()));
+                }
+            }
         }
     }
 
