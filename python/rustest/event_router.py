@@ -8,7 +8,26 @@ from __future__ import annotations
 
 import sys
 import threading
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from rustest.rust import (
+        CollectionErrorEvent,
+        FileCompletedEvent,
+        FileStartedEvent,
+        SuiteCompletedEvent,
+        SuiteStartedEvent,
+        TestCompletedEvent,
+    )
+
+    EventType = (
+        SuiteStartedEvent
+        | SuiteCompletedEvent
+        | FileStartedEvent
+        | FileCompletedEvent
+        | TestCompletedEvent
+        | CollectionErrorEvent
+    )
 
 
 class EventConsumer(Protocol):
@@ -17,7 +36,7 @@ class EventConsumer(Protocol):
     Consumers implement a handle() method that processes events.
     """
 
-    def handle(self, event) -> None:
+    def handle(self, event: EventType) -> None:
         """Handle a test execution event.
 
         Args:
@@ -42,7 +61,8 @@ class EventRouter:
         rust.run(..., event_callback=router.emit)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        super().__init__()
         self._consumers: list[EventConsumer] = []
         self._lock = threading.Lock()
 
@@ -65,7 +85,7 @@ class EventRouter:
             if consumer in self._consumers:
                 self._consumers.remove(consumer)
 
-    def emit(self, event) -> None:
+    def emit(self, event: EventType) -> None:
         """Emit an event to all subscribed consumers.
 
         Called from Rust thread (with GIL held). The GIL serializes

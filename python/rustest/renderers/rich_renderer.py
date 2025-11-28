@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.live import Live
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 
 if TYPE_CHECKING:
     from rustest.rust import (
@@ -20,6 +20,15 @@ if TYPE_CHECKING:
         SuiteCompletedEvent,
         SuiteStartedEvent,
         TestCompletedEvent,
+    )
+
+    EventType = (
+        SuiteStartedEvent
+        | SuiteCompletedEvent
+        | FileStartedEvent
+        | FileCompletedEvent
+        | TestCompletedEvent
+        | CollectionErrorEvent
     )
 
 
@@ -34,12 +43,13 @@ class RichRenderer:
     but calls are serialized by the GIL. Rich's Live is also thread-safe.
     """
 
-    def __init__(self, *, use_colors: bool = True):
+    def __init__(self, *, use_colors: bool = True) -> None:
         """Initialize the rich renderer.
 
         Args:
             use_colors: Whether to use colored output
         """
+        super().__init__()
         self.console = Console(force_terminal=use_colors, file=sys.stderr)
         self.use_colors = use_colors
 
@@ -56,7 +66,7 @@ class RichRenderer:
         )
 
         # Map file paths to progress task IDs
-        self.file_tasks: dict[str, int] = {}
+        self.file_tasks: dict[str, TaskID] = {}
 
         # Overall statistics
         self.total_tests = 0
@@ -74,14 +84,14 @@ class RichRenderer:
         self.live: Live | None = None
         self._started = False
 
-    def _ensure_started(self):
+    def _ensure_started(self) -> None:
         """Ensure the live display is started."""
         if not self._started:
             self.live = Live(self.progress, console=self.console, refresh_per_second=10)
             self.live.start()
             self._started = True
 
-    def handle(self, event) -> None:
+    def handle(self, event: EventType) -> None:
         """Handle a test execution event.
 
         Called from Rust threads, but serialized by GIL.
@@ -91,7 +101,6 @@ class RichRenderer:
             event: Event from rust module
         """
         from rustest.rust import (
-            CollectionErrorEvent,
             FileCompletedEvent,
             FileStartedEvent,
             SuiteCompletedEvent,
@@ -109,7 +118,8 @@ class RichRenderer:
             self._handle_file_completed(event)
         elif isinstance(event, SuiteCompletedEvent):
             self._handle_suite_completed(event)
-        elif isinstance(event, CollectionErrorEvent):
+        else:
+            # Must be CollectionErrorEvent
             self._handle_collection_error(event)
 
     def _handle_suite_started(self, event: SuiteStartedEvent) -> None:
