@@ -17,7 +17,7 @@ import pytest
 
 def run_rustest(project_dir):
     """Run rustest on a project directory and return result."""
-    cmd = [sys.executable, "-m", "rustest", str(project_dir / "tests")]
+    cmd = [sys.executable, "-m", "rustest", str(project_dir / "tests"), "--no-color"]
     result = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True)
     return result
 
@@ -132,7 +132,7 @@ def test_src_layout(src_layout_project):
     result = run_rustest(src_layout_project)
 
     assert result.returncode == 0, f"rustest failed: {result.stderr}"
-    assert "3 passing" in result.stderr, f"Expected 3 tests to pass: {result.stderr}"
+    assert "3 passed" in result.stderr, f"Expected 3 tests to pass: {result.stderr}"
 
 
 def test_flat_layout(flat_layout_project):
@@ -140,7 +140,7 @@ def test_flat_layout(flat_layout_project):
     result = run_rustest(flat_layout_project)
 
     assert result.returncode == 0, f"rustest failed: {result.stderr}"
-    assert "1 passing" in result.stderr, f"Expected 1 test to pass: {result.stderr}"
+    assert "1 passed" in result.stderr, f"Expected 1 test to pass: {result.stderr}"
 
 
 def test_nested_packages(nested_package_project):
@@ -148,4 +148,4 @@ def test_nested_packages(nested_package_project):
     result = run_rustest(nested_package_project)
 
     assert result.returncode == 0, f"rustest failed: {result.stderr}"
-    assert "2 passing" in result.stderr, f"Expected 2 tests to pass: {result.stderr}"
+    assert "2 passed" in result.stderr, f"Expected 2 tests to pass: {result.stderr}"
