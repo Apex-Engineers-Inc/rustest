@@ -13,6 +13,7 @@ mod execution;
 mod mark_expr;
 mod model;
 mod output;
+mod parallel;
 mod python_support;
 
 #[cfg(test)]
@@ -21,13 +22,13 @@ mod model_tests;
 mod python_support_tests;
 
 use discovery::discover_tests;
-use execution::run_collected_tests;
+use execution::{run_collected_tests, run_collected_tests_parallel};
 use model::{CollectionError, LastFailedMode, PyRunReport, RunConfiguration};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None, parallel = false))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
@@ -44,6 +45,7 @@ fn run(
     ascii: bool,
     no_color: bool,
     event_callback: Option<Py<PyAny>>,
+    parallel: bool,
 ) -> PyResult<PyRunReport> {
     let last_failed_mode = LastFailedMode::from_str(last_failed_mode)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -61,10 +63,18 @@ fn run(
         ascii,
         no_color,
         event_callback,
+        parallel,
     );
     let input_paths = PyPaths::from_vec(paths);
     let (collected, collection_errors) = discover_tests(py, &input_paths, &config)?;
-    let report = run_collected_tests(py, &collected, &collection_errors, &config)?;
+
+    // Use parallel execution when enabled and worker count > 1
+    let report = if config.parallel_mode && config.worker_count > 1 {
+        run_collected_tests_parallel(py, &collected, &collection_errors, &config)?
+    } else {
+        run_collected_tests(py, &collected, &collection_errors, &config)?
+    };
+
     Ok(report)
 }
 
@@ -141,6 +151,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            false,
         );
         let paths = PyPaths::from_vec(vec![path.to_string_lossy().into_owned()]);
         discover_tests(py, &paths, &config).expect("discovery should succeed")
@@ -178,6 +190,8 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
+                false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -211,6 +225,8 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
+                None,
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
@@ -267,6 +283,8 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
+                false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, _collection_errors) =
@@ -306,6 +324,8 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
+                None,
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
@@ -353,6 +373,8 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
+                false,
             );
             let paths = PyPaths::from_vec(vec!["/nonexistent/path".to_string()]);
             let result = discover_tests(py, &paths, &config);
@@ -378,6 +400,8 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
+                None,
                 false,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
@@ -407,6 +431,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            false,
         );
         assert_eq!(config1.worker_count, 1);
 
@@ -421,6 +447,8 @@ mod tests {
             false,
             false,
             false,
+            false,
+            None,
             false,
         );
         assert_eq!(config2.worker_count, 8);
@@ -437,7 +465,46 @@ mod tests {
             false,
             false,
             false,
+            None,
+            false,
         );
         assert!(config3.worker_count >= 1);
+    }
+
+    #[test]
+    fn test_parallel_mode_configuration() {
+        let config_sequential = RunConfiguration::new(
+            None,
+            None,
+            Some(4),
+            true,
+            true,
+            LastFailedMode::None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            false,
+        );
+        assert!(!config_sequential.parallel_mode);
+
+        let config_parallel = RunConfiguration::new(
+            None,
+            None,
+            Some(4),
+            true,
+            true,
+            LastFailedMode::None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            true,
+        );
+        assert!(config_parallel.parallel_mode);
     }
 }

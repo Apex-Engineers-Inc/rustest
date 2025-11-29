@@ -107,12 +107,15 @@ mod tests {
             false,
             false,
             false,
+            None,
+            false,
         );
 
         assert!(config.pattern.is_none());
         assert!(config.mark_expr.is_none());
         assert!(config.worker_count >= 1);
         assert!(config.capture_output);
+        assert!(!config.parallel_mode);
     }
 
     #[test]
@@ -128,6 +131,8 @@ mod tests {
             false,
             false,
             false,
+            false,
+            None,
             false,
         );
 
@@ -150,12 +155,15 @@ mod tests {
             false,
             false,
             false,
+            None,
+            true,
         );
         let cloned = config.clone();
 
         assert_eq!(config.pattern, cloned.pattern);
         assert_eq!(config.worker_count, cloned.worker_count);
         assert_eq!(config.capture_output, cloned.capture_output);
+        assert_eq!(config.parallel_mode, cloned.parallel_mode);
     }
 
     #[test]

@@ -58,6 +58,7 @@ def run(
     verbose: bool = False,
     ascii: bool = False,
     no_color: bool = False,
+    parallel: bool = False,
 ) -> RunReport:
     """Execute tests and return a rich report.
 
@@ -65,7 +66,7 @@ def run(
         paths: Files or directories to collect tests from
         pattern: Substring to filter tests by (case insensitive)
         mark_expr: Mark expression to filter tests (e.g., "slow", "not slow", "slow and integration")
-        workers: Number of worker slots to use (experimental)
+        workers: Number of worker threads to use for parallel execution
         capture_output: Whether to capture stdout/stderr during test execution
         enable_codeblocks: Whether to enable code block tests from markdown files
         last_failed_mode: Last failed mode: "none", "only", or "first"
@@ -74,6 +75,7 @@ def run(
         verbose: Show verbose output with hierarchical test structure
         ascii: Use ASCII characters instead of Unicode symbols for output
         no_color: Disable colored output
+        parallel: Enable parallel test execution mode
     """
     # Print pytest compatibility banner if enabled
     if pytest_compat:
@@ -99,5 +101,6 @@ def run(
         ascii=ascii,
         no_color=no_color,
         event_callback=router.emit,
+        parallel=parallel,
     )
     return RunReport.from_py(raw_report)

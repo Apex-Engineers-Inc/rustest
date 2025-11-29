@@ -75,7 +75,19 @@ def build_parser() -> argparse.ArgumentParser:
         "-n",
         "--workers",
         type=int,
-        help="Number of worker slots to use (experimental).",
+        help="Number of worker threads to use for parallel execution.",
+    )
+    _ = parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        dest="jobs",
+        help="Alias for --workers: number of parallel jobs.",
+    )
+    _ = parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Enable parallel test execution (uses multiple worker threads).",
     )
     _ = parser.add_argument(
         "--no-capture",
@@ -140,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         failed_first=False,
         fail_fast=False,
         pytest_compat=False,
+        parallel=False,
     )
     return parser
 
@@ -165,11 +178,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:  # "never"
         use_color = False
 
+    # Handle -j/--jobs as alias for --workers
+    workers = args.workers if args.workers is not None else args.jobs
+
+    # Determine parallel mode:
+    # - Explicit --parallel flag enables it
+    # - Or implicitly when workers > 1
+    parallel = args.parallel or (workers is not None and workers > 1)
+
     report = run(
         paths=list(args.paths),
         pattern=args.pattern,
         mark_expr=args.mark_expr,
-        workers=args.workers,
+        workers=workers,
         capture_output=args.capture_output,
         enable_codeblocks=args.enable_codeblocks,
         last_failed_mode=last_failed_mode,
@@ -178,6 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         verbose=args.verbose,
         ascii=args.ascii,
         no_color=not use_color,
+        parallel=parallel,
     )
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called

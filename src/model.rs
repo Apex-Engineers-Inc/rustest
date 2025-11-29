@@ -321,7 +321,6 @@ impl LastFailedMode {
 pub struct RunConfiguration {
     pub pattern: Option<String>,
     pub mark_expr: Option<String>,
-    #[allow(dead_code)]
     pub worker_count: usize,
     pub capture_output: bool,
     pub enable_codeblocks: bool,
@@ -332,6 +331,9 @@ pub struct RunConfiguration {
     pub ascii: bool,
     pub no_color: bool,
     pub event_callback: Option<pyo3::Py<pyo3::PyAny>>,
+    /// Enable parallel test execution mode.
+    /// When true and worker_count > 1, tests run in parallel.
+    pub parallel_mode: bool,
 }
 
 impl Clone for RunConfiguration {
@@ -352,6 +354,7 @@ impl Clone for RunConfiguration {
                 .event_callback
                 .as_ref()
                 .map(|cb| pyo3::Python::attach(|py| cb.clone_ref(py))),
+            parallel_mode: self.parallel_mode,
         }
     }
 }
@@ -371,6 +374,7 @@ impl RunConfiguration {
         ascii: bool,
         no_color: bool,
         event_callback: Option<pyo3::Py<pyo3::PyAny>>,
+        parallel_mode: bool,
     ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
@@ -386,6 +390,7 @@ impl RunConfiguration {
             ascii,
             no_color,
             event_callback,
+            parallel_mode,
         }
     }
 }
@@ -433,7 +438,7 @@ impl PyRunReport {
 
 /// Individual test result exposed to Python callers.
 #[pyclass(module = "rustest.rust")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PyTestResult {
     #[pyo3(get)]
     pub name: String,

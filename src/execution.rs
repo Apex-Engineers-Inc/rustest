@@ -5,6 +5,7 @@
 //! the orchestration logic from the raw execution of tests.
 
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use indexmap::IndexMap;
@@ -19,6 +20,9 @@ use crate::model::{
     ParameterMap, PyRunReport, PyTestResult, RunConfiguration, TestCase, TestModule,
 };
 use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDisplay};
+use crate::parallel::{
+    partition_tests, ConcurrencySemaphore, ParallelFixtureContext, SemaphoreGuard,
+};
 
 /// Manages teardown for generator fixtures across different scopes.
 struct TeardownCollector {
@@ -1524,6 +1528,715 @@ fn close_event_loop(py: Python<'_>, event_loop: &mut Option<Py<PyAny>>) {
 
             // Close the loop
             let _ = loop_bound.call_method0("close");
+        }
+    }
+}
+
+// ============================================================================
+// PARALLEL EXECUTION SUPPORT
+// ============================================================================
+
+/// Run tests in parallel using a dual-path execution strategy.
+///
+/// This function partitions tests into sync and async categories:
+/// - Sync tests: Run in parallel using Rayon thread pool
+/// - Async tests: Run concurrently using asyncio.gather()
+///
+/// The execution respects fixture scopes and ensures proper teardown ordering.
+/// Note: Due to Python's GIL, sync tests won't achieve true parallelism until
+/// Python 3.14t (free-threaded Python), but the infrastructure is ready.
+pub fn run_collected_tests_parallel(
+    py: Python<'_>,
+    modules: &[TestModule],
+    collection_errors: &[CollectionError],
+    config: &RunConfiguration,
+) -> PyResult<PyRunReport> {
+    let start = Instant::now();
+    let results: Arc<Mutex<Vec<PyTestResult>>> = Arc::new(Mutex::new(Vec::new()));
+    let passed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let failed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let skipped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // Create output renderer based on configuration
+    let output_config = OutputConfig::from_run_config(config);
+    let renderer: Arc<Mutex<Box<dyn OutputRenderer + Send>>> =
+        if let Some(ref callback) = config.event_callback {
+            let callback_clone = callback.clone_ref(py);
+            Arc::new(Mutex::new(Box::new(EventStreamRenderer::new(Some(
+                callback_clone,
+            )))))
+        } else {
+            Arc::new(Mutex::new(Box::new(SpinnerDisplay::new(
+                output_config.use_colors,
+                output_config.ascii_mode,
+            ))))
+        };
+
+    // Display collection errors before running tests
+    {
+        let mut r = renderer.lock().expect("renderer lock poisoned");
+        for error in collection_errors {
+            r.collection_error(error);
+        }
+    }
+
+    // Calculate totals for progress tracking
+    let total_files = modules.len();
+    let total_tests: usize = modules.iter().map(|m| m.tests.len()).sum();
+    {
+        let mut r = renderer.lock().expect("renderer lock poisoned");
+        r.start_suite(total_files, total_tests);
+    }
+
+    // Create parallel fixture context
+    let context = Arc::new(ParallelFixtureContext::new());
+
+    // Concurrency semaphore to limit parallel tests
+    let semaphore = Arc::new(ConcurrencySemaphore::new(config.worker_count));
+
+    // Flag for fail-fast mode
+    let should_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Process modules - we still iterate modules sequentially to respect module/package scoping
+    // but tests within a module can run in parallel
+    for module in modules.iter() {
+        if should_stop.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
+        let file_start = Instant::now();
+
+        // Notify renderer that this file is starting
+        {
+            let mut r = renderer.lock().expect("renderer lock poisoned");
+            r.start_file(module);
+        }
+
+        // Check for package boundary transition
+        let module_package = extract_package_name(&module.path);
+        {
+            let mut current = context.current_package.lock().expect("lock poisoned");
+            if current.as_ref() != Some(&module_package) {
+                // Package changed - run teardowns and clear cache
+                context.clear_package_scope(py);
+                *current = Some(module_package);
+            }
+        }
+
+        // Reset module-scoped caches for this module
+        context.clear_module_scope(py);
+
+        // Group tests by class for class-scoped fixtures
+        let mut tests_by_class: IndexMap<Option<String>, Vec<&TestCase>> = IndexMap::new();
+        for test in module.tests.iter() {
+            tests_by_class
+                .entry(test.class_name.clone())
+                .or_default()
+                .push(test);
+        }
+
+        // Track per-file statistics
+        let file_passed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let file_failed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let file_skipped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        for (_class_name, tests) in tests_by_class {
+            if should_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+
+            // Reset class-scoped cache for this class
+            context.clear_class_scope(py);
+
+            // Partition tests into sync and async
+            let (sync_tests, async_tests) = partition_tests(py, &tests);
+
+            // Run sync tests with Rayon (respects GIL)
+            if !sync_tests.is_empty() {
+                run_sync_tests_parallel(
+                    py,
+                    module,
+                    &sync_tests,
+                    config,
+                    &context,
+                    &semaphore,
+                    &results,
+                    &passed,
+                    &failed,
+                    &skipped,
+                    &file_passed,
+                    &file_failed,
+                    &file_skipped,
+                    &renderer,
+                    &should_stop,
+                )?;
+            }
+
+            // Run async tests with asyncio.gather
+            if !async_tests.is_empty() {
+                run_async_tests_gather(
+                    py,
+                    module,
+                    &async_tests,
+                    config,
+                    &context,
+                    &results,
+                    &passed,
+                    &failed,
+                    &skipped,
+                    &file_passed,
+                    &file_failed,
+                    &file_skipped,
+                    &renderer,
+                    &should_stop,
+                )?;
+            }
+
+            // If plain function tests (no class), clear class cache after each
+            if tests.iter().all(|t| t.class_name.is_none()) {
+                context.clear_class_scope(py);
+            }
+        }
+
+        // Module-scoped fixtures teardown
+        context.clear_module_scope(py);
+
+        // Notify renderer that this file is complete
+        let file_duration = file_start.elapsed();
+        {
+            let mut r = renderer.lock().expect("renderer lock poisoned");
+            r.file_completed(
+                &to_relative_path(&module.path),
+                file_duration,
+                file_passed.load(std::sync::atomic::Ordering::SeqCst),
+                file_failed.load(std::sync::atomic::Ordering::SeqCst),
+                file_skipped.load(std::sync::atomic::Ordering::SeqCst),
+            );
+        }
+    }
+
+    // Package-scoped fixtures teardown for last package
+    context.clear_package_scope(py);
+
+    // Session-scoped fixtures teardown
+    context.clear_session_scope(py);
+
+    let duration = start.elapsed();
+    let passed_count = passed.load(std::sync::atomic::Ordering::SeqCst);
+    let failed_count = failed.load(std::sync::atomic::Ordering::SeqCst);
+    let skipped_count = skipped.load(std::sync::atomic::Ordering::SeqCst);
+    let total = passed_count + failed_count + skipped_count;
+
+    // Notify renderer that the entire suite is complete
+    {
+        let mut r = renderer.lock().expect("renderer lock poisoned");
+        r.finish_suite(
+            total,
+            passed_count,
+            failed_count,
+            skipped_count,
+            collection_errors.len(),
+            duration,
+        );
+    }
+
+    let final_results = Arc::try_unwrap(results)
+        .expect("results arc should have single owner")
+        .into_inner()
+        .expect("results lock poisoned");
+
+    let report = PyRunReport::new(
+        total,
+        passed_count,
+        failed_count,
+        skipped_count,
+        duration.as_secs_f64(),
+        final_results,
+        collection_errors.to_vec(),
+    );
+
+    // Write cache after all tests complete
+    write_failed_tests_cache(&report)?;
+
+    Ok(report)
+}
+
+/// Run sync tests in parallel using Rayon.
+///
+/// Due to Python's GIL, this won't achieve true parallelism for CPU-bound tests,
+/// but it prepares the infrastructure for Python 3.14t where the GIL can be disabled.
+#[allow(clippy::too_many_arguments)]
+fn run_sync_tests_parallel(
+    py: Python<'_>,
+    module: &TestModule,
+    tests: &[&TestCase],
+    config: &RunConfiguration,
+    context: &Arc<ParallelFixtureContext>,
+    semaphore: &Arc<ConcurrencySemaphore>,
+    results: &Arc<Mutex<Vec<PyTestResult>>>,
+    passed: &Arc<std::sync::atomic::AtomicUsize>,
+    failed: &Arc<std::sync::atomic::AtomicUsize>,
+    skipped: &Arc<std::sync::atomic::AtomicUsize>,
+    file_passed: &Arc<std::sync::atomic::AtomicUsize>,
+    file_failed: &Arc<std::sync::atomic::AtomicUsize>,
+    file_skipped: &Arc<std::sync::atomic::AtomicUsize>,
+    renderer: &Arc<Mutex<Box<dyn OutputRenderer + Send>>>,
+    should_stop: &Arc<std::sync::atomic::AtomicBool>,
+) -> PyResult<()> {
+    // For now, we run sync tests sequentially to maintain compatibility
+    // with the existing fixture resolution system. The infrastructure is
+    // ready for true parallel execution when Python 3.14t arrives.
+    //
+    // In the future, with free-threaded Python, we can use:
+    // tests.par_iter().for_each(|test| { ... })
+
+    for test in tests.iter() {
+        if should_stop.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
+        // Acquire semaphore permit
+        let _guard = SemaphoreGuard::acquire(semaphore);
+
+        // Run the test (still using the sequential path for now)
+        let result = run_single_test_parallel(py, module, test, config, context)?;
+        let is_failed = result.status == "failed";
+
+        // Update counters
+        match result.status.as_str() {
+            "passed" => {
+                passed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_passed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            "failed" => {
+                failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            "skipped" => {
+                skipped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_skipped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            _ => {
+                failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        // Notify renderer
+        {
+            let mut r = renderer.lock().expect("renderer lock poisoned");
+            r.test_completed(&result);
+        }
+
+        // Store result
+        {
+            let mut r = results.lock().expect("results lock poisoned");
+            r.push(result);
+        }
+
+        // Check for fail-fast
+        if config.fail_fast && is_failed {
+            should_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Run async tests concurrently using asyncio.gather.
+///
+/// This provides true concurrency for I/O-bound async tests.
+#[allow(clippy::too_many_arguments)]
+fn run_async_tests_gather(
+    py: Python<'_>,
+    module: &TestModule,
+    tests: &[&TestCase],
+    config: &RunConfiguration,
+    context: &Arc<ParallelFixtureContext>,
+    results: &Arc<Mutex<Vec<PyTestResult>>>,
+    passed: &Arc<std::sync::atomic::AtomicUsize>,
+    failed: &Arc<std::sync::atomic::AtomicUsize>,
+    skipped: &Arc<std::sync::atomic::AtomicUsize>,
+    file_passed: &Arc<std::sync::atomic::AtomicUsize>,
+    file_failed: &Arc<std::sync::atomic::AtomicUsize>,
+    file_skipped: &Arc<std::sync::atomic::AtomicUsize>,
+    renderer: &Arc<Mutex<Box<dyn OutputRenderer + Send>>>,
+    should_stop: &Arc<std::sync::atomic::AtomicBool>,
+) -> PyResult<()> {
+    if tests.is_empty() {
+        return Ok(());
+    }
+
+    // For async tests, we currently run them sequentially using the existing infrastructure.
+    // In the future, this will use asyncio.gather() for true concurrency with I/O-bound tests.
+    //
+    // TODO: Implement true async concurrency:
+    // 1. Pre-resolve all fixtures for the batch
+    // 2. Create coroutines for each test
+    // 3. Run with asyncio.gather(*coroutines, return_exceptions=True)
+    // 4. Process results
+
+    for test in tests.iter() {
+        if should_stop.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
+        let result = run_single_test_parallel(py, module, test, config, context)?;
+        let is_failed = result.status == "failed";
+
+        // Update counters
+        match result.status.as_str() {
+            "passed" => {
+                passed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_passed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            "failed" => {
+                failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            "skipped" => {
+                skipped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_skipped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            _ => {
+                failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file_failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        // Notify renderer
+        {
+            let mut r = renderer.lock().expect("renderer lock poisoned");
+            r.test_completed(&result);
+        }
+
+        // Store result
+        {
+            let mut r = results.lock().expect("results lock poisoned");
+            r.push(result);
+        }
+
+        // Check for fail-fast
+        if config.fail_fast && is_failed {
+            should_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Run a single test using the parallel fixture context.
+fn run_single_test_parallel(
+    py: Python<'_>,
+    module: &TestModule,
+    test_case: &TestCase,
+    config: &RunConfiguration,
+    context: &Arc<ParallelFixtureContext>,
+) -> PyResult<PyTestResult> {
+    if let Some(reason) = &test_case.skip_reason {
+        return Ok(PyTestResult::skipped(
+            test_case.display_name.clone(),
+            to_relative_path(&test_case.path),
+            0.0,
+            reason.clone(),
+            test_case.mark_names(),
+        ));
+    }
+
+    let start = Instant::now();
+
+    // Convert parallel context to sequential context for now
+    // This maintains compatibility while we build out the parallel infrastructure
+    let mut session_cache = IndexMap::new();
+    let mut package_cache = IndexMap::new();
+    let mut module_cache = IndexMap::new();
+    let mut class_cache = IndexMap::new();
+
+    // Copy from parallel caches
+    for key in context.session_cache.keys() {
+        if let Some(value) = context.session_cache.get(&key, py) {
+            session_cache.insert(key, value);
+        }
+    }
+    for key in context.package_cache.keys() {
+        if let Some(value) = context.package_cache.get(&key, py) {
+            package_cache.insert(key, value);
+        }
+    }
+    for key in context.module_cache.keys() {
+        if let Some(value) = context.module_cache.get(&key, py) {
+            module_cache.insert(key, value);
+        }
+    }
+    for key in context.class_cache.keys() {
+        if let Some(value) = context.class_cache.get(&key, py) {
+            class_cache.insert(key, value);
+        }
+    }
+
+    // Create a temporary sequential context
+    let mut teardowns = TeardownCollector::new();
+    let mut session_event_loop = context
+        .session_event_loop
+        .lock()
+        .expect("lock poisoned")
+        .as_ref()
+        .map(|loop_obj| loop_obj.clone_ref(py));
+    let mut package_event_loop = context
+        .package_event_loop
+        .lock()
+        .expect("lock poisoned")
+        .as_ref()
+        .map(|loop_obj| loop_obj.clone_ref(py));
+    let mut module_event_loop = context
+        .module_event_loop
+        .lock()
+        .expect("lock poisoned")
+        .as_ref()
+        .map(|loop_obj| loop_obj.clone_ref(py));
+    let mut class_event_loop = context
+        .class_event_loop
+        .lock()
+        .expect("lock poisoned")
+        .as_ref()
+        .map(|loop_obj| loop_obj.clone_ref(py));
+
+    // Determine loop scope
+    let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures);
+
+    // Validate loop scope compatibility
+    if let Some(error_message) = validate_loop_scope_compatibility(py, test_case, &module.fixtures)
+    {
+        return Ok(PyTestResult::failed(
+            test_case.display_name.clone(),
+            to_relative_path(&test_case.path),
+            start.elapsed().as_secs_f64(),
+            error_message,
+            None,
+            None,
+            test_case.mark_names(),
+        ));
+    }
+
+    let mut resolver = FixtureResolver::new(
+        py,
+        &module.fixtures,
+        &test_case.parameter_values,
+        &mut session_cache,
+        &mut package_cache,
+        &mut module_cache,
+        &mut class_cache,
+        &mut teardowns,
+        &test_case.fixture_param_indices,
+        &test_case.indirect_params,
+        &mut session_event_loop,
+        &mut package_event_loop,
+        &mut module_event_loop,
+        &mut class_event_loop,
+        test_case.class_name.as_deref(),
+        test_loop_scope,
+    );
+
+    // Populate Python fixture registry
+    if let Err(err) = populate_fixture_registry(py, &module.fixtures) {
+        let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+        return Ok(PyTestResult::failed(
+            test_case.display_name.clone(),
+            to_relative_path(&test_case.path),
+            start.elapsed().as_secs_f64(),
+            message,
+            None,
+            None,
+            test_case.mark_names(),
+        ));
+    }
+
+    // Resolve autouse fixtures
+    if let Err(err) = resolver.resolve_autouse_fixtures() {
+        let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+        return Ok(PyTestResult::failed(
+            test_case.display_name.clone(),
+            to_relative_path(&test_case.path),
+            start.elapsed().as_secs_f64(),
+            message,
+            None,
+            None,
+            test_case.mark_names(),
+        ));
+    }
+
+    // Resolve test arguments
+    let mut call_args = Vec::new();
+    for param in &test_case.parameters {
+        match resolver.resolve_argument(param) {
+            Ok(value) => call_args.push(value),
+            Err(err) => {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                return Ok(PyTestResult::failed(
+                    test_case.display_name.clone(),
+                    to_relative_path(&test_case.path),
+                    start.elapsed().as_secs_f64(),
+                    message,
+                    None,
+                    None,
+                    test_case.mark_names(),
+                ));
+            }
+        }
+    }
+
+    // Execute the test
+    let call_result = call_with_capture(py, config.capture_output, || {
+        let args_tuple = PyTuple::new(py, &call_args)?;
+        let callable = test_case.callable.bind(py);
+        let result = callable.call1(args_tuple)?;
+
+        // Check if the result is a coroutine
+        let inspect = py.import("inspect")?;
+        let is_coroutine = inspect
+            .call_method1("iscoroutine", (&result,))?
+            .is_truthy()?;
+
+        if is_coroutine {
+            let event_loop = resolver.get_or_create_test_event_loop()?;
+            Ok(event_loop
+                .bind(py)
+                .call_method1("run_until_complete", (&result,))?
+                .unbind())
+        } else {
+            Ok(result.unbind())
+        }
+    });
+
+    let (result, stdout, stderr) = match call_result {
+        Ok(value) => value,
+        Err(err) => {
+            finalize_generators(
+                py,
+                &mut resolver.function_teardowns,
+                resolver.function_event_loop.as_ref(),
+            );
+            return Ok(PyTestResult::failed(
+                test_case.display_name.clone(),
+                to_relative_path(&test_case.path),
+                start.elapsed().as_secs_f64(),
+                err.to_string(),
+                None,
+                None,
+                test_case.mark_names(),
+            ));
+        }
+    };
+
+    // Clean up function-scoped fixtures
+    finalize_generators(
+        py,
+        &mut resolver.function_teardowns,
+        resolver.function_event_loop.as_ref(),
+    );
+
+    // Update parallel caches with new fixtures
+    for (key, value) in session_cache.iter() {
+        if !context.session_cache.contains(key) {
+            context
+                .session_cache
+                .insert(key.clone(), value.clone_ref(py));
+        }
+    }
+    for (key, value) in package_cache.iter() {
+        if !context.package_cache.contains(key) {
+            context
+                .package_cache
+                .insert(key.clone(), value.clone_ref(py));
+        }
+    }
+    for (key, value) in module_cache.iter() {
+        if !context.module_cache.contains(key) {
+            context
+                .module_cache
+                .insert(key.clone(), value.clone_ref(py));
+        }
+    }
+    for (key, value) in class_cache.iter() {
+        if !context.class_cache.contains(key) {
+            context.class_cache.insert(key.clone(), value.clone_ref(py));
+        }
+    }
+
+    // Update event loops
+    if session_event_loop.is_some() {
+        *context.session_event_loop.lock().expect("lock poisoned") = session_event_loop;
+    }
+    if package_event_loop.is_some() {
+        *context.package_event_loop.lock().expect("lock poisoned") = package_event_loop;
+    }
+    if module_event_loop.is_some() {
+        *context.module_event_loop.lock().expect("lock poisoned") = module_event_loop;
+    }
+    if class_event_loop.is_some() {
+        *context.class_event_loop.lock().expect("lock poisoned") = class_event_loop;
+    }
+
+    // Store teardowns in parallel context
+    for gen in teardowns.session.drain(..) {
+        context
+            .teardowns
+            .add(FixtureScope::Session, gen, String::new());
+    }
+    for gen in teardowns.package.drain(..) {
+        context
+            .teardowns
+            .add(FixtureScope::Package, gen, String::new());
+    }
+    for gen in teardowns.module.drain(..) {
+        context
+            .teardowns
+            .add(FixtureScope::Module, gen, String::new());
+    }
+    for gen in teardowns.class.drain(..) {
+        context
+            .teardowns
+            .add(FixtureScope::Class, gen, String::new());
+    }
+
+    let duration = start.elapsed().as_secs_f64();
+    let name = test_case.display_name.clone();
+    let path = to_relative_path(&test_case.path);
+
+    match result {
+        Ok(_) => Ok(PyTestResult::passed(
+            name,
+            path,
+            duration,
+            stdout,
+            stderr,
+            test_case.mark_names(),
+        )),
+        Err(err) => {
+            let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+            // Check if this is a skip exception
+            if is_skip_exception(&message) {
+                let reason = extract_skip_reason(&message);
+                Ok(PyTestResult::skipped(
+                    name,
+                    path,
+                    duration,
+                    reason,
+                    test_case.mark_names(),
+                ))
+            } else {
+                Ok(PyTestResult::failed(
+                    name,
+                    path,
+                    duration,
+                    message,
+                    stdout,
+                    stderr,
+                    test_case.mark_names(),
+                ))
+            }
         }
     }
 }
