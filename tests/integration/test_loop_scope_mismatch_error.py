@@ -13,10 +13,10 @@ import sys
 from pathlib import Path
 
 # Skip this module when running under rustest (not pytest)
-# Detection: _pytest is loaded when pytest is the test runner
-if "_pytest" not in sys.modules:
-    # Define no test functions so rustest has nothing to collect
-    __all__: list[str] = []
+# Detection: rustest.rust is only loaded when the actual rustest runner is active
+if "rustest.rust" in sys.modules:
+    # Running under rustest - don't define any test functions
+    pass
 else:
     import pytest
 
@@ -35,9 +35,7 @@ else:
             "never",
             *args,
         ]
-        result = subprocess.run(
-            cmd, cwd=project_dir.parent, capture_output=True, text=True
-        )
+        result = subprocess.run(cmd, cwd=project_dir.parent, capture_output=True, text=True)
         return result
 
     @pytest.fixture
@@ -131,27 +129,21 @@ async def test_with_correct_scope(session_client):
         result = _run_rustest(loop_scope_mismatch_project)
 
         # Should fail
-        assert (
-            result.returncode != 0
-        ), f"Expected failure but got success: {result.stderr}"
+        assert result.returncode != 0, f"Expected failure but got success: {result.stderr}"
 
         # Check for helpful error message components
         output = result.stdout + result.stderr
 
         # Should mention it's a loop scope mismatch
-        assert (
-            "Loop scope mismatch" in output
-        ), f"Expected 'Loop scope mismatch' in output: {output}"
+        assert "Loop scope mismatch" in output, (
+            f"Expected 'Loop scope mismatch' in output: {output}"
+        )
 
         # Should mention the test name
-        assert (
-            "test_with_wrong_scope" in output
-        ), f"Expected test name in output: {output}"
+        assert "test_with_wrong_scope" in output, f"Expected test name in output: {output}"
 
         # Should mention the explicit scope used
-        assert (
-            'loop_scope="function"' in output
-        ), f"Expected explicit scope in output: {output}"
+        assert 'loop_scope="function"' in output, f"Expected explicit scope in output: {output}"
 
         # Should mention the fixture that requires wider scope
         assert "session_client" in output or "session-scoped" in output, (
@@ -159,29 +151,23 @@ async def test_with_correct_scope(session_client):
         )
 
         # Should provide fix suggestions
-        assert (
-            "To fix this" in output
-        ), f"Expected fix suggestions in output: {output}"
-        assert (
-            "@mark.asyncio" in output
-        ), f"Expected @mark.asyncio mention in output: {output}"
+        assert "To fix this" in output, f"Expected fix suggestions in output: {output}"
+        assert "@mark.asyncio" in output, f"Expected @mark.asyncio mention in output: {output}"
 
     def test_loop_scope_mismatch_class_error_message(loop_scope_mismatch_class_project):
         """Test that class-level loop scope mismatch also produces helpful error."""
         result = _run_rustest(loop_scope_mismatch_class_project)
 
         # Should fail
-        assert (
-            result.returncode != 0
-        ), f"Expected failure but got success: {result.stderr}"
+        assert result.returncode != 0, f"Expected failure but got success: {result.stderr}"
 
         # Check for helpful error message
         output = result.stdout + result.stderr
 
         # Should mention loop scope mismatch
-        assert (
-            "Loop scope mismatch" in output
-        ), f"Expected 'Loop scope mismatch' in output: {output}"
+        assert "Loop scope mismatch" in output, (
+            f"Expected 'Loop scope mismatch' in output: {output}"
+        )
 
         # Should mention the module-scoped fixture
         assert "module_db" in output or "module-scoped" in output, (
@@ -198,6 +184,4 @@ async def test_with_correct_scope(session_client):
 
         # Should NOT have loop scope mismatch error
         output = result.stdout + result.stderr
-        assert (
-            "Loop scope mismatch" not in output
-        ), f"Should not have mismatch error: {output}"
+        assert "Loop scope mismatch" not in output, f"Should not have mismatch error: {output}"
