@@ -27,14 +27,13 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
     paths: Vec<String>,
     pattern: Option<String>,
     mark_expr: Option<String>,
-    workers: Option<usize>,
     capture_output: bool,
     enable_codeblocks: bool,
     last_failed_mode: &str,
@@ -57,7 +56,6 @@ fn run(
     let config = RunConfiguration::new(
         pattern,
         mark_expr,
-        workers,
         capture_output,
         enable_codeblocks,
         last_failed_mode,
@@ -222,7 +220,6 @@ mod tests {
         let config = RunConfiguration::new(
             None,
             None,
-            None,
             true,
             true,
             LastFailedMode::None,
@@ -262,7 +259,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -296,7 +292,6 @@ mod tests {
             let file_path = sample_test_module("test_parametrized.py");
 
             let config = RunConfiguration::new(
-                None,
                 None,
                 None,
                 true,
@@ -355,7 +350,6 @@ mod tests {
             let config = RunConfiguration::new(
                 Some("nonexistent".to_string()),
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -395,7 +389,6 @@ mod tests {
             let file_path = sample_test_module("test_basic.py");
 
             let config = RunConfiguration::new(
-                None,
                 None,
                 None,
                 false,
@@ -445,7 +438,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -472,7 +464,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -495,56 +486,5 @@ mod tests {
             assert!(report.duration >= 0.0);
             assert_eq!(report.results.len(), report.total);
         });
-    }
-
-    #[test]
-    fn test_worker_count_configuration() {
-        let config1 = RunConfiguration::new(
-            None,
-            None,
-            Some(1),
-            true,
-            true,
-            LastFailedMode::None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-        );
-        assert_eq!(config1.worker_count, 1);
-
-        let config2 = RunConfiguration::new(
-            None,
-            None,
-            Some(8),
-            true,
-            true,
-            LastFailedMode::None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-        );
-        assert_eq!(config2.worker_count, 8);
-
-        let config3 = RunConfiguration::new(
-            None,
-            None,
-            None,
-            true,
-            true,
-            LastFailedMode::None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-        );
-        assert!(config3.worker_count >= 1);
     }
 }

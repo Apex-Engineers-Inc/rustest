@@ -3,20 +3,15 @@
 //! ## Parallelization Strategy
 //!
 //! Due to Python's GIL, true parallel execution within a single process is limited.
-//! The current implementation supports:
-//!
-//! 1. **Sequential mode** (`-n 1`): Tests run one at a time in order
-//! 2. **Parallel mode** (`-n auto` or `-n N`): Infrastructure for future multi-process support
-//!
-//! For true parallelization, multi-process execution (like pytest-xdist) is planned.
-//! The current thread-based infrastructure can still benefit I/O-bound test suites.
+//! Test execution currently runs sequentially, while test discovery uses parallel
+//! file walking via rayon.
 //!
 //! ## Fixture Scope Considerations
 //!
-//! - Session fixtures: Shared across all tests (must run in coordinator process)
-//! - Package fixtures: Shared within package (can be parallelized across packages)
-//! - Module fixtures: Shared within file (naturally parallelizable)
-//! - Function fixtures: Per-test (naturally parallelizable)
+//! - Session fixtures: Shared across all tests
+//! - Package fixtures: Shared within package
+//! - Module fixtures: Shared within file
+//! - Function fixtures: Per-test
 
 use std::collections::HashSet;
 use std::time::Instant;

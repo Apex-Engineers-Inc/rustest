@@ -98,7 +98,6 @@ mod tests {
         let config = RunConfiguration::new(
             None,
             None,
-            None,
             true,
             true,
             LastFailedMode::None,
@@ -112,7 +111,6 @@ mod tests {
 
         assert!(config.pattern.is_none());
         assert!(config.mark_expr.is_none());
-        assert!(config.worker_count >= 1);
         assert!(config.capture_output);
     }
 
@@ -121,7 +119,6 @@ mod tests {
         let config = RunConfiguration::new(
             Some("test_.*".to_string()),
             None,
-            Some(4),
             false,
             true,
             LastFailedMode::None,
@@ -134,7 +131,6 @@ mod tests {
         );
 
         assert_eq!(config.pattern, Some("test_.*".to_string()));
-        assert_eq!(config.worker_count, 4);
         assert!(!config.capture_output);
     }
 
@@ -143,7 +139,6 @@ mod tests {
         let config = RunConfiguration::new(
             Some("pattern".to_string()),
             None,
-            Some(2),
             true,
             true,
             LastFailedMode::None,
@@ -157,7 +152,6 @@ mod tests {
         let cloned = config.clone();
 
         assert_eq!(config.pattern, cloned.pattern);
-        assert_eq!(config.worker_count, cloned.worker_count);
         assert_eq!(config.capture_output, cloned.capture_output);
     }
 

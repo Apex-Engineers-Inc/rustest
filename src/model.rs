@@ -321,8 +321,6 @@ impl LastFailedMode {
 pub struct RunConfiguration {
     pub pattern: Option<String>,
     pub mark_expr: Option<String>,
-    #[allow(dead_code)]
-    pub worker_count: usize,
     pub capture_output: bool,
     pub enable_codeblocks: bool,
     pub last_failed_mode: LastFailedMode,
@@ -339,7 +337,6 @@ impl Clone for RunConfiguration {
         Self {
             pattern: self.pattern.clone(),
             mark_expr: self.mark_expr.clone(),
-            worker_count: self.worker_count,
             capture_output: self.capture_output,
             enable_codeblocks: self.enable_codeblocks,
             last_failed_mode: self.last_failed_mode,
@@ -361,7 +358,6 @@ impl RunConfiguration {
     pub fn new(
         pattern: Option<String>,
         mark_expr: Option<String>,
-        workers: Option<usize>,
         capture_output: bool,
         enable_codeblocks: bool,
         last_failed_mode: LastFailedMode,
@@ -372,11 +368,9 @@ impl RunConfiguration {
         no_color: bool,
         event_callback: Option<pyo3::Py<pyo3::PyAny>>,
     ) -> Self {
-        let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
             pattern,
             mark_expr,
-            worker_count,
             capture_output,
             enable_codeblocks,
             last_failed_mode,

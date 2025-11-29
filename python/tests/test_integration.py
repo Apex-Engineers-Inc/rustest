@@ -231,26 +231,6 @@ def test_success():
         assert failed_tests[0].name == "test_fail"
         assert skipped_tests[0].name == "test_skip"
 
-    def test_run_with_worker_count(self, tmp_path: Path) -> None:
-        """Test running tests with specific worker count."""
-        self._write_test_file(
-            tmp_path,
-            "test_workers.py",
-            """
-def test_one():
-    assert True
-
-def test_two():
-    assert True
-""",
-        )
-
-        try:
-            report = run(paths=[str(tmp_path)], workers=2)
-            assert report.total == 2
-        except Exception:
-            pytest.skip("Rust module not available")
-
     def test_empty_test_directory(self, tmp_path: Path) -> None:
         """Test running tests in an empty directory."""
         empty_dir = tmp_path / "empty"
@@ -299,7 +279,6 @@ class TestCLIParser:
         args = parser.parse_args([])
         assert tuple(args.paths) == (".",)
         assert args.pattern is None
-        assert args.workers == "auto"  # Default is "auto" for parallel workers
         assert args.capture_output is True
 
     def test_parser_with_paths(self) -> None:
@@ -314,12 +293,6 @@ class TestCLIParser:
         args = parser.parse_args(["-k", "test_pattern"])
         assert args.pattern == "test_pattern"
 
-    def test_parser_with_workers(self) -> None:
-        """Test parser with worker count."""
-        parser = cli.build_parser()
-        args = parser.parse_args(["-n", "4"])
-        assert args.workers == "4"  # Workers is now a string
-
     def test_parser_with_no_capture(self) -> None:
         """Test parser with capture output disabled."""
         parser = cli.build_parser()
@@ -329,8 +302,7 @@ class TestCLIParser:
     def test_parser_with_all_options(self) -> None:
         """Test parser with all options specified."""
         parser = cli.build_parser()
-        args = parser.parse_args(["tests", "-k", "pattern", "-n", "8", "--no-capture"])
+        args = parser.parse_args(["tests", "-k", "pattern", "--no-capture"])
         assert tuple(args.paths) == ("tests",)
         assert args.pattern == "pattern"
-        assert args.workers == "8"  # Workers is now a string
         assert args.capture_output is False

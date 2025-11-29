@@ -72,13 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
         help='Run tests matching the given mark expression (e.g., "slow", "not slow", "slow and integration").',
     )
     _ = parser.add_argument(
-        "-n",
-        "--workers",
-        type=str,
-        default="auto",
-        help="Number of parallel workers: 'auto' (default, uses CPU count), '1' (sequential), or N (explicit count).",
-    )
-    _ = parser.add_argument(
         "--no-capture",
         dest="capture_output",
         action="store_false",
@@ -145,28 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_workers(workers_str: str) -> int | None:
-    """Parse the workers argument string.
-
-    Args:
-        workers_str: Either 'auto', or an integer string
-
-    Returns:
-        None for 'auto' (let Rust decide based on CPU count),
-        or the parsed integer value
-    """
-    if workers_str.lower() == "auto":
-        return None  # Let Rust auto-detect
-    try:
-        value = int(workers_str)
-        if value < 1:
-            return 1
-        return value
-    except ValueError:
-        # Invalid value, fall back to auto
-        return None
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -188,14 +159,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:  # "never"
         use_color = False
 
-    # Parse workers argument
-    workers = parse_workers(args.workers)
-
     report = run(
         paths=list(args.paths),
         pattern=args.pattern,
         mark_expr=args.mark_expr,
-        workers=workers,
         capture_output=args.capture_output,
         enable_codeblocks=args.enable_codeblocks,
         last_failed_mode=last_failed_mode,

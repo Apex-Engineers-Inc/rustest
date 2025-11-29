@@ -13,8 +13,16 @@ from typing import Any, Sequence
 def run(
     _paths: Sequence[str],
     _pattern: str | None,
-    _workers: int | None,
+    _mark_expr: str | None,
     _capture_output: bool,
+    _enable_codeblocks: bool,
+    _last_failed_mode: str,
+    _fail_fast: bool,
+    _pytest_compat: bool,
+    _verbose: bool,
+    _ascii: bool,
+    _no_color: bool,
+    _event_callback: object | None = None,
 ) -> Any:
     """Placeholder implementation that mirrors the extension signature."""
 
