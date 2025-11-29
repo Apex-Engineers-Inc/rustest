@@ -518,7 +518,7 @@ class MarkGenerator:
         self,
         func: Callable[..., Any] | None = None,
         *,
-        loop_scope: str = "function",
+        loop_scope: str | None = None,
     ) -> Callable[..., Any]:
         """Mark an async test function to be executed with asyncio.
 
@@ -529,7 +529,8 @@ class MarkGenerator:
         Args:
             func: The function to decorate (when used without parentheses)
             loop_scope: The scope of the event loop. One of:
-                - "function": New loop for each test function (default)
+                - None: Auto-detect based on fixture dependencies (default, recommended)
+                - "function": New loop for each test function
                 - "class": Shared loop across all test methods in a class
                 - "module": Shared loop across all tests in a module
                 - "session": Shared loop across all tests in the session
@@ -545,24 +546,30 @@ class MarkGenerator:
                 await another_async_operation()
 
         Note:
-            This decorator works best with async functions (coroutines), which will
-            be automatically wrapped to run in an asyncio event loop. For pytest
-            compatibility, it can also be applied to regular functions (the mark
-            will be recorded but the function runs normally without asyncio).
+            When loop_scope is not specified (None), rustest automatically detects
+            the appropriate loop scope based on your fixture dependencies. If you
+            use a session-scoped async fixture, tests will automatically share the
+            session loop. This is the recommended default for most use cases.
         """
         import inspect
 
         valid_scopes = {"function", "class", "module", "session"}
-        if loop_scope not in valid_scopes:
+        if loop_scope is not None and loop_scope not in valid_scopes:
             valid = ", ".join(sorted(valid_scopes))
             msg = f"Invalid loop_scope '{loop_scope}'. Must be one of: {valid}"
             raise ValueError(msg)
 
         def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
+            # Only include loop_scope in kwargs if explicitly specified
+            # This allows Rust's smart detection to work when loop_scope is None
+            mark_kwargs: dict[str, Any] = {}
+            if loop_scope is not None:
+                mark_kwargs["loop_scope"] = loop_scope
+
             # Handle class decoration - apply mark to all async methods
             if inspect.isclass(f):
                 # Apply the mark to the class itself
-                mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
+                mark_decorator = MarkDecorator("asyncio", (), mark_kwargs)
                 marked_class = mark_decorator(f)
 
                 # Apply the mark to all async methods in the class as well
@@ -570,13 +577,13 @@ class MarkGenerator:
                     marked_class, predicate=inspect.iscoroutinefunction
                 ):
                     # Apply the mark to the method so it carries loop_scope metadata
-                    marked_method = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})(method)
+                    marked_method = MarkDecorator("asyncio", (), mark_kwargs)(method)
                     setattr(marked_class, name, marked_method)
                 return marked_class
 
             # For both async and sync functions, just apply the mark
             # The Rust layer will handle event loop management based on loop_scope
-            mark_decorator = MarkDecorator("asyncio", (), {"loop_scope": loop_scope})
+            mark_decorator = MarkDecorator("asyncio", (), mark_kwargs)
             return mark_decorator(f)
 
         # Support both @mark.asyncio and @mark.asyncio(loop_scope="...")
