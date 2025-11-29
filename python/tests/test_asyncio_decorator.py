@@ -18,7 +18,9 @@ def test_asyncio_mark_basic_usage():
     marks = test_func.__rustest_marks__
     assert len(marks) == 1
     assert marks[0]["name"] == "asyncio"
-    assert marks[0]["kwargs"]["loop_scope"] == "function"
+    # When loop_scope is not specified, kwargs should be empty
+    # This allows smart loop scope detection to work
+    assert marks[0]["kwargs"] == {}
 
 
 def test_asyncio_mark_with_loop_scope():
@@ -215,14 +217,16 @@ def test_asyncio_mark_idempotent():
 
 
 def test_asyncio_mark_default_loop_scope():
-    """Test that default loop_scope is 'function'."""
+    """Test that default loop_scope is None (auto-detect)."""
 
     @mark.asyncio
     async def test_func():
         pass
 
     marks = test_func.__rustest_marks__
-    assert marks[0]["kwargs"]["loop_scope"] == "function"
+    # When loop_scope is not specified, kwargs should be empty
+    # This allows Rust's smart loop scope detection to work
+    assert "loop_scope" not in marks[0]["kwargs"]
 
 
 def test_asyncio_combined_with_other_marks():

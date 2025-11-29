@@ -538,6 +538,109 @@ fn is_scope_wider(scope_a: &FixtureScope, scope_b: &FixtureScope) -> bool {
     order(scope_a) > order(scope_b)
 }
 
+/// Convert a FixtureScope to its string representation for error messages.
+fn scope_to_string(scope: &FixtureScope) -> &'static str {
+    match scope {
+        FixtureScope::Function => "function",
+        FixtureScope::Class => "class",
+        FixtureScope::Module => "module",
+        FixtureScope::Package => "package",
+        FixtureScope::Session => "session",
+    }
+}
+
+/// Validate that an explicit loop_scope is compatible with the test's fixture requirements.
+///
+/// Returns an error message if the explicit scope is too narrow for the fixtures used.
+/// This helps users understand why they're getting "attached to a different loop" errors.
+fn validate_loop_scope_compatibility(
+    py: Python<'_>,
+    test_case: &TestCase,
+    fixtures: &IndexMap<String, Fixture>,
+) -> Option<String> {
+    // Only validate if there's an explicit loop_scope
+    let explicit_scope = get_explicit_loop_scope_from_marks(py, test_case)?;
+
+    // Detect what scope is required by fixtures
+    let required_scope = detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters);
+
+    // Check if explicit scope is narrower than required
+    if is_scope_wider(&required_scope, &explicit_scope) {
+        // Find the async fixture(s) that require the wider scope
+        let mut problematic_fixtures = Vec::new();
+        let mut visited = HashSet::new();
+        for param in &test_case.parameters {
+            find_async_fixtures_with_scope(
+                fixtures,
+                param,
+                &required_scope,
+                &mut problematic_fixtures,
+                &mut visited,
+            );
+        }
+
+        let fixture_list = if problematic_fixtures.is_empty() {
+            "async fixtures".to_string()
+        } else {
+            problematic_fixtures
+                .iter()
+                .map(|s| format!("'{}'", s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        let test_name = &test_case.name;
+        let explicit_str = scope_to_string(&explicit_scope);
+        let required_str = scope_to_string(&required_scope);
+
+        return Some(format!(
+            "Loop scope mismatch: Test '{}' uses @mark.asyncio(loop_scope=\"{}\") but depends on \
+{}-scoped async fixture(s): {}.\n\n\
+This will cause 'attached to a different loop' errors because the test creates a new event loop \
+for each {} while the fixture expects to reuse the {} loop.\n\n\
+To fix this, either:\n\
+  1. Remove the explicit loop_scope to let rustest auto-detect it: @mark.asyncio\n\
+  2. Use a wider loop_scope: @mark.asyncio(loop_scope=\"{}\")\n\
+  3. Change the fixture scope to match your loop_scope",
+            test_name,
+            explicit_str,
+            required_str,
+            fixture_list,
+            explicit_str,
+            required_str,
+            required_str,
+        ));
+    }
+
+    None
+}
+
+/// Find async fixtures that have a specific scope, for error reporting.
+fn find_async_fixtures_with_scope(
+    fixtures: &IndexMap<String, Fixture>,
+    fixture_name: &str,
+    target_scope: &FixtureScope,
+    found: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) {
+    if visited.contains(fixture_name) {
+        return;
+    }
+    visited.insert(fixture_name.to_string());
+
+    if let Some(fixture) = fixtures.get(fixture_name) {
+        // Check if this is the async fixture with the target scope
+        if (fixture.is_async || fixture.is_async_generator) && fixture.scope == *target_scope {
+            found.push(fixture_name.to_string());
+        }
+
+        // Recursively check dependencies
+        for dep in &fixture.parameters {
+            find_async_fixtures_with_scope(fixtures, dep, target_scope, found, visited);
+        }
+    }
+}
+
 /// Determine the appropriate loop scope for a test.
 ///
 /// Strategy (matching pytest-asyncio with smart defaults):
@@ -569,6 +672,17 @@ fn execute_test_case(
     config: &RunConfiguration,
     context: &mut FixtureContext,
 ) -> Result<TestCallSuccess, TestCallFailure> {
+    // Validate loop scope compatibility before running the test
+    // This catches cases where explicit loop_scope is too narrow for the fixtures used
+    if let Some(error_message) = validate_loop_scope_compatibility(py, test_case, &module.fixtures)
+    {
+        return Err(TestCallFailure {
+            message: error_message,
+            stdout: None,
+            stderr: None,
+        });
+    }
+
     // Determine loop scope: explicit mark or smart detection based on fixture dependencies
     let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures);
 
