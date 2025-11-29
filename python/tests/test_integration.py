@@ -299,7 +299,7 @@ class TestCLIParser:
         args = parser.parse_args([])
         assert tuple(args.paths) == (".",)
         assert args.pattern is None
-        assert args.workers is None
+        assert args.workers == "auto"  # Default is "auto" for parallel workers
         assert args.capture_output is True
 
     def test_parser_with_paths(self) -> None:
@@ -318,7 +318,7 @@ class TestCLIParser:
         """Test parser with worker count."""
         parser = cli.build_parser()
         args = parser.parse_args(["-n", "4"])
-        assert args.workers == 4
+        assert args.workers == "4"  # Workers is now a string
 
     def test_parser_with_no_capture(self) -> None:
         """Test parser with capture output disabled."""
@@ -332,5 +332,5 @@ class TestCLIParser:
         args = parser.parse_args(["tests", "-k", "pattern", "-n", "8", "--no-capture"])
         assert tuple(args.paths) == ("tests",)
         assert args.pattern == "pattern"
-        assert args.workers == 8
+        assert args.workers == "8"  # Workers is now a string
         assert args.capture_output is False

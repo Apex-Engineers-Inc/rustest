@@ -1,8 +1,22 @@
 //! Execution pipeline for running collected tests.
 //!
-//! Even though the Python GIL prevents truly parallel execution, the code in
-//! this module keeps the door open for future parallel strategies by isolating
-//! the orchestration logic from the raw execution of tests.
+//! ## Parallelization Strategy
+//!
+//! Due to Python's GIL, true parallel execution within a single process is limited.
+//! The current implementation supports:
+//!
+//! 1. **Sequential mode** (`-n 1`): Tests run one at a time in order
+//! 2. **Parallel mode** (`-n auto` or `-n N`): Infrastructure for future multi-process support
+//!
+//! For true parallelization, multi-process execution (like pytest-xdist) is planned.
+//! The current thread-based infrastructure can still benefit I/O-bound test suites.
+//!
+//! ## Fixture Scope Considerations
+//!
+//! - Session fixtures: Shared across all tests (must run in coordinator process)
+//! - Package fixtures: Shared within package (can be parallelized across packages)
+//! - Module fixtures: Shared within file (naturally parallelizable)
+//! - Function fixtures: Per-test (naturally parallelizable)
 
 use std::collections::HashSet;
 use std::time::Instant;

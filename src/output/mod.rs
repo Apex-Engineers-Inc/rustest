@@ -11,8 +11,9 @@ mod spinner_display;
 
 pub use event_stream::EventStreamRenderer;
 pub use events::{
-    CollectionErrorEvent, FileCompletedEvent, FileStartedEvent, SuiteCompletedEvent,
-    SuiteStartedEvent, TestCompletedEvent,
+    current_timestamp, CollectionCompletedEvent, CollectionErrorEvent, CollectionStartedEvent,
+    FileCollectedEvent, FileCompletedEvent, FileDiscoveredEvent, FileStartedEvent,
+    SuiteCompletedEvent, SuiteStartedEvent, TestCompletedEvent,
 };
 pub use renderer::{OutputMode, OutputRenderer};
 pub use spinner_display::SpinnerDisplay;

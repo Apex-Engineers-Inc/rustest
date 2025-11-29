@@ -107,6 +107,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
 
         assert!(config.pattern.is_none());
@@ -129,6 +130,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
 
         assert_eq!(config.pattern, Some("test_.*".to_string()));
@@ -150,6 +152,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         let cloned = config.clone();
 

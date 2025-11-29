@@ -5,6 +5,112 @@
 
 use pyo3::prelude::*;
 
+/// Event emitted when test collection starts
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct CollectionStartedEvent {
+    /// Number of paths being searched
+    #[pyo3(get)]
+    pub num_paths: usize,
+
+    /// Unix timestamp when collection started
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
+#[pymethods]
+impl CollectionStartedEvent {
+    fn __repr__(&self) -> String {
+        format!("CollectionStartedEvent(num_paths={})", self.num_paths)
+    }
+}
+
+/// Event emitted when a test file is discovered (before loading)
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct FileDiscoveredEvent {
+    /// Relative path to the discovered file
+    #[pyo3(get)]
+    pub file_path: String,
+
+    /// Unix timestamp when file was discovered
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
+#[pymethods]
+impl FileDiscoveredEvent {
+    fn __repr__(&self) -> String {
+        format!("FileDiscoveredEvent(file_path='{}')", self.file_path)
+    }
+}
+
+/// Event emitted when tests are collected from a file
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct FileCollectedEvent {
+    /// Relative path to the test file
+    #[pyo3(get)]
+    pub file_path: String,
+
+    /// Number of tests collected from this file
+    #[pyo3(get)]
+    pub num_tests: usize,
+
+    /// Number of fixtures collected from this file
+    #[pyo3(get)]
+    pub num_fixtures: usize,
+
+    /// Unix timestamp when file was collected
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
+#[pymethods]
+impl FileCollectedEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "FileCollectedEvent(file_path='{}', num_tests={})",
+            self.file_path, self.num_tests
+        )
+    }
+}
+
+/// Event emitted when test collection completes
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct CollectionCompletedEvent {
+    /// Total number of files collected
+    #[pyo3(get)]
+    pub total_files: usize,
+
+    /// Total number of tests collected
+    #[pyo3(get)]
+    pub total_tests: usize,
+
+    /// Number of collection errors
+    #[pyo3(get)]
+    pub num_errors: usize,
+
+    /// Duration of collection in seconds
+    #[pyo3(get)]
+    pub duration: f64,
+
+    /// Unix timestamp when collection completed
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
+#[pymethods]
+impl CollectionCompletedEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "CollectionCompletedEvent(total_files={}, total_tests={})",
+            self.total_files, self.total_tests
+        )
+    }
+}
+
 /// Event emitted when a test file starts execution
 #[pyclass]
 #[derive(Clone, Debug)]
