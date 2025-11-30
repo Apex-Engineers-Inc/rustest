@@ -464,11 +464,14 @@ Rustest automatically runs compatible async tests concurrently using `asyncio.ga
 
 ### How It Works
 
-When executing tests within a module, rustest analyzes each async test's fixture dependencies to determine if it can safely run concurrently with others:
+When executing tests, rustest analyzes each async test's fixture dependencies to determine if it can safely run concurrently with others:
 
 1. **Gatherable tests**: Async tests that don't depend on session-scoped or package-scoped **async fixtures** are gathered and run concurrently. All gathered tests share a single event loop.
 2. **Sequential tests**: Async tests that depend on session-scoped or package-scoped async fixtures run sequentially (they need a persistent event loop shared across the session/package)
 3. **Sync tests**: Regular synchronous tests run sequentially as normal
+
+!!! important "Gathering scope"
+    Gathering happens **per-class within each module**. Tests in `TestClassA` are gathered separately from tests in `TestClassB`, and these class groups run sequentially. Tests not in any class are gathered together as their own group.
 
 ```python
 from rustest import mark
@@ -511,6 +514,10 @@ The actual speedup depends on:
 - **I/O wait time**: More waiting = more benefit from concurrency
 - **CPU work**: CPU-bound portions still run sequentially (Python GIL)
 - **Async fixture scopes**: Tests depending on session/package-scoped async fixtures run sequentially
+- **Test organization**: Tests in different classes are gathered separately and run sequentially as groups
+
+!!! note "Theoretical maximums"
+    The speedup numbers above assume all tests are in the same class (or no class), all are gatherable, and all are purely I/O-bound. Real-world speedups vary based on test organization and fixture dependencies.
 
 ### When Tests Run Sequentially
 

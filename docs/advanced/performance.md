@@ -73,9 +73,12 @@ Rustest automatically runs compatible async tests concurrently using `asyncio.ga
 
 Async tests are gathered for concurrent execution when they:
 - Don't depend on session-scoped or package-scoped **async fixtures**
-- Are within the same module (gathering happens per-module)
+- Are within the same module AND same class (or no class)
 
 All gathered tests share a single event loop during execution. Tests with sync fixtures (even session-scoped) can still be gathered.
+
+!!! note "Gathering scope"
+    Gathering happens per-class within each module. Tests in `TestClassA` are gathered separately from tests in `TestClassB`, and these class groups run sequentially. Tests not in any class are gathered together.
 
 ```python
 from rustest import mark
@@ -129,10 +132,9 @@ This speedup **stacks with** rustest's base performance advantage, meaning async
 - Plugin hooks slow down discovery
 
 **rustest:**
-- Scans the filesystem from Rust using **parallel file walking** (rayon)
-- Pattern matching in native code with optimized glob patterns
+- Scans the filesystem from Rust with optimized glob patterns
 - Delays Python imports until execution
-- Multiple files processed concurrently during collection
+- When multiple paths are provided (e.g., `rustest tests/ examples/`), path scanning runs in parallel via rayon
 
 ### 3. Optimized Fixture Resolution
 

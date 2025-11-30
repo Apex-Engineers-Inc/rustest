@@ -302,7 +302,7 @@ See the [Performance](performance.md) page for detailed benchmarks.
 **Summary:**
 - **~2.1x faster** on typical test suites
 - **~24x faster** on heavily parametrized tests
-- **~10-100x faster** on I/O-bound async test suites (concurrent execution via `asyncio.gather()`)
+- **Up to 10-50× faster** on I/O-bound async test suites (concurrent execution via `asyncio.gather()`)
 - Scales better with larger test suites
 
 ### Async Test Performance
@@ -314,7 +314,7 @@ Rustest provides a significant advantage for async tests:
 | 10 async tests × 100ms I/O | 1,000ms | ~100ms | **~10×** |
 | 50 async tests × 50ms I/O | 2,500ms | ~50ms | **~50×** |
 
-pytest-asyncio runs async tests sequentially. Rustest automatically runs compatible async tests concurrently using `asyncio.gather()`, overlapping I/O wait times.
+pytest-asyncio runs async tests sequentially. Rustest runs compatible async tests concurrently using `asyncio.gather()`, overlapping I/O wait times. Speedup depends on tests being in the same class and not requiring session-scoped async fixtures.
 
 ## Ecosystem
 
