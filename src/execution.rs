@@ -643,7 +643,9 @@ fn run_async_tests_gathered<'a>(
     let asyncio = py.import("asyncio")?;
 
     // Prepare all tests: resolve fixtures and get coroutines
-    let mut prepared_tests: Vec<(&TestCase, Py<PyAny>, Vec<Py<PyAny>>)> = Vec::new();
+    // Type alias to satisfy clippy::type_complexity
+    type PreparedTest<'a> = (&'a TestCase, Py<PyAny>, Vec<Py<PyAny>>);
+    let mut prepared_tests: Vec<PreparedTest<'_>> = Vec::new();
     let mut skip_results: Vec<(&TestCase, PyTestResult)> = Vec::new();
     let mut error_results: Vec<(&TestCase, PyTestResult)> = Vec::new();
 
@@ -769,7 +771,7 @@ fn run_async_tests_gathered<'a>(
         match callable.call1(args_tuple) {
             Ok(coroutine) => {
                 // Store function teardowns for this test
-                function_teardowns.extend(resolver.function_teardowns.drain(..));
+                function_teardowns.append(&mut resolver.function_teardowns);
                 prepared_tests.push((test_case, coroutine.unbind(), function_teardowns));
             }
             Err(err) => {
