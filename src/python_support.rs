@@ -27,6 +27,11 @@ impl PyPaths {
         Self { raw }
     }
 
+    /// Return the number of paths.
+    pub fn len(&self) -> usize {
+        self.raw.len()
+    }
+
     /// Convert the raw strings into canonicalised [`PathBuf`] values.
     pub fn materialise(&self) -> PyResult<Vec<PathBuf>> {
         self.raw

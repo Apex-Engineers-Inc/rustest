@@ -151,12 +151,15 @@ exclude_lines = [
     # rustest -n auto tests/   # Not yet available
     ```
 
-**Current status**: Tests run **sequentially** in rustest. Parallel execution is a planned feature.
+**Current status**: **Async tests run concurrently** using `asyncio.gather()`. Synchronous tests run sequentially - full parallel execution is planned.
 
-!!! warning "Not Yet Implemented"
-    Rustest does **not** currently run tests in parallel. However, it's still **8.5× faster than pytest on average** even when running sequentially.
+!!! info "Partial Parallelism Available"
+    - **Async tests**: Run concurrently via `asyncio.gather()` - up to 100× faster for I/O-bound tests
+    - **Sync tests**: Run sequentially (parallel execution planned)
 
-    **Why it's still faster:** Rust eliminates Python's overhead in test discovery, fixture resolution, and module imports. For most projects, sequential rustest outperforms parallel pytest-xdist.
+    Rustest is still **8.5× faster than pytest on average** even for sequential sync tests due to Rust's speed.
+
+    **Why sync tests are still faster:** Rust eliminates Python's overhead in test discovery, fixture resolution, and module imports.
 
 **If you need parallelization today**:
 
@@ -222,14 +225,24 @@ async def test_parametrized_async(value):
     assert result > 0
 ```
 
-!!! success "Fully supported"
-    rustest has full built-in support for async tests with `@mark.asyncio`. No plugin needed!
+!!! success "Fully supported - and faster!"
+    rustest has full built-in support for async tests with `@mark.asyncio`. No plugin needed - and **async tests run concurrently** using `asyncio.gather()` for massive I/O speedups!
 
-**Limitations**:
+**Performance advantage over pytest-asyncio**:
 
-- Event loop fixture (`event_loop`) is not available
-- Cannot use `pytest_asyncio.fixture` for async fixtures (use regular fixtures with async functions)
-- Auto mode (`asyncio_mode = "auto"`) is not supported
+| Scenario | pytest-asyncio | rustest | Speedup |
+|----------|---------------|---------|---------|
+| 10 tests × 100ms I/O | 1,000ms | ~100ms | **~10×** |
+| 50 tests × 50ms I/O | 2,500ms | ~50ms | **~50×** |
+
+pytest-asyncio runs tests sequentially. Rustest runs compatible async tests concurrently, overlapping I/O wait times.
+
+**Differences from pytest-asyncio**:
+
+- Event loop fixture (`event_loop`) is not available - loops managed internally
+- Cannot use `pytest_asyncio.fixture` - use regular `@fixture` with async functions
+- Auto mode (`asyncio_mode = "auto"`) is not supported - use explicit `@mark.asyncio`
+- Tests may run concurrently - ensure tests don't rely on sequential execution
 
 **Async fixtures**:
 

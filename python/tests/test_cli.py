@@ -47,7 +47,6 @@ class TestCli:
                 paths=["tests"],
                 pattern=None,
                 mark_expr=None,
-                workers=None,
                 capture_output=True,
                 enable_codeblocks=True,
                 last_failed_mode="none",

@@ -72,12 +72,6 @@ def build_parser() -> argparse.ArgumentParser:
         help='Run tests matching the given mark expression (e.g., "slow", "not slow", "slow and integration").',
     )
     _ = parser.add_argument(
-        "-n",
-        "--workers",
-        type=int,
-        help="Number of worker slots to use (experimental).",
-    )
-    _ = parser.add_argument(
         "--no-capture",
         dest="capture_output",
         action="store_false",
@@ -169,7 +163,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths=list(args.paths),
         pattern=args.pattern,
         mark_expr=args.mark_expr,
-        workers=args.workers,
         capture_output=args.capture_output,
         enable_codeblocks=args.enable_codeblocks,
         last_failed_mode=last_failed_mode,

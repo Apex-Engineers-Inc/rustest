@@ -27,14 +27,13 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
     paths: Vec<String>,
     pattern: Option<String>,
     mark_expr: Option<String>,
-    workers: Option<usize>,
     capture_output: bool,
     enable_codeblocks: bool,
     last_failed_mode: &str,
@@ -45,13 +44,18 @@ fn run(
     no_color: bool,
     event_callback: Option<Py<PyAny>>,
 ) -> PyResult<PyRunReport> {
+    use output::{
+        current_timestamp, CollectionCompletedEvent, CollectionStartedEvent, FileCollectedEvent,
+        FileDiscoveredEvent,
+    };
+    use std::time::Instant;
+
     let last_failed_mode = LastFailedMode::from_str(last_failed_mode)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let config = RunConfiguration::new(
         pattern,
         mark_expr,
-        workers,
         capture_output,
         enable_codeblocks,
         last_failed_mode,
@@ -62,8 +66,85 @@ fn run(
         no_color,
         event_callback,
     );
+
+    // Create a collection event emitter closure
+    let emit_event = |py: Python<'_>, event: &Py<PyAny>| {
+        if let Some(ref callback) = config.event_callback {
+            let _ = callback.call1(py, (event,));
+        }
+    };
+
+    // Emit collection started event
+    let collection_start = Instant::now();
     let input_paths = PyPaths::from_vec(paths);
-    let (collected, collection_errors) = discover_tests(py, &input_paths, &config)?;
+    let num_paths = input_paths.len();
+
+    if config.event_callback.is_some() {
+        let event = Py::new(
+            py,
+            CollectionStartedEvent {
+                num_paths,
+                timestamp: current_timestamp(),
+            },
+        )?;
+        emit_event(py, &event.into_any());
+    }
+
+    // Discover tests with event emission
+    let (collected, collection_errors) = discover_tests(
+        py,
+        &input_paths,
+        &config,
+        |py, file_path| {
+            // Emit file discovered event
+            if config.event_callback.is_some() {
+                if let Ok(event) = Py::new(
+                    py,
+                    FileDiscoveredEvent {
+                        file_path: file_path.to_string(),
+                        timestamp: current_timestamp(),
+                    },
+                ) {
+                    emit_event(py, &event.into_any());
+                }
+            }
+        },
+        |py, file_path, num_tests, num_fixtures| {
+            // Emit file collected event
+            if config.event_callback.is_some() {
+                if let Ok(event) = Py::new(
+                    py,
+                    FileCollectedEvent {
+                        file_path: file_path.to_string(),
+                        num_tests,
+                        num_fixtures,
+                        timestamp: current_timestamp(),
+                    },
+                ) {
+                    emit_event(py, &event.into_any());
+                }
+            }
+        },
+    )?;
+
+    // Emit collection completed event
+    let collection_duration = collection_start.elapsed().as_secs_f64();
+    let total_tests: usize = collected.iter().map(|m| m.tests.len()).sum();
+
+    if config.event_callback.is_some() {
+        let event = Py::new(
+            py,
+            CollectionCompletedEvent {
+                total_files: collected.len(),
+                total_tests,
+                num_errors: collection_errors.len(),
+                duration: collection_duration,
+                timestamp: current_timestamp(),
+            },
+        )?;
+        emit_event(py, &event.into_any());
+    }
+
     let report = run_collected_tests(py, &collected, &collection_errors, &config)?;
     Ok(report)
 }
@@ -72,7 +153,8 @@ fn run(
 #[pymodule]
 fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     use output::{
-        CollectionErrorEvent, FileCompletedEvent, FileStartedEvent, SuiteCompletedEvent,
+        CollectionCompletedEvent, CollectionErrorEvent, CollectionStartedEvent, FileCollectedEvent,
+        FileCompletedEvent, FileDiscoveredEvent, FileStartedEvent, SuiteCompletedEvent,
         SuiteStartedEvent, TestCompletedEvent,
     };
 
@@ -80,7 +162,13 @@ fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CollectionError>()?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
 
-    // Event types for event stream consumers
+    // Collection event types
+    m.add_class::<CollectionStartedEvent>()?;
+    m.add_class::<FileDiscoveredEvent>()?;
+    m.add_class::<FileCollectedEvent>()?;
+    m.add_class::<CollectionCompletedEvent>()?;
+
+    // Execution event types
     m.add_class::<FileStartedEvent>()?;
     m.add_class::<TestCompletedEvent>()?;
     m.add_class::<FileCompletedEvent>()?;
@@ -132,7 +220,6 @@ mod tests {
         let config = RunConfiguration::new(
             None,
             None,
-            None,
             true,
             true,
             LastFailedMode::None,
@@ -141,9 +228,12 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         let paths = PyPaths::from_vec(vec![path.to_string_lossy().into_owned()]);
-        discover_tests(py, &paths, &config).expect("discovery should succeed")
+        // Use no-op callbacks for tests
+        discover_tests(py, &paths, &config, |_, _| {}, |_, _, _, _| {})
+            .expect("discovery should succeed")
     }
 
     #[test]
@@ -169,7 +259,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -178,10 +267,12 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
-                discover_tests(py, &paths, &config).expect("discovery should succeed");
+                discover_tests(py, &paths, &config, |_, _| {}, |_, _, _, _| {})
+                    .expect("discovery should succeed");
             assert_eq!(modules.len(), 1);
             let report = run_collected_tests(py, &modules, &collection_errors, &config)
                 .expect("execution should succeed");
@@ -203,7 +294,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -212,10 +302,12 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
-                discover_tests(py, &paths, &config).expect("discovery should succeed");
+                discover_tests(py, &paths, &config, |_, _| {}, |_, _, _, _| {})
+                    .expect("discovery should succeed");
             let report = run_collected_tests(py, &modules, &collection_errors, &config)
                 .expect("execution should succeed");
 
@@ -258,7 +350,6 @@ mod tests {
             let config = RunConfiguration::new(
                 Some("nonexistent".to_string()),
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -267,10 +358,12 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, _collection_errors) =
-                discover_tests(py, &paths, &config).expect("discovery should succeed");
+                discover_tests(py, &paths, &config, |_, _| {}, |_, _, _, _| {})
+                    .expect("discovery should succeed");
 
             // No modules should match the pattern
             assert_eq!(modules.len(), 0);
@@ -298,7 +391,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 false,
                 true,
                 LastFailedMode::None,
@@ -307,10 +399,12 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
-                discover_tests(py, &paths, &config).expect("discovery should succeed");
+                discover_tests(py, &paths, &config, |_, _| {}, |_, _, _, _| {})
+                    .expect("discovery should succeed");
             let report = run_collected_tests(py, &modules, &collection_errors, &config)
                 .expect("execution should succeed");
 
@@ -344,7 +438,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -353,9 +446,10 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec!["/nonexistent/path".to_string()]);
-            let result = discover_tests(py, &paths, &config);
+            let result = discover_tests(py, &paths, &config, |_, _| {}, |_, _, _, _| {});
 
             assert!(result.is_err());
         });
@@ -370,7 +464,6 @@ mod tests {
             let config = RunConfiguration::new(
                 None,
                 None,
-                None,
                 true,
                 true,
                 LastFailedMode::None,
@@ -379,10 +472,12 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
-                discover_tests(py, &paths, &config).expect("discovery should succeed");
+                discover_tests(py, &paths, &config, |_, _| {}, |_, _, _, _| {})
+                    .expect("discovery should succeed");
             let report = run_collected_tests(py, &modules, &collection_errors, &config)
                 .expect("execution should succeed");
 
@@ -391,53 +486,5 @@ mod tests {
             assert!(report.duration >= 0.0);
             assert_eq!(report.results.len(), report.total);
         });
-    }
-
-    #[test]
-    fn test_worker_count_configuration() {
-        let config1 = RunConfiguration::new(
-            None,
-            None,
-            Some(1),
-            true,
-            true,
-            LastFailedMode::None,
-            false,
-            false,
-            false,
-            false,
-            false,
-        );
-        assert_eq!(config1.worker_count, 1);
-
-        let config2 = RunConfiguration::new(
-            None,
-            None,
-            Some(8),
-            true,
-            true,
-            LastFailedMode::None,
-            false,
-            false,
-            false,
-            false,
-            false,
-        );
-        assert_eq!(config2.worker_count, 8);
-
-        let config3 = RunConfiguration::new(
-            None,
-            None,
-            None,
-            true,
-            true,
-            LastFailedMode::None,
-            false,
-            false,
-            false,
-            false,
-            false,
-        );
-        assert!(config3.worker_count >= 1);
     }
 }

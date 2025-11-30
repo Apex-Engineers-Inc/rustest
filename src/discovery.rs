@@ -4,10 +4,20 @@
 //! fixtures and test functions.  The code heavily documents the involved steps
 //! because the interaction with Python's reflection facilities can otherwise be
 //! tricky to follow.
+//!
+//! ## Parallelization Strategy
+//!
+//! File discovery uses a two-phase approach:
+//! 1. **Parallel phase**: Walk directories using rayon to collect file paths (pure Rust, no GIL)
+//! 2. **Sequential phase**: Load Python modules and extract tests (GIL-bound)
+//!
+//! This provides speedup for large codebases with many directories while respecting
+//! Python's GIL constraints.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
@@ -15,6 +25,7 @@ use pyo3::prelude::*;
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
 use pyo3::types::{PyAny, PyDict, PyList, PySequence};
 use pyo3::Bound;
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::cache;
@@ -109,6 +120,71 @@ fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
         .any(|pattern| matches_pattern(&basename, pattern))
 }
 
+/// Represents the type of file discovered during directory walking.
+#[derive(Debug, Clone)]
+enum DiscoveredFile {
+    /// A Python test file (test_*.py or *_test.py)
+    Python(PathBuf),
+    /// A Markdown file containing code blocks
+    Markdown(PathBuf),
+}
+
+/// Collect all test files from a directory in parallel using rayon.
+///
+/// This function walks the directory tree in parallel, collecting all files
+/// that match the test file patterns. The actual Python module loading happens
+/// later in the sequential phase.
+fn collect_files_parallel(
+    paths: &[PathBuf],
+    py_glob: &GlobSet,
+    md_glob: Option<&GlobSet>,
+) -> Vec<DiscoveredFile> {
+    // Use a thread-safe collector for discovered files
+    let files: Mutex<Vec<DiscoveredFile>> = Mutex::new(Vec::new());
+
+    // Process each input path in parallel
+    paths.par_iter().for_each(|path| {
+        if path.is_dir() {
+            // Walk directory and collect matching files
+            for entry in WalkDir::new(path)
+                .into_iter()
+                .filter_entry(|e| !should_exclude_dir(e))
+                .filter_map(Result::ok)
+            {
+                let file = entry.into_path();
+                if file.is_file() {
+                    if py_glob.is_match(&file) {
+                        if let Ok(mut guard) = files.lock() {
+                            guard.push(DiscoveredFile::Python(file));
+                        }
+                    } else if let Some(md) = md_glob {
+                        if md.is_match(&file) {
+                            if let Ok(mut guard) = files.lock() {
+                                guard.push(DiscoveredFile::Markdown(file));
+                            }
+                        }
+                    }
+                }
+            }
+        } else if path.is_file() {
+            if py_glob.is_match(path) {
+                if let Ok(mut guard) = files.lock() {
+                    guard.push(DiscoveredFile::Python(path.clone()));
+                }
+            } else if let Some(md) = md_glob {
+                if md.is_match(path) {
+                    if let Ok(mut guard) = files.lock() {
+                        guard.push(DiscoveredFile::Markdown(path.clone()));
+                    }
+                }
+            }
+        }
+    });
+
+    // Extract the collected files
+    files.into_inner().unwrap_or_default()
+}
+
 /// Discover tests for the provided paths.
 ///
 /// The return type is intentionally high level: the caller receives a list of
@@ -118,11 +194,20 @@ fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
 ///
 /// Returns a tuple of (modules, collection_errors) where collection_errors
 /// contains any errors that occurred during test collection (e.g., syntax errors).
-pub fn discover_tests(
+///
+/// The `on_file_discovered` callback is called when a test file is found (before loading).
+/// The `on_file_collected` callback is called after tests are extracted from a file.
+pub fn discover_tests<F1, F2>(
     py: Python<'_>,
     paths: &PyPaths,
     config: &RunConfiguration,
-) -> PyResult<(Vec<TestModule>, Vec<CollectionError>)> {
+    on_file_discovered: F1,
+    on_file_collected: F2,
+) -> PyResult<(Vec<TestModule>, Vec<CollectionError>)>
+where
+    F1: Fn(Python<'_>, &str),
+    F2: Fn(Python<'_>, &str, usize, usize),
+{
     let canonical_paths = paths.materialise()?;
 
     // Setup sys.path to enable imports like pytest does
@@ -164,65 +249,62 @@ pub fn discover_tests(
         }
     }
 
-    // Now discover test files, merging with conftest fixtures
-    for path in canonical_paths {
-        if path.is_dir() {
-            for entry in WalkDir::new(&path)
-                .into_iter()
-                .filter_entry(|e| !should_exclude_dir(e))
-                .filter_map(Result::ok)
-            {
-                let file = entry.into_path();
-                if file.is_file() {
-                    if py_glob.is_match(&file) {
-                        match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)
-                        {
-                            Ok(Some(module)) => modules.push(module),
-                            Ok(None) => {}
-                            Err(err) => {
-                                let error_msg = format_collection_error(py, &err);
-                                collection_errors
-                                    .push(CollectionError::new(to_relative_path(&file), error_msg));
-                            }
-                        }
-                    } else if let Some(ref md_glob_set) = md_glob {
-                        if md_glob_set.is_match(&file) {
-                            match collect_from_markdown(py, &file, config, &conftest_fixtures) {
-                                Ok(Some(module)) => modules.push(module),
-                                Ok(None) => {}
-                                Err(err) => {
-                                    let error_msg = format_collection_error(py, &err);
-                                    collection_errors.push(CollectionError::new(
-                                        to_relative_path(&file),
-                                        error_msg,
-                                    ));
-                                }
-                            }
-                        }
+    // Phase 1: Collect all test files in parallel (pure Rust, no GIL needed)
+    // This provides speedup for large codebases with many directories
+    let discovered_files = collect_files_parallel(&canonical_paths, &py_glob, md_glob.as_ref());
+
+    // Phase 2: Process each discovered file sequentially (GIL-bound for Python module loading)
+    for discovered in discovered_files {
+        match discovered {
+            DiscoveredFile::Python(file) => {
+                let relative_path = to_relative_path(&file);
+                // Emit file discovered event
+                on_file_discovered(py, &relative_path);
+
+                match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures) {
+                    Ok(Some(module)) => {
+                        // Emit file collected event
+                        on_file_collected(
+                            py,
+                            &relative_path,
+                            module.tests.len(),
+                            module.fixtures.len(),
+                        );
+                        modules.push(module);
+                    }
+                    Ok(None) => {
+                        // No tests found, still emit collected with 0
+                        on_file_collected(py, &relative_path, 0, 0);
+                    }
+                    Err(err) => {
+                        let error_msg = format_collection_error(py, &err);
+                        collection_errors.push(CollectionError::new(relative_path, error_msg));
                     }
                 }
             }
-        } else if path.is_file() {
-            if py_glob.is_match(&path) {
-                match collect_from_file(py, &path, config, &module_ids, &conftest_fixtures) {
-                    Ok(Some(module)) => modules.push(module),
-                    Ok(None) => {}
+            DiscoveredFile::Markdown(file) => {
+                let relative_path = to_relative_path(&file);
+                // Emit file discovered event
+                on_file_discovered(py, &relative_path);
+
+                match collect_from_markdown(py, &file, config, &conftest_fixtures) {
+                    Ok(Some(module)) => {
+                        // Emit file collected event
+                        on_file_collected(
+                            py,
+                            &relative_path,
+                            module.tests.len(),
+                            module.fixtures.len(),
+                        );
+                        modules.push(module);
+                    }
+                    Ok(None) => {
+                        // No tests found, still emit collected with 0
+                        on_file_collected(py, &relative_path, 0, 0);
+                    }
                     Err(err) => {
                         let error_msg = format_collection_error(py, &err);
-                        collection_errors
-                            .push(CollectionError::new(to_relative_path(&path), error_msg));
-                    }
-                }
-            } else if let Some(ref md_glob_set) = md_glob {
-                if md_glob_set.is_match(&path) {
-                    match collect_from_markdown(py, &path, config, &conftest_fixtures) {
-                        Ok(Some(module)) => modules.push(module),
-                        Ok(None) => {}
-                        Err(err) => {
-                            let error_msg = format_collection_error(py, &err);
-                            collection_errors
-                                .push(CollectionError::new(to_relative_path(&path), error_msg));
-                        }
+                        collection_errors.push(CollectionError::new(relative_path, error_msg));
                     }
                 }
             }
