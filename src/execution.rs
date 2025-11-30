@@ -55,13 +55,33 @@ fn is_test_async(py: Python<'_>, test_case: &TestCase) -> bool {
 /// cannot be gathered because they need to share an event loop that
 /// persists across the entire session/package. These tests must run
 /// sequentially to ensure proper event loop sharing.
-fn can_async_test_be_gathered(fixtures: &IndexMap<String, Fixture>, test_case: &TestCase) -> bool {
+///
+/// Additionally, tests with explicit `@mark.asyncio(loop_scope="session")`
+/// or `loop_scope="package"` are excluded from gathering since they
+/// explicitly request a broader-scoped event loop.
+fn can_async_test_be_gathered(
+    py: Python<'_>,
+    fixtures: &IndexMap<String, Fixture>,
+    test_case: &TestCase,
+) -> bool {
+    // Check if the test has an explicit loop_scope that requires broader scope
+    if let Some(explicit_scope) = get_explicit_loop_scope_from_marks(py, test_case) {
+        // Only function and module scopes can be gathered
+        // Session/package scopes explicitly request a persistent loop
+        if !matches!(
+            explicit_scope,
+            FixtureScope::Function | FixtureScope::Module | FixtureScope::Class
+        ) {
+            return false;
+        }
+    }
+
     // Check the required loop scope based on async fixture dependencies
     let required_scope = detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters);
-    // Only tests requiring module or function scope can be gathered
+    // Only tests requiring module, class, or function scope can be gathered
     matches!(
         required_scope,
-        FixtureScope::Function | FixtureScope::Module
+        FixtureScope::Function | FixtureScope::Module | FixtureScope::Class
     )
 }
 
@@ -206,7 +226,7 @@ pub fn run_collected_tests(
 
             for test in tests {
                 if is_test_async(py, test) {
-                    if can_async_test_be_gathered(&module.fixtures, test) {
+                    if can_async_test_be_gathered(py, &module.fixtures, test) {
                         gatherable_async_tests.push(test);
                     } else {
                         // Tests with session/package-scoped async fixtures run sequentially
