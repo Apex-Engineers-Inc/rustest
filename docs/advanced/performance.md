@@ -71,10 +71,11 @@ Rustest automatically runs compatible async tests concurrently using `asyncio.ga
 
 ### When Async Tests Run Concurrently
 
-Tests are gathered for concurrent execution when they:
-- Use function-scoped or module-scoped fixtures
-- Don't require session/package-scoped async fixtures (which need shared event loops)
-- Are independent of each other
+Async tests are gathered for concurrent execution when they:
+- Don't depend on session-scoped or package-scoped **async fixtures**
+- Are within the same module (gathering happens per-module)
+
+All gathered tests share a single event loop during execution. Tests with sync fixtures (even session-scoped) can still be gathered.
 
 ```python
 from rustest import mark
