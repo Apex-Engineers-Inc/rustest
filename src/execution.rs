@@ -51,34 +51,37 @@ fn is_test_async(py: Python<'_>, test_case: &TestCase) -> bool {
 
 /// Check if an async test can be safely gathered with other async tests.
 ///
-/// Tests that depend on session-scoped or package-scoped async fixtures
-/// cannot be gathered because they need to share an event loop that
-/// persists across the entire session/package. These tests must run
-/// sequentially to ensure proper event loop sharing.
+/// Tests are ONLY gathered if they can safely share an event loop. This means:
+/// 1. Tests with explicit `loop_scope="function"` are NEVER gathered (they need isolation)
+/// 2. Tests with `loop_scope="session"` or `"package"` are NEVER gathered (broader scope)
+/// 3. Tests depending on session/package-scoped async fixtures are NEVER gathered
+/// 4. Tests depending on session/package-scoped async autouse fixtures are NEVER gathered
 ///
-/// Additionally, tests with explicit `@mark.asyncio(loop_scope="session")`
-/// or `loop_scope="package"` are excluded from gathering since they
-/// explicitly request a broader-scoped event loop.
+/// Only tests with module or class scope (explicit or implicit) can be gathered,
+/// since they're designed to share a loop within that boundary.
 fn can_async_test_be_gathered(
     py: Python<'_>,
     fixtures: &IndexMap<String, Fixture>,
     test_case: &TestCase,
 ) -> bool {
-    // Check if the test has an explicit loop_scope that requires broader scope
+    // Check explicit loop_scope from @mark.asyncio(loop_scope="...")
     if let Some(explicit_scope) = get_explicit_loop_scope_from_marks(py, test_case) {
-        // Only function and module scopes can be gathered
-        // Session/package scopes explicitly request a persistent loop
-        if !matches!(
-            explicit_scope,
-            FixtureScope::Function | FixtureScope::Module | FixtureScope::Class
-        ) {
+        // Only module and class scopes can be gathered
+        // - Function scope: explicitly requests a fresh loop per test (isolation)
+        // - Session/package scopes: require a persistent loop across boundaries
+        if !matches!(explicit_scope, FixtureScope::Module | FixtureScope::Class) {
             return false;
         }
     }
 
-    // Check the required loop scope based on async fixture dependencies
-    let required_scope = detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters);
-    // Only tests requiring module, class, or function scope can be gathered
+    // Check the required loop scope based on ALL async fixture dependencies
+    // This includes both explicit parameters AND autouse fixtures
+    let required_scope =
+        detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters, test_case);
+
+    // Only tests requiring module or class scope can be gathered
+    // Function scope without explicit mark defaults to module for gathering purposes,
+    // but if fixtures require session/package, we can't gather
     matches!(
         required_scope,
         FixtureScope::Function | FixtureScope::Module | FixtureScope::Class
@@ -693,8 +696,28 @@ fn run_async_tests_gathered<'a>(
             continue;
         }
 
+        // Validate loop scope compatibility (catches mismatches between explicit scope and fixtures)
+        if let Some(error_message) =
+            validate_loop_scope_compatibility(py, test_case, &module.fixtures)
+        {
+            error_results.push((
+                test_case,
+                PyTestResult::failed(
+                    test_case.display_name.clone(),
+                    to_relative_path(&test_case.path),
+                    0.0,
+                    error_message,
+                    None,
+                    None,
+                    test_case.mark_names(),
+                ),
+            ));
+            continue;
+        }
+
         // For gathered tests, all must use the same event loop (module scope)
         // This is required for asyncio.gather() to work correctly
+        // Note: Tests with loop_scope="function" are excluded in can_async_test_be_gathered()
         let test_loop_scope = FixtureScope::Module;
 
         // Create a fresh function-scoped fixture context for each test
@@ -996,17 +1019,45 @@ fn get_explicit_loop_scope_from_marks(
 /// Analyze test's fixture dependencies to find the widest async fixture scope.
 /// This enables automatic loop scope detection based on what fixtures the test uses.
 ///
+/// This function checks:
+/// 1. Explicit fixture parameters requested by the test
+/// 2. Autouse fixtures that apply to this test (based on class scope)
+/// 3. Recursive dependencies of all the above
+///
 /// Returns the widest scope of any async fixture used by the test, or Function if none.
 fn detect_required_loop_scope_from_fixtures(
     fixtures: &IndexMap<String, Fixture>,
     test_params: &[String],
+    test_case: &TestCase,
 ) -> FixtureScope {
     let mut widest_scope = FixtureScope::Function;
     let mut visited = HashSet::new();
 
-    // Recursively analyze fixture dependencies
+    // Analyze explicit fixture parameters
     for param in test_params {
         analyze_fixture_scope(fixtures, param, &mut widest_scope, &mut visited);
+    }
+
+    // Also analyze autouse fixtures that apply to this test
+    // These are implicitly executed even if not in the parameter list
+    for (name, fixture) in fixtures.iter() {
+        if !fixture.autouse {
+            continue;
+        }
+
+        // Check if autouse fixture applies to this test
+        let applies = match (&fixture.class_name, &test_case.class_name) {
+            // Class-scoped autouse: only applies to tests in that class
+            (Some(fixture_class), Some(test_class)) => fixture_class == test_class,
+            // Module-level autouse: applies to all tests
+            (None, _) => true,
+            // Class fixture shouldn't run for non-class tests
+            (Some(_), None) => false,
+        };
+
+        if applies {
+            analyze_fixture_scope(fixtures, name, &mut widest_scope, &mut visited);
+        }
     }
 
     widest_scope
@@ -1075,8 +1126,9 @@ fn validate_loop_scope_compatibility(
     // Only validate if there's an explicit loop_scope
     let explicit_scope = get_explicit_loop_scope_from_marks(py, test_case)?;
 
-    // Detect what scope is required by fixtures
-    let required_scope = detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters);
+    // Detect what scope is required by fixtures (including autouse)
+    let required_scope =
+        detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters, test_case);
 
     // Check if explicit scope is narrower than required
     if is_scope_wider(&required_scope, &explicit_scope) {
@@ -1174,8 +1226,8 @@ fn determine_test_loop_scope(
         return explicit_scope;
     }
 
-    // Analyze fixture dependencies to find required scope
-    detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters)
+    // Analyze fixture dependencies to find required scope (including autouse)
+    detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters, test_case)
 }
 
 /// Execute a test case and return either success metadata or failure details.
