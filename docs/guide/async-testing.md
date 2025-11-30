@@ -458,6 +458,123 @@ async def test_expected_exception():
         await validate_data(invalid_data)
 ```
 
+## Concurrent Async Test Execution
+
+Rustest automatically runs compatible async tests concurrently using `asyncio.gather()`, providing significant speedup for I/O-bound test suites.
+
+### How It Works
+
+When executing tests, rustest analyzes each async test and its fixtures to determine if it can safely run concurrently with others:
+
+1. **Gatherable tests**: Async tests with function-scoped or module-scoped fixtures run concurrently
+2. **Sequential tests**: Async tests requiring session-scoped or package-scoped async fixtures run sequentially (they share event loops)
+3. **Sync tests**: Regular synchronous tests run as normal
+
+```python
+from rustest import fixture, mark
+import asyncio
+
+# These tests run concurrently - they don't share state
+@mark.asyncio
+async def test_api_call_1():
+    """Each test gets its own fresh event loop."""
+    await asyncio.sleep(0.1)  # Simulates network I/O
+    assert True
+
+@mark.asyncio
+async def test_api_call_2():
+    """Runs at the same time as test_api_call_1."""
+    await asyncio.sleep(0.1)
+    assert True
+
+@mark.asyncio
+async def test_api_call_3():
+    """Also concurrent with the others."""
+    await asyncio.sleep(0.1)
+    assert True
+```
+
+### Performance Benefits
+
+For I/O-bound async tests, the speedup can be dramatic:
+
+| Scenario | Sequential Time | Concurrent Time | Speedup |
+|----------|-----------------|-----------------|---------|
+| 10 tests × 100ms each | 1,000ms | ~100ms | **~10×** |
+| 50 tests × 50ms each | 2,500ms | ~50ms | **~50×** |
+| 100 tests × 20ms each | 2,000ms | ~20ms | **~100×** |
+
+The actual speedup depends on:
+- **I/O wait time**: More waiting = more benefit from concurrency
+- **CPU work**: CPU-bound portions still run sequentially (Python GIL)
+- **Fixture scopes**: Tests with shared fixtures may need sequencing
+
+### When Tests Run Sequentially
+
+Tests are excluded from concurrent gathering when they:
+
+1. **Use session/package-scoped async fixtures**: These must share an event loop
+2. **Have explicit dependencies**: The fixture graph requires sequential execution
+3. **Are synchronous**: Regular sync tests don't benefit from async gathering
+
+```python
+from rustest import fixture, mark
+
+# Session-scoped fixture requires sequential execution
+@fixture(scope="session")
+async def database_connection():
+    """Session-scoped async fixture - tests using this run sequentially."""
+    conn = await create_connection()
+    yield conn
+    await conn.close()
+
+@mark.asyncio(loop_scope="session")
+async def test_db_query_1(database_connection):
+    """Runs sequentially - shares session loop."""
+    result = await database_connection.query("SELECT 1")
+    assert result == 1
+
+@mark.asyncio(loop_scope="session")
+async def test_db_query_2(database_connection):
+    """Also runs sequentially - same session loop."""
+    result = await database_connection.query("SELECT 2")
+    assert result == 2
+```
+
+### Best Practices for Concurrent Tests
+
+1. **Use function scope by default**: Each test gets its own event loop and can run concurrently
+2. **Isolate test state**: Avoid global mutable state between async tests
+3. **Prefer module scope for shared resources**: When tests need to share an async resource within a module
+4. **Use session scope sparingly**: Only when truly necessary (e.g., expensive connection pools)
+
+```python
+from rustest import fixture, mark
+import asyncio
+
+# Good: Function-scoped tests run concurrently
+@mark.asyncio
+async def test_independent_1():
+    await asyncio.sleep(0.1)
+
+@mark.asyncio
+async def test_independent_2():
+    await asyncio.sleep(0.1)
+
+# Good: Module-scoped for shared in-module resources
+@fixture(scope="module")
+async def shared_client():
+    return await create_client()
+
+@mark.asyncio(loop_scope="module")
+async def test_with_client_1(shared_client):
+    await shared_client.request()
+
+@mark.asyncio(loop_scope="module")
+async def test_with_client_2(shared_client):
+    await shared_client.request()
+```
+
 ## Performance Considerations
 
 ### Loop Overhead
@@ -514,6 +631,56 @@ async def test_async():
 
 The API is intentionally similar to minimize migration effort.
 
+### Key Differences from pytest-asyncio
+
+| Feature | pytest-asyncio | rustest |
+|---------|---------------|---------|
+| **Concurrent execution** | Sequential by default | Automatic `asyncio.gather()` for compatible tests |
+| **Plugin required** | Yes (`pip install pytest-asyncio`) | No - built-in support |
+| **Auto mode** | `asyncio_mode = "auto"` | Not supported - explicit `@mark.asyncio` required |
+| **Event loop fixture** | `event_loop` fixture available | Not available - loops managed internally |
+| **Async fixtures** | `@pytest_asyncio.fixture` | Regular `@fixture` with async functions |
+| **Loop scope** | `loop_scope` parameter | Same - `loop_scope` parameter |
+
+### Performance Comparison
+
+Rustest provides a significant advantage for I/O-bound async test suites:
+
+**pytest-asyncio behavior**:
+- Runs async tests **sequentially** by default
+- Each test awaits completion before the next starts
+- 10 tests with 100ms I/O each = **1,000ms total**
+
+**rustest behavior**:
+- Runs compatible async tests **concurrently** via `asyncio.gather()`
+- I/O wait time overlaps across tests
+- 10 tests with 100ms I/O each = **~100ms total** (~10× faster)
+
+This means:
+
+- **API tests**: If you have 50 HTTP endpoint tests averaging 50ms each, rustest runs them in ~50ms vs pytest-asyncio's ~2,500ms
+- **Database tests**: Async DB query tests benefit similarly when using function or module scope
+- **WebSocket tests**: Connection and message tests can run concurrently
+
+### Migration Considerations
+
+**What works the same**:
+- `@mark.asyncio` decorator syntax
+- `loop_scope` parameter with same values
+- Async fixtures (defined differently)
+- Exception handling in async tests
+
+**What changes**:
+- No need to install a plugin
+- Tests may complete faster due to concurrent execution
+- No `event_loop` fixture - rustest manages loops internally
+- No auto mode - always use explicit `@mark.asyncio`
+
+**Potential issues**:
+- Tests that accidentally relied on sequential execution may expose race conditions
+- Global state mutations between tests may cause issues when running concurrently
+- Session-scoped async fixtures require careful design
+
 ## Common Patterns
 
 ### Testing Async Fixtures (Future Enhancement)
@@ -562,9 +729,10 @@ async def test_with_shared_pool():
 
 Current limitations (may be addressed in future releases):
 
-- Async fixtures are not yet supported
-- Loop scope currently creates a new loop per scope (future versions may reuse loops)
+- No `event_loop` fixture - loops are managed internally by rustest
+- Auto mode (`asyncio_mode = "auto"`) is not supported - use explicit `@mark.asyncio`
 - Debug mode and custom loop policies are not yet configurable
+- Tests with session/package-scoped async fixtures cannot run concurrently (by design - they share loops)
 
 ## Next Steps
 

@@ -64,7 +64,8 @@ This page provides a complete feature-by-feature comparison so you can see exact
 | Selecting tests by mark (`-m`) | ✅ | 🚧 | Mark metadata collected, filtering planned |
 | **Test Execution** |
 | Detailed assertion introspection | ✅ | ❌ | Uses standard Python assertions |
-| Parallel execution | ✅ (`pytest-xdist`) | 🚧 | Planned (Rust makes this easier) |
+| Parallel execution | ✅ (`pytest-xdist`) | ⚠️ | Async tests run concurrently; sync parallel planned |
+| Concurrent async tests | ❌ (sequential) | ✅ | Automatic `asyncio.gather()` for I/O speedup |
 | Test isolation | ✅ | ✅ | |
 | Stdout/stderr capture | ✅ | ✅ | `--no-capture` / `-s` |
 | **Reporting** |
@@ -301,7 +302,19 @@ See the [Performance](performance.md) page for detailed benchmarks.
 **Summary:**
 - **~2.1x faster** on typical test suites
 - **~24x faster** on heavily parametrized tests
+- **~10-100x faster** on I/O-bound async test suites (concurrent execution via `asyncio.gather()`)
 - Scales better with larger test suites
+
+### Async Test Performance
+
+Rustest provides a significant advantage for async tests:
+
+| Test Type | pytest | rustest | Speedup |
+|-----------|--------|---------|---------|
+| 10 async tests × 100ms I/O | 1,000ms | ~100ms | **~10×** |
+| 50 async tests × 50ms I/O | 2,500ms | ~50ms | **~50×** |
+
+pytest-asyncio runs async tests sequentially. Rustest automatically runs compatible async tests concurrently using `asyncio.gather()`, overlapping I/O wait times.
 
 ## Ecosystem
 
@@ -325,7 +338,7 @@ Planned rustest features to increase pytest compatibility:
 
 - 🚧 Mark-based filtering (`-m`)
 - 🚧 JUnit XML output
-- 🚧 Parallel test execution
+- 🚧 Full parallel sync test execution (async already runs concurrently)
 - 🚧 HTML reports
 
 Features not planned:
