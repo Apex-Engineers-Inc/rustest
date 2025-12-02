@@ -10,7 +10,7 @@ use std::ffi::c_void;
 use std::time::Instant;
 
 use indexmap::IndexMap;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -1195,6 +1195,13 @@ impl<'py> FixtureResolver<'py> {
     }
 
     fn resolve_for_request(&mut self, name: &str) -> PyResult<Py<PyAny>> {
+        if let Some(fixture) = self.fixtures.get(name) {
+            if fixture.is_async || fixture.is_async_generator {
+                return Err(PyNotImplementedError::new_err(async_getfixturevalue_error(
+                    name,
+                )));
+            }
+        }
         self.resolve_fixture_value(name)
     }
 
@@ -1388,6 +1395,24 @@ impl<'py> FixtureResolver<'py> {
         let tuple_obj = tuple_fn.call1((args_list,))?;
         Ok(tuple_obj.unbind())
     }
+}
+
+fn async_getfixturevalue_error(name: &str) -> String {
+    format!(
+        "\nCannot use async fixture '{name}' with request.getfixturevalue().\n\n\
+Why this fails:\n\
+  • getfixturevalue() is a synchronous function that returns values immediately\n\
+  • Async fixtures must be awaited, but we can't await in a sync context\n\
+  • Calling the async fixture returns a coroutine object, not the actual value\n\n\
+Good news: Async fixtures work perfectly with normal injection!\n\n\
+How to fix:\n\
+  ❌ Don't use: request.getfixturevalue('{name}')\n\
+  ✅ Instead use: def test_something({name}):\n\n\
+Example:\n\
+  # This works perfectly:\n\
+  async def test_my_feature({name}):\n\
+      assert {name} is not None\n"
+    )
 }
 
 /// Result type for test execution with optional stdout/stderr capture.
