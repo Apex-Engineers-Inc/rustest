@@ -5,6 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2025-12-02
+
+### Added
+
+- **Event Stream Architecture with Rich Terminal Rendering**: Complete redesign of test output system for beautiful, real-time feedback
+  - Event-based architecture enabling multiple output consumers (terminal, VS Code, JSON, etc.)
+  - Beautiful terminal output using the rich library with progress bars
+  - Real-time file-level progress indicators showing test execution status
+  - Compact progress display with green checkmarks (✓) for passing files, red (✗) for failures
+  - Live progress percentage and test counts with duration tracking
+  - Automatic terminal width adaptation for responsive display
+  - Foundation for parallel test execution and IDE integrations
+
+- **Smart Async Event Loop Detection**: Intelligent automatic event loop management for async tests and fixtures
+  - Automatic loop scope detection based on fixture dependency analysis
+  - Tests automatically use the widest async fixture scope (function → class → module → session)
+  - Eliminates "Task got Future attached to a different loop" errors
+  - Session-scoped async fixtures seamlessly work with function-scoped tests
+  - Explicit control available via `@mark.asyncio(loop_scope="...")` when needed
+  - Pytest-asyncio compatible with better automatic defaults
+  - Comprehensive beginner-friendly documentation in `docs/async-event-loops.md`
+
+- **Native Fixture Resolution Enhancements**: Deep integration of fixture resolution into Rust execution engine
+  - `request.getfixturevalue()` now calls directly into Rust backend for improved performance
+  - `@mark.usefixtures` eagerly resolves specified fixtures in Rust execution layer
+  - Generator fixtures fetched via `getfixturevalue` correctly trigger teardown logic
+  - Enhanced fixture request with nodeid and marks support
+  - Thread-safe fixture resolver activation for concurrent access
+
+- **Nested Conftest Discovery**: Robust fixture discovery for complex project structures
+  - Automatically loads ancestor conftest.py files for nested test directories
+  - Async autouse fixture support in nested conftest files
+  - Proper fixture scope resolution across directory hierarchies
+  - `RUSTEST_RUNNING` environment variable for detecting rustest execution context
+
+- **Advanced CLI Output Control**: Flexible output formatting options for different environments
+  - `--color` flag with three modes:
+    - `auto` (default): Colors ON locally, OFF in CI environments
+    - `always`: Force colors ON everywhere
+    - `never`: Force colors OFF everywhere
+  - Automatic CI detection across all major providers (GitHub Actions, GitLab CI, CircleCI, Travis CI, Jenkins, etc.)
+  - `--ascii` flag for ASCII-only output (PASS/FAIL/SKIP instead of Unicode symbols)
+  - Clean, readable logs in CI without manual configuration
+
+- **VHS Demo Recording Infrastructure**: Automated terminal demo generation for documentation
+  - VHS tape files for generating beautiful terminal recordings
+  - Automated regeneration in CI when output code changes
+  - Multiple output formats (GIF, PNG, WebM)
+  - Task runner integration (`poe demos`)
+
+### Changed
+
+- Pytest compatibility banner now uses rich Panel formatting for consistent styling
+- Event loop creation strategy changed from isolated per-test to scope-based sharing
+- `@mark.asyncio` decorator no longer wraps functions; only applies metadata for Rust execution layer
+- Output rendering moved from Python to event-stream architecture for better performance
+- Improved test output formatting with better error display during progress tracking
+
+### Fixed
+
+- **Multiple @parametrize Cross-Products**: Fixed cartesian product expansion when multiple `@parametrize` decorators are applied
+  - Multiple decorators now correctly create cross-products of all parameter combinations
+  - Example: `@parametrize("a", [1,2,3])` + `@parametrize("b", [4,5])` now creates 6 tests (3×2)
+  - Previously only parameters from one decorator would be used
+  - Indirect parameter lists from multiple decorators properly merged
+
+- **Async Fixture Event Loop Isolation**: Fixed critical event loop mismatch bugs
+  - Session-scoped async fixtures no longer cause "different loop" errors with function tests
+  - Function-scoped async fixtures correctly reuse session event loops when needed
+  - Class-based tests with `@mark.asyncio` no longer override smart loop detection
+  - Fixed `@mark.asyncio` defaulting to `loop_scope="function"` inappropriately
+
+- **skipif String Condition Evaluation**: `@mark.skipif` now correctly evaluates string conditions using module globals
+  - String expressions like `skipif("sys.platform == 'win32'")` now work correctly
+  - Condition evaluation uses proper module context
+
+- **Fixture Name Extraction**: Corrected fixture name extraction from `@mark.usefixtures` arguments
+  - Fixed regression in argument parsing for usefixtures decorator
+  - Proper handling of fixture name lists
+
+- **Rust Deprecation Warnings**: Updated to modern PyO3 APIs
+  - Replaced deprecated `Python::with_gil` with `Python::attach`
+  - Removed unnecessary `.clone()` on Copy types
+
+- **Test Skip Detection**: Improved pytest-only test detection for rustest-native features
+  - Loop scope detection tests properly skip when running with pytest
+  - Integration tests correctly detect execution context
+  - No more collection errors in pytest-compat mode
+
 ## [0.14.0] - 2025-11-24
 
 ### Added

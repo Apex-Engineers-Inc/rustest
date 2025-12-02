@@ -10,8 +10,8 @@ rustest --help
 
 ```
 usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [--no-capture]
-               [-v] [--ascii] [--no-color] [--no-codeblocks] [--lf] [--ff]
-               [-x]
+               [-v] [--ascii] [--color {auto,always,never}] [--no-codeblocks]
+               [--lf] [--ff] [-x]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -32,7 +32,10 @@ options:
   -v, --verbose         Show verbose output with hierarchical test structure.
   --ascii               Use ASCII characters instead of Unicode symbols for
                         output.
-  --no-color            Disable colored output.
+  --color {auto,always,never}
+                        Control colored output. 'auto' (default) enables
+                        colors locally and disables in CI. 'always' forces
+                        colors on. 'never' disables colors.
   --no-codeblocks       Disable code block tests from markdown files.
   --lf, --last-failed   Rerun only the tests that failed in the last run.
   --ff, --failed-first  Run previously failed tests first, then all other
@@ -430,7 +433,7 @@ rustest [OPTIONS] [PATHS...]
 | `--no-capture` | Don't capture stdout/stderr during test execution |
 | `-v, --verbose` | Show verbose output with hierarchical test structure |
 | `--ascii` | Use ASCII characters instead of Unicode symbols |
-| `--no-color` | Disable colored output |
+| `--color {auto,always,never}` | Control colored output: `auto` (default, colors in terminal, none in CI), `always` (force colors), `never` (disable colors) |
 | `--no-codeblocks` | Disable markdown code block testing |
 | `--lf, --last-failed` | Rerun only tests that failed in the last run |
 | `--ff, --failed-first` | Run failed tests first, then all other tests |
