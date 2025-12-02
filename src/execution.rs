@@ -1233,8 +1233,7 @@ impl<'py> FixtureResolver<'py> {
 
             let args = mark.args.bind(self.py);
             for item in args.iter() {
-                let py_value = item?;
-                let fixture_name: String = py_value.extract()?;
+                let fixture_name: String = item.extract()?;
                 names_to_resolve.push(fixture_name);
             }
         }
