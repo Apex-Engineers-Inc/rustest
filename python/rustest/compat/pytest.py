@@ -621,9 +621,13 @@ class FixtureRequest:
         if _rust_bridge is not None:
             try:
                 return _rust_bridge.getfixturevalue(name)
-            except RuntimeError as exc:
+            except (AttributeError, RuntimeError) as exc:
                 # When not running under rustest, fall back to Python resolver
-                if "active rustest test" not in str(exc):
+                message = str(exc)
+                if (
+                    "active rustest test" not in message
+                    and "only run while rustest is executing a test" not in message
+                ):
                     raise
                 # Continue to fallback path below so users still get a value when
                 # calling request.getfixturevalue() in environments where the Rust
