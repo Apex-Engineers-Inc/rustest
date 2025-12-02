@@ -1,5 +1,9 @@
 """Tests at deep level of nested conftest structure."""
 
+import os
+
+AUTOUSE_ENV_VAR = "RUSTEST_PARENT_AUTOUSE_LAST_TEST"
+
 
 def test_deep_fixture(deep_fixture):
     """Test can access deep level fixture."""
@@ -39,3 +43,10 @@ def test_session_fixture_in_deep(nested_session_fixture):
 def test_root_only_in_deep(root_only):
     """Root-only fixture is accessible from deep level."""
     assert root_only == "root_only_value"
+
+
+def test_root_autouse_runs_for_deep_dir():
+    """Root-level autouse fixture should run even in deeper directories."""
+    assert (
+        os.environ.get(AUTOUSE_ENV_VAR) == "test_root_autouse_runs_for_deep_dir"
+    ), "Parent autouse fixture did not run for deep directory tests"

@@ -150,6 +150,7 @@ pub fn discover_tests(
     for path in &canonical_paths {
         if path.is_dir() {
             discover_conftest_files(py, path, &mut conftest_fixtures, &module_ids)?;
+            discover_ancestor_conftest_directories(py, path, &mut conftest_fixtures, &module_ids)?;
         } else if path.is_file() {
             // For single test files, discover conftest.py in parent directories
             // This ensures fixtures from ancestor conftest.py files are available
@@ -317,6 +318,32 @@ fn discover_parent_conftest_files(
             Some(parent) => current_dir = parent,
             None => break, // Reached filesystem root
         }
+    }
+
+    Ok(())
+}
+
+/// Discover conftest.py files in ancestor directories of a provided directory path.
+///
+/// This mirrors pytest's behavior when running `pytest some/subdir`: pytest will still
+/// load conftest.py files from parent directories (e.g., project-root/conftest.py)
+/// so fixtures like session-scoped autouse fixtures remain available.
+fn discover_ancestor_conftest_directories(
+    py: Python<'_>,
+    start_dir: &Path,
+    conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
+    module_ids: &ModuleIdGenerator,
+) -> PyResult<()> {
+    let mut current_dir = start_dir.parent();
+
+    while let Some(dir) = current_dir {
+        let conftest_path = dir.join("conftest.py");
+        if conftest_path.is_file() && !conftest_map.contains_key(dir) {
+            let fixtures = load_conftest_fixtures(py, &conftest_path, module_ids)?;
+            conftest_map.insert(dir.to_path_buf(), fixtures);
+        }
+
+        current_dir = dir.parent();
     }
 
     Ok(())

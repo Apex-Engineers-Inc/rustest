@@ -1,5 +1,9 @@
 """Tests at child level of nested conftest structure."""
 
+import os
+
+AUTOUSE_ENV_VAR = "RUSTEST_PARENT_AUTOUSE_LAST_TEST"
+
 
 def test_child_fixture(child_fixture):
     """Test can access child level fixture."""
@@ -34,3 +38,10 @@ def test_root_only_accessible(root_only):
 def test_another_overridable(another_overridable):
     """At child level, gets child version."""
     assert another_overridable == "from_child_level"
+
+
+def test_root_autouse_runs_for_child_dir():
+    """Root-level autouse fixture should run even when collecting child dir."""
+    assert (
+        os.environ.get(AUTOUSE_ENV_VAR) == "test_root_autouse_runs_for_child_dir"
+    ), "Parent autouse fixture did not run for child directory tests"
