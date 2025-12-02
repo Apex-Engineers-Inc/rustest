@@ -1,5 +1,17 @@
 """Tests at child level of nested conftest structure."""
 
+import os
+
+import pytest
+
+AUTOUSE_ENV_VAR = "RUSTEST_PARENT_AUTOUSE_LAST_TEST"
+ASYNC_AUTOUSE_ENV_VAR = "RUSTEST_PARENT_ASYNC_AUTOUSE_LAST_TEST"
+
+requires_rustest = pytest.mark.skipif(
+    os.environ.get("RUSTEST_RUNNING") != "1",
+    reason="async autouse fixtures supported only when running under rustest",
+)
+
 
 def test_child_fixture(child_fixture):
     """Test can access child level fixture."""
@@ -34,3 +46,18 @@ def test_root_only_accessible(root_only):
 def test_another_overridable(another_overridable):
     """At child level, gets child version."""
     assert another_overridable == "from_child_level"
+
+
+def test_root_autouse_runs_for_child_dir():
+    """Root-level autouse fixture should run even when collecting child dir."""
+    assert (
+        os.environ.get(AUTOUSE_ENV_VAR) == "test_root_autouse_runs_for_child_dir"
+    ), "Parent autouse fixture did not run for child directory tests"
+
+
+@requires_rustest
+def test_root_async_autouse_runs_for_child_dir():
+    """Root-level async autouse fixture should also run for child dir."""
+    assert (
+        os.environ.get(ASYNC_AUTOUSE_ENV_VAR) == "test_root_async_autouse_runs_for_child_dir"
+    ), "Parent async autouse fixture did not run for child directory tests"

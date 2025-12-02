@@ -265,6 +265,16 @@ class TestFixtureRequestNodeAndConfig:
         assert request.node.name == "test_example"
         assert request.node.nodeid == "test_example"
 
+    def test_request_with_nodeid_override(self):
+        """Test creating request with explicit nodeid."""
+        request = FixtureRequest(
+            node_name="test_example",
+            nodeid="tests/test_file.py::test_example[param]",
+        )
+
+        assert request.node.name == "test_example"
+        assert request.node.nodeid == "tests/test_file.py::test_example[param]"
+
     def test_request_with_node_markers(self):
         """Test creating request with node markers."""
         markers = [{"name": "slow", "args": (), "kwargs": {}}]

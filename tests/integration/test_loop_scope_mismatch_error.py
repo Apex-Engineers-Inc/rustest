@@ -8,13 +8,13 @@ NOTE: These tests use pytest fixtures and subprocess to test rustest externally.
 They require pytest to run and are skipped when run with rustest.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 # Skip this module when running under rustest (not pytest)
-# Detection: rustest.rust is only loaded when the actual rustest runner is active
-if "rustest.rust" in sys.modules:
+if os.environ.get("RUSTEST_RUNNING") == "1":
     # Running under rustest - don't define any test functions
     pass
 else:

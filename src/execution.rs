@@ -11,11 +11,11 @@ use indexmap::IndexMap;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 use crate::cache;
 use crate::model::{
-    invalid_test_definition, to_relative_path, CollectionError, Fixture, FixtureScope,
+    invalid_test_definition, to_relative_path, CollectionError, Fixture, FixtureScope, Mark,
     ParameterMap, PyRunReport, PyTestResult, RunConfiguration, TestCase, TestModule,
 };
 use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDisplay};
@@ -686,6 +686,10 @@ fn execute_test_case(
     // Determine loop scope: explicit mark or smart detection based on fixture dependencies
     let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures);
 
+    let test_display_name = test_case.display_name.clone();
+    let test_nodeid = test_case.unique_id();
+    let test_marks = test_case.marks.clone();
+
     let mut resolver = FixtureResolver::new(
         py,
         &module.fixtures,
@@ -703,6 +707,9 @@ fn execute_test_case(
         &mut context.class_event_loop,
         test_case.class_name.as_deref(),
         test_loop_scope,
+        test_display_name,
+        test_nodeid,
+        test_marks,
     );
 
     // Populate Python fixture registry for getfixturevalue() support
@@ -839,6 +846,12 @@ struct FixtureResolver<'py> {
     test_class_name: Option<&'py str>,
     /// Loop scope for the current test (from @mark.asyncio(loop_scope="..."))
     test_loop_scope: FixtureScope,
+    /// Display name for the current test (used for request.node.name)
+    test_display_name: String,
+    /// Fully qualified identifier for the current test (used for request.node.nodeid)
+    test_nodeid: String,
+    /// Marks attached to the current test
+    test_marks: Vec<Mark>,
 }
 
 impl<'py> FixtureResolver<'py> {
@@ -860,6 +873,9 @@ impl<'py> FixtureResolver<'py> {
         class_event_loop: &'py mut Option<Py<PyAny>>,
         test_class_name: Option<&'py str>,
         test_loop_scope: FixtureScope,
+        test_display_name: String,
+        test_nodeid: String,
+        test_marks: Vec<Mark>,
     ) -> Self {
         Self {
             py,
@@ -883,6 +899,9 @@ impl<'py> FixtureResolver<'py> {
             function_event_loop: None,
             test_class_name,
             test_loop_scope,
+            test_display_name,
+            test_nodeid,
+            test_marks,
         }
     }
 
@@ -1152,6 +1171,10 @@ impl<'py> FixtureResolver<'py> {
             .map(|(name, _)| name.clone())
             .collect();
 
+        if std::env::var_os("RUSTEST_DEBUG_AUTOUSE").is_some() {
+            eprintln!("[rustest-debug] autouse fixtures: {:?}", autouse_fixtures);
+        }
+
         // Resolve each autouse fixture
         for name in autouse_fixtures {
             // Skip if already in cache (for higher-scoped autouse fixtures)
@@ -1240,9 +1263,32 @@ impl<'py> FixtureResolver<'py> {
         // Call FixtureRequest(param=param_value)
         let kwargs = pyo3::types::PyDict::new(self.py);
         kwargs.set_item("param", param)?;
+        kwargs.set_item("node_name", &self.test_display_name)?;
+        kwargs.set_item("nodeid", &self.test_nodeid)?;
+        kwargs.set_item("node_markers", self.build_marker_list()?)?;
         let request = fixture_request_class.call((), Some(&kwargs))?;
 
         Ok(request.unbind())
+    }
+
+    fn build_marker_list(&self) -> PyResult<Py<PyList>> {
+        let markers = PyList::empty(self.py);
+        for mark in &self.test_marks {
+            let marker_dict = PyDict::new(self.py);
+            marker_dict.set_item("name", mark.name.clone())?;
+            marker_dict.set_item("args", self.mark_args_as_tuple(mark)?)?;
+            marker_dict.set_item("kwargs", mark.kwargs.clone_ref(self.py))?;
+            markers.append(marker_dict)?;
+        }
+        Ok(markers.unbind())
+    }
+
+    fn mark_args_as_tuple(&self, mark: &Mark) -> PyResult<Py<PyAny>> {
+        let builtins = self.py.import("builtins")?;
+        let tuple_fn = builtins.getattr("tuple")?;
+        let args_list = mark.args.bind(self.py);
+        let tuple_obj = tuple_fn.call1((args_list,))?;
+        Ok(tuple_obj.unbind())
     }
 }
 
