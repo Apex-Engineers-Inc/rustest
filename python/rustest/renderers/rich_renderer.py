@@ -252,7 +252,7 @@ class RichRenderer:
             duration_str = f"{event.duration:.2f}s"
 
         # Build summary parts
-        parts = []
+        parts: list[str] = []
         if event.passed > 0:
             parts.append(f"[green]{pass_symbol} {event.passed} passed[/green]")
         if event.failed > 0:

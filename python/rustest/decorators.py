@@ -497,7 +497,7 @@ class MarkDecorator:
         setattr(func, "__rustest_marks__", existing_marks)
         return func
 
-    def _normalize_args(self, target: TFunc) -> tuple[Any, ...]:
+    def _normalize_args(self, target: Callable[..., Any]) -> tuple[Any, ...]:
         if self.name != "skipif" or not self.args:
             return self.args
 
@@ -723,7 +723,7 @@ class MarkGenerator:
 mark = MarkGenerator()
 
 
-def _evaluate_skipif_condition(condition: Any, target: TFunc) -> Any:
+def _evaluate_skipif_condition(condition: Any, target: Callable[..., Any]) -> Any:
     if not isinstance(condition, str):
         return condition
 
@@ -747,10 +747,11 @@ def _evaluate_skipif_condition(condition: Any, target: TFunc) -> Any:
     try:
         return bool(eval(condition, globals_ns, locals_ns))
     except Exception as exc:  # pragma: no cover - defensive
-        raise RuntimeError(
+        message = (
             "Failed to evaluate skipif condition "
-            f"'{condition}': {exc}. Fix the expression or guard it with try/except."
-        ) from exc
+            + f"'{condition}': {exc}. Fix the expression or guard it with try/except."
+        )
+        raise RuntimeError(message) from exc
 
 
 class ExceptionInfo:

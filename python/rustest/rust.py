@@ -30,8 +30,8 @@ def run(
 
     raise NotImplementedError(
         "rustest.rust.run() is only available when the native extension is built. "
-        "Tests that import rustest without compiling the extension should monkeypatch "
-        "rustest.rust.run with a stub implementation."
+        + "Tests that import rustest without compiling the extension should monkeypatch "
+        + "rustest.rust.run with a stub implementation."
     )
 
 
