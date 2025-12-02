@@ -26,7 +26,7 @@ use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDi
 // It lets Python's `request.getfixturevalue()` calls tunnel back into the Rust resolver
 // without exposing the resolver publicly or cloning it.
 thread_local! {
-    static ACTIVE_RESOLVER: RefCell<Option<*mut c_void>> = const { RefCell::new(None) };
+    static ACTIVE_RESOLVER: RefCell<Vec<*mut c_void>> = const { RefCell::new(Vec::new()) };
 }
 
 struct ResolverActivationGuard;
@@ -35,9 +35,7 @@ impl ResolverActivationGuard {
     fn new(resolver: &mut FixtureResolver<'_>) -> Self {
         let ptr = resolver as *mut _ as *mut c_void;
         ACTIVE_RESOLVER.with(|cell| {
-            let mut slot = cell.borrow_mut();
-            debug_assert!(slot.is_none(), "resolver already active on this thread");
-            *slot = Some(ptr);
+            cell.borrow_mut().push(ptr);
         });
         Self
     }
@@ -46,7 +44,9 @@ impl ResolverActivationGuard {
 impl Drop for ResolverActivationGuard {
     fn drop(&mut self) {
         ACTIVE_RESOLVER.with(|cell| {
-            *cell.borrow_mut() = None;
+            let mut slot = cell.borrow_mut();
+            let popped = slot.pop();
+            debug_assert!(popped.is_some(), "resolver stack underflow");
         });
     }
 }
@@ -54,7 +54,7 @@ impl Drop for ResolverActivationGuard {
 pub(crate) fn resolve_fixture_for_request(name: &str) -> PyResult<Py<PyAny>> {
     ACTIVE_RESOLVER.with(|cell| {
         let slot = cell.borrow();
-        if let Some(ptr) = *slot {
+        if let Some(&ptr) = slot.last() {
             // SAFETY: The pointer is valid for the duration of the test while the guard is active.
             let resolver = unsafe { &mut *(ptr as *mut FixtureResolver<'static>) };
             resolver.resolve_for_request(name)
