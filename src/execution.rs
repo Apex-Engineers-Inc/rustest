@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
-use pyo3::types::{PyCapsule, PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 use crate::cache;
 use crate::model::{
@@ -1223,7 +1223,9 @@ impl<'py> FixtureResolver<'py> {
     /// Rather than mutating the signature, we simply resolve the fixtures up front so all
     /// registered setup/teardown behaviour still runs.
     fn apply_usefixtures_marks(&mut self) -> PyResult<()> {
-        let mut resolved = HashSet::new();
+        // Safely collect fixture names first so we can drop the immutable borrow on
+        // `self.test_marks` before calling `resolve_fixture_value`.
+        let mut names_to_resolve: Vec<String> = Vec::new();
         for mark in &self.test_marks {
             if !mark.is_named("usefixtures") {
                 continue;
@@ -1232,11 +1234,17 @@ impl<'py> FixtureResolver<'py> {
             let args = mark.args.bind(self.py);
             for item in args.iter() {
                 let fixture_name: String = item.extract()?;
-                if resolved.insert(fixture_name.clone()) {
-                    self.resolve_fixture_value(&fixture_name)?;
-                }
+                names_to_resolve.push(fixture_name);
             }
         }
+
+        let mut resolved = HashSet::new();
+        for fixture_name in names_to_resolve {
+            if resolved.insert(fixture_name.clone()) {
+                self.resolve_fixture_value(&fixture_name)?;
+            }
+        }
+
         Ok(())
     }
 

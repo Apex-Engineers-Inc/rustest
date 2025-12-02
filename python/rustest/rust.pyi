@@ -87,18 +87,22 @@ class PyRunReport:
 
 def run(
     paths: Sequence[str],
-    pattern: str | None,
-    mark_expr: str | None,
-    workers: int | None,
-    capture_output: bool,
-    enable_codeblocks: bool,
-    last_failed_mode: str,
-    fail_fast: bool,
-    pytest_compat: bool,
-    verbose: bool,
-    ascii: bool,
-    no_color: bool,
-    event_callback: object | None = None,
+    pattern: str | None = ...,
+    mark_expr: str | None = ...,
+    workers: int | None = ...,
+    capture_output: bool = ...,
+    enable_codeblocks: bool = ...,
+    last_failed_mode: str = ...,
+    fail_fast: bool = ...,
+    pytest_compat: bool = ...,
+    verbose: bool = ...,
+    ascii: bool = ...,
+    no_color: bool = ...,
+    event_callback: object | None = ...,
 ) -> PyRunReport:
     """Execute tests and return a report."""
+    ...
+
+def getfixturevalue(name: str) -> object:
+    """Resolve a fixture through the active test resolver."""
     ...
