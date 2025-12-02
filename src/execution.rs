@@ -26,7 +26,7 @@ use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDi
 // It lets Python's `request.getfixturevalue()` calls tunnel back into the Rust resolver
 // without exposing the resolver publicly or cloning it.
 thread_local! {
-    static ACTIVE_RESOLVER: RefCell<Option<*mut c_void>> = RefCell::new(None);
+    static ACTIVE_RESOLVER: RefCell<Option<*mut c_void>> = const { RefCell::new(None) };
 }
 
 struct ResolverActivationGuard;
