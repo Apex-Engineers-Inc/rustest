@@ -176,6 +176,12 @@ pub fn discover_tests(
                 let file = entry.into_path();
                 if file.is_file() {
                     if py_glob.is_match(&file) {
+                        discover_parent_conftest_files(
+                            py,
+                            &file,
+                            &mut conftest_fixtures,
+                            &module_ids,
+                        )?;
                         match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)
                         {
                             Ok(Some(module)) => modules.push(module),
@@ -188,6 +194,12 @@ pub fn discover_tests(
                         }
                     } else if let Some(ref md_glob_set) = md_glob {
                         if md_glob_set.is_match(&file) {
+                            discover_parent_conftest_files(
+                                py,
+                                &file,
+                                &mut conftest_fixtures,
+                                &module_ids,
+                            )?;
                             match collect_from_markdown(py, &file, config, &conftest_fixtures) {
                                 Ok(Some(module)) => modules.push(module),
                                 Ok(None) => {}
@@ -205,6 +217,7 @@ pub fn discover_tests(
             }
         } else if path.is_file() {
             if py_glob.is_match(&path) {
+                discover_parent_conftest_files(py, &path, &mut conftest_fixtures, &module_ids)?;
                 match collect_from_file(py, &path, config, &module_ids, &conftest_fixtures) {
                     Ok(Some(module)) => modules.push(module),
                     Ok(None) => {}
@@ -216,6 +229,7 @@ pub fn discover_tests(
                 }
             } else if let Some(ref md_glob_set) = md_glob {
                 if md_glob_set.is_match(&path) {
+                    discover_parent_conftest_files(py, &path, &mut conftest_fixtures, &module_ids)?;
                     match collect_from_markdown(py, &path, config, &conftest_fixtures) {
                         Ok(Some(module)) => modules.push(module),
                         Ok(None) => {}

@@ -509,6 +509,7 @@ class FixtureRequest:
         self,
         param: Any = None,
         node_name: str = "",
+        nodeid: str | None = None,
         node_markers: list[MarkerDict] | None = None,
         config_options: dict[str, Any] | None = None,
     ) -> None:
@@ -516,7 +517,8 @@ class FixtureRequest:
 
         Args:
             param: The parameter value for parametrized fixtures
-            node_name: Name of the test node
+            node_name: Name of the current test node
+            nodeid: Fully-qualified identifier for the current test node
             node_markers: List of markers applied to the node
             config_options: Dictionary of configuration options
         """
@@ -527,9 +529,10 @@ class FixtureRequest:
 
         # Create Config and Node objects
         self.config: Config = Config(options=config_options)
+        node_identifier = nodeid or node_name
         self.node: Node = Node(
             name=node_name,
-            nodeid=node_name,  # Use name as nodeid for now
+            nodeid=node_identifier,
             markers=node_markers,
             config=self.config,
         )

@@ -5,12 +5,13 @@ These tests are executed via pytest (subprocess) and are skipped when running
 with rustest itself to avoid recursive invocations.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-# Skip when rustest is the active runner (rustest.rust only exists then)
-if "rustest.rust" not in sys.modules:
+# Skip when running inside rustest itself to avoid recursive invocation
+if os.environ.get("RUSTEST_RUNNING") != "1":
 
     def _python_executable() -> str:
         """Prefer system python if available to match CI behavior."""

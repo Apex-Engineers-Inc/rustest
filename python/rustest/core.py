@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Sequence
 
@@ -84,20 +85,29 @@ def run(
     rich_renderer = RichRenderer(use_colors=not no_color, use_ascii=ascii)
     router.subscribe(rich_renderer)
 
-    # Run tests with event callback
-    raw_report = rust.run(
-        paths=list(paths),
-        pattern=pattern,
-        mark_expr=mark_expr,
-        workers=workers,
-        capture_output=capture_output,
-        enable_codeblocks=enable_codeblocks,
-        last_failed_mode=last_failed_mode,
-        fail_fast=fail_fast,
-        pytest_compat=pytest_compat,
-        verbose=verbose,
-        ascii=ascii,
-        no_color=no_color,
-        event_callback=router.emit,
-    )
+    previous_running = os.environ.get("RUSTEST_RUNNING")
+    os.environ["RUSTEST_RUNNING"] = "1"
+    try:
+        # Run tests with event callback
+        raw_report = rust.run(
+            paths=list(paths),
+            pattern=pattern,
+            mark_expr=mark_expr,
+            workers=workers,
+            capture_output=capture_output,
+            enable_codeblocks=enable_codeblocks,
+            last_failed_mode=last_failed_mode,
+            fail_fast=fail_fast,
+            pytest_compat=pytest_compat,
+            verbose=verbose,
+            ascii=ascii,
+            no_color=no_color,
+            event_callback=router.emit,
+        )
+    finally:
+        if previous_running is None:
+            os.environ.pop("RUSTEST_RUNNING", None)
+        else:
+            os.environ["RUSTEST_RUNNING"] = previous_running
+
     return RunReport.from_py(raw_report)
