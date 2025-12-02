@@ -2,7 +2,8 @@
 
 This module is packaged with the Python distribution so unit tests can import the
 package without building the Rust extension. Individual tests are expected to
-monkeypatch the functions they exercise.
+monkeypatch the functions they exercise. Keeping this stub lightweight makes it
+easy to trigger CI rebuilds without touching the compiled extension itself.
 """
 
 from __future__ import annotations
