@@ -2,7 +2,15 @@
 
 import os
 
+import pytest
+
 AUTOUSE_ENV_VAR = "RUSTEST_PARENT_AUTOUSE_LAST_TEST"
+ASYNC_AUTOUSE_ENV_VAR = "RUSTEST_PARENT_ASYNC_AUTOUSE_LAST_TEST"
+
+requires_rustest = pytest.mark.skipif(
+    os.environ.get("RUSTEST_RUNNING") != "1",
+    reason="async autouse fixtures supported only when running under rustest",
+)
 
 
 def test_deep_fixture(deep_fixture):
@@ -50,3 +58,11 @@ def test_root_autouse_runs_for_deep_dir():
     assert (
         os.environ.get(AUTOUSE_ENV_VAR) == "test_root_autouse_runs_for_deep_dir"
     ), "Parent autouse fixture did not run for deep directory tests"
+
+
+@requires_rustest
+def test_root_async_autouse_runs_for_deep_dir():
+    """Root-level async autouse fixture should run even in deeper directories."""
+    assert (
+        os.environ.get(ASYNC_AUTOUSE_ENV_VAR) == "test_root_async_autouse_runs_for_deep_dir"
+    ), "Parent async autouse fixture did not run for deep directory tests"
