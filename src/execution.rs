@@ -4,14 +4,16 @@
 //! this module keeps the door open for future parallel strategies by isolating
 //! the orchestration logic from the raw execution of tests.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::ffi::c_void;
 use std::time::Instant;
 
 use indexmap::IndexMap;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyCapsule, PyDict, PyList, PyTuple};
 
 use crate::cache;
 use crate::model::{
@@ -19,6 +21,47 @@ use crate::model::{
     ParameterMap, PyRunReport, PyTestResult, RunConfiguration, TestCase, TestModule,
 };
 use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDisplay};
+
+thread_local! {
+    static ACTIVE_RESOLVER: RefCell<Option<*mut c_void>> = RefCell::new(None);
+}
+
+struct ResolverActivationGuard;
+
+impl ResolverActivationGuard {
+    fn new(resolver: &mut FixtureResolver<'_>) -> Self {
+        let ptr = resolver as *mut _ as *mut c_void;
+        ACTIVE_RESOLVER.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            debug_assert!(slot.is_none(), "resolver already active on this thread");
+            *slot = Some(ptr);
+        });
+        Self
+    }
+}
+
+impl Drop for ResolverActivationGuard {
+    fn drop(&mut self) {
+        ACTIVE_RESOLVER.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
+}
+
+pub(crate) fn resolve_fixture_for_request(name: &str) -> PyResult<Py<PyAny>> {
+    ACTIVE_RESOLVER.with(|cell| {
+        let slot = cell.borrow();
+        if let Some(ptr) = *slot {
+            // SAFETY: The pointer is valid for the duration of the test while the guard is active.
+            let resolver = unsafe { &mut *(ptr as *mut FixtureResolver<'static>) };
+            resolver.resolve_for_request(name)
+        } else {
+            Err(PyRuntimeError::new_err(
+                "request.getfixturevalue() is only available inside an active rustest test",
+            ))
+        }
+    })
+}
 
 /// Manages teardown for generator fixtures across different scopes.
 struct TeardownCollector {
@@ -712,6 +755,8 @@ fn execute_test_case(
         test_marks,
     );
 
+    let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
+
     // Populate Python fixture registry for getfixturevalue() support
     if let Err(err) = populate_fixture_registry(py, &module.fixtures) {
         let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
@@ -724,6 +769,15 @@ fn execute_test_case(
 
     // Resolve autouse fixtures first
     if let Err(err) = resolver.resolve_autouse_fixtures() {
+        let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+        return Err(TestCallFailure {
+            message,
+            stdout: None,
+            stderr: None,
+        });
+    }
+
+    if let Err(err) = resolver.apply_usefixtures_marks() {
         let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
         return Err(TestCallFailure {
             message,
@@ -919,6 +973,10 @@ impl<'py> FixtureResolver<'py> {
             return Ok(value.clone_ref(self.py));
         }
 
+        self.resolve_fixture_value(name)
+    }
+
+    fn resolve_fixture_value(&mut self, name: &str) -> PyResult<Py<PyAny>> {
         // Special handling for "request" fixture - create with current param value
         if name == "request" {
             return self.create_request_fixture();
@@ -1131,6 +1189,10 @@ impl<'py> FixtureResolver<'py> {
         Ok(result)
     }
 
+    fn resolve_for_request(&mut self, name: &str) -> PyResult<Py<PyAny>> {
+        self.resolve_fixture_value(name)
+    }
+
     /// Validate that a fixture's scope is compatible with its dependency's scope.
     ///
     /// The rule is: a fixture can only depend on fixtures with equal or broader scope.
@@ -1146,6 +1208,25 @@ impl<'py> FixtureResolver<'py> {
                  A fixture can only depend on fixtures with equal or broader scope.",
                 fixture.name, fixture.scope, dependency.name, dependency.scope
             )));
+        }
+        Ok(())
+    }
+
+    /// Apply @mark.usefixtures by eagerly resolving the referenced fixtures.
+    fn apply_usefixtures_marks(&mut self) -> PyResult<()> {
+        let mut resolved = HashSet::new();
+        for mark in &self.test_marks {
+            if !mark.is_named("usefixtures") {
+                continue;
+            }
+
+            let args = mark.args.bind(self.py);
+            for item in args.iter() {
+                let fixture_name: String = item.extract()?;
+                if resolved.insert(fixture_name.clone()) {
+                    self.resolve_fixture_value(&fixture_name)?;
+                }
+            }
         }
         Ok(())
     }

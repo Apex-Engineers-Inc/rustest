@@ -51,7 +51,12 @@ def get_fixture(name: str) -> Any:
         return _fixture_registry[name]
 
 
-def resolve_fixture(name: str, _executed_fixtures: dict[str, Any] | None = None) -> Any:
+def resolve_fixture(
+    name: str,
+    _executed_fixtures: dict[str, Any] | None = None,
+    *,
+    request_obj: Any | None = None,
+) -> Any:
     """Resolve and execute a fixture by name.
 
     This handles fixture dependencies recursively and caches results per test.
@@ -108,13 +113,14 @@ def resolve_fixture(name: str, _executed_fixtures: dict[str, Any] | None = None)
             # Try to get the fixture (thread-safe with lock)
             get_fixture(param_name)
             # It's a fixture - resolve it recursively
-            resolved_args[param_name] = resolve_fixture(param_name, _executed_fixtures)
+            resolved_args[param_name] = resolve_fixture(
+                param_name,
+                _executed_fixtures,
+                request_obj=request_obj,
+            )
         except ValueError:
-            # Not a fixture - skip it
-            # Special handling for 'request' parameter
             if param_name == "request":
-                # Skip 'request' parameter - will be handled by caller
-                resolved_args[param_name] = None
+                resolved_args[param_name] = _resolve_request_argument(request_obj)
 
     # Execute the fixture
     result = fixture_func(**resolved_args)
@@ -128,3 +134,13 @@ def resolve_fixture(name: str, _executed_fixtures: dict[str, Any] | None = None)
     _executed_fixtures[name] = result
 
     return result
+
+
+def _resolve_request_argument(request_obj: Any | None) -> Any:
+    if request_obj is not None:
+        return request_obj
+
+    # Lazy import to avoid circular dependency during module import
+    from rustest.compat.pytest import FixtureRequest
+
+    return FixtureRequest()

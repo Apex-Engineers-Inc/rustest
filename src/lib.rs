@@ -21,7 +21,7 @@ mod model_tests;
 mod python_support_tests;
 
 use discovery::discover_tests;
-use execution::run_collected_tests;
+use execution::{resolve_fixture_for_request, run_collected_tests};
 use model::{CollectionError, LastFailedMode, PyRunReport, RunConfiguration};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -68,6 +68,11 @@ fn run(
     Ok(report)
 }
 
+#[pyfunction]
+fn getfixturevalue(name: &str) -> PyResult<Py<PyAny>> {
+    resolve_fixture_for_request(name)
+}
+
 /// Entry point for the Python extension module.
 #[pymodule]
 fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -79,6 +84,7 @@ fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunReport>()?;
     m.add_class::<CollectionError>()?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(getfixturevalue, m)?)?;
 
     // Event types for event stream consumers
     m.add_class::<FileStartedEvent>()?;

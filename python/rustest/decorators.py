@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import inspect
+import sys
 from typing import Any, ParamSpec, TypeVar, overload, cast
 
 P = ParamSpec("P")
@@ -486,7 +488,7 @@ class MarkDecorator:
         # Add this mark to the list
         mark_data = {
             "name": self.name,
-            "args": self.args,
+            "args": self._normalize_args(func),
             "kwargs": self.kwargs,
         }
         existing_marks.append(mark_data)
@@ -494,6 +496,13 @@ class MarkDecorator:
         # Store the marks list on the function
         setattr(func, "__rustest_marks__", existing_marks)
         return func
+
+    def _normalize_args(self, target: TFunc) -> tuple[Any, ...]:
+        if self.name != "skipif" or not self.args:
+            return self.args
+
+        evaluated = _evaluate_skipif_condition(self.args[0], target)
+        return (evaluated, *self.args[1:])
 
     def __repr__(self) -> str:
         return f"Mark({self.name!r}, {self.args!r}, {self.kwargs!r})"
@@ -712,6 +721,30 @@ class MarkGenerator:
 
 # Create a singleton instance
 mark = MarkGenerator()
+
+
+def _evaluate_skipif_condition(condition: Any, target: TFunc) -> Any:
+    if not isinstance(condition, str):
+        return condition
+
+    globals_ns = getattr(target, "__globals__", None)
+    if globals_ns is None:
+        module_name = getattr(target, "__module__", None)
+        if module_name is not None:
+            module = sys.modules.get(module_name)
+            if module is not None:
+                globals_ns = vars(module)
+    if globals_ns is None:
+        globals_ns = {}
+
+    locals_ns: dict[str, Any] = {}
+    if inspect.isclass(target):
+        locals_ns = dict(vars(target))
+
+    try:
+        return bool(eval(condition, globals_ns, locals_ns))
+    except Exception as exc:  # pragma: no cover - defensive
+        raise RuntimeError(f"Failed to evaluate skipif condition '{condition}': {exc}") from exc
 
 
 class ExceptionInfo:
