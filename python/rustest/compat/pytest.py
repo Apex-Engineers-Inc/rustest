@@ -625,6 +625,9 @@ class FixtureRequest:
                 # When not running under rustest, fall back to Python resolver
                 if "active rustest test" not in str(exc):
                     raise
+                # Continue to fallback path below so users still get a value when
+                # calling request.getfixturevalue() in environments where the Rust
+                # extension is not active (e.g., plain pytest).
 
         # Import and use the fixture registry fallback
         from rustest.fixture_registry import resolve_fixture

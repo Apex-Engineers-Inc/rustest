@@ -22,6 +22,9 @@ use crate::model::{
 };
 use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDisplay};
 
+// This thread-local stores a raw pointer to the currently active `FixtureResolver`.
+// It lets Python's `request.getfixturevalue()` calls tunnel back into the Rust resolver
+// without exposing the resolver publicly or cloning it.
 thread_local! {
     static ACTIVE_RESOLVER: RefCell<Option<*mut c_void>> = RefCell::new(None);
 }
@@ -57,7 +60,9 @@ pub(crate) fn resolve_fixture_for_request(name: &str) -> PyResult<Py<PyAny>> {
             resolver.resolve_for_request(name)
         } else {
             Err(PyRuntimeError::new_err(
-                "request.getfixturevalue() is only available inside an active rustest test",
+                "request.getfixturevalue() can only run while rustest is executing a test. \
+                 Call it from inside a test function (or inject the fixture directly) so rustest \
+                 knows which resolver to use.",
             ))
         }
     })
@@ -1213,6 +1218,10 @@ impl<'py> FixtureResolver<'py> {
     }
 
     /// Apply @mark.usefixtures by eagerly resolving the referenced fixtures.
+    ///
+    /// Pytest treats `@mark.usefixtures("foo")` as if "foo" were listed in the test signature.
+    /// Rather than mutating the signature, we simply resolve the fixtures up front so all
+    /// registered setup/teardown behaviour still runs.
     fn apply_usefixtures_marks(&mut self) -> PyResult<()> {
         let mut resolved = HashSet::new();
         for mark in &self.test_marks {

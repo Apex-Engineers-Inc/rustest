@@ -727,6 +727,9 @@ def _evaluate_skipif_condition(condition: Any, target: TFunc) -> Any:
     if not isinstance(condition, str):
         return condition
 
+    # Recreate pytest's evaluation order: use the function's globals first and fall
+    # back to the module where the function is defined. This lets expressions reuse
+    # constants or helper flags defined next to the tests.
     globals_ns = getattr(target, "__globals__", None)
     if globals_ns is None:
         module_name = getattr(target, "__module__", None)
@@ -744,7 +747,10 @@ def _evaluate_skipif_condition(condition: Any, target: TFunc) -> Any:
     try:
         return bool(eval(condition, globals_ns, locals_ns))
     except Exception as exc:  # pragma: no cover - defensive
-        raise RuntimeError(f"Failed to evaluate skipif condition '{condition}': {exc}") from exc
+        raise RuntimeError(
+            "Failed to evaluate skipif condition "
+            f"'{condition}': {exc}. Fix the expression or guard it with try/except."
+        ) from exc
 
 
 class ExceptionInfo:

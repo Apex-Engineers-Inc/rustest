@@ -143,4 +143,6 @@ def _resolve_request_argument(request_obj: Any | None) -> Any:
     # Lazy import to avoid circular dependency during module import
     from rustest.compat.pytest import FixtureRequest
 
+    # This mirrors pytest's behaviour where a best-effort request object is created
+    # so fixtures that reference `request` can still introspect basic metadata.
     return FixtureRequest()
