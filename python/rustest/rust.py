@@ -36,6 +36,4 @@ def run(
 
 def getfixturevalue(_name: str) -> Any:
     """Placeholder matching the native helper exported by the extension."""
-    raise RuntimeError(
-        "request.getfixturevalue() is only available inside an active rustest test"
-    )
+    raise RuntimeError("request.getfixturevalue() is only available inside an active rustest test")
