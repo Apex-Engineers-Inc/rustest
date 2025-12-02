@@ -9,6 +9,9 @@ import pytest
 # Create a conditional skip decorator for tests that require pytest or pytest-compat mode
 _needs_pytest_compat = "pytest" not in sys.argv[0] and "--pytest-compat" not in sys.argv
 
+_session_instance_ids: list[int] = []
+_generator_teardowns: list[str] = []
+
 def _skip_if_native_mode(func):
     """Decorator to skip tests when running rustest in native mode."""
     if _needs_pytest_compat:
@@ -207,6 +210,30 @@ def level3(level2):
     return f"{level2}_level3"
 
 
+@pytest.fixture(scope="session")
+def tracked_session_fixture():
+    """Session fixture that tracks instantiations."""
+    instance = object()
+    _session_instance_ids.append(id(instance))
+    return instance
+
+
+@pytest.fixture
+def request_aware_fixture(request):
+    """Fixture that asserts request object is available."""
+    return {"node": request.node.name, "scope": request.scope}
+
+
+@pytest.fixture
+def generator_teardown_fixture():
+    """Generator fixture used to ensure teardown runs."""
+    data = {"alive": True}
+    try:
+        yield data
+    finally:
+        _generator_teardowns.append("done")
+
+
 @_skip_if_native_mode
 def test_getfixturevalue_nested_deps(request):
     """Test getfixturevalue with deeply nested dependencies."""
@@ -242,3 +269,43 @@ class TestGetFixtureValueInClass:
         """Test parametrized getfixturevalue in class methods."""
         value = request.getfixturevalue(fixture_name)
         assert value is not None
+
+
+@_skip_if_native_mode
+def test_getfixturevalue_passes_request_object(request):
+    """request.getfixturevalue should provide the same request object to fixtures."""
+    value = request.getfixturevalue("request_aware_fixture")
+    assert value["scope"] == "function"
+    assert value["node"].startswith("test_getfixturevalue_passes_request_object")
+
+
+@_skip_if_native_mode
+def test_getfixturevalue_session_scope_single_instance(request):
+    """Session-scoped fixtures fetched dynamically should not be recreated."""
+    first = request.getfixturevalue("tracked_session_fixture")
+    second = request.getfixturevalue("tracked_session_fixture")
+    assert first is second
+
+
+@_skip_if_native_mode
+def test_getfixturevalue_session_scope_shared_between_tests(request):
+    """Subsequent tests should reuse the same session fixture instance."""
+    current = request.getfixturevalue("tracked_session_fixture")
+    assert len(_session_instance_ids) == 1
+    assert id(current) == _session_instance_ids[0]
+
+
+@_skip_if_native_mode
+def test_getfixturevalue_generator_fixture_teardown(request):
+    """Generator fixtures fetched dynamically should still execute teardown."""
+    value = request.getfixturevalue("generator_teardown_fixture")
+    assert value["alive"] is True
+    assert _generator_teardowns == []
+
+
+def teardown_module(_module):
+    """Verify teardown side effects that occur after the module finishes."""
+    if _needs_pytest_compat:
+        return
+    assert len(_session_instance_ids) == 1
+    assert _generator_teardowns == ["done"]

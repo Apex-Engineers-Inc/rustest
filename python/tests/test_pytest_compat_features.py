@@ -20,9 +20,11 @@ from rustest.compat.pytest import (
     deprecated_call,
     param,
     importorskip,
+    FixtureRequest,
 )
 from rustest.decorators import parametrize, ParameterSet, _build_cases
 from rustest.builtin_fixtures import CaptureFixture
+from rustest.fixture_registry import register_fixtures, clear_registry
 
 
 # =============================================================================
@@ -759,3 +761,21 @@ class TestAsyncioDecorator:
 
         assert "asyncio" in mark_names
         assert "slow" in mark_names
+
+
+class TestFixtureRequestFallback:
+    """Tests for FixtureRequest.getfixturevalue fallback resolver."""
+
+    def test_getfixturevalue_uses_python_registry(self):
+        """Ensure fallback resolver passes the active request object."""
+
+        def needs_request(request: FixtureRequest) -> FixtureRequest:
+            return request
+
+        register_fixtures({"needs_request": needs_request})
+        try:
+            request = FixtureRequest()
+            result = request.getfixturevalue("needs_request")
+            assert result is request
+        finally:
+            clear_registry()

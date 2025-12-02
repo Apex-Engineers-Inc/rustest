@@ -48,6 +48,13 @@ from __future__ import annotations
 
 from typing import Any, Callable, TypeVar, TypedDict, cast
 
+try:
+    from rustest import rust as _rust_bridge
+except (
+    Exception
+):  # pragma: no cover - rust module not available when running unit tests without extension
+    _rust_bridge = None
+
 # Import rustest's actual implementations
 from rustest.decorators import (
     fixture as _rustest_fixture,
@@ -611,12 +618,31 @@ class FixtureRequest:
         if name in self._executed_fixtures:
             return self._executed_fixtures[name]
 
-        # Import and use the fixture registry
+        if _rust_bridge is not None:
+            try:
+                return _rust_bridge.getfixturevalue(name)
+            except (AttributeError, RuntimeError) as exc:
+                # When not running under rustest, fall back to Python resolver
+                message = str(exc)
+                if (
+                    "active rustest test" not in message
+                    and "only run while rustest is executing a test" not in message
+                ):
+                    raise
+                # Continue to fallback path below so users still get a value when
+                # calling request.getfixturevalue() in environments where the Rust
+                # extension is not active (e.g., plain pytest).
+
+        # Import and use the fixture registry fallback
         from rustest.fixture_registry import resolve_fixture
 
         try:
             # Resolve the fixture (handles dependencies and caching)
-            result = resolve_fixture(name, self._executed_fixtures)
+            result = resolve_fixture(
+                name,
+                self._executed_fixtures,
+                request_obj=self,
+            )
             return result
         except ValueError as e:
             # Fixture not found

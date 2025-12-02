@@ -2,7 +2,8 @@
 
 This module is packaged with the Python distribution so unit tests can import the
 package without building the Rust extension. Individual tests are expected to
-monkeypatch the functions they exercise.
+monkeypatch the functions they exercise. Keeping this stub lightweight makes it
+easy to trigger CI rebuilds without touching the compiled extension itself.
 """
 
 from __future__ import annotations
@@ -11,13 +12,29 @@ from typing import Any, Sequence
 
 
 def run(
-    _paths: Sequence[str],
-    _pattern: str | None,
-    _workers: int | None,
-    _capture_output: bool,
+    paths: Sequence[str],
+    pattern: str | None = None,
+    mark_expr: str | None = None,
+    workers: int | None = None,
+    capture_output: bool = True,
+    enable_codeblocks: bool = True,
+    last_failed_mode: str = "none",
+    fail_fast: bool = False,
+    pytest_compat: bool = False,
+    verbose: bool = False,
+    ascii: bool = False,
+    no_color: bool = False,
+    event_callback: Any | None = None,
 ) -> Any:
-    """Placeholder implementation that mirrors the extension signature."""
+    """Placeholder implementation that mirrors the PyO3 extension signature."""
 
     raise NotImplementedError(
-        "The rustest native extension is unavailable. Tests must patch rustest.rust.run."
+        "rustest.rust.run() is only available when the native extension is built. "
+        + "Tests that import rustest without compiling the extension should monkeypatch "
+        + "rustest.rust.run with a stub implementation."
     )
+
+
+def getfixturevalue(_name: str) -> Any:
+    """Placeholder matching the native helper exported by the extension."""
+    raise RuntimeError("request.getfixturevalue() is only available inside an active rustest test")

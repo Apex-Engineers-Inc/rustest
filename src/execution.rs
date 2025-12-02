@@ -4,11 +4,13 @@
 //! this module keeps the door open for future parallel strategies by isolating
 //! the orchestration logic from the raw execution of tests.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::ffi::c_void;
 use std::time::Instant;
 
 use indexmap::IndexMap;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -19,6 +21,52 @@ use crate::model::{
     ParameterMap, PyRunReport, PyTestResult, RunConfiguration, TestCase, TestModule,
 };
 use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDisplay};
+
+// This thread-local stores a raw pointer to the currently active `FixtureResolver`.
+// It lets Python's `request.getfixturevalue()` calls tunnel back into the Rust resolver
+// without exposing the resolver publicly or cloning it.
+thread_local! {
+    static ACTIVE_RESOLVER: RefCell<Vec<*mut c_void>> = const { RefCell::new(Vec::new()) };
+}
+
+struct ResolverActivationGuard;
+
+impl ResolverActivationGuard {
+    fn new(resolver: &mut FixtureResolver<'_>) -> Self {
+        let ptr = resolver as *mut _ as *mut c_void;
+        ACTIVE_RESOLVER.with(|cell| {
+            cell.borrow_mut().push(ptr);
+        });
+        Self
+    }
+}
+
+impl Drop for ResolverActivationGuard {
+    fn drop(&mut self) {
+        ACTIVE_RESOLVER.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let popped = slot.pop();
+            debug_assert!(popped.is_some(), "resolver stack underflow");
+        });
+    }
+}
+
+pub(crate) fn resolve_fixture_for_request(name: &str) -> PyResult<Py<PyAny>> {
+    ACTIVE_RESOLVER.with(|cell| {
+        let slot = cell.borrow();
+        if let Some(&ptr) = slot.last() {
+            // SAFETY: The pointer is valid for the duration of the test while the guard is active.
+            let resolver = unsafe { &mut *(ptr as *mut FixtureResolver<'static>) };
+            resolver.resolve_for_request(name)
+        } else {
+            Err(PyRuntimeError::new_err(
+                "request.getfixturevalue() can only run while rustest is executing a test. \
+                 Call it from inside a test function (or inject the fixture directly) so rustest \
+                 knows which resolver to use.",
+            ))
+        }
+    })
+}
 
 /// Manages teardown for generator fixtures across different scopes.
 struct TeardownCollector {
@@ -712,6 +760,8 @@ fn execute_test_case(
         test_marks,
     );
 
+    let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
+
     // Populate Python fixture registry for getfixturevalue() support
     if let Err(err) = populate_fixture_registry(py, &module.fixtures) {
         let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
@@ -724,6 +774,15 @@ fn execute_test_case(
 
     // Resolve autouse fixtures first
     if let Err(err) = resolver.resolve_autouse_fixtures() {
+        let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+        return Err(TestCallFailure {
+            message,
+            stdout: None,
+            stderr: None,
+        });
+    }
+
+    if let Err(err) = resolver.apply_usefixtures_marks() {
         let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
         return Err(TestCallFailure {
             message,
@@ -919,6 +978,10 @@ impl<'py> FixtureResolver<'py> {
             return Ok(value.clone_ref(self.py));
         }
 
+        self.resolve_fixture_value(name)
+    }
+
+    fn resolve_fixture_value(&mut self, name: &str) -> PyResult<Py<PyAny>> {
         // Special handling for "request" fixture - create with current param value
         if name == "request" {
             return self.create_request_fixture();
@@ -1131,6 +1194,17 @@ impl<'py> FixtureResolver<'py> {
         Ok(result)
     }
 
+    fn resolve_for_request(&mut self, name: &str) -> PyResult<Py<PyAny>> {
+        if let Some(fixture) = self.fixtures.get(name) {
+            if fixture.is_async || fixture.is_async_generator {
+                return Err(PyNotImplementedError::new_err(async_getfixturevalue_error(
+                    name,
+                )));
+            }
+        }
+        self.resolve_fixture_value(name)
+    }
+
     /// Validate that a fixture's scope is compatible with its dependency's scope.
     ///
     /// The rule is: a fixture can only depend on fixtures with equal or broader scope.
@@ -1147,6 +1221,37 @@ impl<'py> FixtureResolver<'py> {
                 fixture.name, fixture.scope, dependency.name, dependency.scope
             )));
         }
+        Ok(())
+    }
+
+    /// Apply @mark.usefixtures by eagerly resolving the referenced fixtures.
+    ///
+    /// Pytest treats `@mark.usefixtures("foo")` as if "foo" were listed in the test signature.
+    /// Rather than mutating the signature, we simply resolve the fixtures up front so all
+    /// registered setup/teardown behaviour still runs.
+    fn apply_usefixtures_marks(&mut self) -> PyResult<()> {
+        // Safely collect fixture names first so we can drop the immutable borrow on
+        // `self.test_marks` before calling `resolve_fixture_value`.
+        let mut names_to_resolve: Vec<String> = Vec::new();
+        for mark in &self.test_marks {
+            if !mark.is_named("usefixtures") {
+                continue;
+            }
+
+            let args = mark.args.bind(self.py);
+            for item in args.iter() {
+                let fixture_name: String = item.extract()?;
+                names_to_resolve.push(fixture_name);
+            }
+        }
+
+        let mut resolved = HashSet::new();
+        for fixture_name in names_to_resolve {
+            if resolved.insert(fixture_name.clone()) {
+                self.resolve_fixture_value(&fixture_name)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -1290,6 +1395,24 @@ impl<'py> FixtureResolver<'py> {
         let tuple_obj = tuple_fn.call1((args_list,))?;
         Ok(tuple_obj.unbind())
     }
+}
+
+fn async_getfixturevalue_error(name: &str) -> String {
+    format!(
+        "\nCannot use async fixture '{name}' with request.getfixturevalue().\n\n\
+Why this fails:\n\
+  • getfixturevalue() is a synchronous function that returns values immediately\n\
+  • Async fixtures must be awaited, but we can't await in a sync context\n\
+  • Calling the async fixture returns a coroutine object, not the actual value\n\n\
+Good news: Async fixtures work perfectly with normal injection!\n\n\
+How to fix:\n\
+  ❌ Don't use: request.getfixturevalue('{name}')\n\
+  ✅ Instead use: def test_something({name}):\n\n\
+Example:\n\
+  # This works perfectly:\n\
+  async def test_my_feature({name}):\n\
+      assert {name} is not None\n"
+    )
 }
 
 /// Result type for test execution with optional stdout/stderr capture.
