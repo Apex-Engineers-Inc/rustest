@@ -548,6 +548,7 @@ class MarkGenerator:
                 longer than this, it will be cancelled with asyncio.TimeoutError.
                 This works correctly with parallel test execution - each test has
                 its own independent timeout. Default is None (no timeout).
+                Must be a positive number if specified.
 
         Usage:
             @mark.asyncio
@@ -577,6 +578,15 @@ class MarkGenerator:
             valid = ", ".join(sorted(valid_scopes))
             msg = f"Invalid loop_scope '{loop_scope}'. Must be one of: {valid}"
             raise ValueError(msg)
+
+        # Validate timeout
+        if timeout is not None:
+            if not isinstance(timeout, (int, float)):
+                msg = f"timeout must be a number, got {type(timeout).__name__}"
+                raise TypeError(msg)
+            if timeout <= 0:
+                msg = f"timeout must be positive, got {timeout}"
+                raise ValueError(msg)
 
         def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
             # Only include loop_scope in kwargs if explicitly specified

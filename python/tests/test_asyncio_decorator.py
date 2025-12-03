@@ -241,3 +241,116 @@ def test_asyncio_combined_with_other_marks():
     mark_names = [m["name"] for m in marks]
     assert "asyncio" in mark_names
     assert "slow" in mark_names
+
+
+# ============================================================================
+# Timeout parameter tests
+# ============================================================================
+
+
+def test_asyncio_mark_with_timeout():
+    """Test @mark.asyncio with timeout parameter."""
+
+    @mark.asyncio(timeout=5.0)
+    async def test_func():
+        await asyncio.sleep(0.001)
+
+    marks = test_func.__rustest_marks__
+    assert marks[0]["kwargs"]["timeout"] == 5.0
+
+
+def test_asyncio_mark_with_timeout_and_loop_scope():
+    """Test @mark.asyncio with both timeout and loop_scope."""
+
+    @mark.asyncio(loop_scope="module", timeout=10.0)
+    async def test_func():
+        await asyncio.sleep(0.001)
+
+    marks = test_func.__rustest_marks__
+    assert marks[0]["kwargs"]["loop_scope"] == "module"
+    assert marks[0]["kwargs"]["timeout"] == 10.0
+
+
+def test_asyncio_mark_timeout_integer():
+    """Test @mark.asyncio accepts integer timeout."""
+
+    @mark.asyncio(timeout=5)
+    async def test_func():
+        await asyncio.sleep(0.001)
+
+    marks = test_func.__rustest_marks__
+    assert marks[0]["kwargs"]["timeout"] == 5
+
+
+def test_asyncio_mark_timeout_negative_raises():
+    """Test that negative timeout raises ValueError."""
+
+    with pytest.raises(ValueError, match="timeout must be positive"):
+
+        @mark.asyncio(timeout=-1.0)
+        async def test_func():
+            pass
+
+
+def test_asyncio_mark_timeout_zero_raises():
+    """Test that zero timeout raises ValueError."""
+
+    with pytest.raises(ValueError, match="timeout must be positive"):
+
+        @mark.asyncio(timeout=0)
+        async def test_func():
+            pass
+
+
+def test_asyncio_mark_timeout_invalid_type_raises():
+    """Test that invalid timeout type raises TypeError."""
+
+    with pytest.raises(TypeError, match="timeout must be a number"):
+
+        @mark.asyncio(timeout="5")  # type: ignore[arg-type]
+        async def test_func():
+            pass
+
+
+def test_asyncio_mark_timeout_none_allowed():
+    """Test that timeout=None is allowed (default)."""
+
+    @mark.asyncio(timeout=None)
+    async def test_func():
+        await asyncio.sleep(0.001)
+
+    marks = test_func.__rustest_marks__
+    # timeout=None means no timeout, should not be in kwargs
+    assert "timeout" not in marks[0]["kwargs"]
+
+
+def test_asyncio_mark_timeout_on_class():
+    """Test @mark.asyncio with timeout on class applies to methods."""
+
+    @mark.asyncio(loop_scope="class", timeout=5.0)
+    class TestAsyncClass:
+        async def test_method(self):
+            await asyncio.sleep(0.001)
+
+    # Check class has the mark
+    class_marks = TestAsyncClass.__rustest_marks__
+    assert class_marks[0]["kwargs"]["timeout"] == 5.0
+
+    # Check method has the mark propagated
+    method_marks = TestAsyncClass.test_method.__rustest_marks__
+    # Should have at least one mark with timeout
+    timeouts = [
+        m["kwargs"].get("timeout") for m in method_marks if "timeout" in m.get("kwargs", {})
+    ]
+    assert 5.0 in timeouts
+
+
+def test_asyncio_mark_small_timeout():
+    """Test @mark.asyncio with very small timeout value."""
+
+    @mark.asyncio(timeout=0.001)
+    async def test_func():
+        await asyncio.sleep(0.0001)
+
+    marks = test_func.__rustest_marks__
+    assert marks[0]["kwargs"]["timeout"] == 0.001

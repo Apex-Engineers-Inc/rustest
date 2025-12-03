@@ -23,6 +23,9 @@ This module is called from Rust via PyO3 when a batch of async tests is ready.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
+import time
 import traceback
 from typing import Any, Coroutine
 
@@ -48,10 +51,6 @@ async def _wrap_test_for_gather(
     Returns:
         Result dictionary with test execution info.
     """
-    import io
-    import contextlib
-    import time
-
     start_time = time.perf_counter()
     stdout_capture = io.StringIO() if capture_output else None
     stderr_capture = io.StringIO() if capture_output else None
