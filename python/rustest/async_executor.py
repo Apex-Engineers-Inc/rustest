@@ -170,7 +170,9 @@ class AsyncBatchExecutor:
                 stderr=stderr_capture.getvalue() if stderr_capture else None,
             )
 
-        except Exception as e:
+        except BaseException as e:
+            # Catch BaseException to handle CancelledError, SystemExit, KeyboardInterrupt
+            # This ensures we capture stdout/stderr even for these cases
             duration = time.perf_counter() - start_time
             # Format the exception with full traceback
             error_message = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -277,7 +279,9 @@ async def _wrap_test_for_gather(
             "duration": duration,
         }
 
-    except Exception as e:
+    except BaseException as e:
+        # Catch BaseException to handle CancelledError, SystemExit, KeyboardInterrupt
+        # This ensures we capture stdout/stderr even for these cases
         duration = time.perf_counter() - start_time
         error_message = "".join(traceback.format_exception(type(e), e, e.__traceback__))
 

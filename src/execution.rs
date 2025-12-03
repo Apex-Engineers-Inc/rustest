@@ -1007,8 +1007,18 @@ fn run_coroutines_parallel<'py>(
 
     for (test_id, callable, args) in test_specs {
         let args_tuple = PyTuple::new(py, args)?;
-        let coro = callable.bind(py).call1(args_tuple)?;
-        coroutines_list.push((test_id.clone(), coro.unbind()));
+        match callable.bind(py).call1(args_tuple) {
+            Ok(coro) => {
+                coroutines_list.push((test_id.clone(), coro.unbind()));
+            }
+            Err(e) => {
+                // Close any already-created coroutines to avoid "coroutine never awaited" warnings
+                for (_, coro) in coroutines_list.drain(..) {
+                    let _ = coro.bind(py).call_method0("close");
+                }
+                return Err(e);
+            }
+        }
     }
 
     // Convert to Python list of tuples

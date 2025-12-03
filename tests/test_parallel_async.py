@@ -728,3 +728,127 @@ async def test_order_tracking_c(reset_order_tracking):
     reset_order_tracking.append("c_start")
     await asyncio.sleep(0.02)
     reset_order_tracking.append("c_end")
+
+
+# ============================================================================
+# Test: Verify actual parallel execution via timing
+# ============================================================================
+
+# Module-level timing data for verification
+_module_timing: dict[str, float] = {}
+
+
+@fixture(scope="module")
+def module_timing():
+    """Shared timing data for parallel execution verification."""
+    return _module_timing
+
+
+@mark.asyncio(loop_scope="module")
+async def test_parallel_timing_1(module_timing):
+    """First timing test - records start time."""
+    module_timing["t1_start"] = time.time()
+    await asyncio.sleep(0.1)  # 100ms sleep
+    module_timing["t1_end"] = time.time()
+
+
+@mark.asyncio(loop_scope="module")
+async def test_parallel_timing_2(module_timing):
+    """Second timing test - should overlap with first."""
+    module_timing["t2_start"] = time.time()
+    await asyncio.sleep(0.1)  # 100ms sleep
+    module_timing["t2_end"] = time.time()
+
+
+@mark.asyncio(loop_scope="module")
+async def test_parallel_timing_verify(module_timing):
+    """Verify timing overlap occurred.
+
+    If tests ran in parallel, t1 and t2 should have overlapping execution.
+    Sequential execution would take ~200ms, parallel should take ~100ms.
+    """
+    # Both tests should have recorded times
+    assert "t1_start" in module_timing, "t1 didn't record start time"
+    assert "t2_start" in module_timing, "t2 didn't record start time"
+
+    t1_start = module_timing["t1_start"]
+    t2_start = module_timing["t2_start"]
+
+    # If parallel: t2_start should be very close to t1_start (< 50ms)
+    # If sequential: t2_start would be after t1_end (100ms+ difference)
+    time_diff = abs(t2_start - t1_start)
+    assert time_diff < 0.05, f"Tests didn't run in parallel: start diff = {time_diff:.3f}s"
+
+
+# ============================================================================
+# Test: All tests in batch failing
+# ============================================================================
+
+@mark.asyncio(loop_scope="module")
+async def test_batch_failure_1():
+    """First failing test in batch."""
+    await asyncio.sleep(0.01)
+    assert False, "Intentional failure 1"
+
+
+@mark.asyncio(loop_scope="module")
+async def test_batch_failure_2():
+    """Second failing test in batch."""
+    await asyncio.sleep(0.01)
+    assert False, "Intentional failure 2"
+
+
+@mark.asyncio(loop_scope="module")
+async def test_batch_failure_3():
+    """Third failing test in batch."""
+    await asyncio.sleep(0.01)
+    assert False, "Intentional failure 3"
+
+
+# ============================================================================
+# Test: SystemExit handling (tests that call sys.exit should be caught)
+# ============================================================================
+
+@mark.asyncio(loop_scope="module")
+async def test_before_sys_exit():
+    """Test that runs before the sys.exit test."""
+    await asyncio.sleep(0.01)
+    assert True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_sys_exit_in_test():
+    """Test that calls sys.exit - should be caught and reported as failure."""
+    await asyncio.sleep(0.01)
+    import sys
+    sys.exit(1)  # This should be caught, not crash the runner
+
+
+@mark.asyncio(loop_scope="module")
+async def test_after_sys_exit():
+    """Test that runs after the sys.exit test - should still execute."""
+    await asyncio.sleep(0.01)
+    assert True
+
+
+# ============================================================================
+# Test: CancelledError handling (via asyncio.timeout)
+# ============================================================================
+
+@mark.asyncio(loop_scope="module")
+async def test_cancelled_error_via_timeout():
+    """Test that CancelledError from timeout is properly handled."""
+    try:
+        async with asyncio.timeout(0.001):  # Very short timeout
+            await asyncio.sleep(1.0)  # Will be cancelled
+    except asyncio.TimeoutError:
+        # This is expected - timeout was hit
+        pass
+    # Test should pass normally after handling timeout
+
+
+@mark.asyncio(loop_scope="module")
+async def test_after_cancellation_test():
+    """Test that runs after the cancellation test - verifies batch continues."""
+    await asyncio.sleep(0.01)
+    assert True
