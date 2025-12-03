@@ -895,3 +895,99 @@ async def test_after_fixture_error(track_fixture_error):
     track_fixture_error["after_ran"] = True
     await asyncio.sleep(0.01)
     assert True
+
+
+# ============================================================================
+# Test: Per-test timeout support
+# ============================================================================
+
+# Tracking for timeout tests
+_timeout_tracking: dict[str, bool] = {}
+
+
+@fixture(scope="module")
+def timeout_tracker():
+    """Track which tests ran for timeout test verification."""
+    return _timeout_tracking
+
+
+@mark.asyncio(loop_scope="module", timeout=0.5)
+async def test_timeout_completes_within_limit(timeout_tracker):
+    """Test that completes well within its timeout."""
+    timeout_tracker["test_timeout_completes"] = True
+    await asyncio.sleep(0.01)  # 0.01s < 0.5s timeout
+    assert True
+
+
+@mark.asyncio(loop_scope="module", timeout=0.05)
+async def test_timeout_exceeds_limit(timeout_tracker):
+    """Test that should timeout and fail."""
+    # This test intentionally takes longer than its timeout
+    timeout_tracker["test_timeout_exceeds_started"] = True
+    await asyncio.sleep(1.0)  # 1.0s > 0.05s timeout
+    # Should never reach here
+    timeout_tracker["test_timeout_exceeds_completed"] = True
+    assert False, "Should have timed out"
+
+
+@mark.asyncio(loop_scope="module")
+async def test_timeout_other_test_unaffected(timeout_tracker):
+    """Test without timeout should not be affected by other tests' timeouts."""
+    timeout_tracker["test_timeout_other_unaffected"] = True
+    await asyncio.sleep(0.01)
+    assert True
+
+
+@mark.asyncio(loop_scope="module", timeout=1.0)
+async def test_timeout_third_test_completes(timeout_tracker):
+    """Another test with a generous timeout that should pass."""
+    timeout_tracker["test_timeout_third_completes"] = True
+    await asyncio.sleep(0.01)
+    assert True
+
+
+# ============================================================================
+# Test: Timeout works correctly with parallel execution
+# ============================================================================
+
+# Track whether non-timing-out test completed
+_parallel_batch_tracking: dict[str, bool] = {}
+
+
+@fixture(scope="module")
+def parallel_batch_tracker():
+    """Track test completion in parallel batch."""
+    return _parallel_batch_tracking
+
+
+@mark.asyncio(loop_scope="module", timeout=0.08)
+async def test_parallel_batch_timeout_will_fail(parallel_batch_tracker):
+    """Test in parallel batch with short timeout - will fail."""
+    parallel_batch_tracker["timeout_test_started"] = True
+    await asyncio.sleep(0.5)  # Will timeout at 0.08s
+    parallel_batch_tracker["timeout_test_completed"] = True
+
+
+@mark.asyncio(loop_scope="module", timeout=2.0)
+async def test_parallel_batch_should_pass(parallel_batch_tracker):
+    """Test in same parallel batch with long timeout - should pass."""
+    parallel_batch_tracker["long_test_started"] = True
+    # This takes longer than the other test's 0.08s timeout
+    # If timeouts were shared, this would fail too
+    await asyncio.sleep(0.15)
+    parallel_batch_tracker["long_test_completed"] = True
+    assert True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_parallel_batch_no_timeout(parallel_batch_tracker):
+    """Test in same batch with no timeout - should pass.
+
+    This test runs in parallel with test_parallel_batch_timeout_will_fail.
+    If timeouts were shared or affected other tests, this would fail too.
+    The fact that this passes proves timeout independence.
+    """
+    parallel_batch_tracker["no_timeout_test_started"] = True
+    await asyncio.sleep(0.1)
+    parallel_batch_tracker["no_timeout_test_completed"] = True
+    assert True

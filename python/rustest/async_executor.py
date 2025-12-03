@@ -31,6 +31,7 @@ async def _wrap_test_for_gather(
     test_id: str,
     coro: Coroutine[Any, Any, Any],
     capture_output: bool,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Wrap a single test coroutine for use with asyncio.gather.
 
@@ -41,6 +42,8 @@ async def _wrap_test_for_gather(
         test_id: Unique identifier for the test.
         coro: The test coroutine to execute.
         capture_output: Whether to capture stdout/stderr.
+        timeout: Optional timeout in seconds. If specified, the coroutine
+            will be cancelled with asyncio.TimeoutError after this duration.
 
     Returns:
         Result dictionary with test execution info.
@@ -52,6 +55,10 @@ async def _wrap_test_for_gather(
     start_time = time.perf_counter()
     stdout_capture = io.StringIO() if capture_output else None
     stderr_capture = io.StringIO() if capture_output else None
+
+    # Wrap with timeout if specified
+    if timeout is not None:
+        coro = asyncio.wait_for(coro, timeout=timeout)
 
     try:
         if capture_output:
@@ -68,6 +75,20 @@ async def _wrap_test_for_gather(
             "test_id": test_id,
             "success": True,
             "error_message": None,
+            "stdout": stdout_capture.getvalue() if stdout_capture else None,
+            "stderr": stderr_capture.getvalue() if stderr_capture else None,
+            "duration": duration,
+        }
+
+    except asyncio.TimeoutError:
+        # Handle timeout specifically for clearer error message
+        duration = time.perf_counter() - start_time
+        error_message = f"Test timed out after {timeout} seconds"
+
+        return {
+            "test_id": test_id,
+            "success": False,
+            "error_message": error_message,
             "stdout": stdout_capture.getvalue() if stdout_capture else None,
             "stderr": stderr_capture.getvalue() if stderr_capture else None,
             "duration": duration,
@@ -91,7 +112,7 @@ async def _wrap_test_for_gather(
 
 def run_coroutines_parallel(
     event_loop: asyncio.AbstractEventLoop,
-    coroutines: list[tuple[str, Coroutine[Any, Any, Any]]],
+    coroutines: list[tuple[str, Coroutine[Any, Any, Any], float | None]],
     capture_output: bool = True,
 ) -> list[dict[str, Any]]:
     """Run pre-created coroutines in parallel.
@@ -104,7 +125,8 @@ def run_coroutines_parallel(
 
     Args:
         event_loop: The asyncio event loop to use.
-        coroutines: List of (test_id, coroutine) tuples.
+        coroutines: List of (test_id, coroutine, timeout) tuples. Timeout is
+            in seconds and can be None for no timeout.
         capture_output: Whether to capture stdout/stderr.
 
     Returns:
@@ -115,7 +137,8 @@ def run_coroutines_parallel(
 
     async def run_all() -> list[dict[str, Any] | BaseException]:
         tasks = [
-            _wrap_test_for_gather(test_id, coro, capture_output) for test_id, coro in coroutines
+            _wrap_test_for_gather(test_id, coro, capture_output, timeout)
+            for test_id, coro, timeout in coroutines
         ]
         # return_exceptions=True ensures all tests complete even if some fail
         # unexpectedly (e.g., in the wrapper before try block)

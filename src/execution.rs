@@ -703,7 +703,7 @@ fn run_async_batch<'a>(
     // 2. Create a coroutine for each test with its resolved arguments
     // 3. Run all coroutines in parallel
 
-    let mut test_coroutines: Vec<(String, Py<PyAny>, Vec<Py<PyAny>>)> = Vec::new();
+    let mut test_coroutines: Vec<TestSpec> = Vec::new();
     let mut test_function_teardowns: Vec<(String, Vec<Py<PyAny>>)> = Vec::new();
     let mut preparation_errors: Vec<(String, String)> = Vec::new();
 
@@ -746,7 +746,7 @@ fn run_async_batch<'a>(
             batch.loop_scope,
             test_display_name,
             test_nodeid,
-            test_marks,
+            test_marks.clone(),
         );
 
         // Populate fixture registry
@@ -808,8 +808,27 @@ fn run_async_batch<'a>(
                 continue;
             }
 
+            // Extract timeout from asyncio mark(s) if present
+            // A test may have multiple asyncio marks (one with timeout, one from class decoration)
+            let timeout = test_marks
+                .iter()
+                .filter(|m| m.is_named("asyncio"))
+                .find_map(|m| {
+                    m.kwargs
+                        .bind(py)
+                        .get_item("timeout")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.extract::<f64>().ok())
+                });
+
             // Store the test's callable and args for parallel execution
-            test_coroutines.push((test_id.clone(), test.callable.clone_ref(py), call_args));
+            test_coroutines.push((
+                test_id.clone(),
+                test.callable.clone_ref(py),
+                call_args,
+                timeout,
+            ));
 
             // Store function teardowns to run after all tests complete
             test_function_teardowns
@@ -859,7 +878,7 @@ fn run_async_batch<'a>(
         };
 
     // Process results and run teardowns
-    for ((test_id, _, _), result_dict) in test_coroutines.iter().zip(parallel_results.iter()) {
+    for ((test_id, _, _, _), result_dict) in test_coroutines.iter().zip(parallel_results.iter()) {
         // Find the corresponding test
         let test = batch.tests.iter().find(|t| t.unique_id() == *test_id);
         let test = match test {
@@ -983,8 +1002,8 @@ fn get_or_create_context_event_loop(
     Ok(new_loop)
 }
 
-/// A test specification for parallel execution: (test_id, callable, args).
-type TestSpec = (String, Py<PyAny>, Vec<Py<PyAny>>);
+/// A test specification for parallel execution: (test_id, callable, args, timeout).
+type TestSpec = (String, Py<PyAny>, Vec<Py<PyAny>>, Option<f64>);
 
 /// Run multiple test coroutines in parallel using Python's asyncio.gather.
 ///
@@ -1003,17 +1022,17 @@ fn run_coroutines_parallel<'py>(
     let run_parallel = executor_module.getattr("run_coroutines_parallel")?;
 
     // Create coroutines by calling each test callable
-    let mut coroutines_list: Vec<(String, Py<PyAny>)> = Vec::new();
+    let mut coroutines_list: Vec<(String, Py<PyAny>, Option<f64>)> = Vec::new();
 
-    for (test_id, callable, args) in test_specs {
+    for (test_id, callable, args, timeout) in test_specs {
         let args_tuple = PyTuple::new(py, args)?;
         match callable.bind(py).call1(args_tuple) {
             Ok(coro) => {
-                coroutines_list.push((test_id.clone(), coro.unbind()));
+                coroutines_list.push((test_id.clone(), coro.unbind(), *timeout));
             }
             Err(e) => {
                 // Close any already-created coroutines to avoid "coroutine never awaited" warnings
-                for (_, coro) in coroutines_list.drain(..) {
+                for (_, coro, _) in coroutines_list.drain(..) {
                     let _ = coro.bind(py).call_method0("close");
                 }
                 return Err(e);
@@ -1021,15 +1040,20 @@ fn run_coroutines_parallel<'py>(
         }
     }
 
-    // Convert to Python list of tuples
+    // Convert to Python list of tuples (test_id, coro, timeout)
     let py_coroutines = PyList::new(
         py,
-        coroutines_list.iter().map(|(id, coro)| {
+        coroutines_list.iter().map(|(id, coro, timeout)| {
+            let timeout_py: Py<PyAny> = match timeout {
+                Some(t) => t.into_pyobject(py).unwrap().into_any().unbind(),
+                None => py.None(),
+            };
             let tuple = PyTuple::new(
                 py,
                 [
                     id.as_str().into_pyobject(py).unwrap().into_any(),
                     coro.bind(py).clone().into_any(),
+                    timeout_py.bind(py).clone().into_any(),
                 ],
             )
             .unwrap();
@@ -1080,12 +1104,14 @@ fn populate_fixture_registry(py: Python<'_>, fixtures: &IndexMap<String, Fixture
     Ok(())
 }
 
-/// Extract the loop_scope from a test's asyncio mark, if present.
-/// Returns Some(scope) if explicitly specified, None otherwise.
+/// Extract the loop_scope from a test's asyncio mark(s), if present.
+/// Returns Some(scope) if explicitly specified in any asyncio mark, None otherwise.
+/// Note: A test may have multiple asyncio marks (e.g., one for timeout, one from class decoration).
 fn get_explicit_loop_scope_from_marks(
     py: Python<'_>,
     test_case: &TestCase,
 ) -> Option<FixtureScope> {
+    // Check all asyncio marks - a test might have multiple (one with timeout, one with loop_scope)
     for mark in &test_case.marks {
         if mark.is_named("asyncio") {
             if let Some(loop_scope_value) = mark.get_kwarg(py, "loop_scope") {
@@ -1100,11 +1126,10 @@ fn get_explicit_loop_scope_from_marks(
                     });
                 }
             }
-            // asyncio mark found but no loop_scope specified
-            return None;
+            // This asyncio mark has no loop_scope, but keep checking other marks
         }
     }
-    // No asyncio mark found
+    // No asyncio mark with loop_scope found
     None
 }
 
@@ -1338,7 +1363,7 @@ fn execute_test_case(
         test_loop_scope,
         test_display_name,
         test_nodeid,
-        test_marks,
+        test_marks.clone(),
     );
 
     let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
@@ -1402,9 +1427,31 @@ fn execute_test_case(
             // Get or reuse the session event loop to ensure compatibility with async fixtures
             // This prevents "Task got Future attached to a different loop" errors
             let event_loop = resolver.get_or_create_test_event_loop()?;
+
+            // Extract timeout from asyncio mark(s) if present
+            let timeout: Option<f64> = test_marks
+                .iter()
+                .filter(|m| m.is_named("asyncio"))
+                .find_map(|m| {
+                    m.kwargs
+                        .bind(py)
+                        .get_item("timeout")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.extract::<f64>().ok())
+                });
+
+            // Apply timeout if specified
+            let coro_to_run = if let Some(timeout_secs) = timeout {
+                let asyncio = py.import("asyncio")?;
+                asyncio.call_method1("wait_for", (&result, timeout_secs))?
+            } else {
+                result
+            };
+
             Ok(event_loop
                 .bind(py)
-                .call_method1("run_until_complete", (&result,))?
+                .call_method1("run_until_complete", (&coro_to_run,))?
                 .unbind())
         } else {
             Ok(result.unbind())

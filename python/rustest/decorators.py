@@ -528,6 +528,7 @@ class MarkGenerator:
         func: Callable[..., Any] | None = None,
         *,
         loop_scope: str | None = None,
+        timeout: float | None = None,
     ) -> Callable[..., Any]:
         """Mark an async test function to be executed with asyncio.
 
@@ -543,6 +544,10 @@ class MarkGenerator:
                 - "class": Shared loop across all test methods in a class
                 - "module": Shared loop across all tests in a module
                 - "session": Shared loop across all tests in the session
+            timeout: Optional timeout in seconds for the test. If the test takes
+                longer than this, it will be cancelled with asyncio.TimeoutError.
+                This works correctly with parallel test execution - each test has
+                its own independent timeout. Default is None (no timeout).
 
         Usage:
             @mark.asyncio
@@ -553,6 +558,11 @@ class MarkGenerator:
             @mark.asyncio(loop_scope="module")
             async def test_with_module_loop():
                 await another_async_operation()
+
+            @mark.asyncio(timeout=5.0)
+            async def test_with_timeout():
+                # This test will fail if it takes longer than 5 seconds
+                await slow_operation()
 
         Note:
             When loop_scope is not specified (None), rustest automatically detects
@@ -574,6 +584,8 @@ class MarkGenerator:
             mark_kwargs: dict[str, Any] = {}
             if loop_scope is not None:
                 mark_kwargs["loop_scope"] = loop_scope
+            if timeout is not None:
+                mark_kwargs["timeout"] = timeout
 
             # Handle class decoration - apply mark to all async methods
             if inspect.isclass(f):
