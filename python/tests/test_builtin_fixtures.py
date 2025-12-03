@@ -200,3 +200,337 @@ def test_builtin_fixtures_are_available(tmp_path: Path) -> None:
         assert not tmpdir_base_path.exists()
 
     assert os.environ.get("RUSTEST_MONKEYPATCH_SENTINEL") is None
+
+
+def _write_monkeypatch_edge_cases_module(target: Path) -> None:
+    """Write module testing MonkeyPatch edge cases."""
+    target.write_text(
+        """
+import os
+import pytest
+
+class Target:
+    existing_attr = "original"
+
+GLOBAL_DICT = {"key": "value"}
+
+
+def test_monkeypatch_setattr_dotted_path_requires_dot(monkeypatch):
+    '''Test that setattr with dotted path requires at least one dot.'''
+    with pytest.raises(TypeError, match="at least one dot"):
+        monkeypatch.setattr("nodots", "value")
+
+
+def test_monkeypatch_delattr_dotted_path_requires_dot(monkeypatch):
+    '''Test that delattr with dotted path requires at least one dot.'''
+    with pytest.raises(TypeError, match="at least one dot"):
+        monkeypatch.delattr("nodots")
+
+
+def test_monkeypatch_setattr_raising_false(monkeypatch):
+    '''Test setattr with raising=False on non-existent attribute.'''
+    monkeypatch.setattr(Target, "nonexistent", "value", raising=False)
+    assert Target.nonexistent == "value"
+
+
+def test_monkeypatch_setattr_raising_true(monkeypatch):
+    '''Test setattr with raising=True on non-existent attribute.'''
+    with pytest.raises(AttributeError):
+        monkeypatch.setattr(Target, "nonexistent_raising", "value", raising=True)
+
+
+def test_monkeypatch_delattr_raising_false(monkeypatch):
+    '''Test delattr with raising=False on non-existent attribute.'''
+    # Should not raise
+    monkeypatch.delattr(Target, "nonexistent", raising=False)
+
+
+def test_monkeypatch_delattr_raising_true(monkeypatch):
+    '''Test delattr with raising=True on non-existent attribute.'''
+    with pytest.raises(AttributeError):
+        monkeypatch.delattr(Target, "nonexistent", raising=True)
+
+
+def test_monkeypatch_delitem_raising_false(monkeypatch):
+    '''Test delitem with raising=False on non-existent key.'''
+    # Should not raise
+    monkeypatch.delitem(GLOBAL_DICT, "nonexistent", raising=False)
+
+
+def test_monkeypatch_delitem_raising_true(monkeypatch):
+    '''Test delitem with raising=True on non-existent key.'''
+    with pytest.raises(KeyError):
+        monkeypatch.delitem(GLOBAL_DICT, "nonexistent", raising=True)
+
+
+def test_monkeypatch_delenv_raising_false(monkeypatch):
+    '''Test delenv with raising=False on non-existent variable.'''
+    # Should not raise
+    monkeypatch.delenv("NONEXISTENT_VAR_12345", raising=False)
+
+
+def test_monkeypatch_delenv_raising_true(monkeypatch):
+    '''Test delenv with raising=True on non-existent variable.'''
+    with pytest.raises(KeyError):
+        monkeypatch.delenv("NONEXISTENT_VAR_12345", raising=True)
+
+
+def test_monkeypatch_setenv_prepend_existing(monkeypatch):
+    '''Test setenv with prepend on existing variable.'''
+    os.environ["TEST_PREPEND_VAR"] = "original"
+    monkeypatch.setenv("TEST_PREPEND_VAR", "prepended", prepend=":")
+    assert os.environ["TEST_PREPEND_VAR"] == "prepended:original"
+
+
+def test_monkeypatch_setenv_prepend_new(monkeypatch):
+    '''Test setenv with prepend on non-existing variable.'''
+    os.environ.pop("TEST_NEW_PREPEND_VAR", None)
+    monkeypatch.setenv("TEST_NEW_PREPEND_VAR", "value", prepend=":")
+    # prepend has no effect when var doesn't exist
+    assert os.environ["TEST_NEW_PREPEND_VAR"] == "value"
+
+
+def test_monkeypatch_context_manager():
+    '''Test MonkeyPatch as context manager.'''
+    from rustest.builtin_fixtures import MonkeyPatch
+
+    original_value = Target.existing_attr
+
+    with MonkeyPatch.context() as mp:
+        mp.setattr(Target, "existing_attr", "modified")
+        assert Target.existing_attr == "modified"
+
+    # Should be restored after context
+    assert Target.existing_attr == original_value
+"""
+    )
+
+
+def test_monkeypatch_edge_cases(tmp_path: Path) -> None:
+    """Test MonkeyPatch edge cases and error conditions."""
+    module_path = tmp_path / "test_monkeypatch_edge_cases.py"
+    _write_monkeypatch_edge_cases_module(module_path)
+
+    report = run(paths=[str(tmp_path)])
+
+    assert report.total == 13
+    assert report.passed == 13
+
+
+def _write_cache_edge_cases_module(target: Path) -> None:
+    """Write module testing Cache edge cases."""
+    target.write_text(
+        """
+import pytest
+
+
+def test_cache_get_default(cache):
+    '''Test cache.get with default value.'''
+    result = cache.get("nonexistent/key", "default_value")
+    assert result == "default_value"
+
+
+def test_cache_set_and_get(cache):
+    '''Test cache set and get.'''
+    cache.set("test/key", {"data": 123})
+    result = cache.get("test/key")
+    assert result == {"data": 123}
+
+
+def test_cache_dict_style_access(cache):
+    '''Test cache dict-style access.'''
+    cache["dict/key"] = [1, 2, 3]
+    assert cache["dict/key"] == [1, 2, 3]
+
+
+def test_cache_contains(cache):
+    '''Test cache __contains__.'''
+    cache.set("exists/key", "value")
+    assert "exists/key" in cache
+    assert "nonexistent/key" not in cache
+
+
+def test_cache_mkdir(cache, tmp_path):
+    '''Test cache.mkdir.'''
+    dir_path = cache.mkdir("test_dir")
+    assert dir_path.exists()
+    assert dir_path.is_dir()
+
+
+def test_cache_various_types(cache):
+    '''Test cache with various JSON-serializable types.'''
+    cache.set("string", "hello")
+    cache.set("number", 42)
+    cache.set("float", 3.14)
+    cache.set("bool", True)
+    cache.set("none", None)
+    cache.set("list", [1, 2, 3])
+    cache.set("dict", {"nested": {"data": 1}})
+
+    assert cache.get("string") == "hello"
+    assert cache.get("number") == 42
+    assert cache.get("float") == 3.14
+    assert cache.get("bool") is True
+    assert cache.get("none") is None
+    assert cache.get("list") == [1, 2, 3]
+    assert cache.get("dict") == {"nested": {"data": 1}}
+"""
+    )
+
+
+def test_cache_edge_cases(tmp_path: Path) -> None:
+    """Test Cache edge cases."""
+    module_path = tmp_path / "test_cache_edge_cases.py"
+    _write_cache_edge_cases_module(module_path)
+
+    report = run(paths=[str(tmp_path)])
+
+    assert report.total == 6
+    assert report.passed == 6
+
+
+def _write_capture_fixture_module(target: Path) -> None:
+    """Write module testing capsys and capfd fixtures.
+
+    Note: rustest's capture behavior may differ from pytest's in how it handles
+    output capture. These tests verify the basic fixture availability and API,
+    not exact capture semantics.
+    """
+    target.write_text(
+        """
+import sys
+
+
+def test_capsys_available(capsys):
+    '''Test capsys fixture is available and has correct API.'''
+    # Verify the fixture has the expected methods
+    assert hasattr(capsys, 'readouterr')
+
+    # Verify readouterr returns a named tuple with out and err
+    captured = capsys.readouterr()
+    assert hasattr(captured, 'out')
+    assert hasattr(captured, 'err')
+    assert isinstance(captured.out, str)
+    assert isinstance(captured.err, str)
+
+
+def test_capsys_empty(capsys):
+    '''Test capsys with no output returns empty strings.'''
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_capfd_available(capfd):
+    '''Test capfd fixture is available and has correct API.'''
+    # Verify the fixture has the expected methods
+    assert hasattr(capfd, 'readouterr')
+
+    # Verify readouterr returns a named tuple with out and err
+    captured = capfd.readouterr()
+    assert hasattr(captured, 'out')
+    assert hasattr(captured, 'err')
+    assert isinstance(captured.out, str)
+    assert isinstance(captured.err, str)
+"""
+    )
+
+
+def test_capture_fixtures(tmp_path: Path) -> None:
+    """Test capsys and capfd fixtures are available."""
+    module_path = tmp_path / "test_capture_fixtures.py"
+    _write_capture_fixture_module(module_path)
+
+    report = run(paths=[str(tmp_path)])
+
+    assert report.total == 3
+    assert report.passed == 3
+
+
+def _write_caplog_fixture_module(target: Path) -> None:
+    """Write module testing caplog fixture."""
+    target.write_text(
+        """
+import logging
+
+
+def test_caplog_basic(caplog):
+    '''Test basic caplog functionality.'''
+    logging.info("test message")
+    assert "test message" in caplog.text
+    assert len(caplog.records) == 1
+
+
+def test_caplog_levels(caplog):
+    '''Test caplog with different levels.'''
+    logging.debug("debug msg")
+    logging.info("info msg")
+    logging.warning("warning msg")
+    logging.error("error msg")
+
+    assert len(caplog.records) == 4
+    levels = [r.levelname for r in caplog.records]
+    assert "DEBUG" in levels
+    assert "INFO" in levels
+    assert "WARNING" in levels
+    assert "ERROR" in levels
+
+
+def test_caplog_record_tuples(caplog):
+    '''Test caplog.record_tuples.'''
+    logging.info("tuple test")
+    tuples = caplog.record_tuples
+    assert len(tuples) == 1
+    name, level, message = tuples[0]
+    assert message == "tuple test"
+    assert level == logging.INFO
+
+
+def test_caplog_messages(caplog):
+    '''Test caplog.messages property.'''
+    logging.info("msg1")
+    logging.info("msg2")
+    assert caplog.messages == ["msg1", "msg2"]
+
+
+def test_caplog_clear(caplog):
+    '''Test caplog.clear().'''
+    logging.info("before clear")
+    assert len(caplog.records) == 1
+
+    caplog.clear()
+    assert len(caplog.records) == 0
+
+
+def test_caplog_set_level(caplog):
+    '''Test caplog.set_level().'''
+    caplog.set_level(logging.WARNING)
+    logging.debug("should not appear")
+    logging.warning("should appear")
+
+    assert len(caplog.records) == 1
+    assert "should appear" in caplog.text
+
+
+def test_caplog_at_level(caplog):
+    '''Test caplog.at_level() context manager.'''
+    with caplog.at_level(logging.ERROR):
+        logging.warning("not captured in context")
+        logging.error("captured in context")
+
+    # Only error should be captured
+    assert len(caplog.records) == 1
+    assert "captured in context" in caplog.text
+"""
+    )
+
+
+def test_caplog_fixture(tmp_path: Path) -> None:
+    """Test caplog fixture."""
+    module_path = tmp_path / "test_caplog_fixture.py"
+    _write_caplog_fixture_module(module_path)
+
+    report = run(paths=[str(tmp_path)])
+
+    assert report.total == 7
+    assert report.passed == 7

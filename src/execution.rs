@@ -25,11 +25,21 @@ use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDi
 // This thread-local stores a raw pointer to the currently active `FixtureResolver`.
 // It lets Python's `request.getfixturevalue()` calls tunnel back into the Rust resolver
 // without exposing the resolver publicly or cloning it.
+//
+// SAFETY INVARIANTS:
+// 1. Pointers are only valid while `ResolverActivationGuard` is alive on the stack
+// 2. The guard MUST be dropped before the resolver goes out of scope
+// 3. Access is single-threaded (Python GIL ensures this)
+// 4. The lifetime cast to 'static is a lie - we rely on stack discipline to ensure
+//    the pointer is never dereferenced after the resolver is dropped
 thread_local! {
     static ACTIVE_RESOLVER: RefCell<Vec<*mut c_void>> = const { RefCell::new(Vec::new()) };
 }
 
-struct ResolverActivationGuard;
+struct ResolverActivationGuard {
+    // Store the pointer to verify we pop the correct one
+    ptr: *mut c_void,
+}
 
 impl ResolverActivationGuard {
     fn new(resolver: &mut FixtureResolver<'_>) -> Self {
@@ -37,7 +47,7 @@ impl ResolverActivationGuard {
         ACTIVE_RESOLVER.with(|cell| {
             cell.borrow_mut().push(ptr);
         });
-        Self
+        Self { ptr }
     }
 }
 
@@ -46,7 +56,16 @@ impl Drop for ResolverActivationGuard {
         ACTIVE_RESOLVER.with(|cell| {
             let mut slot = cell.borrow_mut();
             let popped = slot.pop();
-            debug_assert!(popped.is_some(), "resolver stack underflow");
+            // Use assert! instead of debug_assert! to catch errors in release mode
+            assert!(
+                popped.is_some(),
+                "BUG: resolver stack underflow - guard dropped without matching push"
+            );
+            // Verify we're popping the correct pointer (stack discipline)
+            assert!(
+                popped == Some(self.ptr),
+                "BUG: resolver stack corruption - popped pointer doesn't match pushed pointer"
+            );
         });
     }
 }
@@ -55,7 +74,12 @@ pub(crate) fn resolve_fixture_for_request(name: &str) -> PyResult<Py<PyAny>> {
     ACTIVE_RESOLVER.with(|cell| {
         let slot = cell.borrow();
         if let Some(&ptr) = slot.last() {
-            // SAFETY: The pointer is valid for the duration of the test while the guard is active.
+            // SAFETY: This is safe because:
+            // 1. The pointer was pushed by ResolverActivationGuard::new() which holds a valid reference
+            // 2. The guard is still on the stack (we haven't popped yet), so the resolver is still alive
+            // 3. We're running under the Python GIL, so no concurrent access is possible
+            // 4. The 'static lifetime is incorrect but we maintain stack discipline to ensure
+            //    the pointer is never accessed after the resolver is dropped
             let resolver = unsafe { &mut *(ptr as *mut FixtureResolver<'static>) };
             resolver.resolve_for_request(name)
         } else {
@@ -174,7 +198,17 @@ pub fn run_collected_tests(
         // Check for package boundary transition
         let module_package = extract_package_name(&module.path);
         if context.current_package.as_ref() != Some(&module_package) {
-            // Package changed - run teardowns and clear cache
+            // Package changed - run teardowns and clear caches
+            // Clear class cache first (narrowest scope teardowns first)
+            finalize_generators(
+                py,
+                &mut context.teardowns.class,
+                context.class_event_loop.as_ref(),
+            );
+            context.class_cache.clear();
+            close_event_loop(py, &mut context.class_event_loop);
+
+            // Then package teardowns
             finalize_generators(
                 py,
                 &mut context.teardowns.package,
@@ -988,23 +1022,32 @@ impl<'py> FixtureResolver<'py> {
         }
 
         // Check if this is a parametrized fixture and get the cache key
-        let (cache_key, param_value) =
-            if let Some(&param_idx) = self.fixture_param_indices.get(name) {
-                if let Some(fixture) = self.fixtures.get(name) {
-                    if let Some(params) = &fixture.params {
-                        let param = &params[param_idx];
-                        // Use a cache key that includes the parameter index for parametrized fixtures
-                        let key = format!("{}[{}]", name, param_idx);
-                        (key, Some(param.value.clone_ref(self.py)))
-                    } else {
-                        (name.to_string(), None)
+        let (cache_key, param_value) = if let Some(&param_idx) =
+            self.fixture_param_indices.get(name)
+        {
+            if let Some(fixture) = self.fixtures.get(name) {
+                if let Some(params) = &fixture.params {
+                    // Bounds check to prevent panic on invalid param_idx
+                    if param_idx >= params.len() {
+                        return Err(invalid_test_definition(format!(
+                                "Invalid parameter index {} for fixture '{}' which only has {} parameters. \
+                                 This may indicate a mismatch between test parametrization and fixture definition.",
+                                param_idx, name, params.len()
+                            )));
                     }
+                    let param = &params[param_idx];
+                    // Use a cache key that includes the parameter index for parametrized fixtures
+                    let key = format!("{}[{}]", name, param_idx);
+                    (key, Some(param.value.clone_ref(self.py)))
                 } else {
                     (name.to_string(), None)
                 }
             } else {
                 (name.to_string(), None)
-            };
+            }
+        } else {
+            (name.to_string(), None)
+        };
 
         // Check all caches in order: function -> class -> module -> package -> session
         if let Some(value) = self.function_cache.get(&cache_key) {
