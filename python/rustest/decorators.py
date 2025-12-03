@@ -581,7 +581,8 @@ class MarkGenerator:
 
         # Validate timeout
         if timeout is not None:
-            if not isinstance(timeout, (int, float)):
+            # Runtime check for invalid types (e.g., user passes string)
+            if not isinstance(timeout, (int, float)):  # pyright: ignore[reportUnnecessaryIsInstance]
                 msg = f"timeout must be a number, got {type(timeout).__name__}"
                 raise TypeError(msg)
             if timeout <= 0:
