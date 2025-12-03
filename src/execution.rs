@@ -1,8 +1,14 @@
 //! Execution pipeline for running collected tests.
 //!
-//! Even though the Python GIL prevents truly parallel execution, the code in
-//! this module keeps the door open for future parallel strategies by isolating
-//! the orchestration logic from the raw execution of tests.
+//! This module supports parallel async test execution within the same event loop scope.
+//! Tests that share a loop scope (class, module, or session) can run concurrently
+//! using asyncio.gather(), providing significant speedups for I/O-bound async tests.
+//!
+//! Key concepts:
+//! - Tests with function loop scope run sequentially (each needs its own loop)
+//! - Tests with class/module/session loop scope can batch within that scope
+//! - Sync tests always run sequentially
+//! - Fixture scopes are respected: shared fixtures resolve once, function fixtures per-test
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -21,6 +27,135 @@ use crate::model::{
     ParameterMap, PyRunReport, PyTestResult, RunConfiguration, TestCase, TestModule,
 };
 use crate::output::{EventStreamRenderer, OutputConfig, OutputRenderer, SpinnerDisplay};
+
+/// Represents a batch of async tests that can run in parallel.
+/// All tests in a batch share the same event loop scope (class, module, or session).
+struct AsyncBatch<'a> {
+    /// The tests in this batch
+    tests: Vec<&'a TestCase>,
+    /// The loop scope shared by all tests in the batch
+    loop_scope: FixtureScope,
+}
+
+/// Represents a test execution unit - either a single test or a batch of parallel async tests.
+enum TestExecutionUnit<'a> {
+    /// A single test to run sequentially
+    Single(&'a TestCase),
+    /// A batch of async tests to run in parallel
+    Batch(AsyncBatch<'a>),
+}
+
+/// Determines if a test is async by checking its callable.
+fn is_async_test(py: Python<'_>, test_case: &TestCase) -> bool {
+    let inspect = match py.import("inspect") {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    inspect
+        .call_method1("iscoroutinefunction", (&test_case.callable.bind(py),))
+        .map(|r| r.is_truthy().unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// Partition tests into execution units for optimal async parallelization.
+///
+/// Tests are grouped based on their loop scope:
+/// - Async tests with class/module/session loop scope are batched together
+/// - Async tests with function loop scope run sequentially
+/// - Sync tests always run sequentially
+///
+/// The function preserves test order within batches and relative to sequential tests.
+fn partition_tests_for_parallel<'a>(
+    py: Python<'_>,
+    tests: &[&'a TestCase],
+    fixtures: &IndexMap<String, Fixture>,
+) -> Vec<TestExecutionUnit<'a>> {
+    let mut units: Vec<TestExecutionUnit<'a>> = Vec::new();
+    let mut current_batch: Option<AsyncBatch<'a>> = None;
+
+    for test in tests {
+        // Skip tests that are already marked as skipped
+        if test.skip_reason.is_some() {
+            // Flush any pending batch before adding a sequential test
+            if let Some(batch) = current_batch.take() {
+                if batch.tests.len() > 1 {
+                    units.push(TestExecutionUnit::Batch(batch));
+                } else if let Some(t) = batch.tests.into_iter().next() {
+                    units.push(TestExecutionUnit::Single(t));
+                }
+            }
+            units.push(TestExecutionUnit::Single(test));
+            continue;
+        }
+
+        let is_async = is_async_test(py, test);
+        let loop_scope = determine_test_loop_scope(py, test, fixtures);
+
+        // Only batch async tests with non-function loop scope
+        let can_batch = is_async && loop_scope > FixtureScope::Function;
+
+        if can_batch {
+            match &mut current_batch {
+                Some(batch) if batch.loop_scope == loop_scope => {
+                    // Same scope, add to current batch
+                    batch.tests.push(test);
+                }
+                Some(batch) => {
+                    // Different scope, flush current batch and start new one
+                    if batch.tests.len() > 1 {
+                        units.push(TestExecutionUnit::Batch(std::mem::replace(
+                            batch,
+                            AsyncBatch {
+                                tests: vec![test],
+                                loop_scope,
+                            },
+                        )));
+                    } else {
+                        // Single test batch becomes sequential
+                        let old_batch = std::mem::replace(
+                            batch,
+                            AsyncBatch {
+                                tests: vec![test],
+                                loop_scope,
+                            },
+                        );
+                        if let Some(t) = old_batch.tests.into_iter().next() {
+                            units.push(TestExecutionUnit::Single(t));
+                        }
+                    }
+                }
+                None => {
+                    // Start new batch
+                    current_batch = Some(AsyncBatch {
+                        tests: vec![test],
+                        loop_scope,
+                    });
+                }
+            }
+        } else {
+            // Flush any pending batch before adding a sequential test
+            if let Some(batch) = current_batch.take() {
+                if batch.tests.len() > 1 {
+                    units.push(TestExecutionUnit::Batch(batch));
+                } else if let Some(t) = batch.tests.into_iter().next() {
+                    units.push(TestExecutionUnit::Single(t));
+                }
+            }
+            units.push(TestExecutionUnit::Single(test));
+        }
+    }
+
+    // Flush any remaining batch
+    if let Some(batch) = current_batch.take() {
+        if batch.tests.len() > 1 {
+            units.push(TestExecutionUnit::Batch(batch));
+        } else if let Some(t) = batch.tests.into_iter().next() {
+            units.push(TestExecutionUnit::Single(t));
+        }
+    }
+
+    units
+}
 
 // This thread-local stores a raw pointer to the currently active `FixtureResolver`.
 // It lets Python's `request.getfixturevalue()` calls tunnel back into the Rust resolver
@@ -236,37 +371,77 @@ pub fn run_collected_tests(
             // Reset class-scoped cache for this class
             context.class_cache.clear();
 
-            for test in tests {
-                let result = run_single_test(py, module, test, config, &mut context)?;
-                let is_failed = result.status == "failed";
+            // Partition tests for optimal async parallelization
+            let execution_units = partition_tests_for_parallel(py, &tests, &module.fixtures);
 
-                // Update global and per-file counters
-                match result.status.as_str() {
-                    "passed" => {
-                        passed += 1;
-                        file_passed += 1;
+            for unit in execution_units {
+                let (unit_results, is_plain_function_test): (Vec<PyTestResult>, bool) = match unit {
+                    TestExecutionUnit::Single(test) => {
+                        let result = run_single_test(py, module, test, config, &mut context)?;
+                        let is_plain = test.class_name.is_none();
+                        (vec![result], is_plain)
                     }
-                    "failed" => {
-                        failed += 1;
-                        file_failed += 1;
+                    TestExecutionUnit::Batch(batch) => {
+                        let batch_results =
+                            run_async_batch(py, module, &batch, config, &mut context)?;
+                        // For batches, check if any test is a plain function test
+                        let any_plain = batch.tests.iter().any(|t| t.class_name.is_none());
+                        (
+                            batch_results.into_iter().map(|(_, r)| r).collect(),
+                            any_plain,
+                        )
                     }
-                    "skipped" => {
-                        skipped += 1;
-                        file_skipped += 1;
+                };
+
+                let mut should_fail_fast = false;
+
+                for result in unit_results {
+                    let is_failed = result.status == "failed";
+
+                    // Update global and per-file counters
+                    match result.status.as_str() {
+                        "passed" => {
+                            passed += 1;
+                            file_passed += 1;
+                        }
+                        "failed" => {
+                            failed += 1;
+                            file_failed += 1;
+                        }
+                        "skipped" => {
+                            skipped += 1;
+                            file_skipped += 1;
+                        }
+                        _ => {
+                            failed += 1;
+                            file_failed += 1;
+                        }
                     }
-                    _ => {
-                        failed += 1;
-                        file_failed += 1;
+
+                    // Notify renderer of test completion
+                    renderer.test_completed(&result);
+
+                    results.push(result);
+
+                    // Check for fail-fast mode
+                    if config.fail_fast && is_failed {
+                        should_fail_fast = true;
                     }
                 }
 
-                // Notify renderer of test completion
-                renderer.test_completed(&result);
+                // If this was a plain function test (no class), clear class cache
+                // Class-scoped fixtures should NOT be shared across plain function tests
+                if is_plain_function_test {
+                    context.class_cache.clear();
+                    finalize_generators(
+                        py,
+                        &mut context.teardowns.class,
+                        context.class_event_loop.as_ref(),
+                    );
+                }
 
-                results.push(result);
-
-                // Check for fail-fast mode: exit immediately on first failure
-                if config.fail_fast && is_failed {
+                // Handle fail-fast after processing all results in the unit
+                if should_fail_fast {
                     // Clean up fixtures before returning early
                     finalize_generators(
                         py,
@@ -320,17 +495,6 @@ pub fn run_collected_tests(
                     write_failed_tests_cache(&report)?;
 
                     return Ok(report);
-                }
-
-                // If this is a plain function test (no class), clear class cache
-                // Class-scoped fixtures should NOT be shared across plain function tests
-                if test.class_name.is_none() {
-                    context.class_cache.clear();
-                    finalize_generators(
-                        py,
-                        &mut context.teardowns.class,
-                        context.class_event_loop.as_ref(),
-                    );
                 }
             }
 
@@ -499,6 +663,413 @@ fn extract_skip_reason(message: &str) -> String {
     }
 }
 
+/// Run a batch of async tests in parallel using asyncio.gather().
+///
+/// This function:
+/// 1. Sets up the shared event loop for the batch's loop scope
+/// 2. Resolves shared fixtures (scopes >= loop_scope) once before the batch
+/// 3. For each test: resolves function-scoped fixtures and creates the coroutine
+/// 4. Runs all coroutines in parallel via Python's asyncio.gather()
+/// 5. Returns results for each test
+///
+/// Returns a vector of (test_case, result) tuples in the same order as input.
+fn run_async_batch<'a>(
+    py: Python<'_>,
+    module: &TestModule,
+    batch: &AsyncBatch<'a>,
+    config: &RunConfiguration,
+    context: &mut FixtureContext,
+) -> PyResult<Vec<(&'a TestCase, PyTestResult)>> {
+    let mut results: Vec<(&TestCase, PyTestResult)> = Vec::with_capacity(batch.tests.len());
+
+    // When fail-fast is enabled, fall back to sequential execution
+    // (fail-fast semantics require stopping on first failure)
+    // Note: Batches are guaranteed to have at least 2 tests by partition_tests_for_parallel
+    if config.fail_fast {
+        for test in &batch.tests {
+            let result = run_single_test(py, module, test, config, context)?;
+            let is_failed = result.status == "failed";
+            results.push((test, result));
+            if is_failed {
+                break;
+            }
+        }
+        return Ok(results);
+    }
+
+    // Prepare test execution data
+    // We need to:
+    // 1. Resolve shared fixtures once (these are cached by scope)
+    // 2. Create a coroutine for each test with its resolved arguments
+    // 3. Run all coroutines in parallel
+
+    let mut test_coroutines: Vec<TestSpec> = Vec::new();
+    let mut test_function_teardowns: Vec<(String, Vec<Py<PyAny>>)> = Vec::new();
+    let mut preparation_errors: Vec<(String, String)> = Vec::new();
+
+    // Get or create the event loop for this batch's scope
+    let event_loop = get_or_create_context_event_loop(py, batch.loop_scope, context)?;
+
+    for test in &batch.tests {
+        let test_id = test.unique_id();
+
+        // Validate loop scope compatibility
+        if let Some(error_message) = validate_loop_scope_compatibility(py, test, &module.fixtures) {
+            preparation_errors.push((
+                test_id.clone(),
+                format!("Loop scope validation error:\n{}", error_message),
+            ));
+            continue;
+        }
+
+        // Create a resolver for this test
+        let test_display_name = test.display_name.clone();
+        let test_nodeid = test.unique_id();
+        let test_marks = test.marks.clone();
+
+        let mut resolver = FixtureResolver::new(
+            py,
+            &module.fixtures,
+            &test.parameter_values,
+            &mut context.session_cache,
+            &mut context.package_cache,
+            &mut context.module_cache,
+            &mut context.class_cache,
+            &mut context.teardowns,
+            &test.fixture_param_indices,
+            &test.indirect_params,
+            &mut context.session_event_loop,
+            &mut context.package_event_loop,
+            &mut context.module_event_loop,
+            &mut context.class_event_loop,
+            test.class_name.as_deref(),
+            batch.loop_scope,
+            test_display_name,
+            test_nodeid,
+            test_marks.clone(),
+        );
+
+        // Populate fixture registry
+        if let Err(err) = populate_fixture_registry(py, &module.fixtures) {
+            let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+            preparation_errors.push((
+                test_id.clone(),
+                format!("Fixture registry error:\n{}", message),
+            ));
+            continue;
+        }
+
+        // Resolve autouse fixtures
+        {
+            let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
+            if let Err(err) = resolver.resolve_autouse_fixtures() {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Autouse fixture setup error:\n{}", message),
+                ));
+                continue;
+            }
+
+            if let Err(err) = resolver.apply_usefixtures_marks() {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Usefixtures mark error:\n{}", message),
+                ));
+                continue;
+            }
+
+            // Resolve all arguments for this test
+            let mut call_args = Vec::new();
+            let mut resolution_failed = false;
+            for param in &test.parameters {
+                match resolver.resolve_argument(param) {
+                    Ok(value) => call_args.push(value),
+                    Err(err) => {
+                        let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                        preparation_errors.push((
+                            test_id.clone(),
+                            format!("Fixture '{}' resolution error:\n{}", param, message),
+                        ));
+                        resolution_failed = true;
+                        break;
+                    }
+                }
+            }
+
+            if resolution_failed {
+                // Clean up function teardowns for this test
+                finalize_generators(
+                    py,
+                    &mut resolver.function_teardowns,
+                    resolver.function_event_loop.as_ref(),
+                );
+                continue;
+            }
+
+            // Extract timeout from asyncio mark(s) if present
+            // A test may have multiple asyncio marks (one with timeout, one from class decoration)
+            let timeout = test_marks
+                .iter()
+                .filter(|m| m.is_named("asyncio"))
+                .find_map(|m| {
+                    m.kwargs
+                        .bind(py)
+                        .get_item("timeout")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.extract::<f64>().ok())
+                });
+
+            // Store the test's callable and args for parallel execution
+            test_coroutines.push((
+                test_id.clone(),
+                test.callable.clone_ref(py),
+                call_args,
+                timeout,
+            ));
+
+            // Store function teardowns to run after all tests complete
+            test_function_teardowns
+                .push((test_id, resolver.function_teardowns.drain(..).collect()));
+        }
+    }
+
+    // Add preparation errors as failed results
+    for (test_id, error_message) in preparation_errors {
+        if let Some(test) = batch.tests.iter().find(|t| t.unique_id() == test_id) {
+            results.push((
+                *test,
+                PyTestResult::failed(
+                    test.display_name.clone(),
+                    to_relative_path(&test.path),
+                    0.0,
+                    error_message,
+                    None,
+                    None,
+                    test.mark_names(),
+                ),
+            ));
+        }
+    }
+
+    // If no tests to run in parallel, return early (but ensure teardowns run)
+    if test_coroutines.is_empty() {
+        // Run any pending teardowns from preparation phase
+        for (_, mut teardowns) in test_function_teardowns {
+            finalize_generators(py, &mut teardowns, Some(&event_loop));
+        }
+        return Ok(results);
+    }
+
+    // Run all test coroutines in parallel using Python's asyncio.gather
+    // Use a closure to ensure teardowns run even if parallel execution fails
+    let parallel_results =
+        match run_coroutines_parallel(py, &event_loop, &test_coroutines, config.capture_output) {
+            Ok(results) => results,
+            Err(e) => {
+                // Ensure teardowns run even on error
+                for (_, mut teardowns) in test_function_teardowns {
+                    finalize_generators(py, &mut teardowns, Some(&event_loop));
+                }
+                return Err(e);
+            }
+        };
+
+    // Process results and run teardowns
+    for ((test_id, _, _, _), result_dict) in test_coroutines.iter().zip(parallel_results.iter()) {
+        // Find the corresponding test
+        let test = batch.tests.iter().find(|t| t.unique_id() == *test_id);
+        let test = match test {
+            Some(t) => *t,
+            None => continue,
+        };
+
+        // Find and run teardowns for this test
+        if let Some((_, teardowns)) = test_function_teardowns
+            .iter_mut()
+            .find(|(id, _)| id == test_id)
+        {
+            finalize_generators(py, teardowns, Some(&event_loop));
+        }
+
+        // Extract result from dictionary
+        let success: bool = result_dict
+            .get_item("success")?
+            .map(|v| v.extract().unwrap_or(false))
+            .unwrap_or(false);
+        let duration: f64 = result_dict
+            .get_item("duration")?
+            .map(|v| v.extract().unwrap_or(0.0))
+            .unwrap_or(0.0);
+        let error_message: Option<String> = result_dict
+            .get_item("error_message")?
+            .and_then(|v| v.extract().ok());
+        let stdout: Option<String> = result_dict
+            .get_item("stdout")?
+            .and_then(|v| v.extract().ok());
+        let stderr: Option<String> = result_dict
+            .get_item("stderr")?
+            .and_then(|v| v.extract().ok());
+
+        let result = if success {
+            PyTestResult::passed(
+                test.display_name.clone(),
+                to_relative_path(&test.path),
+                duration,
+                stdout,
+                stderr,
+                test.mark_names(),
+            )
+        } else {
+            match error_message {
+                Some(ref msg) if is_skip_exception(msg) => {
+                    let reason = extract_skip_reason(msg);
+                    PyTestResult::skipped(
+                        test.display_name.clone(),
+                        to_relative_path(&test.path),
+                        duration,
+                        reason,
+                        test.mark_names(),
+                    )
+                }
+                Some(msg) => PyTestResult::failed(
+                    test.display_name.clone(),
+                    to_relative_path(&test.path),
+                    duration,
+                    msg,
+                    stdout,
+                    stderr,
+                    test.mark_names(),
+                ),
+                None => PyTestResult::failed(
+                    test.display_name.clone(),
+                    to_relative_path(&test.path),
+                    duration,
+                    "Unknown error".to_string(),
+                    stdout,
+                    stderr,
+                    test.mark_names(),
+                ),
+            }
+        };
+
+        results.push((test, result));
+    }
+
+    Ok(results)
+}
+
+/// Get or create an event loop for the given scope from context.
+fn get_or_create_context_event_loop(
+    py: Python<'_>,
+    scope: FixtureScope,
+    context: &mut FixtureContext,
+) -> PyResult<Py<PyAny>> {
+    let event_loop_opt = match scope {
+        FixtureScope::Session => &mut context.session_event_loop,
+        FixtureScope::Package => &mut context.package_event_loop,
+        FixtureScope::Module => &mut context.module_event_loop,
+        FixtureScope::Class => &mut context.class_event_loop,
+        FixtureScope::Function => {
+            // Function scope doesn't make sense for batching, but handle it gracefully
+            return Err(PyRuntimeError::new_err(
+                "Cannot create shared event loop for function scope in batch execution",
+            ));
+        }
+    };
+
+    // Check if a loop already exists and is still open
+    if let Some(ref loop_obj) = event_loop_opt {
+        let is_closed = loop_obj
+            .bind(py)
+            .call_method0("is_closed")?
+            .extract::<bool>()?;
+        if !is_closed {
+            return Ok(loop_obj.clone_ref(py));
+        }
+    }
+
+    // Create a new event loop
+    let asyncio = py.import("asyncio")?;
+    let new_loop = asyncio.call_method0("new_event_loop")?.unbind();
+    asyncio.call_method1("set_event_loop", (&new_loop.bind(py),))?;
+
+    // Store it for reuse
+    *event_loop_opt = Some(new_loop.clone_ref(py));
+
+    Ok(new_loop)
+}
+
+/// A test specification for parallel execution: (test_id, callable, args, timeout).
+type TestSpec = (String, Py<PyAny>, Vec<Py<PyAny>>, Option<f64>);
+
+/// Run multiple test coroutines in parallel using Python's asyncio.gather.
+///
+/// This function:
+/// 1. Creates coroutines by calling each test callable with its arguments
+/// 2. Uses asyncio.gather to run them concurrently
+/// 3. Wraps each coroutine to capture its result, stdout, stderr, and timing
+fn run_coroutines_parallel<'py>(
+    py: Python<'py>,
+    event_loop: &Py<PyAny>,
+    test_specs: &[TestSpec],
+    capture_output: bool,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    // Import the async executor module
+    let executor_module = py.import("rustest.async_executor")?;
+    let run_parallel = executor_module.getattr("run_coroutines_parallel")?;
+
+    // Create coroutines by calling each test callable
+    let mut coroutines_list: Vec<(String, Py<PyAny>, Option<f64>)> = Vec::new();
+
+    for (test_id, callable, args, timeout) in test_specs {
+        let args_tuple = PyTuple::new(py, args)?;
+        match callable.bind(py).call1(args_tuple) {
+            Ok(coro) => {
+                coroutines_list.push((test_id.clone(), coro.unbind(), *timeout));
+            }
+            Err(e) => {
+                // Close any already-created coroutines to avoid "coroutine never awaited" warnings
+                for (_, coro, _) in coroutines_list.drain(..) {
+                    let _ = coro.bind(py).call_method0("close");
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    // Convert to Python list of tuples (test_id, coro, timeout)
+    let py_coroutines = PyList::new(
+        py,
+        coroutines_list.iter().map(|(id, coro, timeout)| {
+            let timeout_py: Py<PyAny> = match timeout {
+                Some(t) => t.into_pyobject(py).unwrap().into_any().unbind(),
+                None => py.None(),
+            };
+            let tuple = PyTuple::new(
+                py,
+                [
+                    id.as_str().into_pyobject(py).unwrap().into_any(),
+                    coro.bind(py).clone().into_any(),
+                    timeout_py.bind(py).clone().into_any(),
+                ],
+            )
+            .unwrap();
+            tuple
+        }),
+    )?;
+
+    // Call the Python function
+    let result = run_parallel.call1((event_loop, py_coroutines, capture_output))?;
+
+    // Extract the list of result dictionaries
+    let result_list = result.extract::<Vec<Bound<'py, PyDict>>>()?;
+
+    Ok(result_list)
+}
+
 /// Successful execution details.
 struct TestCallSuccess {
     stdout: Option<String>,
@@ -533,12 +1104,14 @@ fn populate_fixture_registry(py: Python<'_>, fixtures: &IndexMap<String, Fixture
     Ok(())
 }
 
-/// Extract the loop_scope from a test's asyncio mark, if present.
-/// Returns Some(scope) if explicitly specified, None otherwise.
+/// Extract the loop_scope from a test's asyncio mark(s), if present.
+/// Returns Some(scope) if explicitly specified in any asyncio mark, None otherwise.
+/// Note: A test may have multiple asyncio marks (e.g., one for timeout, one from class decoration).
 fn get_explicit_loop_scope_from_marks(
     py: Python<'_>,
     test_case: &TestCase,
 ) -> Option<FixtureScope> {
+    // Check all asyncio marks - a test might have multiple (one with timeout, one with loop_scope)
     for mark in &test_case.marks {
         if mark.is_named("asyncio") {
             if let Some(loop_scope_value) = mark.get_kwarg(py, "loop_scope") {
@@ -553,11 +1126,10 @@ fn get_explicit_loop_scope_from_marks(
                     });
                 }
             }
-            // asyncio mark found but no loop_scope specified
-            return None;
+            // This asyncio mark has no loop_scope, but keep checking other marks
         }
     }
-    // No asyncio mark found
+    // No asyncio mark with loop_scope found
     None
 }
 
@@ -791,7 +1363,7 @@ fn execute_test_case(
         test_loop_scope,
         test_display_name,
         test_nodeid,
-        test_marks,
+        test_marks.clone(),
     );
 
     let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
@@ -855,9 +1427,31 @@ fn execute_test_case(
             // Get or reuse the session event loop to ensure compatibility with async fixtures
             // This prevents "Task got Future attached to a different loop" errors
             let event_loop = resolver.get_or_create_test_event_loop()?;
+
+            // Extract timeout from asyncio mark(s) if present
+            let timeout: Option<f64> = test_marks
+                .iter()
+                .filter(|m| m.is_named("asyncio"))
+                .find_map(|m| {
+                    m.kwargs
+                        .bind(py)
+                        .get_item("timeout")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.extract::<f64>().ok())
+                });
+
+            // Apply timeout if specified
+            let coro_to_run = if let Some(timeout_secs) = timeout {
+                let asyncio = py.import("asyncio")?;
+                asyncio.call_method1("wait_for", (&result, timeout_secs))?
+            } else {
+                result
+            };
+
             Ok(event_loop
                 .bind(py)
-                .call_method1("run_until_complete", (&result,))?
+                .call_method1("run_until_complete", (&coro_to_run,))?
                 .unbind())
         } else {
             Ok(result.unbind())

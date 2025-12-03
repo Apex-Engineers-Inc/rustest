@@ -1,6 +1,30 @@
 # Async Testing
 
-Rustest provides built-in support for testing asynchronous code using the `@mark.asyncio` decorator. This feature is inspired by pytest-asyncio and provides a familiar API for developers who need to test async functions.
+Rustest provides built-in support for testing asynchronous code using the `@mark.asyncio` decorator. This feature is inspired by pytest-asyncio but includes **built-in timeout support** that pytest-asyncio lacks out of the box.
+
+## What is Async? (For Beginners)
+
+If you're new to async programming, here's a simple explanation:
+
+**Regular (synchronous) code** runs one thing at a time. If you're waiting for a slow operation (like downloading a file), your program just sits there waiting.
+
+**Asynchronous code** can start a slow operation and then do other things while waiting. It's like ordering food at a restaurant - you don't stand at the counter waiting; you sit down and do other things until your food is ready.
+
+In Python, async functions use `async def` and you `await` operations that might take time:
+
+```python
+# Regular function - blocks while sleeping
+def slow_sync():
+    time.sleep(1)  # Program freezes for 1 second
+    return "done"
+
+# Async function - doesn't block the whole program
+async def slow_async():
+    await asyncio.sleep(1)  # Other code can run during this wait
+    return "done"
+```
+
+The key insight: **async lets your tests run faster** because slow operations can overlap instead of running one after another.
 
 ## Quick Start
 
@@ -145,6 +169,173 @@ async def test_session_scoped():
     await setup_database()
 ```
 
+## Built-in Timeout Support
+
+One of rustest's key advantages over pytest-asyncio is **built-in per-test timeout support**. With pytest-asyncio, you need additional plugins or manual `asyncio.wait_for()` calls. With rustest, it's built right in.
+
+### Basic Timeout
+
+Add a timeout to any async test with the `timeout` parameter:
+
+```python
+from rustest import mark
+
+@mark.asyncio(timeout=5.0)
+async def test_api_call():
+    """This test will fail if it takes longer than 5 seconds."""
+    result = await slow_api_call()
+    assert result["status"] == "ok"
+```
+
+If the test exceeds the timeout, it automatically fails with a clear message:
+
+```
+Test timed out after 5.0 seconds
+```
+
+### Why Built-in Timeouts Matter
+
+Timeouts are **essential** for async tests because:
+
+1. **Prevent hanging tests**: A bug in your async code might cause it to wait forever. Without a timeout, your entire test suite hangs.
+
+2. **Catch performance regressions**: If an operation that should take 100ms suddenly takes 10 seconds, you want to know.
+
+3. **CI/CD reliability**: Tests that hang can block your entire deployment pipeline.
+
+### Timeout with Loop Scope
+
+Combine timeout with loop scopes for maximum control:
+
+```python
+from rustest import mark
+
+@mark.asyncio(loop_scope="module", timeout=10.0)
+async def test_database_query():
+    """Shares event loop with other module tests, fails after 10s."""
+    results = await db.query("SELECT * FROM large_table")
+    assert len(results) > 0
+```
+
+### Class-Level Timeout
+
+Apply timeout to all methods in a test class:
+
+```python
+from rustest import mark
+
+@mark.asyncio(loop_scope="class", timeout=30.0)
+class TestSlowOperations:
+    """All methods have a 30 second timeout."""
+
+    async def test_operation_one(self):
+        await slow_operation()
+        assert True
+
+    async def test_operation_two(self):
+        await another_slow_operation()
+        assert True
+```
+
+### Per-Test Timeout Override
+
+When using class decoration, you can override the timeout for specific methods:
+
+```python
+from rustest import mark
+
+@mark.asyncio(loop_scope="class", timeout=5.0)
+class TestMixedTimeouts:
+    """Default 5 second timeout for all methods."""
+
+    async def test_fast_operation(self):
+        """Uses the class default of 5 seconds."""
+        await fast_operation()
+
+    @mark.asyncio(timeout=60.0)
+    async def test_very_slow_operation(self):
+        """Override: this test gets 60 seconds."""
+        await very_slow_operation()
+```
+
+### Timeout Gotchas
+
+!!! warning "Common Timeout Pitfalls"
+    Be aware of these common issues when using timeouts.
+
+**1. Timeout only applies to async tests**
+
+If you accidentally apply `timeout` to a synchronous function, it will be silently ignored:
+
+<!--rustest.mark.skip-->
+```python
+@mark.asyncio(timeout=5.0)
+def test_sync():  # NOT async! Timeout is ignored.
+    time.sleep(10)  # This will NOT timeout after 5 seconds
+```
+
+**2. Timeout must be positive**
+
+Passing zero or negative values raises a `ValueError` at decoration time:
+
+- `@mark.asyncio(timeout=0)` → `ValueError: timeout must be positive`
+- `@mark.asyncio(timeout=-1.0)` → `ValueError: timeout must be positive`
+
+**3. Timeouts are per-test, not shared**
+
+Each test has its own independent timeout. If test A times out after 5 seconds, test B (running in parallel) is not affected:
+
+<!--rustest.mark.skip-->
+```python
+@mark.asyncio(loop_scope="module", timeout=0.1)
+async def test_will_timeout():
+    await asyncio.sleep(10)  # Times out after 0.1s
+
+@mark.asyncio(loop_scope="module", timeout=60.0)
+async def test_will_complete():
+    await asyncio.sleep(1)  # Completes normally, not affected by test_will_timeout
+```
+
+### Comparison: rustest vs pytest-asyncio
+
+| Feature | rustest | pytest-asyncio |
+|---------|---------|----------------|
+| **Parallel async test execution** | ✅ Tests run concurrently | ❌ Sequential only |
+| **Built-in timeout parameter** | ✅ `@mark.asyncio(timeout=5.0)` | ❌ Not available |
+| Per-test timeout | ✅ Built-in | ❌ Requires pytest-timeout plugin |
+| Clean timeout message | ✅ "Test timed out after X seconds" | ❌ Raw asyncio.TimeoutError |
+| Independent test timeouts | ✅ Each test has own timeout | ⚠️ Depends on plugin |
+
+**Why this matters for performance**: With pytest-asyncio, if you have 10 async tests that each `await asyncio.sleep(1)`, they run sequentially taking ~10 seconds. With rustest, they run in parallel and complete in ~1 second.
+
+With pytest-asyncio, you'd need to write:
+
+```python
+# pytest-asyncio: Manual timeout handling
+import pytest
+import asyncio
+
+@pytest.mark.asyncio
+async def test_with_timeout():
+    result = await asyncio.wait_for(
+        slow_operation(),
+        timeout=5.0
+    )
+    assert result is not None
+```
+
+With rustest, it's just:
+
+```python
+# rustest: Built-in timeout
+from rustest import mark
+
+@mark.asyncio(timeout=5.0)
+async def test_with_timeout():
+    result = await slow_operation()
+    assert result is not None
+```
+
 ## Advanced Patterns
 
 ### Concurrent Operations with gather
@@ -236,15 +427,29 @@ async def test_async_generator():
     assert len(results) > 0
 ```
 
-### Timeouts
+### Timeouts (Manual vs Built-in)
+
+Rustest provides **built-in timeout support** via `@mark.asyncio(timeout=...)` (see [Built-in Timeout Support](#built-in-timeout-support) above). However, you can also use manual `asyncio.wait_for()` for more granular control within a test:
 
 ```python
 from rustest import mark, raises
 import asyncio
 
+# RECOMMENDED: Use built-in timeout for whole-test timeout
+@mark.asyncio(timeout=5.0)
+async def test_with_builtin_timeout():
+    """Whole test fails if it exceeds 5 seconds."""
+    result = await slow_operation()
+    assert result is not None
+
+# ALTERNATIVE: Manual timeout for specific operations within a test
 @mark.asyncio
-async def test_with_timeout():
-    """Test async operation with timeout."""
+async def test_with_manual_timeout():
+    """Only the specific operation has a timeout."""
+    # First operation - no timeout
+    setup_result = await setup_operation()
+
+    # Second operation - must complete in 1 second
     result = await asyncio.wait_for(
         slow_operation(),
         timeout=1.0
@@ -260,6 +465,10 @@ async def test_timeout_error():
             timeout=0.1
         )
 ```
+
+!!! tip "When to use which?"
+    - **Built-in timeout** (`@mark.asyncio(timeout=X)`): Use for "this whole test should complete in X seconds"
+    - **Manual timeout** (`asyncio.wait_for()`): Use when you need different timeouts for different parts of a test
 
 ## Combining with Other Features
 
@@ -488,16 +697,26 @@ Rustest automatically cleans up the event loop after each test scope, canceling 
 
 ## Migration from pytest-asyncio
 
-If you're migrating from pytest-asyncio, the transition is straightforward:
+If you're migrating from pytest-asyncio, the transition is straightforward - and you get **built-in timeout support** as a bonus!
 
 ### Before (pytest-asyncio)
 
 ```python
 import pytest
+import asyncio
 
 @pytest.mark.asyncio
 async def test_async():
     result = await async_operation()
+    assert result == expected
+
+# With timeout - requires manual wrapping
+@pytest.mark.asyncio
+async def test_with_timeout():
+    result = await asyncio.wait_for(
+        async_operation(),
+        timeout=5.0
+    )
     assert result == expected
 ```
 
@@ -510,9 +729,32 @@ from rustest import mark
 async def test_async():
     result = await async_operation()
     assert result == expected
+
+# With timeout - built-in! No manual wrapping needed
+@mark.asyncio(timeout=5.0)
+async def test_with_timeout():
+    result = await async_operation()
+    assert result == expected
 ```
 
-The API is intentionally similar to minimize migration effort.
+### Key Improvements Over pytest-asyncio
+
+| Feature | pytest-asyncio | rustest |
+|---------|----------------|---------|
+| Basic async support | ✅ | ✅ |
+| Loop scopes | ✅ | ✅ |
+| Class decoration | ✅ | ✅ |
+| **🚀 Parallel async test execution** | ❌ | ✅ |
+| **⏱️ Built-in per-test timeout** | ❌ | ✅ |
+| Clear timeout messages | ❌ | ✅ |
+
+The two killer features that set rustest apart:
+
+1. **Parallel Execution**: Async tests run concurrently, not sequentially. A test suite with 100 async tests that each wait 100ms completes in ~100ms total, not 10 seconds.
+
+2. **Built-in Timeouts**: No plugins needed. Just add `timeout=5.0` to catch hanging tests before they block your CI pipeline.
+
+The API is intentionally similar to minimize migration effort, while adding features that pytest-asyncio lacks.
 
 ## Common Patterns
 
@@ -552,11 +794,26 @@ async def test_with_shared_pool():
 
 ## Best Practices
 
-1. **Use appropriate scopes**: Function scope for isolation, broader scopes for performance
-2. **Clean up resources**: Use async context managers or proper cleanup in teardown
-3. **Avoid shared state**: Even with shared loops, avoid shared mutable state between tests
-4. **Test concurrency**: Use `gather()` and `create_task()` to test concurrent operations
-5. **Handle timeouts**: Use `asyncio.wait_for()` to prevent tests from hanging
+1. **Always use timeouts**: Add `timeout=X` to every async test to prevent hanging tests in CI:
+   <!--rustest.mark.skip-->
+   ```python
+   @mark.asyncio(timeout=30.0)  # Good: has a timeout
+   async def test_api_call():
+       ...
+   ```
+
+2. **Use appropriate scopes**: Function scope for isolation, broader scopes for performance
+
+3. **Clean up resources**: Use async context managers or proper cleanup in teardown
+
+4. **Avoid shared state**: Even with shared loops, avoid shared mutable state between tests
+
+5. **Test concurrency**: Use `gather()` and `create_task()` to test concurrent operations
+
+6. **Set reasonable timeouts**: Don't set timeouts too tight (flaky tests) or too loose (slow feedback):
+   - Unit tests: 1-5 seconds
+   - Integration tests: 10-30 seconds
+   - End-to-end tests: 60+ seconds
 
 ## Limitations
 
