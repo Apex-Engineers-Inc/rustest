@@ -95,8 +95,23 @@ class AsyncBatchExecutor:
         async def run_all() -> list[AsyncTestResult]:
             tasks = [self._run_single_test(spec, capture_output) for spec in tests]
             # gather with return_exceptions=True ensures all tests complete
-            # even if some fail
-            return await asyncio.gather(*tasks)
+            # even if some fail (prevents one exception from stopping others)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Convert any exceptions to AsyncTestResult objects
+            processed_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    # This shouldn't happen since _run_single_test catches all exceptions,
+                    # but handle it defensively
+                    processed_results.append(AsyncTestResult(
+                        test_id=tests[i].test_id,
+                        success=False,
+                        error_message="".join(traceback.format_exception(type(result), result, result.__traceback__)),
+                        duration=0.0,
+                    ))
+                else:
+                    processed_results.append(result)
+            return processed_results
 
         # Run all tests in the event loop
         return self.event_loop.run_until_complete(run_all())
@@ -297,6 +312,25 @@ def run_coroutines_parallel(
         tasks = [
             _wrap_test_for_gather(test_id, coro, capture_output) for test_id, coro in coroutines
         ]
-        return await asyncio.gather(*tasks)
+        # return_exceptions=True ensures all tests complete even if some fail
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Convert any exceptions to result dictionaries
+        processed_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                # This shouldn't happen since _wrap_test_for_gather catches all exceptions,
+                # but handle it defensively
+                test_id, _ = coroutines[i]
+                processed_results.append({
+                    "test_id": test_id,
+                    "success": False,
+                    "error_message": "".join(traceback.format_exception(type(result), result, result.__traceback__)),
+                    "stdout": None,
+                    "stderr": None,
+                    "duration": 0.0,
+                })
+            else:
+                processed_results.append(result)
+        return processed_results
 
     return event_loop.run_until_complete(run_all())
