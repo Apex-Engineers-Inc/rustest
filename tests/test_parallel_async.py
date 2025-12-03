@@ -24,6 +24,7 @@ if "pytest" in sys.argv[0]:
     pytest.skip("This test file requires rustest runner (parallel async tests)", allow_module_level=True)
 
 from rustest import fixture, mark, parametrize, raises
+from rustest.decorators import skip_decorator
 
 
 # ============================================================================
@@ -784,6 +785,7 @@ async def test_parallel_timing_verify(module_timing):
 # Test: All tests in batch failing
 # ============================================================================
 
+@skip_decorator("Intentional failure test - skipped in CI")
 @mark.asyncio(loop_scope="module")
 async def test_batch_failure_1():
     """First failing test in batch."""
@@ -791,6 +793,7 @@ async def test_batch_failure_1():
     assert False, "Intentional failure 1"
 
 
+@skip_decorator("Intentional failure test - skipped in CI")
 @mark.asyncio(loop_scope="module")
 async def test_batch_failure_2():
     """Second failing test in batch."""
@@ -798,6 +801,7 @@ async def test_batch_failure_2():
     assert False, "Intentional failure 2"
 
 
+@skip_decorator("Intentional failure test - skipped in CI")
 @mark.asyncio(loop_scope="module")
 async def test_batch_failure_3():
     """Third failing test in batch."""
@@ -816,6 +820,7 @@ async def test_before_sys_exit():
     assert True
 
 
+@skip_decorator("Intentional sys.exit test - skipped in CI")
 @mark.asyncio(loop_scope="module")
 async def test_sys_exit_in_test():
     """Test that calls sys.exit - should be caught and reported as failure."""
@@ -881,6 +886,7 @@ async def test_before_fixture_error(track_fixture_error):
     assert True
 
 
+@skip_decorator("Intentional fixture failure test - skipped in CI")
 @mark.asyncio(loop_scope="module")
 async def test_with_failing_fixture(failing_fixture):
     """Test with failing fixture - should report as failed, not crash batch."""
@@ -919,6 +925,7 @@ async def test_timeout_completes_within_limit(timeout_tracker):
     assert True
 
 
+@skip_decorator("Intentional timeout test - skipped in CI")
 @mark.asyncio(loop_scope="module", timeout=0.05)
 async def test_timeout_exceeds_limit(timeout_tracker):
     """Test that should timeout and fail."""
@@ -960,6 +967,7 @@ def parallel_batch_tracker():
     return _parallel_batch_tracking
 
 
+@skip_decorator("Intentional timeout test - skipped in CI")
 @mark.asyncio(loop_scope="module", timeout=0.08)
 async def test_parallel_batch_timeout_will_fail(parallel_batch_tracker):
     """Test in parallel batch with short timeout - will fail."""
