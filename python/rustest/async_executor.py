@@ -92,14 +92,33 @@ class AsyncBatchExecutor:
             return []
 
         # Create wrapper coroutines for each test
-        async def run_all() -> list[AsyncTestResult]:
+        async def run_all() -> list[AsyncTestResult | BaseException]:
             tasks = [self._run_single_test(spec, capture_output) for spec in tests]
-            # gather with return_exceptions=True ensures all tests complete
-            # even if some fail
-            return await asyncio.gather(*tasks)
+            # return_exceptions=True ensures all tests complete even if some fail
+            # unexpectedly (e.g., in the wrapper before try block)
+            return await asyncio.gather(*tasks, return_exceptions=True)
 
         # Run all tests in the event loop
-        return self.event_loop.run_until_complete(run_all())
+        raw_results = self.event_loop.run_until_complete(run_all())
+
+        # Convert any unexpected exceptions to AsyncTestResult
+        results: list[AsyncTestResult] = []
+        for i, result in enumerate(raw_results):
+            if isinstance(result, BaseException):
+                # Unexpected exception in wrapper - convert to failure result
+                results.append(
+                    AsyncTestResult(
+                        test_id=tests[i].test_id,
+                        success=False,
+                        error_message="".join(
+                            traceback.format_exception(type(result), result, result.__traceback__)
+                        ),
+                        duration=0.0,
+                    )
+                )
+            else:
+                results.append(result)
+        return results
 
     async def _run_single_test(
         self,
@@ -282,6 +301,9 @@ def run_coroutines_parallel(
     This variant is used when coroutines are already created (e.g., from
     calling async test functions with their resolved arguments).
 
+    Note: Results are returned in the same order as input coroutines.
+    This is guaranteed by asyncio.gather() which preserves order.
+
     Args:
         event_loop: The asyncio event loop to use.
         coroutines: List of (test_id, coroutine) tuples.
@@ -293,10 +315,33 @@ def run_coroutines_parallel(
     if not coroutines:
         return []
 
-    async def run_all() -> list[dict[str, Any]]:
+    async def run_all() -> list[dict[str, Any] | BaseException]:
         tasks = [
             _wrap_test_for_gather(test_id, coro, capture_output) for test_id, coro in coroutines
         ]
-        return await asyncio.gather(*tasks)
+        # return_exceptions=True ensures all tests complete even if some fail
+        # unexpectedly (e.g., in the wrapper before try block)
+        return await asyncio.gather(*tasks, return_exceptions=True)
 
-    return event_loop.run_until_complete(run_all())
+    raw_results = event_loop.run_until_complete(run_all())
+
+    # Convert any unexpected exceptions to result dictionaries
+    results: list[dict[str, Any]] = []
+    for i, result in enumerate(raw_results):
+        if isinstance(result, BaseException):
+            # Unexpected exception in wrapper - convert to failure result
+            results.append(
+                {
+                    "test_id": coroutines[i][0],
+                    "success": False,
+                    "error_message": "".join(
+                        traceback.format_exception(type(result), result, result.__traceback__)
+                    ),
+                    "stdout": None,
+                    "stderr": None,
+                    "duration": 0.0,
+                }
+            )
+        else:
+            results.append(result)
+    return results

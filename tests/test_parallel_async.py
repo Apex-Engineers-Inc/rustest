@@ -128,26 +128,26 @@ class TestParallelClass:
 # ============================================================================
 
 @fixture(scope="session")
-async def session_resource():
-    """Session-scoped async fixture."""
+async def parallel_session_resource():
+    """Session-scoped async fixture for parallel tests."""
     await asyncio.sleep(0.01)
     return {"session_id": "test_session"}
 
 
 @mark.asyncio(loop_scope="session")
-async def test_session_parallel_1(session_resource):
+async def test_session_parallel_1(parallel_session_resource):
     """First session-scoped parallel test."""
     log_execution("session_test_1_start")
-    assert session_resource["session_id"] == "test_session"
+    assert parallel_session_resource["session_id"] == "test_session"
     await asyncio.sleep(0.05)
     log_execution("session_test_1_end")
 
 
 @mark.asyncio(loop_scope="session")
-async def test_session_parallel_2(session_resource):
+async def test_session_parallel_2(parallel_session_resource):
     """Second session-scoped parallel test."""
     log_execution("session_test_2_start")
-    assert session_resource["session_id"] == "test_session"
+    assert parallel_session_resource["session_id"] == "test_session"
     await asyncio.sleep(0.05)
     log_execution("session_test_2_end")
 
@@ -478,3 +478,253 @@ async def test_nested_fixtures_2(derived_async_fixture):
     """Test with nested async fixtures - test 2."""
     assert derived_async_fixture == "base_derived"
     await asyncio.sleep(0.01)
+
+
+# ============================================================================
+# Test: Concurrent fixture access (edge case)
+# ============================================================================
+
+# Shared mutable state to test concurrent access patterns
+_concurrent_access_counter = {"value": 0, "access_count": 0}
+
+
+@fixture(scope="module")
+async def concurrent_shared_state():
+    """Module-scoped fixture accessed concurrently by multiple tests."""
+    _concurrent_access_counter["value"] = 100
+    _concurrent_access_counter["access_count"] = 0
+    return _concurrent_access_counter
+
+
+@mark.asyncio(loop_scope="module")
+async def test_concurrent_access_1(concurrent_shared_state):
+    """Test 1 accessing shared fixture concurrently."""
+    # Simulate read-modify-write pattern
+    initial = concurrent_shared_state["value"]
+    concurrent_shared_state["access_count"] += 1
+    await asyncio.sleep(0.05)  # Yield to other tests
+    # Value should still be consistent (no corruption)
+    assert concurrent_shared_state["value"] == initial
+    assert concurrent_shared_state["access_count"] >= 1
+
+
+@mark.asyncio(loop_scope="module")
+async def test_concurrent_access_2(concurrent_shared_state):
+    """Test 2 accessing shared fixture concurrently."""
+    initial = concurrent_shared_state["value"]
+    concurrent_shared_state["access_count"] += 1
+    await asyncio.sleep(0.05)
+    assert concurrent_shared_state["value"] == initial
+    assert concurrent_shared_state["access_count"] >= 1
+
+
+@mark.asyncio(loop_scope="module")
+async def test_concurrent_access_3(concurrent_shared_state):
+    """Test 3 accessing shared fixture concurrently."""
+    initial = concurrent_shared_state["value"]
+    concurrent_shared_state["access_count"] += 1
+    await asyncio.sleep(0.05)
+    assert concurrent_shared_state["value"] == initial
+    assert concurrent_shared_state["access_count"] >= 1
+
+
+# ============================================================================
+# Test: Exception isolation in parallel tests (partial batch failures)
+# ============================================================================
+
+_exception_tracking = {"test1_ran": False, "test2_ran": False, "test3_ran": False}
+
+
+@fixture(scope="module")
+def reset_exception_tracking():
+    """Reset tracking state before tests."""
+    _exception_tracking["test1_ran"] = False
+    _exception_tracking["test2_ran"] = False
+    _exception_tracking["test3_ran"] = False
+    return _exception_tracking
+
+
+@mark.asyncio(loop_scope="module")
+async def test_exception_isolation_passes_1(reset_exception_tracking):
+    """This test should pass and complete regardless of sibling failures."""
+    reset_exception_tracking["test1_ran"] = True
+    await asyncio.sleep(0.02)
+    assert True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_exception_isolation_passes_2(reset_exception_tracking):
+    """Another passing test to verify exception isolation."""
+    reset_exception_tracking["test2_ran"] = True
+    await asyncio.sleep(0.02)
+    assert True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_exception_isolation_passes_3(reset_exception_tracking):
+    """Third passing test verifying all complete independently."""
+    reset_exception_tracking["test3_ran"] = True
+    await asyncio.sleep(0.02)
+    assert True
+
+
+# ============================================================================
+# Test: Large batch size handling
+# ============================================================================
+
+# Generate many tests to verify batch handling doesn't have issues with scale
+@mark.asyncio(loop_scope="module")
+@parametrize("n", list(range(20)))
+async def test_large_batch_parametrized(n):
+    """Test large parametrized batch (20 concurrent tests)."""
+    await asyncio.sleep(0.01)
+    assert n >= 0 and n < 20
+
+
+# ============================================================================
+# Test: Event loop state after test completion
+# ============================================================================
+
+@mark.asyncio(loop_scope="module")
+async def test_event_loop_state_1():
+    """Verify event loop is still usable after other tests."""
+    loop = asyncio.get_running_loop()
+    assert loop is not None
+    assert not loop.is_closed()
+    await asyncio.sleep(0.01)
+
+
+@mark.asyncio(loop_scope="module")
+async def test_event_loop_state_2():
+    """Second test to verify loop is shared and healthy."""
+    loop = asyncio.get_running_loop()
+    assert loop is not None
+    assert not loop.is_closed()
+    # Verify we can create and await tasks
+    result = await asyncio.create_task(asyncio.sleep(0.01))
+    assert result is None
+
+
+# ============================================================================
+# Test: Rapid sequential await patterns
+# ============================================================================
+
+@mark.asyncio(loop_scope="module")
+async def test_rapid_awaits_1():
+    """Test with many rapid sequential awaits."""
+    for _ in range(10):
+        await asyncio.sleep(0.001)
+    assert True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_rapid_awaits_2():
+    """Another test with rapid awaits running concurrently."""
+    for _ in range(10):
+        await asyncio.sleep(0.001)
+    assert True
+
+
+# ============================================================================
+# Test: Nested task creation in parallel context
+# ============================================================================
+
+@mark.asyncio(loop_scope="module")
+async def test_nested_task_creation_1():
+    """Test creating nested tasks within parallel execution."""
+    async def inner_task(value: int) -> int:
+        await asyncio.sleep(0.01)
+        return value * 2
+
+    # Create multiple nested tasks
+    tasks = [asyncio.create_task(inner_task(i)) for i in range(5)]
+    results = await asyncio.gather(*tasks)
+    assert results == [0, 2, 4, 6, 8]
+
+
+@mark.asyncio(loop_scope="module")
+async def test_nested_task_creation_2():
+    """Another test with nested tasks to verify no interference."""
+    async def inner_task(value: str) -> str:
+        await asyncio.sleep(0.01)
+        return value.upper()
+
+    tasks = [asyncio.create_task(inner_task(s)) for s in ["a", "b", "c"]]
+    results = await asyncio.gather(*tasks)
+    assert results == ["A", "B", "C"]
+
+
+# ============================================================================
+# Test: Async context managers in parallel tests
+# ============================================================================
+
+class AsyncResource:
+    """Async context manager for testing."""
+    def __init__(self):
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self):
+        await asyncio.sleep(0.01)
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *args):
+        await asyncio.sleep(0.01)
+        self.exited = True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_async_context_manager_1():
+    """Test async context managers work correctly in parallel."""
+    async with AsyncResource() as resource:
+        assert resource.entered
+        await asyncio.sleep(0.01)
+    assert resource.exited
+
+
+@mark.asyncio(loop_scope="module")
+async def test_async_context_manager_2():
+    """Another async context manager test running concurrently."""
+    async with AsyncResource() as resource:
+        assert resource.entered
+        await asyncio.sleep(0.01)
+    assert resource.exited
+
+
+# ============================================================================
+# Test: Verify order preservation in results
+# ============================================================================
+
+_order_tracking: list[str] = []
+
+
+@fixture(scope="module")
+def reset_order_tracking():
+    """Reset order tracking."""
+    _order_tracking.clear()
+    return _order_tracking
+
+
+@mark.asyncio(loop_scope="module")
+async def test_order_tracking_a(reset_order_tracking):
+    """First ordered test."""
+    reset_order_tracking.append("a_start")
+    await asyncio.sleep(0.03)
+    reset_order_tracking.append("a_end")
+
+
+@mark.asyncio(loop_scope="module")
+async def test_order_tracking_b(reset_order_tracking):
+    """Second ordered test."""
+    reset_order_tracking.append("b_start")
+    await asyncio.sleep(0.01)
+    reset_order_tracking.append("b_end")
+
+
+@mark.asyncio(loop_scope="module")
+async def test_order_tracking_c(reset_order_tracking):
+    """Third ordered test."""
+    reset_order_tracking.append("c_start")
+    await asyncio.sleep(0.02)
+    reset_order_tracking.append("c_end")

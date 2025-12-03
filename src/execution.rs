@@ -682,14 +682,15 @@ fn run_async_batch<'a>(
 ) -> PyResult<Vec<(&'a TestCase, PyTestResult)>> {
     let mut results: Vec<(&TestCase, PyTestResult)> = Vec::with_capacity(batch.tests.len());
 
-    // For very small batches or when fail-fast is enabled, fall back to sequential
+    // When fail-fast is enabled, fall back to sequential execution
     // (fail-fast semantics require stopping on first failure)
-    if batch.tests.len() < 2 || config.fail_fast {
+    // Note: Batches are guaranteed to have at least 2 tests by partition_tests_for_parallel
+    if config.fail_fast {
         for test in &batch.tests {
             let result = run_single_test(py, module, test, config, context)?;
             let is_failed = result.status == "failed";
             results.push((test, result));
-            if config.fail_fast && is_failed {
+            if is_failed {
                 break;
             }
         }
@@ -714,7 +715,10 @@ fn run_async_batch<'a>(
 
         // Validate loop scope compatibility
         if let Some(error_message) = validate_loop_scope_compatibility(py, test, &module.fixtures) {
-            preparation_errors.push((test_id.clone(), error_message));
+            preparation_errors.push((
+                test_id.clone(),
+                format!("Loop scope validation error:\n{}", error_message),
+            ));
             continue;
         }
 
@@ -748,7 +752,10 @@ fn run_async_batch<'a>(
         // Populate fixture registry
         if let Err(err) = populate_fixture_registry(py, &module.fixtures) {
             let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-            preparation_errors.push((test_id.clone(), message));
+            preparation_errors.push((
+                test_id.clone(),
+                format!("Fixture registry error:\n{}", message),
+            ));
             continue;
         }
 
@@ -757,13 +764,19 @@ fn run_async_batch<'a>(
             let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
             if let Err(err) = resolver.resolve_autouse_fixtures() {
                 let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                preparation_errors.push((test_id.clone(), message));
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Autouse fixture setup error:\n{}", message),
+                ));
                 continue;
             }
 
             if let Err(err) = resolver.apply_usefixtures_marks() {
                 let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                preparation_errors.push((test_id.clone(), message));
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Usefixtures mark error:\n{}", message),
+                ));
                 continue;
             }
 
@@ -775,7 +788,10 @@ fn run_async_batch<'a>(
                     Ok(value) => call_args.push(value),
                     Err(err) => {
                         let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                        preparation_errors.push((test_id.clone(), message));
+                        preparation_errors.push((
+                            test_id.clone(),
+                            format!("Fixture '{}' resolution error:\n{}", param, message),
+                        ));
                         resolution_failed = true;
                         break;
                     }
@@ -819,14 +835,28 @@ fn run_async_batch<'a>(
         }
     }
 
-    // If no tests to run in parallel, return early
+    // If no tests to run in parallel, return early (but ensure teardowns run)
     if test_coroutines.is_empty() {
+        // Run any pending teardowns from preparation phase
+        for (_, mut teardowns) in test_function_teardowns {
+            finalize_generators(py, &mut teardowns, Some(&event_loop));
+        }
         return Ok(results);
     }
 
     // Run all test coroutines in parallel using Python's asyncio.gather
+    // Use a closure to ensure teardowns run even if parallel execution fails
     let parallel_results =
-        run_coroutines_parallel(py, &event_loop, &test_coroutines, config.capture_output)?;
+        match run_coroutines_parallel(py, &event_loop, &test_coroutines, config.capture_output) {
+            Ok(results) => results,
+            Err(e) => {
+                // Ensure teardowns run even on error
+                for (_, mut teardowns) in test_function_teardowns {
+                    finalize_generators(py, &mut teardowns, Some(&event_loop));
+                }
+                return Err(e);
+            }
+        };
 
     // Process results and run teardowns
     for ((test_id, _, _), result_dict) in test_coroutines.iter().zip(parallel_results.iter()) {
