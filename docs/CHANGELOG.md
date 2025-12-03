@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2025-12-03
+
+### Added
+
+- **Parallel Async Test Execution**: Revolutionary performance improvement for async tests with shared event loop scopes
+  - Tests that share the same event loop scope (class, module, or session) now run concurrently using `asyncio.gather()`
+  - Provides significant speedups for I/O-bound async tests (10x+ in many cases)
+  - Automatic batching of tests by loop scope for optimal parallelization
+  - Respects fixture scopes and boundaries (shared fixtures resolved once, function fixtures per-test)
+  - Graceful error handling with `return_exceptions=True` for fault tolerance
+  - Falls back to sequential execution in fail-fast mode
+  - Comprehensive test suite with 40+ tests covering edge cases, error isolation, and concurrent fixture access
+
+- **Per-Test Timeout Support**: Built-in timeout functionality for async tests without external plugins
+  - New `timeout` parameter for `@mark.asyncio()` decorator: `@mark.asyncio(timeout=5.0)`
+  - Each test's timeout is independent - timeouts don't affect other parallel tests
+  - Implemented via `asyncio.wait_for()` for clean cancellation handling
+  - Works with both sequential and parallel async execution
+  - Supports integer and float timeout values
+  - Comprehensive validation with clear error messages for invalid values (negative, zero, non-numeric)
+  - Combines seamlessly with loop_scope parameter: `@mark.asyncio(loop_scope="module", timeout=10.0)`
+
+- **Enhanced Test Coverage**: Expanded test suite for critical functionality
+  - New `tests/test_regression_bugs.py` for tracking and preventing bug regressions
+  - New `tests/test_fixture_dependency_chains.py` for complex fixture dependency testing
+  - New `tests/test_parametrize_data_types.py` for parametrization edge cases
+  - Expanded `python/tests/test_builtin_fixtures.py` with edge case coverage
+  - Expanded `python/tests/test_cli.py` with return code and edge case tests
+  - Total test count increased to 850+ tests
+
+- **Comprehensive Async Testing Documentation**: Major documentation overhaul for async testing
+  - New "What is Async?" section for beginners with clear explanations
+  - Detailed "Built-in Timeout Support" section highlighting feature advantages
+  - Timeout best practices and common pitfalls documentation
+  - Performance comparison tables showing advantages over pytest-asyncio
+  - Migration guide with before/after examples for pytest-asyncio users
+  - Updated best practices recommending timeout usage for all async tests
+
+### Fixed
+
+- **Thread-Local Safety**: Improved ACTIVE_RESOLVER thread-local safety with pointer verification
+  - Added release-mode assertion for resolver stack integrity (upgraded from debug_assert to assert)
+  - Prevents potential memory safety issues in multi-threaded contexts
+
+- **Parametrized Fixture Bounds Checking**: Added bounds checking for parametrized fixture resolution
+  - Prevents panics when accessing fixture parameters out of range
+  - More robust error handling for edge cases in fixture parametrization
+
+- **Class Cache Management**: Clear class cache on package boundary changes
+  - Ensures proper cache invalidation when moving between test packages
+  - Prevents stale fixture data from affecting subsequent tests
+
+- **MonkeyPatch Validation**: Fixed `MonkeyPatch.setattr()` to validate dotted paths
+  - Now correctly rejects paths without at least one dot
+  - Provides clear error messages for invalid attribute paths
+
+- **Type Comparison Flexibility**: Relaxed `approx.py` type strictness
+  - Allows list vs tuple comparison for better pytest compatibility
+  - More forgiving numeric comparison behavior
+
+### Changed
+
+- Async test execution strategy now prioritizes parallel execution for shared loop scopes
+- Error handling in async batch execution now uses `BaseException` instead of `Exception` for proper cancellation support
+- Documentation now emphasizes parallel execution and timeout as key differentiators from pytest-asyncio
+
 ## [0.15.0] - 2025-12-02
 
 ### Added
