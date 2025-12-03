@@ -131,8 +131,10 @@ def test_approx_dict_key_mismatch() -> None:
 
 
 def test_approx_type_mismatch() -> None:
-    """Test that approx fails when types don't match."""
-    assert not ([1, 2] == approx((1, 2)))  # list vs tuple
+    """Test that approx fails when fundamentally different types don't match."""
+    # Note: list vs tuple now passes (relaxed type checking like pytest.approx)
+    assert [1, 2] == approx((1, 2))  # list vs tuple - NOW WORKS
+    # But these should still fail (fundamentally different types)
     assert not ({"a": 1} == approx([("a", 1)]))  # dict vs list
     assert not (1.0 == approx("1.0"))  # float vs string
 

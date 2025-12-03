@@ -147,6 +147,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         let paths = PyPaths::from_vec(vec![path.to_string_lossy().into_owned()]);
         discover_tests(py, &paths, &config).expect("discovery should succeed")
@@ -184,6 +185,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -218,6 +220,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -273,6 +276,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, _collection_errors) =
@@ -313,6 +317,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -359,6 +364,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec!["/nonexistent/path".to_string()]);
             let result = discover_tests(py, &paths, &config);
@@ -385,6 +391,7 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -413,6 +420,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         assert_eq!(config1.worker_count, 1);
 
@@ -428,6 +436,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         assert_eq!(config2.worker_count, 8);
 
@@ -443,6 +452,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         assert!(config3.worker_count >= 1);
     }

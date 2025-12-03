@@ -87,6 +87,11 @@ class MonkeyPatch:
         if value is _NOT_SET:
             if not isinstance(target, str):
                 raise TypeError("use setattr(target, name, value) or setattr('module.attr', value)")
+            if "." not in target:
+                raise TypeError(
+                    f"setattr() with dotted path requires at least one dot: {target!r}. "
+                    "Use setattr(target_object, 'name', value) or setattr('module.attr', value)"
+                )
             module_path, attr_name = target.rsplit(".", 1)
             module = importlib.import_module(module_path)
             obj = module
@@ -112,6 +117,11 @@ class MonkeyPatch:
         self, target: object | str, name: str | _NotSet = _NOT_SET, *, raising: bool = True
     ) -> None:
         if isinstance(target, str) and name is _NOT_SET:
+            if "." not in target:
+                raise TypeError(
+                    f"delattr() with dotted path requires at least one dot: {target!r}. "
+                    "Use delattr(target_object, 'name') or delattr('module.attr')"
+                )
             module_path, attr_name = target.rsplit(".", 1)
             module = importlib.import_module(module_path)
             obj = module

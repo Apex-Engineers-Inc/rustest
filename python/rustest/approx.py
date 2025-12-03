@@ -98,12 +98,12 @@ class approx:
             )
 
         # Handle sequences (lists, tuples, etc.) but not strings
+        # Note: We accept any sequence type (list, tuple, etc.) as long as contents match
+        # This matches pytest.approx behavior which allows list == approx(tuple) etc.
         if isinstance(expected, Sequence) and not isinstance(expected, (str, bytes, bytearray)):
             expected_sequence = cast(Sequence[ApproxValue], expected)
             if not (
-                isinstance(actual, Sequence)
-                and not isinstance(actual, (str, bytes, bytearray))
-                and type(actual) is type(expected)  # pyright: ignore[reportUnknownArgumentType]
+                isinstance(actual, Sequence) and not isinstance(actual, (str, bytes, bytearray))
             ):
                 return False
             actual_sequence = cast(Sequence[ApproxValue], actual)
