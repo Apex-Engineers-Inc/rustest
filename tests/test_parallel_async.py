@@ -852,3 +852,46 @@ async def test_after_cancellation_test():
     """Test that runs after the cancellation test - verifies batch continues."""
     await asyncio.sleep(0.01)
     assert True
+
+
+# ============================================================================
+# Test: Fixture error during batch preparation
+# ============================================================================
+
+_fixture_error_tracking = {"before_ran": False, "after_ran": False}
+
+
+@fixture(scope="module")
+def failing_fixture():
+    """Fixture that raises during setup."""
+    raise RuntimeError("Fixture setup failed intentionally")
+
+
+@fixture(scope="module")
+def track_fixture_error():
+    """Track test execution around fixture errors."""
+    return _fixture_error_tracking
+
+
+@mark.asyncio(loop_scope="module")
+async def test_before_fixture_error(track_fixture_error):
+    """Test that runs before the fixture error test."""
+    track_fixture_error["before_ran"] = True
+    await asyncio.sleep(0.01)
+    assert True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_with_failing_fixture(failing_fixture):
+    """Test with failing fixture - should report as failed, not crash batch."""
+    # This test should never actually run - fixture fails during setup
+    await asyncio.sleep(0.01)
+    assert True
+
+
+@mark.asyncio(loop_scope="module")
+async def test_after_fixture_error(track_fixture_error):
+    """Test that runs after fixture error - should still execute."""
+    track_fixture_error["after_ran"] = True
+    await asyncio.sleep(0.01)
+    assert True
