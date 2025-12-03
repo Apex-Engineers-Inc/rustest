@@ -2,13 +2,25 @@
 
 These tests verify that rustest correctly handles various fixture dependency
 scenarios including deep chains, diamond dependencies, and scope interactions.
+
+This test file is designed to be run with rustest:
+    uv run python -m rustest tests/test_fixture_dependency_chains.py
 """
 
 from __future__ import annotations
 
-from typing import Any
+import sys
 
-import pytest
+# Skip this entire module when running with pytest
+if "pytest" in sys.argv[0]:
+    import pytest
+
+    pytest.skip(
+        "This test file requires rustest runner (rustest-specific fixture behavior)",
+        allow_module_level=True,
+    )
+
+from typing import Any
 
 from rustest import fixture
 

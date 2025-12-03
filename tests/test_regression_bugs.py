@@ -1,9 +1,23 @@
 """Regression tests for bugs that have been fixed.
 
 Each test documents a specific bug and ensures it doesn't regress.
+
+This test file is designed to be run with rustest:
+    uv run python -m rustest tests/test_regression_bugs.py
 """
 
 from __future__ import annotations
+
+import sys
+
+# Skip this entire module when running with pytest
+if "pytest" in sys.argv[0]:
+    import pytest
+
+    pytest.skip(
+        "This test file requires rustest runner (rustest-specific features)",
+        allow_module_level=True,
+    )
 
 from rustest import fixture, mark, parametrize
 
@@ -167,14 +181,4 @@ def test_usefixtures_mark() -> None:
     assert _usefixtures_ran
 
 
-# Regression test for indirect parametrization
-@fixture
-def indirect_value() -> str:
-    """Fixture for indirect parametrization test."""
-    return "indirect_fixture_value"
-
-
-@parametrize("data", ["indirect_value"], indirect=True)
-def test_indirect_parametrization(data: str) -> None:
-    """Indirect parametrization should resolve fixture by name."""
-    assert data == "indirect_fixture_value"
+# Note: indirect parametrization is tested in tests/test_indirect_parametrization.py

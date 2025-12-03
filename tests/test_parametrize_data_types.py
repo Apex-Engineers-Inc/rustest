@@ -9,12 +9,22 @@ This test file is designed to be run with rustest:
 
 from __future__ import annotations
 
+import sys
+
+# Skip this entire module when running with pytest
+if "pytest" in sys.argv[0]:
+    import pytest
+
+    pytest.skip(
+        "This test file requires rustest runner (rustest-specific parametrize features)",
+        allow_module_level=True,
+    )
+
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-import pytest
-
-from rustest import parametrize, ParameterSet
+from rustest import parametrize, raises
+from rustest.decorators import ParameterSet
 
 
 # Create a param helper function similar to pytest.param
@@ -341,7 +351,7 @@ def test_parametrize_no_space_names(a: int, b: int, c: int) -> None:
 
 def test_parametrize_validates_empty_names() -> None:
     """Test that empty argument names raise an error."""
-    with pytest.raises(ValueError, match="at least one argument"):
+    with raises(ValueError, match="at least one argument"):
 
         @parametrize("", [1, 2])
         def test_func(x: int) -> None:
@@ -350,7 +360,7 @@ def test_parametrize_validates_empty_names() -> None:
 
 def test_parametrize_validates_ids_length() -> None:
     """Test that ids must match values length."""
-    with pytest.raises(ValueError, match="ids must match"):
+    with raises(ValueError, match="ids must match"):
 
         @parametrize("x", [1, 2, 3], ids=["a", "b"])  # Only 2 ids for 3 values
         def test_func(x: int) -> None:
