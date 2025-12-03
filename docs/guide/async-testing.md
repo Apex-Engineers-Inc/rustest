@@ -296,14 +296,17 @@ async def test_will_complete():
     await asyncio.sleep(1)  # Completes normally, not affected by test_will_timeout
 ```
 
-### Comparison: rustest vs pytest-asyncio Timeouts
+### Comparison: rustest vs pytest-asyncio
 
 | Feature | rustest | pytest-asyncio |
 |---------|---------|----------------|
-| Built-in timeout parameter | ✅ `@mark.asyncio(timeout=5.0)` | ❌ Not available |
+| **Parallel async test execution** | ✅ Tests run concurrently | ❌ Sequential only |
+| **Built-in timeout parameter** | ✅ `@mark.asyncio(timeout=5.0)` | ❌ Not available |
 | Per-test timeout | ✅ Built-in | ❌ Requires pytest-timeout plugin |
 | Clean timeout message | ✅ "Test timed out after X seconds" | ❌ Raw asyncio.TimeoutError |
-| Parallel test independence | ✅ Each test has own timeout | ⚠️ Depends on plugin |
+| Independent test timeouts | ✅ Each test has own timeout | ⚠️ Depends on plugin |
+
+**Why this matters for performance**: With pytest-asyncio, if you have 10 async tests that each `await asyncio.sleep(1)`, they run sequentially taking ~10 seconds. With rustest, they run in parallel and complete in ~1 second.
 
 With pytest-asyncio, you'd need to write:
 
@@ -740,10 +743,16 @@ async def test_with_timeout():
 |---------|----------------|---------|
 | Basic async support | ✅ | ✅ |
 | Loop scopes | ✅ | ✅ |
-| **Built-in timeout** | ❌ | ✅ |
 | Class decoration | ✅ | ✅ |
+| **🚀 Parallel async test execution** | ❌ | ✅ |
+| **⏱️ Built-in per-test timeout** | ❌ | ✅ |
 | Clear timeout messages | ❌ | ✅ |
-| Parallel test execution | ❌ | ✅ |
+
+The two killer features that set rustest apart:
+
+1. **Parallel Execution**: Async tests run concurrently, not sequentially. A test suite with 100 async tests that each wait 100ms completes in ~100ms total, not 10 seconds.
+
+2. **Built-in Timeouts**: No plugins needed. Just add `timeout=5.0` to catch hanging tests before they block your CI pipeline.
 
 The API is intentionally similar to minimize migration effort, while adding features that pytest-asyncio lacks.
 
