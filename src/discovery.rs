@@ -276,6 +276,9 @@ pub fn discover_tests(
     let module_ids = ModuleIdGenerator::default();
     let mut files_collected: usize = 0;
 
+    // OPTIMIZATION: Load builtin fixtures ONCE at the start, not per file
+    let builtin_fixtures = load_builtin_fixtures(py)?;
+
     // OPTIMIZATION: Discover all conftest paths in parallel first
     let conftest_dirs = discover_conftest_paths_parallel(&canonical_paths);
 
@@ -299,7 +302,14 @@ pub fn discover_tests(
 
         match file_type {
             FileType::Python => {
-                match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures) {
+                match collect_from_file(
+                    py,
+                    &file,
+                    config,
+                    &module_ids,
+                    &conftest_fixtures,
+                    &builtin_fixtures,
+                ) {
                     Ok(Some(module)) => {
                         let tests_in_file = module.tests.len();
                         modules.push(module);
@@ -322,7 +332,13 @@ pub fn discover_tests(
                 }
             }
             FileType::Markdown => {
-                match collect_from_markdown(py, &file, config, &conftest_fixtures) {
+                match collect_from_markdown(
+                    py,
+                    &file,
+                    config,
+                    &conftest_fixtures,
+                    &builtin_fixtures,
+                ) {
                     Ok(Some(module)) => {
                         let tests_in_file = module.tests.len();
                         modules.push(module);
@@ -644,12 +660,28 @@ fn merge_conftest_fixtures(
     test_path: &Path,
     module_fixtures: IndexMap<String, Fixture>,
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+    builtin_fixtures: &IndexMap<String, Fixture>,
 ) -> PyResult<IndexMap<String, Fixture>> {
     let mut merged = IndexMap::new();
 
     // Start with built-in fixtures so user-defined ones can override them.
-    for (name, fixture) in load_builtin_fixtures(py)? {
-        merged.insert(name, fixture);
+    // OPTIMIZATION: Use pre-loaded builtin fixtures instead of loading per-file
+    for (name, fixture) in builtin_fixtures {
+        merged.insert(
+            name.clone(),
+            Fixture {
+                name: fixture.name.clone(),
+                callable: fixture.callable.clone_ref(py),
+                parameters: fixture.parameters.clone(),
+                scope: fixture.scope,
+                is_generator: fixture.is_generator,
+                is_async: fixture.is_async,
+                is_async_generator: fixture.is_async_generator,
+                autouse: fixture.autouse,
+                params: None, // Builtin fixtures don't have params
+                class_name: None,
+            },
+        );
     }
 
     // Collect all parent directories from farthest to nearest
@@ -771,6 +803,7 @@ fn collect_from_file(
     config: &RunConfiguration,
     module_ids: &ModuleIdGenerator,
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+    builtin_fixtures: &IndexMap<String, Fixture>,
 ) -> PyResult<Option<TestModule>> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
@@ -779,7 +812,8 @@ fn collect_from_file(
     let (module_fixtures, tests) = inspect_module(py, path, &module_dict, config.pytest_compat)?;
 
     // Merge conftest fixtures with the module's own fixtures
-    let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
+    let fixtures =
+        merge_conftest_fixtures(py, path, module_fixtures, conftest_map, builtin_fixtures)?;
 
     // Expand tests for parametrized fixtures
     let mut tests = expand_tests_for_parametrized_fixtures(py, tests, &fixtures)?;
@@ -808,6 +842,7 @@ fn collect_from_markdown(
     path: &Path,
     config: &RunConfiguration,
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+    builtin_fixtures: &IndexMap<String, Fixture>,
 ) -> PyResult<Option<TestModule>> {
     // Read the markdown file
     let content = std::fs::read_to_string(path).map_err(|e| {
@@ -878,7 +913,8 @@ fn collect_from_markdown(
     }
 
     // Merge conftest fixtures for the markdown file
-    let fixtures = merge_conftest_fixtures(py, path, IndexMap::new(), conftest_map)?;
+    let fixtures =
+        merge_conftest_fixtures(py, path, IndexMap::new(), conftest_map, builtin_fixtures)?;
 
     Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
 }
