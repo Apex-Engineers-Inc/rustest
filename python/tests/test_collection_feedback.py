@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+
 class TestCollectionEventTypes:
     """Test that collection event types are properly defined and accessible."""
 
