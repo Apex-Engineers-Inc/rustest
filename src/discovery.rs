@@ -13,8 +13,9 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
-use pyo3::types::{PyAny, PyDict, PyList, PySequence};
+use pyo3::types::{PyAny, PyDict, PyList, PySequence, PyTuple};
 use pyo3::Bound;
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::cache;
@@ -110,6 +111,127 @@ fn should_exclude_dir(entry: &walkdir::DirEntry) -> bool {
         .any(|pattern| matches_pattern(&basename, pattern))
 }
 
+/// File type for collection.
+#[derive(Clone)]
+enum FileType {
+    Python,
+    Markdown,
+}
+
+/// Discover all test files in parallel using rayon.
+///
+/// This function walks the file system in parallel to collect all potential
+/// test files before any Python imports happen. This is a significant
+/// optimization because file system traversal is I/O-bound and can be
+/// parallelized effectively.
+fn discover_files_parallel(
+    paths: &[PathBuf],
+    py_glob: &GlobSet,
+    md_glob: Option<&GlobSet>,
+) -> Vec<(PathBuf, FileType)> {
+    // First, collect all directories to walk
+    let mut dirs_to_walk: Vec<PathBuf> = Vec::new();
+    let mut direct_files: Vec<(PathBuf, FileType)> = Vec::new();
+
+    for path in paths {
+        if path.is_dir() {
+            dirs_to_walk.push(path.clone());
+        } else if path.is_file() {
+            if py_glob.is_match(path) {
+                direct_files.push((path.clone(), FileType::Python));
+            } else if let Some(md_glob_set) = md_glob {
+                if md_glob_set.is_match(path) {
+                    direct_files.push((path.clone(), FileType::Markdown));
+                }
+            }
+        }
+    }
+
+    // Walk directories in parallel using rayon
+    let discovered_files: Vec<(PathBuf, FileType)> = dirs_to_walk
+        .par_iter()
+        .flat_map(|dir| {
+            let mut files = Vec::new();
+            for entry in WalkDir::new(dir)
+                .into_iter()
+                .filter_entry(|e| !should_exclude_dir(e))
+                .filter_map(Result::ok)
+            {
+                let file = entry.into_path();
+                if file.is_file() {
+                    if py_glob.is_match(&file) {
+                        files.push((file, FileType::Python));
+                    } else if let Some(md_glob_set) = md_glob {
+                        if md_glob_set.is_match(&file) {
+                            files.push((file, FileType::Markdown));
+                        }
+                    }
+                }
+            }
+            files
+        })
+        .collect();
+
+    // Combine direct files with discovered files
+    let mut all_files = direct_files;
+    all_files.extend(discovered_files);
+    all_files
+}
+
+/// Discover all conftest.py files in parallel.
+///
+/// This collects all conftest.py paths first using parallel file system traversal,
+/// then loads them sequentially (Python imports require GIL).
+fn discover_conftest_paths_parallel(paths: &[PathBuf]) -> HashSet<PathBuf> {
+    let mut conftest_paths: HashSet<PathBuf> = HashSet::new();
+
+    // Collect directories to walk
+    let dirs_to_walk: Vec<&PathBuf> = paths.iter().filter(|p| p.is_dir()).collect();
+
+    // Walk directories in parallel to find conftest.py files
+    let discovered: Vec<PathBuf> = dirs_to_walk
+        .par_iter()
+        .flat_map(|dir| {
+            let mut paths = Vec::new();
+            for entry in WalkDir::new(dir)
+                .into_iter()
+                .filter_entry(|e| !should_exclude_dir(e))
+                .filter_map(Result::ok)
+            {
+                let path = entry.path();
+                if path.is_file() && path.file_name() == Some("conftest.py".as_ref()) {
+                    if let Some(parent) = path.parent() {
+                        paths.push(parent.to_path_buf());
+                    }
+                }
+            }
+            paths
+        })
+        .collect();
+
+    conftest_paths.extend(discovered);
+
+    // Also collect ancestor conftest directories for all input paths
+    for path in paths {
+        let start_dir = if path.is_dir() {
+            Some(path.as_path())
+        } else {
+            path.parent()
+        };
+
+        let mut current = start_dir;
+        while let Some(dir) = current {
+            let conftest_path = dir.join("conftest.py");
+            if conftest_path.is_file() {
+                conftest_paths.insert(dir.to_path_buf());
+            }
+            current = dir.parent();
+        }
+    }
+
+    conftest_paths
+}
+
 /// Discover tests for the provided paths.
 ///
 /// The return type is intentionally high level: the caller receives a list of
@@ -154,104 +276,30 @@ pub fn discover_tests(
     let module_ids = ModuleIdGenerator::default();
     let mut files_collected: usize = 0;
 
-    // First, discover all conftest.py files and their fixtures
-    let mut conftest_fixtures: HashMap<PathBuf, IndexMap<String, Fixture>> = HashMap::new();
-    for path in &canonical_paths {
-        if path.is_dir() {
-            discover_conftest_files(py, path, &mut conftest_fixtures, &module_ids)?;
-            discover_ancestor_conftest_directories(py, path, &mut conftest_fixtures, &module_ids)?;
-        } else if path.is_file() {
-            // For single test files, discover conftest.py in parent directories
-            // This ensures fixtures from ancestor conftest.py files are available
-            // (e.g., session-scoped fixtures in root conftest.py)
-            discover_parent_conftest_files(py, path, &mut conftest_fixtures, &module_ids)?;
+    // OPTIMIZATION: Discover all conftest paths in parallel first
+    let conftest_dirs = discover_conftest_paths_parallel(&canonical_paths);
 
-            // Also discover conftest.py files in subdirectories of the test file's directory
-            // This handles cases where fixtures are defined in sibling directories
-            if let Some(parent) = path.parent() {
-                discover_conftest_files(py, parent, &mut conftest_fixtures, &module_ids)?;
-            }
+    // Load conftest fixtures (must be sequential due to Python GIL)
+    let mut conftest_fixtures: HashMap<PathBuf, IndexMap<String, Fixture>> = HashMap::new();
+    for dir in &conftest_dirs {
+        let conftest_path = dir.join("conftest.py");
+        if conftest_path.is_file() && !conftest_fixtures.contains_key(dir) {
+            let fixtures = load_conftest_fixtures(py, &conftest_path, &module_ids)?;
+            conftest_fixtures.insert(dir.clone(), fixtures);
         }
     }
 
-    // Now discover test files, merging with conftest fixtures
-    for path in canonical_paths {
-        if path.is_dir() {
-            for entry in WalkDir::new(&path)
-                .into_iter()
-                .filter_entry(|e| !should_exclude_dir(e))
-                .filter_map(Result::ok)
-            {
-                let file = entry.into_path();
-                if file.is_file() {
-                    if py_glob.is_match(&file) {
-                        discover_parent_conftest_files(
-                            py,
-                            &file,
-                            &mut conftest_fixtures,
-                            &module_ids,
-                        )?;
-                        match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)
-                        {
-                            Ok(Some(module)) => {
-                                let tests_in_file = module.tests.len();
-                                modules.push(module);
-                                files_collected += 1;
-                                if let Some(ref callback) = config.event_callback {
-                                    emit_collection_progress(
-                                        callback,
-                                        to_relative_path(&file),
-                                        tests_in_file,
-                                        files_collected,
-                                    );
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(err) => {
-                                let error_msg = format_collection_error(py, &err);
-                                collection_errors
-                                    .push(CollectionError::new(to_relative_path(&file), error_msg));
-                            }
-                        }
-                    } else if let Some(ref md_glob_set) = md_glob {
-                        if md_glob_set.is_match(&file) {
-                            discover_parent_conftest_files(
-                                py,
-                                &file,
-                                &mut conftest_fixtures,
-                                &module_ids,
-                            )?;
-                            match collect_from_markdown(py, &file, config, &conftest_fixtures) {
-                                Ok(Some(module)) => {
-                                    let tests_in_file = module.tests.len();
-                                    modules.push(module);
-                                    files_collected += 1;
-                                    if let Some(ref callback) = config.event_callback {
-                                        emit_collection_progress(
-                                            callback,
-                                            to_relative_path(&file),
-                                            tests_in_file,
-                                            files_collected,
-                                        );
-                                    }
-                                }
-                                Ok(None) => {}
-                                Err(err) => {
-                                    let error_msg = format_collection_error(py, &err);
-                                    collection_errors.push(CollectionError::new(
-                                        to_relative_path(&file),
-                                        error_msg,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else if path.is_file() {
-            if py_glob.is_match(&path) {
-                discover_parent_conftest_files(py, &path, &mut conftest_fixtures, &module_ids)?;
-                match collect_from_file(py, &path, config, &module_ids, &conftest_fixtures) {
+    // OPTIMIZATION: Discover all test files in parallel
+    let test_files = discover_files_parallel(&canonical_paths, &py_glob, md_glob.as_ref());
+
+    // Process test files sequentially (Python imports require GIL)
+    for (file, file_type) in test_files {
+        // Ensure parent conftest fixtures are loaded (they should already be, but check)
+        discover_parent_conftest_files(py, &file, &mut conftest_fixtures, &module_ids)?;
+
+        match file_type {
+            FileType::Python => {
+                match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures) {
                     Ok(Some(module)) => {
                         let tests_in_file = module.tests.len();
                         modules.push(module);
@@ -259,7 +307,7 @@ pub fn discover_tests(
                         if let Some(ref callback) = config.event_callback {
                             emit_collection_progress(
                                 callback,
-                                to_relative_path(&path),
+                                to_relative_path(&file),
                                 tests_in_file,
                                 files_collected,
                             );
@@ -269,32 +317,30 @@ pub fn discover_tests(
                     Err(err) => {
                         let error_msg = format_collection_error(py, &err);
                         collection_errors
-                            .push(CollectionError::new(to_relative_path(&path), error_msg));
+                            .push(CollectionError::new(to_relative_path(&file), error_msg));
                     }
                 }
-            } else if let Some(ref md_glob_set) = md_glob {
-                if md_glob_set.is_match(&path) {
-                    discover_parent_conftest_files(py, &path, &mut conftest_fixtures, &module_ids)?;
-                    match collect_from_markdown(py, &path, config, &conftest_fixtures) {
-                        Ok(Some(module)) => {
-                            let tests_in_file = module.tests.len();
-                            modules.push(module);
-                            files_collected += 1;
-                            if let Some(ref callback) = config.event_callback {
-                                emit_collection_progress(
-                                    callback,
-                                    to_relative_path(&path),
-                                    tests_in_file,
-                                    files_collected,
-                                );
-                            }
+            }
+            FileType::Markdown => {
+                match collect_from_markdown(py, &file, config, &conftest_fixtures) {
+                    Ok(Some(module)) => {
+                        let tests_in_file = module.tests.len();
+                        modules.push(module);
+                        files_collected += 1;
+                        if let Some(ref callback) = config.event_callback {
+                            emit_collection_progress(
+                                callback,
+                                to_relative_path(&file),
+                                tests_in_file,
+                                files_collected,
+                            );
                         }
-                        Ok(None) => {}
-                        Err(err) => {
-                            let error_msg = format_collection_error(py, &err);
-                            collection_errors
-                                .push(CollectionError::new(to_relative_path(&path), error_msg));
-                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        let error_msg = format_collection_error(py, &err);
+                        collection_errors
+                            .push(CollectionError::new(to_relative_path(&file), error_msg));
                     }
                 }
             }
@@ -330,29 +376,6 @@ fn format_collection_error(py: Python<'_>, error: &PyErr) -> String {
     })();
 
     format_result.unwrap_or_else(|_: PyErr| error.to_string())
-}
-
-/// Discover all conftest.py files in a directory tree and load their fixtures.
-fn discover_conftest_files(
-    py: Python<'_>,
-    root: &Path,
-    conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
-    module_ids: &ModuleIdGenerator,
-) -> PyResult<()> {
-    for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_entry(|e| !should_exclude_dir(e))
-        .filter_map(Result::ok)
-    {
-        let path = entry.path();
-        if path.is_file() && path.file_name() == Some("conftest.py".as_ref()) {
-            let fixtures = load_conftest_fixtures(py, path, module_ids)?;
-            if let Some(parent) = path.parent() {
-                conftest_map.insert(parent.to_path_buf(), fixtures);
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Discover conftest.py files in parent directories when running a single test file.
@@ -396,32 +419,6 @@ fn discover_parent_conftest_files(
             Some(parent) => current_dir = parent,
             None => break, // Reached filesystem root
         }
-    }
-
-    Ok(())
-}
-
-/// Discover conftest.py files in ancestor directories of a provided directory path.
-///
-/// This mirrors pytest's behavior when running `pytest some/subdir`: pytest will still
-/// load conftest.py files from parent directories (e.g., project-root/conftest.py)
-/// so fixtures like session-scoped autouse fixtures remain available.
-fn discover_ancestor_conftest_directories(
-    py: Python<'_>,
-    start_dir: &Path,
-    conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
-    module_ids: &ModuleIdGenerator,
-) -> PyResult<()> {
-    let mut current_dir = start_dir.parent();
-
-    while let Some(dir) = current_dir {
-        let conftest_path = dir.join("conftest.py");
-        if conftest_path.is_file() && !conftest_map.contains_key(dir) {
-            let fixtures = load_conftest_fixtures(py, &conftest_path, module_ids)?;
-            conftest_map.insert(dir.to_path_buf(), fixtures);
-        }
-
-        current_dir = dir.parent();
     }
 
     Ok(())
@@ -1637,22 +1634,63 @@ fn is_fixture(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     })
 }
 
+// Python code object flag constants (from CPython's code.h)
+const CO_GENERATOR: u32 = 0x20;
+const CO_COROUTINE: u32 = 0x80;
+const CO_ASYNC_GENERATOR: u32 = 0x200;
+
 /// Check if a function is a generator function (contains yield).
+///
+/// OPTIMIZATION: Uses __code__.co_flags directly instead of inspect.isgeneratorfunction()
+/// which is significantly faster.
 fn is_generator_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    // Fast path: check co_flags directly
+    if let Ok(code) = value.getattr("__code__") {
+        if let Ok(flags) = code.getattr("co_flags") {
+            let flags: u32 = flags.extract()?;
+            return Ok((flags & CO_GENERATOR) != 0);
+        }
+    }
+
+    // Fallback for edge cases
     let inspect = py.import("inspect")?;
     let is_gen = inspect.call_method1("isgeneratorfunction", (value,))?;
     is_gen.is_truthy()
 }
 
 /// Check if a function is an async coroutine function.
+///
+/// OPTIMIZATION: Uses __code__.co_flags directly instead of inspect.iscoroutinefunction()
+/// which is significantly faster.
 fn is_async_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    // Fast path: check co_flags directly
+    if let Ok(code) = value.getattr("__code__") {
+        if let Ok(flags) = code.getattr("co_flags") {
+            let flags: u32 = flags.extract()?;
+            return Ok((flags & CO_COROUTINE) != 0);
+        }
+    }
+
+    // Fallback for edge cases
     let inspect = py.import("inspect")?;
     let is_coro = inspect.call_method1("iscoroutinefunction", (value,))?;
     is_coro.is_truthy()
 }
 
 /// Check if a function is an async generator function (contains async + yield).
+///
+/// OPTIMIZATION: Uses __code__.co_flags directly instead of inspect.isasyncgenfunction()
+/// which is significantly faster.
 fn is_async_generator_function(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    // Fast path: check co_flags directly
+    if let Ok(code) = value.getattr("__code__") {
+        if let Ok(flags) = code.getattr("co_flags") {
+            let flags: u32 = flags.extract()?;
+            return Ok((flags & CO_ASYNC_GENERATOR) != 0);
+        }
+    }
+
+    // Fallback for edge cases
     let inspect = py.import("inspect")?;
     let is_async_gen = inspect.call_method1("isasyncgenfunction", (value,))?;
     is_async_gen.is_truthy()
@@ -1833,7 +1871,30 @@ fn check_for_pytest_skip_mark(
 }
 
 /// Extract the parameter names from a Python callable.
+///
+/// OPTIMIZATION: Uses __code__.co_varnames directly instead of inspect.signature()
+/// which is significantly faster. Falls back to inspect.signature() for edge cases
+/// like built-in functions or wrapped callables that don't have __code__.
 fn extract_parameters(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    // Fast path: try to get parameters directly from __code__ object
+    // This is much faster than inspect.signature() for regular Python functions
+    if let Ok(code) = value.getattr("__code__") {
+        if let (Ok(varnames), Ok(argcount)) =
+            (code.getattr("co_varnames"), code.getattr("co_argcount"))
+        {
+            let argcount: usize = argcount.extract()?;
+            let varnames_tuple: Bound<'_, PyTuple> = varnames.cast_into()?;
+            let mut names = Vec::with_capacity(argcount);
+            for i in 0..argcount {
+                if let Ok(name) = varnames_tuple.get_item(i) {
+                    names.push(name.extract()?);
+                }
+            }
+            return Ok(names);
+        }
+    }
+
+    // Fallback: use inspect.signature() for edge cases (built-ins, C extensions, etc.)
     let inspect = py.import("inspect")?;
     let signature = inspect.call_method1("signature", (value,))?;
     let params = signature.getattr("parameters")?;
