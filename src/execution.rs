@@ -496,6 +496,10 @@ pub fn run_collected_tests(
 
                     return Ok(report);
                 }
+
+                // Check for signals (like Ctrl+C) after each execution unit
+                // This allows users to interrupt test runs with KeyboardInterrupt
+                py.check_signals()?;
             }
 
             // Class-scoped fixtures are dropped here - run teardowns
@@ -523,6 +527,10 @@ pub fn run_collected_tests(
             file_failed,
             file_skipped,
         );
+
+        // Check for signals (like Ctrl+C) after each file/module
+        // This allows users to interrupt test runs with KeyboardInterrupt
+        py.check_signals()?;
     }
 
     // Package-scoped fixtures are dropped here - run teardowns for last package
