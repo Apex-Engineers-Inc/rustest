@@ -56,6 +56,7 @@ class TestCli:
                 verbose=False,
                 ascii=False,
                 no_color=False,
+                use_cache=False,
             )
             assert exit_code == 0
 

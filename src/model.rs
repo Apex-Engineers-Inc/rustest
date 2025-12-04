@@ -332,6 +332,8 @@ pub struct RunConfiguration {
     pub ascii: bool,
     pub no_color: bool,
     pub event_callback: Option<pyo3::Py<pyo3::PyAny>>,
+    /// Enable collection caching for faster repeated runs.
+    pub use_cache: bool,
 }
 
 impl Clone for RunConfiguration {
@@ -352,6 +354,7 @@ impl Clone for RunConfiguration {
                 .event_callback
                 .as_ref()
                 .map(|cb| pyo3::Python::attach(|py| cb.clone_ref(py))),
+            use_cache: self.use_cache,
         }
     }
 }
@@ -371,6 +374,7 @@ impl RunConfiguration {
         ascii: bool,
         no_color: bool,
         event_callback: Option<pyo3::Py<pyo3::PyAny>>,
+        use_cache: bool,
     ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
@@ -386,6 +390,7 @@ impl RunConfiguration {
             ascii,
             no_color,
             event_callback,
+            use_cache,
         }
     }
 }

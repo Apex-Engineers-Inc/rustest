@@ -59,6 +59,7 @@ def run(
     verbose: bool = False,
     ascii: bool = False,
     no_color: bool = False,
+    use_cache: bool = False,
 ) -> RunReport:
     """Execute tests and return a rich report.
 
@@ -75,6 +76,7 @@ def run(
         verbose: Show verbose output with hierarchical test structure
         ascii: Use ASCII characters instead of Unicode symbols for output
         no_color: Disable colored output
+        use_cache: Enable collection caching for faster repeated runs
     """
     # Print pytest compatibility banner if enabled
     if pytest_compat:
@@ -103,6 +105,7 @@ def run(
             ascii=ascii,
             no_color=no_color,
             event_callback=router.emit,
+            use_cache=use_cache,
         )
     finally:
         if previous_running is None:

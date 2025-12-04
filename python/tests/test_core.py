@@ -44,6 +44,7 @@ class TestCoreRun:
             ascii,
             no_color,
             event_callback,
+            use_cache,
         ):  # type: ignore[no-untyped-def]
             captured_args["paths"] = paths
             captured_args["pattern"] = pattern
@@ -58,6 +59,7 @@ class TestCoreRun:
             captured_args["ascii"] = ascii
             captured_args["no_color"] = no_color
             captured_args["event_callback"] = event_callback
+            captured_args["use_cache"] = use_cache
             return dummy_report
 
         with stub_rust_module(run=fake_run):
@@ -83,5 +85,6 @@ class TestCoreRun:
         assert captured_args["no_color"] is False
         assert captured_args["event_callback"] is not None  # EventRouter.emit callback
         assert callable(captured_args["event_callback"])
+        assert captured_args["use_cache"] is False
         assert report.total == 1
         assert report.passed == 1

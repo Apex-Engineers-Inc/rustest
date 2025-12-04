@@ -18,7 +18,10 @@ use pyo3::Bound;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-use crate::cache;
+use crate::cache::{
+    self, read_collection_cache, write_collection_cache, CachedFixtureInfo, CachedModuleInfo,
+    CachedTestInfo, CollectionCache,
+};
 use crate::mark_expr::MarkExpr;
 use crate::model::{
     invalid_test_definition, to_relative_path, CollectionError, Fixture, FixtureParam,
@@ -276,6 +279,14 @@ pub fn discover_tests(
     let module_ids = ModuleIdGenerator::default();
     let mut files_collected: usize = 0;
 
+    // Load collection cache if enabled
+    let mut collection_cache = if config.use_cache {
+        read_collection_cache()
+    } else {
+        CollectionCache::new()
+    };
+    let mut cache_updated = false;
+
     // OPTIMIZATION: Discover all conftest paths in parallel first
     let conftest_dirs = discover_conftest_paths_parallel(&canonical_paths);
 
@@ -299,7 +310,28 @@ pub fn discover_tests(
 
         match file_type {
             FileType::Python => {
-                match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures) {
+                // Check if we have a valid cache entry
+                let cache_hit = config.use_cache && collection_cache.is_valid(&file);
+
+                if cache_hit {
+                    // Cache hit: check if file has tests before loading
+                    if let Some(cached_info) = collection_cache.get(&file) {
+                        if cached_info.tests.is_empty() && cached_info.fixtures.is_empty() {
+                            // No tests in this file, skip it entirely
+                            continue;
+                        }
+                    }
+                }
+
+                match collect_from_file_with_cache(
+                    py,
+                    &file,
+                    config,
+                    &module_ids,
+                    &conftest_fixtures,
+                    &mut collection_cache,
+                    &mut cache_updated,
+                ) {
                     Ok(Some(module)) => {
                         let tests_in_file = module.tests.len();
                         modules.push(module);
@@ -345,6 +377,13 @@ pub fn discover_tests(
                 }
             }
         }
+    }
+
+    // Save cache if it was updated
+    if config.use_cache && cache_updated {
+        // Clean up stale entries and save
+        collection_cache.cleanup();
+        let _ = write_collection_cache(&collection_cache);
     }
 
     // Apply last-failed filtering if configured
@@ -800,6 +839,244 @@ fn collect_from_file(
     }
 
     Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
+}
+
+/// Collect from file with caching support.
+///
+/// This function wraps `collect_from_file` with caching logic:
+/// - On cache hit (valid mtime): Still load module but use cached metadata to quickly
+///   reconstruct tests without expensive inspection
+/// - On cache miss: Do full inspection and update cache
+#[allow(clippy::too_many_arguments)]
+fn collect_from_file_with_cache(
+    py: Python<'_>,
+    path: &Path,
+    config: &RunConfiguration,
+    module_ids: &ModuleIdGenerator,
+    conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+    cache: &mut CollectionCache,
+    cache_updated: &mut bool,
+) -> PyResult<Option<TestModule>> {
+    // If caching is disabled, use standard collection
+    if !config.use_cache {
+        return collect_from_file(py, path, config, module_ids, conftest_map);
+    }
+
+    // Check for cache hit
+    if let Some(cached_info) = cache.get(path) {
+        // Cache hit - use cached metadata for faster collection
+        if let Ok(result) =
+            collect_from_file_cached(py, path, config, module_ids, conftest_map, cached_info)
+        {
+            return Ok(result);
+        }
+        // If cached collection fails, fall through to full collection
+    }
+
+    // Cache miss or cached collection failed - do full inspection
+    let (module_name, package_name) = infer_module_names(path, module_ids.next());
+    let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
+    let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
+
+    let (module_fixtures, tests) = inspect_module(py, path, &module_dict, config.pytest_compat)?;
+
+    // Update cache with collected metadata
+    // Only cache unique test names (before parametrization expansion)
+    if let Some(mut cached_info) = cache::create_cached_module_info(path) {
+        let mut seen_names = HashSet::new();
+        cached_info.tests = tests
+            .iter()
+            .filter(|t| seen_names.insert(t.name.clone()))
+            .map(create_cached_test_info)
+            .collect();
+        cached_info.fixtures = module_fixtures
+            .values()
+            .map(create_cached_fixture_info)
+            .collect();
+        cache.insert(path, cached_info);
+        *cache_updated = true;
+    }
+
+    // Merge conftest fixtures with the module's own fixtures
+    let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
+
+    // Expand tests for parametrized fixtures
+    let mut tests = expand_tests_for_parametrized_fixtures(py, tests, &fixtures)?;
+
+    if let Some(pattern) = &config.pattern {
+        tests.retain(|case| test_matches_pattern(case, pattern));
+    }
+
+    // Apply mark filtering if specified
+    if let Some(mark_expr_str) = &config.mark_expr {
+        let mark_expr = MarkExpr::parse(mark_expr_str)
+            .map_err(|e| invalid_test_definition(format!("Invalid mark expression: {}", e)))?;
+        tests.retain(|case| mark_expr.matches(&case.marks));
+    }
+
+    if tests.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
+}
+
+/// Collect tests using cached metadata (fast path).
+///
+/// This avoids expensive introspection by using cached test/fixture names
+/// to directly access them from the module.
+fn collect_from_file_cached(
+    py: Python<'_>,
+    path: &Path,
+    config: &RunConfiguration,
+    module_ids: &ModuleIdGenerator,
+    conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+    cached_info: &CachedModuleInfo,
+) -> PyResult<Option<TestModule>> {
+    let (module_name, package_name) = infer_module_names(path, module_ids.next());
+    let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
+    let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
+
+    // Reconstruct fixtures from cached metadata
+    let mut module_fixtures: IndexMap<String, Fixture> = IndexMap::new();
+    for cached_fixture in &cached_info.fixtures {
+        if let Ok(Some(value)) = module_dict.get_item(&cached_fixture.name) {
+            // Get the actual fixture params (these contain Python objects, can't be cached)
+            let params = extract_fixture_params(&value)?;
+
+            let fixture = if let Some(params) = params {
+                Fixture::with_params(
+                    cached_fixture.name.clone(),
+                    value.clone().unbind(),
+                    cached_fixture.parameters.clone(),
+                    FixtureScope::from_str(&cached_fixture.scope).unwrap_or_default(),
+                    cached_fixture.is_generator,
+                    cached_fixture.is_async,
+                    cached_fixture.is_async_generator,
+                    cached_fixture.autouse,
+                    params,
+                    cached_fixture.class_name.clone(),
+                )
+            } else {
+                Fixture::new(
+                    cached_fixture.name.clone(),
+                    value.clone().unbind(),
+                    cached_fixture.parameters.clone(),
+                    FixtureScope::from_str(&cached_fixture.scope).unwrap_or_default(),
+                    cached_fixture.is_generator,
+                    cached_fixture.is_async,
+                    cached_fixture.is_async_generator,
+                    cached_fixture.autouse,
+                    cached_fixture.class_name.clone(),
+                )
+            };
+            module_fixtures.insert(cached_fixture.name.clone(), fixture);
+        }
+    }
+
+    // Reconstruct tests from cached metadata
+    let mut tests: Vec<TestCase> = Vec::new();
+    for cached_test in &cached_info.tests {
+        if let Ok(Some(value)) = module_dict.get_item(&cached_test.name) {
+            // Get parametrization values (these contain Python objects, can't be cached)
+            let param_cases = collect_parametrization(py, &value)?;
+            let marks = collect_marks(&value)?;
+
+            if param_cases.is_empty() {
+                tests.push(TestCase {
+                    name: cached_test.name.clone(),
+                    display_name: cached_test.display_name.clone(),
+                    path: path.to_path_buf(),
+                    callable: value.clone().unbind(),
+                    parameters: cached_test.parameters.clone(),
+                    parameter_values: ParameterMap::new(),
+                    skip_reason: cached_test.skip_reason.clone(),
+                    marks,
+                    class_name: cached_test.class_name.clone(),
+                    fixture_param_indices: IndexMap::new(),
+                    indirect_params: cached_test.indirect_params.clone(),
+                });
+            } else {
+                for (case_id, values) in param_cases {
+                    let display_name = format!("{}[{}]", cached_test.name, case_id);
+                    tests.push(TestCase {
+                        name: cached_test.name.clone(),
+                        display_name,
+                        path: path.to_path_buf(),
+                        callable: value.clone().unbind(),
+                        parameters: cached_test.parameters.clone(),
+                        parameter_values: values,
+                        skip_reason: cached_test.skip_reason.clone(),
+                        marks: marks.clone(),
+                        class_name: cached_test.class_name.clone(),
+                        fixture_param_indices: IndexMap::new(),
+                        indirect_params: cached_test.indirect_params.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Merge conftest fixtures
+    let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
+
+    // Expand tests for parametrized fixtures
+    let mut tests = expand_tests_for_parametrized_fixtures(py, tests, &fixtures)?;
+
+    if let Some(pattern) = &config.pattern {
+        tests.retain(|case| test_matches_pattern(case, pattern));
+    }
+
+    if let Some(mark_expr_str) = &config.mark_expr {
+        let mark_expr = MarkExpr::parse(mark_expr_str)
+            .map_err(|e| invalid_test_definition(format!("Invalid mark expression: {}", e)))?;
+        tests.retain(|case| mark_expr.matches(&case.marks));
+    }
+
+    if tests.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
+}
+
+/// Create cached test info from a TestCase (for cache storage).
+fn create_cached_test_info(test: &TestCase) -> CachedTestInfo {
+    CachedTestInfo {
+        name: test.name.clone(),
+        display_name: test.display_name.clone(),
+        parameters: test.parameters.clone(),
+        skip_reason: test.skip_reason.clone(),
+        mark_names: test.mark_names(),
+        class_name: test.class_name.clone(),
+        parametrization: Vec::new(), // Parametrization cases are computed at runtime
+        indirect_params: test.indirect_params.clone(),
+    }
+}
+
+/// Create cached fixture info from a Fixture (for cache storage).
+fn create_cached_fixture_info(fixture: &Fixture) -> CachedFixtureInfo {
+    let scope_str = match fixture.scope {
+        FixtureScope::Function => "function",
+        FixtureScope::Class => "class",
+        FixtureScope::Module => "module",
+        FixtureScope::Package => "package",
+        FixtureScope::Session => "session",
+    };
+
+    CachedFixtureInfo {
+        name: fixture.name.clone(),
+        parameters: fixture.parameters.clone(),
+        scope: scope_str.to_string(),
+        is_generator: fixture.is_generator,
+        is_async: fixture.is_async,
+        is_async_generator: fixture.is_async_generator,
+        autouse: fixture.autouse,
+        class_name: fixture.class_name.clone(),
+        param_ids: fixture.params.as_ref().map_or(Vec::new(), |params| {
+            params.iter().map(|p| p.id.clone()).collect()
+        }),
+    }
 }
 
 /// Parse markdown file and extract Python code blocks as tests.

@@ -133,6 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
         dest="pytest_compat",
         help="Enable pytest compatibility mode - allows running existing pytest tests without modifying imports.",
     )
+    _ = parser.add_argument(
+        "-p",
+        "--cache",
+        action="store_true",
+        dest="use_cache",
+        help="Enable collection caching for faster repeated runs. Caches test metadata to skip expensive inspection.",
+    )
     parser.set_defaults(
         capture_output=True,
         enable_codeblocks=True,
@@ -140,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
         failed_first=False,
         fail_fast=False,
         pytest_compat=False,
+        use_cache=False,
     )
     return parser
 
@@ -178,6 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         verbose=args.verbose,
         ascii=args.ascii,
         no_color=not use_color,
+        use_cache=args.use_cache,
     )
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called
