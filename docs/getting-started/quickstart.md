@@ -28,10 +28,19 @@ rustest
 You should see output like this:
 
 ```
-✓✓
+✓ Collected 2 tests from 1 files (15ms)
 
-✓ 2/2 2 passing (1ms)
+✓ test_math.py (1ms) 100% • 2/2
+
+✓ 2 passed in 1ms
 ```
+
+Rustest shows real-time feedback:
+
+1. **Collection phase**: A spinner shows progress while discovering tests
+2. **Collection summary**: Total tests and files found
+3. **Execution phase**: Progress bars for each file
+4. **Final summary**: Pass/fail counts and duration
 
 Each `✓` represents a passing test. Failed tests show as `✗` with detailed error information.
 
