@@ -325,6 +325,23 @@ rustest -k "integration" -x     # Stop on first integration test failure
 
 ## Output Control
 
+### Collection Feedback
+
+When rustest starts, it shows real-time progress during test collection:
+
+```
+⠋ Collecting tests • 52 files, 893 tests 0:00:00
+✓ Collected 893 tests from 52 files (531ms)
+```
+
+The spinner animates while scanning your codebase, with live updates showing the number of files and tests discovered. After collection completes, a summary shows the total count and duration. This helps you know rustest is working when scanning large codebases.
+
+If no tests are found, you'll see:
+
+```
+No tests collected (45ms)
+```
+
 ### Verbose Mode
 
 Show detailed test information with names and timing:

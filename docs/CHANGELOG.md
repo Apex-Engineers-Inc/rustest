@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Test Collection Feedback**: Real-time visual feedback during test discovery
+  - Animated spinner with "Collecting tests" message during the discovery phase
+  - Live progress updates showing file and test counts as they're discovered (e.g., "52 files, 893 tests")
+  - Collection summary after discovery completes (e.g., "✓ Collected 893 tests from 52 files (531ms)")
+  - Supports ASCII mode with `[OK]` instead of `✓` for terminals without Unicode
+  - "No tests collected" warning when no tests are found
+  - New event types for custom renderers: `CollectionStartedEvent`, `CollectionProgressEvent`, `CollectionCompletedEvent`
+
 ## [0.16.0] - 2025-12-03
 
 ### Added

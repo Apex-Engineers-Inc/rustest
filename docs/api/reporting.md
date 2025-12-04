@@ -253,6 +253,56 @@ for test in slowest:
     print(f"  {test.name}: {test.duration:.3f}s")
 ```
 
+## Event Types (Advanced)
+
+For building custom output renderers, rustest emits events during test collection and execution. These events are available from the `rustest.rust` module.
+
+### Collection Events
+
+Events emitted during the test discovery phase:
+
+| Event | Description | Attributes |
+|-------|-------------|------------|
+| `CollectionStartedEvent` | Emitted when collection begins | `timestamp` |
+| `CollectionProgressEvent` | Emitted as each file is collected | `file_path`, `tests_collected`, `files_collected`, `timestamp` |
+| `CollectionCompletedEvent` | Emitted when collection finishes | `total_files`, `total_tests`, `duration`, `timestamp` |
+
+### Execution Events
+
+Events emitted during test execution:
+
+| Event | Description | Attributes |
+|-------|-------------|------------|
+| `SuiteStartedEvent` | Test suite begins | `total_files`, `total_tests`, `timestamp` |
+| `FileStartedEvent` | Test file begins | `file_path`, `total_tests`, `timestamp` |
+| `TestCompletedEvent` | Individual test completes | `test_id`, `file_path`, `test_name`, `status`, `duration`, `message`, `timestamp` |
+| `FileCompletedEvent` | Test file completes | `file_path`, `passed`, `failed`, `skipped`, `duration`, `timestamp` |
+| `SuiteCompletedEvent` | Test suite completes | `passed`, `failed`, `skipped`, `errors`, `duration`, `timestamp` |
+| `CollectionErrorEvent` | Collection error (e.g., syntax error) | `path`, `message`, `timestamp` |
+
+### Example: Custom Event Consumer
+
+<!--rustest.mark.skip-->
+```python
+from rustest import rust
+from rustest.event_router import EventRouter
+
+class MyConsumer:
+    def handle(self, event):
+        if isinstance(event, rust.CollectionStartedEvent):
+            print("Starting collection...")
+        elif isinstance(event, rust.CollectionProgressEvent):
+            print(f"Found {event.tests_collected} tests in {event.file_path}")
+        elif isinstance(event, rust.CollectionCompletedEvent):
+            print(f"Collected {event.total_tests} tests in {event.duration:.2f}s")
+
+# Use with event router
+router = EventRouter()
+router.subscribe(MyConsumer())
+
+# Pass to rust.run() as event_callback=router.emit
+```
+
 ## See Also
 
 - [run()](core.md#run) - Function that returns these objects
