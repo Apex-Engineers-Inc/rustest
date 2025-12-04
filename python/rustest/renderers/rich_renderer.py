@@ -14,7 +14,10 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 if TYPE_CHECKING:
     from rustest.rust import (
+        CollectionCompletedEvent,
         CollectionErrorEvent,
+        CollectionProgressEvent,
+        CollectionStartedEvent,
         FileCompletedEvent,
         FileStartedEvent,
         SuiteCompletedEvent,
@@ -29,6 +32,9 @@ if TYPE_CHECKING:
         | FileCompletedEvent
         | TestCompletedEvent
         | CollectionErrorEvent
+        | CollectionStartedEvent
+        | CollectionProgressEvent
+        | CollectionCompletedEvent
     )
 
 
@@ -67,8 +73,25 @@ class RichRenderer:
             console=self.console,
         )
 
+        # Collection phase progress bar (simpler, no percentage)
+        self.collection_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]{task.description}"),
+            TextColumn("•"),
+            TextColumn("{task.fields[status]}"),
+            TimeElapsedColumn(),
+            console=self.console,
+        )
+
         # Map file paths to progress task IDs
         self.file_tasks: dict[str, TaskID] = {}
+
+        # Collection phase state
+        self._collection_task: TaskID | None = None
+        self._collection_live: Live | None = None
+        self._collecting = False
+        self._files_collected = 0
+        self._tests_collected = 0
 
         # Overall statistics
         self.total_tests = 0
@@ -103,6 +126,9 @@ class RichRenderer:
             event: Event from rust module
         """
         from rustest.rust import (
+            CollectionCompletedEvent,
+            CollectionProgressEvent,
+            CollectionStartedEvent,
             FileCompletedEvent,
             FileStartedEvent,
             SuiteCompletedEvent,
@@ -110,7 +136,15 @@ class RichRenderer:
             TestCompletedEvent,
         )
 
-        if isinstance(event, SuiteStartedEvent):
+        # Collection phase events
+        if isinstance(event, CollectionStartedEvent):
+            self._handle_collection_started(event)
+        elif isinstance(event, CollectionProgressEvent):
+            self._handle_collection_progress(event)
+        elif isinstance(event, CollectionCompletedEvent):
+            self._handle_collection_completed(event)
+        # Execution phase events
+        elif isinstance(event, SuiteStartedEvent):
             self._handle_suite_started(event)
         elif isinstance(event, FileStartedEvent):
             self._handle_file_started(event)
@@ -121,8 +155,72 @@ class RichRenderer:
         elif isinstance(event, SuiteCompletedEvent):
             self._handle_suite_completed(event)
         else:
-            # Must be CollectionErrorEvent
+            # Must be CollectionErrorEvent - final type in the union
             self._handle_collection_error(event)
+
+    def _handle_collection_started(self, event: CollectionStartedEvent) -> None:
+        """Handle collection start event."""
+        self._collecting = True
+        self._files_collected = 0
+        self._tests_collected = 0
+
+        # Start the collection progress display
+        self._collection_live = Live(
+            self.collection_progress, console=self.console, refresh_per_second=10
+        )
+        self._collection_live.start()
+
+        # Add the collection task
+        self._collection_task = self.collection_progress.add_task(
+            "[cyan]Collecting tests[/cyan]",
+            total=None,  # Indeterminate
+            status="scanning...",
+        )
+
+    def _handle_collection_progress(self, event: CollectionProgressEvent) -> None:
+        """Handle collection progress event."""
+        self._files_collected = event.files_collected
+        self._tests_collected += event.tests_collected
+
+        if self._collection_task is not None:
+            # Update status with current counts
+            status = f"{self._files_collected} files, {self._tests_collected} tests"
+            self.collection_progress.update(
+                self._collection_task,
+                status=status,
+            )
+
+    def _handle_collection_completed(self, event: CollectionCompletedEvent) -> None:
+        """Handle collection completed event."""
+        self._collecting = False
+
+        # Stop the collection progress display
+        if self._collection_live:
+            self._collection_live.stop()
+            self._collection_live = None
+
+        # Format duration
+        if event.duration < 1:
+            duration_str = f"{event.duration * 1000:.0f}ms"
+        else:
+            duration_str = f"{event.duration:.2f}s"
+
+        # Select symbols based on ASCII mode
+        if self.use_ascii:
+            check_symbol = "[OK]"
+        else:
+            check_symbol = "✓"
+
+        # Print collection summary
+        if event.total_tests > 0:
+            msg = (
+                f"{check_symbol} Collected {event.total_tests} tests "
+                + f"from {event.total_files} files [dim]({duration_str})[/dim]"
+            )
+            self.console.print(msg)
+        else:
+            self.console.print(f"[yellow]No tests collected[/yellow] [dim]({duration_str})[/dim]")
+        self.console.print()
 
     def _handle_suite_started(self, event: SuiteStartedEvent) -> None:
         """Handle suite start event."""

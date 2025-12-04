@@ -24,6 +24,7 @@ use crate::model::{
     FixtureScope, LastFailedMode, Mark, ModuleIdGenerator, ParameterMap, RunConfiguration,
     TestCase, TestModule,
 };
+use crate::output::{emit_collection_completed, emit_collection_progress, emit_collection_started};
 use crate::python_support::{setup_python_path, PyPaths};
 
 /// Inject the pytest compatibility shim into sys.modules.
@@ -123,6 +124,13 @@ pub fn discover_tests(
     paths: &PyPaths,
     config: &RunConfiguration,
 ) -> PyResult<(Vec<TestModule>, Vec<CollectionError>)> {
+    let collection_start = std::time::Instant::now();
+
+    // Emit collection started event
+    if let Some(ref callback) = config.event_callback {
+        emit_collection_started(callback);
+    }
+
     let canonical_paths = paths.materialise()?;
 
     // Setup sys.path to enable imports like pytest does
@@ -144,6 +152,7 @@ pub fn discover_tests(
     let mut modules = Vec::new();
     let mut collection_errors = Vec::new();
     let module_ids = ModuleIdGenerator::default();
+    let mut files_collected: usize = 0;
 
     // First, discover all conftest.py files and their fixtures
     let mut conftest_fixtures: HashMap<PathBuf, IndexMap<String, Fixture>> = HashMap::new();
@@ -184,7 +193,19 @@ pub fn discover_tests(
                         )?;
                         match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures)
                         {
-                            Ok(Some(module)) => modules.push(module),
+                            Ok(Some(module)) => {
+                                let tests_in_file = module.tests.len();
+                                modules.push(module);
+                                files_collected += 1;
+                                if let Some(ref callback) = config.event_callback {
+                                    emit_collection_progress(
+                                        callback,
+                                        to_relative_path(&file),
+                                        tests_in_file,
+                                        files_collected,
+                                    );
+                                }
+                            }
                             Ok(None) => {}
                             Err(err) => {
                                 let error_msg = format_collection_error(py, &err);
@@ -201,7 +222,19 @@ pub fn discover_tests(
                                 &module_ids,
                             )?;
                             match collect_from_markdown(py, &file, config, &conftest_fixtures) {
-                                Ok(Some(module)) => modules.push(module),
+                                Ok(Some(module)) => {
+                                    let tests_in_file = module.tests.len();
+                                    modules.push(module);
+                                    files_collected += 1;
+                                    if let Some(ref callback) = config.event_callback {
+                                        emit_collection_progress(
+                                            callback,
+                                            to_relative_path(&file),
+                                            tests_in_file,
+                                            files_collected,
+                                        );
+                                    }
+                                }
                                 Ok(None) => {}
                                 Err(err) => {
                                     let error_msg = format_collection_error(py, &err);
@@ -219,7 +252,19 @@ pub fn discover_tests(
             if py_glob.is_match(&path) {
                 discover_parent_conftest_files(py, &path, &mut conftest_fixtures, &module_ids)?;
                 match collect_from_file(py, &path, config, &module_ids, &conftest_fixtures) {
-                    Ok(Some(module)) => modules.push(module),
+                    Ok(Some(module)) => {
+                        let tests_in_file = module.tests.len();
+                        modules.push(module);
+                        files_collected += 1;
+                        if let Some(ref callback) = config.event_callback {
+                            emit_collection_progress(
+                                callback,
+                                to_relative_path(&path),
+                                tests_in_file,
+                                files_collected,
+                            );
+                        }
+                    }
                     Ok(None) => {}
                     Err(err) => {
                         let error_msg = format_collection_error(py, &err);
@@ -231,7 +276,19 @@ pub fn discover_tests(
                 if md_glob_set.is_match(&path) {
                     discover_parent_conftest_files(py, &path, &mut conftest_fixtures, &module_ids)?;
                     match collect_from_markdown(py, &path, config, &conftest_fixtures) {
-                        Ok(Some(module)) => modules.push(module),
+                        Ok(Some(module)) => {
+                            let tests_in_file = module.tests.len();
+                            modules.push(module);
+                            files_collected += 1;
+                            if let Some(ref callback) = config.event_callback {
+                                emit_collection_progress(
+                                    callback,
+                                    to_relative_path(&path),
+                                    tests_in_file,
+                                    files_collected,
+                                );
+                            }
+                        }
                         Ok(None) => {}
                         Err(err) => {
                             let error_msg = format_collection_error(py, &err);
@@ -247,6 +304,13 @@ pub fn discover_tests(
     // Apply last-failed filtering if configured
     if config.last_failed_mode != LastFailedMode::None {
         apply_last_failed_filter(&mut modules, config)?;
+    }
+
+    // Calculate total tests and emit collection completed event
+    let total_tests: usize = modules.iter().map(|m| m.tests.len()).sum();
+    let collection_duration = collection_start.elapsed().as_secs_f64();
+    if let Some(ref callback) = config.event_callback {
+        emit_collection_completed(callback, files_collected, total_tests, collection_duration);
     }
 
     Ok((modules, collection_errors))

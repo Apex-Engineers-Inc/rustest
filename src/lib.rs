@@ -77,7 +77,8 @@ fn getfixturevalue(name: &str) -> PyResult<Py<PyAny>> {
 #[pymodule]
 fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     use output::{
-        CollectionErrorEvent, FileCompletedEvent, FileStartedEvent, SuiteCompletedEvent,
+        CollectionCompletedEvent, CollectionErrorEvent, CollectionProgressEvent,
+        CollectionStartedEvent, FileCompletedEvent, FileStartedEvent, SuiteCompletedEvent,
         SuiteStartedEvent, TestCompletedEvent,
     };
 
@@ -93,6 +94,11 @@ fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SuiteStartedEvent>()?;
     m.add_class::<SuiteCompletedEvent>()?;
     m.add_class::<CollectionErrorEvent>()?;
+
+    // Collection phase event types
+    m.add_class::<CollectionStartedEvent>()?;
+    m.add_class::<CollectionProgressEvent>()?;
+    m.add_class::<CollectionCompletedEvent>()?;
 
     Ok(())
 }

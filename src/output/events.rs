@@ -4,6 +4,7 @@
 //! multiple renderers (terminal, VS Code, JSON export, web UI, etc.)
 
 use pyo3::prelude::*;
+use pyo3::Py;
 
 /// Event emitted when a test file starts execution
 #[pyclass]
@@ -208,10 +209,140 @@ impl CollectionErrorEvent {
     }
 }
 
+/// Event emitted when test collection starts
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct CollectionStartedEvent {
+    /// Unix timestamp when collection started
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
+#[pymethods]
+impl CollectionStartedEvent {
+    fn __repr__(&self) -> String {
+        "CollectionStartedEvent()".to_string()
+    }
+}
+
+/// Event emitted when a file is collected during test discovery
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct CollectionProgressEvent {
+    /// Path to the file being collected
+    #[pyo3(get)]
+    pub file_path: String,
+
+    /// Number of tests collected from this file
+    #[pyo3(get)]
+    pub tests_collected: usize,
+
+    /// Total files collected so far
+    #[pyo3(get)]
+    pub files_collected: usize,
+
+    /// Unix timestamp when file was collected
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
+#[pymethods]
+impl CollectionProgressEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "CollectionProgressEvent(file_path='{}', tests_collected={}, files_collected={})",
+            self.file_path, self.tests_collected, self.files_collected
+        )
+    }
+}
+
+/// Event emitted when test collection completes
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct CollectionCompletedEvent {
+    /// Total number of test files collected
+    #[pyo3(get)]
+    pub total_files: usize,
+
+    /// Total number of tests collected
+    #[pyo3(get)]
+    pub total_tests: usize,
+
+    /// Duration of collection in seconds
+    #[pyo3(get)]
+    pub duration: f64,
+
+    /// Unix timestamp when collection completed
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
+#[pymethods]
+impl CollectionCompletedEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "CollectionCompletedEvent(total_files={}, total_tests={})",
+            self.total_files, self.total_tests
+        )
+    }
+}
+
 /// Helper to get current Unix timestamp
 pub fn current_timestamp() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
+}
+
+/// Emit a CollectionStartedEvent to the callback
+pub fn emit_collection_started(callback: &Py<PyAny>) {
+    let event = CollectionStartedEvent {
+        timestamp: current_timestamp(),
+    };
+    Python::attach(|py| {
+        if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
+            eprintln!("Error in event callback: {}", e);
+        }
+    });
+}
+
+/// Emit a CollectionProgressEvent to the callback
+pub fn emit_collection_progress(
+    callback: &Py<PyAny>,
+    file_path: String,
+    tests_collected: usize,
+    files_collected: usize,
+) {
+    let event = CollectionProgressEvent {
+        file_path,
+        tests_collected,
+        files_collected,
+        timestamp: current_timestamp(),
+    };
+    Python::attach(|py| {
+        if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
+            eprintln!("Error in event callback: {}", e);
+        }
+    });
+}
+
+/// Emit a CollectionCompletedEvent to the callback
+pub fn emit_collection_completed(
+    callback: &Py<PyAny>,
+    total_files: usize,
+    total_tests: usize,
+    duration: f64,
+) {
+    let event = CollectionCompletedEvent {
+        total_files,
+        total_tests,
+        duration,
+        timestamp: current_timestamp(),
+    };
+    Python::attach(|py| {
+        if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
+            eprintln!("Error in event callback: {}", e);
+        }
+    });
 }

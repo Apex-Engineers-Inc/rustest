@@ -57,6 +57,27 @@ class CollectionErrorEvent:
     message: str
     timestamp: float
 
+class CollectionStartedEvent:
+    """Event emitted when test collection starts."""
+
+    timestamp: float
+
+class CollectionProgressEvent:
+    """Event emitted when a file is collected during test discovery."""
+
+    file_path: str
+    tests_collected: int
+    files_collected: int
+    timestamp: float
+
+class CollectionCompletedEvent:
+    """Event emitted when test collection completes."""
+
+    total_files: int
+    total_tests: int
+    duration: float
+    timestamp: float
+
 class PyTestResult:
     """Individual test result from the Rust extension."""
 
