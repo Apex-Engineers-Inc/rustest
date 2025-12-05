@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2025-12-05
+
+### Added
+
+- **Collection Feedback**: Visual feedback during test collection process
+  - Shows live spinner with progress updates as files are discovered
+  - Displays collection summary with file count and duration
+  - Helps users understand that rustest is working when scanning large codebases
+  - New collection events: `CollectionStartedEvent`, `CollectionProgressEvent`, `CollectionCompletedEvent`
+
+### Fixed
+
+- **Fixture Discovery**: Fixed named fixture discovery in conftest.py files
+  - Fixtures with `name` parameter on `@fixture` decorator are now correctly registered under their custom name
+  - Applied `extract_fixture_name()` consistently across all fixture loading functions
+  - Improved error messages for unknown fixtures to list all available fixtures alphabetically
+
+- **Test Cancellation**: Fixed Ctrl+C responsiveness during test execution
+  - Added signal checking at strategic points in Rust execution loop
+  - Tests can now be cancelled with Ctrl+C at any time during execution
+  - Graceful termination with proper KeyboardInterrupt propagation
+
+### Changed
+
+- **Collection Performance**: Optimized test collection speed with parallel discovery
+  - Parallel file discovery using rayon for concurrent directory traversal
+  - Consolidated conftest discovery to single parallel pass (eliminates redundant walks)
+  - Optimized Python introspection using `__code__.co_varnames` instead of `inspect.signature()`
+  - Optimized function type detection using `__code__.co_flags` for faster checks
+
 ## [0.16.0] - 2025-12-03
 
 ### Added
@@ -493,3 +523,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0] - 2025-11-10
 
 (See previous releases for earlier changelog entries)
+
