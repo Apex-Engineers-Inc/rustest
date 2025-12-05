@@ -523,3 +523,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0] - 2025-11-10
 
 (See previous releases for earlier changelog entries)
+
