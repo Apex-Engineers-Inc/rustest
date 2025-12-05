@@ -1669,10 +1669,15 @@ impl<'py> FixtureResolver<'py> {
         }
 
         // Fixture not in any cache, need to execute it
-        let fixture = self
-            .fixtures
-            .get(name)
-            .ok_or_else(|| invalid_test_definition(format!("Unknown fixture '{}'.", name)))?;
+        let fixture = self.fixtures.get(name).ok_or_else(|| {
+            let mut available: Vec<&str> = self.fixtures.keys().map(String::as_str).collect();
+            available.sort();
+            let available_list = available.join(", ");
+            invalid_test_definition(format!(
+                "Unknown fixture '{}'.\nAvailable fixtures: {}",
+                name, available_list
+            ))
+        })?;
 
         // Set current fixture param for request.param access
         let previous_param = self.current_fixture_param.take();
