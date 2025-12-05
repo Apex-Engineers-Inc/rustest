@@ -512,10 +512,11 @@ fn load_pytest_plugins_fixtures(
                 let is_async_generator = is_async_generator_function(py, &value)?;
                 let autouse = extract_fixture_autouse(&value)?;
                 let params = extract_fixture_params(&value)?;
+                let fixture_name = extract_fixture_name(&value, &name)?;
 
                 let fixture = if let Some(params) = params {
                     Fixture::with_params(
-                        name.clone(),
+                        fixture_name.clone(),
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
                         scope,
@@ -528,7 +529,7 @@ fn load_pytest_plugins_fixtures(
                     )
                 } else {
                     Fixture::new(
-                        name.clone(),
+                        fixture_name.clone(),
                         value.clone().unbind(),
                         extract_parameters(py, &value)?,
                         scope,
@@ -539,7 +540,7 @@ fn load_pytest_plugins_fixtures(
                         None,
                     )
                 };
-                fixtures.insert(name.clone(), fixture);
+                fixtures.insert(fixture_name, fixture);
             }
         }
     }
@@ -602,10 +603,11 @@ fn load_conftest_fixtures(
             let is_async_generator = is_async_generator_function(py, &value)?;
             let autouse = extract_fixture_autouse(&value)?;
             let params = extract_fixture_params(&value)?;
+            let fixture_name = extract_fixture_name(&value, &name)?;
 
             let fixture = if let Some(params) = params {
                 Fixture::with_params(
-                    name.clone(),
+                    fixture_name.clone(),
                     value.clone().unbind(),
                     extract_parameters(py, &value)?,
                     scope,
@@ -618,7 +620,7 @@ fn load_conftest_fixtures(
                 )
             } else {
                 Fixture::new(
-                    name.clone(),
+                    fixture_name.clone(),
                     value.clone().unbind(),
                     extract_parameters(py, &value)?,
                     scope,
@@ -629,7 +631,7 @@ fn load_conftest_fixtures(
                     None,
                 )
             };
-            fixtures.insert(name.clone(), fixture);
+            fixtures.insert(fixture_name, fixture);
         }
     }
 
@@ -702,10 +704,11 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
             let is_async_generator = is_async_generator_function(py, &value)?;
             let autouse = extract_fixture_autouse(&value)?;
             let params = extract_fixture_params(&value)?;
+            let fixture_name = extract_fixture_name(&value, &name)?;
 
             let fixture = if let Some(params) = params {
                 Fixture::with_params(
-                    name.clone(),
+                    fixture_name.clone(),
                     value.clone().unbind(),
                     extract_parameters(py, &value)?,
                     scope,
@@ -718,7 +721,7 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
                 )
             } else {
                 Fixture::new(
-                    name.clone(),
+                    fixture_name.clone(),
                     value.clone().unbind(),
                     extract_parameters(py, &value)?,
                     scope,
@@ -729,7 +732,7 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
                     None,
                 )
             };
-            fixtures.insert(name, fixture);
+            fixtures.insert(fixture_name, fixture);
         }
     }
 
