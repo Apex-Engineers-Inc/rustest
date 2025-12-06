@@ -1119,6 +1119,30 @@ def importorskip(
     return mod
 
 
+# Install _pytest stub module for compatibility with projects that import from _pytest
+# This allows common imports like:
+#   from _pytest import monkeypatch
+#   from _pytest.config import Config
+#   from _pytest.outcomes import Failed, Skipped
+# to work without ModuleNotFoundError, while showing deprecation warnings
+import sys
+
+try:
+    from rustest import _pytest_stub
+
+    sys.modules["_pytest"] = _pytest_stub
+    sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch  # type: ignore[attr-defined]
+    sys.modules["_pytest.config"] = _pytest_stub.config  # type: ignore[attr-defined]
+    sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes  # type: ignore[attr-defined]
+    sys.modules["_pytest.nodes"] = _pytest_stub.nodes  # type: ignore[attr-defined]
+    sys.modules["_pytest.mark"] = _pytest_stub.mark  # type: ignore[attr-defined]
+    sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures  # type: ignore[attr-defined]
+    sys.modules["_pytest.assertion"] = _pytest_stub.assertion  # type: ignore[attr-defined]
+    sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite  # type: ignore[attr-defined]
+except ImportError:
+    # _pytest_stub not available (shouldn't happen, but handle gracefully)
+    pass
+
 # Module-level version to match pytest
 __version__ = "rustest-compat"
 

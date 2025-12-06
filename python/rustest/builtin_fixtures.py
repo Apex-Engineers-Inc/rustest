@@ -1125,6 +1125,66 @@ def mocker() -> Generator[MockerFixture, None, None]:
         m.stopall()
 
 
+@fixture(scope="session")
+def pytestconfig(request: Any) -> Any:
+    """
+    Session-scoped fixture that returns the pytest config object.
+
+    This provides access to pytest configuration for compatibility with
+    pytest test suites that use pytestconfig.
+
+    **Supported:**
+        - pytestconfig.getoption(name, default=None): Get command-line option
+        - pytestconfig.getini(name): Get ini configuration value
+        - pytestconfig.rootpath: Root directory path
+        - pytestconfig.inipath: Config file path (always None in rustest)
+
+    **Limited Support:**
+        - pytestconfig.option: Namespace with common options
+        - pytestconfig.pluginmanager: Stub (minimal functionality)
+
+    Common usage:
+        def test_conditional(pytestconfig):
+            verbose = pytestconfig.getoption("verbose", default=0)
+            if verbose > 1:
+                print("Running in verbose mode")
+
+        @fixture
+        def needs_feature(pytestconfig):
+            mode = pytestconfig.getoption("assertmode", default="rewrite")
+            if mode != "rewrite":
+                pytest.skip("This test requires assertion rewrite")
+
+    Example (pytest-mock pattern):
+        @fixture
+        def needs_assert_rewrite(pytestconfig):
+            option = pytestconfig.getoption("assertmode")
+            if option != "rewrite":
+                pytest.skip("assertion rewrite required")
+    """
+    # Import here to avoid circular dependency
+    from rustest.compat.pytest import Config
+
+    # Return a Config object with sensible defaults
+    config = Config(
+        options={
+            "verbose": 0,
+            "capture": "fd",
+            "assertmode": "rewrite",  # rustest uses rewrite-like assertions
+            "tb": "short",
+            "strict": False,
+        },
+        ini_values={
+            "markers": [],
+            "python_files": ["test_*.py", "*_test.py"],
+            "python_classes": ["Test"],
+            "python_functions": ["test"],
+        },
+    )
+
+    return config
+
+
 __all__ = [
     "Cache",
     "CaptureFixture",
@@ -1139,9 +1199,10 @@ __all__ = [
     "capfd",
     "mocker",
     "monkeypatch",
+    "pytestconfig",
+    "request",
     "tmpdir",
     "tmpdir_factory",
     "tmp_path",
     "tmp_path_factory",
-    "request",
 ]

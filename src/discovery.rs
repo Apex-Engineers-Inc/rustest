@@ -1024,14 +1024,11 @@ fn inspect_module(
     for (name_obj, value) in module_dict.iter() {
         let name: String = name_obj.extract()?;
 
-        // OPTIMIZATION: Skip obvious non-test/non-fixture items early
-        // This reduces the number of expensive attribute checks
-        if name.starts_with('_') && !name.starts_with("__test") {
-            continue; // Skip private/dunder attributes
-        }
-
         // Check if it's a function
         if is_function(&value, &function_type)? {
+            // Check for fixtures FIRST, before name filtering
+            // Fixtures can have any name, including underscore-prefixed names
+            // (e.g., _patch_for_completion, _restore_state)
             if is_fixture(&value)? {
                 let scope = extract_fixture_scope(&value)?;
                 let is_generator = is_generator_function(py, &value)?;
@@ -1068,6 +1065,12 @@ fn inspect_module(
                     )
                 };
                 fixtures.insert(fixture_name, fixture);
+                continue;
+            }
+
+            // Skip underscore-prefixed functions that are not fixtures
+            // (keep this filter for test functions and helpers)
+            if name.starts_with('_') && !name.starts_with("__test") {
                 continue;
             }
 
