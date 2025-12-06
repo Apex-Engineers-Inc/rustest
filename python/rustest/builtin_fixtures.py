@@ -1126,41 +1126,38 @@ def mocker() -> Generator[MockerFixture, None, None]:
 
 
 @fixture(scope="session")
-def pytestconfig(request: Any) -> Any:
+def rustestconfig(request: Any) -> Any:
     """
-    Session-scoped fixture that returns the pytest config object.
+    Session-scoped fixture that returns the rustest config object.
 
-    This provides access to pytest configuration for compatibility with
-    pytest test suites that use pytestconfig.
+    This provides access to rustest's configuration. When running in pytest-compat
+    mode, this fixture is also available as `pytestconfig` for compatibility.
 
     **Supported:**
-        - pytestconfig.getoption(name, default=None): Get command-line option
-        - pytestconfig.getini(name): Get ini configuration value
-        - pytestconfig.rootpath: Root directory path
-        - pytestconfig.inipath: Config file path (always None in rustest)
+        - rustestconfig.getoption(name, default=None): Get command-line option
+        - rustestconfig.getini(name): Get ini configuration value
+        - rustestconfig.rootpath: Root directory path
+        - rustestconfig.inipath: Config file path (always None in rustest)
 
     **Limited Support:**
-        - pytestconfig.option: Namespace with common options
-        - pytestconfig.pluginmanager: Stub (minimal functionality)
+        - rustestconfig.option: Namespace with common options
+        - rustestconfig.pluginmanager: Stub (minimal functionality)
 
     Common usage:
-        def test_conditional(pytestconfig):
-            verbose = pytestconfig.getoption("verbose", default=0)
+        def test_conditional(rustestconfig):
+            verbose = rustestconfig.getoption("verbose", default=0)
             if verbose > 1:
                 print("Running in verbose mode")
 
         @fixture
-        def needs_feature(pytestconfig):
-            mode = pytestconfig.getoption("assertmode", default="rewrite")
+        def needs_feature(rustestconfig):
+            mode = rustestconfig.getoption("assertmode", default="rewrite")
             if mode != "rewrite":
                 pytest.skip("This test requires assertion rewrite")
 
-    Example (pytest-mock pattern):
-        @fixture
-        def needs_assert_rewrite(pytestconfig):
-            option = pytestconfig.getoption("assertmode")
-            if option != "rewrite":
-                pytest.skip("assertion rewrite required")
+    Note:
+        In pytest-compat mode, this fixture is aliased as `pytestconfig` for
+        compatibility with existing pytest test suites.
     """
     # Import here to avoid circular dependency
     from rustest.compat.pytest import Config
@@ -1185,6 +1182,23 @@ def pytestconfig(request: Any) -> Any:
     return config
 
 
+@fixture(scope="session")
+def pytestconfig(rustestconfig: Any) -> Any:
+    """
+    Pytest compatibility alias for rustestconfig.
+
+    This fixture is provided for compatibility with pytest test suites.
+    It returns the same config object as rustestconfig.
+
+    For new tests, prefer using rustestconfig directly.
+
+    Example (pytest compatibility):
+        def test_example(pytestconfig):
+            verbose = pytestconfig.getoption("verbose", default=0)
+    """
+    return rustestconfig
+
+
 __all__ = [
     "Cache",
     "CaptureFixture",
@@ -1200,6 +1214,7 @@ __all__ = [
     "mocker",
     "monkeypatch",
     "pytestconfig",
+    "rustestconfig",
     "request",
     "tmpdir",
     "tmpdir_factory",

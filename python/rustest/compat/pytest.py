@@ -83,6 +83,8 @@ from rustest.builtin_fixtures import (
     caplog,
     capsys,
     capfd,
+    pytestconfig,
+    rustestconfig,
 )
 
 __all__ = [
@@ -115,6 +117,7 @@ __all__ = [
     "caplog",
     "capsys",
     "capfd",
+    "pytestconfig",
     # Pytest plugin decorator
     "hookimpl",
 ]
