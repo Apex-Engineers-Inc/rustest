@@ -447,8 +447,6 @@ fn discover_parent_conftest_files(
 fn load_pytest_plugins_fixtures(
     py: Python<'_>,
     pytest_plugins: &Bound<'_, PyAny>,
-    _inspect: &Bound<'_, PyAny>,
-    isfunction: &Bound<'_, PyAny>,
     fixtures: &mut IndexMap<String, Fixture>,
     conftest_dir: &Path,
 ) -> PyResult<()> {
@@ -505,7 +503,7 @@ fn load_pytest_plugins_fixtures(
             };
 
             // Check if it's a function and a fixture
-            if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
+            if is_function(&value)? && is_fixture(&value)? {
                 let scope = extract_fixture_scope(&value)?;
                 let is_generator = is_generator_function(py, &value)?;
                 let is_async = is_async_function(py, &value)?;
@@ -561,8 +559,6 @@ fn load_conftest_fixtures(
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let inspect = py.import("inspect")?;
-    let isfunction = inspect.getattr("isfunction")?;
     let mut fixtures = IndexMap::new();
 
     // Load fixtures from external modules
@@ -581,14 +577,7 @@ fn load_conftest_fixtures(
     if let Some(plugins) = fixture_modules {
         // Get the conftest directory for importing modules
         let conftest_dir = path.parent().unwrap_or(path);
-        load_pytest_plugins_fixtures(
-            py,
-            &plugins,
-            &inspect,
-            &isfunction,
-            &mut fixtures,
-            conftest_dir,
-        )?;
+        load_pytest_plugins_fixtures(py, &plugins, &mut fixtures, conftest_dir)?;
     }
 
     // Then load fixtures from the conftest module itself
@@ -596,7 +585,7 @@ fn load_conftest_fixtures(
         let name: String = name_obj.extract()?;
 
         // Check if it's a function and a fixture
-        if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
+        if is_function(&value)? && is_fixture(&value)? {
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
             let is_async = is_async_function(py, &value)?;
@@ -690,14 +679,12 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
     let module = py.import("rustest.builtin_fixtures")?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let inspect = py.import("inspect")?;
-    let isfunction = inspect.getattr("isfunction")?;
     let mut fixtures = IndexMap::new();
 
     for (name_obj, value) in module_dict.iter() {
         let name: String = name_obj.extract()?;
 
-        if isfunction.call1((&value,))?.is_truthy()? && is_fixture(&value)? {
+        if is_function(&value)? && is_fixture(&value)? {
             let scope = extract_fixture_scope(&value)?;
             let is_generator = is_generator_function(py, &value)?;
             let is_async = is_async_function(py, &value)?;
@@ -1015,17 +1002,20 @@ fn inspect_module(
     module_dict: &Bound<'_, PyDict>,
     pytest_compat: bool,
 ) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
-    let inspect = py.import("inspect")?;
-    let isfunction = inspect.getattr("isfunction")?;
-    let isclass = inspect.getattr("isclass")?;
     let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
 
     for (name_obj, value) in module_dict.iter() {
         let name: String = name_obj.extract()?;
 
+        // OPTIMIZATION: Skip obvious non-test/non-fixture items early
+        // This reduces the number of expensive attribute checks
+        if name.starts_with('_') && !name.starts_with("__test") {
+            continue; // Skip private/dunder attributes
+        }
+
         // Check if it's a function
-        if isfunction.call1((&value,))?.is_truthy()? {
+        if is_function(&value)? {
             if is_fixture(&value)? {
                 let scope = extract_fixture_scope(&value)?;
                 let is_generator = is_generator_function(py, &value)?;
@@ -1120,7 +1110,7 @@ fn inspect_module(
             }
         }
         // Check if it's a class (both unittest.TestCase and plain test classes)
-        else if isclass.call1((&value,))?.is_truthy()? {
+        else if is_class(&value)? {
             if is_test_case_class(py, &value)? {
                 // unittest.TestCase support
                 let class_tests = discover_unittest_class_tests(py, path, &name, &value)?;
@@ -1627,6 +1617,36 @@ def run_test(*args, **kwargs):
     let run_test = namespace.get_item("run_test")?.unwrap();
 
     Ok(run_test.unbind())
+}
+
+/// Check if a Python object is a function.
+///
+/// OPTIMIZATION: This is much faster than inspect.isfunction() because it uses
+/// direct type checking instead of calling Python code. We check isinstance against
+/// types.FunctionType which is the same check inspect.isfunction does internally.
+///
+/// Note: We can't use hasattr("__code__") because it triggers __getattr__ on objects
+/// that define it (like MarkGenerator), which can cause unexpected side effects.
+fn is_function(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let py = value.py();
+    let types_module = py.import("types")?;
+    let function_type = types_module.getattr("FunctionType")?;
+    value.is_instance(&function_type)
+}
+
+/// Check if a Python object is a class.
+///
+/// OPTIMIZATION: This is much faster than inspect.isclass() because it uses
+/// direct type checking. We check if the object's type is 'type' (the metaclass),
+/// which is the same check inspect.isclass does internally.
+///
+/// Note: We can't use hasattr("__bases__") because it can trigger __getattr__.
+fn is_class(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let py = value.py();
+    let builtins = py.import("builtins")?;
+    let type_type = builtins.getattr("type")?;
+    // Check if value is an instance of type (i.e., it's a class)
+    value.is_instance(&type_type)
 }
 
 /// Determine whether a Python object has been marked as a fixture.
