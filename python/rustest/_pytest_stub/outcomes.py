@@ -82,3 +82,8 @@ def skip(msg: str = ""):
     Prefer using: pytest.skip(msg)
     """
     raise Skipped(msg)
+
+
+# Pytest internal - outcome tuple for internal pytest use
+# This is not part of pytest's public API
+TEST_OUTCOME = (Failed, Skipped)
