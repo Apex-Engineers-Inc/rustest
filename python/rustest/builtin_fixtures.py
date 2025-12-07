@@ -1185,17 +1185,55 @@ def rustestconfig(request: Any) -> Any:
 @fixture(scope="session")
 def pytestconfig(rustestconfig: Any) -> Any:
     """
-    Pytest compatibility alias for rustestconfig.
+    Pytest compatibility fixture for accessing configuration.
 
-    This fixture is provided for compatibility with pytest test suites.
-    It returns the same config object as rustestconfig.
+    **IMPORTANT:** This fixture is ONLY for pytest-compat mode.
+    Use `rustestconfig` for native rustest code.
 
-    For new tests, prefer using rustestconfig directly.
+    When running without --pytest-compat, this fixture will raise an error
+    directing you to use rustestconfig instead.
+
+    **Supported:**
+        - pytestconfig.getoption(name, default=None): Get command-line option
+        - pytestconfig.getini(name): Get ini configuration value
+        - pytestconfig.rootpath: Root directory path
+        - pytestconfig.inipath: Config file path (always None)
 
     Example (pytest compatibility):
         def test_example(pytestconfig):
             verbose = pytestconfig.getoption("verbose", default=0)
+
+        @pytest.fixture
+        def needs_assert_rewrite(pytestconfig):
+            option = pytestconfig.getoption("assertmode")
+            if option != "rewrite":
+                pytest.skip("assertion rewrite required")
     """
+    import sys
+
+    # Check if pytest-compat mode is active by checking if 'pytest' module
+    # is loaded and is our compat module
+    pytest_module = sys.modules.get("pytest")
+    is_pytest_compat = (
+        pytest_module is not None
+        and hasattr(pytest_module, "__file__")
+        and "rustest/compat/pytest.py" in str(getattr(pytest_module, "__file__", ""))
+    )
+
+    if not is_pytest_compat:
+        raise RuntimeError(
+            "The 'pytestconfig' fixture is only available in pytest-compat mode.\n\n"
+            "For native rustest code, use 'rustestconfig' instead:\n\n"
+            "  # Change this:\n"
+            "  def test_example(pytestconfig):\n"
+            "      verbose = pytestconfig.getoption('verbose')\n\n"
+            "  # To this:\n"
+            "  def test_example(rustestconfig):\n"
+            "      verbose = rustestconfig.getoption('verbose')\n\n"
+            "Or run with --pytest-compat flag:\n"
+            "  rustest --pytest-compat tests/"
+        )
+
     return rustestconfig
 
 
