@@ -1122,38 +1122,41 @@ def importorskip(
     return mod
 
 
-# Install _pytest stub module for compatibility with projects that import from _pytest
-# This allows common imports like:
-#   from _pytest import monkeypatch
-#   from _pytest.config import Config
-#   from _pytest.outcomes import Failed, Skipped
-# to work without ModuleNotFoundError, while showing deprecation warnings
-#
-# IMPORTANT: Only install the stub if real pytest is not already running.
-# If pytest is the test runner, we should not interfere with its internal modules.
-import sys
+def _install_pytest_stubs() -> None:
+    """
+    Install _pytest stub modules for compatibility with projects that import from _pytest.
 
-# Check if pytest is already imported (meaning pytest is the runner, not rustest)
-_pytest_is_real = "_pytest" in sys.modules and hasattr(sys.modules.get("_pytest"), "__path__")
+    This allows common imports like:
+      from _pytest import monkeypatch
+      from _pytest.config import Config
+      from _pytest.outcomes import Failed, Skipped
+    to work without ModuleNotFoundError, while showing deprecation warnings.
 
-if not _pytest_is_real:
-    # Install our stub modules only if pytest is not running
-    try:
-        from rustest import _pytest_stub
+    This should only be called when --pytest-compat mode is explicitly enabled.
+    """
+    import sys
 
-        sys.modules["_pytest"] = _pytest_stub
-        sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch  # type: ignore[attr-defined]
-        sys.modules["_pytest.config"] = _pytest_stub.config  # type: ignore[attr-defined]
-        sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes  # type: ignore[attr-defined]
-        sys.modules["_pytest.nodes"] = _pytest_stub.nodes  # type: ignore[attr-defined]
-        sys.modules["_pytest.mark"] = _pytest_stub.mark  # type: ignore[attr-defined]
-        sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures  # type: ignore[attr-defined]
-        sys.modules["_pytest.assertion"] = _pytest_stub.assertion  # type: ignore[attr-defined]
-        sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite  # type: ignore[attr-defined]
-        sys.modules["_pytest.main"] = _pytest_stub.main  # type: ignore[attr-defined]
-    except ImportError:
-        # _pytest_stub not available (shouldn't happen, but handle gracefully)
-        pass
+    # Check if pytest is already imported (meaning pytest is the runner, not rustest)
+    _pytest_is_real = "_pytest" in sys.modules and hasattr(sys.modules.get("_pytest"), "__path__")
+
+    if not _pytest_is_real:
+        # Install our stub modules only if pytest is not running
+        try:
+            from rustest import _pytest_stub
+
+            sys.modules["_pytest"] = _pytest_stub
+            sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch  # type: ignore[attr-defined]
+            sys.modules["_pytest.config"] = _pytest_stub.config  # type: ignore[attr-defined]
+            sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes  # type: ignore[attr-defined]
+            sys.modules["_pytest.nodes"] = _pytest_stub.nodes  # type: ignore[attr-defined]
+            sys.modules["_pytest.mark"] = _pytest_stub.mark  # type: ignore[attr-defined]
+            sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures  # type: ignore[attr-defined]
+            sys.modules["_pytest.assertion"] = _pytest_stub.assertion  # type: ignore[attr-defined]
+            sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite  # type: ignore[attr-defined]
+            sys.modules["_pytest.main"] = _pytest_stub.main  # type: ignore[attr-defined]
+        except ImportError:
+            # _pytest_stub not available (shouldn't happen, but handle gracefully)
+            pass
 
 # Module-level version to match pytest
 __version__ = "rustest-compat"

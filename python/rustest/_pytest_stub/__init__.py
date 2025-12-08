@@ -14,6 +14,10 @@ For details on migration, see: https://github.com/anthropics/rustest
 
 import warnings
 
+# Version string for compatibility with pytest's __init__.py
+__version__ = "rustest-compat"
+version_tuple = (0, 0, 0, "rustest-compat", 0)
+
 # Import submodules so they're available as attributes
 from . import monkeypatch, config, outcomes, nodes, mark, assertion, main
 
