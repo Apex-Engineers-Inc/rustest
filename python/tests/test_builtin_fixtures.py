@@ -645,7 +645,7 @@ def test_pytestconfig_noncompat_mode(tmp_path: Path) -> None:
     assert report.total == 1
     assert report.failed == 1
     # Check that the error message mentions pytest-compat mode
-    assert report.errors == 0  # Not a collection error, it's a fixture error
+    assert len(report.collection_errors) == 0  # Not a collection error, it's a fixture error
 
 
 def _write_pytestconfig_compat_module(target: Path) -> None:

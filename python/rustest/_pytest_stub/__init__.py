@@ -15,7 +15,7 @@ For details on migration, see: https://github.com/anthropics/rustest
 import warnings
 
 # Import submodules so they're available as attributes
-from . import monkeypatch, config, outcomes, nodes, mark, assertion
+from . import monkeypatch, config, outcomes, nodes, mark, assertion, main
 
 # Show deprecation warning when _pytest is imported
 warnings.warn(
@@ -26,4 +26,4 @@ warnings.warn(
     stacklevel=2,
 )
 
-__all__ = ["monkeypatch", "config", "outcomes", "nodes", "mark", "assertion"]
+__all__ = ["monkeypatch", "config", "outcomes", "nodes", "mark", "assertion", "main"]
