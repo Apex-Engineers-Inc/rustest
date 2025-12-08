@@ -1222,16 +1222,18 @@ def pytestconfig(rustestconfig: Any) -> Any:
 
     if not is_pytest_compat:
         raise RuntimeError(
-            "The 'pytestconfig' fixture is only available in pytest-compat mode.\n\n"
-            "For native rustest code, use 'rustestconfig' instead:\n\n"
-            "  # Change this:\n"
-            "  def test_example(pytestconfig):\n"
-            "      verbose = pytestconfig.getoption('verbose')\n\n"
-            "  # To this:\n"
-            "  def test_example(rustestconfig):\n"
-            "      verbose = rustestconfig.getoption('verbose')\n\n"
-            "Or run with --pytest-compat flag:\n"
-            "  rustest --pytest-compat tests/"
+            (
+                "The 'pytestconfig' fixture is only available in pytest-compat mode.\n\n"
+                "For native rustest code, use 'rustestconfig' instead:\n\n"
+                "  # Change this:\n"
+                "  def test_example(pytestconfig):\n"
+                "      verbose = pytestconfig.getoption('verbose')\n\n"
+                "  # To this:\n"
+                "  def test_example(rustestconfig):\n"
+                "      verbose = rustestconfig.getoption('verbose')\n\n"
+                "Or run with --pytest-compat flag:\n"
+                "  rustest --pytest-compat tests/"
+            )
         )
 
     return rustestconfig

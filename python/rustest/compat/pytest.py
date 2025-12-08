@@ -84,7 +84,6 @@ from rustest.builtin_fixtures import (
     capsys,
     capfd,
     pytestconfig,
-    rustestconfig,
 )
 
 __all__ = [
@@ -1122,7 +1121,7 @@ def importorskip(
     return mod
 
 
-def _install_pytest_stubs() -> None:
+def install_pytest_stubs() -> None:
     """
     Install _pytest stub modules for compatibility with projects that import from _pytest.
 
@@ -1137,7 +1136,9 @@ def _install_pytest_stubs() -> None:
     import sys
 
     # Check if pytest is already imported (meaning pytest is the runner, not rustest)
-    _pytest_is_real = "_pytest" in sys.modules and hasattr(sys.modules.get("_pytest"), "__path__")
+    _pytest_is_real = "_pytest" in sys.modules and hasattr(
+        sys.modules.get("_pytest"), "__path__"
+    )
 
     if not _pytest_is_real:
         # Install our stub modules only if pytest is not running
@@ -1145,18 +1146,19 @@ def _install_pytest_stubs() -> None:
             from rustest import _pytest_stub
 
             sys.modules["_pytest"] = _pytest_stub
-            sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch  # type: ignore[attr-defined]
-            sys.modules["_pytest.config"] = _pytest_stub.config  # type: ignore[attr-defined]
-            sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes  # type: ignore[attr-defined]
-            sys.modules["_pytest.nodes"] = _pytest_stub.nodes  # type: ignore[attr-defined]
-            sys.modules["_pytest.mark"] = _pytest_stub.mark  # type: ignore[attr-defined]
-            sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures  # type: ignore[attr-defined]
-            sys.modules["_pytest.assertion"] = _pytest_stub.assertion  # type: ignore[attr-defined]
-            sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite  # type: ignore[attr-defined]
-            sys.modules["_pytest.main"] = _pytest_stub.main  # type: ignore[attr-defined]
+            sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch
+            sys.modules["_pytest.config"] = _pytest_stub.config
+            sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes
+            sys.modules["_pytest.nodes"] = _pytest_stub.nodes
+            sys.modules["_pytest.mark"] = _pytest_stub.mark
+            sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures
+            sys.modules["_pytest.assertion"] = _pytest_stub.assertion
+            sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite
+            sys.modules["_pytest.main"] = _pytest_stub.main
         except ImportError:
             # _pytest_stub not available (shouldn't happen, but handle gracefully)
             pass
+
 
 # Module-level version to match pytest
 __version__ = "rustest-compat"

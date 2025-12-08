@@ -19,13 +19,15 @@ __version__ = "rustest-compat"
 version_tuple = (0, 0, 0, "rustest-compat", 0)
 
 # Import submodules so they're available as attributes
-from . import monkeypatch, config, outcomes, nodes, mark, assertion, main
+from . import monkeypatch, config, outcomes, nodes, mark, assertion, main  # noqa: E402
 
 # Show deprecation warning when _pytest is imported
 warnings.warn(
-    "_pytest is pytest's internal API and is not fully supported by rustest. "
-    "Please migrate to rustest's public API or pytest's public API. "
-    "See https://github.com/anthropics/rustest for migration guide.",
+    (
+        "_pytest is pytest's internal API and is not fully supported by rustest. "
+        "Please migrate to rustest's public API or pytest's public API. "
+        "See https://github.com/anthropics/rustest for migration guide."
+    ),
     DeprecationWarning,
     stacklevel=2,
 )

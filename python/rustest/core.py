@@ -80,8 +80,9 @@ def run(
     if pytest_compat:
         _print_pytest_compat_banner(use_colors=not no_color)
         # Install _pytest stub modules for compatibility
-        from rustest.compat.pytest import _install_pytest_stubs
-        _install_pytest_stubs()
+        from rustest.compat.pytest import install_pytest_stubs
+
+        install_pytest_stubs()
 
     # Set up event routing with rich terminal renderer
     router = EventRouter()

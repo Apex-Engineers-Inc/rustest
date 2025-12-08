@@ -90,7 +90,13 @@ reportMissingSuperCall = "error"
 reportPropertyTypeMismatch = "error"
 reportUninitializedInstanceVariable = "error"
 include = ["python/rustest"]
-exclude = ["**/__pycache__", "**/.*", "**/*.pyc", "**/tests"]
+exclude = [
+    "**/__pycache__",
+    "**/.*",
+    "**/*.pyc",
+    "**/tests",
+    "python/rustest/_pytest_stub",
+]
 
 [tool.uv]
 managed = true
