@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 6 tests for `rustestconfig` fixture in native mode
   - 1 test for `pytestconfig` error handling in non-compat mode
   - 6 tests for `pytestconfig` fixture in pytest-compat mode
+- **Validation Testing**: Validated fixes against 10 popular Python projects (click, httpx, pytest-asyncio, etc.)
 
 ## [0.16.1] - 2025-12-05
 
