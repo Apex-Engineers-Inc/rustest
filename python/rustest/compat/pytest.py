@@ -1136,9 +1136,7 @@ def install_pytest_stubs() -> None:
     import sys
 
     # Check if pytest is already imported (meaning pytest is the runner, not rustest)
-    _pytest_is_real = "_pytest" in sys.modules and hasattr(
-        sys.modules.get("_pytest"), "__path__"
-    )
+    _pytest_is_real = "_pytest" in sys.modules and hasattr(sys.modules.get("_pytest"), "__path__")
 
     if not _pytest_is_real:
         # Install our stub modules only if pytest is not running
