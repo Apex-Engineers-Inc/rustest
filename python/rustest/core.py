@@ -76,6 +76,19 @@ def run(
         ascii: Use ASCII characters instead of Unicode symbols for output
         no_color: Disable colored output
     """
+    # Store runtime configuration for fixtures to access
+    from rustest._runtime_config import set_runtime_config
+
+    set_runtime_config(
+        verbose=1 if verbose else 0,  # Convert bool to int (could be expanded to levels)
+        capture="no" if not capture_output else "fd",
+        pytest_compat=pytest_compat,
+        ascii=ascii,
+        no_color=no_color,
+        workers=workers,
+        fail_fast=fail_fast,
+    )
+
     # Print pytest compatibility banner and install _pytest stubs if enabled
     if pytest_compat:
         _print_pytest_compat_banner(use_colors=not no_color)

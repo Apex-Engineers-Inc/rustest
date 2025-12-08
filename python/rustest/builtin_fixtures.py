@@ -1161,16 +1161,14 @@ def rustestconfig(request: Any) -> Any:
     """
     # Import here to avoid circular dependency
     from rustest.compat.pytest import Config
+    from rustest._runtime_config import get_runtime_config
 
-    # Return a Config object with sensible defaults
+    # Get actual runtime configuration
+    runtime_config = get_runtime_config()
+
+    # Create Config object with runtime values
     config = Config(
-        options={
-            "verbose": 0,
-            "capture": "fd",
-            "assertmode": "rewrite",  # rustest uses rewrite-like assertions
-            "tb": "short",
-            "strict": False,
-        },
+        options=runtime_config.copy(),
         ini_values={
             "markers": [],
             "python_files": ["test_*.py", "*_test.py"],
@@ -1209,18 +1207,11 @@ def pytestconfig(rustestconfig: Any) -> Any:
             if option != "rewrite":
                 pytest.skip("assertion rewrite required")
     """
-    import sys
+    from rustest._runtime_config import is_pytest_compat_mode
 
-    # Check if pytest-compat mode is active by checking if 'pytest' module
-    # is loaded and is our compat module
-    pytest_module = sys.modules.get("pytest")
-    is_pytest_compat = (
-        pytest_module is not None
-        and hasattr(pytest_module, "__file__")
-        and "rustest/compat/pytest.py" in str(getattr(pytest_module, "__file__", ""))
-    )
-
-    if not is_pytest_compat:
+    # Check if pytest-compat mode is active using runtime config
+    # This is more reliable than path-based detection
+    if not is_pytest_compat_mode():
         raise RuntimeError(
             (
                 "The 'pytestconfig' fixture is only available in pytest-compat mode.\n\n"

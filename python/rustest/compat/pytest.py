@@ -1153,9 +1153,19 @@ def install_pytest_stubs() -> None:
             sys.modules["_pytest.assertion"] = _pytest_stub.assertion
             sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite
             sys.modules["_pytest.main"] = _pytest_stub.main
-        except ImportError:
-            # _pytest_stub not available (shouldn't happen, but handle gracefully)
-            pass
+        except ImportError as e:
+            # _pytest_stub not available (shouldn't happen in normal operation)
+            import warnings
+
+            warnings.warn(
+                (
+                    f"Failed to install _pytest stub modules: {e}. "
+                    "Tests that import from _pytest will fail. "
+                    "This is an internal rustest error - please report it."
+                ),
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 # Module-level version to match pytest

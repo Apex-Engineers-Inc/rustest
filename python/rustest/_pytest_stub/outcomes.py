@@ -47,7 +47,16 @@ class Failed(Exception):
         assert False, "message"
     """
 
-    pass
+    def __init__(self, msg: str = "", pytrace: bool = True):
+        """Initialize Failed exception.
+
+        Args:
+            msg: Failure message
+            pytrace: Whether to show Python traceback (pytest compatibility)
+        """
+        super().__init__(msg)
+        self.msg = msg
+        self.pytrace = pytrace
 
 
 class Skipped(Exception):
@@ -63,7 +72,16 @@ class Skipped(Exception):
         pytest.skip("reason")
     """
 
-    pass
+    def __init__(self, msg: str = "", allow_module_level: bool = False):
+        """Initialize Skipped exception.
+
+        Args:
+            msg: Skip reason
+            allow_module_level: Whether to allow skipping at module level (pytest compatibility)
+        """
+        super().__init__(msg)
+        self.msg = msg
+        self.allow_module_level = allow_module_level
 
 
 def fail(msg: str = "", pytrace: bool = True):
