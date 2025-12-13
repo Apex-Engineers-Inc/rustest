@@ -10,10 +10,6 @@ import sys
 # Detection: check if _pytest is already loaded (pytest loads it early during startup)
 # This is more reliable than PYTEST_CURRENT_TEST which is only set during test execution
 # Also skip if we're running inside rustest's code block execution
-# Only activate when pytest is actually running (not just installed)
-# Detection: check if _pytest is already loaded (pytest loads it early during startup)
-# This is more reliable than PYTEST_CURRENT_TEST which is only set during test execution
-# Also skip if we're running inside rustest's code block execution
 if "_pytest" in sys.modules and "rustest" not in sys.modules:
     try:
         import pytest
@@ -39,12 +35,30 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
                 compat_module.__path__ = real_rustest_loader.__path__
 
         def _fixture(func=None, *, scope="function", autouse=False, name=None, params=None, ids=None):
-            """Redirect to pytest.fixture with full parametrization support."""
+            """Redirect to pytest.fixture with full parametrization support.
+
+            Also sets rustest-specific attributes so rustest's discovery can find these fixtures.
+            """
+            def decorate(f):
+                # Apply pytest fixture decorator
+                decorated = pytest.fixture(f, scope=scope, autouse=autouse, name=name, params=params, ids=ids)
+                # Set rustest-specific attributes for discovery
+                setattr(decorated, "__rustest_fixture__", True)
+                setattr(decorated, "__rustest_fixture_scope__", scope)
+                setattr(decorated, "__rustest_fixture_autouse__", autouse)
+                if name is not None:
+                    setattr(decorated, "__rustest_fixture_name__", name)
+                if params is not None:
+                    setattr(decorated, "__rustest_fixture_params__", params)
+                    if ids is not None:
+                        setattr(decorated, "__rustest_fixture_ids__", ids)
+                return decorated
+
             if func is None:
                 # Called with arguments: @fixture(scope="module", autouse=True, params=[...])
-                return lambda f: pytest.fixture(f, scope=scope, autouse=autouse, name=name, params=params, ids=ids)
+                return decorate
             # Called without arguments: @fixture
-            return pytest.fixture(func, scope=scope, autouse=autouse, name=name, params=params, ids=ids)
+            return decorate(func)
 
         def _parametrize(argnames, argvalues, *, ids=None):
             """Redirect to pytest.mark.parametrize."""
