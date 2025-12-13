@@ -77,9 +77,13 @@ def run(
         no_color: Disable colored output
     """
     # Store runtime configuration for fixtures to access
-    from rustest._runtime_config import set_runtime_config
+    try:
+        import rustest._runtime_config as _runtime_config
+    except ModuleNotFoundError:
+        # Fallback for when rustest is not recognized as a package (e.g., during testing)
+        from . import _runtime_config
 
-    set_runtime_config(
+    _runtime_config.set_runtime_config(
         verbose=1 if verbose else 0,  # Convert bool to int (could be expanded to levels)
         capture="no" if not capture_output else "fd",
         pytest_compat=pytest_compat,

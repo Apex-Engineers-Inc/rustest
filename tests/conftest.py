@@ -10,6 +10,10 @@ import sys
 # Detection: check if _pytest is already loaded (pytest loads it early during startup)
 # This is more reliable than PYTEST_CURRENT_TEST which is only set during test execution
 # Also skip if we're running inside rustest's code block execution
+# Only activate when pytest is actually running (not just installed)
+# Detection: check if _pytest is already loaded (pytest loads it early during startup)
+# This is more reliable than PYTEST_CURRENT_TEST which is only set during test execution
+# Also skip if we're running inside rustest's code block execution
 if "_pytest" in sys.modules and "rustest" not in sys.modules:
     try:
         import pytest
@@ -22,6 +26,17 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
         compat_module = types.ModuleType("rustest")
         compat_module.__file__ = __file__
         compat_module.__package__ = "rustest"
+
+        # Find real rustest and copy its __path__ to make this a proper package
+        # This allows submodule imports like `import rustest._runtime_config`
+        import importlib.util
+        spec = importlib.util.find_spec("rustest")
+        if spec and spec.origin and "tests/conftest.py" not in str(spec.origin):
+            # Get the real rustest package path
+            real_rustest_loader = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(real_rustest_loader)
+            if hasattr(real_rustest_loader, "__path__"):
+                compat_module.__path__ = real_rustest_loader.__path__
 
         def _fixture(func=None, *, scope="function", autouse=False, name=None, params=None, ids=None):
             """Redirect to pytest.fixture with full parametrization support."""
@@ -79,6 +94,32 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
         compat_module.skip = _skip
         compat_module.skip_decorator = _skip  # Alias for compatibility
         compat_module.mark = pytest.mark
+
+        # Add __getattr__ to delegate unknown attributes to real rustest
+        # This allows accessing things like _runtime_config from the shim
+        def __getattr__(name):
+            """Delegate unknown attributes to real rustest module."""
+            try:
+                import importlib.util
+                spec = importlib.util.find_spec("rustest")
+                if spec and spec.origin and "tests/conftest.py" not in str(spec.origin):
+                    # Load the real rustest module
+                    import importlib
+                    # Use import_module to get the actual installed rustest package
+                    # Remove the shim temporarily to allow real import
+                    saved_shim = sys.modules.pop("rustest", None)
+                    try:
+                        real_rustest = importlib.import_module("rustest")
+                        return getattr(real_rustest, name)
+                    finally:
+                        if saved_shim:
+                            sys.modules["rustest"] = saved_shim
+            except Exception:
+                pass
+            raise AttributeError(f"module 'rustest' has no attribute '{name}'")
+
+        # Attach __getattr__ to the module
+        compat_module.__getattr__ = __getattr__
 
         # Inject rustest compatibility shim immediately at import time
         # This MUST happen before subdirectory conftest files are loaded

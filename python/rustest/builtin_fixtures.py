@@ -1161,10 +1161,15 @@ def rustestconfig(request: Any) -> Any:
     """
     # Import here to avoid circular dependency
     from rustest.compat.pytest import Config
-    from rustest._runtime_config import get_runtime_config
+
+    try:
+        import rustest._runtime_config as _runtime_config
+    except ModuleNotFoundError:
+        # Fallback for when rustest is not recognized as a package (e.g., during testing)
+        from . import _runtime_config
 
     # Get actual runtime configuration
-    runtime_config = get_runtime_config()
+    runtime_config = _runtime_config.get_runtime_config()
 
     # Create Config object with runtime values
     config = Config(
@@ -1207,11 +1212,15 @@ def pytestconfig(rustestconfig: Any) -> Any:
             if option != "rewrite":
                 pytest.skip("assertion rewrite required")
     """
-    from rustest._runtime_config import is_pytest_compat_mode
-
     # Check if pytest-compat mode is active using runtime config
     # This is more reliable than path-based detection
-    if not is_pytest_compat_mode():
+    try:
+        import rustest._runtime_config as _runtime_config
+    except ModuleNotFoundError:
+        # Fallback for when rustest is not recognized as a package (e.g., during testing)
+        from . import _runtime_config
+
+    if not _runtime_config.is_pytest_compat_mode():
         raise RuntimeError(
             (
                 "The 'pytestconfig' fixture is only available in pytest-compat mode.\n\n"
