@@ -48,27 +48,55 @@ impl PyPaths {
 
 /// Find the base directory for a test path, similar to pytest's behavior.
 ///
-/// Walks up the directory tree from the given path until it finds the first
-/// directory that does NOT contain an `__init__.py` file. Returns that directory's
-/// parent (the project root) to make imports work for packages at the project level.
+/// The behavior depends on whether the test directory is a Python package:
+///
+/// 1. **Flat layout** (tests/ without `__init__.py`):
+///    Returns the parent of the test directory, allowing imports of sibling packages.
+///    ```text
+///    project/          <- RETURNED (parent of tests/)
+///      mypackage/
+///        __init__.py
+///      tests/          <- no __init__.py
+///        test_foo.py
+///    ```
+///
+/// 2. **Package tests** (tests/ with `__init__.py`):
+///    Returns the first ancestor directory without `__init__.py`. This avoids
+///    namespace package conflicts where a directory name matches an installed package.
+///    ```text
+///    /home/user/Pynite/   <- RETURNED (first dir without __init__.py)
+///      Pynite/            <- installed package (would be shadowed if we returned parent)
+///      Testing/           <- has __init__.py
+///        __init__.py
+///        test_foo.py
+///    ```
 pub(crate) fn find_basedir(path: &Path) -> PathBuf {
-    let mut current = if path.is_file() {
+    let start_dir = if path.is_file() {
         path.parent().unwrap_or(path)
     } else {
         path
     };
 
-    // Walk up until we find a directory without __init__.py
+    // Check if the immediate test directory is a package (has __init__.py)
+    let test_dir_is_package = start_dir.join("__init__.py").exists();
+
+    if !test_dir_is_package {
+        // Flat layout: test directory is NOT a package
+        // Return the parent directory so sibling packages are importable
+        return start_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| start_dir.to_path_buf());
+    }
+
+    // Package tests: walk up until we find a directory without __init__.py
+    let mut current = start_dir;
     loop {
         let init_py = current.join("__init__.py");
         if !init_py.exists() {
-            // If the test directory doesn't have __init__.py, use its parent
-            // as the basedir (the project root). This allows imports of packages
-            // that are siblings to the test directory.
-            return current
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| current.to_path_buf());
+            // Return this directory (first one without __init__.py) as the basedir.
+            // This avoids namespace package conflicts with installed packages.
+            return current.to_path_buf();
         }
 
         match current.parent() {
