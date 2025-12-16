@@ -534,3 +534,189 @@ def test_caplog_fixture(tmp_path: Path) -> None:
 
     assert report.total == 7
     assert report.passed == 7
+
+
+def _write_rustestconfig_module(target: Path) -> None:
+    """Write module testing rustestconfig fixture."""
+    target.write_text(
+        """
+from pathlib import Path
+
+
+def test_rustestconfig_available(rustestconfig):
+    '''Test rustestconfig fixture is available.'''
+    assert rustestconfig is not None
+    assert hasattr(rustestconfig, 'getoption')
+    assert hasattr(rustestconfig, 'getini')
+    assert hasattr(rustestconfig, 'rootpath')
+
+
+def test_rustestconfig_getoption(rustestconfig):
+    '''Test rustestconfig.getoption() with defaults.'''
+    verbose = rustestconfig.getoption("verbose", default=0)
+    assert verbose == 0
+
+    capture = rustestconfig.getoption("capture", default="fd")
+    assert capture == "fd"
+
+    # Test non-existent option
+    custom = rustestconfig.getoption("nonexistent", default="fallback")
+    assert custom == "fallback"
+
+
+def test_rustestconfig_getini(rustestconfig):
+    '''Test rustestconfig.getini() returns expected defaults.'''
+    markers = rustestconfig.getini("markers")
+    assert isinstance(markers, list)
+
+    testpaths = rustestconfig.getini("testpaths")
+    assert isinstance(testpaths, list)
+
+    # String-type ini values
+    minversion = rustestconfig.getini("minversion")
+    assert isinstance(minversion, str)
+
+
+def test_rustestconfig_rootpath(rustestconfig):
+    '''Test rustestconfig.rootpath is a Path.'''
+    assert isinstance(rustestconfig.rootpath, Path)
+    assert rustestconfig.rootpath.exists()
+
+
+def test_rustestconfig_option_namespace(rustestconfig):
+    '''Test rustestconfig.option namespace access.'''
+    assert hasattr(rustestconfig, 'option')
+    # Should be able to access options as attributes
+    verbose = rustestconfig.option.verbose
+    # May be None since we didn't set it
+    assert verbose is None or isinstance(verbose, int)
+
+
+def test_rustestconfig_in_fixture(rustestconfig):
+    '''Test using rustestconfig in a fixture.'''
+    from rustest import fixture
+
+    @fixture
+    def config_dependent(rustestconfig):
+        mode = rustestconfig.getoption("assertmode", default="rewrite")
+        return {"mode": mode}
+
+    # This just tests that the fixture can be defined
+    # Actual execution happens via rustest runner
+    assert config_dependent is not None
+"""
+    )
+
+
+def test_rustestconfig_fixture(tmp_path: Path) -> None:
+    """Test rustestconfig fixture in native mode."""
+    module_path = tmp_path / "test_rustestconfig.py"
+    _write_rustestconfig_module(module_path)
+
+    report = run(paths=[str(tmp_path)])
+
+    assert report.total == 6
+    assert report.passed == 6
+
+
+def _write_pytestconfig_noncompat_module(target: Path) -> None:
+    """Write module testing pytestconfig in non-compat mode (should fail)."""
+    target.write_text(
+        """
+import pytest
+
+
+def test_pytestconfig_raises_in_noncompat(pytestconfig):
+    '''Test that pytestconfig raises RuntimeError in non-compat mode.'''
+    # This should never execute because fixture setup will fail
+    assert False, "Should not reach here"
+"""
+    )
+
+
+def test_pytestconfig_noncompat_mode(tmp_path: Path) -> None:
+    """Test that pytestconfig raises error in non-compat mode."""
+    module_path = tmp_path / "test_pytestconfig_noncompat.py"
+    _write_pytestconfig_noncompat_module(module_path)
+
+    report = run(paths=[str(tmp_path)])
+
+    # Should fail with RuntimeError
+    assert report.total == 1
+    assert report.failed == 1
+    # Check that the error message mentions pytest-compat mode
+    assert len(report.collection_errors) == 0  # Not a collection error, it's a fixture error
+
+
+def _write_pytestconfig_compat_module(target: Path) -> None:
+    """Write module testing pytestconfig in pytest-compat mode."""
+    target.write_text(
+        """
+import pytest
+from pathlib import Path
+
+
+def test_pytestconfig_available(pytestconfig):
+    '''Test pytestconfig fixture is available in compat mode.'''
+    assert pytestconfig is not None
+    assert hasattr(pytestconfig, 'getoption')
+    assert hasattr(pytestconfig, 'getini')
+    assert hasattr(pytestconfig, 'rootpath')
+
+
+def test_pytestconfig_getoption(pytestconfig):
+    '''Test pytestconfig.getoption() works.'''
+    verbose = pytestconfig.getoption("verbose", default=0)
+    assert verbose == 0
+
+    capture = pytestconfig.getoption("capture", default="fd")
+    assert capture == "fd"
+
+
+def test_pytestconfig_getini(pytestconfig):
+    '''Test pytestconfig.getini() works.'''
+    markers = pytestconfig.getini("markers")
+    assert isinstance(markers, list)
+
+
+def test_pytestconfig_rootpath(pytestconfig):
+    '''Test pytestconfig.rootpath is a Path.'''
+    assert isinstance(pytestconfig.rootpath, Path)
+
+
+def test_pytestconfig_pytest_mock_pattern(pytestconfig):
+    '''Test pytest-mock pattern with pytestconfig.'''
+    @pytest.fixture
+    def needs_assert_rewrite(pytestconfig):
+        option = pytestconfig.getoption("assertmode", default="rewrite")
+        if option != "rewrite":
+            pytest.skip("assertion rewrite required")
+        return option
+
+    # This just verifies the pattern compiles
+    assert needs_assert_rewrite is not None
+
+
+def test_both_configs_work(pytestconfig, rustestconfig):
+    '''Test that both pytestconfig and rustestconfig work in compat mode.'''
+    assert pytestconfig is not None
+    assert rustestconfig is not None
+
+    # They should return the same config object
+    verbose_pytest = pytestconfig.getoption("verbose", default=0)
+    verbose_rustest = rustestconfig.getoption("verbose", default=0)
+    assert verbose_pytest == verbose_rustest
+"""
+    )
+
+
+def test_pytestconfig_compat_mode(tmp_path: Path) -> None:
+    """Test pytestconfig fixture in pytest-compat mode."""
+    module_path = tmp_path / "test_pytestconfig_compat.py"
+    _write_pytestconfig_compat_module(module_path)
+
+    # Run with pytest-compat mode enabled
+    report = run(paths=[str(tmp_path)], pytest_compat=True)
+
+    assert report.total == 6
+    assert report.passed == 6

@@ -83,6 +83,7 @@ from rustest.builtin_fixtures import (
     caplog,
     capsys,
     capfd,
+    pytestconfig,
 )
 
 __all__ = [
@@ -115,6 +116,7 @@ __all__ = [
     "caplog",
     "capsys",
     "capfd",
+    "pytestconfig",
     # Pytest plugin decorator
     "hookimpl",
 ]
@@ -1117,6 +1119,53 @@ def importorskip(
                     _rustest_skip_function(reason=reason)
 
     return mod
+
+
+def install_pytest_stubs() -> None:
+    """
+    Install _pytest stub modules for compatibility with projects that import from _pytest.
+
+    This allows common imports like:
+      from _pytest import monkeypatch
+      from _pytest.config import Config
+      from _pytest.outcomes import Failed, Skipped
+    to work without ModuleNotFoundError, while showing deprecation warnings.
+
+    This should only be called when --pytest-compat mode is explicitly enabled.
+    """
+    import sys
+
+    # Check if pytest is already imported (meaning pytest is the runner, not rustest)
+    _pytest_is_real = "_pytest" in sys.modules and hasattr(sys.modules.get("_pytest"), "__path__")
+
+    if not _pytest_is_real:
+        # Install our stub modules only if pytest is not running
+        try:
+            from rustest import _pytest_stub
+
+            sys.modules["_pytest"] = _pytest_stub
+            sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch
+            sys.modules["_pytest.config"] = _pytest_stub.config
+            sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes
+            sys.modules["_pytest.nodes"] = _pytest_stub.nodes
+            sys.modules["_pytest.mark"] = _pytest_stub.mark
+            sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures
+            sys.modules["_pytest.assertion"] = _pytest_stub.assertion
+            sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite
+            sys.modules["_pytest.main"] = _pytest_stub.main
+        except ImportError as e:
+            # _pytest_stub not available (shouldn't happen in normal operation)
+            import warnings
+
+            warnings.warn(
+                (
+                    f"Failed to install _pytest stub modules: {e}. "
+                    "Tests that import from _pytest will fail. "
+                    "This is an internal rustest error - please report it."
+                ),
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 # Module-level version to match pytest

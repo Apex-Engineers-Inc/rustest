@@ -1125,6 +1125,120 @@ def mocker() -> Generator[MockerFixture, None, None]:
         m.stopall()
 
 
+@fixture(scope="session")
+def rustestconfig(request: Any) -> Any:
+    """
+    Session-scoped fixture that returns the rustest config object.
+
+    This provides access to rustest's configuration. When running in pytest-compat
+    mode, this fixture is also available as `pytestconfig` for compatibility.
+
+    **Supported:**
+        - rustestconfig.getoption(name, default=None): Get command-line option
+        - rustestconfig.getini(name): Get ini configuration value
+        - rustestconfig.rootpath: Root directory path
+        - rustestconfig.inipath: Config file path (always None in rustest)
+
+    **Limited Support:**
+        - rustestconfig.option: Namespace with common options
+        - rustestconfig.pluginmanager: Stub (minimal functionality)
+
+    Common usage:
+        def test_conditional(rustestconfig):
+            verbose = rustestconfig.getoption("verbose", default=0)
+            if verbose > 1:
+                print("Running in verbose mode")
+
+        @fixture
+        def needs_feature(rustestconfig):
+            mode = rustestconfig.getoption("assertmode", default="rewrite")
+            if mode != "rewrite":
+                pytest.skip("This test requires assertion rewrite")
+
+    Note:
+        In pytest-compat mode, this fixture is aliased as `pytestconfig` for
+        compatibility with existing pytest test suites.
+    """
+    # Import here to avoid circular dependency
+    from rustest.compat.pytest import Config
+
+    try:
+        import rustest._runtime_config as _runtime_config
+    except ModuleNotFoundError:
+        # Fallback for when rustest is not recognized as a package (e.g., during testing)
+        from . import _runtime_config
+
+    # Get actual runtime configuration
+    runtime_config = _runtime_config.get_runtime_config()
+
+    # Create Config object with runtime values
+    config = Config(
+        options=runtime_config.copy(),
+        ini_values={
+            "markers": [],
+            "python_files": ["test_*.py", "*_test.py"],
+            "python_classes": ["Test"],
+            "python_functions": ["test"],
+        },
+    )
+
+    return config
+
+
+@fixture(scope="session")
+def pytestconfig(rustestconfig: Any) -> Any:
+    """
+    Pytest compatibility fixture for accessing configuration.
+
+    **IMPORTANT:** This fixture is ONLY for pytest-compat mode.
+    Use `rustestconfig` for native rustest code.
+
+    When running without --pytest-compat, this fixture will raise an error
+    directing you to use rustestconfig instead.
+
+    **Supported:**
+        - pytestconfig.getoption(name, default=None): Get command-line option
+        - pytestconfig.getini(name): Get ini configuration value
+        - pytestconfig.rootpath: Root directory path
+        - pytestconfig.inipath: Config file path (always None)
+
+    Example (pytest compatibility):
+        def test_example(pytestconfig):
+            verbose = pytestconfig.getoption("verbose", default=0)
+
+        @pytest.fixture
+        def needs_assert_rewrite(pytestconfig):
+            option = pytestconfig.getoption("assertmode")
+            if option != "rewrite":
+                pytest.skip("assertion rewrite required")
+    """
+    # Check if pytest-compat mode is active using runtime config
+    # This is more reliable than path-based detection
+    try:
+        import rustest._runtime_config as _runtime_config
+    except ModuleNotFoundError:
+        # Fallback for when rustest is not recognized as a package (e.g., during testing)
+        from . import _runtime_config
+
+    if not _runtime_config.is_pytest_compat_mode():
+        raise RuntimeError(
+            (
+                "The 'pytestconfig' fixture is only available in pytest-compat mode.\n\n"
+                "For native rustest code, use 'rustestconfig' instead:\n\n"
+                "  # Change this:\n"
+                "  def test_example(pytestconfig):\n"
+                "      verbose = pytestconfig.getoption('verbose')\n\n"
+                "  # To this:\n"
+                "  def test_example(rustestconfig):\n"
+                "      verbose = rustestconfig.getoption('verbose')\n\n"
+                "Or run with --pytest-compat flag:\n"
+                "  rustest --pytest-compat tests/"
+            )
+        )
+
+    return rustestconfig
+
+
 __all__ = [
     "Cache",
     "CaptureFixture",
@@ -1139,9 +1253,11 @@ __all__ = [
     "capfd",
     "mocker",
     "monkeypatch",
+    "pytestconfig",
+    "rustestconfig",
+    "request",
     "tmpdir",
     "tmpdir_factory",
     "tmp_path",
     "tmp_path_factory",
-    "request",
 ]
