@@ -64,9 +64,9 @@ impl PyPaths {
 ///    Returns the first ancestor directory without `__init__.py`. This avoids
 ///    namespace package conflicts where a directory name matches an installed package.
 ///    ```text
-///    /home/user/Pynite/   <- RETURNED (first dir without __init__.py)
-///      Pynite/            <- installed package (would be shadowed if we returned parent)
-///      Testing/           <- has __init__.py
+///    /home/user/mylib/    <- RETURNED (first dir without __init__.py)
+///      mylib/             <- installed package (would be shadowed if we returned parent)
+///      tests/             <- has __init__.py
 ///        __init__.py
 ///        test_foo.py
 ///    ```
