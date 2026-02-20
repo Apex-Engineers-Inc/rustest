@@ -281,10 +281,15 @@ pub fn discover_tests(
 
     // Load conftest fixtures (must be sequential due to Python GIL)
     let mut conftest_fixtures: HashMap<PathBuf, IndexMap<String, Fixture>> = HashMap::new();
+    let mut detected_pytest_fixtures: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for dir in &conftest_dirs {
         let conftest_path = dir.join("conftest.py");
         if conftest_path.is_file() && !conftest_fixtures.contains_key(dir) {
-            let fixtures = load_conftest_fixtures(py, &conftest_path, &module_ids)?;
+            let (fixtures, pytest_names) =
+                load_conftest_fixtures(py, &conftest_path, &module_ids, config.pytest_compat)?;
+            if !pytest_names.is_empty() {
+                detected_pytest_fixtures.push((conftest_path.clone(), pytest_names));
+            }
             conftest_fixtures.insert(dir.clone(), fixtures);
         }
     }
@@ -295,7 +300,14 @@ pub fn discover_tests(
     // Process test files sequentially (Python imports require GIL)
     for (file, file_type) in test_files {
         // Ensure parent conftest fixtures are loaded (they should already be, but check)
-        discover_parent_conftest_files(py, &file, &mut conftest_fixtures, &module_ids)?;
+        discover_parent_conftest_files(
+            py,
+            &file,
+            &mut conftest_fixtures,
+            &module_ids,
+            config.pytest_compat,
+            &mut detected_pytest_fixtures,
+        )?;
 
         match file_type {
             FileType::Python => {
@@ -359,6 +371,23 @@ pub fn discover_tests(
         emit_collection_completed(callback, files_collected, total_tests, collection_duration);
     }
 
+    // Emit warning about detected @pytest.fixture definitions
+    if !detected_pytest_fixtures.is_empty() {
+        eprintln!();
+        eprintln!("Warning: Found @pytest.fixture definitions that rustest cannot load natively:");
+        for (conftest_path, names) in &detected_pytest_fixtures {
+            eprintln!(
+                "  {}: {}",
+                to_relative_path(conftest_path),
+                names.join(", ")
+            );
+        }
+        eprintln!();
+        eprintln!("Tip: Run with --pytest-compat to use existing pytest fixtures, or migrate to @rustest.fixture.");
+        eprintln!("     See: https://rustest.dev/from-pytest/migration/");
+        eprintln!();
+    }
+
     Ok((modules, collection_errors))
 }
 
@@ -396,6 +425,8 @@ fn discover_parent_conftest_files(
     test_file: &Path,
     conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
     module_ids: &ModuleIdGenerator,
+    pytest_compat: bool,
+    detected_pytest_fixtures: &mut Vec<(PathBuf, Vec<String>)>,
 ) -> PyResult<()> {
     // Start from the test file's parent directory
     let mut current_dir = match test_file.parent() {
@@ -409,7 +440,11 @@ fn discover_parent_conftest_files(
         if conftest_path.is_file() {
             // Only load if we haven't already loaded it
             if !conftest_map.contains_key(current_dir) {
-                let fixtures = load_conftest_fixtures(py, &conftest_path, module_ids)?;
+                let (fixtures, pytest_names) =
+                    load_conftest_fixtures(py, &conftest_path, module_ids, pytest_compat)?;
+                if !pytest_names.is_empty() {
+                    detected_pytest_fixtures.push((conftest_path.clone(), pytest_names));
+                }
                 conftest_map.insert(current_dir.to_path_buf(), fixtures);
             }
         }
@@ -550,12 +585,58 @@ fn load_pytest_plugins_fixtures(
     Ok(())
 }
 
+/// Detect @pytest.fixture objects in a module dictionary.
+///
+/// Scans the module dict for objects that have the `_fixture_function_marker` attribute
+/// (set by pytest's @fixture decorator) but are NOT already rustest fixtures.
+/// Returns the names of any detected pytest fixtures.
+fn detect_pytest_fixtures(
+    module_dict: &Bound<'_, PyDict>,
+    function_type: &Bound<'_, PyAny>,
+) -> PyResult<Vec<String>> {
+    let mut pytest_fixture_names = Vec::new();
+
+    for (name_obj, value) in module_dict.iter() {
+        let name: String = match name_obj.extract() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        // Skip dunder names
+        if name.starts_with("__") {
+            continue;
+        }
+
+        // Skip objects that are already rustest fixtures
+        if is_fixture(&value).unwrap_or(false) {
+            continue;
+        }
+
+        // Skip regular functions (they're not pytest fixtures)
+        if is_function(&value, function_type).unwrap_or(false) {
+            continue;
+        }
+
+        // Check for _fixture_function_marker attribute (set by pytest's @fixture)
+        if value.hasattr("_fixture_function_marker").unwrap_or(false) {
+            pytest_fixture_names.push(name);
+        }
+    }
+
+    pytest_fixture_names.sort();
+    Ok(pytest_fixture_names)
+}
+
 /// Load fixtures from a conftest.py file.
+///
+/// When `pytest_compat` is false, also detects @pytest.fixture objects and returns
+/// their names so the caller can emit a warning.
 fn load_conftest_fixtures(
     py: Python<'_>,
     path: &Path,
     module_ids: &ModuleIdGenerator,
-) -> PyResult<IndexMap<String, Fixture>> {
+    pytest_compat: bool,
+) -> PyResult<(IndexMap<String, Fixture>, Vec<String>)> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
@@ -565,6 +646,13 @@ fn load_conftest_fixtures(
     let function_type = types_module.getattr("FunctionType")?;
 
     let mut fixtures = IndexMap::new();
+
+    // Detect pytest fixtures when NOT in pytest_compat mode
+    let detected_pytest_fixtures = if !pytest_compat {
+        detect_pytest_fixtures(&module_dict, &function_type)?
+    } else {
+        Vec::new()
+    };
 
     // Load fixtures from external modules
     // Priority: rustest_fixtures (preferred) > pytest_plugins (compatibility)
@@ -629,7 +717,7 @@ fn load_conftest_fixtures(
         }
     }
 
-    Ok(fixtures)
+    Ok((fixtures, detected_pytest_fixtures))
 }
 
 /// Merge conftest fixtures for a test file with the file's own fixtures.
