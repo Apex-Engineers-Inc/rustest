@@ -243,3 +243,72 @@ def test_uses_local(local_fixture):
         assert "Found @pytest.fixture" not in output, (
             f"Did not expect pytest fixture warning in compat mode:\n{output}"
         )
+
+    @pytest.fixture
+    def pytest_conftest_project(tmp_path):
+        """Project with @pytest.fixture in conftest.py and a test that requests one."""
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+
+        (tests_dir / "conftest.py").write_text(
+            """
+import pytest
+
+@pytest.fixture
+def db_session():
+    return {"connected": True}
+"""
+        )
+
+        # This test requests db_session which is a @pytest.fixture — rustest won't load it
+        (tests_dir / "test_needs_pytest.py").write_text(
+            """
+def test_needs_db(db_session):
+    assert db_session["connected"]
+"""
+        )
+        return tests_dir
+
+    def test_unknown_fixture_error_suggests_compat_when_pytest_fixtures_present(
+        pytest_conftest_project,
+    ):
+        """Unknown fixture error includes --pytest-compat hint when pytest fixtures detected."""
+        result = _run_rustest(pytest_conftest_project)
+
+        output = result.stdout + result.stderr
+
+        # Should have the standard unknown fixture error
+        assert "Unknown fixture" in output, f"Expected Unknown fixture error:\n{output}"
+
+        # The error itself should mention --pytest-compat
+        assert "--pytest-compat" in output, (
+            f"Expected --pytest-compat hint in error output:\n{output}"
+        )
+
+    def test_unknown_fixture_error_no_hint_when_no_pytest_fixtures(tmp_path):
+        """Unknown fixture error does NOT add hint when project has no pytest fixtures."""
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+
+        (tests_dir / "test_pure.py").write_text(
+            """
+from rustest import fixture
+
+@fixture
+def my_fixture():
+    return 42
+
+def test_uses_unknown(nonexistent_fixture):
+    pass
+"""
+        )
+
+        result = _run_rustest(tests_dir)
+        output = result.stdout + result.stderr
+
+        assert "Unknown fixture" in output, f"Expected Unknown fixture error:\n{output}"
+
+        # Should NOT add the pytest hint since no pytest fixtures exist
+        assert "Run with --pytest-compat" not in output, (
+            f"Should not suggest compat mode for pure rustest project:\n{output}"
+        )

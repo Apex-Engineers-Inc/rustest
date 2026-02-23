@@ -870,7 +870,11 @@ fn collect_from_file(
     let (module_fixtures, tests, pytest_names) =
         inspect_module(py, path, &module_dict, config.pytest_compat)?;
 
-    // Propagate any detected @pytest.fixture names to the caller for warning emission
+    // Propagate any detected @pytest.fixture names to the caller for warning emission.
+    // Also remember whether this module (or any conftest loaded so far) has pytest fixtures
+    // so that "Unknown fixture" errors can include a targeted --pytest-compat hint.
+    let module_has_pytest_fixtures =
+        !pytest_names.is_empty() || !detected_pytest_fixtures.is_empty();
     if !pytest_names.is_empty() {
         detected_pytest_fixtures.push((path.to_path_buf(), pytest_names));
     }
@@ -896,7 +900,12 @@ fn collect_from_file(
         return Ok(None);
     }
 
-    Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
+    Ok(Some(TestModule::with_pytest_fixtures(
+        path.to_path_buf(),
+        fixtures,
+        tests,
+        module_has_pytest_fixtures,
+    )))
 }
 
 /// Parse markdown file and extract Python code blocks as tests.
