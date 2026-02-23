@@ -312,3 +312,41 @@ def test_uses_unknown(nonexistent_fixture):
         assert "Run with --pytest-compat" not in output, (
             f"Should not suggest compat mode for pure rustest project:\n{output}"
         )
+
+    @pytest.fixture
+    def pytest_import_only_project(tmp_path):
+        """Project that imports pytest but only uses pytest.raises (no @pytest.fixture)."""
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+
+        (tests_dir / "test_raises.py").write_text(
+            """
+import pytest
+
+def test_raises_error():
+    with pytest.raises(ValueError):
+        raise ValueError("expected")
+"""
+        )
+        return tests_dir
+
+    def test_suggests_compat_when_import_pytest_found(pytest_import_only_project):
+        """When files import pytest (even without @pytest.fixture), suggest --pytest-compat."""
+        result = _run_rustest(pytest_import_only_project)
+
+        output = result.stdout + result.stderr
+
+        assert "--pytest-compat" in output, (
+            f"Expected --pytest-compat suggestion when import pytest found:\n{output}"
+        )
+
+    def test_no_note_in_compat_mode_for_import_pytest(pytest_import_only_project):
+        """In --pytest-compat mode, no import-pytest note needed."""
+        result = _run_rustest(pytest_import_only_project, "--pytest-compat")
+
+        output = result.stdout + result.stderr
+
+        # In compat mode, pytest.raises works natively
+        assert result.returncode == 0, (
+            f"Expected success with pytest.raises in compat mode:\n{output}"
+        )

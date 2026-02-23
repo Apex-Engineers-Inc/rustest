@@ -232,6 +232,60 @@ fn discover_conftest_paths_parallel(paths: &[PathBuf]) -> HashSet<PathBuf> {
     conftest_paths
 }
 
+/// Fast text scan for `import pytest` in Python files.
+///
+/// Reads files as text and scans for pytest import statements.
+/// This runs before Python module loading, so it catches pytest usage
+/// even in files that fail to import.
+///
+/// Returns true if any file contains a pytest import.
+fn detect_pytest_imports(files: &[(PathBuf, FileType)], conftest_dirs: &HashSet<PathBuf>) -> bool {
+    // Check conftest files first
+    for dir in conftest_dirs {
+        let conftest = dir.join("conftest.py");
+        if conftest.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&conftest) {
+                if file_contains_pytest_import(&content) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Check test files — stop at first match
+    for (file, file_type) in files {
+        if matches!(file_type, FileType::Python) {
+            if let Ok(content) = std::fs::read_to_string(file) {
+                if file_contains_pytest_import(&content) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if file content contains a direct pytest import (not from rustest or compat).
+fn file_contains_pytest_import(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Skip comments
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        // Match: `import pytest` or `from pytest import ...` or `from pytest.something`
+        // But NOT: from rustest.compat.pytest (internal shim)
+        if trimmed == "import pytest"
+            || trimmed.starts_with("import pytest ")
+            || trimmed.starts_with("import pytest;")
+            || (trimmed.starts_with("from pytest") && !trimmed.contains("rustest"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Discover tests for the provided paths.
 ///
 /// The return type is intentionally high level: the caller receives a list of
@@ -296,6 +350,14 @@ pub fn discover_tests(
 
     // OPTIMIZATION: Discover all test files in parallel
     let test_files = discover_files_parallel(&canonical_paths, &py_glob, md_glob.as_ref());
+
+    // Fast text scan for pytest imports — done before Python module loading
+    if !config.pytest_compat && detect_pytest_imports(&test_files, &conftest_dirs) {
+        eprintln!(
+            "Note: Detected `import pytest` in your test files.\n\
+             Consider running with --pytest-compat for full pytest compatibility.\n"
+        );
+    }
 
     // Process test files sequentially (Python imports require GIL)
     for (file, file_type) in test_files {
