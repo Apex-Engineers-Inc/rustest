@@ -350,3 +350,16 @@ def test_raises_error():
         assert result.returncode == 0, (
             f"Expected success with pytest.raises in compat mode:\n{output}"
         )
+
+    def test_help_mentions_pytest_compat_migration(tmp_path):
+        """The --help output describes --pytest-compat's migration purpose."""
+        python_path = sys.executable
+        cmd = [python_path, "-m", "rustest", "--help"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        output = result.stdout
+
+        assert "--pytest-compat" in output, f"Expected --pytest-compat in help:\n{output}"
+        assert "migration" in output.lower(), (
+            f"Expected 'migration' mention in --pytest-compat help:\n{output}"
+        )
