@@ -311,7 +311,14 @@ pub fn discover_tests(
 
         match file_type {
             FileType::Python => {
-                match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures) {
+                match collect_from_file(
+                    py,
+                    &file,
+                    config,
+                    &module_ids,
+                    &conftest_fixtures,
+                    &mut detected_pytest_fixtures,
+                ) {
                     Ok(Some(module)) => {
                         let tests_in_file = module.tests.len();
                         modules.push(module);
@@ -375,12 +382,8 @@ pub fn discover_tests(
     if !detected_pytest_fixtures.is_empty() {
         eprintln!();
         eprintln!("Warning: Found @pytest.fixture definitions that rustest cannot load natively:");
-        for (conftest_path, names) in &detected_pytest_fixtures {
-            eprintln!(
-                "  {}: {}",
-                to_relative_path(conftest_path),
-                names.join(", ")
-            );
+        for (file_path, names) in &detected_pytest_fixtures {
+            eprintln!("  {}: {}", to_relative_path(file_path), names.join(", "));
         }
         eprintln!();
         eprintln!("Tip: Run with --pytest-compat to use existing pytest fixtures, or migrate to @rustest.fixture.");
@@ -858,12 +861,19 @@ fn collect_from_file(
     config: &RunConfiguration,
     module_ids: &ModuleIdGenerator,
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+    detected_pytest_fixtures: &mut Vec<(PathBuf, Vec<String>)>,
 ) -> PyResult<Option<TestModule>> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let (module_fixtures, tests) = inspect_module(py, path, &module_dict, config.pytest_compat)?;
+    let (module_fixtures, tests, pytest_names) =
+        inspect_module(py, path, &module_dict, config.pytest_compat)?;
+
+    // Propagate any detected @pytest.fixture names to the caller for warning emission
+    if !pytest_names.is_empty() {
+        detected_pytest_fixtures.push((path.to_path_buf(), pytest_names));
+    }
 
     // Merge conftest fixtures with the module's own fixtures
     let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
@@ -1092,13 +1102,19 @@ fn test_matches_pattern(test_case: &TestCase, pattern: &str) -> bool {
             .contains(&pattern_lower)
 }
 
+/// Return type for `inspect_module`: (fixtures, test cases, detected pytest fixture names).
+type InspectModuleResult = (IndexMap<String, Fixture>, Vec<TestCase>, Vec<String>);
+
 /// Inspect the module dictionary and extract fixtures/tests.
+///
+/// When `pytest_compat` is false, also detects @pytest.fixture objects in the module
+/// and returns their names as a third element so the caller can emit a warning.
 fn inspect_module(
     py: Python<'_>,
     path: &Path,
     module_dict: &Bound<'_, PyDict>,
     pytest_compat: bool,
-) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
+) -> PyResult<InspectModuleResult> {
     // OPTIMIZATION: Cache type objects once for the entire module
     // This is much faster than importing types on every iteration
     let types_module = py.import("types")?;
@@ -1108,6 +1124,7 @@ fn inspect_module(
 
     let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
+    let mut pytest_fixture_names: Vec<String> = Vec::new();
 
     for (name_obj, value) in module_dict.iter() {
         let name: String = name_obj.extract()?;
@@ -1238,10 +1255,17 @@ fn inspect_module(
                 }
                 tests.extend(class_tests);
             }
+        } else if !pytest_compat
+            && !name.starts_with("__")
+            && value.hasattr("_fixture_function_marker").unwrap_or(false)
+        {
+            pytest_fixture_names.push(name.clone());
         }
     }
 
-    Ok((fixtures, tests))
+    pytest_fixture_names.sort();
+
+    Ok((fixtures, tests, pytest_fixture_names))
 }
 
 /// Recursively collect all parametrized fixtures in a fixture's dependency chain.

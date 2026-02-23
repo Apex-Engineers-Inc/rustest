@@ -197,3 +197,49 @@ def test_greeting(greeting):
         assert result.returncode == 0, (
             f"Expected tests to pass:\nstdout: {result.stdout}\nstderr: {stderr}"
         )
+
+    @pytest.fixture
+    def inline_pytest_fixture_project(tmp_path):
+        """Project with @pytest.fixture defined in the test file itself."""
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+
+        (tests_dir / "test_inline.py").write_text(
+            """
+import pytest
+
+@pytest.fixture
+def local_fixture():
+    return "local"
+
+def test_uses_local(local_fixture):
+    assert local_fixture == "local"
+"""
+        )
+        return tests_dir
+
+    def test_detects_pytest_fixtures_in_test_files(inline_pytest_fixture_project):
+        """When test files use @pytest.fixture, suggest --pytest-compat."""
+        result = _run_rustest(inline_pytest_fixture_project)
+
+        output = result.stdout + result.stderr
+
+        assert "--pytest-compat" in output, (
+            f"Expected --pytest-compat suggestion for inline fixtures:\n{output}"
+        )
+        assert "local_fixture" in output, (
+            f"Expected 'local_fixture' name in warning output:\n{output}"
+        )
+
+    def test_no_warning_for_inline_fixtures_in_compat_mode(inline_pytest_fixture_project):
+        """In compat mode, inline @pytest.fixture works and no warning shown."""
+        result = _run_rustest(inline_pytest_fixture_project, "--pytest-compat")
+
+        output = result.stdout + result.stderr
+
+        assert result.returncode == 0, (
+            f"Expected success with inline fixtures in compat mode:\n{output}"
+        )
+        assert "Found @pytest.fixture" not in output, (
+            f"Did not expect pytest fixture warning in compat mode:\n{output}"
+        )
