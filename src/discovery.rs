@@ -667,7 +667,7 @@ fn load_pytest_plugins_fixtures(
 
 /// Detect @pytest.fixture objects in a module dictionary.
 ///
-/// Scans the module dict for objects that have the `_fixture_function_marker` attribute
+/// Scans the module dict for objects that have the `_pytestfixturefunction` attribute
 /// (set by pytest's @fixture decorator). Skips dunder names, rustest fixtures, and plain
 /// functions — pytest's @fixture wraps callables into `FixtureFunctionMarker` objects
 /// that are not `types.FunctionType`. Returns the sorted names of any detected pytest fixtures.
@@ -698,8 +698,8 @@ fn detect_pytest_fixtures(
             continue;
         }
 
-        // Check for _fixture_function_marker attribute (set by pytest's @fixture)
-        if value.hasattr("_fixture_function_marker").unwrap_or(false) {
+        // Check for _pytestfixturefunction attribute (set by pytest's @fixture)
+        if value.hasattr("_pytestfixturefunction").unwrap_or(false) {
             pytest_fixture_names.push(name);
         }
     }
