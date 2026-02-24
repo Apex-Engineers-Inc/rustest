@@ -11,7 +11,7 @@ rustest --help
 ```
 usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [--no-capture]
                [-v] [--ascii] [--color {auto,always,never}] [--no-codeblocks]
-               [--lf] [--ff] [-x]
+               [--lf] [--ff] [-x] [--pytest-compat]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -41,6 +41,9 @@ options:
   --ff, --failed-first  Run previously failed tests first, then all other
                         tests.
   -x, --exitfirst       Exit instantly on first error or failed test.
+  --pytest-compat       Enable pytest compatibility mode for migrating
+                        existing pytest test suites. Intercepts 'import
+                        pytest' so existing tests run without code changes.
 
 ```
 
@@ -455,6 +458,7 @@ rustest [OPTIONS] [PATHS...]
 | `--lf, --last-failed` | Rerun only tests that failed in the last run |
 | `--ff, --failed-first` | Run failed tests first, then all other tests |
 | `-x, --exitfirst` | Exit instantly on first error or failed test |
+| `--pytest-compat` | Enable pytest compatibility mode. Intercepts `import pytest` so existing pytest tests run without code changes. See [Pytest Compatibility](../advanced/pytest-compat.md) |
 | `-h, --help` | Show help message and exit |
 
 ## Exit Codes
