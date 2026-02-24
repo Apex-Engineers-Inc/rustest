@@ -143,7 +143,7 @@ We use `poe` (poethepoet) as a task runner:
 | `poe lint` | Check Python code style | Before committing |
 | `poe typecheck` | Check Python types | Before committing |
 | `poe fmt` | Format Rust code | Before committing Rust changes |
-| `poe unit` | Run example test suite | Verify end-to-end functionality |
+| `poe tests` | Run integration and example tests | Verify end-to-end functionality |
 | `cargo test` | Run Rust tests | After changing Rust code |
 | `cargo check` | Fast-check Rust compiles | While developing Rust code |
 
@@ -243,14 +243,17 @@ poe fmt
 ### Python Tests
 
 ```bash
-# Run all Python tests
+# Run Python unit tests
 poe pytests
 
+# Run integration and example tests
+poe tests
+
 # Run a specific test file
-python -m unittest python.tests.test_decorators
+uv run rustest python/tests/test_decorators.py -v
 
 # Run a specific test
-python -m unittest python.tests.test_decorators.FixtureDecoratorTests.test_fixture_marks_callable
+uv run rustest python/tests/test_decorators.py -v -k test_fixture_marks_callable
 ```
 
 ### Rust Tests
