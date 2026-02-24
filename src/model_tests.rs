@@ -91,6 +91,26 @@ mod tests {
         assert_eq!(module.path, PathBuf::from("/test/module.py"));
         assert!(module.fixtures.is_empty());
         assert!(module.tests.is_empty());
+        assert!(!module.has_pytest_fixtures);
+    }
+
+    #[test]
+    fn test_test_module_with_pytest_fixtures() {
+        let module = TestModule::with_pytest_fixtures(
+            PathBuf::from("/test/module.py"),
+            IndexMap::new(),
+            vec![],
+            true,
+        );
+        assert!(module.has_pytest_fixtures);
+
+        let module_without = TestModule::with_pytest_fixtures(
+            PathBuf::from("/test/module.py"),
+            IndexMap::new(),
+            vec![],
+            false,
+        );
+        assert!(!module_without.has_pytest_fixtures);
     }
 
     #[test]

@@ -281,8 +281,8 @@ pub struct TestModule {
     pub path: PathBuf,
     pub fixtures: IndexMap<String, Fixture>,
     pub tests: Vec<TestCase>,
-    /// True when this module (or its conftest files) contain @pytest.fixture definitions
-    /// that rustest cannot load natively. Used to enrich "Unknown fixture" error messages.
+    /// True when this module or any conftest file in its ancestor chain contains
+    /// @pytest.fixture definitions. Used to enrich "Unknown fixture" error messages.
     pub has_pytest_fixtures: bool,
 }
 

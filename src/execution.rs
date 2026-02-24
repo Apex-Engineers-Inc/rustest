@@ -1549,8 +1549,8 @@ struct FixtureResolver<'py> {
     test_nodeid: String,
     /// Marks attached to the current test
     test_marks: Vec<Mark>,
-    /// True when the module (or its conftest files) contain @pytest.fixture definitions.
-    /// Used to enrich "Unknown fixture" error messages with a --pytest-compat hint.
+    /// True when the module or any conftest file in its ancestor chain contains
+    /// @pytest.fixture definitions. Used to enrich "Unknown fixture" error messages.
     has_pytest_fixtures: bool,
 }
 
