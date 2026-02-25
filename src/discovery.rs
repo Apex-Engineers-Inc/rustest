@@ -232,6 +232,95 @@ fn discover_conftest_paths_parallel(paths: &[PathBuf]) -> HashSet<PathBuf> {
     conftest_paths
 }
 
+/// Fast text scan for `import pytest` in Python files.
+///
+/// Reads files as text and scans for pytest import statements.
+/// This runs before Python module loading, so it catches pytest usage
+/// even in files that fail to import.
+///
+/// Returns true if any file contains a pytest import.
+fn detect_pytest_imports(files: &[(PathBuf, FileType)], conftest_dirs: &HashSet<PathBuf>) -> bool {
+    // Check conftest files first
+    for dir in conftest_dirs {
+        let conftest = dir.join("conftest.py");
+        if conftest.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&conftest) {
+                if file_contains_pytest_import(&content) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Check test files — stop at first match
+    for (file, file_type) in files {
+        if matches!(file_type, FileType::Python) {
+            if let Ok(content) = std::fs::read_to_string(file) {
+                if file_contains_pytest_import(&content) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Heuristic check for direct `import pytest` or `from pytest import ...` statements.
+///
+/// Matches `from pytest import ...` and `from pytest.something import ...` but NOT
+/// third-party pytest plugins like `from pytest_mock import ...`.
+/// Excludes lines referencing rustest's internal compatibility shim.
+/// Skips content inside triple-quoted strings (docstrings) to avoid false positives.
+fn file_contains_pytest_import(content: &str) -> bool {
+    let mut in_triple_double = false;
+    let mut in_triple_single = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Track triple-quoted string boundaries.
+        // Count occurrences on this line; an odd count toggles the state.
+        if !in_triple_single {
+            let count = trimmed.matches(r#"""""#).count();
+            if count % 2 == 1 {
+                in_triple_double = !in_triple_double;
+            }
+        }
+        if !in_triple_double {
+            let count = trimmed.matches("'''").count();
+            if count % 2 == 1 {
+                in_triple_single = !in_triple_single;
+            }
+        }
+
+        // Skip lines inside triple-quoted strings
+        if in_triple_double || in_triple_single {
+            continue;
+        }
+
+        // Skip comments
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        // Match: `import pytest` (with optional trailing comment/semicolon)
+        if trimmed == "import pytest"
+            || trimmed.starts_with("import pytest ")
+            || trimmed.starts_with("import pytest;")
+        {
+            return true;
+        }
+        // Match: `from pytest import ...` or `from pytest.something import ...`
+        // but NOT: `from pytest_mock import ...` (third-party plugin)
+        // and NOT: `from rustest.compat.pytest import ...` (internal shim)
+        if (trimmed.starts_with("from pytest ") || trimmed.starts_with("from pytest."))
+            && !trimmed.contains("rustest")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Discover tests for the provided paths.
 ///
 /// The return type is intentionally high level: the caller receives a list of
@@ -281,10 +370,15 @@ pub fn discover_tests(
 
     // Load conftest fixtures (must be sequential due to Python GIL)
     let mut conftest_fixtures: HashMap<PathBuf, IndexMap<String, Fixture>> = HashMap::new();
+    let mut detected_pytest_fixtures: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for dir in &conftest_dirs {
         let conftest_path = dir.join("conftest.py");
         if conftest_path.is_file() && !conftest_fixtures.contains_key(dir) {
-            let fixtures = load_conftest_fixtures(py, &conftest_path, &module_ids)?;
+            let (fixtures, pytest_names) =
+                load_conftest_fixtures(py, &conftest_path, &module_ids, config.pytest_compat)?;
+            if !pytest_names.is_empty() {
+                detected_pytest_fixtures.push((conftest_path.clone(), pytest_names));
+            }
             conftest_fixtures.insert(dir.clone(), fixtures);
         }
     }
@@ -292,14 +386,34 @@ pub fn discover_tests(
     // OPTIMIZATION: Discover all test files in parallel
     let test_files = discover_files_parallel(&canonical_paths, &py_glob, md_glob.as_ref());
 
+    // Fast text scan for pytest imports — done before Python module loading.
+    // We defer emitting the message until after module processing so that the
+    // more specific "@pytest.fixture" warning takes priority when both apply.
+    let has_pytest_imports =
+        !config.pytest_compat && detect_pytest_imports(&test_files, &conftest_dirs);
+
     // Process test files sequentially (Python imports require GIL)
     for (file, file_type) in test_files {
         // Ensure parent conftest fixtures are loaded (they should already be, but check)
-        discover_parent_conftest_files(py, &file, &mut conftest_fixtures, &module_ids)?;
+        discover_parent_conftest_files(
+            py,
+            &file,
+            &mut conftest_fixtures,
+            &module_ids,
+            config.pytest_compat,
+            &mut detected_pytest_fixtures,
+        )?;
 
         match file_type {
             FileType::Python => {
-                match collect_from_file(py, &file, config, &module_ids, &conftest_fixtures) {
+                match collect_from_file(
+                    py,
+                    &file,
+                    config,
+                    &module_ids,
+                    &conftest_fixtures,
+                    &mut detected_pytest_fixtures,
+                ) {
                     Ok(Some(module)) => {
                         let tests_in_file = module.tests.len();
                         modules.push(module);
@@ -359,6 +473,27 @@ pub fn discover_tests(
         emit_collection_completed(callback, files_collected, total_tests, collection_duration);
     }
 
+    // Emit a single pytest-detection message.
+    // The detailed "@pytest.fixture" warning takes priority; the generic "import pytest"
+    // note is only shown as a fallback when no specific fixture definitions were found.
+    if !detected_pytest_fixtures.is_empty() {
+        eprintln!();
+        eprintln!("Warning: Found @pytest.fixture definitions that rustest cannot load natively:");
+        for (file_path, names) in &detected_pytest_fixtures {
+            eprintln!("  {}: {}", to_relative_path(file_path), names.join(", "));
+        }
+        eprintln!();
+        eprintln!("Tip: Run with --pytest-compat to use existing pytest fixtures, or migrate to @rustest.fixture.");
+        eprintln!("     Note: --pytest-compat may not support all pytest features (e.g., async fixtures, some plugins).");
+        eprintln!("     See: https://rustest.dev/from-pytest/migration/");
+        eprintln!();
+    } else if has_pytest_imports {
+        eprintln!(
+            "Note: Detected `import pytest` in your test files.\n\
+             Consider running with --pytest-compat for full pytest compatibility.\n"
+        );
+    }
+
     Ok((modules, collection_errors))
 }
 
@@ -396,6 +531,8 @@ fn discover_parent_conftest_files(
     test_file: &Path,
     conftest_map: &mut HashMap<PathBuf, IndexMap<String, Fixture>>,
     module_ids: &ModuleIdGenerator,
+    pytest_compat: bool,
+    detected_pytest_fixtures: &mut Vec<(PathBuf, Vec<String>)>,
 ) -> PyResult<()> {
     // Start from the test file's parent directory
     let mut current_dir = match test_file.parent() {
@@ -409,7 +546,11 @@ fn discover_parent_conftest_files(
         if conftest_path.is_file() {
             // Only load if we haven't already loaded it
             if !conftest_map.contains_key(current_dir) {
-                let fixtures = load_conftest_fixtures(py, &conftest_path, module_ids)?;
+                let (fixtures, pytest_names) =
+                    load_conftest_fixtures(py, &conftest_path, module_ids, pytest_compat)?;
+                if !pytest_names.is_empty() {
+                    detected_pytest_fixtures.push((conftest_path.clone(), pytest_names));
+                }
                 conftest_map.insert(current_dir.to_path_buf(), fixtures);
             }
         }
@@ -550,12 +691,62 @@ fn load_pytest_plugins_fixtures(
     Ok(())
 }
 
-/// Load fixtures from a conftest.py file.
+/// Detect @pytest.fixture objects in a module dictionary.
+///
+/// Scans the module dict for objects that have the `_pytestfixturefunction` attribute
+/// (set by pytest's @fixture decorator). Skips dunder names, rustest fixtures, and plain
+/// functions — pytest's @fixture wraps callables into `FixtureFunctionMarker` objects
+/// that are not `types.FunctionType`. Returns the sorted names of any detected pytest fixtures.
+fn detect_pytest_fixtures(
+    module_dict: &Bound<'_, PyDict>,
+    function_type: &Bound<'_, PyAny>,
+) -> PyResult<Vec<String>> {
+    let mut pytest_fixture_names = Vec::new();
+
+    for (name_obj, value) in module_dict.iter() {
+        let name: String = name_obj.extract()?;
+
+        // Skip dunder names
+        if name.starts_with("__") {
+            continue;
+        }
+
+        // Skip objects that are already rustest fixtures
+        if is_fixture(&value)? {
+            continue;
+        }
+
+        // Skip regular functions (they're not pytest fixtures)
+        if is_function(&value, function_type)? {
+            continue;
+        }
+
+        // Check for pytest fixture marker attributes (set by pytest's @fixture decorator).
+        // Older pytest versions use `_pytestfixturefunction`, newer versions (8.x+) use
+        // `_fixture_function_marker`. We check both for cross-version compatibility.
+        // hasattr can legitimately fail on exotic objects with broken descriptors,
+        // so we use unwrap_or(false) here since we're probing unknown objects.
+        if value.hasattr("_pytestfixturefunction").unwrap_or(false)
+            || value.hasattr("_fixture_function_marker").unwrap_or(false)
+        {
+            pytest_fixture_names.push(name);
+        }
+    }
+
+    pytest_fixture_names.sort();
+    Ok(pytest_fixture_names)
+}
+
+/// Load fixtures from a conftest.py file, optionally detecting unrecognized @pytest.fixture objects.
+///
+/// When `pytest_compat` is false, also detects @pytest.fixture objects and returns
+/// their names so the caller can emit a warning.
 fn load_conftest_fixtures(
     py: Python<'_>,
     path: &Path,
     module_ids: &ModuleIdGenerator,
-) -> PyResult<IndexMap<String, Fixture>> {
+    pytest_compat: bool,
+) -> PyResult<(IndexMap<String, Fixture>, Vec<String>)> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
@@ -565,6 +756,13 @@ fn load_conftest_fixtures(
     let function_type = types_module.getattr("FunctionType")?;
 
     let mut fixtures = IndexMap::new();
+
+    // Detect pytest fixtures when NOT in pytest_compat mode
+    let detected_pytest_fixtures = if !pytest_compat {
+        detect_pytest_fixtures(&module_dict, &function_type)?
+    } else {
+        Vec::new()
+    };
 
     // Load fixtures from external modules
     // Priority: rustest_fixtures (preferred) > pytest_plugins (compatibility)
@@ -629,7 +827,7 @@ fn load_conftest_fixtures(
         }
     }
 
-    Ok(fixtures)
+    Ok((fixtures, detected_pytest_fixtures))
 }
 
 /// Merge conftest fixtures for a test file with the file's own fixtures.
@@ -770,12 +968,30 @@ fn collect_from_file(
     config: &RunConfiguration,
     module_ids: &ModuleIdGenerator,
     conftest_map: &HashMap<PathBuf, IndexMap<String, Fixture>>,
+    detected_pytest_fixtures: &mut Vec<(PathBuf, Vec<String>)>,
 ) -> PyResult<Option<TestModule>> {
     let (module_name, package_name) = infer_module_names(path, module_ids.next());
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let (module_fixtures, tests) = inspect_module(py, path, &module_dict, config.pytest_compat)?;
+    let (module_fixtures, tests, pytest_names) =
+        inspect_module(py, path, &module_dict, config.pytest_compat)?;
+
+    // Propagate any detected @pytest.fixture names to the caller for warning emission.
+    // Check whether this module itself or any conftest in its ancestor chain has pytest
+    // fixtures, so that "Unknown fixture" errors can include a targeted --pytest-compat hint.
+    let ancestors_have_pytest = detected_pytest_fixtures.iter().any(|(detected_path, _)| {
+        // Only consider conftest.py files for ancestor chain detection,
+        // not peer test files that happen to have pytest fixtures.
+        detected_path
+            .file_name()
+            .is_some_and(|f| f == "conftest.py")
+            && path.starts_with(detected_path.parent().unwrap_or(detected_path))
+    });
+    let module_has_pytest_fixtures = !pytest_names.is_empty() || ancestors_have_pytest;
+    if !pytest_names.is_empty() {
+        detected_pytest_fixtures.push((path.to_path_buf(), pytest_names));
+    }
 
     // Merge conftest fixtures with the module's own fixtures
     let fixtures = merge_conftest_fixtures(py, path, module_fixtures, conftest_map)?;
@@ -798,7 +1014,12 @@ fn collect_from_file(
         return Ok(None);
     }
 
-    Ok(Some(TestModule::new(path.to_path_buf(), fixtures, tests)))
+    Ok(Some(TestModule::with_pytest_fixtures(
+        path.to_path_buf(),
+        fixtures,
+        tests,
+        module_has_pytest_fixtures,
+    )))
 }
 
 /// Parse markdown file and extract Python code blocks as tests.
@@ -1004,13 +1225,19 @@ fn test_matches_pattern(test_case: &TestCase, pattern: &str) -> bool {
             .contains(&pattern_lower)
 }
 
+/// Return type for `inspect_module`: (fixtures, test cases, detected pytest fixture names).
+type InspectModuleResult = (IndexMap<String, Fixture>, Vec<TestCase>, Vec<String>);
+
 /// Inspect the module dictionary and extract fixtures/tests.
+///
+/// When `pytest_compat` is false, also detects @pytest.fixture objects in the module
+/// and returns their names as a third element so the caller can emit a warning.
 fn inspect_module(
     py: Python<'_>,
     path: &Path,
     module_dict: &Bound<'_, PyDict>,
     pytest_compat: bool,
-) -> PyResult<(IndexMap<String, Fixture>, Vec<TestCase>)> {
+) -> PyResult<InspectModuleResult> {
     // OPTIMIZATION: Cache type objects once for the entire module
     // This is much faster than importing types on every iteration
     let types_module = py.import("types")?;
@@ -1020,6 +1247,7 @@ fn inspect_module(
 
     let mut fixtures = IndexMap::new();
     let mut tests = Vec::new();
+    let mut pytest_fixture_names: Vec<String> = Vec::new();
 
     for (name_obj, value) in module_dict.iter() {
         let name: String = name_obj.extract()?;
@@ -1153,7 +1381,14 @@ fn inspect_module(
         }
     }
 
-    Ok((fixtures, tests))
+    // Detect pytest fixtures using the shared function (same guards as conftest detection:
+    // skips dunders, rustest fixtures, and plain functions before checking the marker).
+    if !pytest_compat {
+        let detected = detect_pytest_fixtures(module_dict, &function_type)?;
+        pytest_fixture_names.extend(detected);
+    }
+
+    Ok((fixtures, tests, pytest_fixture_names))
 }
 
 /// Recursively collect all parametrized fixtures in a fixture's dependency chain.
@@ -2219,4 +2454,165 @@ fn apply_last_failed_filter(
     modules.retain(|m| !m.tests.is_empty());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_contains_pytest_import;
+
+    #[test]
+    fn detects_import_pytest() {
+        assert!(file_contains_pytest_import("import pytest\n"));
+    }
+
+    #[test]
+    fn detects_import_pytest_with_trailing_comment() {
+        assert!(file_contains_pytest_import(
+            "import pytest  # type: ignore\n"
+        ));
+    }
+
+    #[test]
+    fn detects_import_pytest_with_semicolon() {
+        assert!(file_contains_pytest_import("import pytest; import os\n"));
+    }
+
+    #[test]
+    fn detects_from_pytest_import() {
+        assert!(file_contains_pytest_import(
+            "from pytest import fixture, raises\n"
+        ));
+    }
+
+    #[test]
+    fn detects_from_pytest_submodule() {
+        assert!(file_contains_pytest_import(
+            "from pytest.mark import parametrize\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_pytest_plugin_imports() {
+        assert!(!file_contains_pytest_import(
+            "from pytest_mock import mocker\n"
+        ));
+        assert!(!file_contains_pytest_import(
+            "from pytest_cov import plugin\n"
+        ));
+        assert!(!file_contains_pytest_import(
+            "from pytest_asyncio import fixture\n"
+        ));
+        assert!(!file_contains_pytest_import(
+            "from pytest_bdd import scenario\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_rustest_compat_import() {
+        assert!(!file_contains_pytest_import(
+            "from rustest.compat.pytest import fixture\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_commented_import() {
+        assert!(!file_contains_pytest_import("# import pytest\n"));
+        assert!(!file_contains_pytest_import(
+            "  # from pytest import fixture\n"
+        ));
+    }
+
+    #[test]
+    fn empty_file_returns_false() {
+        assert!(!file_contains_pytest_import(""));
+    }
+
+    #[test]
+    fn comments_only_returns_false() {
+        assert!(!file_contains_pytest_import(
+            "# just a comment\n# another\n"
+        ));
+    }
+
+    #[test]
+    fn detects_indented_import() {
+        // Indented imports (e.g., inside if TYPE_CHECKING) should still match
+        assert!(file_contains_pytest_import("    import pytest\n"));
+    }
+
+    #[test]
+    fn multiline_from_import() {
+        // Only the first line of a multiline from-import is checked
+        assert!(file_contains_pytest_import(
+            "from pytest import (\n    raises,\n    fixture\n)\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_import_in_triple_quoted_docstring() {
+        // import pytest inside a docstring should NOT trigger detection
+        let content = r#"
+"""
+This module replaces import pytest with import rustest.
+"""
+
+def test_something():
+    assert True
+"#;
+        assert!(!file_contains_pytest_import(content));
+    }
+
+    #[test]
+    fn ignores_import_in_single_quote_docstring() {
+        // import pytest inside single-quote triple-quoted string
+        let content = "'''
+import pytest
+'''\n\ndef test_something():\n    assert True\n";
+        assert!(!file_contains_pytest_import(content));
+    }
+
+    #[test]
+    fn ignores_import_in_function_docstring() {
+        // import pytest inside a function docstring
+        let content = r#"
+def test_migration():
+    """
+    Tests that we migrated away from import pytest.
+    Use import rustest instead.
+    """
+    assert True
+"#;
+        assert!(!file_contains_pytest_import(content));
+    }
+
+    #[test]
+    fn detects_import_after_docstring() {
+        // Real import after a docstring should still be detected
+        let content = r#"
+"""Module docstring."""
+
+import pytest
+
+def test_something():
+    pass
+"#;
+        assert!(file_contains_pytest_import(content));
+    }
+
+    #[test]
+    fn ignores_import_in_multiline_string_assignment() {
+        // import pytest inside an assigned triple-quoted string
+        let content = r#"
+migration_guide = """
+To migrate, replace:
+    import pytest
+with:
+    import rustest
+"""
+
+def test_something():
+    assert True
+"#;
+        assert!(!file_contains_pytest_import(content));
+    }
 }

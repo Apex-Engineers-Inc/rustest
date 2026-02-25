@@ -108,7 +108,7 @@ poe pytests   # Run Python tests
 poe lint      # Check Python style
 poe typecheck # Type check Python
 poe fmt       # Format Rust
-poe unit      # Run example tests
+poe tests     # Run integration and example tests
 ```
 
 ## Code Style and Conventions

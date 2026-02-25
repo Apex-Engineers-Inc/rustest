@@ -281,6 +281,9 @@ pub struct TestModule {
     pub path: PathBuf,
     pub fixtures: IndexMap<String, Fixture>,
     pub tests: Vec<TestCase>,
+    /// True when this module or any conftest file in its ancestor chain contains
+    /// @pytest.fixture definitions. Used to enrich "Unknown fixture" error messages.
+    pub has_pytest_fixtures: bool,
 }
 
 impl TestModule {
@@ -289,6 +292,21 @@ impl TestModule {
             path,
             fixtures,
             tests,
+            has_pytest_fixtures: false,
+        }
+    }
+
+    pub fn with_pytest_fixtures(
+        path: PathBuf,
+        fixtures: IndexMap<String, Fixture>,
+        tests: Vec<TestCase>,
+        has_pytest_fixtures: bool,
+    ) -> Self {
+        Self {
+            path,
+            fixtures,
+            tests,
+            has_pytest_fixtures,
         }
     }
 }

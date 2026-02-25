@@ -755,6 +755,7 @@ fn run_async_batch<'a>(
             test_display_name,
             test_nodeid,
             test_marks.clone(),
+            module.has_pytest_fixtures,
         );
 
         // Populate fixture registry
@@ -1372,6 +1373,7 @@ fn execute_test_case(
         test_display_name,
         test_nodeid,
         test_marks.clone(),
+        module.has_pytest_fixtures,
     );
 
     let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
@@ -1547,6 +1549,9 @@ struct FixtureResolver<'py> {
     test_nodeid: String,
     /// Marks attached to the current test
     test_marks: Vec<Mark>,
+    /// True when the module or any conftest file in its ancestor chain contains
+    /// @pytest.fixture definitions. Used to enrich "Unknown fixture" error messages.
+    has_pytest_fixtures: bool,
 }
 
 impl<'py> FixtureResolver<'py> {
@@ -1571,6 +1576,7 @@ impl<'py> FixtureResolver<'py> {
         test_display_name: String,
         test_nodeid: String,
         test_marks: Vec<Mark>,
+        has_pytest_fixtures: bool,
     ) -> Self {
         Self {
             py,
@@ -1597,6 +1603,7 @@ impl<'py> FixtureResolver<'py> {
             test_display_name,
             test_nodeid,
             test_marks,
+            has_pytest_fixtures,
         }
     }
 
@@ -1673,9 +1680,14 @@ impl<'py> FixtureResolver<'py> {
             let mut available: Vec<&str> = self.fixtures.keys().map(String::as_str).collect();
             available.sort();
             let available_list = available.join(", ");
+            let hint = if self.has_pytest_fixtures {
+                "\n\nHint: This project uses @pytest.fixture definitions that rustest cannot load natively.\n      Run with --pytest-compat to use existing pytest fixtures."
+            } else {
+                ""
+            };
             invalid_test_definition(format!(
-                "Unknown fixture '{}'.\nAvailable fixtures: {}",
-                name, available_list
+                "Unknown fixture '{}'.\nAvailable fixtures: {}{}",
+                name, available_list, hint
             ))
         })?;
 
