@@ -484,6 +484,7 @@ pub fn discover_tests(
         }
         eprintln!();
         eprintln!("Tip: Run with --pytest-compat to use existing pytest fixtures, or migrate to @rustest.fixture.");
+        eprintln!("     Note: --pytest-compat may not support all pytest features (e.g., async fixtures, some plugins).");
         eprintln!("     See: https://rustest.dev/from-pytest/migration/");
         eprintln!();
     } else if has_pytest_imports {
