@@ -351,6 +351,99 @@ def test_raises_error():
             f"Expected success with pytest.raises in compat mode:\n{output}"
         )
 
+    @pytest.fixture
+    def fixture_warning_priority_project(tmp_path):
+        """Project with both `import pytest` AND `@pytest.fixture` — tests warning priority."""
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+
+        (tests_dir / "conftest.py").write_text(
+            """
+import pytest
+
+@pytest.fixture
+def db_session():
+    return {"connected": True}
+"""
+        )
+
+        (tests_dir / "test_example.py").write_text(
+            """
+def test_simple():
+    assert True
+"""
+        )
+        return tests_dir
+
+    def test_fixture_warning_suppresses_import_note(fixture_warning_priority_project):
+        """When @pytest.fixture is detected, the generic 'import pytest' note should NOT appear."""
+        result = _run_rustest(fixture_warning_priority_project)
+
+        stderr = result.stderr
+
+        # The specific fixture warning should appear
+        assert "Found @pytest.fixture" in stderr, (
+            f"Expected fixture warning in stderr:\n{stderr}"
+        )
+
+        # The generic import note should NOT appear — fixture warning takes priority
+        assert "Note: Detected `import pytest`" not in stderr, (
+            f"Generic import note should be suppressed when fixture warning is shown:\n{stderr}"
+        )
+
+    @pytest.fixture
+    def nested_conftest_project(tmp_path):
+        """Project with pytest fixtures in parent conftest but rustest fixtures in child."""
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        subdir = tests_dir / "subdir"
+        subdir.mkdir()
+
+        # Parent conftest has @pytest.fixture
+        (tests_dir / "conftest.py").write_text(
+            """
+import pytest
+
+@pytest.fixture
+def parent_fixture():
+    return "from parent"
+"""
+        )
+
+        # Child conftest has only @rustest.fixture
+        (subdir / "conftest.py").write_text(
+            """
+from rustest import fixture
+
+@fixture
+def child_fixture():
+    return "from child"
+"""
+        )
+
+        # Test in subdir requests the parent pytest fixture — should get hint
+        (subdir / "test_nested.py").write_text(
+            """
+def test_needs_parent(parent_fixture):
+    assert parent_fixture == "from parent"
+"""
+        )
+        return tests_dir
+
+    def test_nested_conftest_unknown_fixture_suggests_compat(nested_conftest_project):
+        """Unknown fixture error in nested dir includes hint when parent conftest has pytest fixtures."""
+        result = _run_rustest(nested_conftest_project)
+
+        output = result.stdout + result.stderr
+
+        # Should have the unknown fixture error for the parent fixture
+        assert "Unknown fixture" in output, f"Expected Unknown fixture error:\n{output}"
+
+        # The hint should be present because the parent conftest has @pytest.fixture
+        assert "--pytest-compat" in output, (
+            f"Expected --pytest-compat hint from parent conftest detection:\n{output}"
+        )
+
     def test_help_mentions_pytest_compat_migration(tmp_path):
         """The --help output describes --pytest-compat's migration purpose."""
         python_path = sys.executable
