@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustest"
-version = "0.16.1"
+version = "0.16.2"
 description = "Rust powered pytest-compatible runner"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -65,6 +65,7 @@ typecheck = "uv run --with dev basedpyright python"
 pytests = "uv run pytest python/tests -v"
 tests = "uv run rustest tests/ examples/tests/"
 demos = "bash scripts/generate-demos.sh"
+docs = "uv run zensical serve"
 
 [tool.ruff]
 line-length = 100

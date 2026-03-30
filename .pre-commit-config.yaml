@@ -63,6 +63,16 @@ repos:
         types: [rust]
         pass_filenames: false
 
+  # Sync root CHANGELOG.md to docs/
+  - repo: local
+    hooks:
+      - id: sync-changelog
+        name: sync changelog to docs
+        entry: bash -c 'cp CHANGELOG.md docs/CHANGELOG.md && git add docs/CHANGELOG.md'
+        language: system
+        files: ^CHANGELOG\.md$
+        pass_filenames: false
+
   # Standard pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -70,7 +80,6 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        exclude: ^mkdocs\.yml$
       - id: check-toml
       - id: check-merge-conflict
       - id: check-case-conflict

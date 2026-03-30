@@ -5,32 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.2] - 2026-03-30
 
 ### Fixed
 
 - **Pytest Compatibility**: Fixed three critical compatibility issues discovered during testing of popular Python projects
   - **Underscore-Prefixed Fixtures**: Fixed fixture discovery to properly detect underscore-prefixed fixtures (e.g., `_patch_for_completion` in click)
-    - Reordered discovery logic in `src/discovery.rs` to check for `@fixture` decorator before filtering by name
-    - Ensures compatibility with projects that use private fixtures as implementation details
-  - **_pytest Stub Modules**: Added comprehensive stub modules for `_pytest` internal API compatibility
-    - Created 8 stub modules: `_pytest.{monkeypatch,config,outcomes,nodes,mark,assertion,main}`
-    - Stubs only installed when `--pytest-compat` mode is explicitly enabled
-    - Includes deprecation warnings guiding users to migrate to public APIs
-    - Prevents `ModuleNotFoundError` for projects using pytest internals
-  - **Config Fixtures**: Added new configuration fixtures for both rustest native and pytest-compat modes
-    - New `rustestconfig` fixture provides access to rustest's configuration (native mode)
-    - New `pytestconfig` fixture available only in `--pytest-compat` mode (raises helpful error otherwise)
-    - Both fixtures provide `getoption()`, `getini()` methods and `option`, `invocation_dir` attributes
-    - Strict mode separation prevents confusion between rustest and pytest config APIs
+  - **_pytest Stub Modules**: Added comprehensive stub modules for `_pytest` internal API compatibility (10 stub modules, only active with `--pytest-compat`)
+  - **Config Fixtures**: Added `rustestconfig` and `pytestconfig` fixtures for configuration access
 
 ### Added
 
-- **Test Coverage**: Added 13 new test cases in `python/tests/test_builtin_fixtures.py` for config fixtures
-  - 6 tests for `rustestconfig` fixture in native mode
-  - 1 test for `pytestconfig` error handling in non-compat mode
-  - 6 tests for `pytestconfig` fixture in pytest-compat mode
-- **Validation Testing**: Validated fixes against 10 popular Python projects (click, httpx, pytest-asyncio, etc.)
+- **Pytest Migration UX**: Smart detection of pytest usage with helpful migration guidance
+  - Detects `@pytest.fixture` in conftest.py and test files, suggesting `--pytest-compat` mode
+  - Fast text scan for `import pytest` / `from pytest import` before collection begins
+  - Enriched "Unknown fixture" error messages with `--pytest-compat` hint when pytest fixtures are detected
+  - Caveat about compat mode limitations included in warning messages
+- **Test Coverage**: Added 13+ new test cases for config fixtures and 12+ Rust unit tests for pytest import detection
+- **Validation Testing**: Validated fixes against 24 popular Python projects (click, httpx, pytest-asyncio, flask, pydantic, etc.)
 
 ## [0.16.1] - 2025-12-05
 
@@ -550,4 +542,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0] - 2025-11-10
 
 (See previous releases for earlier changelog entries)
-
