@@ -134,30 +134,10 @@ class MarkerDict(TypedDict):
 
 
 class Node:
-    """
-    Pytest-compatible Node object representing a test or collection node.
+    """Pytest-compatible Node representing a test or collection node.
 
-    This provides basic node information for compatibility with pytest fixtures
-    that access request.node.
-
-    **Supported:**
-        - node.name: Test/node name
-        - node.nodeid: Full test identifier
-        - node.get_closest_marker(name): Get marker by name
-        - node.add_marker(marker): Add marker to node
-        - node.keywords: Dictionary of keywords/markers
-
-    **Limited Support:**
-        - node.parent: Always None (not implemented)
-        - node.session: Always None (not implemented)
-        - node.config: Returns associated Config object if available
-
-    Example:
-        def test_example(request):
-            assert request.node.name == "test_example"
-            marker = request.node.get_closest_marker("skip")
-            if marker:
-                pytest.skip(marker.kwargs.get("reason", ""))
+    Supports: name, nodeid, get_closest_marker(), add_marker(), keywords, config.
+    Not implemented: parent, session (always None).
     """
 
     def __init__(
@@ -190,19 +170,7 @@ class Node:
                 self.keywords[marker["name"]] = True
 
     def get_closest_marker(self, name: str) -> Any:
-        """Get the closest marker with the given name.
-
-        Args:
-            name: Name of the marker to retrieve
-
-        Returns:
-            A marker object with args and kwargs attributes, or None if not found
-
-        Example:
-            skip_marker = request.node.get_closest_marker("skip")
-            if skip_marker:
-                reason = skip_marker.kwargs.get("reason", "")
-        """
+        """Get the closest marker with the given name, or None if not found."""
         # Find the first marker with the given name
         for marker in reversed(self._markers):  # Start from most recently added
             if marker.get("name") == name:
@@ -215,16 +183,7 @@ class Node:
         return None
 
     def add_marker(self, marker: Any, append: bool = True) -> None:
-        """Add a marker to this node.
-
-        Args:
-            marker: Marker to add (can be string name or marker object)
-            append: If True, append to markers list; if False, prepend
-
-        Example:
-            request.node.add_marker("slow")
-            request.node.add_marker(pytest.mark.xfail(reason="known bug"))
-        """
+        """Add a marker to this node."""
         marker_dict: MarkerDict
 
         # Handle string markers
@@ -297,31 +256,9 @@ class _MarkerInfo:
 
 
 class Config:
-    """
-    Pytest-compatible Config object for accessing test configuration.
+    """Pytest-compatible Config for accessing test configuration.
 
-    This provides basic configuration access for compatibility with pytest
-    fixtures that access request.config.
-
-    **Supported:**
-        - config.getoption(name, default=None): Get command-line option value
-        - config.getini(name): Get configuration value from pytest.ini/setup.cfg/tox.ini
-        - config.rootpath: Root directory path (always returns current directory)
-        - config.inipath: Path to config file (always None in rustest)
-
-    **Limited Support:**
-        - config.pluginmanager: Stub PluginManager (minimal functionality)
-        - config.option: Namespace with option values
-
-    **Not Supported:**
-        - Advanced plugin configuration
-        - Hook specifications
-
-    Example:
-        def test_example(request):
-            verbose = request.config.getoption("verbose", default=0)
-            if verbose > 1:
-                print("Running in verbose mode")
+    Supports: getoption(), getini(), rootpath, inipath, pluginmanager, option.
     """
 
     def __init__(
@@ -350,19 +287,7 @@ class Config:
         self.inipath: Path | None = None
 
     def getoption(self, name: str, default: Any = None, skip: bool = False) -> Any:
-        """Get command-line option value.
-
-        Args:
-            name: Option name (e.g., "verbose", "capture", "tb")
-            default: Default value if option not found
-            skip: If True and option not found, skip the test
-
-        Returns:
-            Option value or default
-
-        Example:
-            verbose = request.config.getoption("verbose", default=0)
-        """
+        """Get command-line option value, or default if not found."""
         # Remove leading dashes from option name
         clean_name = name.lstrip("-")
 
@@ -377,17 +302,7 @@ class Config:
         return value
 
     def getini(self, name: str) -> Any:
-        """Get configuration value from pytest.ini/setup.cfg/tox.ini.
-
-        Args:
-            name: Configuration option name
-
-        Returns:
-            Configuration value (default empty string/list if not found)
-
-        Example:
-            testpaths = request.config.getini("testpaths")
-        """
+        """Get configuration value from pytest.ini/setup.cfg/tox.ini."""
         value = self._ini_values.get(name)
 
         # Return appropriate default based on common ini values
@@ -458,60 +373,11 @@ class _PluginManagerStub:
 
 
 class FixtureRequest:
-    """
-    Pytest-compatible FixtureRequest for fixture parametrization.
+    """Pytest-compatible FixtureRequest for fixture parametrization.
 
-    This implementation provides access to fixture parameter values via
-    request.param for parametrized fixtures.
-
-    **Supported:**
-        - Type annotations: request: pytest.FixtureRequest
-        - request.param: Current parameter value for parametrized fixtures
-        - request.scope: Fixture scope (default: "function")
-        - request.node: Test node object with marker access
-        - request.config: Configuration object with option access
-
-    **Limited Support:**
-        - request.node.get_closest_marker(name): Get marker by name
-        - request.node.add_marker(marker): Add marker to node
-        - request.config.getoption(name): Get command-line option
-        - request.config.getini(name): Get ini configuration value
-
-    **NOT Supported (returns None or raises NotImplementedError):**
-        - request.function, cls, module: Always None
-        - request.fixturename: Always None
-        - request.addfinalizer(): Raises NotImplementedError
-        - request.getfixturevalue(): Raises NotImplementedError
-
-    Common pytest.FixtureRequest attributes:
-        - param: Parameter value (for parametrized fixtures) - SUPPORTED
-        - node: Test node object - SUPPORTED (basic functionality)
-        - config: Pytest config - SUPPORTED (basic functionality)
-        - function: Test function - Always None
-        - cls: Test class - Always None
-        - module: Test module - Always None
-        - fixturename: Name of the fixture - Always None
-        - scope: Scope of the fixture - Returns "function"
-
-    Example:
-        @pytest.fixture(params=[1, 2, 3])
-        def number(request: pytest.FixtureRequest):
-            # Access parameter value
-            return request.param
-
-        @pytest.fixture
-        def conditional_fixture(request):
-            # Check for markers
-            marker = request.node.get_closest_marker("slow")
-            if marker:
-                pytest.skip("Skipping slow test")
-
-            # Access configuration
-            verbose = request.config.getoption("verbose", default=0)
-            if verbose > 1:
-                print(f"Test: {request.node.name}")
-
-            return "fixture_value"
+    Supports: param, scope, node, config, getfixturevalue().
+    Not implemented: function, cls, module, fixturename (always None),
+    addfinalizer() (raises NotImplementedError).
     """
 
     def __init__(
@@ -555,26 +421,7 @@ class FixtureRequest:
         self._executed_fixtures: dict[str, Any] = {}
 
     def addfinalizer(self, finalizer: Callable[[], None]) -> None:
-        """
-        Add a finalizer to be called after the test.
-
-        NOT SUPPORTED in rustest pytest-compat mode.
-
-        In pytest, this would register a function to be called during teardown.
-        Rustest does not support this functionality in compat mode.
-
-        Raises:
-            NotImplementedError: Always raised with helpful message
-
-        Workaround:
-            Use fixture teardown with yield instead:
-
-                @pytest.fixture
-                def my_fixture():
-                    resource = setup()
-                    yield resource
-                    teardown(resource)  # This runs after the test
-        """
+        """Not supported — use yield-based fixture teardown instead. Always raises NotImplementedError."""
         msg = (
             "request.addfinalizer() is not supported in rustest pytest-compat mode.\n"
             "\n"
@@ -590,32 +437,7 @@ class FixtureRequest:
         raise NotImplementedError(msg)
 
     def getfixturevalue(self, name: str) -> Any:
-        """
-        Get the value of another fixture by name.
-
-        This method dynamically loads and executes fixtures at runtime by name.
-        Fixture dependencies are resolved recursively, and results are cached
-        per test execution.
-
-        Args:
-            name: Name of the fixture to retrieve
-
-        Returns:
-            The fixture value
-
-        Raises:
-            ValueError: If the fixture is not found
-            NotImplementedError: If the fixture is async (not yet supported)
-
-        Example:
-            @pytest.fixture
-            def user():
-                return {"name": "Alice"}
-
-            def test_dynamic(request):
-                user = request.getfixturevalue("user")
-                assert user["name"] == "Alice"
-        """
+        """Get the value of another fixture by name, resolving dependencies recursively."""
         # Check cache first
         if name in self._executed_fixtures:
             return self._executed_fixtures[name]
