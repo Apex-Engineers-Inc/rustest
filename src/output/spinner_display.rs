@@ -73,30 +73,26 @@ impl SpinnerDisplay {
         }
     }
 
+    /// Apply a style function to text only when colors are enabled.
+    fn styled<F>(&self, text: &str, styler: F) -> String
+    where
+        F: FnOnce(console::StyledObject<&str>) -> console::StyledObject<&str>,
+    {
+        if self.use_colors {
+            format!("{}", styler(style(text)))
+        } else {
+            text.to_string()
+        }
+    }
+
     /// Format a symbol based on status
     fn format_symbol(&self, failed: usize) -> String {
-        if self.ascii_mode {
-            if failed > 0 {
-                if self.use_colors {
-                    format!("{}", style("FAIL").red())
-                } else {
-                    "FAIL".to_string()
-                }
-            } else if self.use_colors {
-                format!("{}", style("PASS").green())
-            } else {
-                "PASS".to_string()
-            }
-        } else if failed > 0 {
-            if self.use_colors {
-                format!("{}", style("✗").red())
-            } else {
-                "✗".to_string()
-            }
-        } else if self.use_colors {
-            format!("{}", style("✓").green())
+        if failed > 0 {
+            let text = if self.ascii_mode { "FAIL" } else { "✗" };
+            self.styled(text, |s| s.red())
         } else {
-            "✓".to_string()
+            let text = if self.ascii_mode { "PASS" } else { "✓" };
+            self.styled(text, |s| s.green())
         }
     }
 }
@@ -167,18 +163,10 @@ impl OutputRenderer for SpinnerDisplay {
             // Build the status parts conditionally
             let mut status_parts = Vec::new();
             if passed > 0 {
-                if self.use_colors {
-                    status_parts.push(format!("{}", style(format!("{} passing", passed)).green()));
-                } else {
-                    status_parts.push(format!("{} passing", passed));
-                }
+                status_parts.push(self.styled(&format!("{} passing", passed), |s| s.green()));
             }
             if failed > 0 {
-                if self.use_colors {
-                    status_parts.push(format!("{}", style(format!("{} failed", failed)).red()));
-                } else {
-                    status_parts.push(format!("{} failed", failed));
-                }
+                status_parts.push(self.styled(&format!("{} failed", failed), |s| s.red()));
             }
 
             let status_str = if status_parts.is_empty() {
@@ -206,11 +194,7 @@ impl OutputRenderer for SpinnerDisplay {
         // Print collection errors first (like pytest does with "ERRORS" section)
         if !self.collection_errors.is_empty() {
             eprintln!();
-            if self.use_colors {
-                eprintln!("{}", style("ERRORS").red().bold());
-            } else {
-                eprintln!("ERRORS");
-            }
+            eprintln!("{}", self.styled("ERRORS", |s| s.red().bold()));
 
             for (path, message) in &self.collection_errors {
                 // Print header like pytest
@@ -230,11 +214,7 @@ impl OutputRenderer for SpinnerDisplay {
         // Print deferred failures at the end
         if !self.deferred_failures.is_empty() {
             eprintln!();
-            if self.use_colors {
-                eprintln!("{}", style("FAILURES").red().bold());
-            } else {
-                eprintln!("FAILURES");
-            }
+            eprintln!("{}", self.styled("FAILURES", |s| s.red().bold()));
 
             for (name, path, message) in &self.deferred_failures {
                 let formatted = self.formatter.format_failure(name, path, message);
@@ -250,35 +230,16 @@ impl OutputRenderer for SpinnerDisplay {
         // Build summary with conditional parts
         let mut parts = Vec::new();
         if passed > 0 {
-            if self.use_colors {
-                parts.push(format!("{}", style(format!("{} passing", passed)).green()));
-            } else {
-                parts.push(format!("{} passing", passed));
-            }
+            parts.push(self.styled(&format!("{} passing", passed), |s| s.green()));
         }
         if failed > 0 {
-            if self.use_colors {
-                parts.push(format!("{}", style(format!("{} failed", failed)).red()));
-            } else {
-                parts.push(format!("{} failed", failed));
-            }
+            parts.push(self.styled(&format!("{} failed", failed), |s| s.red()));
         }
         if skipped > 0 {
-            if self.use_colors {
-                parts.push(format!(
-                    "{}",
-                    style(format!("{} skipped", skipped)).yellow()
-                ));
-            } else {
-                parts.push(format!("{} skipped", skipped));
-            }
+            parts.push(self.styled(&format!("{} skipped", skipped), |s| s.yellow()));
         }
         if errors > 0 {
-            if self.use_colors {
-                parts.push(format!("{}", style(format!("{} error", errors)).red()));
-            } else {
-                parts.push(format!("{} error", errors));
-            }
+            parts.push(self.styled(&format!("{} error", errors), |s| s.red()));
         }
 
         let status_str = if parts.is_empty() {
@@ -289,15 +250,9 @@ impl OutputRenderer for SpinnerDisplay {
 
         // Symbol is red if there are failures OR errors
         let symbol = if failed > 0 || errors > 0 {
-            if self.use_colors {
-                format!("{}", style("✗").red())
-            } else {
-                "✗".to_string()
-            }
-        } else if self.use_colors {
-            format!("{}", style("✓").green())
+            self.styled("✗", |s| s.red())
         } else {
-            "✓".to_string()
+            self.styled("✓", |s| s.green())
         };
 
         eprintln!("{} {}/{} {} {}", symbol, total, total, status_str, time_str);

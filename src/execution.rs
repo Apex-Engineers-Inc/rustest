@@ -277,6 +277,61 @@ impl FixtureContext {
             class_event_loop: None,
         }
     }
+
+    /// Run teardowns and close event loop for a specific scope. Does NOT clear cache.
+    fn teardown_scope(&mut self, py: Python<'_>, scope: FixtureScope) {
+        let (teardowns, event_loop) = match scope {
+            FixtureScope::Class => (&mut self.teardowns.class, &mut self.class_event_loop),
+            FixtureScope::Module => (&mut self.teardowns.module, &mut self.module_event_loop),
+            FixtureScope::Package => (&mut self.teardowns.package, &mut self.package_event_loop),
+            FixtureScope::Session => (&mut self.teardowns.session, &mut self.session_event_loop),
+            FixtureScope::Function => return,
+        };
+        finalize_generators(py, teardowns, event_loop.as_ref());
+        close_event_loop(py, event_loop);
+    }
+
+    /// Run teardowns, clear cache, and close event loop for a specific scope.
+    fn cleanup_scope(&mut self, py: Python<'_>, scope: FixtureScope) {
+        let (teardowns, cache, event_loop) = match scope {
+            FixtureScope::Class => (
+                &mut self.teardowns.class,
+                &mut self.class_cache,
+                &mut self.class_event_loop,
+            ),
+            FixtureScope::Module => (
+                &mut self.teardowns.module,
+                &mut self.module_cache,
+                &mut self.module_event_loop,
+            ),
+            FixtureScope::Package => (
+                &mut self.teardowns.package,
+                &mut self.package_cache,
+                &mut self.package_event_loop,
+            ),
+            FixtureScope::Session => (
+                &mut self.teardowns.session,
+                &mut self.session_cache,
+                &mut self.session_event_loop,
+            ),
+            FixtureScope::Function => return,
+        };
+        finalize_generators(py, teardowns, event_loop.as_ref());
+        cache.clear();
+        close_event_loop(py, event_loop);
+    }
+
+    /// Clean up all scopes from narrowest to widest.
+    fn cleanup_all(&mut self, py: Python<'_>) {
+        for scope in [
+            FixtureScope::Class,
+            FixtureScope::Module,
+            FixtureScope::Package,
+            FixtureScope::Session,
+        ] {
+            self.teardown_scope(py, scope);
+        }
+    }
 }
 
 /// Run the collected test modules and return a report that mirrors pytest's
@@ -335,22 +390,10 @@ pub fn run_collected_tests(
         if context.current_package.as_ref() != Some(&module_package) {
             // Package changed - run teardowns and clear caches
             // Clear class cache first (narrowest scope teardowns first)
-            finalize_generators(
-                py,
-                &mut context.teardowns.class,
-                context.class_event_loop.as_ref(),
-            );
-            context.class_cache.clear();
-            close_event_loop(py, &mut context.class_event_loop);
+            context.cleanup_scope(py, FixtureScope::Class);
 
             // Then package teardowns
-            finalize_generators(
-                py,
-                &mut context.teardowns.package,
-                context.package_event_loop.as_ref(),
-            );
-            context.package_cache.clear();
-            close_event_loop(py, &mut context.package_event_loop);
+            context.cleanup_scope(py, FixtureScope::Package);
             context.current_package = Some(module_package);
         }
 
@@ -443,30 +486,7 @@ pub fn run_collected_tests(
                 // Handle fail-fast after processing all results in the unit
                 if should_fail_fast {
                     // Clean up fixtures before returning early
-                    finalize_generators(
-                        py,
-                        &mut context.teardowns.class,
-                        context.class_event_loop.as_ref(),
-                    );
-                    close_event_loop(py, &mut context.class_event_loop);
-                    finalize_generators(
-                        py,
-                        &mut context.teardowns.module,
-                        context.module_event_loop.as_ref(),
-                    );
-                    close_event_loop(py, &mut context.module_event_loop);
-                    finalize_generators(
-                        py,
-                        &mut context.teardowns.package,
-                        context.package_event_loop.as_ref(),
-                    );
-                    close_event_loop(py, &mut context.package_event_loop);
-                    finalize_generators(
-                        py,
-                        &mut context.teardowns.session,
-                        context.session_event_loop.as_ref(),
-                    );
-                    close_event_loop(py, &mut context.session_event_loop);
+                    context.cleanup_all(py);
 
                     let duration = start.elapsed();
                     let total = passed + failed + skipped;
@@ -503,12 +523,7 @@ pub fn run_collected_tests(
             }
 
             // Class-scoped fixtures are dropped here - run teardowns
-            finalize_generators(
-                py,
-                &mut context.teardowns.class,
-                context.class_event_loop.as_ref(),
-            );
-            close_event_loop(py, &mut context.class_event_loop);
+            context.teardown_scope(py, FixtureScope::Class);
         }
 
         // Module-scoped fixtures are dropped here - run teardowns
@@ -534,20 +549,10 @@ pub fn run_collected_tests(
     }
 
     // Package-scoped fixtures are dropped here - run teardowns for last package
-    finalize_generators(
-        py,
-        &mut context.teardowns.package,
-        context.package_event_loop.as_ref(),
-    );
-    close_event_loop(py, &mut context.package_event_loop);
+    context.teardown_scope(py, FixtureScope::Package);
 
     // Session-scoped fixtures are dropped here - run teardowns
-    finalize_generators(
-        py,
-        &mut context.teardowns.session,
-        context.session_event_loop.as_ref(),
-    );
-    close_event_loop(py, &mut context.session_event_loop);
+    context.teardown_scope(py, FixtureScope::Session);
 
     let duration = start.elapsed();
     let total = passed + failed + skipped;

@@ -56,35 +56,30 @@ async def module_resource():
     return {"initialized": True, "counter": 0}
 
 
+async def _module_scope_test_body(name: str, module_resource) -> None:
+    """Shared helper: log start, assert resource initialized, sleep, log end."""
+    log_execution(f"{name}_start")
+    assert module_resource["initialized"]
+    await asyncio.sleep(0.1)
+    log_execution(f"{name}_end")
+
+
 @mark.asyncio(loop_scope="module")
 async def test_parallel_module_scope_1(module_resource):
     """First test in module-scoped parallel batch."""
-    log_execution("test_parallel_module_scope_1_start")
-    assert module_resource["initialized"]
-    # Simulate I/O wait
-    await asyncio.sleep(0.1)
-    log_execution("test_parallel_module_scope_1_end")
-    assert True
+    await _module_scope_test_body("test_parallel_module_scope_1", module_resource)
 
 
 @mark.asyncio(loop_scope="module")
 async def test_parallel_module_scope_2(module_resource):
     """Second test in module-scoped parallel batch."""
-    log_execution("test_parallel_module_scope_2_start")
-    assert module_resource["initialized"]
-    await asyncio.sleep(0.1)
-    log_execution("test_parallel_module_scope_2_end")
-    assert True
+    await _module_scope_test_body("test_parallel_module_scope_2", module_resource)
 
 
 @mark.asyncio(loop_scope="module")
 async def test_parallel_module_scope_3(module_resource):
     """Third test in module-scoped parallel batch."""
-    log_execution("test_parallel_module_scope_3_start")
-    assert module_resource["initialized"]
-    await asyncio.sleep(0.1)
-    log_execution("test_parallel_module_scope_3_end")
-    assert True
+    await _module_scope_test_body("test_parallel_module_scope_3", module_resource)
 
 
 # ============================================================================
@@ -243,18 +238,22 @@ async def test_async_generator_parallel_2(async_generator_resource):
 # Test: Error handling in parallel context
 # ============================================================================
 
+async def _simple_pass_test() -> None:
+    """Shared helper: minimal async test body that simply passes."""
+    await asyncio.sleep(0.01)
+    assert True
+
+
 @mark.asyncio(loop_scope="module")
 async def test_parallel_error_handling_pass():
     """This test should pass even if siblings fail."""
-    await asyncio.sleep(0.01)
-    assert True
+    await _simple_pass_test()
 
 
 @mark.asyncio(loop_scope="module")
 async def test_parallel_error_handling_pass_2():
     """Another passing test demonstrating error isolation."""
-    await asyncio.sleep(0.01)
-    assert True
+    await _simple_pass_test()
 
 
 # ============================================================================
@@ -431,8 +430,7 @@ async def test_performance_parallel_5():
 @mark.asyncio(loop_scope="module")
 async def test_before_skipped():
     """Test before a skipped test."""
-    await asyncio.sleep(0.01)
-    assert True
+    await _simple_pass_test()
 
 
 @mark.skip(reason="Testing skip handling in parallel batch")
@@ -445,8 +443,7 @@ async def test_skipped_in_batch():
 @mark.asyncio(loop_scope="module")
 async def test_after_skipped():
     """Test after a skipped test."""
-    await asyncio.sleep(0.01)
-    assert True
+    await _simple_pass_test()
 
 
 # ============================================================================
@@ -497,10 +494,8 @@ async def concurrent_shared_state():
     return _concurrent_access_counter
 
 
-@mark.asyncio(loop_scope="module")
-async def test_concurrent_access_1(concurrent_shared_state):
-    """Test 1 accessing shared fixture concurrently."""
-    # Simulate read-modify-write pattern
+async def _concurrent_access_body(concurrent_shared_state) -> None:
+    """Shared helper: read-modify-write pattern for concurrent access tests."""
     initial = concurrent_shared_state["value"]
     concurrent_shared_state["access_count"] += 1
     await asyncio.sleep(0.05)  # Yield to other tests
@@ -510,23 +505,21 @@ async def test_concurrent_access_1(concurrent_shared_state):
 
 
 @mark.asyncio(loop_scope="module")
+async def test_concurrent_access_1(concurrent_shared_state):
+    """Test 1 accessing shared fixture concurrently."""
+    await _concurrent_access_body(concurrent_shared_state)
+
+
+@mark.asyncio(loop_scope="module")
 async def test_concurrent_access_2(concurrent_shared_state):
     """Test 2 accessing shared fixture concurrently."""
-    initial = concurrent_shared_state["value"]
-    concurrent_shared_state["access_count"] += 1
-    await asyncio.sleep(0.05)
-    assert concurrent_shared_state["value"] == initial
-    assert concurrent_shared_state["access_count"] >= 1
+    await _concurrent_access_body(concurrent_shared_state)
 
 
 @mark.asyncio(loop_scope="module")
 async def test_concurrent_access_3(concurrent_shared_state):
     """Test 3 accessing shared fixture concurrently."""
-    initial = concurrent_shared_state["value"]
-    concurrent_shared_state["access_count"] += 1
-    await asyncio.sleep(0.05)
-    assert concurrent_shared_state["value"] == initial
-    assert concurrent_shared_state["access_count"] >= 1
+    await _concurrent_access_body(concurrent_shared_state)
 
 
 # ============================================================================
@@ -545,28 +538,29 @@ def reset_exception_tracking():
     return _exception_tracking
 
 
+async def _exception_isolation_body(tracking: dict, key: str) -> None:
+    """Shared helper: mark tracking key and sleep to verify isolation."""
+    tracking[key] = True
+    await asyncio.sleep(0.02)
+    assert True
+
+
 @mark.asyncio(loop_scope="module")
 async def test_exception_isolation_passes_1(reset_exception_tracking):
     """This test should pass and complete regardless of sibling failures."""
-    reset_exception_tracking["test1_ran"] = True
-    await asyncio.sleep(0.02)
-    assert True
+    await _exception_isolation_body(reset_exception_tracking, "test1_ran")
 
 
 @mark.asyncio(loop_scope="module")
 async def test_exception_isolation_passes_2(reset_exception_tracking):
     """Another passing test to verify exception isolation."""
-    reset_exception_tracking["test2_ran"] = True
-    await asyncio.sleep(0.02)
-    assert True
+    await _exception_isolation_body(reset_exception_tracking, "test2_ran")
 
 
 @mark.asyncio(loop_scope="module")
 async def test_exception_isolation_passes_3(reset_exception_tracking):
     """Third passing test verifying all complete independently."""
-    reset_exception_tracking["test3_ran"] = True
-    await asyncio.sleep(0.02)
-    assert True
+    await _exception_isolation_body(reset_exception_tracking, "test3_ran")
 
 
 # ============================================================================
@@ -816,8 +810,7 @@ async def test_batch_failure_3():
 @mark.asyncio(loop_scope="module")
 async def test_before_sys_exit():
     """Test that runs before the sys.exit test."""
-    await asyncio.sleep(0.01)
-    assert True
+    await _simple_pass_test()
 
 
 @skip_decorator("Intentional sys.exit test - skipped in CI")
@@ -832,8 +825,7 @@ async def test_sys_exit_in_test():
 @mark.asyncio(loop_scope="module")
 async def test_after_sys_exit():
     """Test that runs after the sys.exit test - should still execute."""
-    await asyncio.sleep(0.01)
-    assert True
+    await _simple_pass_test()
 
 
 # ============================================================================
@@ -855,8 +847,7 @@ async def test_cancelled_error_via_timeout():
 @mark.asyncio(loop_scope="module")
 async def test_after_cancellation_test():
     """Test that runs after the cancellation test - verifies batch continues."""
-    await asyncio.sleep(0.01)
-    assert True
+    await _simple_pass_test()
 
 
 # ============================================================================

@@ -373,3 +373,78 @@ def test_auto_generated_dict_ids(person_dict):
     """Test that dict params get reasonable auto-generated IDs."""
     assert "name" in person_dict
     assert "age" in person_dict
+
+
+# --- pytest-compat API tests ---
+# These verify fixture parametrization works through the pytest compatibility layer.
+
+import sys as _sys
+
+# Only run these tests when using the rustest runner, not pytest directly
+if _sys.argv and "pytest" not in _sys.argv[0]:
+    from rustest.compat import pytest as _pytest
+
+    # ==============================================================================
+    # pytest.param() usage in fixture params
+    # ==============================================================================
+
+    @_pytest.fixture(params=[
+        _pytest.param(10, id="ten"),
+        _pytest.param(20, id="twenty"),
+    ])
+    def pytest_param_fixture(request):
+        """Fixture using pytest.param for custom IDs."""
+        return request.param
+
+    def test_pytest_param_in_fixture(pytest_param_fixture):
+        """Test fixture using pytest.param."""
+        assert pytest_param_fixture in [10, 20]
+
+    # ==============================================================================
+    # Complex object params with custom IDs
+    # ==============================================================================
+
+    class DatabaseConfig:
+        """Sample config class for testing."""
+        def __init__(self, name, port):
+            self.name = name
+            self.port = port
+
+    @_pytest.fixture(params=[
+        DatabaseConfig("mysql", 3306),
+        DatabaseConfig("postgres", 5432),
+    ], ids=["mysql", "postgres"])
+    def db_config(request):
+        """Parametrized fixture with class instances."""
+        return request.param
+
+    def test_class_instance_params(db_config):
+        """Test parametrized fixture with class instances."""
+        assert db_config.name in ["mysql", "postgres"]
+        if db_config.name == "mysql":
+            assert db_config.port == 3306
+        else:
+            assert db_config.port == 5432
+
+    # ==============================================================================
+    # Autouse fixture with params
+    # ==============================================================================
+
+    _autouse_calls = []
+
+    @_pytest.fixture(autouse=True, params=["auto1", "auto2"])
+    def autouse_parametrized(request):
+        """Autouse fixture with params - creates test variants."""
+        _autouse_calls.append(request.param)
+        return request.param
+
+    def test_with_autouse_param():
+        """Test that runs with autouse parametrized fixture.
+
+        Note: This test will be run once for each param value.
+        """
+        pass
+
+    def test_with_autouse_param_explicit(autouse_parametrized):
+        """Test that explicitly requests the autouse parametrized fixture."""
+        assert autouse_parametrized in ["auto1", "auto2"]

@@ -104,18 +104,7 @@ impl Mark {
         self.name == name
     }
 
-    /// Get a string argument from the mark args by position.
-    #[allow(dead_code)]
-    pub fn get_string_arg(&self, py: Python<'_>, index: usize) -> Option<String> {
-        self.args
-            .bind(py)
-            .get_item(index)
-            .ok()
-            .and_then(|item| item.extract().ok())
-    }
-
     /// Get a keyword argument from the mark kwargs.
-    #[allow(dead_code)]
     pub fn get_kwarg(&self, py: Python<'_>, key: &str) -> Option<Py<PyAny>> {
         self.kwargs
             .bind(py)
@@ -123,14 +112,6 @@ impl Mark {
             .ok()
             .flatten()
             .map(|item| item.unbind())
-    }
-
-    /// Get a boolean from kwargs with a default value.
-    #[allow(dead_code)]
-    pub fn get_bool_kwarg(&self, py: Python<'_>, key: &str, default: bool) -> bool {
-        self.get_kwarg(py, key)
-            .and_then(|val| val.extract(py).ok())
-            .unwrap_or(default)
     }
 }
 
@@ -205,12 +186,6 @@ impl Fixture {
         }
     }
 
-    /// Check if this fixture is parametrized.
-    #[allow(dead_code)]
-    pub fn is_parametrized(&self) -> bool {
-        self.params.is_some() && !self.params.as_ref().unwrap().is_empty()
-    }
-
     /// Clone the fixture with a Python context.
     pub fn clone_with_py(&self, py: Python<'_>) -> Self {
         Self {
@@ -233,7 +208,6 @@ impl Fixture {
 
 /// Metadata describing a single test case.
 pub struct TestCase {
-    #[allow(dead_code)]
     pub name: String,
     pub display_name: String,
     pub path: PathBuf,
@@ -257,18 +231,6 @@ impl TestCase {
         format!("{}::{}", self.path.display(), self.display_name)
     }
 
-    /// Find a mark by name.
-    #[allow(dead_code)]
-    pub fn find_mark(&self, name: &str) -> Option<&Mark> {
-        self.marks.iter().find(|m| m.is_named(name))
-    }
-
-    /// Check if this test has a mark with the given name.
-    #[allow(dead_code)]
-    pub fn has_mark(&self, name: &str) -> bool {
-        self.marks.iter().any(|m| m.is_named(name))
-    }
-
     /// Get mark names as strings for reporting.
     pub fn mark_names(&self) -> Vec<String> {
         self.marks.iter().map(|m| m.name.clone()).collect()
@@ -277,7 +239,6 @@ impl TestCase {
 
 /// Collection of fixtures and test cases for a Python module.
 pub struct TestModule {
-    #[allow(dead_code)]
     pub path: PathBuf,
     pub fixtures: IndexMap<String, Fixture>,
     pub tests: Vec<TestCase>,
@@ -339,7 +300,6 @@ impl LastFailedMode {
 pub struct RunConfiguration {
     pub pattern: Option<String>,
     pub mark_expr: Option<String>,
-    #[allow(dead_code)]
     pub worker_count: usize,
     pub capture_output: bool,
     pub enable_codeblocks: bool,

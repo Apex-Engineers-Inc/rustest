@@ -77,20 +77,6 @@ pub fn write_last_failed(failed_tests: &HashSet<String>) -> PyResult<()> {
     Ok(())
 }
 
-/// Clear the last failed cache
-#[allow(dead_code)]
-pub fn clear_last_failed() -> PyResult<()> {
-    let cache_path = get_last_failed_path();
-
-    if cache_path.exists() {
-        fs::remove_file(&cache_path).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!("Failed to clear cache: {}", e))
-        })?;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -280,6 +280,9 @@ class TestPackageScopeAutouse:
         with tempfile.TemporaryDirectory() as tmpdir:
             pkg_a = os.path.join(tmpdir, "pkg_a")
             os.makedirs(pkg_a)
+            # Use forward slashes for path interpolation into Python source
+            # to avoid Windows backslash unicode escape issues (e.g. \U -> unicode)
+            pkg_a_safe = pkg_a.replace("\\", "/")
 
             with open(os.path.join(pkg_a, "__init__.py"), "w") as f:
                 f.write("")
@@ -295,7 +298,7 @@ setup_count = {"value": 0}
             with open(conftest, "w") as f:
                 f.write(f"""
 import sys
-sys.path.insert(0, "{pkg_a}")
+sys.path.insert(0, "{pkg_a_safe}")
 from rustest import fixture
 from shared_state import setup_count
 
@@ -310,7 +313,7 @@ def auto_setup():
             with open(test_mod1, "w") as f:
                 f.write(f"""
 import sys
-sys.path.insert(0, "{pkg_a}")
+sys.path.insert(0, "{pkg_a_safe}")
 from shared_state import setup_count
 
 def test_first():
@@ -324,7 +327,7 @@ def test_second():
             with open(test_mod2, "w") as f:
                 f.write(f"""
 import sys
-sys.path.insert(0, "{pkg_a}")
+sys.path.insert(0, "{pkg_a_safe}")
 from shared_state import setup_count
 
 def test_third():

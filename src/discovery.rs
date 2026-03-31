@@ -646,40 +646,7 @@ fn load_pytest_plugins_fixtures(
 
             // Check if it's a function and a fixture
             if is_function(&value, function_type)? && is_fixture(&value)? {
-                let scope = extract_fixture_scope(&value)?;
-                let is_generator = is_generator_function(py, &value)?;
-                let is_async = is_async_function(py, &value)?;
-                let is_async_generator = is_async_generator_function(py, &value)?;
-                let autouse = extract_fixture_autouse(&value)?;
-                let params = extract_fixture_params(&value)?;
-                let fixture_name = extract_fixture_name(&value, &name)?;
-
-                let fixture = if let Some(params) = params {
-                    Fixture::with_params(
-                        fixture_name.clone(),
-                        value.clone().unbind(),
-                        extract_parameters(py, &value)?,
-                        scope,
-                        is_generator,
-                        is_async,
-                        is_async_generator,
-                        autouse,
-                        params,
-                        None,
-                    )
-                } else {
-                    Fixture::new(
-                        fixture_name.clone(),
-                        value.clone().unbind(),
-                        extract_parameters(py, &value)?,
-                        scope,
-                        is_generator,
-                        is_async,
-                        is_async_generator,
-                        autouse,
-                        None,
-                    )
-                };
+                let (fixture_name, fixture) = build_fixture_from_value(py, &value, &name, None)?;
                 fixtures.insert(fixture_name, fixture);
             }
         }
@@ -789,40 +756,7 @@ fn load_conftest_fixtures(
 
         // Check if it's a function and a fixture
         if is_function(&value, &function_type)? && is_fixture(&value)? {
-            let scope = extract_fixture_scope(&value)?;
-            let is_generator = is_generator_function(py, &value)?;
-            let is_async = is_async_function(py, &value)?;
-            let is_async_generator = is_async_generator_function(py, &value)?;
-            let autouse = extract_fixture_autouse(&value)?;
-            let params = extract_fixture_params(&value)?;
-            let fixture_name = extract_fixture_name(&value, &name)?;
-
-            let fixture = if let Some(params) = params {
-                Fixture::with_params(
-                    fixture_name.clone(),
-                    value.clone().unbind(),
-                    extract_parameters(py, &value)?,
-                    scope,
-                    is_generator,
-                    is_async,
-                    is_async_generator,
-                    autouse,
-                    params,
-                    None,
-                )
-            } else {
-                Fixture::new(
-                    fixture_name.clone(),
-                    value.clone().unbind(),
-                    extract_parameters(py, &value)?,
-                    scope,
-                    is_generator,
-                    is_async,
-                    is_async_generator,
-                    autouse,
-                    None,
-                )
-            };
+            let (fixture_name, fixture) = build_fixture_from_value(py, &value, &name, None)?;
             fixtures.insert(fixture_name, fixture);
         }
     }
@@ -892,40 +826,7 @@ fn load_builtin_fixtures(py: Python<'_>) -> PyResult<IndexMap<String, Fixture>> 
         let name: String = name_obj.extract()?;
 
         if is_function(&value, &function_type)? && is_fixture(&value)? {
-            let scope = extract_fixture_scope(&value)?;
-            let is_generator = is_generator_function(py, &value)?;
-            let is_async = is_async_function(py, &value)?;
-            let is_async_generator = is_async_generator_function(py, &value)?;
-            let autouse = extract_fixture_autouse(&value)?;
-            let params = extract_fixture_params(&value)?;
-            let fixture_name = extract_fixture_name(&value, &name)?;
-
-            let fixture = if let Some(params) = params {
-                Fixture::with_params(
-                    fixture_name.clone(),
-                    value.clone().unbind(),
-                    extract_parameters(py, &value)?,
-                    scope,
-                    is_generator,
-                    is_async,
-                    is_async_generator,
-                    autouse,
-                    params,
-                    None,
-                )
-            } else {
-                Fixture::new(
-                    fixture_name.clone(),
-                    value.clone().unbind(),
-                    extract_parameters(py, &value)?,
-                    scope,
-                    is_generator,
-                    is_async,
-                    is_async_generator,
-                    autouse,
-                    None,
-                )
-            };
+            let (fixture_name, fixture) = build_fixture_from_value(py, &value, &name, None)?;
             fixtures.insert(fixture_name, fixture);
         }
     }
@@ -1258,40 +1159,7 @@ fn inspect_module(
             // Fixtures can have any name, including underscore-prefixed names
             // (e.g., _patch_for_completion, _restore_state)
             if is_fixture(&value)? {
-                let scope = extract_fixture_scope(&value)?;
-                let is_generator = is_generator_function(py, &value)?;
-                let is_async = is_async_function(py, &value)?;
-                let is_async_generator = is_async_generator_function(py, &value)?;
-                let autouse = extract_fixture_autouse(&value)?;
-                let params = extract_fixture_params(&value)?;
-                let fixture_name = extract_fixture_name(&value, &name)?;
-
-                let fixture = if let Some(params) = params {
-                    Fixture::with_params(
-                        fixture_name.clone(),
-                        value.clone().unbind(),
-                        extract_parameters(py, &value)?,
-                        scope,
-                        is_generator,
-                        is_async,
-                        is_async_generator,
-                        autouse,
-                        params,
-                        None,
-                    )
-                } else {
-                    Fixture::new(
-                        fixture_name.clone(),
-                        value.clone().unbind(),
-                        extract_parameters(py, &value)?,
-                        scope,
-                        is_generator,
-                        is_async,
-                        is_async_generator,
-                        autouse,
-                        None,
-                    )
-                };
+                let (fixture_name, fixture) = build_fixture_from_value(py, &value, &name, None)?;
                 fixtures.insert(fixture_name, fixture);
                 continue;
             }
@@ -2021,6 +1889,53 @@ fn extract_fixture_params(value: &Bound<'_, PyAny>) -> PyResult<Option<Vec<Fixtu
     } else {
         Ok(Some(params))
     }
+}
+
+/// Build a Fixture from a Python callable that has been identified as a fixture.
+///
+/// Consolidates the repeated pattern of extracting fixture metadata and
+/// creating a Fixture object.
+fn build_fixture_from_value(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    class_name: Option<&str>,
+) -> PyResult<(String, Fixture)> {
+    let scope = extract_fixture_scope(value)?;
+    let is_generator = is_generator_function(py, value)?;
+    let is_async = is_async_function(py, value)?;
+    let is_async_generator = is_async_generator_function(py, value)?;
+    let autouse = extract_fixture_autouse(value)?;
+    let params = extract_fixture_params(value)?;
+    let fixture_name = extract_fixture_name(value, name)?;
+
+    let fixture = if let Some(params) = params {
+        Fixture::with_params(
+            fixture_name.clone(),
+            value.clone().unbind(),
+            extract_parameters(py, value)?,
+            scope,
+            is_generator,
+            is_async,
+            is_async_generator,
+            autouse,
+            params,
+            class_name.map(|s| s.to_string()),
+        )
+    } else {
+        Fixture::new(
+            fixture_name.clone(),
+            value.clone().unbind(),
+            extract_parameters(py, value)?,
+            scope,
+            is_generator,
+            is_async,
+            is_async_generator,
+            autouse,
+            class_name.map(|s| s.to_string()),
+        )
+    };
+    Ok((fixture_name, fixture))
 }
 
 /// Extract a string attribute from the object, if present.
