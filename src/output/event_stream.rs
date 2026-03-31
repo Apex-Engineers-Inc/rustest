@@ -26,69 +26,19 @@ impl EventStreamRenderer {
             collection_errors: Vec::new(),
         }
     }
+}
 
-    /// Emit an event to the Python callback
-    ///
-    /// Events are PyO3 classes, so they can be passed directly to Python
-    fn emit_file_started(&self, event: FileStartedEvent) {
-        if let Some(callback) = &self.callback {
+/// Emit a PyO3 event object to a Python callback, if present.
+macro_rules! emit_event {
+    ($callback:expr, $event:expr) => {
+        if let Some(callback) = $callback {
             Python::attach(|py| {
-                if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
+                if let Err(e) = callback.call1(py, (Py::new(py, $event).unwrap(),)) {
                     eprintln!("Error in event callback: {}", e);
                 }
             });
         }
-    }
-
-    fn emit_test_completed(&self, event: TestCompletedEvent) {
-        if let Some(callback) = &self.callback {
-            Python::attach(|py| {
-                if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
-                    eprintln!("Error in event callback: {}", e);
-                }
-            });
-        }
-    }
-
-    fn emit_file_completed(&self, event: FileCompletedEvent) {
-        if let Some(callback) = &self.callback {
-            Python::attach(|py| {
-                if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
-                    eprintln!("Error in event callback: {}", e);
-                }
-            });
-        }
-    }
-
-    fn emit_suite_started(&self, event: SuiteStartedEvent) {
-        if let Some(callback) = &self.callback {
-            Python::attach(|py| {
-                if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
-                    eprintln!("Error in event callback: {}", e);
-                }
-            });
-        }
-    }
-
-    fn emit_suite_completed(&self, event: SuiteCompletedEvent) {
-        if let Some(callback) = &self.callback {
-            Python::attach(|py| {
-                if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
-                    eprintln!("Error in event callback: {}", e);
-                }
-            });
-        }
-    }
-
-    fn emit_collection_error(&self, event: CollectionErrorEvent) {
-        if let Some(callback) = &self.callback {
-            Python::attach(|py| {
-                if let Err(e) = callback.call1(py, (Py::new(py, event).unwrap(),)) {
-                    eprintln!("Error in event callback: {}", e);
-                }
-            });
-        }
-    }
+    };
 }
 
 impl OutputRenderer for EventStreamRenderer {
@@ -102,7 +52,7 @@ impl OutputRenderer for EventStreamRenderer {
             message: error.message.clone(),
             timestamp: current_timestamp(),
         };
-        self.emit_collection_error(event);
+        emit_event!(&self.callback, event);
     }
 
     fn start_suite(&mut self, total_files: usize, total_tests: usize) {
@@ -111,7 +61,7 @@ impl OutputRenderer for EventStreamRenderer {
             total_tests,
             timestamp: current_timestamp(),
         };
-        self.emit_suite_started(event);
+        emit_event!(&self.callback, event);
     }
 
     fn start_file(&mut self, module: &TestModule) {
@@ -120,7 +70,7 @@ impl OutputRenderer for EventStreamRenderer {
             total_tests: module.tests.len(),
             timestamp: current_timestamp(),
         };
-        self.emit_file_started(event);
+        emit_event!(&self.callback, event);
     }
 
     fn start_test(&mut self, _test: &TestCase) {
@@ -138,7 +88,7 @@ impl OutputRenderer for EventStreamRenderer {
             message: result.message.clone(),
             timestamp: current_timestamp(),
         };
-        self.emit_test_completed(event);
+        emit_event!(&self.callback, event);
     }
 
     fn file_completed(
@@ -157,7 +107,7 @@ impl OutputRenderer for EventStreamRenderer {
             skipped,
             timestamp: current_timestamp(),
         };
-        self.emit_file_completed(event);
+        emit_event!(&self.callback, event);
     }
 
     fn finish_suite(
@@ -178,7 +128,7 @@ impl OutputRenderer for EventStreamRenderer {
             duration: duration.as_secs_f64(),
             timestamp: current_timestamp(),
         };
-        self.emit_suite_completed(event);
+        emit_event!(&self.callback, event);
     }
 
     fn println(&self, message: &str) {
