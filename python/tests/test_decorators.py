@@ -53,8 +53,8 @@ class TestParametrizeDecorator:
 
         cases = getattr(test_func, "__rustest_parametrization__")
         assert cases == (
-            {"id": "case_0", "values": {"x": 1, "y": 2}},
-            {"id": "case_1", "values": {"x": 3, "y": 4}},
+            {"id": "1-2", "values": {"x": 1, "y": 2}},
+            {"id": "3-4", "values": {"x": 3, "y": 4}},
         )
 
     def test_parametrize_rejects_empty_names(self) -> None:

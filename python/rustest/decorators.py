@@ -172,22 +172,13 @@ def _build_fixture_params(
                 param_value.values[0] if len(param_value.values) == 1 else param_value.values
             )
 
-        # Generate case ID
-        # Priority: ParameterSet id > ids parameter > auto-generated
-        if param_set_id is not None:
-            case_id = param_set_id
-        elif ids is None:
-            # Auto-generate ID based on value representation
-            case_id = _generate_param_id(actual_value, index)
-        elif ids_is_callable:
-            generated_id = ids(actual_value)
-            case_id = (
-                str(generated_id)
-                if generated_id is not None
-                else _generate_param_id(actual_value, index)
-            )
-        else:
-            case_id = ids[index]
+        case_id = _resolve_case_id(
+            param_set_id=param_set_id,
+            ids=ids,
+            ids_is_callable=ids_is_callable,
+            value=actual_value,
+            index=index,
+        )
 
         cases.append({"id": case_id, "value": actual_value})
 
@@ -234,6 +225,28 @@ def _generate_param_id(value: Any, index: int) -> str:
 
     # Fallback to index-based ID
     return f"param{index}"
+
+
+def _resolve_case_id(
+    *,
+    param_set_id: str | None,
+    ids: Sequence[str] | Callable[[Any], str | None] | None,
+    ids_is_callable: bool,
+    value: Any,
+    index: int,
+) -> str:
+    """Resolve the ID for a parametrization case.
+
+    Priority: ParameterSet.id > callable ids > explicit ids list > auto-generated.
+    """
+    if param_set_id is not None:
+        return param_set_id
+    if ids is None:
+        return _generate_param_id(value, index)
+    if ids_is_callable:
+        generated_id = cast(Callable[[Any], str | None], ids)(value)
+        return str(generated_id) if generated_id is not None else _generate_param_id(value, index)
+    return cast(Sequence[str], ids)[index]
 
 
 def skip_decorator(reason: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
@@ -454,18 +467,13 @@ def _build_cases(
             else:
                 raise ValueError("Parametrized value does not match argument names")
 
-        # Generate case ID
-        # Priority: ParameterSet id > ids parameter > auto-generated
-        if param_set_id is not None:
-            case_id = param_set_id
-        elif ids is None:
-            case_id = f"case_{index}"
-        elif ids_is_callable:
-            # Call the function on the case value to get the ID
-            generated_id = ids(actual_case)
-            case_id = str(generated_id) if generated_id is not None else f"case_{index}"
-        else:
-            case_id = ids[index]
+        case_id = _resolve_case_id(
+            param_set_id=param_set_id,
+            ids=ids,
+            ids_is_callable=ids_is_callable,
+            value=actual_case,
+            index=index,
+        )
 
         case_payloads.append({"id": case_id, "values": data})
     return tuple(case_payloads)
