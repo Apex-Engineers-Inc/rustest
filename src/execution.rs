@@ -69,6 +69,7 @@ fn partition_tests_for_parallel<'a>(
     py: Python<'_>,
     tests: &[&'a TestCase],
     fixtures: &IndexMap<String, Fixture>,
+    config: &RunConfiguration,
 ) -> Vec<TestExecutionUnit<'a>> {
     let mut units: Vec<TestExecutionUnit<'a>> = Vec::new();
     let mut current_batch: Option<AsyncBatch<'a>> = None;
@@ -89,7 +90,7 @@ fn partition_tests_for_parallel<'a>(
         }
 
         let is_async = is_async_test(py, test);
-        let loop_scope = determine_test_loop_scope(py, test, fixtures);
+        let loop_scope = determine_test_loop_scope(py, test, fixtures, config);
 
         // Only batch async tests with non-function loop scope
         let can_batch = is_async && loop_scope > FixtureScope::Function;
@@ -415,7 +416,8 @@ pub fn run_collected_tests(
             context.class_cache.clear();
 
             // Partition tests for optimal async parallelization
-            let execution_units = partition_tests_for_parallel(py, &tests, &module.fixtures);
+            let execution_units =
+                partition_tests_for_parallel(py, &tests, &module.fixtures, config);
 
             for unit in execution_units {
                 let (unit_results, is_plain_function_test): (Vec<PyTestResult>, bool) = match unit {
@@ -1325,6 +1327,7 @@ fn determine_test_loop_scope(
     py: Python<'_>,
     test_case: &TestCase,
     fixtures: &IndexMap<String, Fixture>,
+    config: &RunConfiguration,
 ) -> FixtureScope {
     // Check for explicit loop_scope mark first
     if let Some(explicit_scope) = get_explicit_loop_scope_from_marks(py, test_case) {
@@ -1351,7 +1354,10 @@ fn determine_test_loop_scope(
     }
 
     // Analyze fixture dependencies to find required scope
-    detect_required_loop_scope_from_fixtures(fixtures, &all_fixture_names)
+    let detected = detect_required_loop_scope_from_fixtures(fixtures, &all_fixture_names);
+
+    // Use the wider of: detected scope vs config default
+    std::cmp::max(detected, config.default_test_loop_scope)
 }
 
 /// Execute a test case and return either success metadata or failure details.
@@ -1374,7 +1380,7 @@ fn execute_test_case(
     }
 
     // Determine loop scope: explicit mark or smart detection based on fixture dependencies
-    let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures);
+    let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures, config);
 
     let test_display_name = test_case.display_name.clone();
     let test_nodeid = test_case.unique_id();

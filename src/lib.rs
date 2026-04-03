@@ -22,12 +22,12 @@ mod python_support_tests;
 
 use discovery::discover_tests;
 use execution::{resolve_fixture_for_request, run_collected_tests};
-use model::{CollectionError, LastFailedMode, PyRunReport, RunConfiguration};
+use model::{CollectionError, FixtureScope, LastFailedMode, PyRunReport, RunConfiguration};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use python_support::PyPaths;
 
-#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None))]
+#[pyfunction(signature = (paths, pattern = None, mark_expr = None, workers = None, capture_output = true, enable_codeblocks = true, last_failed_mode = "none", fail_fast = false, pytest_compat = false, verbose = false, ascii = false, no_color = false, event_callback = None, default_test_loop_scope = "function", default_fixture_loop_scope = "function"))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
@@ -44,8 +44,14 @@ fn run(
     ascii: bool,
     no_color: bool,
     event_callback: Option<Py<PyAny>>,
+    default_test_loop_scope: &str,
+    default_fixture_loop_scope: &str,
 ) -> PyResult<PyRunReport> {
     let last_failed_mode = LastFailedMode::from_str(last_failed_mode)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let default_test_loop_scope = FixtureScope::from_str(default_test_loop_scope)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let default_fixture_loop_scope = FixtureScope::from_str(default_fixture_loop_scope)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let config = RunConfiguration::new(
@@ -61,6 +67,8 @@ fn run(
         ascii,
         no_color,
         event_callback,
+        default_test_loop_scope,
+        default_fixture_loop_scope,
     );
     let input_paths = PyPaths::from_vec(paths);
     let (collected, collection_errors) = discover_tests(py, &input_paths, &config)?;
@@ -109,7 +117,7 @@ mod tests {
 
     use crate::discovery::discover_tests;
     use crate::execution::run_collected_tests;
-    use crate::model::{LastFailedMode, RunConfiguration};
+    use crate::model::{FixtureScope, LastFailedMode, RunConfiguration};
     use crate::python_support::PyPaths;
     use pyo3::prelude::PyAnyMethods;
     use pyo3::types::PyList;
@@ -154,6 +162,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
         let paths = PyPaths::from_vec(vec![path.to_string_lossy().into_owned()]);
         discover_tests(py, &paths, &config).expect("discovery should succeed")
@@ -192,6 +202,8 @@ mod tests {
                 false,
                 false,
                 None,
+                FixtureScope::Function,
+                FixtureScope::Function,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -227,6 +239,8 @@ mod tests {
                 false,
                 false,
                 None,
+                FixtureScope::Function,
+                FixtureScope::Function,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -283,6 +297,8 @@ mod tests {
                 false,
                 false,
                 None,
+                FixtureScope::Function,
+                FixtureScope::Function,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, _collection_errors) =
@@ -324,6 +340,8 @@ mod tests {
                 false,
                 false,
                 None,
+                FixtureScope::Function,
+                FixtureScope::Function,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -371,6 +389,8 @@ mod tests {
                 false,
                 false,
                 None,
+                FixtureScope::Function,
+                FixtureScope::Function,
             );
             let paths = PyPaths::from_vec(vec!["/nonexistent/path".to_string()]);
             let result = discover_tests(py, &paths, &config);
@@ -398,6 +418,8 @@ mod tests {
                 false,
                 false,
                 None,
+                FixtureScope::Function,
+                FixtureScope::Function,
             );
             let paths = PyPaths::from_vec(vec![file_path.to_string_lossy().into_owned()]);
             let (modules, collection_errors) =
@@ -427,6 +449,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
         assert_eq!(config1.worker_count, 1);
 
@@ -443,6 +467,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
         assert_eq!(config2.worker_count, 8);
 
@@ -459,6 +485,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
         assert!(config3.worker_count >= 1);
     }

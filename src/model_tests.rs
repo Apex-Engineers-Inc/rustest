@@ -130,6 +130,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
 
         assert!(config.pattern.is_none());
@@ -153,6 +155,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
 
         assert_eq!(config.pattern, Some("test_.*".to_string()));
@@ -175,6 +179,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
         let cloned = config.clone();
 
