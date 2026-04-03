@@ -1328,8 +1328,27 @@ fn determine_test_loop_scope(
         return explicit_scope;
     }
 
+    // Collect both explicit parameters AND autouse fixtures for analysis
+    let mut all_fixture_names: Vec<String> = test_case.parameters.clone();
+
+    // Include autouse fixtures - they run for every test and affect loop scope
+    for (name, fixture) in fixtures {
+        if fixture.autouse && !all_fixture_names.contains(name) {
+            // For class-scoped autouse fixtures, only include if the test is in that class
+            match (&fixture.class_name, &test_case.class_name) {
+                (Some(fixture_class), Some(test_class)) if fixture_class == test_class => {
+                    all_fixture_names.push(name.clone());
+                }
+                (None, _) => {
+                    all_fixture_names.push(name.clone());
+                }
+                _ => {} // Skip class fixtures for non-matching tests
+            }
+        }
+    }
+
     // Analyze fixture dependencies to find required scope
-    detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters)
+    detect_required_loop_scope_from_fixtures(fixtures, &all_fixture_names)
 }
 
 /// Execute a test case and return either success metadata or failure details.
@@ -1746,9 +1765,11 @@ impl<'py> FixtureResolver<'py> {
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Use the test's loop scope for all fixtures (pytest-asyncio behavior)
-            // All async operations in a test (fixtures + test) share the same loop
-            let event_loop = self.get_or_create_event_loop(self.test_loop_scope)?;
+            // Use the wider of the fixture's scope and the test's loop scope.
+            // Session-scoped async fixtures must use the session event loop to avoid
+            // "attached to a different loop" errors when reused across tests.
+            let effective_scope = std::cmp::max(fixture.scope, self.test_loop_scope);
+            let event_loop = self.get_or_create_event_loop(effective_scope)?;
 
             // Call anext() on the async generator to get the yielded value
             let anext_builtin = self.py.import("builtins")?.getattr("anext")?;
@@ -1819,9 +1840,11 @@ impl<'py> FixtureResolver<'py> {
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Use the test's loop scope for all fixtures (pytest-asyncio behavior)
-            // All async operations in a test (fixtures + test) share the same loop
-            let event_loop = self.get_or_create_event_loop(self.test_loop_scope)?;
+            // Use the wider of the fixture's scope and the test's loop scope.
+            // Session-scoped async fixtures must use the session event loop to avoid
+            // "attached to a different loop" errors when reused across tests.
+            let effective_scope = std::cmp::max(fixture.scope, self.test_loop_scope);
+            let event_loop = self.get_or_create_event_loop(effective_scope)?;
 
             // Run the coroutine in the scoped event loop
             event_loop
