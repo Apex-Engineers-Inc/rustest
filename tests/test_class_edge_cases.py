@@ -70,15 +70,9 @@ class TestClassWithSetupPattern:
         assert self.setup_called is True
 
     def test_without_manual_setup(self):
-        """Test behavior varies by runner."""
-        # Note: pytest auto-calls setup_method, rustest does not
-        # This test works with both behaviors
-        if hasattr(self, "setup_called"):
-            # pytest behavior - setup_method was auto-called
-            assert self.setup_called is True
-        else:
-            # rustest behavior - setup_method not auto-called
-            assert True
+        """setup_method should be auto-called by both pytest and rustest."""
+        assert hasattr(self, "setup_called"), "setup_method was not called automatically"
+        assert self.setup_called is True
 
 
 # ============================================================================
@@ -466,3 +460,28 @@ class TestNoDocstring:
 
     def test_another_no_docstring(self):
         assert 1 == 1
+
+
+# ============================================================================
+# CLASS WITH TEARDOWN_METHOD
+# ============================================================================
+
+
+class TestClassWithTeardown:
+    """Test class verifying teardown_method is called."""
+
+    _teardown_tracker: list[str] = []
+
+    def setup_method(self):
+        self.value = "initialized"
+
+    def teardown_method(self):
+        TestClassWithTeardown._teardown_tracker.append(self.value)
+
+    def test_first(self):
+        self.value = "first"
+        assert self.value == "first"
+
+    def test_second(self):
+        # setup_method should give us a fresh instance with "initialized"
+        assert self.value == "initialized"

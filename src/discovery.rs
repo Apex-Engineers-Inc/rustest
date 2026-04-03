@@ -1722,8 +1722,16 @@ fn create_plain_class_method_runner(
         r#"
 def run_test(*args, **kwargs):
     test_instance = test_class()
-    test_method = getattr(test_instance, '{}')
-    return test_method(*args, **kwargs)
+    _setup = getattr(test_instance, 'setup_method', None)
+    if _setup is not None:
+        _setup()
+    try:
+        test_method = getattr(test_instance, '{}')
+        return test_method(*args, **kwargs)
+    finally:
+        _teardown = getattr(test_instance, 'teardown_method', None)
+        if _teardown is not None:
+            _teardown()
 "#,
         method_name
     );
