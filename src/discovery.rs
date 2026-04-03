@@ -979,6 +979,7 @@ fn collect_from_markdown(
             class_name: None,
             fixture_param_indices: IndexMap::new(),
             indirect_params: Vec::new(),
+            has_patches: false,
         });
     }
 
@@ -1174,6 +1175,7 @@ fn inspect_module(
                 continue;
             }
 
+            let has_patches = count_patch_decorators(&value)? > 0;
             let parameters = extract_parameters(py, &value)?;
             let mut skip_reason = string_attribute(&value, "__rustest_skip__")?;
 
@@ -1204,6 +1206,7 @@ fn inspect_module(
                     class_name: None,
                     fixture_param_indices: IndexMap::new(),
                     indirect_params: indirect_params.clone(),
+                    has_patches,
                 });
             } else {
                 for (case_id, values) in param_cases {
@@ -1220,6 +1223,7 @@ fn inspect_module(
                         class_name: None,
                         fixture_param_indices: IndexMap::new(),
                         indirect_params: indirect_params.clone(),
+                        has_patches,
                     });
                 }
             }
@@ -1357,6 +1361,7 @@ fn expand_tests_for_parametrized_fixtures(
                 class_name: test.class_name.clone(),
                 fixture_param_indices,
                 indirect_params: test.indirect_params.clone(),
+                has_patches: test.has_patches,
             });
         }
     }
@@ -1457,6 +1462,7 @@ fn discover_unittest_class_tests(
                 class_name: Some(class_name.to_string()),
                 fixture_param_indices: IndexMap::new(),
                 indirect_params: Vec::new(),
+                has_patches: false,
             });
         }
     }
@@ -1602,6 +1608,9 @@ fn discover_plain_class_tests_and_fixtures(
         if name.starts_with("test") && is_callable(&method)? {
             let display_name = format!("{}::{}", class_name, name);
 
+            // Detect @patch decorators on the method
+            let has_patches = count_patch_decorators(&method)? > 0;
+
             // Extract parameters (excluding 'self')
             let all_params = extract_parameters(py, &method)?;
             let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
@@ -1652,6 +1661,7 @@ fn discover_plain_class_tests_and_fixtures(
                     class_name: Some(class_name.to_string()),
                     fixture_param_indices: IndexMap::new(),
                     indirect_params: indirect_params.clone(),
+                    has_patches,
                 });
             } else {
                 // Handle parametrized test methods
@@ -1669,6 +1679,7 @@ fn discover_plain_class_tests_and_fixtures(
                         class_name: Some(class_name.to_string()),
                         fixture_param_indices: IndexMap::new(),
                         indirect_params: indirect_params.clone(),
+                        has_patches,
                     });
                 }
             }
@@ -2098,17 +2109,34 @@ fn check_for_pytest_skip_mark(
 /// and removes the mock parameters (which are prepended by @patch).
 fn extract_parameters(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     // Check for @patch decorators - if present, extract params from the
-    // unwrapped original function and remove mock parameters
+    // unwrapped original function and remove mock parameters.
+    // @patch appends mock objects when calling the wrapped function, so mock
+    // parameters appear after 'self' (for methods) or at the start (for functions)
+    // in the original function's signature.
     let patch_count = count_patch_decorators(value)?;
     if patch_count > 0 {
         // Get the original unwrapped function
         if let Ok(wrapped) = value.getattr("__wrapped__") {
             let all_params = extract_parameters_inner(py, &wrapped)?;
-            // @patch prepends mock args, so remove the first N parameters
-            if patch_count <= all_params.len() {
-                return Ok(all_params[patch_count..].to_vec());
+            // For class methods, 'self' comes first - preserve it and skip mock params
+            let (has_self, param_start) = if all_params.first().is_some_and(|p| p == "self") {
+                (true, 1)
+            } else {
+                (false, 0)
+            };
+            let mock_end = param_start + patch_count;
+            if mock_end <= all_params.len() {
+                let mut result = Vec::new();
+                if has_self {
+                    result.push("self".to_string());
+                }
+                result.extend_from_slice(&all_params[mock_end..]);
+                return Ok(result);
             }
-            // All params are mocks - return empty
+            // All non-self params are mocks
+            if has_self {
+                return Ok(vec!["self".to_string()]);
+            }
             return Ok(Vec::new());
         }
     }

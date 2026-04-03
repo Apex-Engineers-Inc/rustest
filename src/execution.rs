@@ -1418,10 +1418,10 @@ fn execute_test_case(
     // Resolve test arguments FIRST - this triggers higher-scoped fixture
     // resolution (e.g. session) which must happen before lower-scoped
     // autouse fixtures that may depend on them
-    let mut call_args = Vec::new();
+    let mut call_args: Vec<(String, Py<PyAny>)> = Vec::new();
     for param in &test_case.parameters {
         match resolver.resolve_argument(param) {
-            Ok(value) => call_args.push(value),
+            Ok(value) => call_args.push((param.clone(), value)),
             Err(err) => {
                 let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
                 return Err(TestCallFailure {
@@ -1453,9 +1453,22 @@ fn execute_test_case(
     }
 
     let call_result = call_with_capture(py, config.capture_output, || {
-        let args_tuple = PyTuple::new(py, &call_args)?;
         let callable = test_case.callable.bind(py);
-        let result = callable.call1(args_tuple)?;
+
+        // For @patch-decorated tests, pass fixture args as keyword arguments
+        // so that unittest.mock.patch can prepend mock objects as positional args.
+        let result = if test_case.has_patches {
+            let kwargs = PyDict::new(py);
+            for (name, value) in &call_args {
+                kwargs.set_item(name, value)?;
+            }
+            let empty_args = PyTuple::empty(py);
+            callable.call(empty_args, Some(&kwargs))?
+        } else {
+            let values: Vec<_> = call_args.iter().map(|(_, v)| v).collect();
+            let args_tuple = PyTuple::new(py, &values)?;
+            callable.call1(args_tuple)?
+        };
 
         // Check if the result is a coroutine (async test function)
         let inspect = py.import("inspect")?;

@@ -224,6 +224,10 @@ pub struct TestCase {
     /// Parameters that should be resolved as fixture references (indirect parametrization).
     /// Contains the parameter names that are marked as indirect.
     pub indirect_params: Vec<String>,
+    /// Whether this test function has @patch decorators.
+    /// When true, fixture args are passed as keyword arguments so that
+    /// unittest.mock.patch can prepend mock objects as positional args.
+    pub has_patches: bool,
 }
 
 impl TestCase {
