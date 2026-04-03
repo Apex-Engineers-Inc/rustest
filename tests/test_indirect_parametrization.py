@@ -114,3 +114,31 @@ def test_indirect_with_request_param(executor_style):
         assert executor_style["value"] == 10
     else:
         assert executor_style["value"] == 100
+
+
+@fixture
+def model_resolver(request: FixtureRequest):
+    """Fixture that resolves another fixture by name via request.param."""
+    name = request.param
+    # Simulate dynamic fixture resolution
+    return {"resolved_from": name, "value": f"resolved_{name}"}
+
+
+@parametrize(
+    "direct_val,model_resolver",
+    [("x", "alpha"), ("y", "beta")],
+    indirect=["model_resolver"],
+)
+class TestClassLevelIndirect:
+    """Class-level parametrize with partial indirect."""
+
+    def test_direct_value(self, direct_val, model_resolver):
+        assert direct_val in ("x", "y")
+        assert isinstance(model_resolver, dict)
+        assert model_resolver["resolved_from"] in ("alpha", "beta")
+
+    def test_resolved_correctly(self, direct_val, model_resolver):
+        if direct_val == "x":
+            assert model_resolver["resolved_from"] == "alpha"
+        else:
+            assert model_resolver["resolved_from"] == "beta"

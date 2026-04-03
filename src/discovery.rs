@@ -1547,6 +1547,7 @@ fn discover_plain_class_tests_and_fixtures(
 
     // Extract class-level parametrization (if any)
     let class_param_cases = collect_parametrization(py, cls)?;
+    let class_indirect_params = extract_indirect_params(cls)?;
 
     // Process all members
     let members = inspect.call_method1("getmembers", (cls,))?;
@@ -1620,7 +1621,15 @@ fn discover_plain_class_tests_and_fixtures(
 
             let marks = collect_marks(&method)?;
             let method_param_cases = collect_parametrization(py, &method)?;
-            let indirect_params = extract_indirect_params(&method)?;
+            let method_indirect_params = extract_indirect_params(&method)?;
+
+            // Merge class-level and method-level indirect params
+            let mut indirect_params = class_indirect_params.clone();
+            for p in method_indirect_params {
+                if !indirect_params.contains(&p) {
+                    indirect_params.push(p);
+                }
+            }
 
             // Combine class-level and method-level parametrization
             let combined_param_cases =
@@ -1962,16 +1971,19 @@ fn string_attribute(value: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<Str
 
 /// Check if a test function uses @patch decorator from unittest.mock.
 ///
-/// Returns a skip reason if @patch is detected, None otherwise.
-/// This check runs in all modes (not just pytest-compat) to prevent
-/// confusing "Unknown fixture" errors.
+/// In native mode, returns a skip reason if @patch is detected.
+/// In pytest-compat mode, returns None (allowing @patch tests to run).
 fn check_for_patch_decorator(
     _py: Python<'_>,
     func: &Bound<'_, PyAny>,
-    _pytest_compat: bool,
+    pytest_compat: bool,
 ) -> PyResult<Option<String>> {
-    // Check if the function has __wrapped__ attribute (indicates decorators)
-    // The @patch decorator from unittest.mock wraps functions
+    // In pytest-compat mode, allow @patch decorated tests to run
+    if pytest_compat {
+        return Ok(None);
+    }
+
+    // Native mode: detect @patch and skip with a helpful message
     let mut current = func.clone();
     let mut depth = 0;
     const MAX_DEPTH: usize = 10; // Prevent infinite loops
@@ -2016,6 +2028,19 @@ fn check_for_patch_decorator(
     }
 
     Ok(None)
+}
+
+/// Count the number of @patch decorators on a function.
+///
+/// Returns the number of patches (0 if none detected).
+fn count_patch_decorators(func: &Bound<'_, PyAny>) -> PyResult<usize> {
+    // Check for patchings attribute (set by unittest.mock.patch)
+    if let Ok(patchings) = func.getattr("patchings") {
+        if let Ok(list) = patchings.cast_into::<PyList>() {
+            return Ok(list.len());
+        }
+    }
+    Ok(0)
 }
 
 /// Check if a test function has @pytest.mark.skip decorator.
@@ -2068,7 +2093,31 @@ fn check_for_pytest_skip_mark(
 /// OPTIMIZATION: Uses __code__.co_varnames directly instead of inspect.signature()
 /// which is significantly faster. Falls back to inspect.signature() for edge cases
 /// like built-in functions or wrapped callables that don't have __code__.
+///
+/// For @patch-decorated functions, extracts parameters from the unwrapped original
+/// and removes the mock parameters (which are prepended by @patch).
 fn extract_parameters(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    // Check for @patch decorators - if present, extract params from the
+    // unwrapped original function and remove mock parameters
+    let patch_count = count_patch_decorators(value)?;
+    if patch_count > 0 {
+        // Get the original unwrapped function
+        if let Ok(wrapped) = value.getattr("__wrapped__") {
+            let all_params = extract_parameters_inner(py, &wrapped)?;
+            // @patch prepends mock args, so remove the first N parameters
+            if patch_count <= all_params.len() {
+                return Ok(all_params[patch_count..].to_vec());
+            }
+            // All params are mocks - return empty
+            return Ok(Vec::new());
+        }
+    }
+
+    extract_parameters_inner(py, value)
+}
+
+/// Inner parameter extraction logic (without @patch handling).
+fn extract_parameters_inner(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     // Fast path: try to get parameters directly from __code__ object
     // This is much faster than inspect.signature() for regular Python functions
     if let Ok(code) = value.getattr("__code__") {
