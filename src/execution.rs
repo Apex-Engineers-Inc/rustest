@@ -773,28 +773,13 @@ fn run_async_batch<'a>(
             continue;
         }
 
-        // Resolve autouse fixtures
+        // Resolve test arguments and autouse fixtures in correct scope order
         {
             let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
-            if let Err(err) = resolver.resolve_autouse_fixtures() {
-                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                preparation_errors.push((
-                    test_id.clone(),
-                    format!("Autouse fixture setup error:\n{}", message),
-                ));
-                continue;
-            }
 
-            if let Err(err) = resolver.apply_usefixtures_marks() {
-                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                preparation_errors.push((
-                    test_id.clone(),
-                    format!("Usefixtures mark error:\n{}", message),
-                ));
-                continue;
-            }
-
-            // Resolve all arguments for this test
+            // Resolve test arguments FIRST - this triggers higher-scoped fixture
+            // resolution (e.g. session) which must happen before lower-scoped
+            // autouse fixtures that may depend on them
             let mut call_args = Vec::new();
             let mut resolution_failed = false;
             for param in &test.parameters {
@@ -818,6 +803,25 @@ fn run_async_batch<'a>(
                     .get_test_scope_event_loop()
                     .map(|l| l.clone_ref(py));
                 finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
+                continue;
+            }
+
+            // THEN resolve autouse fixtures - higher-scoped ones are now cached
+            if let Err(err) = resolver.resolve_autouse_fixtures() {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Autouse fixture setup error:\n{}", message),
+                ));
+                continue;
+            }
+
+            if let Err(err) = resolver.apply_usefixtures_marks() {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Usefixtures mark error:\n{}", message),
+                ));
                 continue;
             }
 
@@ -1411,7 +1415,25 @@ fn execute_test_case(
         });
     }
 
-    // Resolve autouse fixtures first
+    // Resolve test arguments FIRST - this triggers higher-scoped fixture
+    // resolution (e.g. session) which must happen before lower-scoped
+    // autouse fixtures that may depend on them
+    let mut call_args = Vec::new();
+    for param in &test_case.parameters {
+        match resolver.resolve_argument(param) {
+            Ok(value) => call_args.push(value),
+            Err(err) => {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                return Err(TestCallFailure {
+                    message,
+                    stdout: None,
+                    stderr: None,
+                });
+            }
+        }
+    }
+
+    // THEN resolve autouse fixtures - higher-scoped ones are now cached
     if let Err(err) = resolver.resolve_autouse_fixtures() {
         let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
         return Err(TestCallFailure {
@@ -1428,21 +1450,6 @@ fn execute_test_case(
             stdout: None,
             stderr: None,
         });
-    }
-
-    let mut call_args = Vec::new();
-    for param in &test_case.parameters {
-        match resolver.resolve_argument(param) {
-            Ok(value) => call_args.push(value),
-            Err(err) => {
-                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                return Err(TestCallFailure {
-                    message,
-                    stdout: None,
-                    stderr: None,
-                });
-            }
-        }
     }
 
     let call_result = call_with_capture(py, config.capture_output, || {
@@ -1953,9 +1960,10 @@ impl<'py> FixtureResolver<'py> {
 
     /// Resolve all autouse fixtures appropriate for the current test.
     /// Autouse fixtures are automatically executed without needing to be explicitly requested.
+    /// Fixtures are sorted by scope (session first, function last) to match pytest behavior.
     fn resolve_autouse_fixtures(&mut self) -> PyResult<()> {
-        // Collect all autouse fixtures that match the current test's class
-        let autouse_fixtures: Vec<String> = self
+        // Collect all autouse fixtures that match the current test's class, with their scope
+        let mut autouse_fixtures: Vec<(String, FixtureScope)> = self
             .fixtures
             .iter()
             .filter(|(_, fixture)| {
@@ -1969,15 +1977,21 @@ impl<'py> FixtureResolver<'py> {
                     (Some(_), None) => false, // Class fixture shouldn't run for non-class tests
                 }
             })
-            .map(|(name, _)| name.clone())
+            .map(|(name, fixture)| (name.clone(), fixture.scope))
             .collect();
 
+        // Sort by scope: session (widest) first, function (narrowest) last
+        autouse_fixtures.sort_by(|a, b| b.1.cmp(&a.1));
+
         if std::env::var_os("RUSTEST_DEBUG_AUTOUSE").is_some() {
-            eprintln!("[rustest-debug] autouse fixtures: {:?}", autouse_fixtures);
+            eprintln!(
+                "[rustest-debug] autouse fixtures (sorted by scope): {:?}",
+                autouse_fixtures
+            );
         }
 
-        // Resolve each autouse fixture
-        for name in autouse_fixtures {
+        // Resolve each autouse fixture in scope order
+        for (name, _) in autouse_fixtures {
             // Skip if already in cache (for higher-scoped autouse fixtures)
             if self.function_cache.contains_key(&name)
                 || self.class_cache.contains_key(&name)
