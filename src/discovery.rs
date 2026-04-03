@@ -2368,13 +2368,12 @@ fn ensure_parent_packages_loaded(py: Python<'_>, path: &Path) -> PyResult<()> {
         if !loader.is_none() {
             let module = importlib.call_method1("module_from_spec", (&spec,))?;
 
-            // Set __package__ for the __init__.py module
-            if current_package.len() > 1 {
-                let parent_package = current_package[..current_package.len() - 1].join(".");
-                module.setattr("__package__", parent_package)?;
-            } else {
-                module.setattr("__package__", package_name.as_str())?;
-            }
+            // For an __init__.py module, __package__ must equal the
+            // fully-qualified package name itself (not the parent).
+            // Python resolves `from .foo import bar` as
+            // `__package__ + ".foo"`, so using the parent would cause
+            // the lookup to target the wrong module.
+            module.setattr("__package__", package_name.as_str())?;
 
             // Add to sys.modules before executing
             modules.set_item(package_name.as_str(), &module)?;
