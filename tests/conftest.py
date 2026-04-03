@@ -60,9 +60,10 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
             # Called without arguments: @fixture
             return decorate(func)
 
-        def _parametrize(argnames, argvalues, *, ids=None):
+        def _parametrize(argnames, argvalues=None, *, argvalues_kw=None, ids=None, indirect=False):
             """Redirect to pytest.mark.parametrize."""
-            return pytest.mark.parametrize(argnames, argvalues, ids=ids)
+            vals = argvalues if argvalues is not None else argvalues_kw
+            return pytest.mark.parametrize(argnames, vals, ids=ids, indirect=indirect)
 
         def _skip(reason=None):
             """Redirect to pytest.mark.skip."""

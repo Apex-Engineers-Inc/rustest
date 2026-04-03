@@ -1536,6 +1536,8 @@ struct FixtureResolver<'py> {
     fixture_param_indices: &'py IndexMap<String, usize>,
     /// Current fixture param values being resolved, for request.param support.
     current_fixture_param: Option<Py<PyAny>>,
+    /// Override param value from indirect parametrization (takes precedence over fixture's own params).
+    indirect_param_override: Option<Py<PyAny>>,
     /// Parameter names that should be resolved as fixture references (indirect parametrization).
     indirect_params: &'py [String],
     /// Event loops for different scopes (for async fixtures)
@@ -1597,6 +1599,7 @@ impl<'py> FixtureResolver<'py> {
             parameters,
             fixture_param_indices,
             current_fixture_param: None,
+            indirect_param_override: None,
             indirect_params,
             session_event_loop,
             package_event_loop,
@@ -1615,12 +1618,13 @@ impl<'py> FixtureResolver<'py> {
     fn resolve_argument(&mut self, name: &str) -> PyResult<Py<PyAny>> {
         // First check if it's a parametrized value
         if let Some(value) = self.parameters.get(name) {
-            // If this parameter is indirect, treat its value as a fixture name
+            // If this parameter is indirect, pass the value to the fixture via request.param
             if self.indirect_params.contains(&name.to_string()) {
-                // Extract the fixture name from the parameter value
-                let fixture_name: String = value.bind(self.py).extract()?;
-                // Resolve the fixture by its name (recursive call without the parameter)
-                return self.resolve_argument(&fixture_name);
+                let indirect_value = value.clone_ref(self.py);
+                self.indirect_param_override = Some(indirect_value);
+                let result = self.resolve_fixture_value(name);
+                self.indirect_param_override = None;
+                return result;
             }
             // Otherwise, return the value directly
             return Ok(value.clone_ref(self.py));
@@ -1698,7 +1702,12 @@ impl<'py> FixtureResolver<'py> {
 
         // Set current fixture param for request.param access
         let previous_param = self.current_fixture_param.take();
-        self.current_fixture_param = param_value;
+        // Indirect parametrize override takes precedence over fixture's own params
+        if let Some(indirect_val) = self.indirect_param_override.take() {
+            self.current_fixture_param = Some(indirect_val);
+        } else {
+            self.current_fixture_param = param_value;
+        }
 
         // Detect circular dependencies
         if !self.stack.insert(fixture.name.clone()) {

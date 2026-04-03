@@ -327,17 +327,18 @@ def parametrize(
             - ["param1", "param2"]: Only specified parameters are passed to fixtures
             - "param1": Single parameter passed to fixture
 
-            When a parameter is indirect, its value is treated as a fixture name,
-            and that fixture is resolved and its value used for the test.
+            When a parameter is indirect, the parameter value is passed to the
+            matching fixture via ``request.param``, and the fixture's return value
+            is used for the test.
 
             Example:
                 @fixture
-                def my_data():
-                    return {"value": 42}
+                def my_data(request):
+                    return {"value": request.param}
 
-                @parametrize("data", ["my_data"], indirect=True)
-                def test_example(data):
-                    assert data["value"] == 42
+                @parametrize("my_data", [42, 100], indirect=True)
+                def test_example(my_data):
+                    assert my_data["value"] in (42, 100)
     """
     # Support both 'values' (rustest style) and 'argvalues' (pytest style)
     actual_values = argvalues if argvalues is not None else values
