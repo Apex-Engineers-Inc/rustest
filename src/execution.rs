@@ -814,11 +814,10 @@ fn run_async_batch<'a>(
 
             if resolution_failed {
                 // Clean up function teardowns for this test
-                finalize_generators(
-                    py,
-                    &mut resolver.function_teardowns,
-                    resolver.function_event_loop.as_ref(),
-                );
+                let event_loop = resolver
+                    .get_test_scope_event_loop()
+                    .map(|l| l.clone_ref(py));
+                finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
                 continue;
             }
 
@@ -1496,11 +1495,10 @@ fn execute_test_case(
         Ok(value) => value,
         Err(err) => {
             // Clean up function-scoped fixtures before returning
-            finalize_generators(
-                py,
-                &mut resolver.function_teardowns,
-                resolver.function_event_loop.as_ref(),
-            );
+            let event_loop = resolver
+                .get_test_scope_event_loop()
+                .map(|l| l.clone_ref(py));
+            finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
             return Err(TestCallFailure {
                 message: err.to_string(),
                 stdout: None,
@@ -1510,11 +1508,10 @@ fn execute_test_case(
     };
 
     // Clean up function-scoped fixtures after test completes
-    finalize_generators(
-        py,
-        &mut resolver.function_teardowns,
-        resolver.function_event_loop.as_ref(),
-    );
+    let event_loop = resolver
+        .get_test_scope_event_loop()
+        .map(|l| l.clone_ref(py));
+    finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
 
     match result {
         Ok(_) => Ok(TestCallSuccess { stdout, stderr }),
@@ -2049,6 +2046,18 @@ impl<'py> FixtureResolver<'py> {
     fn get_or_create_test_event_loop(&mut self) -> PyResult<Py<PyAny>> {
         // Use the test's specified loop_scope
         self.get_or_create_event_loop(self.test_loop_scope)
+    }
+
+    /// Get the event loop for the current test's loop scope (without creating one).
+    /// Returns the existing event loop for the test's scope, falling back to function_event_loop.
+    fn get_test_scope_event_loop(&self) -> Option<&Py<PyAny>> {
+        match self.test_loop_scope {
+            FixtureScope::Session => (*self.session_event_loop).as_ref(),
+            FixtureScope::Package => (*self.package_event_loop).as_ref(),
+            FixtureScope::Module => (*self.module_event_loop).as_ref(),
+            FixtureScope::Class => (*self.class_event_loop).as_ref(),
+            FixtureScope::Function => self.function_event_loop.as_ref(),
+        }
     }
 
     /// Create a request fixture with the current param value.
