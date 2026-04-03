@@ -11,6 +11,12 @@ This test file covers edge cases and special scenarios:
 
 from rustest import fixture, parametrize, skip_decorator as skip, mark
 
+# Try to import pytest fixture for compat mode testing; fall back to rustest
+try:
+    from pytest import fixture as pytest_fixture
+except ImportError:
+    pytest_fixture = fixture
+
 
 # ============================================================================
 # FIXTURES
@@ -485,3 +491,29 @@ class TestClassWithTeardown:
     def test_second(self):
         # setup_method should give us a fresh instance with "initialized"
         assert self.value == "initialized"
+
+
+# ============================================================================
+# CLASS-METHOD AUTOUSE FIXTURE SHARING INSTANCE WITH TESTS
+# ============================================================================
+
+
+class TestClassMethodFixture:
+    """Test that class method fixtures share instance with tests."""
+
+    @fixture(autouse=True)
+    def setup_data(self):
+        self.data = {"key": "value"}
+
+    def test_data_available(self):
+        assert hasattr(self, "data"), "Class-method fixture should set self.data"
+        assert self.data == {"key": "value"}
+
+    def test_data_fresh_each_test(self):
+        # Each test gets its own instance, so data should be fresh
+        assert self.data == {"key": "value"}
+        self.data["extra"] = True
+
+    def test_no_leakage(self):
+        # Previous test's modifications should not leak
+        assert "extra" not in self.data

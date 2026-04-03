@@ -1551,6 +1551,14 @@ fn discover_plain_class_tests_and_fixtures(
     let mut tests = Vec::new();
     let inspect = py.import("inspect")?;
 
+    // Create a shared namespace for this class so that fixture and test wrappers
+    // share the same instance cache.  This is critical for class-method autouse
+    // fixtures that set attributes on `self` — both the fixture and the test
+    // must operate on the *same* instance.
+    let class_namespace = PyDict::new(py);
+    class_namespace.set_item("test_class", cls)?;
+    class_namespace.set_item("_instance_cache", PyDict::new(py))?;
+
     // Extract class-level parametrization (if any)
     let class_param_cases = collect_parametrization(py, cls)?;
     let class_indirect_params = extract_indirect_params(cls)?;
@@ -1584,8 +1592,9 @@ fn discover_plain_class_tests_and_fixtures(
             let all_params = extract_parameters(py, &method)?;
             let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
 
-            // Create a wrapper that instantiates the class and calls the fixture method
-            let fixture_callable = create_plain_class_method_runner(py, cls, &name)?;
+            // Create a wrapper that instantiates the class and calls the fixture method,
+            // sharing the class instance cache so autouse fixtures and tests see the same `self`.
+            let fixture_callable = create_class_fixture_runner(py, &name, &class_namespace)?;
 
             fixtures.insert(
                 fixture_name.clone(),
@@ -1644,9 +1653,10 @@ fn discover_plain_class_tests_and_fixtures(
             let combined_param_cases =
                 combine_parametrizations(py, &class_param_cases, &method_param_cases)?;
 
-            // Create a callable that instantiates the class and calls the method
-            // Autouse fixtures will be resolved by the fixture system
-            let test_callable = create_plain_class_method_runner(py, cls, &name)?;
+            // Create a callable that instantiates the class and calls the method.
+            // Uses the shared instance cache so class-method fixtures and tests
+            // operate on the same instance.
+            let test_callable = create_class_test_runner(py, &name, &class_namespace)?;
 
             if combined_param_cases.is_empty() {
                 tests.push(TestCase {
@@ -1727,46 +1737,81 @@ def run_test():
     Ok(run_test.unbind())
 }
 
-/// Create a callable that instantiates a plain test class and runs a specific test method.
-/// This wrapper will receive fixtures as arguments and pass them to the method.
-fn create_plain_class_method_runner(
+/// Create a callable wrapper for a **fixture** method on a plain test class.
+///
+/// The wrapper looks up (or creates) a shared class instance in `_instance_cache`
+/// which lives in `class_namespace`.  This ensures that autouse fixtures that set
+/// attributes on `self` share the same instance as the test method that reads them.
+fn create_class_fixture_runner(
     py: Python<'_>,
-    cls: &Bound<'_, PyAny>,
     method_name: &str,
+    class_namespace: &Bound<'_, PyDict>,
 ) -> PyResult<Py<PyAny>> {
-    // Create a wrapper function that:
-    // 1. Instantiates the test class (without arguments)
-    // 2. Gets the test method
-    // 3. Calls the method with provided fixtures (as *args)
+    // Use a unique function name to avoid collisions in the shared namespace.
+    let func_name = format!("_fixture_{}", method_name);
+
     let code = format!(
         r#"
-def run_test(*args, **kwargs):
-    test_instance = test_class()
-    _setup = getattr(test_instance, 'setup_method', None)
-    if _setup is not None:
-        _setup()
-    try:
-        test_method = getattr(test_instance, '{}')
-        return test_method(*args, **kwargs)
-    finally:
-        _teardown = getattr(test_instance, 'teardown_method', None)
-        if _teardown is not None:
-            _teardown()
+def {func_name}(*args, **kwargs):
+    if 'instance' not in _instance_cache:
+        _instance_cache['instance'] = test_class()
+    instance = _instance_cache['instance']
+    return getattr(instance, '{method_name}')(*args, **kwargs)
 "#,
-        method_name
+        func_name = func_name,
+        method_name = method_name
     );
-
-    let namespace = PyDict::new(py);
-    namespace.set_item("test_class", cls)?;
 
     let code_cstr = CString::new(code).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
     })?;
-    // Use the same dict for both globals and locals to ensure proper variable resolution
-    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
-    let run_test = namespace.get_item("run_test")?.unwrap();
+    py.run(&code_cstr, Some(class_namespace), Some(class_namespace))?;
+    let wrapper = class_namespace.get_item(&func_name)?.unwrap();
 
-    Ok(run_test.unbind())
+    Ok(wrapper.unbind())
+}
+
+/// Create a callable wrapper for a **test** method on a plain test class.
+///
+/// Like [`create_class_fixture_runner`], this shares the `_instance_cache` in
+/// `class_namespace`.  After the test method returns (or raises) the cache is
+/// cleared so the next test gets a fresh instance.
+fn create_class_test_runner(
+    py: Python<'_>,
+    method_name: &str,
+    class_namespace: &Bound<'_, PyDict>,
+) -> PyResult<Py<PyAny>> {
+    let func_name = format!("_test_{}", method_name);
+
+    let code = format!(
+        r#"
+def {func_name}(*args, **kwargs):
+    if 'instance' not in _instance_cache:
+        _instance_cache['instance'] = test_class()
+    instance = _instance_cache['instance']
+    _setup = getattr(instance, 'setup_method', None)
+    if _setup is not None:
+        _setup()
+    try:
+        test_method = getattr(instance, '{method_name}')
+        return test_method(*args, **kwargs)
+    finally:
+        _teardown = getattr(instance, 'teardown_method', None)
+        if _teardown is not None:
+            _teardown()
+        _instance_cache.clear()
+"#,
+        func_name = func_name,
+        method_name = method_name
+    );
+
+    let code_cstr = CString::new(code).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
+    })?;
+    py.run(&code_cstr, Some(class_namespace), Some(class_namespace))?;
+    let wrapper = class_namespace.get_item(&func_name)?.unwrap();
+
+    Ok(wrapper.unbind())
 }
 
 /// Check if a Python object is a function.
@@ -2300,11 +2345,23 @@ fn ensure_parent_packages_loaded(py: Python<'_>, path: &Path) -> PyResult<()> {
             continue;
         }
 
-        // Load the __init__.py file for this package
+        // Load the __init__.py file for this package.
+        // We must pass `submodule_search_locations` so Python's import
+        // system recognises this as a *package*.  Without it, relative
+        // imports like `from .subpkg import thing` inside the package
+        // fail because the loader doesn't know where to find child modules.
         let path_str = init_path.to_string_lossy();
-        let spec = importlib.call_method1(
+        let package_dir = init_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let search_locations = PyList::new(py, [package_dir.as_str()])?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("submodule_search_locations", search_locations)?;
+        let spec = importlib.call_method(
             "spec_from_file_location",
             (package_name.as_str(), path_str.as_ref()),
+            Some(&kwargs),
         )?;
         let loader = spec.getattr("loader")?;
 
