@@ -609,29 +609,31 @@ fn run_single_test(
     let name = test_case.display_name.clone();
     let path = to_relative_path(&test_case.path);
 
-    match outcome {
-        Ok(success) => Ok(PyTestResult::passed(
+    let result = match outcome {
+        Ok(success) => PyTestResult::passed(
             name,
             path,
             duration,
             success.stdout,
             success.stderr,
             test_case.mark_names(),
-        )),
+        ),
         Err(failure) => {
             // Check if this is a skip exception
             if is_skip_exception(&failure.message) {
-                // Extract skip reason from the message
                 let reason = extract_skip_reason(&failure.message);
-                Ok(PyTestResult::skipped(
-                    name,
-                    path,
-                    duration,
-                    reason,
-                    test_case.mark_names(),
-                ))
+                PyTestResult::skipped(name, path, duration, reason, test_case.mark_names())
+            } else if is_xfail_exception(&failure.message) {
+                // Runtime xfail() call – treat as expected failure
+                let reason = extract_xfail_reason(&failure.message);
+                let xfail_reason = if reason.is_empty() {
+                    "[XFAIL]".to_string()
+                } else {
+                    format!("[XFAIL] {}", reason)
+                };
+                PyTestResult::skipped(name, path, duration, xfail_reason, test_case.mark_names())
             } else {
-                Ok(PyTestResult::failed(
+                PyTestResult::failed(
                     name,
                     path,
                     duration,
@@ -639,10 +641,13 @@ fn run_single_test(
                     failure.stdout,
                     failure.stderr,
                     test_case.mark_names(),
-                ))
+                )
             }
         }
-    }
+    };
+
+    // Apply xfail mark semantics: convert expected failures to skips, etc.
+    Ok(apply_xfail(py, &test_case.marks, result))
 }
 
 /// Check if an error message indicates a skipped test.
@@ -676,6 +681,110 @@ fn extract_skip_reason(message: &str) -> String {
         // Fallback: use the entire message
         message.lines().next().unwrap_or(message).to_string()
     }
+}
+
+/// Check if an error message indicates an xfail exception raised at runtime.
+///
+/// Detects `rustest.decorators.XFailed` and `pytest.xfail.Exception`.
+fn is_xfail_exception(message: &str) -> bool {
+    message.contains("rustest.decorators.XFailed")
+        || message.contains("XFailed:")
+        || message.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("XFailed:") || trimmed.ends_with(".XFailed")
+        })
+}
+
+/// Extract the reason from a runtime xfail exception message.
+fn extract_xfail_reason(message: &str) -> String {
+    if let Some(pos) = message.find("XFailed: ") {
+        let reason = &message[pos + 9..];
+        reason.lines().next().unwrap_or(reason).to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Extract xfail information from a test's marks.
+///
+/// Returns `Some((condition_met, reason, strict))` when an `xfail` mark is
+/// present, or `None` otherwise.
+fn get_xfail_info(py: Python<'_>, marks: &[Mark]) -> Option<(bool, String, bool)> {
+    for mark in marks {
+        if mark.is_named("xfail") {
+            let reason = mark
+                .get_kwarg(py, "reason")
+                .and_then(|v| v.bind(py).extract::<String>().ok())
+                .unwrap_or_default();
+            let strict = mark
+                .get_kwarg(py, "strict")
+                .and_then(|v| v.bind(py).extract::<bool>().ok())
+                .unwrap_or(false);
+
+            // The condition is the first positional argument (defaults to true).
+            let args = mark.args.bind(py);
+            let condition = if args.len() > 0 {
+                args.get_item(0)
+                    .ok()
+                    .and_then(|v| v.extract::<bool>().ok())
+                    .unwrap_or(true)
+            } else {
+                true
+            };
+
+            return Some((condition, reason, strict));
+        }
+    }
+    None
+}
+
+/// Apply xfail semantics to a [`PyTestResult`].
+///
+/// If the test has an active xfail mark:
+/// - A failure is converted into a skip (expected failure).
+/// - A pass with `strict=True` is converted into a failure (unexpected pass).
+/// - A non-strict pass is left as-is.
+fn apply_xfail(py: Python<'_>, marks: &[Mark], result: PyTestResult) -> PyTestResult {
+    if let Some((condition_met, reason, strict)) = get_xfail_info(py, marks) {
+        if condition_met {
+            match result.status.as_str() {
+                "failed" => {
+                    // Expected failure – report as skipped/xfail
+                    let xfail_reason = if reason.is_empty() {
+                        "[XFAIL]".to_string()
+                    } else {
+                        format!("[XFAIL] {}", reason)
+                    };
+                    return PyTestResult::skipped(
+                        result.name,
+                        result.path,
+                        result.duration,
+                        xfail_reason,
+                        result.marks,
+                    );
+                }
+                "passed" if strict => {
+                    // Unexpected pass with strict – this is a failure
+                    let msg = if reason.is_empty() {
+                        "[XFAIL] Unexpected pass (strict xfail)".to_string()
+                    } else {
+                        format!("[XFAIL] Unexpected pass: {}", reason)
+                    };
+                    return PyTestResult::failed(
+                        result.name,
+                        result.path,
+                        result.duration,
+                        msg,
+                        result.stdout,
+                        result.stderr,
+                        result.marks,
+                    );
+                }
+                _ => { /* non-strict pass – leave as-is */ }
+            }
+        }
+    }
+    result
 }
 
 /// Run a batch of async tests in parallel using asyncio.gather().
@@ -953,6 +1062,21 @@ fn run_async_batch<'a>(
                         test.mark_names(),
                     )
                 }
+                Some(ref msg) if is_xfail_exception(msg) => {
+                    let reason = extract_xfail_reason(msg);
+                    let xfail_reason = if reason.is_empty() {
+                        "[XFAIL]".to_string()
+                    } else {
+                        format!("[XFAIL] {}", reason)
+                    };
+                    PyTestResult::skipped(
+                        test.display_name.clone(),
+                        to_relative_path(&test.path),
+                        duration,
+                        xfail_reason,
+                        test.mark_names(),
+                    )
+                }
                 Some(msg) => PyTestResult::failed(
                     test.display_name.clone(),
                     to_relative_path(&test.path),
@@ -973,6 +1097,9 @@ fn run_async_batch<'a>(
                 ),
             }
         };
+
+        // Apply xfail semantics: convert expected failures to skips, etc.
+        let result = apply_xfail(py, &test.marks, result);
 
         results.push((test, result));
     }
