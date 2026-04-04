@@ -224,6 +224,10 @@ pub struct TestCase {
     /// Parameters that should be resolved as fixture references (indirect parametrization).
     /// Contains the parameter names that are marked as indirect.
     pub indirect_params: Vec<String>,
+    /// Whether this test function has @patch decorators.
+    /// When true, fixture args are passed as keyword arguments so that
+    /// unittest.mock.patch can prepend mock objects as positional args.
+    pub has_patches: bool,
 }
 
 impl TestCase {
@@ -310,6 +314,10 @@ pub struct RunConfiguration {
     pub ascii: bool,
     pub no_color: bool,
     pub event_callback: Option<pyo3::Py<pyo3::PyAny>>,
+    /// Default loop scope for async tests (from pyproject.toml asyncio_default_test_loop_scope).
+    pub default_test_loop_scope: FixtureScope,
+    /// Default loop scope for async fixtures (from pyproject.toml asyncio_default_fixture_loop_scope).
+    pub default_fixture_loop_scope: FixtureScope,
 }
 
 impl Clone for RunConfiguration {
@@ -330,6 +338,8 @@ impl Clone for RunConfiguration {
                 .event_callback
                 .as_ref()
                 .map(|cb| pyo3::Python::attach(|py| cb.clone_ref(py))),
+            default_test_loop_scope: self.default_test_loop_scope,
+            default_fixture_loop_scope: self.default_fixture_loop_scope,
         }
     }
 }
@@ -349,6 +359,8 @@ impl RunConfiguration {
         ascii: bool,
         no_color: bool,
         event_callback: Option<pyo3::Py<pyo3::PyAny>>,
+        default_test_loop_scope: FixtureScope,
+        default_fixture_loop_scope: FixtureScope,
     ) -> Self {
         let worker_count = workers.unwrap_or_else(|| rayon::current_num_threads().max(1));
         Self {
@@ -364,6 +376,8 @@ impl RunConfiguration {
             ascii,
             no_color,
             event_callback,
+            default_test_loop_scope,
+            default_fixture_loop_scope,
         }
     }
 }

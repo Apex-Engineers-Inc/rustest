@@ -443,6 +443,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+docs = [
+    { name = "zensical" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
     { name = "maturin" },
@@ -455,27 +460,28 @@ dev = [
     { name = "pytest-codeblocks" },
     { name = "ruff" },
 ]
-docs = [
-    { name = "zensical" },
-]
 
 [package.metadata]
 requires-dist = [
-    { name = "basedpyright", marker = "extra == 'dev'", specifier = ">=1.19" },
-    { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.4,<2" },
-    { name = "packaging", marker = "extra == 'dev'", specifier = ">=20.0" },
-    { name = "poethepoet", marker = "extra == 'dev'", specifier = ">=0.22" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5" },
-    { name = "py", marker = "extra == 'dev'", specifier = ">=1.11" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.2.0" },
-    { name = "pytest-codeblocks", marker = "extra == 'dev'", specifier = ">=0.17.0" },
     { name = "rich", specifier = ">=13.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.9" },
     { name = "typing-extensions", specifier = ">=4.15" },
     { name = "zensical", marker = "extra == 'docs'" },
 ]
-provides-extras = ["dev", "docs"]
+provides-extras = ["docs"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "basedpyright", specifier = ">=1.19" },
+    { name = "maturin", specifier = ">=1.4,<2" },
+    { name = "packaging", specifier = ">=20.0" },
+    { name = "poethepoet", specifier = ">=0.22" },
+    { name = "pre-commit", specifier = ">=3.5" },
+    { name = "py", specifier = ">=1.11" },
+    { name = "pytest", specifier = ">=7.0" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0" },
+    { name = "pytest-codeblocks", specifier = ">=0.17.0" },
+    { name = "ruff", specifier = ">=0.1.9" },
+]
 
 [[package]]
 name = "tomli"

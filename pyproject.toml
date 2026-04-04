@@ -23,13 +23,13 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Software Development :: Testing",
 ]
-dependencies = [
-    "typing-extensions>=4.15",
-    "rich>=13.0.0",
-]
+dependencies = ["typing-extensions>=4.15", "rich>=13.0.0"]
 scripts = { rustest = "rustest.__main__:main" }
 
 [project.optional-dependencies]
+docs = ["zensical"]
+
+[dependency-groups]
 dev = [
     "basedpyright>=1.19",
     "maturin>=1.4,<2",
@@ -41,9 +41,6 @@ dev = [
     "pytest-asyncio>=1.2.0",
     "pytest-codeblocks>=0.17.0",
     "ruff>=0.1.9",
-]
-docs = [
-    "zensical",
 ]
 
 [project.urls]
@@ -60,8 +57,8 @@ compatibility = "manylinux2014"
 build = "uv build"
 dev = "uv run maturin develop"
 fmt = "cargo fmt"
-lint = "uv run --with dev ruff check python"
-typecheck = "uv run --with dev basedpyright python"
+lint = "uv run ruff check python"
+typecheck = "uv run basedpyright python"
 pytests = "uv run pytest python/tests -v"
 tests = "uv run rustest tests/ examples/tests/"
 demos = "bash scripts/generate-demos.sh"

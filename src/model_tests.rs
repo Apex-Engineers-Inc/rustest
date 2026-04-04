@@ -49,6 +49,7 @@ mod tests {
                 class_name: None,
                 fixture_param_indices: IndexMap::new(),
                 indirect_params: vec![],
+                has_patches: false,
             };
 
             let unique_id = test_case.unique_id();
@@ -73,6 +74,7 @@ mod tests {
                 class_name: None,
                 fixture_param_indices: IndexMap::new(),
                 indirect_params: vec![],
+                has_patches: false,
             };
 
             assert_eq!(
@@ -128,6 +130,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
 
         assert!(config.pattern.is_none());
@@ -151,6 +155,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
 
         assert_eq!(config.pattern, Some("test_.*".to_string()));
@@ -173,6 +179,8 @@ mod tests {
             false,
             false,
             None,
+            FixtureScope::Function,
+            FixtureScope::Function,
         );
         let cloned = config.clone();
 
@@ -321,6 +329,7 @@ mod tests {
                 class_name: None,
                 fixture_param_indices: IndexMap::new(),
                 indirect_params: vec![],
+                has_patches: false,
             };
 
             assert_eq!(test_case.parameters.len(), 2);

@@ -16,7 +16,7 @@ use std::ffi::c_void;
 use std::time::Instant;
 
 use indexmap::IndexMap;
-use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -69,6 +69,7 @@ fn partition_tests_for_parallel<'a>(
     py: Python<'_>,
     tests: &[&'a TestCase],
     fixtures: &IndexMap<String, Fixture>,
+    config: &RunConfiguration,
 ) -> Vec<TestExecutionUnit<'a>> {
     let mut units: Vec<TestExecutionUnit<'a>> = Vec::new();
     let mut current_batch: Option<AsyncBatch<'a>> = None;
@@ -89,7 +90,7 @@ fn partition_tests_for_parallel<'a>(
         }
 
         let is_async = is_async_test(py, test);
-        let loop_scope = determine_test_loop_scope(py, test, fixtures);
+        let loop_scope = determine_test_loop_scope(py, test, fixtures, config);
 
         // Only batch async tests with non-function loop scope
         let can_batch = is_async && loop_scope > FixtureScope::Function;
@@ -415,7 +416,8 @@ pub fn run_collected_tests(
             context.class_cache.clear();
 
             // Partition tests for optimal async parallelization
-            let execution_units = partition_tests_for_parallel(py, &tests, &module.fixtures);
+            let execution_units =
+                partition_tests_for_parallel(py, &tests, &module.fixtures, config);
 
             for unit in execution_units {
                 let (unit_results, is_plain_function_test): (Vec<PyTestResult>, bool) = match unit {
@@ -607,29 +609,31 @@ fn run_single_test(
     let name = test_case.display_name.clone();
     let path = to_relative_path(&test_case.path);
 
-    match outcome {
-        Ok(success) => Ok(PyTestResult::passed(
+    let result = match outcome {
+        Ok(success) => PyTestResult::passed(
             name,
             path,
             duration,
             success.stdout,
             success.stderr,
             test_case.mark_names(),
-        )),
+        ),
         Err(failure) => {
             // Check if this is a skip exception
             if is_skip_exception(&failure.message) {
-                // Extract skip reason from the message
                 let reason = extract_skip_reason(&failure.message);
-                Ok(PyTestResult::skipped(
-                    name,
-                    path,
-                    duration,
-                    reason,
-                    test_case.mark_names(),
-                ))
+                PyTestResult::skipped(name, path, duration, reason, test_case.mark_names())
+            } else if is_xfail_exception(&failure.message) {
+                // Runtime xfail() call – treat as expected failure
+                let reason = extract_xfail_reason(&failure.message);
+                let xfail_reason = if reason.is_empty() {
+                    "[XFAIL]".to_string()
+                } else {
+                    format!("[XFAIL] {}", reason)
+                };
+                PyTestResult::skipped(name, path, duration, xfail_reason, test_case.mark_names())
             } else {
-                Ok(PyTestResult::failed(
+                PyTestResult::failed(
                     name,
                     path,
                     duration,
@@ -637,10 +641,13 @@ fn run_single_test(
                     failure.stdout,
                     failure.stderr,
                     test_case.mark_names(),
-                ))
+                )
             }
         }
-    }
+    };
+
+    // Apply xfail mark semantics: convert expected failures to skips, etc.
+    Ok(apply_xfail(py, &test_case.marks, result))
 }
 
 /// Check if an error message indicates a skipped test.
@@ -674,6 +681,110 @@ fn extract_skip_reason(message: &str) -> String {
         // Fallback: use the entire message
         message.lines().next().unwrap_or(message).to_string()
     }
+}
+
+/// Check if an error message indicates an xfail exception raised at runtime.
+///
+/// Detects `rustest.decorators.XFailed` and `pytest.xfail.Exception`.
+fn is_xfail_exception(message: &str) -> bool {
+    message.contains("rustest.decorators.XFailed")
+        || message.contains("XFailed:")
+        || message.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("XFailed:") || trimmed.ends_with(".XFailed")
+        })
+}
+
+/// Extract the reason from a runtime xfail exception message.
+fn extract_xfail_reason(message: &str) -> String {
+    if let Some(pos) = message.find("XFailed: ") {
+        let reason = &message[pos + 9..];
+        reason.lines().next().unwrap_or(reason).to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Extract xfail information from a test's marks.
+///
+/// Returns `Some((condition_met, reason, strict))` when an `xfail` mark is
+/// present, or `None` otherwise.
+fn get_xfail_info(py: Python<'_>, marks: &[Mark]) -> Option<(bool, String, bool)> {
+    for mark in marks {
+        if mark.is_named("xfail") {
+            let reason = mark
+                .get_kwarg(py, "reason")
+                .and_then(|v| v.bind(py).extract::<String>().ok())
+                .unwrap_or_default();
+            let strict = mark
+                .get_kwarg(py, "strict")
+                .and_then(|v| v.bind(py).extract::<bool>().ok())
+                .unwrap_or(false);
+
+            // The condition is the first positional argument (defaults to true).
+            let args = mark.args.bind(py);
+            let condition = if args.len() > 0 {
+                args.get_item(0)
+                    .ok()
+                    .and_then(|v| v.extract::<bool>().ok())
+                    .unwrap_or(true)
+            } else {
+                true
+            };
+
+            return Some((condition, reason, strict));
+        }
+    }
+    None
+}
+
+/// Apply xfail semantics to a [`PyTestResult`].
+///
+/// If the test has an active xfail mark:
+/// - A failure is converted into a skip (expected failure).
+/// - A pass with `strict=True` is converted into a failure (unexpected pass).
+/// - A non-strict pass is left as-is.
+fn apply_xfail(py: Python<'_>, marks: &[Mark], result: PyTestResult) -> PyTestResult {
+    if let Some((condition_met, reason, strict)) = get_xfail_info(py, marks) {
+        if condition_met {
+            match result.status.as_str() {
+                "failed" => {
+                    // Expected failure – report as skipped/xfail
+                    let xfail_reason = if reason.is_empty() {
+                        "[XFAIL]".to_string()
+                    } else {
+                        format!("[XFAIL] {}", reason)
+                    };
+                    return PyTestResult::skipped(
+                        result.name,
+                        result.path,
+                        result.duration,
+                        xfail_reason,
+                        result.marks,
+                    );
+                }
+                "passed" if strict => {
+                    // Unexpected pass with strict – this is a failure
+                    let msg = if reason.is_empty() {
+                        "[XFAIL] Unexpected pass (strict xfail)".to_string()
+                    } else {
+                        format!("[XFAIL] Unexpected pass: {}", reason)
+                    };
+                    return PyTestResult::failed(
+                        result.name,
+                        result.path,
+                        result.duration,
+                        msg,
+                        result.stdout,
+                        result.stderr,
+                        result.marks,
+                    );
+                }
+                _ => { /* non-strict pass – leave as-is */ }
+            }
+        }
+    }
+    result
 }
 
 /// Run a batch of async tests in parallel using asyncio.gather().
@@ -773,28 +884,13 @@ fn run_async_batch<'a>(
             continue;
         }
 
-        // Resolve autouse fixtures
+        // Resolve test arguments and autouse fixtures in correct scope order
         {
             let _resolver_guard = ResolverActivationGuard::new(&mut resolver);
-            if let Err(err) = resolver.resolve_autouse_fixtures() {
-                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                preparation_errors.push((
-                    test_id.clone(),
-                    format!("Autouse fixture setup error:\n{}", message),
-                ));
-                continue;
-            }
 
-            if let Err(err) = resolver.apply_usefixtures_marks() {
-                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                preparation_errors.push((
-                    test_id.clone(),
-                    format!("Usefixtures mark error:\n{}", message),
-                ));
-                continue;
-            }
-
-            // Resolve all arguments for this test
+            // Resolve test arguments FIRST - this triggers higher-scoped fixture
+            // resolution (e.g. session) which must happen before lower-scoped
+            // autouse fixtures that may depend on them
             let mut call_args = Vec::new();
             let mut resolution_failed = false;
             for param in &test.parameters {
@@ -814,11 +910,29 @@ fn run_async_batch<'a>(
 
             if resolution_failed {
                 // Clean up function teardowns for this test
-                finalize_generators(
-                    py,
-                    &mut resolver.function_teardowns,
-                    resolver.function_event_loop.as_ref(),
-                );
+                let event_loop = resolver
+                    .get_test_scope_event_loop()
+                    .map(|l| l.clone_ref(py));
+                finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
+                continue;
+            }
+
+            // THEN resolve autouse fixtures - higher-scoped ones are now cached
+            if let Err(err) = resolver.resolve_autouse_fixtures() {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Autouse fixture setup error:\n{}", message),
+                ));
+                continue;
+            }
+
+            if let Err(err) = resolver.apply_usefixtures_marks() {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                preparation_errors.push((
+                    test_id.clone(),
+                    format!("Usefixtures mark error:\n{}", message),
+                ));
                 continue;
             }
 
@@ -948,6 +1062,21 @@ fn run_async_batch<'a>(
                         test.mark_names(),
                     )
                 }
+                Some(ref msg) if is_xfail_exception(msg) => {
+                    let reason = extract_xfail_reason(msg);
+                    let xfail_reason = if reason.is_empty() {
+                        "[XFAIL]".to_string()
+                    } else {
+                        format!("[XFAIL] {}", reason)
+                    };
+                    PyTestResult::skipped(
+                        test.display_name.clone(),
+                        to_relative_path(&test.path),
+                        duration,
+                        xfail_reason,
+                        test.mark_names(),
+                    )
+                }
                 Some(msg) => PyTestResult::failed(
                     test.display_name.clone(),
                     to_relative_path(&test.path),
@@ -968,6 +1097,9 @@ fn run_async_batch<'a>(
                 ),
             }
         };
+
+        // Apply xfail semantics: convert expected failures to skips, etc.
+        let result = apply_xfail(py, &test.marks, result);
 
         results.push((test, result));
     }
@@ -1322,14 +1454,37 @@ fn determine_test_loop_scope(
     py: Python<'_>,
     test_case: &TestCase,
     fixtures: &IndexMap<String, Fixture>,
+    config: &RunConfiguration,
 ) -> FixtureScope {
     // Check for explicit loop_scope mark first
     if let Some(explicit_scope) = get_explicit_loop_scope_from_marks(py, test_case) {
         return explicit_scope;
     }
 
+    // Collect both explicit parameters AND autouse fixtures for analysis
+    let mut all_fixture_names: Vec<String> = test_case.parameters.clone();
+
+    // Include autouse fixtures - they run for every test and affect loop scope
+    for (name, fixture) in fixtures {
+        if fixture.autouse && !all_fixture_names.contains(name) {
+            // For class-scoped autouse fixtures, only include if the test is in that class
+            match (&fixture.class_name, &test_case.class_name) {
+                (Some(fixture_class), Some(test_class)) if fixture_class == test_class => {
+                    all_fixture_names.push(name.clone());
+                }
+                (None, _) => {
+                    all_fixture_names.push(name.clone());
+                }
+                _ => {} // Skip class fixtures for non-matching tests
+            }
+        }
+    }
+
     // Analyze fixture dependencies to find required scope
-    detect_required_loop_scope_from_fixtures(fixtures, &test_case.parameters)
+    let detected = detect_required_loop_scope_from_fixtures(fixtures, &all_fixture_names);
+
+    // Use the wider of: detected scope vs config default
+    std::cmp::max(detected, config.default_test_loop_scope)
 }
 
 /// Execute a test case and return either success metadata or failure details.
@@ -1352,7 +1507,7 @@ fn execute_test_case(
     }
 
     // Determine loop scope: explicit mark or smart detection based on fixture dependencies
-    let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures);
+    let test_loop_scope = determine_test_loop_scope(py, test_case, &module.fixtures, config);
 
     let test_display_name = test_case.display_name.clone();
     let test_nodeid = test_case.unique_id();
@@ -1393,7 +1548,25 @@ fn execute_test_case(
         });
     }
 
-    // Resolve autouse fixtures first
+    // Resolve test arguments FIRST - this triggers higher-scoped fixture
+    // resolution (e.g. session) which must happen before lower-scoped
+    // autouse fixtures that may depend on them
+    let mut call_args: Vec<(String, Py<PyAny>)> = Vec::new();
+    for param in &test_case.parameters {
+        match resolver.resolve_argument(param) {
+            Ok(value) => call_args.push((param.clone(), value)),
+            Err(err) => {
+                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
+                return Err(TestCallFailure {
+                    message,
+                    stdout: None,
+                    stderr: None,
+                });
+            }
+        }
+    }
+
+    // THEN resolve autouse fixtures - higher-scoped ones are now cached
     if let Err(err) = resolver.resolve_autouse_fixtures() {
         let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
         return Err(TestCallFailure {
@@ -1412,25 +1585,23 @@ fn execute_test_case(
         });
     }
 
-    let mut call_args = Vec::new();
-    for param in &test_case.parameters {
-        match resolver.resolve_argument(param) {
-            Ok(value) => call_args.push(value),
-            Err(err) => {
-                let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
-                return Err(TestCallFailure {
-                    message,
-                    stdout: None,
-                    stderr: None,
-                });
-            }
-        }
-    }
-
     let call_result = call_with_capture(py, config.capture_output, || {
-        let args_tuple = PyTuple::new(py, &call_args)?;
         let callable = test_case.callable.bind(py);
-        let result = callable.call1(args_tuple)?;
+
+        // For @patch-decorated tests, pass fixture args as keyword arguments
+        // so that unittest.mock.patch can prepend mock objects as positional args.
+        let result = if test_case.has_patches {
+            let kwargs = PyDict::new(py);
+            for (name, value) in &call_args {
+                kwargs.set_item(name, value)?;
+            }
+            let empty_args = PyTuple::empty(py);
+            callable.call(empty_args, Some(&kwargs))?
+        } else {
+            let values: Vec<_> = call_args.iter().map(|(_, v)| v).collect();
+            let args_tuple = PyTuple::new(py, &values)?;
+            callable.call1(args_tuple)?
+        };
 
         // Check if the result is a coroutine (async test function)
         let inspect = py.import("inspect")?;
@@ -1477,11 +1648,10 @@ fn execute_test_case(
         Ok(value) => value,
         Err(err) => {
             // Clean up function-scoped fixtures before returning
-            finalize_generators(
-                py,
-                &mut resolver.function_teardowns,
-                resolver.function_event_loop.as_ref(),
-            );
+            let event_loop = resolver
+                .get_test_scope_event_loop()
+                .map(|l| l.clone_ref(py));
+            finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
             return Err(TestCallFailure {
                 message: err.to_string(),
                 stdout: None,
@@ -1491,11 +1661,10 @@ fn execute_test_case(
     };
 
     // Clean up function-scoped fixtures after test completes
-    finalize_generators(
-        py,
-        &mut resolver.function_teardowns,
-        resolver.function_event_loop.as_ref(),
-    );
+    let event_loop = resolver
+        .get_test_scope_event_loop()
+        .map(|l| l.clone_ref(py));
+    finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
 
     match result {
         Ok(_) => Ok(TestCallSuccess { stdout, stderr }),
@@ -1536,6 +1705,8 @@ struct FixtureResolver<'py> {
     fixture_param_indices: &'py IndexMap<String, usize>,
     /// Current fixture param values being resolved, for request.param support.
     current_fixture_param: Option<Py<PyAny>>,
+    /// Override param value from indirect parametrization (takes precedence over fixture's own params).
+    indirect_param_override: Option<Py<PyAny>>,
     /// Parameter names that should be resolved as fixture references (indirect parametrization).
     indirect_params: &'py [String],
     /// Event loops for different scopes (for async fixtures)
@@ -1597,6 +1768,7 @@ impl<'py> FixtureResolver<'py> {
             parameters,
             fixture_param_indices,
             current_fixture_param: None,
+            indirect_param_override: None,
             indirect_params,
             session_event_loop,
             package_event_loop,
@@ -1615,12 +1787,13 @@ impl<'py> FixtureResolver<'py> {
     fn resolve_argument(&mut self, name: &str) -> PyResult<Py<PyAny>> {
         // First check if it's a parametrized value
         if let Some(value) = self.parameters.get(name) {
-            // If this parameter is indirect, treat its value as a fixture name
+            // If this parameter is indirect, pass the value to the fixture via request.param
             if self.indirect_params.contains(&name.to_string()) {
-                // Extract the fixture name from the parameter value
-                let fixture_name: String = value.bind(self.py).extract()?;
-                // Resolve the fixture by its name (recursive call without the parameter)
-                return self.resolve_argument(&fixture_name);
+                let indirect_value = value.clone_ref(self.py);
+                self.indirect_param_override = Some(indirect_value);
+                let result = self.resolve_fixture_value(name);
+                self.indirect_param_override = None;
+                return result;
             }
             // Otherwise, return the value directly
             return Ok(value.clone_ref(self.py));
@@ -1698,7 +1871,12 @@ impl<'py> FixtureResolver<'py> {
 
         // Set current fixture param for request.param access
         let previous_param = self.current_fixture_param.take();
-        self.current_fixture_param = param_value;
+        // Indirect parametrize override takes precedence over fixture's own params
+        if let Some(indirect_val) = self.indirect_param_override.take() {
+            self.current_fixture_param = Some(indirect_val);
+        } else {
+            self.current_fixture_param = param_value;
+        }
 
         // Detect circular dependencies
         if !self.stack.insert(fixture.name.clone()) {
@@ -1737,9 +1915,11 @@ impl<'py> FixtureResolver<'py> {
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Use the test's loop scope for all fixtures (pytest-asyncio behavior)
-            // All async operations in a test (fixtures + test) share the same loop
-            let event_loop = self.get_or_create_event_loop(self.test_loop_scope)?;
+            // Use the wider of the fixture's scope and the test's loop scope.
+            // Session-scoped async fixtures must use the session event loop to avoid
+            // "attached to a different loop" errors when reused across tests.
+            let effective_scope = std::cmp::max(fixture.scope, self.test_loop_scope);
+            let event_loop = self.get_or_create_event_loop(effective_scope)?;
 
             // Call anext() on the async generator to get the yielded value
             let anext_builtin = self.py.import("builtins")?.getattr("anext")?;
@@ -1810,9 +1990,11 @@ impl<'py> FixtureResolver<'py> {
                 .call1(args_tuple)
                 .map(|value| value.unbind())?;
 
-            // Use the test's loop scope for all fixtures (pytest-asyncio behavior)
-            // All async operations in a test (fixtures + test) share the same loop
-            let event_loop = self.get_or_create_event_loop(self.test_loop_scope)?;
+            // Use the wider of the fixture's scope and the test's loop scope.
+            // Session-scoped async fixtures must use the session event loop to avoid
+            // "attached to a different loop" errors when reused across tests.
+            let effective_scope = std::cmp::max(fixture.scope, self.test_loop_scope);
+            let event_loop = self.get_or_create_event_loop(effective_scope)?;
 
             // Run the coroutine in the scoped event loop
             event_loop
@@ -1862,13 +2044,6 @@ impl<'py> FixtureResolver<'py> {
     }
 
     fn resolve_for_request(&mut self, name: &str) -> PyResult<Py<PyAny>> {
-        if let Some(fixture) = self.fixtures.get(name) {
-            if fixture.is_async || fixture.is_async_generator {
-                return Err(PyNotImplementedError::new_err(async_getfixturevalue_error(
-                    name,
-                )));
-            }
-        }
         self.resolve_fixture_value(name)
     }
 
@@ -1924,9 +2099,10 @@ impl<'py> FixtureResolver<'py> {
 
     /// Resolve all autouse fixtures appropriate for the current test.
     /// Autouse fixtures are automatically executed without needing to be explicitly requested.
+    /// Fixtures are sorted by scope (session first, function last) to match pytest behavior.
     fn resolve_autouse_fixtures(&mut self) -> PyResult<()> {
-        // Collect all autouse fixtures that match the current test's class
-        let autouse_fixtures: Vec<String> = self
+        // Collect all autouse fixtures that match the current test's class, with their scope
+        let mut autouse_fixtures: Vec<(String, FixtureScope)> = self
             .fixtures
             .iter()
             .filter(|(_, fixture)| {
@@ -1940,15 +2116,21 @@ impl<'py> FixtureResolver<'py> {
                     (Some(_), None) => false, // Class fixture shouldn't run for non-class tests
                 }
             })
-            .map(|(name, _)| name.clone())
+            .map(|(name, fixture)| (name.clone(), fixture.scope))
             .collect();
 
+        // Sort by scope: session (widest) first, function (narrowest) last
+        autouse_fixtures.sort_by(|a, b| b.1.cmp(&a.1));
+
         if std::env::var_os("RUSTEST_DEBUG_AUTOUSE").is_some() {
-            eprintln!("[rustest-debug] autouse fixtures: {:?}", autouse_fixtures);
+            eprintln!(
+                "[rustest-debug] autouse fixtures (sorted by scope): {:?}",
+                autouse_fixtures
+            );
         }
 
-        // Resolve each autouse fixture
-        for name in autouse_fixtures {
+        // Resolve each autouse fixture in scope order
+        for (name, _) in autouse_fixtures {
             // Skip if already in cache (for higher-scoped autouse fixtures)
             if self.function_cache.contains_key(&name)
                 || self.class_cache.contains_key(&name)
@@ -2019,6 +2201,18 @@ impl<'py> FixtureResolver<'py> {
         self.get_or_create_event_loop(self.test_loop_scope)
     }
 
+    /// Get the event loop for the current test's loop scope (without creating one).
+    /// Returns the existing event loop for the test's scope, falling back to function_event_loop.
+    fn get_test_scope_event_loop(&self) -> Option<&Py<PyAny>> {
+        match self.test_loop_scope {
+            FixtureScope::Session => (*self.session_event_loop).as_ref(),
+            FixtureScope::Package => (*self.package_event_loop).as_ref(),
+            FixtureScope::Module => (*self.module_event_loop).as_ref(),
+            FixtureScope::Class => (*self.class_event_loop).as_ref(),
+            FixtureScope::Function => self.function_event_loop.as_ref(),
+        }
+    }
+
     /// Create a request fixture with the current param value.
     fn create_request_fixture(&self) -> PyResult<Py<PyAny>> {
         // Import the FixtureRequest class from rustest.compat.pytest
@@ -2062,24 +2256,6 @@ impl<'py> FixtureResolver<'py> {
         let tuple_obj = tuple_fn.call1((args_list,))?;
         Ok(tuple_obj.unbind())
     }
-}
-
-fn async_getfixturevalue_error(name: &str) -> String {
-    format!(
-        "\nCannot use async fixture '{name}' with request.getfixturevalue().\n\n\
-Why this fails:\n\
-  • getfixturevalue() is a synchronous function that returns values immediately\n\
-  • Async fixtures must be awaited, but we can't await in a sync context\n\
-  • Calling the async fixture returns a coroutine object, not the actual value\n\n\
-Good news: Async fixtures work perfectly with normal injection!\n\n\
-How to fix:\n\
-  ❌ Don't use: request.getfixturevalue('{name}')\n\
-  ✅ Instead use: def test_something({name}):\n\n\
-Example:\n\
-  # This works perfectly:\n\
-  async def test_my_feature({name}):\n\
-      assert {name} is not None\n"
-    )
 }
 
 /// Result type for test execution with optional stdout/stderr capture.

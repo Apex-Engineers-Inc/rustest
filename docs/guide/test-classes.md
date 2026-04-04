@@ -334,6 +334,54 @@ class TestEmailService:
         assert result.success is True
 ```
 
+## Setup and Teardown Methods
+
+Rustest automatically calls `setup_method()` and `teardown_method()` for plain test classes, matching pytest behavior. These methods run before and after each test method respectively:
+
+<!--rustest.mark.skip-->
+```python
+class TestWithSetup:
+    def setup_method(self):
+        """Called before each test method."""
+        self.connection = create_connection()
+        self.data = []
+
+    def teardown_method(self):
+        """Called after each test method, even if the test fails."""
+        self.connection.close()
+
+    def test_insert(self):
+        self.connection.insert({"key": "value"})
+        assert self.connection.count() == 1
+
+    def test_empty(self):
+        assert self.connection.count() == 0
+```
+
+`teardown_method()` runs in a `finally` block, so it is guaranteed to execute even when the test raises an exception. This ensures resources are always cleaned up.
+
+## Class-Method Fixtures and Instance Sharing
+
+When you define a `@pytest.fixture` (or `@fixture`) as a method inside a test class, the fixture method shares the same class instance as the test method that uses it. This means `self` refers to the same object in both the fixture and the test:
+
+<!--rustest.mark.skip-->
+```python
+from rustest import fixture
+
+class TestUserService:
+    @fixture
+    def service(self):
+        """This fixture shares `self` with the test method."""
+        self.service_instance = UserService()
+        return self.service_instance
+
+    def test_service_available(self, service):
+        # self.service_instance was set by the fixture on the same instance
+        assert self.service_instance is service
+```
+
+This is particularly useful when fixtures need to store state on the instance that test methods can access, or when multiple fixtures on the same class need to coordinate through shared instance attributes.
+
 ## Best Practices
 
 ### Keep Classes Focused

@@ -152,6 +152,24 @@ async def test_with_both(db, api_client):
     assert response.status == 200
 ```
 
+### Fixture Scope and Event Loop Assignment
+
+Fixture scope now correctly determines which event loop is used. Session-scoped async fixtures always run in the session event loop, and function-scoped async fixture teardowns use the test's effective event loop scope. This prevents "attached to a different loop" errors when mixing fixture scopes.
+
+Autouse fixtures are also included in loop scope auto-detection, so a session-scoped autouse async fixture will correctly widen the loop scope for all tests that use it.
+
+### pyproject.toml Configuration
+
+Rustest reads `asyncio_default_test_loop_scope` and `asyncio_default_fixture_loop_scope` from `pyproject.toml` under `[tool.pytest.ini_options]`. These settings act as a floor for loop scope detection:
+
+```toml
+[tool.pytest.ini_options]
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
+```
+
+When set, auto-detected loop scopes will not be narrower than the configured value. This is useful for projects that want all async tests to share a single event loop by default.
+
 ## Explicit Control (Advanced)
 
 Want explicit control? Use `@mark.asyncio(loop_scope="...")`:

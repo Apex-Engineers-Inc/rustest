@@ -41,6 +41,12 @@ That's it! Your existing pytest tests will run with rustest's performance benefi
 - ✅ `pytest.deprecated_call()` - Deprecation warning capture
 - ✅ `pytest.param()` - Parametrize with custom IDs
 - ✅ `pytest.importorskip()` - Skip if module unavailable
+- ✅ `request.getfixturevalue()` - Dynamic fixture resolution (including async and async generator fixtures)
+
+### Decorator Support
+
+- ✅ `unittest.mock.patch` - `@patch` decorated tests run correctly in `--pytest-compat` mode
+- ✅ `@mark.xfail` - Expected failures with `strict` and `condition` support
 
 ### Built-in Fixtures
 
@@ -144,7 +150,6 @@ def database(request):
 - `request.node.session` - Always None
 - `request.function`, `request.cls`, `request.module` - Always None
 - `request.addfinalizer()` - Not supported (use fixture yield instead)
-- `request.getfixturevalue()` - Not supported (declare as parameter)
 
 ### Partial Support
 
@@ -159,6 +164,7 @@ def database(request):
 - No pytest_asyncio.fixture
 - Auto mode (`asyncio_mode = "auto"`) not supported
 - Use rustest's `@mark.asyncio` decorator
+- `asyncio_default_test_loop_scope` and `asyncio_default_fixture_loop_scope` are read from `pyproject.toml` `[tool.pytest.ini_options]`
 
 ## Migration Examples
 
@@ -272,7 +278,7 @@ Use this checklist to assess your pytest suite's compatibility:
 
 - [ ] Heavy use of pytest plugins (pytest-django, etc.)
 - [ ] Custom pytest hooks (pytest_configure, etc.)
-- [ ] Uses `request.addfinalizer()` or `request.getfixturevalue()`
+- [ ] Uses `request.addfinalizer()`
 - [ ] Relies on pytest internals
 - [ ] Custom collectors or test generation
 
@@ -350,18 +356,20 @@ except ImportError:
 # Replace with Any or remove type annotation
 ```
 
-### "request.getfixturevalue() not supported"
+### Using request.getfixturevalue()
 
-Replace with fixture parameters:
+`request.getfixturevalue()` is now fully supported, including async and async generator fixtures. You can use it for dynamic fixture resolution:
 
 ```python
-# Before
 @pytest.fixture
 def my_fixture(request):
     other = request.getfixturevalue('other_fixture')
     return setup(other)
+```
 
-# After
+For simpler cases, direct parameter injection is still preferred:
+
+```python
 @pytest.fixture
 def my_fixture(other_fixture):  # Direct parameter
     return setup(other_fixture)
@@ -444,12 +452,14 @@ from rustest import fixture
 
 ### 4. Prefer Explicit Dependencies
 
+While `request.getfixturevalue()` is fully supported, explicit dependencies are clearer:
+
 ```python
-# Bad - dynamic fixture lookup
+# Works, but less explicit
 def test_example(request):
     db = request.getfixturevalue('database')
 
-# Good - explicit dependency
+# Preferred - explicit dependency
 def test_example(database):
     db = database
 ```

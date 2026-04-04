@@ -979,6 +979,7 @@ fn collect_from_markdown(
             class_name: None,
             fixture_param_indices: IndexMap::new(),
             indirect_params: Vec::new(),
+            has_patches: false,
         });
     }
 
@@ -1174,6 +1175,7 @@ fn inspect_module(
                 continue;
             }
 
+            let has_patches = count_patch_decorators(&value)? > 0;
             let parameters = extract_parameters(py, &value)?;
             let mut skip_reason = string_attribute(&value, "__rustest_skip__")?;
 
@@ -1204,6 +1206,7 @@ fn inspect_module(
                     class_name: None,
                     fixture_param_indices: IndexMap::new(),
                     indirect_params: indirect_params.clone(),
+                    has_patches,
                 });
             } else {
                 for (case_id, values) in param_cases {
@@ -1220,6 +1223,7 @@ fn inspect_module(
                         class_name: None,
                         fixture_param_indices: IndexMap::new(),
                         indirect_params: indirect_params.clone(),
+                        has_patches,
                     });
                 }
             }
@@ -1357,6 +1361,7 @@ fn expand_tests_for_parametrized_fixtures(
                 class_name: test.class_name.clone(),
                 fixture_param_indices,
                 indirect_params: test.indirect_params.clone(),
+                has_patches: test.has_patches,
             });
         }
     }
@@ -1457,6 +1462,7 @@ fn discover_unittest_class_tests(
                 class_name: Some(class_name.to_string()),
                 fixture_param_indices: IndexMap::new(),
                 indirect_params: Vec::new(),
+                has_patches: false,
             });
         }
     }
@@ -1545,8 +1551,17 @@ fn discover_plain_class_tests_and_fixtures(
     let mut tests = Vec::new();
     let inspect = py.import("inspect")?;
 
+    // Create a shared namespace for this class so that fixture and test wrappers
+    // share the same instance cache.  This is critical for class-method autouse
+    // fixtures that set attributes on `self` — both the fixture and the test
+    // must operate on the *same* instance.
+    let class_namespace = PyDict::new(py);
+    class_namespace.set_item("test_class", cls)?;
+    class_namespace.set_item("_instance_cache", PyDict::new(py))?;
+
     // Extract class-level parametrization (if any)
     let class_param_cases = collect_parametrization(py, cls)?;
+    let class_indirect_params = extract_indirect_params(cls)?;
 
     // Process all members
     let members = inspect.call_method1("getmembers", (cls,))?;
@@ -1577,8 +1592,9 @@ fn discover_plain_class_tests_and_fixtures(
             let all_params = extract_parameters(py, &method)?;
             let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
 
-            // Create a wrapper that instantiates the class and calls the fixture method
-            let fixture_callable = create_plain_class_method_runner(py, cls, &name)?;
+            // Create a wrapper that instantiates the class and calls the fixture method,
+            // sharing the class instance cache so autouse fixtures and tests see the same `self`.
+            let fixture_callable = create_class_fixture_runner(py, &name, &class_namespace)?;
 
             fixtures.insert(
                 fixture_name.clone(),
@@ -1601,6 +1617,9 @@ fn discover_plain_class_tests_and_fixtures(
         if name.starts_with("test") && is_callable(&method)? {
             let display_name = format!("{}::{}", class_name, name);
 
+            // Detect @patch decorators on the method
+            let has_patches = count_patch_decorators(&method)? > 0;
+
             // Extract parameters (excluding 'self')
             let all_params = extract_parameters(py, &method)?;
             let parameters: Vec<String> = all_params.into_iter().filter(|p| p != "self").collect();
@@ -1620,15 +1639,24 @@ fn discover_plain_class_tests_and_fixtures(
 
             let marks = collect_marks(&method)?;
             let method_param_cases = collect_parametrization(py, &method)?;
-            let indirect_params = extract_indirect_params(&method)?;
+            let method_indirect_params = extract_indirect_params(&method)?;
+
+            // Merge class-level and method-level indirect params
+            let mut indirect_params = class_indirect_params.clone();
+            for p in method_indirect_params {
+                if !indirect_params.contains(&p) {
+                    indirect_params.push(p);
+                }
+            }
 
             // Combine class-level and method-level parametrization
             let combined_param_cases =
                 combine_parametrizations(py, &class_param_cases, &method_param_cases)?;
 
-            // Create a callable that instantiates the class and calls the method
-            // Autouse fixtures will be resolved by the fixture system
-            let test_callable = create_plain_class_method_runner(py, cls, &name)?;
+            // Create a callable that instantiates the class and calls the method.
+            // Uses the shared instance cache so class-method fixtures and tests
+            // operate on the same instance.
+            let test_callable = create_class_test_runner(py, &name, &class_namespace)?;
 
             if combined_param_cases.is_empty() {
                 tests.push(TestCase {
@@ -1643,6 +1671,7 @@ fn discover_plain_class_tests_and_fixtures(
                     class_name: Some(class_name.to_string()),
                     fixture_param_indices: IndexMap::new(),
                     indirect_params: indirect_params.clone(),
+                    has_patches,
                 });
             } else {
                 // Handle parametrized test methods
@@ -1660,6 +1689,7 @@ fn discover_plain_class_tests_and_fixtures(
                         class_name: Some(class_name.to_string()),
                         fixture_param_indices: IndexMap::new(),
                         indirect_params: indirect_params.clone(),
+                        has_patches,
                     });
                 }
             }
@@ -1707,38 +1737,81 @@ def run_test():
     Ok(run_test.unbind())
 }
 
-/// Create a callable that instantiates a plain test class and runs a specific test method.
-/// This wrapper will receive fixtures as arguments and pass them to the method.
-fn create_plain_class_method_runner(
+/// Create a callable wrapper for a **fixture** method on a plain test class.
+///
+/// The wrapper looks up (or creates) a shared class instance in `_instance_cache`
+/// which lives in `class_namespace`.  This ensures that autouse fixtures that set
+/// attributes on `self` share the same instance as the test method that reads them.
+fn create_class_fixture_runner(
     py: Python<'_>,
-    cls: &Bound<'_, PyAny>,
     method_name: &str,
+    class_namespace: &Bound<'_, PyDict>,
 ) -> PyResult<Py<PyAny>> {
-    // Create a wrapper function that:
-    // 1. Instantiates the test class (without arguments)
-    // 2. Gets the test method
-    // 3. Calls the method with provided fixtures (as *args)
+    // Use a unique function name to avoid collisions in the shared namespace.
+    let func_name = format!("_fixture_{}", method_name);
+
     let code = format!(
         r#"
-def run_test(*args, **kwargs):
-    test_instance = test_class()
-    test_method = getattr(test_instance, '{}')
-    return test_method(*args, **kwargs)
+def {func_name}(*args, **kwargs):
+    if 'instance' not in _instance_cache:
+        _instance_cache['instance'] = test_class()
+    instance = _instance_cache['instance']
+    return getattr(instance, '{method_name}')(*args, **kwargs)
 "#,
-        method_name
+        func_name = func_name,
+        method_name = method_name
     );
-
-    let namespace = PyDict::new(py);
-    namespace.set_item("test_class", cls)?;
 
     let code_cstr = CString::new(code).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
     })?;
-    // Use the same dict for both globals and locals to ensure proper variable resolution
-    py.run(&code_cstr, Some(&namespace), Some(&namespace))?;
-    let run_test = namespace.get_item("run_test")?.unwrap();
+    py.run(&code_cstr, Some(class_namespace), Some(class_namespace))?;
+    let wrapper = class_namespace.get_item(&func_name)?.unwrap();
 
-    Ok(run_test.unbind())
+    Ok(wrapper.unbind())
+}
+
+/// Create a callable wrapper for a **test** method on a plain test class.
+///
+/// Like [`create_class_fixture_runner`], this shares the `_instance_cache` in
+/// `class_namespace`.  After the test method returns (or raises) the cache is
+/// cleared so the next test gets a fresh instance.
+fn create_class_test_runner(
+    py: Python<'_>,
+    method_name: &str,
+    class_namespace: &Bound<'_, PyDict>,
+) -> PyResult<Py<PyAny>> {
+    let func_name = format!("_test_{}", method_name);
+
+    let code = format!(
+        r#"
+def {func_name}(*args, **kwargs):
+    if 'instance' not in _instance_cache:
+        _instance_cache['instance'] = test_class()
+    instance = _instance_cache['instance']
+    _setup = getattr(instance, 'setup_method', None)
+    if _setup is not None:
+        _setup()
+    try:
+        test_method = getattr(instance, '{method_name}')
+        return test_method(*args, **kwargs)
+    finally:
+        _teardown = getattr(instance, 'teardown_method', None)
+        if _teardown is not None:
+            _teardown()
+        _instance_cache.clear()
+"#,
+        func_name = func_name,
+        method_name = method_name
+    );
+
+    let code_cstr = CString::new(code).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid code string: {}", e))
+    })?;
+    py.run(&code_cstr, Some(class_namespace), Some(class_namespace))?;
+    let wrapper = class_namespace.get_item(&func_name)?.unwrap();
+
+    Ok(wrapper.unbind())
 }
 
 /// Check if a Python object is a function.
@@ -1954,16 +2027,19 @@ fn string_attribute(value: &Bound<'_, PyAny>, attr: &str) -> PyResult<Option<Str
 
 /// Check if a test function uses @patch decorator from unittest.mock.
 ///
-/// Returns a skip reason if @patch is detected, None otherwise.
-/// This check runs in all modes (not just pytest-compat) to prevent
-/// confusing "Unknown fixture" errors.
+/// In native mode, returns a skip reason if @patch is detected.
+/// In pytest-compat mode, returns None (allowing @patch tests to run).
 fn check_for_patch_decorator(
     _py: Python<'_>,
     func: &Bound<'_, PyAny>,
-    _pytest_compat: bool,
+    pytest_compat: bool,
 ) -> PyResult<Option<String>> {
-    // Check if the function has __wrapped__ attribute (indicates decorators)
-    // The @patch decorator from unittest.mock wraps functions
+    // In pytest-compat mode, allow @patch decorated tests to run
+    if pytest_compat {
+        return Ok(None);
+    }
+
+    // Native mode: detect @patch and skip with a helpful message
     let mut current = func.clone();
     let mut depth = 0;
     const MAX_DEPTH: usize = 10; // Prevent infinite loops
@@ -2008,6 +2084,19 @@ fn check_for_patch_decorator(
     }
 
     Ok(None)
+}
+
+/// Count the number of @patch decorators on a function.
+///
+/// Returns the number of patches (0 if none detected).
+fn count_patch_decorators(func: &Bound<'_, PyAny>) -> PyResult<usize> {
+    // Check for patchings attribute (set by unittest.mock.patch)
+    if let Ok(patchings) = func.getattr("patchings") {
+        if let Ok(list) = patchings.cast_into::<PyList>() {
+            return Ok(list.len());
+        }
+    }
+    Ok(0)
 }
 
 /// Check if a test function has @pytest.mark.skip decorator.
@@ -2060,7 +2149,48 @@ fn check_for_pytest_skip_mark(
 /// OPTIMIZATION: Uses __code__.co_varnames directly instead of inspect.signature()
 /// which is significantly faster. Falls back to inspect.signature() for edge cases
 /// like built-in functions or wrapped callables that don't have __code__.
+///
+/// For @patch-decorated functions, extracts parameters from the unwrapped original
+/// and removes the mock parameters (which are prepended by @patch).
 fn extract_parameters(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    // Check for @patch decorators - if present, extract params from the
+    // unwrapped original function and remove mock parameters.
+    // @patch appends mock objects when calling the wrapped function, so mock
+    // parameters appear after 'self' (for methods) or at the start (for functions)
+    // in the original function's signature.
+    let patch_count = count_patch_decorators(value)?;
+    if patch_count > 0 {
+        // Get the original unwrapped function
+        if let Ok(wrapped) = value.getattr("__wrapped__") {
+            let all_params = extract_parameters_inner(py, &wrapped)?;
+            // For class methods, 'self' comes first - preserve it and skip mock params
+            let (has_self, param_start) = if all_params.first().is_some_and(|p| p == "self") {
+                (true, 1)
+            } else {
+                (false, 0)
+            };
+            let mock_end = param_start + patch_count;
+            if mock_end <= all_params.len() {
+                let mut result = Vec::new();
+                if has_self {
+                    result.push("self".to_string());
+                }
+                result.extend_from_slice(&all_params[mock_end..]);
+                return Ok(result);
+            }
+            // All non-self params are mocks
+            if has_self {
+                return Ok(vec!["self".to_string()]);
+            }
+            return Ok(Vec::new());
+        }
+    }
+
+    extract_parameters_inner(py, value)
+}
+
+/// Inner parameter extraction logic (without @patch handling).
+fn extract_parameters_inner(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     // Fast path: try to get parameters directly from __code__ object
     // This is much faster than inspect.signature() for regular Python functions
     if let Ok(code) = value.getattr("__code__") {
@@ -2215,24 +2345,35 @@ fn ensure_parent_packages_loaded(py: Python<'_>, path: &Path) -> PyResult<()> {
             continue;
         }
 
-        // Load the __init__.py file for this package
+        // Load the __init__.py file for this package.
+        // We must pass `submodule_search_locations` so Python's import
+        // system recognises this as a *package*.  Without it, relative
+        // imports like `from .subpkg import thing` inside the package
+        // fail because the loader doesn't know where to find child modules.
         let path_str = init_path.to_string_lossy();
-        let spec = importlib.call_method1(
+        let package_dir = init_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let search_locations = PyList::new(py, [package_dir.as_str()])?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("submodule_search_locations", search_locations)?;
+        let spec = importlib.call_method(
             "spec_from_file_location",
             (package_name.as_str(), path_str.as_ref()),
+            Some(&kwargs),
         )?;
         let loader = spec.getattr("loader")?;
 
         if !loader.is_none() {
             let module = importlib.call_method1("module_from_spec", (&spec,))?;
 
-            // Set __package__ for the __init__.py module
-            if current_package.len() > 1 {
-                let parent_package = current_package[..current_package.len() - 1].join(".");
-                module.setattr("__package__", parent_package)?;
-            } else {
-                module.setattr("__package__", package_name.as_str())?;
-            }
+            // For an __init__.py module, __package__ must equal the
+            // fully-qualified package name itself (not the parent).
+            // Python resolves `from .foo import bar` as
+            // `__package__ + ".foo"`, so using the parent would cause
+            // the lookup to target the wrong module.
+            module.setattr("__package__", package_name.as_str())?;
 
             // Add to sys.modules before executing
             modules.set_item(package_name.as_str(), &module)?;

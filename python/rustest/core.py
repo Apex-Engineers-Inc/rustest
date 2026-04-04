@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -13,6 +14,35 @@ from . import rust
 from .event_router import EventRouter
 from .renderers import RichRenderer
 from .reporting import RunReport
+
+
+def _read_asyncio_config() -> tuple[str, str]:
+    """Read asyncio loop scope defaults from pyproject.toml.
+
+    Returns:
+        A tuple of (default_test_loop_scope, default_fixture_loop_scope).
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        # Python < 3.11
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            return ("function", "function")
+
+    pyproject = Path("pyproject.toml")
+    if pyproject.exists():
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        tool_data: dict[str, object] = data.get("tool", {})  # type: ignore[assignment]
+        pytest_data: dict[str, object] = tool_data.get("pytest", {})  # type: ignore[union-attr]
+        ini_options: dict[str, object] = pytest_data.get("ini_options", {})  # type: ignore[union-attr]
+        test_scope = str(ini_options.get("asyncio_default_test_loop_scope", "function"))
+        fixture_scope = str(ini_options.get("asyncio_default_fixture_loop_scope", "function"))
+        return (test_scope, fixture_scope)
+
+    return ("function", "function")
 
 
 def _print_pytest_compat_banner(use_colors: bool) -> None:
@@ -106,6 +136,9 @@ def run(
     rich_renderer = RichRenderer(use_colors=not no_color, use_ascii=ascii)
     router.subscribe(rich_renderer)
 
+    # Read asyncio loop scope defaults from pyproject.toml
+    default_test_loop_scope, default_fixture_loop_scope = _read_asyncio_config()
+
     previous_running = os.environ.get("RUSTEST_RUNNING")
     os.environ["RUSTEST_RUNNING"] = "1"
     try:
@@ -124,6 +157,8 @@ def run(
             ascii=ascii,
             no_color=no_color,
             event_callback=router.emit,
+            default_test_loop_scope=default_test_loop_scope,
+            default_fixture_loop_scope=default_fixture_loop_scope,
         )
     finally:
         if previous_running is None:

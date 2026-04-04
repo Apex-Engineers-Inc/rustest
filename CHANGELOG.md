@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Pytest Compatibility - Indirect Parametrize**: Fixed `indirect=True` in `@pytest.mark.parametrize` to pass values via `request.param` instead of treating them as fixture names
+  - Also fixed class-level `@parametrize(indirect=[...])` not propagating to test methods
+
+- **Pytest Compatibility - Async Event Loop Management**: Fixed multiple event loop issues causing "attached to a different loop" errors
+  - Session-scoped async fixtures now use the session event loop instead of the test's function loop
+  - Function-scoped async fixture teardowns now use the test's effective event loop scope
+  - Added support for reading `asyncio_default_test_loop_scope` and `asyncio_default_fixture_loop_scope` from `pyproject.toml` `[tool.pytest.ini_options]`
+  - Autouse fixtures are now included in loop scope auto-detection
+
+- **Pytest Compatibility - Test Class Support**: Fixed several class-based test issues
+  - `setup_method()` and `teardown_method()` are now auto-called for plain test classes
+  - Class-method fixtures (`@pytest.fixture` on methods) now share the same instance as test methods
+  - `teardown_method()` runs in a `finally` block to ensure cleanup on failure
+
+- **Pytest Compatibility - Fixture Resolution**: Fixed fixture resolution ordering and async support
+  - Test parameter fixtures now resolve before autouse fixtures, matching pytest's scope-ordered resolution
+  - Autouse fixtures are sorted by scope (session first) before resolution
+  - `request.getfixturevalue()` now supports async and async generator fixtures
+
+- **Pytest Compatibility - Decorator Support**: Added support for `unittest.mock.patch` and `@mark.xfail`
+  - `@patch` decorated tests now run correctly in `--pytest-compat` mode instead of being skipped
+  - `@mark.xfail` failures are treated as expected (counted as skips), with `strict` and `condition` support
+
+- **Pytest Compatibility - Module Loading**: Fixed relative import resolution in test packages
+  - Corrected `__package__` assignment in `ensure_parent_packages_loaded` for nested `__init__.py` modules
+
 ## [0.16.2] - 2026-03-30
 
 ### Fixed
