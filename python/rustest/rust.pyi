@@ -120,6 +120,8 @@ def run(
     ascii: bool = ...,
     no_color: bool = ...,
     event_callback: object | None = ...,
+    default_test_loop_scope: str = ...,
+    default_fixture_loop_scope: str = ...,
 ) -> PyRunReport:
     """Execute tests and return a report."""
     ...

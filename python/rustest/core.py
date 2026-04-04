@@ -35,9 +35,9 @@ def _read_asyncio_config() -> tuple[str, str]:
     if pyproject.exists():
         with open(pyproject, "rb") as f:
             data = tomllib.load(f)
-        ini_options: dict[str, object] = (
-            data.get("tool", {}).get("pytest", {}).get("ini_options", {})
-        )  # type: ignore[assignment]
+        tool_data: dict[str, object] = data.get("tool", {})  # type: ignore[assignment]
+        pytest_data: dict[str, object] = tool_data.get("pytest", {})  # type: ignore[union-attr]
+        ini_options: dict[str, object] = pytest_data.get("ini_options", {})  # type: ignore[union-attr]
         test_scope = str(ini_options.get("asyncio_default_test_loop_scope", "function"))
         fixture_scope = str(ini_options.get("asyncio_default_fixture_loop_scope", "function"))
         return (test_scope, fixture_scope)

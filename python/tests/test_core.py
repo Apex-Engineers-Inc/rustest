@@ -44,6 +44,8 @@ class TestCoreRun:
             ascii,
             no_color,
             event_callback,
+            default_test_loop_scope="function",
+            default_fixture_loop_scope="function",
         ):  # type: ignore[no-untyped-def]
             captured_args["paths"] = paths
             captured_args["pattern"] = pattern
