@@ -63,14 +63,14 @@ class AsyncResource:
 
 
 @fixture(scope="session")
-async def shared_resource():
+async def autouse_loop_shared_resource():
     """Session-scoped async fixture - creates a resource on the session event loop."""
     resource = AsyncResource()
     yield resource
 
 
 @fixture(autouse=True)
-async def touch_resource(shared_resource: AsyncResource):
+async def touch_resource(autouse_loop_shared_resource: AsyncResource):
     """Function-scoped autouse fixture that interacts with the session resource.
 
     This is the key scenario: an autouse fixture calling async methods on a
@@ -80,27 +80,27 @@ async def touch_resource(shared_resource: AsyncResource):
     The teardown (after yield) also verifies event loop consistency - if
     function teardowns use the wrong event loop, clear() will raise.
     """
-    await shared_resource.add("setup")
+    await autouse_loop_shared_resource.add("setup")
     yield
-    await shared_resource.clear()
+    await autouse_loop_shared_resource.clear()
 
 
-async def test_first_use(shared_resource: AsyncResource):
+async def test_first_use(autouse_loop_shared_resource: AsyncResource):
     """First test using the shared resource."""
-    await shared_resource.add("first")
-    count = await shared_resource.get_count()
+    await autouse_loop_shared_resource.add("first")
+    count = await autouse_loop_shared_resource.get_count()
     assert count >= 2  # at least "setup" + "first"
 
 
-async def test_second_use(shared_resource: AsyncResource):
+async def test_second_use(autouse_loop_shared_resource: AsyncResource):
     """Second test - autouse fixture should have run without loop errors."""
-    await shared_resource.add("second")
-    count = await shared_resource.get_count()
+    await autouse_loop_shared_resource.add("second")
+    count = await autouse_loop_shared_resource.get_count()
     assert count >= 2  # at least "setup" + "second" (plus prior items)
 
 
-async def test_third_use(shared_resource: AsyncResource):
+async def test_third_use(autouse_loop_shared_resource: AsyncResource):
     """Third test - ensures consistent behavior across multiple tests."""
-    await shared_resource.add("third")
-    count = await shared_resource.get_count()
+    await autouse_loop_shared_resource.add("third")
+    count = await autouse_loop_shared_resource.get_count()
     assert count >= 2  # at least "setup" + "third" (plus prior items)

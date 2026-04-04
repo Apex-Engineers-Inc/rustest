@@ -11,22 +11,22 @@ _init_order: list[str] = []
 
 
 @fixture(scope="session")
-def session_resource():
+def resolution_order_session_resource():
     """Session-scoped fixture that initializes a shared resource."""
     _init_order.append("session")
     return {"initialized": True}
 
 
 @fixture(autouse=True)
-def function_cleanup(session_resource):
+def function_cleanup(resolution_order_session_resource):
     """Function-scoped autouse that depends on session resource."""
     _init_order.append("function_autouse")
-    assert session_resource["initialized"], "Session resource should be initialized"
+    assert resolution_order_session_resource["initialized"], "Session resource should be initialized"
     yield
     # cleanup
 
 
-def test_order_first(session_resource):
+def test_order_first(resolution_order_session_resource):
     """First test - session resource should init before function autouse."""
     assert "session" in _init_order
     idx_session = _init_order.index("session")
@@ -34,7 +34,7 @@ def test_order_first(session_resource):
     assert idx_session < idx_function
 
 
-def test_order_second(session_resource):
+def test_order_second(resolution_order_session_resource):
     """Second test - session resource cached, function autouse still runs."""
     assert _init_order.count("session") == 1  # Only initialized once
     assert _init_order.count("function_autouse") >= 2  # Runs each test
