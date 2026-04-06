@@ -8,7 +8,7 @@ For the complete changelog with all version history, see the [Changelog](CHANGEL
 
 Planned features for future releases:
 
-- **Parallel execution control**: CLI options to control worker count (`-j`, `--workers`)
+- **Parallel execution control**: CLI options to control worker count (`-n`, `--workers`)
 - **JUnit XML output**: Generate JUnit-compatible test reports
 - **HTML reports**: Generate HTML test reports
 - **Coverage integration**: Built-in coverage reporting

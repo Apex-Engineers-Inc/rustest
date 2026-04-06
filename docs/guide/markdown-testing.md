@@ -62,9 +62,11 @@ rustest example.md
 Output:
 
 ```
-✓✓✓
+✓ Collected 3 tests from 1 files (17ms)
 
-✓ 3/3 3 passing (3ms)
+  ✓ example.md (2ms) ------------------------ 100% … 3/3 0:00:00
+
+✓ 3 passed in 3ms
 ```
 
 ## Skipping Code Blocks

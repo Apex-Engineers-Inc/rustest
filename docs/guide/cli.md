@@ -188,20 +188,29 @@ rustest test_workflow.py
 ```
 
 ```
-✓✓✗✓✗
+✓ Collected 5 tests from 1 files (15ms)
+
+  ✗ test_workflow.py (1ms) ------------------ 100% … 5/5 0:00:00
 
 FAILURES
+
 test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 4, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
 
 test_failing_2 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: String doesn't start with x
-  → assert "world".startswith("x"), "String doesn't start with x"
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 7, in test_failing_2
+    assert "world".startswith("x"), "String doesn't start with x"
+           ^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: String doesn't start with x
 
-✗ 5/5 3 passing, 2 failed (1ms)
+✓ 3 passed, ✗ 2 failed in 1ms
 ```
 
 ```bash
@@ -210,20 +219,29 @@ rustest test_workflow.py --lf
 ```
 
 ```
-✗✗
+✓ Collected 2 tests from 1 files (12ms)
+
+  ✗ test_workflow.py (1ms) ------------------ 100% … 2/2 0:00:00
 
 FAILURES
+
 test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 4, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
 
 test_failing_2 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: String doesn't start with x
-  → assert "world".startswith("x"), "String doesn't start with x"
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 7, in test_failing_2
+    assert "world".startswith("x"), "String doesn't start with x"
+           ^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: String doesn't start with x
 
-✗ 2/2 2 failed (1ms)
+✗ 2 failed in 1ms
 ```
 
 !!! tip "Cache Location"
@@ -239,23 +257,32 @@ rustest test_workflow.py --ff
 ```
 
 ```
-✗✗✓✓✓
+✓ Collected 5 tests from 1 files (15ms)
+
+  ✗ test_workflow.py (1ms) ------------------ 100% … 5/5 0:00:00
 
 FAILURES
+
 test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 4, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
 
 test_failing_2 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: String doesn't start with x
-  → assert "world".startswith("x"), "String doesn't start with x"
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 7, in test_failing_2
+    assert "world".startswith("x"), "String doesn't start with x"
+           ^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: String doesn't start with x
 
-✗ 5/5 3 passing, 2 failed (1ms)
+✓ 3 passed, ✗ 2 failed in 1ms
 ```
 
-Notice the output shows `✗✗✓✓✓` - failed tests run first!
+Notice that failed tests run first in the execution order!
 
 ### Fail Fast (-x)
 
@@ -267,15 +294,21 @@ rustest test_workflow.py -x
 ```
 
 ```
-✓✓✗
+✓ Collected 5 tests from 1 files (15ms)
+
+  ✗ test_workflow.py (1ms) ------------------ 100% … 3/5 0:00:00
 
 FAILURES
-test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
 
-✗ 3/3 2 passing, 1 failed (1ms)
+test_failing_1 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 4, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
+
+✓ 2 passed, ✗ 1 failed in 1ms
 ```
 
 Only 3 tests ran instead of all 5 - execution stopped after the first failure!
@@ -290,15 +323,21 @@ rustest test_workflow.py --ff -x
 ```
 
 ```
-✗
+✓ Collected 5 tests from 1 files (15ms)
+
+  ✗ test_workflow.py (1ms) ------------------ 100% … 1/5 0:00:00
 
 FAILURES
-test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
 
-✗ 1/1 1 failed (1ms)
+test_failing_1 (test_workflow.py)
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_workflow.py", line 4, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+           ^^^^^^^^^^
+AssertionError: Math is broken
+
+✗ 1 failed in 1ms
 ```
 
 Only the first failed test ran! This is extremely fast for iterative development.
@@ -333,7 +372,7 @@ rustest -k "integration" -x     # Stop on first integration test failure
 When rustest starts, it shows real-time progress during test collection:
 
 ```
-⠋ Collecting tests • 52 files, 893 tests 0:00:00
+⠋ Collecting tests … 52 files, 893 tests 0:00:00
 ✓ Collected 893 tests from 52 files (531ms)
 ```
 
@@ -350,7 +389,7 @@ No tests collected (45ms)
 Show detailed test information with names and timing:
 
 ```bash
-# Default: compact output (✓✗⊘ symbols only)
+# Default: compact output
 rustest
 
 # Verbose: show test names and timing
@@ -360,26 +399,45 @@ rustest --verbose
 
 **Compact output:**
 ```
-✓✓✓⊘✗
+✓ Collected 5 tests from 1 files (15ms)
 
-✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
+  ✗ test_math.py (3ms) ---------------------- 100% … 5/5 0:00:00
+
+FAILURES
+
+test_division_error (test_math.py)
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_math.py", line 12, in test_division_error
+    assert result == 5
+           ^^^^^^^^^^^
+AssertionError
+
+✓ 3 passed, ✗ 1 failed, ⊘ 1 skipped in 3ms
 ```
 
 **Verbose output:**
 ```
-/home/user/project/tests/test_math.py
-  ✓ test_addition 0ms
-  ✓ test_subtraction 1ms
-  ✓ test_multiplication 0ms
-  ⊘ test_future_feature 0ms
-  ✗ test_division_error 2ms
+✓ Collected 5 tests from 1 files (15ms)
+
+  ✗ test_math.py (3ms) ---------------------- 100% … 5/5 0:00:00
+      ✓ test_addition (0ms)
+      ✓ test_subtraction (1ms)
+      ✓ test_multiplication (0ms)
+      ⊘ test_future_feature (0ms)
+      ✗ test_division_error (2ms)
 
 FAILURES
-test_division_error (test_math.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Expected 5, got 4
 
-✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
+test_division_error (test_math.py)
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_math.py", line 12, in test_division_error
+    assert result == 5
+           ^^^^^^^^^^^
+AssertionError
+
+✓ 3 passed, ✗ 1 failed, ⊘ 1 skipped in 3ms
 ```
 
 !!! tip "Output Symbols"

@@ -469,4 +469,4 @@ def test_example(database):
 - [Plugin Compatibility Guide](pytest-plugins.md) - Alternatives to popular pytest plugins
 - [Migration Guide](../migration-guide.md) - Complete migration guide
 - [Comparison with pytest](comparison.md) - Feature comparison
-- [Request Object Documentation](../REQUEST_OBJECT_ENHANCEMENTS.md) - Detailed request object API
+- [Known Limitations](../from-pytest/limitations.md#request-object) - Request object compatibility details

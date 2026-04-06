@@ -180,16 +180,21 @@ When you run rustest, you'll see clean, informative output:
 
 <!--rustest.mark.skip-->
 ```
-✓✓✓⊘✗
+✓ Collected 5 tests from 1 files (15ms)
+
+  ✗ test_example.py (10ms) ------------------ 100% … 5/5 0:00:00
 
 FAILURES
-test_broken_feature (test_example.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError
-  Expected: 5
-  Received: 4
 
-✗ 5/5 3 passing, 1 failed, 1 skipped (10ms)
+test_broken_feature (test_example.py)
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_example.py", line 5, in test_broken_feature
+    assert result == 5
+           ^^^^^^^^^^^
+AssertionError
+
+✓ 3 passed, ✗ 1 failed, ⊘ 1 skipped in 10ms
 ```
 
 **Output symbols:**
@@ -208,19 +213,26 @@ rustest -v
 
 <!--rustest.mark.skip-->
 ```
-/home/user/project/test_example.py
-  ✓ test_basic_assertion 0ms
-  ✓ test_string_operations 1ms
-  ✓ test_list_operations 0ms
-  ⊘ test_future_feature 0ms
-  ✗ test_broken_feature 2ms
+✓ Collected 5 tests from 1 files (15ms)
+
+  ✗ test_example.py (3ms) ------------------- 100% … 5/5 0:00:00
+      ✓ test_basic_assertion (0ms)
+      ✓ test_string_operations (1ms)
+      ✓ test_list_operations (0ms)
+      ⊘ test_future_feature (0ms)
+      ✗ test_broken_feature (2ms)
 
 FAILURES
-test_broken_feature (test_example.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Expected 5, got 4
 
-✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
+test_broken_feature (test_example.py)
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_example.py", line 5, in test_broken_feature
+    assert result == 5
+           ^^^^^^^^^^^
+AssertionError
+
+✓ 3 passed, ✗ 1 failed, ⊘ 1 skipped in 3ms
 ```
 
 Verbose mode shows:
