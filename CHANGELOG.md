@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-04-06
+
 ### Fixed
 
 - **Pytest Compatibility - Indirect Parametrize**: Fixed `indirect=True` in `@pytest.mark.parametrize` to pass values via `request.param` instead of treating them as fixture names
@@ -29,17 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `request.getfixturevalue()` now supports async and async generator fixtures
 
 - **Async Event Loop Lifecycle**: Fixed improper event loop shutdown causing resource leaks and performance regression in `--pytest-compat` mode (#122)
-  - `close_event_loop` now awaits pending task cancellation via `asyncio.gather(*tasks, return_exceptions=True)` before closing, ensuring async resources (DB connections, sockets) are properly released
+  - `close_event_loop` now awaits pending task cancellation before closing, ensuring async resources (DB connections, sockets) are properly released
   - `close_event_loop` now calls `shutdown_asyncgens()` so async generator fixture `finally` blocks execute
   - Function-scoped event loops are now explicitly closed after each test instead of leaking until GC
-  - Prevents connection pool exhaustion, socket TIME_WAIT delays, and "Future attached to a different loop" errors in async test suites
 
 - **Pytest Compatibility - Decorator Support**: Added support for `unittest.mock.patch` and `@mark.xfail`
   - `@patch` decorated tests now run correctly in `--pytest-compat` mode instead of being skipped
-  - `@mark.xfail` failures are treated as expected (counted as skips), with `strict` and `condition` support
+  - `@mark.xfail` failures are treated as expected, with `strict` and `condition` support
 
 - **Pytest Compatibility - Module Loading**: Fixed relative import resolution in test packages
   - Corrected `__package__` assignment in `ensure_parent_packages_loaded` for nested `__init__.py` modules
+
+### Changed
+
+- **Code Deduplication**: Surgical refactoring to eliminate redundant code across Rust and Python layers (#123)
+
+### Docs
+
+- **Documentation Accuracy**: Fixed outdated console output examples and inaccurate feature status indicators (#126)
 
 ## [0.16.2] - 2026-03-30
 
