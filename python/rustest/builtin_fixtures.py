@@ -56,6 +56,38 @@ class _NotSet:
 _NOT_SET = _NotSet()
 
 
+def _resolve_dotted_path(dotted_path: str) -> tuple[object, str]:
+    """Resolve a dotted path like ``'pkg.mod.Class.attr'`` to ``(obj, attr_name)``.
+
+    Walks backwards from the last dot to find the deepest importable module,
+    then traverses remaining components via :func:`getattr`.  This mirrors
+    how pytest's real ``monkeypatch`` resolves paths that cross module →
+    attribute boundaries (e.g. ``"module.imported_name.method"``).
+    """
+    parts = dotted_path.split(".")
+    # Try progressively shorter prefixes until import succeeds
+    for i in range(len(parts) - 1, 0, -1):
+        module_path = ".".join(parts[:i])
+        try:
+            obj: object = importlib.import_module(module_path)
+            break
+        except ImportError:
+            continue
+    else:
+        raise ImportError(f"No importable module found in {dotted_path!r}")
+
+    # Walk remaining attribute chain (except the last component)
+    for component in parts[i:-1]:
+        try:
+            obj = getattr(obj, component)
+        except AttributeError:
+            raise AttributeError(
+                f"{component!r} not found on {obj!r} while resolving {dotted_path!r}"
+            )
+
+    return obj, parts[-1]
+
+
 class MonkeyPatch:
     """Lightweight re-implementation of :class:`pytest.MonkeyPatch`."""
 
@@ -92,13 +124,10 @@ class MonkeyPatch:
                     f"setattr() with dotted path requires at least one dot: {target!r}. "
                     + "Use setattr(target_object, 'name', value) or setattr('module.attr', value)"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
+            obj, attr_name = _resolve_dotted_path(target)
             attr_value = name
             if attr_value is _NOT_SET:
                 raise TypeError("value must be provided when using dotted path syntax")
-            attr_name = attr_name
         else:
             if not isinstance(name, str):
                 raise TypeError("attribute name must be a string")
@@ -122,10 +151,7 @@ class MonkeyPatch:
                     f"delattr() with dotted path requires at least one dot: {target!r}. "
                     + "Use delattr(target_object, 'name') or delattr('module.attr')"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
-            attr_name = attr_name
+            obj, attr_name = _resolve_dotted_path(target)
         else:
             if not isinstance(name, str):
                 raise TypeError("attribute name must be a string")

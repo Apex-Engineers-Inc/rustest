@@ -1244,9 +1244,12 @@ fn inspect_module(
                     &value,
                     pytest_compat,
                 )?;
-                // Merge class fixtures into module fixtures
+                // Merge class fixtures into module fixtures using qualified keys
+                // to prevent collisions when multiple classes define fixtures
+                // with the same name (e.g., each class defines "phase").
                 for (fixture_name, fixture) in class_fixtures {
-                    fixtures.insert(fixture_name, fixture);
+                    let qualified_name = format!("{}::{}", name, fixture_name);
+                    fixtures.insert(qualified_name, fixture);
                 }
                 tests.extend(class_tests);
             }

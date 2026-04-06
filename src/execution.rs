@@ -1853,21 +1853,36 @@ impl<'py> FixtureResolver<'py> {
             return Ok(value.clone_ref(self.py));
         }
 
-        // Fixture not in any cache, need to execute it
-        let fixture = self.fixtures.get(name).ok_or_else(|| {
-            let mut available: Vec<&str> = self.fixtures.keys().map(String::as_str).collect();
-            available.sort();
-            let available_list = available.join(", ");
-            let hint = if self.has_pytest_fixtures {
-                "\n\nHint: This project uses @pytest.fixture definitions that rustest cannot load natively.\n      Run with --pytest-compat to use existing pytest fixtures."
-            } else {
-                ""
-            };
-            invalid_test_definition(format!(
-                "Unknown fixture '{}'.\nAvailable fixtures: {}{}",
-                name, available_list, hint
-            ))
-        })?;
+        // Fixture not in any cache, need to execute it.
+        // For class-based tests, try class-qualified fixture name first
+        // (e.g., "TestFoo::phase") to support multiple classes defining
+        // fixtures with the same name.
+        let fixture = {
+            let mut found = None;
+            if let Some(test_class) = self.test_class_name {
+                let qualified = format!("{}::{}", test_class, name);
+                if let Some(f) = self.fixtures.get(qualified.as_str()) {
+                    found = Some(f);
+                }
+            }
+            if found.is_none() {
+                found = self.fixtures.get(name);
+            }
+            found.ok_or_else(|| {
+                let mut available: Vec<&str> = self.fixtures.keys().map(String::as_str).collect();
+                available.sort();
+                let available_list = available.join(", ");
+                let hint = if self.has_pytest_fixtures {
+                    "\n\nHint: This project uses @pytest.fixture definitions that rustest cannot load natively.\n      Run with --pytest-compat to use existing pytest fixtures."
+                } else {
+                    ""
+                };
+                invalid_test_definition(format!(
+                    "Unknown fixture '{}'.\nAvailable fixtures: {}{}",
+                    name, available_list, hint
+                ))
+            })?
+        };
 
         // Set current fixture param for request.param access
         let previous_param = self.current_fixture_param.take();
