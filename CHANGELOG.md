@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Autouse fixtures are sorted by scope (session first) before resolution
   - `request.getfixturevalue()` now supports async and async generator fixtures
 
+- **Async Event Loop Lifecycle**: Fixed improper event loop shutdown causing resource leaks and performance regression in `--pytest-compat` mode (#122)
+  - `close_event_loop` now awaits pending task cancellation via `asyncio.gather(*tasks, return_exceptions=True)` before closing, ensuring async resources (DB connections, sockets) are properly released
+  - `close_event_loop` now calls `shutdown_asyncgens()` so async generator fixture `finally` blocks execute
+  - Function-scoped event loops are now explicitly closed after each test instead of leaking until GC
+  - Prevents connection pool exhaustion, socket TIME_WAIT delays, and "Future attached to a different loop" errors in async test suites
+
 - **Pytest Compatibility - Decorator Support**: Added support for `unittest.mock.patch` and `@mark.xfail`
   - `@patch` decorated tests now run correctly in `--pytest-compat` mode instead of being skipped
   - `@mark.xfail` failures are treated as expected (counted as skips), with `strict` and `condition` support
