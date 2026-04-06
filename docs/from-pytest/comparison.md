@@ -61,7 +61,7 @@ This page provides a complete feature-by-feature comparison so you can see exact
 | `@mark.skip` / `@skip` | ✅ | ✅ | Skip tests with reasons |
 | Custom marks (`@mark.slow`, etc.) | ✅ | ✅ | Full mark support |
 | Mark with arguments | ✅ | ✅ | `@mark.timeout(30)` |
-| Selecting tests by mark (`-m`) | ✅ | 🚧 | Mark metadata collected, filtering planned |
+| Selecting tests by mark (`-m`) | ✅ | ✅ | Full support including boolean expressions (`not`, `and`, `or`) |
 | **Test Execution** |
 | Detailed assertion introspection | ✅ | ❌ | Uses standard Python assertions |
 | Parallel execution | ✅ (`pytest-xdist`) | 🚧 | Planned (Rust makes this easier) |
@@ -260,7 +260,7 @@ def test_expensive():
     pass
 ```
 
-**pytest advantage:** Can filter by marks with `-m "slow"`. Rustest has this planned but not yet implemented.
+**Both support mark filtering:** Filter by marks with `-m "slow"`, `-m "not slow"`, `-m "slow and integration"`.
 
 ### Assertion Helpers
 
@@ -323,7 +323,6 @@ See the [Performance](performance.md) page for detailed benchmarks.
 
 Planned rustest features to increase pytest compatibility:
 
-- 🚧 Mark-based filtering (`-m`)
 - 🚧 JUnit XML output
 - 🚧 Parallel test execution
 - 🚧 HTML reports

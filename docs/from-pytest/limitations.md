@@ -187,9 +187,9 @@ These features work, but with limitations.
 
 ### Mark Filtering (`-m`)
 
-**Status:** ⚠️ Partial support
+**Status:** ✅ Fully supported
 
-**Current:** Mark filtering is implemented but may have edge cases with complex expressions.
+**Current:** Mark filtering is fully implemented with support for boolean expressions.
 
 **What works:**
 
@@ -200,12 +200,7 @@ rustest -m "slow or fast"
 rustest -m "(slow or fast) and not integration"
 ```
 
-**What might not work:**
-
-- Very complex boolean expressions with many operators
-- Custom mark validators
-
-**Note:** Basic mark filtering works well for most use cases.
+**Note:** Mark filtering supports full boolean expressions including `and`, `or`, `not`, and parenthesized groups.
 
 ### Request Object
 

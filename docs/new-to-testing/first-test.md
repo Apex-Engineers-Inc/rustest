@@ -45,9 +45,11 @@ rustest
 You should see:
 
 ```
-✓
+✓ Collected 1 tests from 1 files (15ms)
 
-✓ 1/1 1 passing (1ms)
+  ✓ test_math.py (1ms) ---------------------- 100% … 1/1 0:00:00
+
+✓ 1 passed in 1ms
 ```
 
 **Congratulations!** 🎉 You just wrote and ran your first automated test!
@@ -75,19 +77,21 @@ def test_addition():
 Run `rustest` again:
 
 ```
+✓ Collected 1 tests from 1 files (15ms)
+
+  ✗ test_math.py (1ms) ---------------------- 100% … 1/1 0:00:00
+
 FAILURES
+
 test_addition (test_math.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: assert 4 == 5
+──────────────────────────────────────────────────────────────────────────
+Traceback (most recent call last):
+  File "test_math.py", line 3, in test_addition
+    assert result == 5
+           ^^^^^^^^^^^
+AssertionError
 
-  Expected: 5
-  Received: 4
-
-    def test_addition():
-        result = 2 + 2
-      → assert result == 5
-
-✗ 1/1 1 failed (1ms)
+✗ 1 failed in 1ms
 ```
 
 Rustest shows you:
@@ -132,9 +136,11 @@ def test_multiply():
 Run `rustest`:
 
 ```
-✓✓✓
+✓ Collected 3 tests from 1 files (15ms)
 
-✓ 3/3 3 passing (2ms)
+  ✓ test_calculator.py (2ms) ---------------- 100% … 3/3 0:00:00
+
+✓ 3 passed in 2ms
 ```
 
 **Three passing tests!** Now you're testing real code.

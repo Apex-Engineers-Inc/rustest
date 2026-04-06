@@ -396,13 +396,17 @@ fail("Test failed")
 
 ## The warns() Context Manager
 
+!!! note "Pytest Compatibility Mode Only"
+    `warns()` is available through `--pytest-compat` mode via `import pytest`. It is not part of the native `rustest` API. To use it, run your tests with `rustest --pytest-compat`.
+
 The `warns()` context manager allows you to test that your code emits expected warnings.
 
 ### Basic Usage
 
+<!--rustest.mark.skip-->
 ```python
 import warnings
-import pytest
+import pytest  # Available in --pytest-compat mode
 
 def test_deprecation_warning():
     with pytest.warns(DeprecationWarning):
@@ -417,6 +421,7 @@ def test_user_warning():
 
 Verify the warning message matches a pattern:
 
+<!--rustest.mark.skip-->
 ```python
 def test_warning_message():
     with pytest.warns(UserWarning, match="must be positive"):
@@ -429,6 +434,7 @@ def test_regex_match():
 
 ### Capturing Multiple Warnings
 
+<!--rustest.mark.skip-->
 ```python
 def test_capture_warnings():
     with pytest.warns(UserWarning) as record:
@@ -449,6 +455,7 @@ def test_capture_all_warnings():
 
 ### Multiple Warning Types
 
+<!--rustest.mark.skip-->
 ```python
 def test_multiple_types():
     with pytest.warns((UserWarning, DeprecationWarning)):
@@ -457,9 +464,16 @@ def test_multiple_types():
 
 ## The deprecated_call() Context Manager
 
+!!! note "Pytest Compatibility Mode Only"
+    `deprecated_call()` is available through `--pytest-compat` mode via `import pytest`. It is not part of the native `rustest` API.
+
 A convenience wrapper for testing deprecation warnings:
 
+<!--rustest.mark.skip-->
 ```python
+import warnings
+import pytest  # Available in --pytest-compat mode
+
 def test_deprecated_function():
     with pytest.deprecated_call():
         warnings.warn("old function", DeprecationWarning)
@@ -470,7 +484,7 @@ def test_deprecated_with_match():
 ```
 
 !!! note "deprecated_call vs warns"
-    `deprecated_call()` is equivalent to `warns((DeprecationWarning, PendingDeprecationWarning))`. Use it for clearer intent when specifically testing deprecation warnings.
+    `deprecated_call()` is equivalent to `warns((DeprecationWarning, PendingDeprecationWarning))`. Use it for clearer intent when specifically testing deprecation warnings. Both are only available in `--pytest-compat` mode.
 
 ## Best Practices
 

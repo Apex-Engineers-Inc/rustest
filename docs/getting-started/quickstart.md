@@ -30,7 +30,7 @@ You should see output like this:
 ```
 ✓ Collected 2 tests from 1 files (15ms)
 
-✓ test_math.py (1ms) 100% • 2/2
+  ✓ test_math.py (1ms) ---------------------- 100% … 2/2 0:00:00
 
 ✓ 2 passed in 1ms
 ```
@@ -47,11 +47,13 @@ Each `✓` represents a passing test. Failed tests show as `✗` with detailed e
 !!! tip "Verbose Output"
     Use `-v` or `--verbose` to see individual test names and timing:
     ```
-    /path/to/test_math.py
-      ✓ test_simple_addition 0ms
-      ✓ test_string_operations 1ms
+    ✓ Collected 2 tests from 1 files (15ms)
 
-    ✓ 2/2 2 passing (1ms)
+      ✓ test_math.py (1ms) ---------------------- 100% … 2/2 0:00:00
+          ✓ test_simple_addition (0ms)
+          ✓ test_string_operations (1ms)
+
+    ✓ 2 passed in 1ms
     ```
 
 ## 3. Using Fixtures
@@ -91,9 +93,11 @@ def test_double(input: int, expected: int) -> None:
 This will run three separate test cases, showing three checkmarks in the output:
 
 ```
-✓✓✓
+✓ Collected 3 tests from 1 files (15ms)
 
-✓ 3/3 3 passing (1ms)
+  ✓ test_math.py (1ms) ---------------------- 100% … 3/3 0:00:00
+
+✓ 3 passed in 1ms
 ```
 
 ## 5. Assertion Helpers

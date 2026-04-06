@@ -116,9 +116,11 @@ async def test_async_api():
 
 **Output:**
 ```
-✓✓✓
+✓ Collected 3 tests from 1 files (15ms)
 
-✓ 3/3 3 passing (15ms)
+  ✓ test_example.py (1ms) ---------------------- 100% … 3/3 0:00:00
+
+✓ 3 passed in 1ms
 ```
 
 ---
