@@ -1652,6 +1652,7 @@ fn execute_test_case(
                 .get_test_scope_event_loop()
                 .map(|l| l.clone_ref(py));
             finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
+            close_event_loop(py, &mut resolver.function_event_loop);
             return Err(TestCallFailure {
                 message: err.to_string(),
                 stdout: None,
@@ -1665,6 +1666,10 @@ fn execute_test_case(
         .get_test_scope_event_loop()
         .map(|l| l.clone_ref(py));
     finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
+
+    // Close the function-scoped event loop to release async resources (DB connections,
+    // sockets, etc.) immediately rather than leaking them until GC runs.
+    close_event_loop(py, &mut resolver.function_event_loop);
 
     match result {
         Ok(_) => Ok(TestCallSuccess { stdout, stderr }),
@@ -2512,6 +2517,13 @@ fn write_failed_tests_cache(report: &PyRunReport) -> PyResult<()> {
 }
 
 /// Close an event loop if it exists, properly cleaning up pending tasks.
+///
+/// This follows the proper asyncio shutdown pattern: cancel all tasks, then
+/// await their cancellation via `run_until_complete(gather(...))` so that
+/// async resources (database connections, sockets, etc.) are properly cleaned
+/// up before the loop is closed. Without awaiting cancellation, resources leak
+/// and cause connection pool exhaustion, socket TIME_WAIT delays, and
+/// "Future attached to a different loop" errors in subsequent tests.
 fn close_event_loop(py: Python<'_>, event_loop: &mut Option<Py<PyAny>>) {
     if let Some(loop_obj) = event_loop.take() {
         let loop_bound = loop_obj.bind(py);
@@ -2523,15 +2535,41 @@ fn close_event_loop(py: Python<'_>, event_loop: &mut Option<Py<PyAny>>) {
             .unwrap_or(true);
 
         if !is_closed {
-            // Cancel pending tasks
+            // Cancel pending tasks and await their completion
             if let Ok(asyncio) = py.import("asyncio") {
                 if let Ok(tasks) = asyncio.call_method1("all_tasks", (loop_bound,)) {
                     if let Ok(task_list) = tasks.extract::<Vec<Py<PyAny>>>() {
-                        for task in task_list {
-                            let _ = task.bind(py).call_method0("cancel");
+                        if !task_list.is_empty() {
+                            // Cancel all pending tasks
+                            for task in &task_list {
+                                let _ = task.bind(py).call_method0("cancel");
+                            }
+
+                            // Await cancellation so async resources (DB connections,
+                            // sockets) are properly released before the loop closes.
+                            // Use gather(*tasks, return_exceptions=True) to suppress
+                            // CancelledError from propagating.
+                            let tasks_tuple =
+                                PyTuple::new(py, task_list.iter().map(|t| t.bind(py)));
+                            if let Ok(tasks_tuple) = tasks_tuple {
+                                let kwargs = PyDict::new(py);
+                                let _ = kwargs.set_item("return_exceptions", true);
+                                if let Ok(gather_coro) =
+                                    asyncio.call_method("gather", tasks_tuple, Some(&kwargs))
+                                {
+                                    // Give tasks a chance to clean up; ignore errors
+                                    let _ = loop_bound
+                                        .call_method1("run_until_complete", (gather_coro,));
+                                }
+                            }
                         }
                     }
                 }
+            }
+
+            // Shut down async generators so their finally blocks run
+            if let Ok(shutdown_coro) = loop_bound.call_method0("shutdown_asyncgens") {
+                let _ = loop_bound.call_method1("run_until_complete", (shutdown_coro,));
             }
 
             // Close the loop
