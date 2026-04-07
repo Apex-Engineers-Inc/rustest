@@ -101,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="When to use colored output: auto (default, detect CI), always, or never.",
     )
     _ = parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="Produce minimal, token-efficient output optimized for LLM consumption.",
+    )
+    _ = parser.add_argument(
         "--no-codeblocks",
         dest="enable_codeblocks",
         action="store_false",
@@ -144,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
         failed_first=False,
         fail_fast=False,
         pytest_compat=False,
+        llm=False,
     )
     return parser
 
@@ -169,6 +175,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:  # "never"
         use_color = False
 
+    # --llm forces ascii and no color
+    if args.llm:
+        use_color = False
+        args.ascii = True
+
     report = run(
         paths=list(args.paths),
         pattern=args.pattern,
@@ -182,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         verbose=args.verbose,
         ascii=args.ascii,
         no_color=not use_color,
+        llm=args.llm,
     )
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called
