@@ -66,7 +66,7 @@ class LlmRenderer:
             result_lookup[(result.name, result.path)] = result
 
         for test_name, file_path, message in self._failures:
-            first_line = message.splitlines()[0] if message else ""
+            first_line = message.splitlines()[0] if message else "(no message)"
             line_number = self._extract_line_from_message(message)
             annotated_path = f"{file_path}:{line_number}" if line_number else file_path
             out.write(f"FAIL {test_name} {annotated_path} {first_line}\n")
