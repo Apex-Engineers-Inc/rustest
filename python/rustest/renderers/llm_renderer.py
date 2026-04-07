@@ -71,18 +71,18 @@ class LlmRenderer:
             annotated_path = f"{file_path}:{line_number}" if line_number else file_path
             out.write(f"FAIL {test_name} {annotated_path} {first_line}\n")
 
+            # Verbose: assertion detail lines go directly under the FAIL line
+            if self._verbose and message:
+                for line in self._extract_verbose_lines(message):
+                    out.write(f"{line}\n")
+
             # stdout / stderr from the result object
             result = result_lookup.get((test_name, file_path))
             if result is not None:
                 if result.stdout:
-                    out.write(f"  stdout: {result.stdout.strip()}\n")
+                    out.write(f"stdout: {result.stdout.strip()}\n")
                 if result.stderr:
-                    out.write(f"  stderr: {result.stderr.strip()}\n")
-
-            # Verbose: assertion detail lines
-            if self._verbose and message:
-                for line in self._extract_verbose_lines(message):
-                    out.write(f"  {line}\n")
+                    out.write(f"stderr: {result.stderr.strip()}\n")
 
         # Summary line
         parts: list[str] = []
@@ -124,14 +124,19 @@ class LlmRenderer:
 
     @staticmethod
     def _extract_verbose_lines(full_message: str) -> list[str]:
-        """Extract '> assert ...' and 'where ...' lines for verbose output."""
+        """Extract assertion and value lines for verbose output.
+
+        Lines starting with ``> `` (pytest assertion rewriting prefix) are
+        emitted as ``  > {content}``.  Lines starting with ``where `` (pytest
+        value expansion) are emitted as ``  values: {content}``.
+        """
         lines: list[str] = []
         for line in full_message.splitlines():
             stripped = line.strip()
-            if (
-                stripped.startswith(">")
-                or stripped.startswith("where ")
-                or stripped.startswith("values: ")
-            ):
-                lines.append(stripped)
+            if stripped.startswith("> "):
+                content = stripped[2:].strip()
+                lines.append(f"  > {content}")
+            elif stripped.startswith("where "):
+                content = stripped[len("where ") :]
+                lines.append(f"  values: {content}")
         return lines

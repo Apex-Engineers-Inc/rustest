@@ -709,7 +709,6 @@ class TestLlmRendererVerboseMode:
             ">  assert result == expected\n"
             "where result = foo()\n"
             "where expected = 2\n"
-            "  values: result = 1, expected = 2\n"
         )
 
         renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=1))
@@ -748,6 +747,155 @@ class TestLlmRendererVerboseMode:
         # In verbose mode, both assert lines and values lines must appear
         assert "  > " in output
         assert "  values: " in output
+
+    def test_verbose_failure_with_assertion(self) -> None:
+        """Full integration: FAIL, verbose lines, stdout, summary in correct order."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=True, output=buf)
+
+        message = (
+            "AssertionError: expected 200, got 401\n"
+            ">  assert response.status_code == 200\n"
+            "where response.status_code = 401"
+        )
+
+        renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=1))
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_auth.py::test_login",
+                file_path="tests/test_auth.py",
+                test_name="test_login",
+                status="failed",
+                duration=0.1,
+                message=message,
+            )
+        )
+
+        result = FakeTestResult(
+            name="test_login",
+            path="tests/test_auth.py",
+            status="failed",
+            duration=0.1,
+            message=message,
+            stdout="Attempting login for user=admin",
+            stderr=None,
+        )
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(result,),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        lines = output.splitlines()
+
+        # Locate each expected line
+        fail_idx = next(i for i, ln in enumerate(lines) if ln.startswith("FAIL"))
+        assert_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  > "))
+        values_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  values: "))
+        stdout_idx = next(i for i, ln in enumerate(lines) if "stdout:" in ln)
+        summary_idx = next(
+            i for i, ln in enumerate(lines) if "failed" in ln and not ln.startswith("FAIL")
+        )
+
+        # Exact ordering: FAIL → verbose assert → verbose values → stdout → summary
+        assert fail_idx < assert_idx < values_idx < stdout_idx < summary_idx
+
+        # Content checks
+        assert "AssertionError: expected 200, got 401" in lines[fail_idx]
+        assert "assert response.status_code == 200" in lines[assert_idx]
+        assert "response.status_code = 401" in lines[values_idx]
+        assert "Attempting login for user=admin" in lines[stdout_idx]
+        assert "1 failed" in lines[summary_idx]
+
+    def test_verbose_does_not_affect_passing(self) -> None:
+        """verbose=True with all passing tests: output is just the summary line."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=True, output=buf)
+
+        renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=3))
+        for i in range(3):
+            renderer.handle(
+                FakeTestCompletedEvent(
+                    test_id=f"t::test_pass_{i}",
+                    file_path="t.py",
+                    test_name=f"test_pass_{i}",
+                    status="passed",
+                    duration=0.1,
+                    message=None,
+                )
+            )
+
+        report = FakeRunReport(
+            total=3,
+            passed=3,
+            failed=0,
+            skipped=0,
+            duration=0.3,
+            results=(),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        assert buf.getvalue() == "3 passed 0.3s\n"
+
+    def test_non_verbose_omits_code_snippets(self) -> None:
+        """verbose=False: assert lines and where-clause values are NOT shown."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        message = (
+            "AssertionError: expected 200, got 401\n"
+            ">  assert response.status_code == 200\n"
+            "where response.status_code = 401"
+        )
+
+        renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=1))
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_auth.py::test_login",
+                file_path="tests/test_auth.py",
+                test_name="test_login",
+                status="failed",
+                duration=0.1,
+                message=message,
+            )
+        )
+
+        result = FakeTestResult(
+            name="test_login",
+            path="tests/test_auth.py",
+            status="failed",
+            duration=0.1,
+            message=message,
+            stdout=None,
+            stderr=None,
+        )
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(result,),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        assert "  > " not in output
+        assert "  values: " not in output
 
 
 class TestLlmRendererEdgeCases:
