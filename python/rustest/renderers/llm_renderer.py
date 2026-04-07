@@ -95,10 +95,10 @@ class LlmRenderer:
         if self._collection_errors:
             parts.append(f"{len(self._collection_errors)} error")
 
+        duration = f"{report.duration:.1f}s"
         if not parts:
-            out.write("0 collected\n")
+            out.write(f"0 collected {duration}\n")
         else:
-            duration = f"{report.duration:.1f}s"
             out.write(" ".join(parts) + f" {duration}\n")
 
     # ------------------------------------------------------------------

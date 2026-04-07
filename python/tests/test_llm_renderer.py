@@ -271,7 +271,7 @@ class TestLlmRendererSummaryLine:
         )
         renderer.finalize(report)
 
-        assert buf.getvalue() == "0 collected\n"
+        assert buf.getvalue() == "0 collected 0.0s\n"
 
     def test_duration_formatting(self) -> None:
         from rustest.renderers.llm_renderer import LlmRenderer
@@ -404,7 +404,7 @@ class TestLlmRendererDefaultOutput:
             )
             renderer.finalize(report)
 
-        assert fake_stdout.getvalue() == "0 collected\n"
+        assert fake_stdout.getvalue() == "0 collected 0.0s\n"
 
 
 class TestLlmRendererIgnoresUnknownEvents:
@@ -442,7 +442,7 @@ class TestLlmRendererIgnoresUnknownEvents:
         renderer.finalize(report)
 
         # Should still produce valid output without crashing
-        assert "0 collected\n" == buf.getvalue()
+        assert "0 collected 0.0s\n" == buf.getvalue()
 
 
 class TestLlmRendererFailures:
@@ -983,7 +983,7 @@ class TestLlmRendererEdgeCases:
         )
         renderer.finalize(report)
 
-        assert buf.getvalue() == "0 collected\n"
+        assert buf.getvalue() == "0 collected 0.0s\n"
 
     def test_mixed_pass_fail_skip(self) -> None:
         """1 passed, 1 failed, 1 skipped: FAIL line present and summary correct."""
