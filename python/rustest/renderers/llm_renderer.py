@@ -67,7 +67,9 @@ class LlmRenderer:
 
         for test_name, file_path, message in self._failures:
             first_line = message.splitlines()[0] if message else ""
-            out.write(f"FAIL {test_name} {file_path} {first_line}\n")
+            line_number = self._extract_line_from_message(message)
+            annotated_path = f"{file_path}:{line_number}" if line_number else file_path
+            out.write(f"FAIL {test_name} {annotated_path} {first_line}\n")
 
             # stdout / stderr from the result object
             result = result_lookup.get((test_name, file_path))
@@ -126,6 +128,10 @@ class LlmRenderer:
         lines: list[str] = []
         for line in full_message.splitlines():
             stripped = line.strip()
-            if stripped.startswith(">") or stripped.startswith("where "):
+            if (
+                stripped.startswith(">")
+                or stripped.startswith("where ")
+                or stripped.startswith("values: ")
+            ):
                 lines.append(stripped)
         return lines

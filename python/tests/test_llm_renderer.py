@@ -458,6 +458,7 @@ class TestLlmRendererVerboseMode:
             ">  assert result == expected\n"
             "where result = foo()\n"
             "where expected = 2\n"
+            "  values: result = 1, expected = 2\n"
         )
 
         renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=1))
@@ -493,5 +494,6 @@ class TestLlmRendererVerboseMode:
         renderer.finalize(report)
 
         output = buf.getvalue()
-        # In verbose mode, assert lines and where-clauses should appear
-        assert "> " in output or "assert result == expected" in output or "where result" in output
+        # In verbose mode, both assert lines and values lines must appear
+        assert "  > " in output
+        assert "  values: " in output
