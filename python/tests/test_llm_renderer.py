@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -1101,3 +1102,59 @@ class TestLlmRendererEdgeCases:
         assert error_idx < fail_idx
         assert "1 failed" in output
         assert "1 error" in output
+
+
+class TestLlmRendererOutputCleanliness:
+    """LlmRenderer output contains no ANSI escape codes and no non-ASCII characters."""
+
+    def test_no_ansi_codes_in_output(self) -> None:
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=2))
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="t::test_pass",
+                file_path="t.py",
+                test_name="test_pass",
+                status="passed",
+                duration=0.1,
+                message=None,
+            )
+        )
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="t::test_fail",
+                file_path="t.py",
+                test_name="test_fail",
+                status="failed",
+                duration=0.1,
+                message="assert 1 == 2",
+            )
+        )
+
+        failed_result = FakeTestResult(
+            name="test_fail",
+            path="t.py",
+            status="failed",
+            duration=0.1,
+            message="assert 1 == 2",
+            stdout=None,
+            stderr=None,
+        )
+        report = FakeRunReport(
+            total=2,
+            passed=1,
+            failed=1,
+            skipped=0,
+            duration=0.2,
+            results=(failed_result,),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        assert not re.search(r"\x1b\[[0-9;]*m", output), "ANSI escape codes found in output"
+        assert output.isascii(), "Non-ASCII characters found in output"
