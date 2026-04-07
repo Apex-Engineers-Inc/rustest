@@ -601,3 +601,20 @@ class TestLlmFlag:
 
             assert mock_run.call_args.kwargs["llm"] is True
             assert mock_run.call_args.kwargs["verbose"] is True
+
+
+class TestLlmPytestCompat:
+    """Test --llm and --pytest-compat flags together."""
+
+    def test_llm_pytest_compat_flags_passed(self) -> None:
+        """Test --llm and --pytest-compat both pass through to core.run()."""
+        report = RunReport(
+            total=0, passed=0, failed=0, skipped=0, duration=0.0, results=(), collection_errors=()
+        )
+        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
+        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
+            with patch("rustest.cli.run", return_value=report) as mock_run:
+                cli.main(["--llm", "--pytest-compat"])
+
+        assert mock_run.call_args.kwargs["llm"] is True
+        assert mock_run.call_args.kwargs["pytest_compat"] is True
