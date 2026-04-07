@@ -12,7 +12,7 @@ from rich.panel import Panel
 
 from . import rust
 from .event_router import EventRouter
-from .renderers import RichRenderer
+from .renderers import LlmRenderer, RichRenderer
 from .reporting import RunReport
 
 
@@ -89,6 +89,7 @@ def run(
     verbose: bool = False,
     ascii: bool = False,
     no_color: bool = False,
+    llm: bool = False,
 ) -> RunReport:
     """Execute tests and return a rich report.
 
@@ -105,6 +106,7 @@ def run(
         verbose: Show verbose output with hierarchical test structure
         ascii: Use ASCII characters instead of Unicode symbols for output
         no_color: Disable colored output
+        llm: Use LlmRenderer instead of RichRenderer for machine-readable output
     """
     # Store runtime configuration for fixtures to access
     try:
@@ -125,16 +127,23 @@ def run(
 
     # Print pytest compatibility banner and install _pytest stubs if enabled
     if pytest_compat:
-        _print_pytest_compat_banner(use_colors=not no_color)
+        if llm:
+            print("pytest-compat mode")
+        else:
+            _print_pytest_compat_banner(use_colors=not no_color)
         # Install _pytest stub modules for compatibility
         from rustest.compat.pytest import install_pytest_stubs
 
         install_pytest_stubs()
 
-    # Set up event routing with rich terminal renderer
+    # Set up event routing with appropriate renderer
     router = EventRouter()
-    rich_renderer = RichRenderer(use_colors=not no_color, use_ascii=ascii)
-    router.subscribe(rich_renderer)
+    if llm:
+        renderer: LlmRenderer | RichRenderer = LlmRenderer(verbose=verbose)
+        router.subscribe(renderer)
+    else:
+        renderer = RichRenderer(use_colors=not no_color, use_ascii=ascii)
+        router.subscribe(renderer)
 
     # Read asyncio loop scope defaults from pyproject.toml
     default_test_loop_scope, default_fixture_loop_scope = _read_asyncio_config()
@@ -166,4 +175,10 @@ def run(
         else:
             os.environ["RUSTEST_RUNNING"] = previous_running
 
-    return RunReport.from_py(raw_report)
+    report = RunReport.from_py(raw_report)
+
+    # Finalize LLM renderer with full report (for stdout/stderr access)
+    if llm and isinstance(renderer, LlmRenderer):
+        renderer.finalize(report)
+
+    return report

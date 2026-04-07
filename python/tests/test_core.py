@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 from .helpers import stub_rust_module
@@ -87,3 +88,9 @@ class TestCoreRun:
         assert callable(captured_args["event_callback"])
         assert report.total == 1
         assert report.passed == 1
+
+
+class TestCoreLlmMode:
+    def test_llm_param_accepted(self) -> None:
+        sig = inspect.signature(core_run)
+        assert "llm" in sig.parameters
