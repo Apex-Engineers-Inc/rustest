@@ -1104,6 +1104,373 @@ class TestLlmRendererEdgeCases:
         assert "1 error" in output
 
 
+# ---------------------------------------------------------------------------
+# Real rustest message format constants (captured from actual rustest output)
+# ---------------------------------------------------------------------------
+
+REAL_TRACEBACK_SIMPLE = (
+    "Traceback (most recent call last):\n"
+    '  File "tests/test_auth.py", line 5, in test_fail_simple\n'
+    "    assert 1 == 2\n"
+    "           ^^^^^^\n"
+    "AssertionError"
+)
+
+REAL_TRACEBACK_WITH_MSG = (
+    "Traceback (most recent call last):\n"
+    '  File "tests/test_auth.py", line 9, in test_fail_with_message\n'
+    '    assert result["status"] == 200, f"expected 200, got {result[\'status\']}"\n'
+    "           ^^^^^^^^^^^^^^^^^^^^^^^\n"
+    "AssertionError: expected 200, got 401"
+)
+
+REAL_TRACEBACK_WITH_VALUES = (
+    "Traceback (most recent call last):\n"
+    '  File "tests/test_math.py", line 13, in test_broken\n'
+    "    assert x == y\n"
+    "           ^^^^^^\n"
+    "AssertionError\n"
+    "\n"
+    "__RUSTEST_ASSERTION_VALUES__\n"
+    "Expected: 20\n"
+    "Received: 10"
+)
+
+REAL_TRACEBACK_LONG_PATH = (
+    "Traceback (most recent call last):\n"
+    '  File "\\\\?\\C:\\Users\\dev\\project\\tests\\test_auth.py", line 42, in test_login\n'
+    "    assert response.status_code == 200\n"
+    "           ^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+    "AssertionError"
+)
+
+
+class TestLlmRendererRealMessages:
+    """Regression tests using actual rustest traceback message formats.
+
+    These tests use the real message format produced by rustest's Rust core,
+    which is a full Python traceback string, NOT a simple error message.
+    """
+
+    def test_fail_line_extracts_error_not_traceback_header(self) -> None:
+        """FAIL line should show the actual error, not 'Traceback (most recent call last):'."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_auth.py::test_fail_simple",
+                file_path="tests/test_auth.py",
+                test_name="test_fail_simple",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_SIMPLE,
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_fail_simple",
+                    path="tests/test_auth.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_SIMPLE,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        lines = output.strip().split("\n")
+        # Must NOT start with "Traceback"
+        assert "Traceback" not in lines[0], (
+            f"FAIL line should show the error, not traceback header: {lines[0]}"
+        )
+        # Must contain the actual error type
+        assert "AssertionError" in lines[0]
+
+    def test_fail_line_includes_error_message_when_present(self) -> None:
+        """FAIL line should include 'AssertionError: expected 200, got 401'."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_auth.py::test_fail_with_message",
+                file_path="tests/test_auth.py",
+                test_name="test_fail_with_message",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_WITH_MSG,
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_fail_with_message",
+                    path="tests/test_auth.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_WITH_MSG,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        lines = output.strip().split("\n")
+        assert "AssertionError: expected 200, got 401" in lines[0]
+
+    def test_line_number_extracted_from_traceback(self) -> None:
+        """Line number should come from the File line in the traceback, not just any 'line N'."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_auth.py::test_fail_simple",
+                file_path="tests/test_auth.py",
+                test_name="test_fail_simple",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_SIMPLE,
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_fail_simple",
+                    path="tests/test_auth.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_SIMPLE,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        # Should extract line 5 from the traceback's File line
+        assert "tests/test_auth.py:5" in output
+
+    def test_verbose_extracts_rustest_assertion_values(self) -> None:
+        """Verbose mode should extract __RUSTEST_ASSERTION_VALUES__ block."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=True, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_math.py::test_broken",
+                file_path="tests/test_math.py",
+                test_name="test_broken",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_WITH_VALUES,
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_broken",
+                    path="tests/test_math.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_WITH_VALUES,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        # Should contain the assertion code line
+        assert "assert x == y" in output
+        # Should contain the expected/received values
+        assert "Expected: 20" in output
+        assert "Received: 10" in output
+        # Should NOT contain the __RUSTEST_ASSERTION_VALUES__ marker itself
+        assert "__RUSTEST_ASSERTION_VALUES__" not in output
+
+    def test_verbose_extracts_code_from_traceback(self) -> None:
+        """Verbose mode should show the failing assert line from the traceback."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=True, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_auth.py::test_fail_simple",
+                file_path="tests/test_auth.py",
+                test_name="test_fail_simple",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_SIMPLE,
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_fail_simple",
+                    path="tests/test_auth.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_SIMPLE,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        # Should contain the failing code line from the traceback
+        assert "assert 1 == 2" in output
+
+    def test_non_verbose_omits_traceback_details(self) -> None:
+        """Non-verbose mode should NOT include traceback details or assertion values."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test_math.py::test_broken",
+                file_path="tests/test_math.py",
+                test_name="test_broken",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_WITH_VALUES,
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_broken",
+                    path="tests/test_math.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_WITH_VALUES,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        # Should only be 2 lines: FAIL + summary
+        lines = output.strip().split("\n")
+        assert len(lines) == 2
+        assert lines[0].startswith("FAIL")
+        assert "Expected:" not in output
+        assert "Received:" not in output
+
+    def test_stdout_lines_clearly_prefixed(self) -> None:
+        """Each line of captured stdout should be prefixed with 'stdout:'."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test.py::test_prints",
+                file_path="tests/test.py",
+                test_name="test_prints",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_WITH_MSG,
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_prints",
+                    path="tests/test.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_WITH_MSG,
+                    stdout="debug: starting auth\ndebug: user=admin\n",
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        lines = output.strip().split("\n")
+        # Find stdout lines - each should be clearly prefixed
+        stdout_lines = [line for line in lines if "debug:" in line]
+        for sl in stdout_lines:
+            assert sl.startswith("stdout:"), f"stdout line not prefixed: {sl!r}"
+
+
 class TestLlmRendererOutputCleanliness:
     """LlmRenderer output contains no ANSI escape codes and no non-ASCII characters."""
 
