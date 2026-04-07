@@ -323,7 +323,13 @@ class TestLlmRendererFailureLines:
                 test_name="test_bad",
                 status="failed",
                 duration=0.05,
-                message="AssertionError: assert 1 == 2\nwhere 1 = foo()",
+                message=(
+                    "Traceback (most recent call last):\n"
+                    '  File "tests/test_x.py", line 5, in test_bad\n'
+                    "    assert 1 == 2\n"
+                    "           ^^^^^^\n"
+                    "AssertionError: assert 1 == 2"
+                ),
             )
         )
 
@@ -332,7 +338,13 @@ class TestLlmRendererFailureLines:
             path="tests/test_x.py",
             status="failed",
             duration=0.05,
-            message="AssertionError: assert 1 == 2\nwhere 1 = foo()",
+            message=(
+                "Traceback (most recent call last):\n"
+                '  File "tests/test_x.py", line 5, in test_bad\n'
+                "    assert 1 == 2\n"
+                "           ^^^^^^\n"
+                "AssertionError: assert 1 == 2"
+            ),
             stdout=None,
             stderr=None,
         )
@@ -348,8 +360,7 @@ class TestLlmRendererFailureLines:
         renderer.finalize(report)
 
         output = buf.getvalue()
-        assert "FAIL test_bad tests/test_x.py" in output
-        # First line of error only
+        assert "FAIL test_bad tests/test_x.py:5" in output
         assert "AssertionError: assert 1 == 2" in output
 
 
@@ -667,7 +678,12 @@ class TestLlmRendererFailures:
                 test_name="test_line_check",
                 status="failed",
                 duration=0.1,
-                message="AssertionError at line 42: expected True",
+                message=(
+                    "Traceback (most recent call last):\n"
+                    '  File "t.py", line 42, in test_line_check\n'
+                    "    assert result is True\n"
+                    "AssertionError"
+                ),
             )
         )
 
@@ -676,7 +692,12 @@ class TestLlmRendererFailures:
             path="t.py",
             status="failed",
             duration=0.1,
-            message="AssertionError at line 42: expected True",
+            message=(
+                "Traceback (most recent call last):\n"
+                '  File "t.py", line 42, in test_line_check\n'
+                "    assert result is True\n"
+                "AssertionError"
+            ),
             stdout=None,
             stderr=None,
         )
@@ -757,9 +778,15 @@ class TestLlmRendererVerboseMode:
         renderer = LlmRenderer(verbose=True, output=buf)
 
         message = (
+            "Traceback (most recent call last):\n"
+            '  File "tests/test_auth.py", line 42, in test_login\n'
+            "    assert response.status_code == 200\n"
+            "           ^^^^^^^^^^^^^^^^^^^^^^^^^\n"
             "AssertionError: expected 200, got 401\n"
-            ">  assert response.status_code == 200\n"
-            "where response.status_code = 401"
+            "\n"
+            "__RUSTEST_ASSERTION_VALUES__\n"
+            "Expected: 200\n"
+            "Received: 401"
         )
 
         renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=1))
@@ -799,20 +826,20 @@ class TestLlmRendererVerboseMode:
 
         # Locate each expected line
         fail_idx = next(i for i, ln in enumerate(lines) if ln.startswith("FAIL"))
-        assert_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  > "))
-        values_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  values: "))
+        assert_idx = next(i for i, ln in enumerate(lines) if "assert response" in ln)
+        values_idx = next(i for i, ln in enumerate(lines) if "Expected:" in ln)
         stdout_idx = next(i for i, ln in enumerate(lines) if "stdout:" in ln)
         summary_idx = next(
             i for i, ln in enumerate(lines) if "failed" in ln and not ln.startswith("FAIL")
         )
 
-        # Exact ordering: FAIL → verbose assert → verbose values → stdout → summary
+        # Exact ordering: FAIL → verbose code → verbose values → stdout → summary
         assert fail_idx < assert_idx < values_idx < stdout_idx < summary_idx
 
         # Content checks
         assert "AssertionError: expected 200, got 401" in lines[fail_idx]
         assert "assert response.status_code == 200" in lines[assert_idx]
-        assert "response.status_code = 401" in lines[values_idx]
+        assert "Expected: 200" in lines[values_idx]
         assert "Attempting login for user=admin" in lines[stdout_idx]
         assert "1 failed" in lines[summary_idx]
 
