@@ -748,3 +748,208 @@ class TestLlmRendererVerboseMode:
         # In verbose mode, both assert lines and values lines must appear
         assert "  > " in output
         assert "  values: " in output
+
+
+class TestLlmRendererEdgeCases:
+    """Edge-case coverage: collection errors, all-skip, zero tests, mixed counts."""
+
+    def test_collection_error(self) -> None:
+        """Collection error with no test events: ERROR line + '1 error' in summary."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeCollectionErrorEvent(
+                path="tests/test_broken.py",
+                message="SyntaxError: unexpected indent (line 15)",
+            )
+        )
+
+        report = FakeRunReport(
+            total=0,
+            passed=0,
+            failed=0,
+            skipped=0,
+            duration=0.0,
+            results=(),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        lines = output.splitlines()
+        assert lines[0] == "ERROR tests/test_broken.py SyntaxError: unexpected indent (line 15)"
+        assert "1 error" in output
+
+    def test_all_skipped(self) -> None:
+        """Three skipped tests produce exactly '3 skipped 0.1s\\n'."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=3))
+        for i in range(3):
+            renderer.handle(
+                FakeTestCompletedEvent(
+                    test_id=f"t::test_skip_{i}",
+                    file_path="t.py",
+                    test_name=f"test_skip_{i}",
+                    status="skipped",
+                    duration=0.0,
+                    message=None,
+                )
+            )
+
+        report = FakeRunReport(
+            total=3,
+            passed=0,
+            failed=0,
+            skipped=3,
+            duration=0.1,
+            results=(),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        assert buf.getvalue() == "3 skipped 0.1s\n"
+
+    def test_zero_tests_collected(self) -> None:
+        """No events at all: output is '0 collected\\n'."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        report = FakeRunReport(
+            total=0,
+            passed=0,
+            failed=0,
+            skipped=0,
+            duration=0.0,
+            results=(),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        assert buf.getvalue() == "0 collected\n"
+
+    def test_mixed_pass_fail_skip(self) -> None:
+        """1 passed, 1 failed, 1 skipped: FAIL line present and summary correct."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(FakeSuiteStartedEvent(total_files=1, total_tests=3))
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="t::test_pass",
+                file_path="t.py",
+                test_name="test_pass",
+                status="passed",
+                duration=0.1,
+                message=None,
+            )
+        )
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="t::test_fail",
+                file_path="t.py",
+                test_name="test_fail",
+                status="failed",
+                duration=0.1,
+                message="AssertionError: wrong value",
+            )
+        )
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="t::test_skip",
+                file_path="t.py",
+                test_name="test_skip",
+                status="skipped",
+                duration=0.0,
+                message=None,
+            )
+        )
+
+        failed_result = FakeTestResult(
+            name="test_fail",
+            path="t.py",
+            status="failed",
+            duration=0.1,
+            message="AssertionError: wrong value",
+            stdout=None,
+            stderr=None,
+        )
+        report = FakeRunReport(
+            total=3,
+            passed=1,
+            failed=1,
+            skipped=1,
+            duration=0.3,
+            results=(failed_result,),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        lines = output.splitlines()
+        fail_lines = [ln for ln in lines if ln.startswith("FAIL")]
+        assert len(fail_lines) == 1
+        assert "FAIL test_fail t.py" in output
+        assert "1 passed 1 failed 1 skipped 0.3s" in output
+
+    def test_collection_error_with_failures(self) -> None:
+        """A collection error alongside a test failure: ERROR before FAIL, both in summary."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeCollectionErrorEvent(
+                path="tests/test_broken.py",
+                message="SyntaxError: invalid syntax",
+            )
+        )
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="t::test_bad",
+                file_path="t.py",
+                test_name="test_bad",
+                status="failed",
+                duration=0.1,
+                message="AssertionError: oops",
+            )
+        )
+
+        failed_result = FakeTestResult(
+            name="test_bad",
+            path="t.py",
+            status="failed",
+            duration=0.1,
+            message="AssertionError: oops",
+            stdout=None,
+            stderr=None,
+        )
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(failed_result,),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        lines = output.splitlines()
+        error_idx = next(i for i, ln in enumerate(lines) if ln.startswith("ERROR"))
+        fail_idx = next(i for i, ln in enumerate(lines) if ln.startswith("FAIL"))
+        assert error_idx < fail_idx
+        assert "1 failed" in output
+        assert "1 error" in output
