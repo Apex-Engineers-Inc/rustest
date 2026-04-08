@@ -1498,6 +1498,145 @@ class TestLlmRendererRealMessages:
             assert sl.startswith("stdout:"), f"stdout line not prefixed: {sl!r}"
 
 
+class TestLlmRendererBareAssertionError:
+    """Bare 'AssertionError' (no message) should include the failing code line."""
+
+    def test_bare_assertion_includes_code(self) -> None:
+        """FAIL line for bare AssertionError should append the failing code."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test.py::test_bare",
+                file_path="tests/test.py",
+                test_name="test_bare",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_SIMPLE,  # ends with bare "AssertionError"
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_bare",
+                    path="tests/test.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_SIMPLE,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        fail_line = output.strip().split("\n")[0]
+        # Should NOT just say "AssertionError" — should include the code
+        assert "assert 1 == 2" in fail_line, (
+            f"Bare AssertionError should include failing code: {fail_line}"
+        )
+
+    def test_assertion_with_message_unchanged(self) -> None:
+        """AssertionError WITH a message should not have code appended."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test.py::test_msg",
+                file_path="tests/test.py",
+                test_name="test_msg",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_WITH_MSG,  # ends with "AssertionError: expected 200, got 401"
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_msg",
+                    path="tests/test.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_WITH_MSG,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        fail_line = output.strip().split("\n")[0]
+        assert "AssertionError: expected 200, got 401" in fail_line
+
+    def test_bare_assertion_with_values_includes_values(self) -> None:
+        """Bare AssertionError with __RUSTEST_ASSERTION_VALUES__ should show expected/received."""
+        from rustest.renderers.llm_renderer import LlmRenderer
+
+        buf = io.StringIO()
+        renderer = LlmRenderer(verbose=False, output=buf)
+
+        renderer.handle(
+            FakeTestCompletedEvent(
+                test_id="tests/test.py::test_cmp",
+                file_path="tests/test.py",
+                test_name="test_cmp",
+                status="failed",
+                duration=0.1,
+                message=REAL_TRACEBACK_WITH_VALUES,  # bare AssertionError + Expected/Received
+            )
+        )
+
+        report = FakeRunReport(
+            total=1,
+            passed=0,
+            failed=1,
+            skipped=0,
+            duration=0.1,
+            results=(
+                FakeTestResult(
+                    name="test_cmp",
+                    path="tests/test.py",
+                    status="failed",
+                    duration=0.1,
+                    message=REAL_TRACEBACK_WITH_VALUES,
+                    stdout=None,
+                    stderr=None,
+                ),
+            ),
+            collection_errors=(),
+        )
+        renderer.finalize(report)
+
+        output = buf.getvalue()
+        fail_line = output.strip().split("\n")[0]
+        # Should show expected vs received inline
+        assert "20" in fail_line and "10" in fail_line, (
+            f"Bare AssertionError with values should include expected/received: {fail_line}"
+        )
+
+
 class TestLlmRendererOutputCleanliness:
     """LlmRenderer output contains no ANSI escape codes and no non-ASCII characters."""
 

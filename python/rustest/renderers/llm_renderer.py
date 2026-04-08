@@ -124,16 +124,45 @@ class LlmRenderer:
 
         Rustest messages are full Python tracebacks.  The useful error is
         the *last* non-blank line (e.g. ``AssertionError: expected 200``),
-        not the first (``Traceback (most recent call last):``).  If a
-        ``__RUSTEST_ASSERTION_VALUES__`` block is present, stop before it.
+        not the first (``Traceback (most recent call last):``).
+
+        When the error is bare ``AssertionError`` with no further detail,
+        we enrich it with context:
+        - The failing code line from the traceback (e.g. ``assert 1 == 2``)
+        - Expected/Received from ``__RUSTEST_ASSERTION_VALUES__`` if present
         """
         error_line = "(no message)"
+        code_line: str | None = None
+        expected: str | None = None
+        received: str | None = None
+        in_values = False
+
         for raw in message.splitlines():
             stripped = raw.strip()
             if stripped == "__RUSTEST_ASSERTION_VALUES__":
-                break
-            if stripped and not stripped.startswith("^"):
+                in_values = True
+                continue
+            if in_values:
+                if stripped.startswith("Expected:"):
+                    expected = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("Received:"):
+                    received = stripped.split(":", 1)[1].strip()
+                continue
+            if stripped.startswith("^"):
+                continue
+            # Indented code lines from traceback (e.g. "    assert x == y")
+            if raw.startswith("    ") and stripped and not stripped.startswith("File "):
+                code_line = stripped
+            elif stripped:
                 error_line = stripped
+
+        # Enrich bare errors with context
+        if error_line == "AssertionError":
+            if expected is not None and received is not None:
+                error_line = f"AssertionError: {code_line or 'assert ...'} (expected {expected}, got {received})"
+            elif code_line:
+                error_line = f"AssertionError: {code_line}"
+
         return error_line
 
     @staticmethod
