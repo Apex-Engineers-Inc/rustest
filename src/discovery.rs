@@ -1189,6 +1189,11 @@ fn inspect_module(
                 skip_reason = check_for_pytest_skip_mark(py, &value)?;
             }
 
+            // Check for @rustest.mark.skip in __rustest_marks__
+            if skip_reason.is_none() {
+                skip_reason = check_for_rustest_mark_skip(&value)?;
+            }
+
             let param_cases = collect_parametrization(py, &value)?;
             let marks = collect_marks(&value)?;
             let indirect_params = extract_indirect_params(&value)?;
@@ -1635,6 +1640,11 @@ fn discover_plain_class_tests_and_fixtures(
             // Check for @pytest.mark.skip decorator if not already skipped
             if skip_reason.is_none() {
                 skip_reason = check_for_pytest_skip_mark(py, &method)?;
+            }
+
+            // Check for @rustest.mark.skip in __rustest_marks__
+            if skip_reason.is_none() {
+                skip_reason = check_for_rustest_mark_skip(&method)?;
             }
 
             let marks = collect_marks(&method)?;
@@ -2139,6 +2149,56 @@ fn check_for_pytest_skip_mark(
                 }
             }
         }
+    }
+
+    Ok(None)
+}
+
+/// Check if a test function has @rustest.mark.skip in its __rustest_marks__ list.
+///
+/// The @rustest.mark.skip decorator stores marks via MarkDecorator into
+/// __rustest_marks__, but the skip detection was only checking __rustest_skip__
+/// (set by the skip_decorator function).  This function bridges the gap.
+fn check_for_rustest_mark_skip(func: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+    let Ok(attr) = func.getattr("__rustest_marks__") else {
+        return Ok(None);
+    };
+    let sequence: Bound<'_, PySequence> = match attr.cast_into() {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+
+    for element in sequence.try_iter()? {
+        let element = element?;
+        let mark_dict: Bound<'_, PyDict> = match element.cast_into() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        // Check if this mark is named "skip"
+        let Some(name_obj) = mark_dict.get_item("name")? else {
+            continue;
+        };
+        let Ok(name_str) = name_obj.extract::<String>() else {
+            continue;
+        };
+        if name_str != "skip" {
+            continue;
+        }
+
+        // Extract reason from kwargs if present
+        if let Some(kwargs_obj) = mark_dict.get_item("kwargs")? {
+            if let Ok(kwargs_dict) = kwargs_obj.cast_into::<PyDict>() {
+                if let Some(reason_obj) = kwargs_dict.get_item("reason")? {
+                    if let Ok(reason_str) = reason_obj.extract::<String>() {
+                        return Ok(Some(reason_str));
+                    }
+                }
+            }
+        }
+
+        // No reason provided, use default
+        return Ok(Some("Skipped via rustest.mark.skip".to_string()));
     }
 
     Ok(None)
