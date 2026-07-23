@@ -10,8 +10,9 @@ rustest --help
 
 ```
 usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [--no-capture]
-               [-v] [--ascii] [--color {auto,always,never}] [--no-codeblocks]
-               [--lf] [--ff] [-x] [--pytest-compat]
+               [-v] [--ascii] [--color {auto,always,never}] [--llm]
+               [--llm-schema] [--llm-full] [--no-codeblocks] [--lf] [--ff]
+               [-x] [--pytest-compat]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -29,13 +30,18 @@ options:
   -n WORKERS, --workers WORKERS
                         Number of worker slots to use (experimental).
   --no-capture          Do not capture stdout/stderr during test execution.
-  -v, --verbose         Show verbose output with hierarchical test structure.
+  -v, --verbose         Increase verbosity. Repeat (-vv) for more detail (LLM:
+                        adds frames).
   --ascii               Use ASCII characters instead of Unicode symbols for
                         output.
   --color {auto,always,never}
                         Control colored output. 'auto' (default) enables
                         colors locally and disables in CI. 'always' forces
                         colors on. 'never' disables colors.
+  --llm                 Produce minimal, machine-readable JSONL output
+                        optimized for LLM consumption.
+  --llm-schema          Print the JSON Schema for --llm output and exit.
+  --llm-full            With --llm, do not truncate captured stdout/stderr.
   --no-codeblocks       Disable code block tests from markdown files.
   --lf, --last-failed   Rerun only the tests that failed in the last run.
   --ff, --failed-first  Run previously failed tests first, then all other
@@ -474,6 +480,61 @@ rustest
 rustest --no-capture
 ```
 
+### LLM Output Mode (`--llm`)
+
+`--llm` produces machine-readable **JSONL** (one JSON object per line) instead of
+the human-oriented rich output. It is designed for LLM coding agents (Claude
+Code, Cursor, Copilot, etc.): no ANSI colors, no Unicode, no progress spinners —
+just the signal an agent needs to act on. `--llm` implies `--ascii` and
+`--color never`.
+
+```bash
+# Emit JSONL
+rustest tests/ --llm
+```
+
+Output is buffered and emitted once at completion, sorted deterministically. A
+`meta` line comes first, then one line per failure and collection error, then a
+`summary` line last:
+
+```json
+{"t":"meta","v":1,"tool":"rustest","version":"0.17.0"}
+{"t":"fail","id":"tests/test_auth.py::test_login","line":42,"error":"AssertionError","msg":"expected 200, got 401","expected":"200","actual":"401","stdout":"login user=admin"}
+{"t":"summary","passed":30,"failed":1,"skipped":1,"errors":0,"duration":1.24,"rerun":["tests/test_auth.py::test_login"]}
+```
+
+Passing and skipped tests are counted in `summary` (not printed as lines) to keep
+the output minimal. The `summary` line is the **completion sentinel**: if it is
+absent, the run was interrupted.
+
+**Verbosity.** `-v` adds the failing source line (`code`) and emits a `skip` line
+per skipped test; `-vv` additionally adds the traceback frame chain (`frames`):
+
+```bash
+rustest tests/ --llm -v     # + code line, + skip lines
+rustest tests/ --llm -vv    # + frame chain
+```
+
+**Captured output** is attached to each failure (`stdout`/`stderr`) and truncated
+to the last 50 lines by default, with the dropped-line count in `stdout_omitted`
+/ `stderr_omitted`. Use `--llm-full` to disable truncation:
+
+```bash
+rustest tests/ --llm --llm-full
+```
+
+**Discovering the schema.** `--llm-schema` prints the JSON Schema for every line
+type and exits, so a tool can learn the format without external docs:
+
+```bash
+rustest --llm-schema
+```
+
+!!! tip "Re-running just the failures"
+    The `summary` line's `rerun` array lists the node IDs of failures (plus the
+    paths of collection errors) — pass them straight back to reproduce only what
+    failed: `rustest $(... rerun ids ...)`.
+
 ## Markdown Code Block Testing
 
 ### Enable/Disable
@@ -509,9 +570,12 @@ rustest [OPTIONS] [PATHS...]
 | `-m MARK_EXPR, --marks MARK_EXPR` | Run tests matching mark expression (e.g., "slow", "not slow") |
 | `-n WORKERS, --workers WORKERS` | Number of worker slots to use (experimental) |
 | `--no-capture` | Don't capture stdout/stderr during test execution |
-| `-v, --verbose` | Show verbose output with hierarchical test structure |
+| `-v, --verbose` | Increase verbosity (repeatable). Rich mode: hierarchical test structure. LLM mode: `-v` adds code line + skip lines, `-vv` adds frame chain |
 | `--ascii` | Use ASCII characters instead of Unicode symbols |
 | `--color {auto,always,never}` | Control colored output: `auto` (default, colors in terminal, none in CI), `always` (force colors), `never` (disable colors) |
+| `--llm` | Emit machine-readable JSONL for LLM tools (implies `--ascii` and `--color never`). See [LLM Output Mode](#llm-output-mode-llm) |
+| `--llm-schema` | Print the JSON Schema for `--llm` output and exit |
+| `--llm-full` | With `--llm`, do not truncate captured stdout/stderr |
 | `--no-codeblocks` | Disable markdown code block testing |
 | `--lf, --last-failed` | Rerun only tests that failed in the last run |
 | `--ff, --failed-first` | Run failed tests first, then all other tests |

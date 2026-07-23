@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--llm` JSONL output mode**: `--llm` now emits machine-readable JSONL (one JSON object per line) optimized for LLM coding agents, replacing the earlier plain-text format
+  - Signal-only: a `meta` header, one line per failure/collection error, and a `summary` sentinel line last; passing and skipped tests are counted in `summary` to keep output minimal
+  - Deterministic (buffered and sorted) for stable prompt caching and diffs; no ANSI, no Unicode, ASCII-only
+  - Canonical re-runnable node IDs, first-class `expected`/`actual`, and a `rerun` list of failures to reproduce
+  - `-v` adds the failing code line and per-skip lines; `-vv` adds the traceback frame chain
+  - Captured stdout/stderr attached per failure, tail-truncated to 50 lines (`stdout_omitted`/`stderr_omitted`); `--llm-full` disables truncation
+  - `--llm-schema` prints the versioned JSON Schema for the output and exits
+
 ## [0.17.0] - 2026-04-06
 
 ### Fixed
