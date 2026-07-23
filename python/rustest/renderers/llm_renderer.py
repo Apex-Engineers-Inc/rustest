@@ -153,8 +153,14 @@ class LlmRenderer:
                 obj[f"{stream}_omitted"] = dropped
 
     def _attach_verbose(self, obj: dict[str, object], message: str) -> None:
-        # Task 4 fills this in. Default: no verbose fields.
-        return
+        if self._verbosity >= 1:
+            code = ex.extract_code(message)
+            if code is not None:
+                obj["code"] = code
+        if self._verbosity >= 2:
+            frames = ex.extract_frames(message, root=self._root)
+            if frames:
+                obj["frames"] = frames
 
 
 def _pkg_version() -> str:

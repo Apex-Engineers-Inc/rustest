@@ -205,3 +205,65 @@ def test_rerun_lists_failures_and_error_paths() -> None:
     rerun = objs[-1]["rerun"]
     assert "t.py::test_login" in rerun
     assert "broken.py" in rerun
+
+
+def _multiframe_fail() -> FakeTestCompletedEvent:
+    msg = (
+        "Traceback (most recent call last):\n"
+        f'  File "{ROOT}/t.py", line 42, in test_login\n'
+        "    get_status()\n"
+        f'  File "{ROOT}/app/client.py", line 88, in get_status\n'
+        "    assert ok\n"
+        "AssertionError\n"
+    )
+    return FakeTestCompletedEvent(
+        f"{ROOT}/t.py::test_login", f"{ROOT}/t.py", "test_login", "failed", msg
+    )
+
+
+def test_default_has_no_code_or_frames() -> None:
+    objs = render([_multiframe_fail()], FakeRunReport(passed=0, failed=1, skipped=0, duration=0.1))
+    fail = next(o for o in objs if o["t"] == "fail")
+    assert "code" not in fail and "frames" not in fail
+
+
+def test_v_adds_code_line() -> None:
+    objs = render(
+        [_multiframe_fail()],
+        FakeRunReport(passed=0, failed=1, skipped=0, duration=0.1),
+        verbosity=1,
+    )
+    fail = next(o for o in objs if o["t"] == "fail")
+    assert fail["code"] == "assert ok"
+    assert "frames" not in fail
+
+
+def test_vv_adds_frames_outermost_first() -> None:
+    objs = render(
+        [_multiframe_fail()],
+        FakeRunReport(passed=0, failed=1, skipped=0, duration=0.1),
+        verbosity=2,
+    )
+    fail = next(o for o in objs if o["t"] == "fail")
+    assert fail["frames"] == [
+        {"file": "t.py", "line": 42, "fn": "test_login"},
+        {"file": "app/client.py", "line": 88, "fn": "get_status"},
+    ]
+
+
+def test_v_emits_skip_lines() -> None:
+    skip = FakeTestCompletedEvent(
+        f"{ROOT}/t.py::test_wip", f"{ROOT}/t.py", "test_wip", "skipped", "not ready"
+    )
+    objs = render([skip], FakeRunReport(passed=0, failed=0, skipped=1, duration=0.0), verbosity=1)
+    skips = [o for o in objs if o["t"] == "skip"]
+    assert skips == [{"t": "skip", "id": "t.py::test_wip", "reason": "not ready"}]
+
+
+def test_default_omits_skip_lines() -> None:
+    skip = FakeTestCompletedEvent(
+        f"{ROOT}/t.py::test_wip", f"{ROOT}/t.py", "test_wip", "skipped", "not ready"
+    )
+    objs = render([skip], FakeRunReport(passed=0, failed=0, skipped=1, duration=0.0))
+    assert not [o for o in objs if o["t"] == "skip"]
+    assert objs[-1]["skipped"] == 1
