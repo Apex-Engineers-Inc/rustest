@@ -90,6 +90,8 @@ def run(
     ascii: bool = False,
     no_color: bool = False,
     llm: bool = False,
+    llm_verbosity: int = 0,
+    llm_full: bool = False,
 ) -> RunReport:
     """Execute tests and return a rich report.
 
@@ -107,6 +109,8 @@ def run(
         ascii: Use ASCII characters instead of Unicode symbols for output
         no_color: Disable colored output
         llm: Use LlmRenderer instead of RichRenderer for machine-readable output
+        llm_verbosity: Verbosity level forwarded to LlmRenderer (0, 1, or 2)
+        llm_full: Disable capture truncation in LlmRenderer when True
     """
     # Store runtime configuration for fixtures to access
     try:
@@ -139,7 +143,7 @@ def run(
     # Set up event routing with appropriate renderer
     router = EventRouter()
     if llm:
-        renderer: LlmRenderer | RichRenderer = LlmRenderer(verbose=verbose)
+        renderer: LlmRenderer | RichRenderer = LlmRenderer(verbosity=llm_verbosity, full=llm_full)
         router.subscribe(renderer)
     else:
         renderer = RichRenderer(use_colors=not no_color, use_ascii=ascii)
