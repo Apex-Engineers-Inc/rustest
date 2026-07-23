@@ -267,3 +267,41 @@ def test_default_omits_skip_lines() -> None:
     objs = render([skip], FakeRunReport(passed=0, failed=0, skipped=1, duration=0.0))
     assert not [o for o in objs if o["t"] == "skip"]
     assert objs[-1]["skipped"] == 1
+
+
+def _fail_with_stdout(nlines: int) -> tuple[FakeTestCompletedEvent, FakeTestResult]:
+    ev = _fail_event("test_x", "5, in test_x")
+    text = "\n".join(f"line{i}" for i in range(nlines))
+    return ev, FakeTestResult("test_x", f"{ROOT}/t.py", "failed", stdout=text)
+
+
+def test_stdout_truncated_to_last_50_lines() -> None:
+    ev, result = _fail_with_stdout(60)
+    objs = render(
+        [ev], FakeRunReport(passed=0, failed=1, skipped=0, duration=0.1, results=(result,))
+    )
+    fail = next(o for o in objs if o["t"] == "fail")
+    assert fail["stdout"].splitlines()[0] == "line10"
+    assert fail["stdout"].splitlines()[-1] == "line59"
+    assert fail["stdout_omitted"] == 10
+
+
+def test_stdout_not_truncated_when_short() -> None:
+    ev, result = _fail_with_stdout(5)
+    objs = render(
+        [ev], FakeRunReport(passed=0, failed=1, skipped=0, duration=0.1, results=(result,))
+    )
+    fail = next(o for o in objs if o["t"] == "fail")
+    assert "stdout_omitted" not in fail
+
+
+def test_full_disables_truncation() -> None:
+    ev, result = _fail_with_stdout(200)
+    objs = render(
+        [ev],
+        FakeRunReport(passed=0, failed=1, skipped=0, duration=0.1, results=(result,)),
+        full=True,
+    )
+    fail = next(o for o in objs if o["t"] == "fail")
+    assert len(fail["stdout"].splitlines()) == 200
+    assert "stdout_omitted" not in fail
