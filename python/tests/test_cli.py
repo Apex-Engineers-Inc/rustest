@@ -56,6 +56,8 @@ class TestCli:
                 ascii=False,
                 no_color=False,
                 llm=False,
+                llm_verbosity=0,
+                llm_full=False,
             )
             assert exit_code == 0
 
@@ -75,13 +77,13 @@ class TestCliArguments:
         """Test -v flag is parsed correctly."""
         parser = cli.build_parser()
         args = parser.parse_args(["-v"])
-        assert args.verbose is True
+        assert args.verbose == 1
 
     def test_verbose_flag_long(self) -> None:
         """Test --verbose flag is parsed correctly."""
         parser = cli.build_parser()
         args = parser.parse_args(["--verbose"])
-        assert args.verbose is True
+        assert args.verbose == 1
 
     def test_ascii_flag(self) -> None:
         """Test --ascii flag is parsed correctly."""
@@ -117,7 +119,7 @@ class TestCliArguments:
         """Test multiple flags can be combined."""
         parser = cli.build_parser()
         args = parser.parse_args(["-v", "--ascii", "--color", "never"])
-        assert args.verbose is True
+        assert args.verbose == 1
         assert args.ascii is True
         assert args.color == "never"
 
@@ -367,7 +369,7 @@ class TestCliEdgeCases:
                 "tests/",
             ]
         )
-        assert args.verbose is True
+        assert args.verbose == 1
         assert args.ascii is True
         assert args.color == "always"
         assert args.pattern == "test_pattern"
@@ -618,3 +620,36 @@ class TestLlmPytestCompat:
 
         assert mock_run.call_args.kwargs["llm"] is True
         assert mock_run.call_args.kwargs["pytest_compat"] is True
+
+
+def test_verbose_is_count() -> None:
+    from rustest.cli import build_parser
+
+    args = build_parser().parse_args(["-vv"])
+    assert args.verbose == 2
+
+
+def test_llm_schema_flag_parses() -> None:
+    from rustest.cli import build_parser
+
+    args = build_parser().parse_args(["--llm-schema"])
+    assert args.llm_schema is True
+
+
+def test_llm_full_flag_parses() -> None:
+    from rustest.cli import build_parser
+
+    args = build_parser().parse_args(["--llm", "--llm-full"])
+    assert args.llm_full is True
+
+
+def test_llm_schema_prints_and_exits_zero(capsys: object) -> None:
+    import json as _json
+
+    from rustest.cli import main
+
+    rc = main(["--llm-schema"])
+    assert rc == 0
+    out = capsys.readouterr().out  # type: ignore[attr-defined]
+    doc = _json.loads(out.strip())
+    assert doc["version"] == 1

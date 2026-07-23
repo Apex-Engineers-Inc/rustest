@@ -86,8 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument(
         "-v",
         "--verbose",
-        action="store_true",
-        help="Show verbose output with hierarchical test structure.",
+        action="count",
+        default=0,
+        help="Increase verbosity. Repeat (-vv) for more detail (LLM: adds frames).",
     )
     _ = parser.add_argument(
         "--ascii",
@@ -104,6 +105,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--llm",
         action="store_true",
         help="Produce minimal, token-efficient output optimized for LLM consumption.",
+    )
+    _ = parser.add_argument(
+        "--llm-schema",
+        action="store_true",
+        help="Print the JSON Schema for --llm output and exit.",
+    )
+    _ = parser.add_argument(
+        "--llm-full",
+        action="store_true",
+        help="With --llm, do not truncate captured stdout/stderr.",
     )
     _ = parser.add_argument(
         "--no-codeblocks",
@@ -150,6 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
         fail_fast=False,
         pytest_compat=False,
         llm=False,
+        llm_schema=False,
+        llm_full=False,
     )
     return parser
 
@@ -157,6 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.llm_schema:
+        from rustest.renderers._llm_schema import schema_json
+
+        print(schema_json())
+        return 0
 
     # Determine last_failed_mode
     if args.last_failed:
@@ -190,10 +209,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         last_failed_mode=last_failed_mode,
         fail_fast=args.fail_fast,
         pytest_compat=args.pytest_compat,
-        verbose=args.verbose,
+        verbose=bool(args.verbose),
         ascii=args.ascii,
         no_color=not use_color,
         llm=args.llm,
+        llm_verbosity=args.verbose,
+        llm_full=args.llm_full,
     )
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called
