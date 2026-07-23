@@ -132,7 +132,7 @@ def run(
     # Print pytest compatibility banner and install _pytest stubs if enabled
     if pytest_compat:
         if llm:
-            print("pytest-compat mode")
+            print("pytest-compat mode", file=sys.stderr)
         else:
             _print_pytest_compat_banner(use_colors=not no_color)
         # Install _pytest stub modules for compatibility

@@ -64,3 +64,16 @@ def test_llm_no_ansi_or_nonascii(tmp_path: Path) -> None:
     )
     assert "\x1b" not in proc.stdout
     assert proc.stdout.isascii()
+
+
+def test_llm_pytest_compat_stdout_stays_pure_jsonl(tmp_path: Path) -> None:
+    suite = _write_suite(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, "-m", "rustest", "--llm", "--pytest-compat", str(suite)],
+        capture_output=True,
+        text=True,
+    )
+    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    assert lines, "expected at least one stdout line"
+    objs = [json.loads(ln) for ln in lines]  # raises if any line is not JSON
+    assert objs[0]["t"] == "meta"
