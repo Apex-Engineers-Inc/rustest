@@ -2,8 +2,8 @@
 
 Buffers test results during execution and emits one JSON object per line at
 ``finalize``: a ``meta`` header, ``error``/``fail`` lines, optional ``skip``
-lines (``-v``), and a ``summary`` sentinel last. See
-docs/superpowers/specs/2026-07-23-llm-jsonl-output-design.md.
+lines (``-v``), and a ``summary`` sentinel last. See docs/guide/llm-output.md
+for the full output contract.
 """
 
 from __future__ import annotations

@@ -27,6 +27,7 @@ See the speedup immediately, then migrate to native rustest for full features.
 - ✅ **Familiar API** — Same `@fixture`, `@parametrize`, `@mark` decorators
 - 🔄 **Built-in async & mocking** — No pytest-asyncio or pytest-mock plugins needed
 - 🐛 **Clear error messages** — Vitest-style output with Expected/Received diffs
+- 🤖 **LLM-friendly output** — `--llm` emits deterministic JSONL for coding agents (Claude Code, Cursor, Copilot)
 - 📝 **Markdown testing** — Test code blocks in documentation
 - 🛠️ **Rich fixtures** — `tmp_path`, `monkeypatch`, `mocker`, `capsys`, `caplog`, `cache`, and more
 
@@ -93,6 +94,7 @@ rustest -k "test_sum"        # Filter by name
 rustest -m "slow"            # Filter by mark
 rustest --lf                 # Rerun last failed
 rustest -x                   # Exit on first failure
+rustest --llm                # JSONL output for LLM coding agents
 ```
 
 **[📖 Full Documentation →](https://apex-engineers-inc.github.io/rustest)**

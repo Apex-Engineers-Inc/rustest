@@ -483,57 +483,24 @@ rustest --no-capture
 ### LLM Output Mode (`--llm`)
 
 `--llm` produces machine-readable **JSONL** (one JSON object per line) instead of
-the human-oriented rich output. It is designed for LLM coding agents (Claude
-Code, Cursor, Copilot, etc.): no ANSI colors, no Unicode, no progress spinners —
-just the signal an agent needs to act on. `--llm` implies `--ascii` and
-`--color never`.
+the human-oriented rich output — for LLM coding agents that parse test results.
+It implies `--ascii` and `--color never`, emits only failures and collection
+errors plus a `summary` line, and is deterministic:
 
 ```bash
-# Emit JSONL
 rustest tests/ --llm
 ```
 
-Output is buffered and emitted once at completion, sorted deterministically. A
-`meta` line comes first, then one line per failure and collection error, then a
-`summary` line last:
-
 ```json
 {"t":"meta","v":1,"tool":"rustest","version":"0.17.0"}
-{"t":"fail","id":"tests/test_auth.py::test_login","line":42,"error":"AssertionError","msg":"expected 200, got 401","expected":"200","actual":"401","stdout":"login user=admin"}
-{"t":"summary","passed":30,"failed":1,"skipped":1,"errors":0,"duration":1.24,"rerun":["tests/test_auth.py::test_login"]}
+{"t":"fail","id":"tests/test_auth.py::test_login","line":42,"error":"AssertionError","msg":"expected 200, got 401","expected":"200","actual":"401"}
+{"t":"summary","passed":30,"failed":1,"skipped":0,"errors":0,"duration":1.24,"rerun":["tests/test_auth.py::test_login"]}
 ```
 
-Passing and skipped tests are counted in `summary` (not printed as lines) to keep
-the output minimal. The `summary` line is the **completion sentinel**: if it is
-absent, the run was interrupted.
+Use `-v`/`-vv` for more failure detail, `--llm-full` to keep full captured
+output, and `--llm-schema` to print the format contract.
 
-**Verbosity.** `-v` adds the failing source line (`code`) and emits a `skip` line
-per skipped test; `-vv` additionally adds the traceback frame chain (`frames`):
-
-```bash
-rustest tests/ --llm -v     # + code line, + skip lines
-rustest tests/ --llm -vv    # + frame chain
-```
-
-**Captured output** is attached to each failure (`stdout`/`stderr`) and truncated
-to the last 50 lines by default, with the dropped-line count in `stdout_omitted`
-/ `stderr_omitted`. Use `--llm-full` to disable truncation:
-
-```bash
-rustest tests/ --llm --llm-full
-```
-
-**Discovering the schema.** `--llm-schema` prints the JSON Schema for every line
-type and exits, so a tool can learn the format without external docs:
-
-```bash
-rustest --llm-schema
-```
-
-!!! tip "Re-running just the failures"
-    The `summary` line's `rerun` array lists the node IDs of failures (plus the
-    paths of collection errors) — pass them straight back to reproduce only what
-    failed: `rustest $(... rerun ids ...)`.
+**[📖 Full LLM Output reference →](llm-output.md)**
 
 ## Markdown Code Block Testing
 
