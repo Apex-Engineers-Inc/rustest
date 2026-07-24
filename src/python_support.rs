@@ -91,10 +91,7 @@ pub(crate) fn find_src_directory(base_path: &Path) -> Option<PathBuf> {
             return Some(src_dir);
         }
 
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
-        }
+        current = current.parent()?;
     }
 }
 
@@ -115,10 +112,7 @@ pub(crate) fn find_project_root(path: &Path) -> Option<PathBuf> {
             return Some(current.to_path_buf());
         }
 
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
-        }
+        current = current.parent()?;
     }
 }
 
