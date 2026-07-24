@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-24
+
 ### Added
 
 - **`--llm` JSONL output mode**: `--llm` now emits machine-readable JSONL (one JSON object per line) optimized for LLM coding agents, replacing the earlier plain-text format
