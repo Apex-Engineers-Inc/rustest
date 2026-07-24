@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 import pytest
 
-from .helpers import stub_rust_module
 from rustest import RunReport, TestResult
 from rustest import cli
 
@@ -56,14 +55,17 @@ class TestCli:
                 verbose=False,
                 ascii=False,
                 no_color=False,
+                llm=False,
+                llm_verbosity=0,
+                llm_full=False,
             )
             assert exit_code == 0
 
     def test_main_surfaces_rust_errors(self) -> None:
-        def raising_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        def raising_run(*_args: object, **_kwargs: object) -> None:
             raise RuntimeError("boom")
 
-        with stub_rust_module(run=raising_run):
+        with patch("rustest.cli.run", side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError):
                 cli.main(["tests"])
 
@@ -75,13 +77,13 @@ class TestCliArguments:
         """Test -v flag is parsed correctly."""
         parser = cli.build_parser()
         args = parser.parse_args(["-v"])
-        assert args.verbose is True
+        assert args.verbose == 1
 
     def test_verbose_flag_long(self) -> None:
         """Test --verbose flag is parsed correctly."""
         parser = cli.build_parser()
         args = parser.parse_args(["--verbose"])
-        assert args.verbose is True
+        assert args.verbose == 1
 
     def test_ascii_flag(self) -> None:
         """Test --ascii flag is parsed correctly."""
@@ -117,7 +119,7 @@ class TestCliArguments:
         """Test multiple flags can be combined."""
         parser = cli.build_parser()
         args = parser.parse_args(["-v", "--ascii", "--color", "never"])
-        assert args.verbose is True
+        assert args.verbose == 1
         assert args.ascii is True
         assert args.color == "never"
 
@@ -367,7 +369,7 @@ class TestCliEdgeCases:
                 "tests/",
             ]
         )
-        assert args.verbose is True
+        assert args.verbose == 1
         assert args.ascii is True
         assert args.color == "always"
         assert args.pattern == "test_pattern"
@@ -524,3 +526,130 @@ class TestCliOutput:
                 cli.main(["--ascii"])
 
             assert mock_run.call_args.kwargs["ascii"] is True
+
+
+class TestLlmFlag:
+    """Test --llm flag behavior."""
+
+    def test_llm_flag_parsed(self) -> None:
+        """Test --llm flag is parsed as True."""
+        parser = cli.build_parser()
+        args = parser.parse_args(["--llm"])
+        assert args.llm is True
+
+    def test_llm_flag_default_false(self) -> None:
+        """Test --llm flag defaults to False."""
+        parser = cli.build_parser()
+        args = parser.parse_args([])
+        assert args.llm is False
+
+    def test_llm_overrides_color_and_ascii(self) -> None:
+        """Test --llm forces no_color=True, ascii=True, and passes llm=True."""
+        report = RunReport(
+            total=0,
+            passed=0,
+            failed=0,
+            skipped=0,
+            duration=0.0,
+            results=(),
+            collection_errors=(),
+        )
+
+        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
+        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
+            with patch("rustest.cli.run", return_value=report) as mock_run:
+                cli.main(["--llm"])
+
+            assert mock_run.call_args.kwargs["no_color"] is True
+            assert mock_run.call_args.kwargs["ascii"] is True
+            assert mock_run.call_args.kwargs["llm"] is True
+
+    def test_llm_silently_overrides_color_always(self) -> None:
+        """Test --llm overrides --color always, still forcing no_color=True and ascii=True."""
+        report = RunReport(
+            total=0,
+            passed=0,
+            failed=0,
+            skipped=0,
+            duration=0.0,
+            results=(),
+            collection_errors=(),
+        )
+
+        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
+        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
+            with patch("rustest.cli.run", return_value=report) as mock_run:
+                cli.main(["--llm", "--color", "always"])
+
+            assert mock_run.call_args.kwargs["no_color"] is True
+            assert mock_run.call_args.kwargs["ascii"] is True
+
+    def test_llm_with_verbose(self) -> None:
+        """Test --llm and -v can be combined."""
+        report = RunReport(
+            total=0,
+            passed=0,
+            failed=0,
+            skipped=0,
+            duration=0.0,
+            results=(),
+            collection_errors=(),
+        )
+
+        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
+        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
+            with patch("rustest.cli.run", return_value=report) as mock_run:
+                cli.main(["--llm", "-v"])
+
+            assert mock_run.call_args.kwargs["llm"] is True
+            assert mock_run.call_args.kwargs["verbose"] is True
+
+
+class TestLlmPytestCompat:
+    """Test --llm and --pytest-compat flags together."""
+
+    def test_llm_pytest_compat_flags_passed(self) -> None:
+        """Test --llm and --pytest-compat both pass through to core.run()."""
+        report = RunReport(
+            total=0, passed=0, failed=0, skipped=0, duration=0.0, results=(), collection_errors=()
+        )
+        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
+        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
+            with patch("rustest.cli.run", return_value=report) as mock_run:
+                cli.main(["--llm", "--pytest-compat"])
+
+        assert mock_run.call_args.kwargs["llm"] is True
+        assert mock_run.call_args.kwargs["pytest_compat"] is True
+
+
+def test_verbose_is_count() -> None:
+    from rustest.cli import build_parser
+
+    args = build_parser().parse_args(["-vv"])
+    assert args.verbose == 2
+
+
+def test_llm_schema_flag_parses() -> None:
+    from rustest.cli import build_parser
+
+    args = build_parser().parse_args(["--llm-schema"])
+    assert args.llm_schema is True
+
+
+def test_llm_full_flag_parses() -> None:
+    from rustest.cli import build_parser
+
+    args = build_parser().parse_args(["--llm", "--llm-full"])
+    assert args.llm_full is True
+
+
+def test_llm_schema_prints_and_exits_zero(capsys: object) -> None:
+    import json as _json
+
+    from rustest.cli import main
+
+    rc = main(["--llm-schema"])
+    assert rc == 0
+    out = capsys.readouterr().out  # type: ignore[attr-defined]
+    doc = _json.loads(out.strip())
+    assert doc["version"] == 1

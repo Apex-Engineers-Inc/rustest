@@ -2125,7 +2125,7 @@ impl<'py> FixtureResolver<'py> {
             .collect();
 
         // Sort by scope: session (widest) first, function (narrowest) last
-        autouse_fixtures.sort_by(|a, b| b.1.cmp(&a.1));
+        autouse_fixtures.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         if std::env::var_os("RUSTEST_DEBUG_AUTOUSE").is_some() {
             eprintln!(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 from .helpers import stub_rust_module
@@ -87,3 +88,33 @@ class TestCoreRun:
         assert callable(captured_args["event_callback"])
         assert report.total == 1
         assert report.passed == 1
+
+
+class TestCoreLlmMode:
+    def test_llm_param_accepted(self) -> None:
+        sig = inspect.signature(core_run)
+        assert "llm" in sig.parameters
+
+
+def test_run_forwards_llm_verbosity_and_full(monkeypatch: object) -> None:
+    """core.run must build LlmRenderer with the given verbosity and full flag."""
+    import rustest.core as core
+
+    captured: dict[str, object] = {}
+
+    class SpyRenderer:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def handle(self, event: object) -> None:  # pragma: no cover
+            pass
+
+        def finalize(self, report: object) -> None:
+            pass
+
+    monkeypatch.setattr(core, "LlmRenderer", SpyRenderer)  # type: ignore[attr-defined]
+
+    core.run(paths=["examples/tests/"], llm=True, llm_verbosity=2, llm_full=True)
+
+    assert captured.get("verbosity") == 2
+    assert captured.get("full") is True
