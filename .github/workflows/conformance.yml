@@ -1,0 +1,49 @@
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly benchmark run
+
+jobs:
+  conformance:
+    name: Conformance corpus + benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv and dependencies
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          python-version: "3.12" # conformance harness uses tomllib; v2 floor is 3.12+
+
+      - name: Install dependencies and build package
+        run: uv sync --all-extras
+
+      - name: Build Rust extension (release)
+        run: uv run maturin develop --release
+
+      - name: Run conformance harness unit tests
+        run: uv run pytest conformance/tests -v
+
+      - name: Run conformance corpus
+        run: uv run python -m conformance
+
+      - name: Benchmarks (scheduled/manual only)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: uv run python -m conformance.bench.bench --out bench_results.json
+
+      - name: Upload benchmark results
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench_results.json

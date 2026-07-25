@@ -18,13 +18,13 @@ repos:
       # Run the formatter
       - id: ruff-format
         name: ruff format
-        files: ^python/
+        files: ^(python|conformance)/
 
       # Run the linter
       - id: ruff
         name: ruff check
         args: [--fix]
-        files: ^python/
+        files: ^(python|conformance)/
 
   # Python type checking with basedpyright
   - repo: https://github.com/RobertCraigie/pyright-python
@@ -33,7 +33,7 @@ repos:
       - id: pyright
         name: basedpyright
         entry: basedpyright
-        args: [python]
+        args: [python, conformance]
         language: python
         types: [python]
         pass_filenames: false

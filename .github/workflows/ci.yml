@@ -74,10 +74,10 @@ jobs:
         run: uv sync --all-extras
 
       - name: Auto-fix Python formatting with ruff
-        run: uv run --no-project ruff format python
+        run: uv run --no-project ruff format python conformance
 
       - name: Auto-fix Python linting with ruff
-        run: uv run --no-project ruff check --fix python
+        run: uv run --no-project ruff check --fix python conformance
 
       - name: Auto-fix Rust formatting
         run: cargo fmt
@@ -93,10 +93,10 @@ jobs:
           fi
 
       - name: Check Python formatting with ruff
-        run: uv run --no-project ruff format --check python
+        run: uv run --no-project ruff format --check python conformance
 
       - name: Lint Python with ruff
-        run: uv run --no-project ruff check python
+        run: uv run --no-project ruff check python conformance
 
       - name: Check Rust formatting
         run: cargo fmt --check
@@ -121,4 +121,4 @@ jobs:
         run: uv sync --all-extras
 
       - name: Type check with basedpyright
-        run: uv run --no-project basedpyright python
+        run: uv run --no-project basedpyright python conformance
