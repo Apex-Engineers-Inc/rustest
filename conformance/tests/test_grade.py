@@ -52,6 +52,15 @@ def test_grade_diverge_on_errors_only() -> None:
     assert "rustest=1/0/0/0" in got.detail
 
 
+def test_grade_stale_waiver() -> None:
+    a = _result({"test_a.py::test_x"})
+
+    got = grade_case("area/case", a, a, {"area/case": "known v1 gap"})
+
+    assert got.status == "STALE-WAIVER"
+    assert got.detail == "case matches but is waived: known v1 gap — remove the waiver"
+
+
 def test_load_waivers_and_case_args(tmp_path: Path) -> None:
     (tmp_path / "waivers.toml").write_text(
         '[cases]\n"area/case" = "reason here"\n', encoding="utf-8"

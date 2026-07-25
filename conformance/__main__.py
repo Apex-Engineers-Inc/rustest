@@ -39,6 +39,25 @@ def _grade_one(
         return CaseResult(name, "DIVERGE", problem)
 
 
+def _summarize(results: list[CaseResult]) -> tuple[str, int]:
+    """Build the trailing summary line and the process exit code for *results*.
+
+    A STALE-WAIVER (a waiver whose case now matches) fails the run exactly
+    like an unwaived DIVERGE: shrinking waivers.toml is the v2 phase-gate
+    metric, so a waiver that has gone silently inert must not go unnoticed.
+    """
+    diverged = [r for r in results if r.status == "DIVERGE"]
+    stale = [r for r in results if r.status == "STALE-WAIVER"]
+    matched = sum(r.status == "MATCH" for r in results)
+    waived = sum(r.status == "WAIVED" for r in results)
+    summary = (
+        f"{len(results)} cases: {matched} match, {waived} waived, "
+        + f"{len(stale)} stale-waivers, {len(diverged)} diverged"
+    )
+    exit_code = 1 if diverged or stale else 0
+    return summary, exit_code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="conformance")
     parser.add_argument("--only", default="", help="Only run cases whose name starts with PREFIX")
@@ -56,15 +75,12 @@ def main() -> int:
             continue
         result = _grade_one(case_dir, name, waivers)
         results.append(result)
-        flag = {"MATCH": "ok", "WAIVED": "~~", "DIVERGE": "XX"}[result.status]
+        flag = {"MATCH": "ok", "WAIVED": "~~", "DIVERGE": "XX", "STALE-WAIVER": "!!"}[result.status]
         print(f"[{flag}] {result.name}" + (f"  ({result.detail})" if result.detail else ""))
 
-    diverged = [r for r in results if r.status == "DIVERGE"]
-    matched = sum(r.status == "MATCH" for r in results)
-    waived = sum(r.status == "WAIVED" for r in results)
-    summary = f"{len(results)} cases: {matched} match, {waived} waived, {len(diverged)} diverged"
+    summary, exit_code = _summarize(results)
     print(f"\n{summary}")
-    return 1 if diverged else 0
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from conformance.__main__ import _grade_one
-from conformance.harness.runners import RunResult
+from conformance.__main__ import _grade_one, _summarize
+from conformance.harness.runners import Outcomes, RunResult
 
 
 def test_grade_one_survives_malformed_case_toml(tmp_path: Path) -> None:
@@ -29,3 +29,31 @@ def test_grade_one_survives_runner_exception(tmp_path: Path) -> None:
 
     assert result.status == "DIVERGE"
     assert "harness error" in result.detail
+
+
+def test_stale_waiver_flows_into_summary_and_exit_code(tmp_path: Path) -> None:
+    match = RunResult(
+        ids={"test_a.py::test_x"},
+        outcomes=Outcomes(1, 0, 0, 0, 0, False),
+    )
+
+    def _matching(case_dir: Path, args: list[str]) -> RunResult:
+        return match
+
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    waivers = {"area/case": "known v1 gap"}
+
+    result = _grade_one(
+        case_dir,
+        "area/case",
+        waivers,
+        run_pytest_fn=_matching,
+        run_rustest_fn=_matching,
+    )
+    assert result.status == "STALE-WAIVER"
+
+    summary, exit_code = _summarize([result])
+
+    assert "1 stale-waivers" in summary
+    assert exit_code == 1

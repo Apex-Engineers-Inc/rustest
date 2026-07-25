@@ -16,7 +16,7 @@ except ImportError as exc:  # pragma: no cover - guards Python < 3.11
 @dataclass(frozen=True)
 class CaseResult:
     name: str
-    status: str  # "MATCH" | "DIVERGE" | "WAIVED"
+    status: str  # "MATCH" | "DIVERGE" | "WAIVED" | "STALE-WAIVER"
     detail: str
 
 
@@ -61,6 +61,12 @@ def grade_case(
     if po.exit_code != ro.exit_code:
         problems.append(f"exit codes pytest={po.exit_code} rustest={ro.exit_code}")
     if not problems:
+        if name in waivers:
+            return CaseResult(
+                name,
+                "STALE-WAIVER",
+                f"case matches but is waived: {waivers[name]} — remove the waiver",
+            )
         return CaseResult(name, "MATCH", "")
     if name in waivers:
         return CaseResult(name, "WAIVED", f"{waivers[name]} :: {'; '.join(problems)}")
