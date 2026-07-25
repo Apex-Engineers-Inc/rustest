@@ -21,6 +21,7 @@ class Outcomes:
     passed: int
     failed: int
     skipped: int
+    errors: int
     exit_code: int
     collection_error: bool
 
@@ -43,8 +44,8 @@ def parse_pytest_collect(text: str) -> set[str]:
 
 
 def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
-    """Extract pass/fail/skip counts from a pytest terminal summary line."""
-    counts = {"passed": 0, "failed": 0, "skipped": 0}
+    """Extract pass/fail/skip/error counts from a pytest terminal summary line."""
+    counts = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0}
     for line in reversed(text.splitlines()):
         found: dict[str, int] = {}
         for match in _SUMMARY_RE.finditer(line):
@@ -52,13 +53,17 @@ def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
             kind: str = match.group(2)
             found[kind] = int(number)
         if found:
-            for key in counts:
-                counts[key] = found.get(key, 0)
+            counts["passed"] = found.get("passed", 0)
+            counts["failed"] = found.get("failed", 0)
+            counts["skipped"] = found.get("skipped", 0)
+            # pytest writes "1 error" but "2 errors"; both mean the same bucket.
+            counts["errors"] = found.get("error", 0) + found.get("errors", 0)
             break
     return Outcomes(
         passed=counts["passed"],
         failed=counts["failed"],
         skipped=counts["skipped"],
+        errors=counts["errors"],
         exit_code=exit_code,
         collection_error=exit_code == 2,
     )
@@ -69,11 +74,29 @@ def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
-    """Collect and run *case_dir* with real pytest, returning normalized results."""
-    base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
-    collect = _run([*base, "--collect-only", "-q", *args], case_dir)
-    raw_ids = parse_pytest_collect(collect.stdout)
-    run = _run([*base, "-q", "--tb=no", *args], case_dir)
+    """Collect and run *case_dir* with real pytest, returning normalized results.
+
+    The case runs under pure pytest defaults: an empty ini file is forced with
+    ``-c`` and the rootdir is pinned to *case_dir*, so pytest never walks up and
+    adopts a surrounding project's ``[tool.pytest.ini_options]`` (this repo's own
+    ``pyproject.toml`` would otherwise apply to every corpus case).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        empty_ini = Path(tmp) / "pytest.ini"
+        empty_ini.write_text("", encoding="utf-8")
+        base = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-c",
+            str(empty_ini),
+            f"--rootdir={case_dir}",
+        ]
+        collect = _run([*base, "--collect-only", "-q", *args], case_dir)
+        raw_ids = parse_pytest_collect(collect.stdout)
+        run = _run([*base, "-q", "--tb=no", *args], case_dir)
     outcomes = parse_pytest_summary(run.stdout, run.returncode)
     return RunResult(
         ids={normalize_pytest_nodeid(i) for i in raw_ids},
@@ -101,7 +124,7 @@ def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
         if not report_path.exists():
             return RunResult(
                 ids=set(),
-                outcomes=Outcomes(0, 0, 0, proc.returncode, collection_error=True),
+                outcomes=Outcomes(0, 0, 0, 0, proc.returncode, collection_error=True),
             )
         data: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
     summary: dict[str, int] = data["summary"]
@@ -112,6 +135,7 @@ def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
             passed=summary["passed"],
             failed=summary["failed"],
             skipped=summary["skipped"],
+            errors=sum(1 for test in tests if test.get("status") == "error"),
             exit_code=proc.returncode,
             collection_error=bool(data["collection_errors"]),
         ),

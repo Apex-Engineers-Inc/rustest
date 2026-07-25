@@ -10,23 +10,32 @@ def _posix(path_part: str) -> str:
 
 
 def normalize_pytest_nodeid(nodeid: str) -> str:
-    """Posixify the path segment and drop intermediate class segments.
+    """Posixify the path segment of a pytest nodeid, preserving every other segment.
 
-    v1 rustest report IDs carry only path::name, so class segments are removed
-    from both sides for comparison. v2's report will restore full fidelity.
+    Class segments are kept: ``tests\\test_a.py::TestX::test_y[1-2]`` normalizes to
+    ``tests/test_a.py::TestX::test_y[1-2]``. Dropping them would collapse
+    ``f.py::TestA::test_x`` and ``f.py::TestB::test_x`` into one ID and hide a
+    runner that missed one of them.
     """
-    parts = nodeid.split("::")
-    return f"{_posix(parts[0])}::{parts[-1]}" if len(parts) > 1 else _posix(parts[0])
+    path_part, sep, rest = nodeid.partition("::")
+    normalized_path = _posix(path_part)
+    return f"{normalized_path}::{rest}" if sep else normalized_path
 
 
 def normalize_rustest_id(test_id: str, case_dir: Path) -> str:
     """Make a rustest report ID comparable to a normalized pytest nodeid.
 
-    rustest emits ``<path>::<name>`` where ``path`` may be absolute or relative
-    to the case directory, and uses the host path separator. The result is always
-    posix-form and relative to *case_dir*, with class segments dropped.
+    rustest emits ``<path>::<name>`` where ``path`` uses the host separator and is
+    either relative to the process CWD (which the runners always set to *case_dir*)
+    or, when the file lies outside that CWD, absolute. The result is always
+    posix-form and relative to *case_dir*.
+
+    The name portion is passed through untouched. Verified against real v1 reports:
+    class-based tests are emitted as ``sub\\test_nested.py::TestBox::test_in_class``,
+    i.e. the same three-segment shape as a pytest nodeid, so preserving the segments
+    keeps both sides comparable without losing information.
     """
-    path_part, sep, name = test_id.partition("::")
+    path_part, sep, rest = test_id.partition("::")
     candidate = Path(path_part)
     if candidate.is_absolute():
         try:
@@ -34,6 +43,4 @@ def normalize_rustest_id(test_id: str, case_dir: Path) -> str:
         except ValueError:
             pass
     normalized_path = _posix(path_part)
-    if not sep:
-        return normalized_path
-    return f"{normalized_path}::{name.split('::')[-1]}"
+    return f"{normalized_path}::{rest}" if sep else normalized_path
