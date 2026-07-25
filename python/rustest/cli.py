@@ -137,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
             "from pytest."
         ),
     )
+    _ = parser.add_argument(
+        "--report-json",
+        dest="report_json",
+        metavar="PATH",
+        help="Write a machine-readable JSON report (schema v1) to PATH.",
+    )
     parser.set_defaults(
         capture_output=True,
         enable_codeblocks=True,
@@ -144,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
         failed_first=False,
         fail_fast=False,
         pytest_compat=False,
+        report_json=None,
     )
     return parser
 
@@ -183,6 +190,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ascii=args.ascii,
         no_color=not use_color,
     )
+    if args.report_json:
+        from .json_report import write_json_report
+
+        write_json_report(report, args.report_json)
     # Note: Rust now handles all output rendering with real-time progress
     # The Python _print_report() function is no longer called
 
