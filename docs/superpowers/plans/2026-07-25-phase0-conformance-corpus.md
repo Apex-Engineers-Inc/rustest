@@ -6,7 +6,7 @@
 
 **Architecture:** A self-contained `conformance/` package runs each corpus case through real pytest and real rustest as subprocesses, diffs collected test IDs and outcome counts, applies waivers, and reports MATCH/DIVERGE/WAIVED. rustest gains a `--report-json` flag (Python-only change) as its machine-readable interface. A generator-based benchmark suite produces the three canonical numbers: collection time, per-test overhead, full-run time.
 
-**Tech Stack:** Python 3.10+ (no Rust changes in this phase), pytest as **dev-dependency only**, tomllib (stdlib), uv + poe tasks, GitHub Actions.
+**Tech Stack:** Python (no Rust changes in this phase), pytest as **dev-dependency only**, tomllib (stdlib), uv + poe tasks, GitHub Actions. The rustest package keeps its 3.10 floor; the conformance harness itself requires Python >= 3.11 (tomllib) and its CI job pins accordingly.
 
 ## Global Constraints
 
