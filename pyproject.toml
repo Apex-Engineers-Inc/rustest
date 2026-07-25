@@ -97,6 +97,7 @@ exclude = [
     "**/*.pyc",
     "**/tests",
     "python/rustest/_pytest_stub",
+    "conformance/corpus",
 ]
 
 [tool.uv]
