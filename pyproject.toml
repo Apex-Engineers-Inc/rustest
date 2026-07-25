@@ -69,6 +69,7 @@ docs = "uv run zensical serve"
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["conformance/corpus"]
 
 [tool.basedpyright]
 pythonVersion = "3.10"
