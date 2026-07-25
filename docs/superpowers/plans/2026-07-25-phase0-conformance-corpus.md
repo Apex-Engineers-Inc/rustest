@@ -215,7 +215,7 @@ git commit -m "feat: add --report-json machine-readable report (schema v1)"
 - Produces (Task 3 depends on these exact names):
   - `ids.normalize_pytest_nodeid(nodeid: str) -> str` — posix path, class segments dropped: `tests\test_a.py::TestX::test_y[1-2]` → `tests/test_a.py::test_y[1-2]`
   - `ids.normalize_rustest_id(test_id: str, case_dir: Path) -> str` — path made relative to `case_dir`, posix, class segments dropped
-  - `runners.Outcomes` dataclass: `passed: int, failed: int, skipped: int, exit_code: int, collection_error: bool`
+  - `runners.Outcomes` dataclass: `passed: int, failed: int, skipped: int, errors: int, exit_code: int, collection_error: bool` (errors added during Task 2 review: pytest error outcomes parsed from summary; rustest counts report tests with status "error", structurally 0 in v1)
   - `runners.RunResult` dataclass: `ids: set[str], outcomes: Outcomes`
   - `runners.run_pytest(case_dir: Path, args: list[str]) -> RunResult`
   - `runners.run_rustest(case_dir: Path, args: list[str]) -> RunResult`
@@ -509,7 +509,7 @@ from conformance.harness.runners import Outcomes, RunResult
 def _result(ids: set[str], passed: int = 1, failed: int = 0) -> RunResult:
     return RunResult(
         ids=ids,
-        outcomes=Outcomes(passed, failed, 0, 1 if failed else 0, False),
+        outcomes=Outcomes(passed, failed, 0, 0, 1 if failed else 0, False),
     )
 
 
@@ -608,10 +608,15 @@ def grade_case(
     if only_rustest:
         problems.append(f"extra in rustest: {only_rustest}")
     po, ro = pytest_result.outcomes, rustest_result.outcomes
-    if (po.passed, po.failed, po.skipped) != (ro.passed, ro.failed, ro.skipped):
+    if (po.passed, po.failed, po.skipped, po.errors) != (
+        ro.passed,
+        ro.failed,
+        ro.skipped,
+        ro.errors,
+    ):
         problems.append(
-            f"outcomes pytest={po.passed}/{po.failed}/{po.skipped} "
-            f"rustest={ro.passed}/{ro.failed}/{ro.skipped}"
+            f"outcomes pytest={po.passed}/{po.failed}/{po.skipped}/{po.errors} "
+            f"rustest={ro.passed}/{ro.failed}/{ro.skipped}/{ro.errors}"
         )
     if po.exit_code != ro.exit_code:
         problems.append(f"exit codes pytest={po.exit_code} rustest={ro.exit_code}")
