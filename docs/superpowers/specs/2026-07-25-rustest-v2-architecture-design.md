@@ -42,8 +42,9 @@ flag and the compat banner are removed.
   with a docs link.
 - **One owner per concern.** Rust owns orchestration, model, scheduling, config. Python
   owns user-facing API and thin in-worker shims. No split-brain async/fixture logic.
-- **Python 3.10+ floor.** Coverage via `sys.monitoring` requires 3.12+; on 3.10/3.11
-  coverage delegates to coverage.py's tracer or errors clearly.
+- **Python 3.12+ floor** (user decision 2026-07-25): rustest v2 requires Python >= 3.12,
+  making `sys.monitoring` coverage unconditional. Phase 1 bumps `requires-python`, the CI
+  matrix, and docs; the 3.10/3.11 fallback question is closed.
 - **Skip/xfail classified by exception type identity**, never message string matching.
 - **Free-threading stance:** no GIL-dependent safety invariants in v2 (v1's
   `ACTIVE_RESOLVER` raw-pointer tunnel is condemned). Worker protocol is data-only.
