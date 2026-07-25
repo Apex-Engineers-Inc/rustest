@@ -40,6 +40,18 @@ def test_grade_waived() -> None:
     assert "known v1 gap" in got.detail
 
 
+def test_grade_diverge_on_errors_only() -> None:
+    same_ids = {"test_a.py::test_x"}
+    pytest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 1, 0, False))
+    rustest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 0, 0, False))
+
+    got = grade_case("area/case", pytest_result, rustest_result, {})
+
+    assert got.status == "DIVERGE"
+    assert "pytest=1/0/0/1" in got.detail
+    assert "rustest=1/0/0/0" in got.detail
+
+
 def test_load_waivers_and_case_args(tmp_path: Path) -> None:
     (tmp_path / "waivers.toml").write_text(
         '[cases]\n"area/case" = "reason here"\n', encoding="utf-8"

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from .runners import RunResult
+
+try:
+    import tomllib
+except ImportError as exc:  # pragma: no cover - guards Python < 3.11
+    raise SystemExit("conformance harness requires Python >= 3.11 (tomllib)") from exc
 
 
 @dataclass(frozen=True)
