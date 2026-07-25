@@ -717,8 +717,8 @@ def test_proper():
     assert True
 
 
-def testfoo():  # pytest does NOT collect this (python_functions = "test_*")
-    assert True
+def testfoo():  # pytest DOES collect this: default python_functions is prefix "test"
+    assert True  # (verified by Task 4 — both runners collect it; case locks prefix semantics)
 ```
 
 ```python
