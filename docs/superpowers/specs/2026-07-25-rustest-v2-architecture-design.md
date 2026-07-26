@@ -89,8 +89,13 @@ flag and the compat banner are removed.
 - **Phase 2 — Speed.** Tier S static collection + manifest cache + pre-import `-k`/`-m`
   pruning + assertion rewriting. Gate: benchmark targets — collection ≤ 50ms warm on the
   5k synthetic suite; per-test overhead < 200µs; corpus still green.
-- **Phase 3 — Secondary absorption.** asyncio + mock transplanted/validated under v2
-  workers; coverage via sys.monitoring. Gate: corpus extended to those areas, green.
+- **Phase 3 — Secondary absorption + real-world validation.** asyncio + mock
+  transplanted/validated under v2 workers; coverage via sys.monitoring. Real-world
+  hook-free suites as just-works + perf baselines: more-itertools, click, jinja2
+  candidates, plus **Apex-Member-Designer `server/`** (user-designated 2026-07-26:
+  real pytest project with `[tool.pytest.ini_options]` addopts, asyncio_mode=auto,
+  session-scoped loops, conftest + fixture trees — prime asyncio-absorption target).
+  Gate: corpus extended to those areas, green; validation suites run under v2.
 - **Cleanup.** Delete v1 runner; docs flip; release.
 
 ## Non-goals (unchanged from v1, now explicit)
