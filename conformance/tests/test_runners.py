@@ -11,6 +11,7 @@ import pytest
 from conformance.harness.runners import (
     CollectResult,
     _check_pytest_collect_exit,
+    _run,
     _check_pytest_exit,
     _isolate_case,
     parse_pytest_collect,
@@ -387,27 +388,58 @@ def test_isolate_case_qualifies_config_by_content(
         assert (work / "pytest.ini").read_text(encoding="utf-8") == "[pytest]\n"
 
 
-@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+# The two collect invocations, as the runners build them -- used where a test must run
+# in a directory it chose itself rather than in the runners' own temp isolation.
+COLLECT_COMMANDS = {
+    "pytest": [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        "--collect-only",
+        "-q",
+    ],
+    "v2": [sys.executable, "-m", "rustest", "--v2-collect-only"],
+}
+
+
+@pytest.mark.parametrize("runner_name", list(COLLECT_COMMANDS))
 def test_non_qualifying_case_config_still_isolates_from_a_poisoned_parent(
-    runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
+    runner_name: str, tmp_path: Path
 ) -> None:
     """The vacuous-MATCH trap: a ``[project]``-only pyproject.toml anchors nothing.
 
     Treating the file's mere *existence* as "this case brings its own config" skips
-    the bare ini; both runners then walk up out of the isolated copy, find the parent
-    ``pytest.ini`` whose ``python_files`` matches nothing here, and both collect
-    zero tests. They would AGREE -- on the wrong rootdir -- and the case would record
-    a MATCH that proves nothing. With content-based qualification the bare ini is
-    written, the parent is unreachable, and the suite is collected.
+    the bare ini; both runners then walk up out of the isolated copy, find a parent
+    ``pytest.ini`` whose ``python_files`` matches nothing here, and both collect zero
+    tests. They would AGREE -- on the wrong rootdir -- and the case would record a
+    MATCH that proves nothing.
+
+    **Why this drives ``_isolate_case`` and raw subprocesses rather than
+    ``run_pytest_collect`` / ``run_rustest_v2_collect``.** Those functions isolate into
+    a fresh ``tempfile.TemporaryDirectory()`` under the system temp root, which is not
+    beneath ``tmp_path`` -- so a poisoned ini written in ``tmp_path`` is never an
+    ancestor of the tree they actually run in, and the test passes no matter how
+    qualification is decided. That is exactly how the first version of this test was
+    inert (it passed under an existence-only mutation). Placing ``dest_parent``
+    *under* the poisoned directory is what puts the poison back in the ancestor chain
+    and makes the assertion load-bearing.
     """
     (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
-    case_dir = _case_with_mini_suite(tmp_path)
+    case_dir = tmp_path / "case_src"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
     (case_dir / "pyproject.toml").write_text('[project]\nname = "case"\n', encoding="utf-8")
+    dest_parent = tmp_path / "work"
+    dest_parent.mkdir()
 
-    result = runner(case_dir, [])
+    work = _isolate_case(case_dir, dest_parent)
+    proc = _run(COLLECT_COMMANDS[runner_name], work)
 
-    assert result.ids == MINI_IDS_ORDERED
-    assert result.exit_code == 0
+    ids = parse_pytest_collect(proc.stdout) if runner_name == "pytest" else proc.stdout.splitlines()
+    assert ids == MINI_IDS_ORDERED
+    assert proc.returncode == 0
 
 
 def test_run_pytest_collect_integration(tmp_path: Path) -> None:
