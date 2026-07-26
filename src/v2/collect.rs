@@ -278,6 +278,10 @@ fn collect_with_launcher(
     let init = WorkerRequest::Init {
         protocol_version: PROTOCOL_VERSION,
         rootdir: rootdir.clone(),
+        // Normalised for the same reason `discover` normalises it before resolving config:
+        // a `.`/`..` segment would otherwise reach the worker verbatim, and an
+        // invocation-relative path would resolve differently there than here.
+        invocation_dir: to_posix(&normpath(invocation_dir)),
         python_files: config.python_files.clone(),
         python_classes: config.python_classes.clone(),
         python_functions: config.python_functions.clone(),
@@ -955,6 +959,9 @@ fn response_op(response: &WorkerResponse) -> &'static str {
     match response {
         WorkerResponse::Ready { .. } => "ready",
         WorkerResponse::Collected { .. } => "collected",
+        // Never sent during collection — a worker answering `collect_file` with one is
+        // exactly the drift this function names in the error.
+        WorkerResponse::TestResult { .. } => "test_result",
         WorkerResponse::Bye => "bye",
     }
 }
@@ -1000,13 +1007,20 @@ mod tests {
     /// data race between tests (and is `unsafe` from edition 2024 onwards).  The seam
     /// exercises exactly the same `collect_with_launcher` path production uses.
     fn scripted_worker(script: &str) -> WorkerLauncher {
+        // Every well-behaved stand-in below hard-codes [`READY`].  Left stale after a
+        // protocol bump it would fail the *handshake* in each of them, so seven unrelated
+        // tests would report version skew instead of the crash or drift they exist to pin.
+        assert!(
+            READY.contains(&format!(r#""protocol_version":{PROTOCOL_VERSION}"#)),
+            "the scripted `ready` line is stale for protocol {PROTOCOL_VERSION}: {READY}"
+        );
         WorkerLauncher {
             program: worker_python(),
             args: vec!["-c".to_string(), script.to_string()],
         }
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":1}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":2}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked
@@ -1032,6 +1046,32 @@ mod tests {
              \x20       break\n\
              \x20   sys.stdout.flush()\n",
             dir = to_posix(log_dir)
+        );
+        scripted_worker(&script)
+    }
+
+    /// A well-behaved stand-in worker that **writes the `init` line it received** to *log*,
+    /// so a test can assert on what the orchestrator actually put on the wire rather than on
+    /// what it meant to.
+    fn init_recording_worker(log: &Path) -> WorkerLauncher {
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   if message['op'] == 'init':\n\
+             \x20       out = open('{log}', 'w', encoding='utf-8'); out.write(line); out.close()\n\
+             \x20       {READY}\n\
+             \x20   elif message['op'] == 'collect_file':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': message['path']}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n",
+            log = to_posix(log)
         );
         scripted_worker(&script)
     }
@@ -1369,6 +1409,46 @@ mod tests {
         let max = *counts.iter().max().unwrap();
         assert!(min > 0, "a worker got nothing: {counts:?}");
         assert!(max < min * 3, "badly unbalanced: {counts:?}");
+    }
+
+    // --- the init line ----------------------------------------------------
+
+    /// `init` carries **both** directories, and they are not interchangeable: `rootdir` is
+    /// wherever the config file was found by walking *up*, `invocation_dir` is where the run
+    /// started.  Nothing else in this suite would notice a producer that sent `rootdir`
+    /// twice — the worker ignores `invocation_dir` for now — so this asserts on the raw line
+    /// a stand-in worker received, from a layout where the two genuinely differ.
+    ///
+    /// The invocation directory is handed over with a `.` segment on purpose: it must reach
+    /// the worker normalised, exactly as `discover` normalises it before resolving config.
+    #[test]
+    fn init_carries_a_normalised_invocation_dir_distinct_from_the_rootdir() {
+        let tmp = tree(&[("sub/test_a.py", &module("a"))]);
+        let logs = TempDir::new().unwrap();
+        let log = logs.path().join("init.json");
+        let sub = tmp.path().join("sub");
+
+        let manifest =
+            collect_with_launcher(&sub.join("."), &[], &init_recording_worker(&log), 1).unwrap();
+        assert!(manifest.tests.is_empty(), "the stand-in collects nothing");
+
+        let line = fs::read_to_string(&log).unwrap();
+        let init: WorkerRequest = serde_json::from_str(line.trim()).unwrap();
+        let WorkerRequest::Init {
+            rootdir,
+            invocation_dir,
+            ..
+        } = init
+        else {
+            panic!("expected an init request, got: {line}");
+        };
+
+        assert_eq!(invocation_dir, to_posix(&sub));
+        assert_eq!(rootdir, to_posix(tmp.path()));
+        assert_ne!(
+            rootdir, invocation_dir,
+            "the fixture must keep the two apart, or this test proves nothing"
+        );
     }
 
     // --- end to end, with the real worker ---------------------------------

@@ -1334,13 +1334,15 @@ def test_ready_declares_the_version_the_worker_speaks(tmp_path: Path) -> None:
     )
 
     assert response == {"op": "ready", "protocol_version": PROTOCOL_VERSION}
-    assert PROTOCOL_VERSION == 1
+    # Pinned as a literal, not read from the constant: this and `PROTOCOL_VERSION` in
+    # `src/v2/protocol.rs` must move together, so bumping one alone has to fail here.
+    assert PROTOCOL_VERSION == 2
 
 
 def test_ready_line_matches_the_rust_golden() -> None:
     assert (
         encode_response({"op": "ready", "protocol_version": PROTOCOL_VERSION})
-        == '{"op":"ready","protocol_version":1}'
+        == '{"op":"ready","protocol_version":2}'
     )
 
 
@@ -1598,6 +1600,32 @@ def test_worker_subprocess_rejects_an_unknown_op() -> None:
 
     assert proc.returncode == 2
     assert "collect_dir" in proc.stderr
+
+
+def test_execute_test_is_not_implemented_yet_and_is_protocol_fatal() -> None:
+    """The wire is at v2, this worker implements only the collection half.
+
+    `execute_test` is a *real* op in `src/v2/protocol.rs`, so the interesting question is
+    not whether an invented op fails but whether the op this worker is expected to grow
+    fails **the same way** in the meantime.  It must take the unknown-op path — exit 2,
+    naming the op, nothing on stdout — never a swallowed request that leaves the
+    orchestrator blocked on a `test_result` line that is never coming.
+
+    Delete this test in the task that implements the op; until then it is what keeps the
+    version bump honest.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "rustest._v2_worker"],
+        input=json.dumps({"op": "execute_test", "id": "tests/test_math.py::test_add"}) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert proc.returncode == 2
+    assert "execute_test" in proc.stderr
+    assert proc.stdout.strip() == ""
 
 
 def _run_worker(lines: list[dict[str, Any]]) -> subprocess.CompletedProcess[str]:

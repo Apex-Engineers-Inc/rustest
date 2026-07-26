@@ -21,7 +21,12 @@ module must never ``import pytest``: it installs rustest's compat shim into
 ``import pytest`` resolves to ``rustest.compat.pytest`` and its decorators leave the
 ``__rustest_*`` metadata this module reads.
 
-**Known scope limits of protocol v1** (each deliberate, none silent):
+**Known scope limits of this worker** (each deliberate, none silent):
+
+* *Collection only.*  The wire is at protocol v2, which defines ``execute_test`` /
+  ``test_result`` (``src/v2/protocol.rs``), but this module implements the collection half
+  only.  An ``execute_test`` request therefore falls through to :func:`main`'s unknown-op
+  branch and exits 2 rather than being answered or ignored.
 
 * *No warning channel.*  pytest reports a class with ``__init__``/``__new__`` via
   ``PytestCollectionWarning`` and still exits 0.  The protocol has no warnings field,
@@ -82,8 +87,15 @@ __all__ = [
 ]
 
 #: The protocol this worker **speaks**.  Mirrors ``PROTOCOL_VERSION`` in
-#: ``src/v2/protocol.rs``; the two must move together.
-PROTOCOL_VERSION: Final = 1
+#: ``src/v2/protocol.rs``; the two must move together — a worker declaring the other side's
+#: number turns every run into a handshake error.
+#:
+#: v2 adds the execute ops (``execute_test`` -> ``test_result``) and ``init.invocation_dir``.
+#: This worker declares 2 because it speaks v2's *handshake*; the execute half lands in the
+#: next tasks, and until then an ``execute_test`` request takes the unknown-op path in
+#: :func:`main` — exit 2, loudly, never a silent skip (pinned by
+#: ``test_execute_test_is_not_implemented_yet_and_is_protocol_fatal``).
+PROTOCOL_VERSION: Final = 2
 
 
 # ---------------------------------------------------------------------------
@@ -1124,6 +1136,11 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     It is never an echo of ``message["protocol_version"]``: an echo would make the
     handshake agree with any orchestrator and detect no skew at all.  Deciding what
     to do about a mismatch is the orchestrator's job (``src/v2/protocol.rs``).
+
+    v2's ``invocation_dir`` is accepted and **not yet stored**: nothing in the collection
+    half is invocation-relative (paths arrive absolute, nodeids are rootdir-relative), and
+    :class:`WorkerState` should gain the field in the task that first needs it rather than
+    carry an unread value that could silently go stale.
     """
     global _state
     _state = WorkerState(
