@@ -129,6 +129,15 @@ def _summary(collected: int, errors: int, deselected: int = 0) -> str:
 def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
     """The one-line stderr summary for a run, in pytest's wording and bucket order.
 
+    The order is ``_pytest/terminal.py::KNOWN_TYPES`` (l. 63-72) and it is **failed-first**::
+
+        failed, passed, skipped, deselected, xfailed, xpassed, warnings, error
+
+    Probed rather than transcribed: a run with one of each prints
+    ``1 failed, 1 passed, 1 skipped, 1 deselected, 1 xfailed, 1 xpassed, 1 error``.
+    ``warnings`` is absent here because v2 has no warnings channel yet; every other bucket
+    keeps its position, so adding one later does not reshuffle the line.
+
     Zero buckets are omitted, exactly as pytest omits them -- a run with no xfails should
     not have to say ``0 xfailed``. An entirely empty tally becomes ``no tests ran``, which
     is pytest's own wording for the exit-5 shape.
@@ -148,8 +157,8 @@ def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
     """
     errors = summary["error"] + collection_errors
     counts = (
-        (summary["passed"], "passed"),
         (summary["failed"], "failed"),
+        (summary["passed"], "passed"),
         (summary["skipped"], "skipped"),
         (summary["deselected"], "deselected"),
         (summary["xfailed"], "xfailed"),

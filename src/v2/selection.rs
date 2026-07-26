@@ -566,6 +566,15 @@ fn evaluate(node: &Node, matcher: &dyn Matcher) -> Result<bool, SelectionError> 
 /// directly onto the test function (`mapped_names.update(function_obj.__dict__)`) and
 /// `item.listextrakeywords()`.  Both are rare and neither can be reconstructed from a
 /// manifest entry — the manifest is data, and these are live-object introspection.
+///
+/// **A third gap is shared with [`MarkMatcher`] and is worth naming here too**, because the
+/// mark names in this set are the reason it bites `-k` as well as `-m`: pytest's
+/// `iter_markers()` yields a `parametrize` mark, so *both* `-m parametrize` and
+/// `-k parametrize` select every parametrized case.  v2's collector consumes `@parametrize`
+/// into `param_id` and records no mark of that name, so both select nothing.  Probed on a
+/// two-case tree: pytest `2/3 tests collected (1 deselected)`, v2 nothing.  Fixing it means
+/// deciding whether a synthesised `parametrize` mark belongs on the wire — recorded, not
+/// guessed.
 #[derive(Debug, Clone)]
 pub struct KeywordMatcher {
     /// Lower-cased once at construction: the matcher is applied per identifier per test,

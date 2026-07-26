@@ -108,6 +108,25 @@ def _v2_counts(report: dict[str, object]) -> dict[str, int]:
     return counts
 
 
+def _pytest_summary_line(stdout: str) -> str:
+    """pytest's terminal summary line, with its ``in <n>s`` tail removed.
+
+    That tail is the only part of the line that is not a claim about outcomes, so stripping
+    it leaves something v2's summary can be compared to byte-for-byte. The line is found by
+    scanning backwards for one carrying a count (or the literal ``no tests ran``), because
+    ``FAILED ...`` entries and the progress line sit above it.
+    """
+    for line in reversed(stdout.splitlines()):
+        stripped = line.strip()
+        if _SUMMARY_RE.search(stripped) or stripped.startswith("no tests ran"):
+            return re.sub(r"\s+in \d[\d.]*s$", "", stripped)
+    raise AssertionError(f"no pytest summary line in:\n{stdout}")
+
+
+def _last_line(text: str) -> str:
+    return text.strip().splitlines()[-1]
+
+
 def _context(label: str, proc: subprocess.CompletedProcess[str]) -> str:
     return f"--- {label} rc={proc.returncode} ---\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
 
@@ -465,6 +484,14 @@ SELECTION_TREE = {
         "def test_param(n):\n    pass\n\n\n"
         "def test_UPPER():\n    pass\n"
     ),
+    # A module-level `pytestmark` applies its marks to every test in the file
+    # (`_pytest/python.py::Module` -> `get_unpacked_marks`), which is a different code path
+    # from a decorator and from a class mark -- so `-m net` has to reach these too.
+    "gamma/test_third.py": (
+        "import pytest\n\n"
+        "pytestmark = [pytest.mark.net(scope='wide', retries=3), pytest.mark.slow()]\n\n\n"
+        "def test_module_marked():\n    pass\n"
+    ),
 }
 
 SELECTION_QUERIES: list[list[str]] = [
@@ -496,6 +523,20 @@ SELECTION_QUERIES: list[list[str]] = [
     ["-m", "net(retries=4)"],
     ["-m", "net(scope='wide', retries=3)"],
     ["-m", "slow or smoke"],
+    # `and not` and a negated group: the two mark-expression shapes users actually type that
+    # the flat rows above never build, and the ones a single-precedence-level parser gets
+    # wrong.
+    ["-m", "slow and not net"],
+    ["-m", "not (slow or smoke)"],
+    # Precedence at the CLI level, not just in the Rust unit tests: `and` binds tighter, so
+    # this is `slow or (smoke and net)` and must not select the smoke-only test.
+    ["-k", "slow or smoke and net"],
+    # Module-level `pytestmark` is a third way a mark reaches a test, after the decorator
+    # and the class. The `-m net` / `-m net(scope='wide')` rows above now cross that path
+    # too, because `gamma/test_third.py` carries `net` at module level -- so those rows
+    # select from two files by two different mechanisms, and this row addresses the
+    # module-marked test by name so a regression says *which* half broke.
+    ["-k", "module_marked"],
     ["-m", "   "],
     ["-k", "test_", "-m", "slow"],
     ["-k", "one", "-m", "smoke"],
@@ -831,51 +872,99 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
     assert captured.err.startswith("INTERNALERROR: could not spawn"), captured
 
 
-def test_the_summary_line_omits_empty_buckets(capsys: pytest.CaptureFixture[str]) -> None:
-    """pytest never writes ``0 xfailed``; neither does this. An all-zero tally becomes
-    ``no tests ran``, which is pytest's own wording for the exit-5 shape."""
-    summary = {
-        "total": 0,
-        "passed": 0,
-        "failed": 0,
-        "skipped": 0,
-        "xfailed": 0,
-        "xpassed": 0,
-        "error": 0,
-        "deselected": 0,
-        "duration": 0.0,
-    }
-    assert core._run_summary(summary) == "no tests ran"  # pyright: ignore[reportPrivateUsage]
-
-    filled = {**summary, "passed": 2, "failed": 1, "xpassed": 1, "error": 1}
-    assert (
-        core._run_summary(filled)  # pyright: ignore[reportPrivateUsage]
-        == "2 passed, 1 failed, 1 xpassed, 1 error"
-    )
-
-    # `error` is the one bucket pytest spells by count.
-    plural = {**summary, "error": 2}
-    assert core._run_summary(plural) == "2 errors"  # pyright: ignore[reportPrivateUsage]
-
-    # Collection errors land in the same bucket, because pytest puts them there. Without
-    # this an exit-2 run prints "no tests ran" -- the wording for an empty tree.
-    assert core._run_summary(summary, 1) == "1 error"  # pyright: ignore[reportPrivateUsage]
-    assert core._run_summary(plural, 1) == "3 errors"  # pyright: ignore[reportPrivateUsage]
-    _ = capsys.readouterr()
+ALL_BUCKETS = """\
+import pytest
 
 
-def test_a_collection_error_run_says_error_not_no_tests_ran(tmp_path: Path) -> None:
+def test_pass():
+    assert True
+
+
+def test_fail():
+    assert False
+
+
+@pytest.mark.skip(reason="x")
+def test_skip():
+    pass
+
+
+@pytest.mark.xfail(reason="x")
+def test_xfail():
+    assert False
+
+
+@pytest.mark.xfail(reason="x")
+def test_xpass():
+    assert True
+
+
+@pytest.fixture
+def boom():
+    raise ValueError("x")
+
+
+def test_error(boom):
+    assert True
+
+
+def test_drop():
+    pass
+"""
+
+
+def test_the_summary_line_matches_pytests_wording_and_bucket_order(tmp_path: Path) -> None:
+    """The summary line, diffed against pytest's own -- not against a hand-written literal.
+
+    The order is ``_pytest/terminal.py::KNOWN_TYPES`` (l. 63-72) and it is **failed-first**:
+    ``failed, passed, skipped, deselected, xfailed, xpassed, warnings, error``. This test
+    was originally written with a literal in the *wrong* (passed-first) order, and it
+    happily pinned the bug -- the exact shape the method note warns about, in the one place
+    this file departed from its differential rule. It no longer departs.
+
+    The comparison is byte-for-byte after stripping pytest's ``in <n>s`` tail, which is the
+    only part of the line that is not a claim about outcomes.
+    """
+    tree = _tree(tmp_path, "buckets", {"test_o.py": ALL_BUCKETS})
+
+    oracle = _run_pytest(tree, ["-k", "not drop"])
+    ours = _run_v2(tree, ["-k", "not drop"])
+
+    expected = _pytest_summary_line(oracle.stdout)
+    assert expected == (
+        "1 failed, 1 passed, 1 skipped, 1 deselected, 1 xfailed, 1 xpassed, 1 error"
+    ), _context("pytest", oracle)
+    assert _last_line(ours.stderr) == expected, _context("v2", ours)
+
+
+def test_an_empty_run_says_no_tests_ran_exactly_as_pytest_does(tmp_path: Path) -> None:
+    tree = _tree(tmp_path, "emptysummary", {"notes.md": "nothing\n"})
+
+    oracle = _run_pytest(tree, [])
+    ours = _run_v2(tree, [])
+
+    assert _pytest_summary_line(oracle.stdout) == "no tests ran", _context("pytest", oracle)
+    assert _last_line(ours.stderr) == "no tests ran", _context("v2", ours)
+
+
+@pytest.mark.parametrize("broken", [1, 2], ids=["one-error", "two-errors"])
+def test_a_collection_error_run_says_error_not_no_tests_ran(tmp_path: Path, broken: int) -> None:
     """The terminal line for an interrupted run must not read like an empty tree.
 
-    pytest prints ``1 error`` and exits 2; before this was folded in, v2 printed ``no tests
+    pytest reports a failed collect report in the *same* ``error`` bucket a broken fixture
+    gets, so it prints ``1 error`` and exits 2. Before the fold, v2 printed ``no tests
     ran`` -- literally its exit-5 wording -- for a run stopped by a broken import.
+
+    Parametrized over one and two broken files because ``error`` is the one bucket pytest
+    spells by count (``1 error`` but ``2 errors``), and a single-file case cannot see that.
     """
-    tree = _tree(tmp_path, "cerr", {"test_bad.py": "import nope_does_not_exist\n"})
+    files = {f"test_bad{i}.py": f"import nope_missing_{i}\n" for i in range(broken)}
+    tree = _tree(tmp_path, f"cerr{broken}", files)
 
     oracle = _run_pytest(tree, [])
     ours = _run_v2(tree, [])
 
     assert oracle.returncode == 2 and ours.returncode == 2, _context("v2", ours)
-    assert _pytest_counts(oracle.stdout)["error"] == 1, _context("pytest", oracle)
-    summary_line = ours.stderr.strip().splitlines()[-1]
-    assert summary_line == "1 error", _context("v2", ours)
+    expected = _pytest_summary_line(oracle.stdout)
+    assert expected == ("1 error" if broken == 1 else "2 errors"), _context("pytest", oracle)
+    assert _last_line(ours.stderr) == expected, _context("v2", ours)
