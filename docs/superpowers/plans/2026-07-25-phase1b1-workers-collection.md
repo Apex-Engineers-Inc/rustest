@@ -33,7 +33,7 @@ use crate::v2::manifest::{CollectedTest, CollectionErrorEntry};
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkerRequest {
     /// Sent once as the first line of a worker's stdin.
     Init {
@@ -52,7 +52,7 @@ pub enum WorkerRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkerResponse {
     Ready { protocol_version: u32 },
     /// Per-file result. Either tests or an error entry (import/syntax failure).
