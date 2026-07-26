@@ -560,8 +560,38 @@ fn fnmatch_ex(pattern: &str, path: &Path) -> bool {
     matches_file_pattern(&path.to_string_lossy(), &[anchored])
 }
 
-/// `os.path.isabs` for the pattern side of [`fnmatch_ex`].  `ntpath.isabs` accepts a bare
-/// leading separator (`\tests`), which `Path::is_absolute` does not.
+/// `os.path.isabs` for the pattern side of [`fnmatch_ex`].
+///
+/// `Path::is_absolute` on Windows requires a prefix (`C:\`, `\\server\share`), so it needs
+/// help for the one shape `ntpath.isabs` treats differently: a **single leading
+/// separator**.  And CPython changed its mind about that shape mid-support-window, so this
+/// is a version split, not a constant.  Probed directly (`ntpath.isabs`, Windows):
+///
+/// | pattern | 3.12.12 | 3.13.11 | 3.14.2 | `Path::is_absolute` |
+/// |---|---|---|---|---|
+/// | `\tests` | **True** | False | False | false |
+/// | `/tests` | **True** | False | False | false |
+/// | `\\srv\share` | True | True | True | true |
+/// | `C:\tests`, `C:/tests` | True | True | True | true |
+/// | `C:tests`, `tests/data` | False | False | False | false |
+///
+/// The 3.13 What's New records the change ("`os.path.isabs()` no longer considers a path
+/// starting with exactly one (back)slash to be absolute" on Windows).
+///
+/// **We follow the 3.12 rule, because 3.12 is this project's floor** (`requires-python`),
+/// so it is the oldest oracle a user can hold us to.
+///
+/// What that costs is *almost* nothing, and the "almost" is worth stating exactly, because
+/// it is not obvious.  Under the 3.13+ rule such a pattern is relative, so [`fnmatch_ex`]
+/// anchors it: `\tests\data` becomes `*` + `\` + `\tests\data` = `*\\tests\data`, whose
+/// **doubled** separator no drive-letter path contains anywhere — so both rules end up
+/// matching nothing and agree by accident.  They part company only where a path really does
+/// contain a doubled separator: a UNC path, at position 0.  So the whole observable
+/// divergence is a `norecursedirs`/`python_files` entry written with exactly one leading
+/// separator *whose first segment is a UNC server name* (`\srv\share\...` against
+/// `\\srv\share\...`), which the 3.13+ rule matches and we do not.  Pinned by
+/// `a_single_leading_separator_pattern_follows_the_312_isabs_rule`, and flagged for the
+/// final review as the module's one known pytest divergence.
 fn is_absolute_pattern(pattern: &str) -> bool {
     if cfg!(windows) && (pattern.starts_with('/') || pattern.starts_with('\\')) {
         return true;
@@ -836,6 +866,18 @@ impl Worker {
         }
     }
 
+    /// Build the "worker is gone" error for the file that was in flight.
+    ///
+    /// The `wait()` here is deliberately **unbounded**, unlike the stderr drain's bounded
+    /// wait, and the asymmetry is the point: the exit status *is* the diagnosis here — the
+    /// real worker exits 2 exactly on protocol drift and 0 otherwise (`_v2_worker.py::main`)
+    /// — so killing it after a timeout would replace the one informative byte with our own
+    /// signal.  It is also safe against the real worker: this path is reached only from EOF
+    /// on stdout or a broken stdin pipe, and EOF means every handle to the write end is
+    /// closed, i.e. the child (and any process that inherited its stdout) is gone, so the
+    /// wait returns immediately.  A stand-in that closed stdout while staying alive could
+    /// block here; that shape is a bug in a worker, and hanging visibly on it beats
+    /// reporting a killed-by-us status that hides the real one.
     fn died(&mut self, path: &Path, detail: String) -> CollectError {
         let status = match self.child.wait() {
             Ok(status) => {
@@ -994,6 +1036,45 @@ mod tests {
 
     const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":1}\n')"#;
 
+    /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
+    /// file per process (named by pid, created at startup) listing the files it was asked
+    /// for.  Counting the files in `log_dir` counts the interpreters actually spawned.
+    fn counting_worker(log_dir: &Path) -> WorkerLauncher {
+        let script = format!(
+            "import json, os, sys\n\
+             log = open('{dir}/w-%d.txt' % os.getpid(), 'w', encoding='utf-8')\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   if message['op'] == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif message['op'] == 'collect_file':\n\
+             \x20       log.write(message['path'] + chr(10))\n\
+             \x20       log.flush()\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': message['path']}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n",
+            dir = to_posix(log_dir)
+        );
+        scripted_worker(&script)
+    }
+
+    /// The phrase `std::process::ExitStatus` renders for a plain exit code.  Asserting on it
+    /// rather than on a bare digit keeps the exit-status assertions from passing by
+    /// coincidence — a temp path or a pid can contain any digit.
+    fn exit_status_phrase(code: i32) -> String {
+        if cfg!(windows) {
+            format!("exit code: {code}")
+        } else {
+            format!("exit status: {code}")
+        }
+    }
+
     fn write_file(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
@@ -1059,6 +1140,30 @@ mod tests {
         assert_eq!(
             discovered(&tmp, &[]),
             vec!["sub/test_c.py", "test_a.py", "test_b.py", "zsub/test_d.py"]
+        );
+    }
+
+    /// Inside a package, `__init__.py` is walked **first** whatever its name sorts to:
+    /// `_pytest/python.py::Package.collect`'s `sort_key` is
+    /// `(entry.name != "__init__.py", entry.name)` ("Always collect `__init__.py` first").
+    ///
+    /// `AAA.py` is the fixture's whole point — `'A'` (0x41) sorts before `'_'` (0x5F), so
+    /// plain name order would put it ahead of `__init__.py` and only the package rule
+    /// prevents that.  `python_files = *.py` is what makes both files visible at all.
+    #[test]
+    fn a_packages_init_is_walked_first() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            &tmp.path().join("pytest.ini"),
+            "[pytest]\npython_files = *.py\n",
+        );
+        write_file(&tmp.path().join("pkg/__init__.py"), "");
+        write_file(&tmp.path().join("pkg/AAA.py"), &module("aaa"));
+        write_file(&tmp.path().join("pkg/zzz.py"), &module("zzz"));
+
+        assert_eq!(
+            discovered(&tmp, &[]),
+            vec!["pkg/__init__.py", "pkg/AAA.py", "pkg/zzz.py"]
         );
     }
 
@@ -1165,6 +1270,31 @@ mod tests {
         assert!(fnmatch_ex("data/test_a.py", root));
         // A separator-free pattern never sees the directories.
         assert!(!fnmatch_ex("data", root));
+    }
+
+    /// Pins the deliberate version choice in [`is_absolute_pattern`] — 3.12's `ntpath.isabs`
+    /// rule, where a single leading separator means *absolute* — at the one input that can
+    /// actually tell the two rules apart.
+    ///
+    /// On a drive path they agree by accident (see that function's docs: the 3.13+ rule
+    /// anchors the pattern into a **doubled** separator, which no drive path contains), so
+    /// asserting there would pin nothing — verified: that form of this test survived the
+    /// "use the 3.13+ rule" mutation.  A UNC path carries a doubled separator at position 0,
+    /// so a pattern whose first segment is the server name is where the rules diverge: the
+    /// 3.13+ rule anchors `\srv\share\*.py` to `*\\srv\share\*.py` and matches; ours treats
+    /// it as an absolute pattern and does not.
+    #[cfg(windows)]
+    #[test]
+    fn a_single_leading_separator_pattern_follows_the_312_isabs_rule() {
+        let unc = Path::new(r"\\srv\share\test_a.py");
+
+        assert!(
+            !fnmatch_ex(r"\srv\share\*.py", unc),
+            "one leading separator is an absolute pattern on the 3.12 floor: no anchoring"
+        );
+        // Control: the same pattern without that separator is relative, gets anchored, and
+        // does match — so the assertion above turns on the leading separator alone.
+        assert!(fnmatch_ex(r"srv\share\*.py", unc));
     }
 
     /// An explicitly named file is an *initial path*, and pytest skips the `python_files`
@@ -1282,6 +1412,15 @@ mod tests {
             ("zsub/test_d.py", &module("d")),
         ]);
 
+        // Without this the fixture could quietly become a one-worker test the day the hash
+        // changes, and would then assert nothing about ordering across workers at all.
+        let (_, targets) = discover(tmp.path(), &[]).unwrap();
+        let used: HashSet<usize> = targets.iter().map(|path| worker_for(path, 2)).collect();
+        assert!(
+            used.len() >= 2,
+            "the fixture must actually spread over both workers, got {used:?}"
+        );
+
         let manifest = collect_with_launcher(tmp.path(), &[], &real_worker(), 2).unwrap();
 
         assert_eq!(
@@ -1344,6 +1483,41 @@ mod tests {
             "unexpected message: {}",
             manifest.errors[0].message
         );
+    }
+
+    /// The pool is clamped to the number of files: eight workers for two files must start
+    /// exactly **two** interpreters, and between them they must be asked for both files.
+    /// Spawning six idle Pythons is pure latency on a small suite, and the clamp is
+    /// invisible from the manifest — only a worker that can count itself can pin it.
+    #[test]
+    fn the_pool_is_clamped_to_the_number_of_files() {
+        let tmp = tree(&[("test_a.py", &module("a")), ("test_b.py", &module("b"))]);
+        let logs = TempDir::new().unwrap();
+
+        let manifest =
+            collect_with_launcher(tmp.path(), &[], &counting_worker(logs.path()), 8).unwrap();
+        assert!(
+            manifest.tests.is_empty() && manifest.errors.is_empty(),
+            "the counting worker reports no tests of its own"
+        );
+
+        let mut spawned = 0;
+        let mut requested = Vec::new();
+        for entry in fs::read_dir(logs.path()).unwrap().flatten() {
+            spawned += 1;
+            requested.extend(
+                fs::read_to_string(entry.path())
+                    .unwrap()
+                    .lines()
+                    .map(str::to_string),
+            );
+        }
+        assert_eq!(spawned, 2, "one interpreter per file, no more");
+
+        requested.sort();
+        assert_eq!(requested.len(), 2, "{requested:?}");
+        assert!(requested[0].ends_with("/test_a.py"), "{requested:?}");
+        assert!(requested[1].ends_with("/test_b.py"), "{requested:?}");
     }
 
     /// Nothing to collect means no process is spawned at all — asserted with a launcher
@@ -1418,6 +1592,12 @@ mod tests {
         let message = err.to_string();
         assert!(
             message.contains("test_inflight.py"),
+            "unexpected message: {message}"
+        );
+        // The exit status is the diagnosis (the real worker exits 2 only on drift), so it
+        // has to survive into the message.
+        assert!(
+            message.contains(&exit_status_phrase(3)),
             "unexpected message: {message}"
         );
     }
@@ -1521,8 +1701,10 @@ mod tests {
 
         let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
+        // The status is genuinely absent on this path — the worker vanished before `bye`,
+        // so nothing was waited for — which makes its stderr the only diagnosis there is.
         assert!(
-            message.contains("refused to say bye") || message.contains('7'),
+            message.contains("refused to say bye"),
             "the worker's own stderr should reach the operator: {message}"
         );
     }
@@ -1550,6 +1732,9 @@ mod tests {
 
         let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
-        assert!(message.contains('9'), "unexpected message: {message}");
+        assert!(
+            message.contains(&exit_status_phrase(9)),
+            "unexpected message: {message}"
+        );
     }
 }

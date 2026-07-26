@@ -211,9 +211,10 @@ pub fn matches_name_pattern(name: &str, patterns: &[String]) -> bool {
 ///
 /// Limitation: `fnmatch_ex` matches a pattern that *contains* a path separator against
 /// the whole path instead of the basename (and, on Windows, rewrites a posix-separator
-/// pattern to backslashes first). This helper is basename-only by contract; Phase 1b will
-/// need a full-path `fnmatch_ex` variant alongside it to cover separator-bearing
-/// `python_files` / `norecursedirs` patterns.
+/// pattern to backslashes first). This helper is basename-only by contract; the full
+/// `fnmatch_ex` port that handles separator-bearing `python_files` / `norecursedirs`
+/// patterns lives in `super::collect::fnmatch_ex` (private) and uses this function as its
+/// `fnmatch` primitive.
 pub fn matches_file_pattern(basename: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pattern| fnmatch(basename, pattern))
 }
