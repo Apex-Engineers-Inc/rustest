@@ -14,4 +14,5 @@
 pub mod config;
 pub mod manifest;
 pub mod nodeid;
+pub mod protocol;
 pub mod py;
