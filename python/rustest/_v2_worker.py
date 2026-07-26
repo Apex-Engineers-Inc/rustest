@@ -37,6 +37,14 @@ not by the exception; and a ``unittest.TestCase`` runs through ``unittest`` with
 how pytest itself does it (`_pytest/unittest.py::TestCaseFunction`) and what keeps one
 classifier for both worlds.
 
+**What the pytest differential does and does not pin.**  The execute tests compare *status*
+per nodeid against real pytest, byte for byte.  They do **not** compare ``message`` text, and
+that is a deliberate line: a skip reason of ``"skipped via rustest.skip"`` where pytest writes
+``"unconditional skip"`` is a v1 wording inherited through ``decorators.py::skip_decorator``,
+not an outcome defect, and pinning prose would make every upstream reword a red gate.  Message
+*shape* is pinned where it is load-bearing — ``[XPASS(strict)]``, ``[NOTRUN]``, and the
+traceback filtering — because those distinguish one outcome from another.
+
 **Known scope limits of this worker** (each deliberate, none silent):
 
 * *No warning channel.*  pytest reports a class with ``__init__``/``__new__`` via
@@ -49,6 +57,17 @@ classifier for both worlds.
 * *Capture is stream-level, not fd-level.*  ``print`` and anything writing to
   ``sys.stdout``/``sys.stderr`` is captured; a subprocess or a C extension writing to the
   underlying descriptors is not.  Same trade-off as v1's ``capsys``; fd capture is 1c.
+* *Boundary-teardown output goes to stderr, not to a test's ``stdout``.*  Class- and
+  module-scoped teardown belongs to the tests that just finished; pytest prints it under the
+  *previous* test's teardown section because ``runtestprotocol`` is handed ``nextitem``.  The
+  execute wire has no lookahead, so :func:`drain_boundaries` runs outside any capture window
+  rather than prefixing one test's teardown onto the next test's output.  Per-boundary
+  attribution needs a place on the wire — 1c.
+* *Traceback filtering reaches only the outermost exception.*  :func:`_format_exception`
+  filters the frames of the exception it is given; the sub-tracebacks nested inside a
+  ``BaseExceptionGroup`` — which :meth:`FixtureRunner.teardown` raises when several fixtures
+  fail at once — are rendered unfiltered, so a runner frame can still appear inside a group's
+  sub-traceback.  The status is unaffected; only the message is noisier.
 * *No ``pytest_generate_tests`` hook and no ``indirect=`` parametrization.*  Decorator
   metadata and fixture ``params=`` are the only two sources of parametrization; a module-
   or class-level ``pytest_generate_tests`` is not called.
@@ -95,8 +114,11 @@ import warnings
 __all__ = [
     "BUILTIN_FIXTURES",
     "DEFAULT_NAMING",
+    "ABORT_EXCEPTIONS",
+    "CAPTURE_CLOSED_MESSAGE",
     "PHASES",
     "PROTOCOL_VERSION",
+    "SHUTDOWN_TEARDOWN_EXIT",
     "SCOPE_NAMES",
     "STATUSES",
     "UNSUPPORTED_BUILTIN_FIXTURES",
@@ -122,6 +144,8 @@ __all__ = [
     "collect_module",
     "conftest_chain",
     "encode_response",
+    "drain_at_shutdown",
+    "drain_boundaries",
     "enumerate_module",
     "evaluate_condition",
     "evaluate_skip_marks",
@@ -148,6 +172,22 @@ __all__ = [
 #: v2 adds the execute ops (``execute_test`` -> ``test_result``) and ``init.invocation_dir``.
 #: Both halves are implemented here: :func:`collect_file` and :func:`execute_test`.
 PROTOCOL_VERSION: Final = 2
+
+#: Exit code for "the response stream is complete, but a fixture teardown failed after the
+#: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
+#:
+#: **Why it cannot be 0.**  A class- or module-scoped teardown that fails on the *last* test
+#: routed to a worker has no test left to be attributed to: that test was already answered
+#: ``passed``.  Exiting 0 turns a real failure into a **green run** with the traceback buried
+#: in stderr, which is the exact silent-failure shape this worker exists to refuse.
+#:
+#: **Why it is not 2.**  Exit 2 means *protocol drift* — a malformed line, an unknown op, an
+#: id nobody collected — and a user's broken teardown is not that.  A distinct code keeps the
+#: two diagnoses apart while still being fatal: the orchestrator treats any non-zero status
+#: after ``bye`` as a failed run and reports the code
+#: (``src/v2/collect.rs::a_nonzero_exit_after_bye_is_still_a_failure``), so ``bye`` is still
+#: written and the stream is still well-formed — the run just does not come back green.
+SHUTDOWN_TEARDOWN_EXIT: Final = 3
 
 
 # ---------------------------------------------------------------------------
@@ -2561,6 +2601,33 @@ PHASES: Final = ("setup", "call", "teardown")
 #: ``TestReport.outcome``, which only ever holds three of them.
 STATUSES: Final = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
 
+#: The phases whose failures are reported as ``error`` rather than ``failed`` — derived from
+#: :data:`PHASES` so the two cannot drift: every phase that is not the call is "the test never
+#: properly ran".  `_pytest/runner.py` l. 214-223 and `_pytest/terminal.py` l. 333-335.
+_ERROR_PHASES: Final = tuple(phase for phase in PHASES if phase != "call")
+
+#: Exceptions that **abort the run** instead of being classified as a test outcome.
+#:
+#: Port of `_pytest/runner.py::call_runtest_hook` l. 242-244, which is the authority and is
+#: narrower than it looks::
+#:
+#:     reraise: tuple[type[BaseException], ...] = (Exit,)
+#:     if not item.config.getoption("usepdb", False):
+#:         reraise += (KeyboardInterrupt,)
+#:
+#: **``SystemExit`` is deliberately not here.**  The obvious guess is that both "process-
+#: ending" exceptions abort; probed, they do not — pytest reports ``raise SystemExit`` in a
+#: body as an ordinary ``FAILED`` and **runs the next test**, because ``CallInfo.from_call``
+#: catches ``BaseException`` and only the ``reraise`` set escapes.  ``SystemExit`` reraises
+#: during *collection* only (l. 392).  Treating it as an abort would let one ``sys.exit()``
+#: deep in a library silently truncate a run.
+#:
+#: ``Exit`` is pytest's own ``pytest.exit()`` signal; rustest has no equivalent, so
+#: ``KeyboardInterrupt`` is the whole set.  Re-raised out of every phase so it propagates to
+#: :func:`main` and ends the process, which is what Ctrl-C must do — classifying it would turn
+#: an interrupt into a "failed" test and then calmly run the next one.
+ABORT_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (KeyboardInterrupt,)
+
 
 def _import_outcome_classes() -> tuple[type[BaseException], ...]:
     """The outcome exception classes this worker classifies **by type**.
@@ -2951,7 +3018,7 @@ class PhaseReport:
             return "skipped"
         if self.outcome == "passed":
             return "passed"
-        return "error" if self.phase in ("setup", "teardown") else "failed"
+        return "error" if self.phase in _ERROR_PHASES else "failed"
 
 
 def report_for_phase(phase: str, exc: BaseException | None, xfailed: Xfail | None) -> PhaseReport:
@@ -3185,6 +3252,42 @@ class _Capture:
     stdout: io.StringIO = field(default_factory=io.StringIO)
     stderr: io.StringIO = field(default_factory=io.StringIO)
 
+    @property
+    def broken(self) -> bool:
+        """True once a test has closed one of the streams out from under the capture.
+
+        ``sys.stdout.close()`` in a test body closes **this buffer** — the redirect makes
+        them the same object — and every later ``getvalue()`` raises ``ValueError: I/O
+        operation on closed file``.  Left unguarded that exception escapes
+        :func:`execute_test`, kills the worker with exit 1 mid-stream, and leaves every
+        queued test unanswered; worse, exit 1 is indistinguishable from an uncaught
+        traceback, i.e. from protocol drift.
+
+        pytest has the same failure and reports it as a **test failure**, because reading the
+        capture is part of its per-phase protocol (`_pytest/capture.py::CaptureFixture.snap`
+        raising out of the item's capture context).  Probed: a test doing
+        ``sys.stdout.close()`` reports ``FAILED`` for the call phase and ``ERROR`` for
+        teardown.  :func:`_run_phases` reproduces that pair by consulting this flag after
+        each phase.
+        """
+        return self.stdout.closed or self.stderr.closed
+
+    def drain(self, stream: io.StringIO) -> str:
+        """One stream's contents, or a marker if the test closed it.
+
+        Never raises: this runs after the phases are over, so an exception here would
+        destroy a result that has already been computed.
+        """
+        try:
+            return stream.getvalue()
+        except ValueError:
+            return CAPTURE_CLOSED_MESSAGE
+
+
+#: What a test that closed its own stream gets instead of captured output — and, when the
+#: closure is what broke an otherwise-passing phase, that phase's failure message.
+CAPTURE_CLOSED_MESSAGE: Final = "<capture closed by the test>"
+
 
 # -- the execute op ---------------------------------------------------------
 
@@ -3223,7 +3326,45 @@ def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, o
         _ = func(**kwargs)
 
 
-def _run_phases(plan: ExecutionPlan, runner: FixtureRunner) -> list[PhaseReport]:
+def drain_boundaries(plan: ExecutionPlan, runner: FixtureRunner) -> BaseException | None:
+    """Unwind the scopes the incoming test does not share, **outside its capture window**.
+
+    Placement is the whole point.  Class- and module-scoped teardown belongs to the tests
+    that just *finished*, so running it inside the next test's ``redirect_stdout`` prefixes
+    the previous module's teardown output onto an unrelated test's ``stdout`` — reviewer's
+    probe: ``TEARDOWN-CLASS``/``TEARDOWN-MODULE`` appearing in ``test_two``'s capture.  That
+    is not a cosmetic mix-up; it attributes one test's output to another on the wire.
+
+    **Documented 1b.2 divergence.**  pytest prints this output under the *previous* test's
+    teardown section, because ``runtestprotocol`` is handed ``nextitem`` and can unwind at
+    the right moment.  The execute wire has no lookahead, so boundary-teardown output goes to
+    the worker's stderr instead of onto any test's ``stdout``.  Attributing it to the test
+    that owns it needs per-boundary capture and a place on the wire to put it — 1c, with the
+    session-scope channel.
+
+    :meth:`FixtureRunner.note_test_boundary` is called here as well as (idempotently) from
+    ``setup``, so the class drain happens out here too rather than half in and half out.
+
+    Returns the exception instead of raising it, so :func:`_run_phases` can report it as the
+    incoming test's *setup* failure — the same attribution as before, just with the output
+    no longer landing in that test's capture.
+    """
+    try:
+        runner.note_module_boundary(plan.path)
+        runner.note_test_boundary(plan.class_name)
+    except ABORT_EXCEPTIONS:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - returned, classified by the caller
+        return exc
+    return None
+
+
+def _run_phases(
+    plan: ExecutionPlan,
+    runner: FixtureRunner,
+    capture: _Capture,
+    boundary_exc: BaseException | None = None,
+) -> list[PhaseReport]:
     """setup -> call -> teardown, with per-phase exception capture.
 
     Port of `_pytest/runner.py::runtestprotocol` (l. 122-147), including the two structural
@@ -3239,40 +3380,67 @@ def _run_phases(plan: ExecutionPlan, runner: FixtureRunner) -> list[PhaseReport]
     (`skipping.py::pytest_runtest_setup`, ``tryfirst``): a ``skip`` mark therefore short-
     circuits **before any fixture is built** — probed, a skipped test whose fixture raises
     reports SKIPPED — and a mark that cannot be evaluated at all is a setup *error*.
+
+    *boundary_exc* is a scope teardown that failed in :func:`drain_boundaries`, before the
+    capture window opened; it is reported as this test's setup failure because that is the
+    only phase left to hang it on.
+
+    After each phase the capture is checked for having been **closed by the test**
+    (:attr:`_Capture.broken`).  A phase that otherwise passed becomes a failure, which is
+    what reproduces pytest's probed ``FAILED`` (call) + ``ERROR`` (teardown) pair for
+    ``sys.stdout.close()`` — see :attr:`_Capture.broken`.
     """
     namespace = _condition_namespace(plan)
     xfailed: Xfail | None = None
-    setup_exc: BaseException | None = None
+    setup_exc: BaseException | None = boundary_exc
     kwargs: Mapping[str, object] = {}
-    try:
-        runner.note_module_boundary(plan.path)
-        skipped = evaluate_skip_marks(plan.marks, namespace)
-        if skipped is not None:
-            raise _Skipped(skipped.reason)
-        xfailed = evaluate_xfail_marks(plan.marks, namespace)
-        if xfailed is not None and not xfailed.run:
-            raise _XFailed("[NOTRUN] " + xfailed.reason)
-        kwargs = runner.setup(plan)
-    except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
-        setup_exc = exc
+    if setup_exc is None:
+        try:
+            skipped = evaluate_skip_marks(plan.marks, namespace)
+            if skipped is not None:
+                raise _Skipped(skipped.reason)
+            xfailed = evaluate_xfail_marks(plan.marks, namespace)
+            if xfailed is not None and not xfailed.run:
+                raise _XFailed("[NOTRUN] " + xfailed.reason)
+            kwargs = runner.setup(plan)
+        except ABORT_EXCEPTIONS:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
+            setup_exc = exc
 
-    reports = [report_for_phase("setup", setup_exc, xfailed)]
+    reports = [_checked(report_for_phase("setup", setup_exc, xfailed), capture)]
 
     if reports[0].outcome == "passed":
         call_exc: BaseException | None = None
         try:
             _run_call(plan, runner, kwargs)
+        except ABORT_EXCEPTIONS:
+            raise
         except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
             call_exc = exc
-        reports.append(report_for_phase("call", call_exc, xfailed))
+        reports.append(_checked(report_for_phase("call", call_exc, xfailed), capture))
 
     teardown_exc: BaseException | None = None
     try:
         runner.teardown("function")
+    except ABORT_EXCEPTIONS:
+        raise
     except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
         teardown_exc = exc
-    reports.append(report_for_phase("teardown", teardown_exc, xfailed))
+    reports.append(_checked(report_for_phase("teardown", teardown_exc, xfailed), capture))
     return reports
+
+
+def _checked(report: PhaseReport, capture: _Capture) -> PhaseReport:
+    """Turn a phase that closed the capture into a failure, as pytest does.
+
+    Only a report that is otherwise a *plain pass* is rewritten: a test that both failed and
+    closed its stream keeps its real failure, which is the more useful message and is also
+    what pytest reports (its own ``snap`` runs after the body's exception is recorded).
+    """
+    if not capture.broken or not report.plain_pass:
+        return report
+    return PhaseReport(report.phase, "failed", CAPTURE_CLOSED_MESSAGE)
 
 
 def execute_test(test_id: str) -> ResultResponse:
@@ -3285,7 +3453,14 @@ def execute_test(test_id: str) -> ResultResponse:
 
     ``duration_s`` is ``time.perf_counter`` around all three phases — a monotonic clock, so
     it cannot go backwards over an NTP step — and covers fixture setup and teardown as well
-    as the body, which is what makes the orchestrator's sum comparable to wall time.
+    as the body, which is what makes the orchestrator's sum comparable to wall time.  The
+    boundary drain is deliberately **outside** both the capture window and the clock: it is
+    the previous tests' teardown, and charging its cost and its output to this test would
+    misattribute both (:func:`drain_boundaries`).
+
+    Nothing in here may raise on behalf of a *test*: a result that has been computed must
+    reach the wire, or the worker dies mid-stream and every queued test goes unanswered.
+    That is why the two capture reads go through :meth:`_Capture.drain`.
     """
     try:
         plan = execution_plan(test_id)
@@ -3293,10 +3468,12 @@ def execute_test(test_id: str) -> ResultResponse:
         raise UnknownTestError(str(exc.args[0]) if exc.args else test_id) from None
 
     runner = _execution_runner()
+    boundary_exc = drain_boundaries(plan, runner)
+
     capture = _Capture()
     started = time.perf_counter()
     with redirect_stdout(capture.stdout), redirect_stderr(capture.stderr):
-        reports = _run_phases(plan, runner)
+        reports = _run_phases(plan, runner, capture, boundary_exc)
     duration = time.perf_counter() - started
 
     report = reduce_reports(reports)
@@ -3308,10 +3485,10 @@ def execute_test(test_id: str) -> ResultResponse:
     }
     if report.message:
         result["message"] = report.message
-    captured_out = capture.stdout.getvalue()
+    captured_out = capture.drain(capture.stdout)
     if captured_out:
         result["stdout"] = captured_out
-    captured_err = capture.stderr.getvalue()
+    captured_err = capture.drain(capture.stderr)
     if captured_err:
         result["stderr"] = captured_err
     return result
@@ -3397,31 +3574,42 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     return {"op": "ready", "protocol_version": PROTOCOL_VERSION}
 
 
-def handle_shutdown() -> ByeResponse:
-    """Handle ``shutdown``; reply ``bye`` — the last line the worker writes.
+def drain_at_shutdown() -> BaseException | None:
+    """Unwind every scope still open, returning the failure rather than raising it.
 
-    Every scope still open is unwound first, so a module- or session-scoped fixture's
-    teardown runs before the process ends rather than being abandoned — a fixture that
-    stops a container or removes a directory must get its turn.
+    Paired with :func:`handle_shutdown`, and the pairing is the contract: this unwinds the
+    fixtures, that answers the protocol, and :func:`main` sequences them so ``bye`` is only
+    written once the drain has actually finished.  A caller that answers ``shutdown`` without
+    calling this leaks every module- and session-scoped fixture — a container never stopped, a
+    directory never removed.
 
-    **Known protocol gap.**  A failure in that final drain belongs to no test: the last test
-    of the run has already been answered, and ``WorkerResponse`` has no session-level error.
-    It is written to stderr and the worker still replies ``bye`` and exits 0, because exit 2
-    means *protocol drift* and a user's broken teardown is not that.  A session-scope error
-    is therefore visible but not attributable — recorded for 1c, where session scope becomes
-    run-wide and needs a channel anyway.
+    The failure is **returned, not swallowed**: :func:`main` turns it into
+    :data:`SHUTDOWN_TEARDOWN_EXIT`.  See that constant for why it cannot be exit 0.
     """
     global _runner
     runner, _runner = _runner, None
-    if runner is not None:
-        try:
-            runner.teardown_all()
-        except BaseException as exc:  # noqa: BLE001 - reported on stderr, never dropped
-            print(
-                "rustest v2 worker: errors while tearing down fixtures at shutdown:\n"
-                + _format_exception(exc),
-                file=sys.stderr,
-            )
+    if runner is None:
+        return None
+    try:
+        runner.teardown_all()
+    except ABORT_EXCEPTIONS:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - returned to main, never dropped
+        print(
+            "rustest v2 worker: errors while tearing down fixtures at shutdown:\n"
+            + _format_exception(exc),
+            file=sys.stderr,
+        )
+        return exc
+    return None
+
+
+def handle_shutdown() -> ByeResponse:
+    """Handle ``shutdown``; reply ``bye`` — the last line the worker writes.
+
+    Answering the protocol only.  :func:`drain_at_shutdown` does the unwinding, and
+    :func:`main` calls it first.
+    """
     return {"op": "bye"}
 
 
@@ -3526,12 +3714,24 @@ def main() -> int:
     ``sys.__stdout__`` still would; nothing short of an fd-level dup can stop that,
     and that is Task 3's option if it ever matters.)
 
-    Every protocol violation exits **2** on the same path: an unparseable line, an
-    unknown ``op``, a ``collect_file`` with no ``path``, and a ``collect_file`` before
-    ``init``.  The protocol is internal, so drift means a bug and must be loud
-    (``src/v2/protocol.rs`` module docs) — and it must be *distinguishable*, which an
-    uncaught traceback (exit 1, no framing) is not.  A file that merely fails to
-    import is NOT drift: it is data, and it comes back as a ``collected`` error entry.
+    **Exit codes**, and they are three distinct diagnoses:
+
+    * **0** — the run completed and every scope unwound cleanly.
+    * **2** — *protocol drift*: an unparseable line, an unknown ``op``, a ``collect_file``
+      with no ``path``, a ``collect_file`` before ``init``, an ``execute_test`` with no
+      ``id``, or an ``execute_test`` for an id this worker never collected.  The protocol is
+      internal, so drift means a bug and must be loud (``src/v2/protocol.rs`` module docs) —
+      and it must be *distinguishable*, which an uncaught traceback (exit 1, no framing) is
+      not.  A file that merely fails to import is NOT drift: it is data, and it comes back as
+      a ``collected`` error entry.
+    * **3** (:data:`SHUTDOWN_TEARDOWN_EXIT`) — every response was written, ``bye`` included,
+      but a fixture teardown failed in :func:`drain_at_shutdown`.  Not drift, and not green:
+      see the constant.
+
+    A ``KeyboardInterrupt`` or ``SystemExit`` from a test body is none of the above — it
+    propagates out of this loop and ends the process, which is pytest aborting the session
+    (:data:`ABORT_EXCEPTIONS`).  The test that raised it gets no ``test_result``, on purpose:
+    the run did not finish, and reporting it as a failure would imply the rest ran.
     """
     install_pytest_shim()
 
@@ -3588,8 +3788,11 @@ def main() -> int:
                 print(f"rustest v2 worker: {exc}", file=sys.stderr)
                 return 2
         elif op == "shutdown":
+            # Drain first, answer second: `bye` must not claim the worker is finished while
+            # a session fixture is still open.  The exit code carries the drain's verdict.
+            shutdown_failure = drain_at_shutdown()
             emit(handle_shutdown())
-            return 0
+            return SHUTDOWN_TEARDOWN_EXIT if shutdown_failure is not None else 0
         else:
             print(f"rustest v2 worker: unknown op {op!r} in line: {line!r}", file=sys.stderr)
             return 2

@@ -124,8 +124,20 @@ def run_module(path: Path, rootdir: Path) -> list[ResultResponse]:
     _entries, plans = collect_module(module, path, rootdir, DEFAULT_NAMING, registry)
     register(plans)
     results = [execute_test(plan.id) for plan in plans]
-    _ = worker.handle_shutdown()
+    _ = shutdown()
     return results
+
+
+def shutdown() -> BaseException | None:
+    """Shut the worker's execution state down the way ``main`` does: drain, then answer.
+
+    A helper rather than a bare ``handle_shutdown()`` call because the two halves are a
+    contract — answering ``shutdown`` without draining leaks every module- and session-scoped
+    fixture — and a test that only called the second half would not notice.
+    """
+    failure = worker.drain_at_shutdown()
+    assert worker.handle_shutdown() == {"op": "bye"}
+    return failure
 
 
 def statuses(results: list[ResultResponse]) -> dict[str, str]:
@@ -235,7 +247,7 @@ def corpus_differential(tmp_path: Path, case: str) -> dict[str, str]:
             _entries, plans = collect_module(module, target, tree, DEFAULT_NAMING, registry)
             register(plans)
             ours.update({plan.id: execute_test(plan.id)["status"] for plan in plans})
-        _ = worker.handle_shutdown()
+        _ = shutdown()
     assert ours == oracle
     return oracle
 
@@ -749,7 +761,7 @@ def test_a_failing_body_still_tears_its_fixtures_down(tmp_path: Path) -> None:
         register(plans)
         result = execute_test(plans[0].id)
         ran = list(getattr(module, "ran"))
-        _ = worker.handle_shutdown()
+        _ = shutdown()
 
     assert result["status"] == "failed"
     assert ran == ["teardown ran"], "teardown was deferred past the test that owned it"
@@ -1501,6 +1513,326 @@ def test_nothing_captured_means_no_keys_at_all(tmp_path: Path) -> None:
     assert "stderr" not in result
 
 
+CLOSES_STDOUT = """
+import sys
+
+
+def test_before():
+    print("before")
+    assert True
+
+
+def test_closes_stdout():
+    sys.stdout.close()
+
+
+def test_after():
+    print("after")
+    assert True
+"""
+
+
+def test_a_test_that_closes_stdout_does_not_kill_the_worker(tmp_path: Path) -> None:
+    """The reviewer's crash: ``sys.stdout.close()`` closes **the capture buffer itself**.
+
+    Every later ``getvalue()`` then raises ``ValueError: I/O operation on closed file`` — out
+    of ``execute_test``, past the protocol loop, killing the worker with **exit 1 mid-stream**.
+    Every queued test goes unanswered, and exit 1 is indistinguishable from an uncaught
+    traceback, i.e. from protocol drift.
+
+    Run through the **real subprocess** on purpose: an in-process test would exercise the
+    guard but not the thing that was actually broken, which is that the worker stays alive and
+    keeps answering. All three tests must come back, ``shutdown`` must be honoured, and the
+    exit code must be 0.
+
+    Status of the closer is pytest's, probed: ``FAILED`` for the call phase and a separate
+    ``ERROR`` at teardown, because reading the capture is part of pytest's per-phase protocol
+    (`_pytest/capture.py::snap`). :meth:`_Capture.broken` reproduces the pair, so the reduction
+    reports ``failed``.
+
+    **Documented divergence on the third test.** pytest's capture is session-wide, so once a
+    test closes it every *subsequent* test errors too (probed: ``test_after`` is ERROR at both
+    setup and teardown). This worker builds a fresh buffer per test, so ``test_after`` recovers
+    and passes. Deliberately not matched: one test's vandalism poisoning the rest of the file
+    is pytest's bug to keep, not ours to copy.
+    """
+    target = write(tmp_path / "test_close.py", CLOSES_STDOUT)
+    proc = _run_worker(
+        [
+            _init_line(tmp_path),
+            {"op": "collect_file", "path": target.as_posix()},
+            {"op": "execute_test", "id": "test_close.py::test_before"},
+            {"op": "execute_test", "id": "test_close.py::test_closes_stdout"},
+            {"op": "execute_test", "id": "test_close.py::test_after"},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, f"the worker died: {proc.stderr}"
+    messages = [json.loads(line) for line in proc.stdout.splitlines()]
+    assert [message["op"] for message in messages] == [
+        "ready",
+        "collected",
+        "test_result",
+        "test_result",
+        "test_result",
+        "bye",
+    ], "every queued test must still be answered"
+
+    before, closer, after = messages[2:5]
+    assert (before["id"], before["status"], before["stdout"]) == (
+        "test_close.py::test_before",
+        "passed",
+        "before\n",
+    )
+    assert closer["status"] == "failed", "pytest reports the closer FAILED; so must we"
+    assert closer["message"] == worker.CAPTURE_CLOSED_MESSAGE
+    assert closer["stdout"] == worker.CAPTURE_CLOSED_MESSAGE
+    assert (after["status"], after["stdout"]) == ("passed", "after\n")
+
+
+def test_a_test_that_closes_stderr_is_caught_too(tmp_path: Path) -> None:
+    """Both streams, not just ``stdout`` — the buffers are independent objects.
+
+    ``sys.stderr.close()`` breaks the capture exactly as ``sys.stdout.close()`` does, and a
+    ``broken`` check that only consulted ``stdout`` would report this test ``passed`` and then
+    hand the wire a ``stderr`` value read from a closed buffer. The mutation pass caught this:
+    the stdout-only test above is green against a stdout-only check.
+    """
+    target = write(
+        tmp_path / "test_close3.py",
+        """
+        import sys
+
+
+        def test_closes_stderr():
+            sys.stderr.close()
+        """,
+    )
+    proc = _run_worker(
+        [
+            _init_line(tmp_path),
+            {"op": "collect_file", "path": target.as_posix()},
+            {"op": "execute_test", "id": "test_close3.py::test_closes_stderr"},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.splitlines()[2])
+    assert result["status"] == "failed"
+    assert result["stderr"] == worker.CAPTURE_CLOSED_MESSAGE
+
+
+def test_a_test_that_closes_stdout_keeps_its_own_failure(tmp_path: Path) -> None:
+    """A test that *both* fails and closes the stream reports the real failure.
+
+    Only a phase that would otherwise be a **plain pass** is rewritten to the capture message
+    — the assertion is the more useful diagnosis, and it is also what pytest reports, since its
+    own ``snap`` runs after the body's exception has been recorded.
+    """
+    target = write(
+        tmp_path / "test_close2.py",
+        """
+        import sys
+
+
+        def test_fails_and_closes():
+            sys.stdout.close()
+            assert 1 == 2
+        """,
+    )
+    proc = _run_worker(
+        [
+            _init_line(tmp_path),
+            {"op": "collect_file", "path": target.as_posix()},
+            {"op": "execute_test", "id": "test_close2.py::test_fails_and_closes"},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.splitlines()[2])
+    assert result["status"] == "failed"
+    assert "AssertionError" in result["message"]
+    assert result["message"] != worker.CAPTURE_CLOSED_MESSAGE
+
+
+BOUNDARY_OUTPUT = """
+import pytest
+
+
+@pytest.fixture(scope="module")
+def per_module():
+    yield 1
+    print("TEARDOWN-MODULE")
+
+
+@pytest.fixture(scope="class")
+def per_class():
+    yield 1
+    print("TEARDOWN-CLASS")
+
+
+class TestFirst:
+    def test_one(self, per_module, per_class):
+        print("ONE")
+
+
+def test_two(per_module):
+    print("TWO")
+"""
+
+
+def test_boundary_teardown_output_is_not_charged_to_the_next_test(tmp_path: Path) -> None:
+    """The previous tests' teardown must not appear in the **next** test's ``stdout``.
+
+    Class- and module-scoped teardown is drained at a boundary, and the boundary is detected
+    when the *incoming* test arrives. Running that drain inside the incoming test's capture
+    window prefixed ``TEARDOWN-CLASS`` onto ``test_two``'s output — attributing one test's
+    output to another on the wire, which is worse than losing it.
+
+    :func:`drain_boundaries` now runs **before** the capture opens, so boundary output goes to
+    the worker's stderr. Divergence from pytest, deliberate and documented: pytest prints it
+    under the *previous* test's teardown section, which needs the ``nextitem`` lookahead the
+    execute wire does not have.
+
+    The assertion is exact equality, not "does not contain": a ``TEARDOWN-`` substring check
+    would still pass if some *other* teardown leaked in.
+    """
+    target = write(tmp_path / "test_bound.py", BOUNDARY_OUTPUT)
+    with isolated_worker_state():
+        results = run_module(target, tmp_path)
+
+    by_id = {result["id"]: result for result in results}
+    assert by_id["test_bound.py::TestFirst::test_one"]["stdout"] == "ONE\n"
+    second = by_id["test_bound.py::test_two"]["stdout"]
+    assert second == "TWO\n", "the previous class's teardown was charged to this test"
+
+
+def test_a_boundary_teardown_failure_is_reported_against_the_incoming_test(
+    tmp_path: Path,
+) -> None:
+    """A class teardown that fails at a **boundary** is an ``error``, never dropped.
+
+    ``drain_boundaries`` returns its exception instead of raising, so it needs somewhere to
+    go; the only phase left is the incoming test's setup. This pins that it gets there —
+    ``drain_boundaries`` swallowing it would lose a real teardown failure entirely, and the
+    shutdown-drain tests do not cover this path because a *boundary* drain happens mid-run,
+    not at shutdown.
+
+    **Documented divergence.** pytest attributes this to ``test_one``'s teardown (``PASSED``
+    then ``ERROR at teardown of test_one``) and leaves ``test_two`` passing, because
+    ``runtestprotocol`` is handed ``nextitem``. The execute wire has no lookahead, so the
+    failure lands on ``test_two`` — the wrong test, but loudly. Asserted here so the
+    divergence is visible rather than implicit.
+    """
+    target = write(
+        tmp_path / "test_bteardown.py",
+        """
+        import pytest
+
+
+        @pytest.fixture(scope="class")
+        def per_class():
+            yield 1
+            raise RuntimeError("class teardown boom")
+
+
+        class TestFirst:
+            def test_one(self, per_class):
+                assert True
+
+
+        class TestSecond:
+            def test_two(self):
+                assert True
+        """,
+    )
+    with isolated_worker_state():
+        results = run_module(target, tmp_path)
+
+    assert statuses(results) == {
+        "test_bteardown.py::TestFirst::test_one": "passed",
+        "test_bteardown.py::TestSecond::test_two": "error",
+    }
+    assert "class teardown boom" in results[1]["message"]
+
+
+def test_a_keyboard_interrupt_ends_the_run_instead_of_being_classified(tmp_path: Path) -> None:
+    """Ctrl-C aborts — port of `_pytest/runner.py::call_runtest_hook` l. 242-244.
+
+    Classifying it would turn an interrupt into a ``failed`` test and then calmly run the
+    next one. Driven through the subprocess because that is the only place "the run ends" is
+    observable: the test gets **no** ``test_result`` and the test queued after it never runs.
+    """
+    target = write(
+        tmp_path / "test_abort.py",
+        """
+        def test_aborts():
+            raise KeyboardInterrupt
+
+
+        def test_never_reached():
+            assert True
+        """,
+    )
+    proc = _run_worker(
+        [
+            _init_line(tmp_path),
+            {"op": "collect_file", "path": target.as_posix()},
+            {"op": "execute_test", "id": "test_abort.py::test_aborts"},
+            {"op": "execute_test", "id": "test_abort.py::test_never_reached"},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode != 0
+    assert [json.loads(line)["op"] for line in proc.stdout.splitlines()] == ["ready", "collected"]
+
+
+def test_a_system_exit_is_an_ordinary_failure_and_the_run_continues(tmp_path: Path) -> None:
+    """``SystemExit`` is **not** an abort — probed, and the obvious guess is wrong.
+
+    Both exceptions end a process, so the natural assumption is that both abort a run.
+    pytest disagrees: ``CallInfo.from_call`` catches ``BaseException`` and only the
+    ``reraise`` set — ``(Exit,)`` plus ``KeyboardInterrupt`` — escapes, so ``raise SystemExit``
+    in a body is reported ``FAILED`` and the next test runs. (``SystemExit`` reraises during
+    *collection* only, `runner.py` l. 392.)
+
+    Matching matters: treating it as an abort would let one ``sys.exit()`` deep inside a
+    library silently truncate a run, which is the same silent-truncation shape as the
+    shutdown-drain false green.
+    """
+    target = write(
+        tmp_path / "test_sysexit.py",
+        """
+        def test_exits():
+            raise SystemExit
+
+
+        def test_still_runs():
+            assert True
+        """,
+    )
+    proc = _run_worker(
+        [
+            _init_line(tmp_path),
+            {"op": "collect_file", "path": target.as_posix()},
+            {"op": "execute_test", "id": "test_sysexit.py::test_exits"},
+            {"op": "execute_test", "id": "test_sysexit.py::test_still_runs"},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    messages = [json.loads(line) for line in proc.stdout.splitlines()]
+    assert [(m["id"], m["status"]) for m in messages if m["op"] == "test_result"] == [
+        ("test_sysexit.py::test_exits", "failed"),
+        ("test_sysexit.py::test_still_runs", "passed"),
+    ]
+
+
 def test_a_failure_message_names_the_test_not_the_runner(tmp_path: Path) -> None:
     """Port of pytest's traceback filters — the runner's own frames are not the user's problem.
 
@@ -1583,7 +1915,7 @@ def test_leaving_a_module_tears_its_module_scoped_fixtures_down(tmp_path: Path) 
             _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
             register(plans)
             results += [execute_test(plan.id) for plan in plans]
-        _ = worker.handle_shutdown()
+        _ = shutdown()
         events = getattr(sys.modules["conftest"], "events")
 
     assert [result["status"] for result in results] == ["passed", "passed"], results
@@ -1617,18 +1949,25 @@ def test_shutdown_drains_every_open_scope(tmp_path: Path) -> None:
         register(plans)
         _ = execute_test(plans[0].id)
         assert getattr(module, "events") == ["setup"]
-        _ = worker.handle_shutdown()
+        _ = shutdown()
         assert getattr(module, "events") == ["setup", "teardown"]
 
 
-def test_a_shutdown_teardown_failure_is_reported_but_not_fatal(
+def test_a_shutdown_drain_failure_is_returned_not_swallowed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The documented protocol gap: it belongs to no test, so it goes to stderr.
+    """A teardown failure with no test left to own it must still end the run.
 
-    Exit 2 means *protocol drift*; a user's broken session teardown is not that, so the
-    worker still answers ``bye``.  Pinned so the gap stays a decision rather than an
-    accident.
+    The in-process half: ``drain_at_shutdown`` **returns** the exception (and reports it on
+    stderr) rather than swallowing it, so ``main`` can turn it into
+    :data:`SHUTDOWN_TEARDOWN_EXIT`.  ``bye`` is still answered, because the response stream
+    really is complete — what is not complete is the run.
+
+    This test used to be named ``..._is_reported_but_not_fatal`` and asserted the swallow. It
+    was wrong: a class- or module-scoped teardown that fails on the **last** test routed to a
+    worker was reported ``passed`` with the traceback buried in stderr, i.e. a green run over
+    a real failure. The subprocess half is
+    ``test_a_shutdown_drain_failure_exits_nonzero_after_bye``.
     """
     target = write(
         tmp_path / "test_boom.py",
@@ -1651,9 +1990,57 @@ def test_a_shutdown_teardown_failure_is_reported_but_not_fatal(
         _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
         register(plans)
         assert execute_test(plans[0].id)["status"] == "passed"
-        assert worker.handle_shutdown() == {"op": "bye"}
+        failure = shutdown()
 
+    assert isinstance(failure, RuntimeError)
     assert "session teardown boom" in capsys.readouterr().err
+
+
+def test_a_shutdown_drain_failure_exits_nonzero_after_bye(tmp_path: Path) -> None:
+    """The reviewer's shape: ``tearDownClass`` raises on the worker's **last** test.
+
+    That test is already answered ``passed`` — correctly, its body passed — so there is no
+    test left for the failure to be attributed to. Before this fix the worker exited 0 and
+    the run came back **green** with a traceback in stderr.
+
+    The fix uses the loud channel that already exists: ``bye`` is still written (the stream
+    is well-formed) and the process exits :data:`SHUTDOWN_TEARDOWN_EXIT`, which the
+    orchestrator already treats as a failed run —
+    ``src/v2/collect.rs::a_nonzero_exit_after_bye_is_still_a_failure``. Distinct from 2 so
+    "your teardown is broken" is never confused with "the protocol drifted".
+    """
+    target = write(
+        tmp_path / "test_last.py",
+        """
+        import unittest
+
+
+        class TestLast(unittest.TestCase):
+            @classmethod
+            def tearDownClass(cls):
+                raise RuntimeError("tearDownClass boom")
+
+            def test_only(self):
+                assert True
+        """,
+    )
+    proc = _run_worker(
+        [
+            _init_line(tmp_path),
+            {"op": "collect_file", "path": target.as_posix()},
+            {"op": "execute_test", "id": "test_last.py::TestLast::test_only"},
+            {"op": "shutdown"},
+        ]
+    )
+
+    messages = [json.loads(line) for line in proc.stdout.splitlines()]
+    assert [message["op"] for message in messages] == ["ready", "collected", "test_result", "bye"]
+    assert messages[2]["status"] == "passed", "the body did pass; the class teardown did not"
+
+    why = f"a broken class teardown on the last test must not exit 0: {proc.stderr}"
+    assert proc.returncode == worker.SHUTDOWN_TEARDOWN_EXIT, why
+    assert proc.returncode != 2, "not protocol drift"
+    assert "tearDownClass boom" in proc.stderr
 
 
 def test_the_runner_is_shared_across_execute_calls(tmp_path: Path) -> None:
