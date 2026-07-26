@@ -45,3 +45,15 @@ def v2_resolve_config(_invocation_dir: str, _args: Sequence[str]) -> str:
     raise NotImplementedError(
         "rustest.rust.v2_resolve_config() is only available when the native extension is built."
     )
+
+
+def v2_collect(
+    _invocation_dir: str,
+    _args: Sequence[str],
+    _python_executable: str,
+    _workers: int,
+) -> str:
+    """Placeholder for the v2 collection entry point (see ``src/v2/py.rs``)."""
+    raise NotImplementedError(
+        "rustest.rust.v2_collect() is only available when the native extension is built."
+    )

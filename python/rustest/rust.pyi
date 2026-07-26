@@ -139,3 +139,28 @@ def v2_resolve_config(invocation_dir: str, args: Sequence[str]) -> str:
     config file.
     """
     ...
+
+def v2_collect(
+    invocation_dir: str,
+    args: Sequence[str],
+    python_executable: str,
+    workers: int,
+) -> str:
+    """Collect tests with the v2 engine; returns a ``CollectionManifest`` JSON string.
+
+    Backs ``rustest --v2-collect-only`` (see ``python/rustest/core.py``). ``invocation_dir``
+    must be absolute; ``args`` are raw CLI path arguments, and an empty list lets
+    ``testpaths`` decide the roots. ``python_executable`` is the interpreter the collection
+    workers run under (``sys.executable``) -- the Rust side never guesses one.
+    ``workers`` is the pool size, clamped to ``[1, number of files]``.
+
+    The JSON object is the manifest frozen in ``src/v2/manifest.rs``: ``schema_version``,
+    ``rootdir`` (absolute posix), ``tests`` (each with ``id``, ``path``, ``qualname`` and
+    optional ``class_name``/``param_id``/``marks``/``fixtures``) and ``errors`` (omitted
+    when empty; each with ``path`` and ``message``).
+
+    Raises ``ValueError`` for a usage error (a bad ``invocation_dir``, a path argument that
+    does not exist, or an unusable config file) and ``RuntimeError`` for an orchestration
+    failure. A test file that fails to import raises nothing -- it is data in ``errors``.
+    """
+    ...

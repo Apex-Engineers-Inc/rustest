@@ -52,6 +52,7 @@ use crate::v2::manifest::{
     CollectedTest, CollectionErrorEntry, CollectionManifest, MANIFEST_SCHEMA_VERSION,
 };
 use crate::v2::protocol::{WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
+use crate::v2::to_posix;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -599,17 +600,6 @@ fn is_absolute_pattern(pattern: &str) -> bool {
     Path::new(pattern).is_absolute()
 }
 
-/// Render a path with posix separators — the manifest and protocol path contract.
-#[cfg(windows)]
-fn to_posix(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-#[cfg(not(windows))]
-fn to_posix(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -992,29 +982,11 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    // --- fixtures ---------------------------------------------------------
+    // The interpreter that runs the **real** worker in the end-to-end tests.  It lives in
+    // `v2::mod` rather than here because `v2::py`'s tests need the same one.
+    use crate::v2::test_python as worker_python;
 
-    /// The interpreter that runs the **real** worker in the end-to-end tests.
-    ///
-    /// `RUSTEST_TEST_PYTHON` wins when set (CI, or a dev pointing at another
-    /// interpreter).  Otherwise the repo's own `.venv` is used, because that is the one
-    /// environment guaranteed to have `rustest` importable — `python` on `PATH` usually
-    /// is not, and a bare fallback would fail with a confusing `No module named rustest`.
-    /// `python` remains the last resort so the suite still runs from an activated venv.
-    fn worker_python() -> String {
-        if let Ok(python) = std::env::var("RUSTEST_TEST_PYTHON") {
-            return python;
-        }
-        let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
-            ".venv/Scripts/python.exe"
-        } else {
-            ".venv/bin/python"
-        });
-        if venv.is_file() {
-            return venv.to_string_lossy().into_owned();
-        }
-        "python".to_string()
-    }
+    // --- fixtures ---------------------------------------------------------
 
     fn real_worker() -> WorkerLauncher {
         WorkerLauncher::module(&worker_python())

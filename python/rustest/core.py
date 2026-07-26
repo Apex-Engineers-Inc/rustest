@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Sequence
+from typing import NotRequired, TypedDict, cast
 
 from rich.console import Console
 from rich.panel import Panel
@@ -13,6 +15,37 @@ from . import rust
 from .event_router import EventRouter
 from .renderers import RichRenderer
 from .reporting import RunReport
+
+# pytest's exit codes (`_pytest.config.ExitCode`), which the v2 engine adopts verbatim --
+# "contracts are pytest's" is the v2 spec's rule. Verified against pytest 8.4.2 by running
+# `pytest --collect-only -q` on each shape rather than transcribed from memory:
+#   * a tree with tests            -> 0
+#   * an empty tree                -> 5   (NO_TESTS_COLLECTED)
+#   * one unimportable file        -> 2   (INTERRUPTED -- even when other files collected)
+#   * a path argument that is gone -> 4   (USAGE_ERROR, with `ERROR: ...` on stderr)
+_EXIT_OK = 0
+_EXIT_INTERRUPTED = 2
+_EXIT_INTERNAL_ERROR = 3
+_EXIT_USAGE_ERROR = 4
+_EXIT_NO_TESTS_COLLECTED = 5
+
+
+class _ManifestTest(TypedDict):
+    """The one manifest field the collect-only surface reads. See `src/v2/manifest.rs`."""
+
+    id: str
+
+
+class _ManifestError(TypedDict):
+    path: str
+    message: str
+
+
+class _Manifest(TypedDict):
+    """`errors` is omitted entirely when empty -- an omit-when-empty wire rule, not a bug."""
+
+    tests: list[_ManifestTest]
+    errors: NotRequired[list[_ManifestError]]
 
 
 def _print_pytest_compat_banner(use_colors: bool) -> None:
@@ -43,6 +76,83 @@ def _print_pytest_compat_banner(use_colors: bool) -> None:
         )
     )
     console.print()  # Add blank line after banner
+
+
+def _summary(collected: int, errors: int) -> str:
+    """The one-line stderr summary, in pytest's wording (`N tests collected, M errors`)."""
+    line = f"{collected} {'test' if collected == 1 else 'tests'} collected"
+    if errors:
+        line += f", {errors} {'error' if errors == 1 else 'errors'}"
+    return line
+
+
+def v2_collect_only(*, paths: Sequence[str], workers: int | None = None) -> int:
+    """Collect with the **v2** engine, print node ids, and return pytest's exit code.
+
+    This is the whole of ``rustest --v2-collect-only``. It runs the v2 spine end to end
+    (config resolution -> file walk -> worker pool -> manifest) and never touches the v1
+    discovery or execution path.
+
+    Output is shaped so stdout is a machine-readable node id list:
+
+    * **stdout** -- one node id per line, in manifest order (which is pytest's collection
+      order). Nothing else, ever: no summary, no banner, no blank lines.
+    * **stderr** -- ``ERROR collecting <path>`` plus the indented message for each file
+      that failed to import, then the ``N tests collected`` summary.
+
+    That split is a deliberate departure from pytest, which puts its summary and its
+    ``ERRORS`` section on stdout; the ids are the payload here and everything else is
+    diagnostics.
+
+    ``sys.executable`` is resolved *here* and handed to the Rust orchestrator, so the
+    workers always run under the interpreter the user invoked -- the Rust side never
+    guesses an interpreter, which would silently collect against the wrong environment.
+
+    Args:
+        paths: Files or directories to collect from. An **empty** sequence means "no path
+            argument was given", which is what lets ``testpaths`` decide the roots exactly
+            as it does under pytest; passing ``["."]`` is an explicit argument and
+            suppresses ``testpaths``.
+        workers: Collection pool size. ``None`` (and any non-positive value) means one
+            worker per CPU; the Rust side clamps the pool to the number of files found.
+
+    Returns:
+        0 with tests, 5 with none, 2 when any file failed to import, 4 for a usage error
+        (a missing path argument or an unusable config file) and 3 for an orchestration
+        failure.
+    """
+    pool_size = workers if workers is not None and workers > 0 else (os.cpu_count() or 1)
+
+    try:
+        payload = rust.v2_collect(os.getcwd(), list(paths), sys.executable, pool_size)
+    except ValueError as exc:
+        # pytest's UsageError shape, including its `ERROR: file or directory not found: x`
+        # wording, which the Rust side produces verbatim.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return _EXIT_USAGE_ERROR
+    except RuntimeError as exc:
+        # The pool itself failed (a worker died, protocol drift, an unusable interpreter).
+        # Loud and distinct from a user error -- never a quietly empty collection.
+        print(f"INTERNALERROR: {exc}", file=sys.stderr)
+        return _EXIT_INTERNAL_ERROR
+
+    manifest = cast(_Manifest, json.loads(payload))
+    tests = manifest["tests"]
+    errors = manifest.get("errors", [])
+
+    for test in tests:
+        print(test["id"])
+    for error in errors:
+        print(f"ERROR collecting {error['path']}", file=sys.stderr)
+        for line in error["message"].splitlines():
+            print(f"  {line}", file=sys.stderr)
+    print(_summary(len(tests), len(errors)), file=sys.stderr)
+
+    if errors:
+        return _EXIT_INTERRUPTED
+    if not tests:
+        return _EXIT_NO_TESTS_COLLECTED
+    return _EXIT_OK
 
 
 def run(

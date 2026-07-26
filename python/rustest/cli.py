@@ -6,7 +6,7 @@ import argparse
 import os
 from collections.abc import Sequence
 
-from .core import run
+from .core import run, v2_collect_only
 
 
 def is_ci_environment() -> bool:
@@ -143,6 +143,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Write a machine-readable JSON report (schema v1) to PATH.",
     )
+    _ = parser.add_argument(
+        "--v2-collect-only",
+        action="store_true",
+        dest="v2_collect_only",
+        help=(
+            "Experimental (v2 engine): collect tests and print their node ids one per "
+            "line, without running anything. Exits 0 with tests, 5 with none, 2 on "
+            "collection errors. None of the other options apply."
+        ),
+    )
     parser.set_defaults(
         capture_output=True,
         enable_codeblocks=True,
@@ -151,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         fail_fast=False,
         pytest_compat=False,
         report_json=None,
+        v2_collect_only=False,
     )
     return parser
 
@@ -158,6 +169,20 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # The v2 engine short-circuits here -- before any v1 option is interpreted and before
+    # `run()` reaches v1 discovery. v2 resolves its own config, walks its own files and
+    # spawns its own workers, so nothing below applies to it (selection options land in
+    # Phase 1b.2). Keeping the branch at the very top is what guarantees the v1 path is
+    # untouched by this flag's existence.
+    if args.v2_collect_only:
+        # argparse hands back the *default object itself* when no positional was supplied,
+        # so identity separates `rustest --v2-collect-only` (no argument, and therefore
+        # `testpaths` decides the roots, as in pytest) from an explicit `.` (an argument,
+        # which suppresses `testpaths`). Forwarding the default would erase that
+        # distinction and quietly diverge from pytest on every `testpaths` project.
+        paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
+        return v2_collect_only(paths=paths, workers=args.workers)
 
     # Determine last_failed_mode
     if args.last_failed:
