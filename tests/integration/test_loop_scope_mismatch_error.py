@@ -6,6 +6,11 @@ explicitly set a loop_scope that's too narrow for their async fixtures.
 
 NOTE: These tests use pytest fixtures and subprocess to test rustest externally.
 They require pytest to run and are skipped when run with rustest.
+
+LEGACY-ENGINE TESTS. The loop-scope mismatch diagnostics asserted here are v1's; the default
+(v2) engine has no loop-scope validator yet (Phase 3 -- see
+``.superpowers/sdd/p1c-task-1-report.md``), so every subprocess below is launched with
+``--v1``.
 """
 
 import os
@@ -30,6 +35,7 @@ else:
             python_path,
             "-m",
             "rustest",
+            "--v1",
             str(project_dir),
             "--color",
             "never",

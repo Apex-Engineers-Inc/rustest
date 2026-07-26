@@ -15,15 +15,19 @@ Run your existing pytest tests with rustest — no code changes required:
 <!--pytest.mark.skip-->
 ```bash
 pip install rustest
-rustest --pytest-compat tests/
+rustest tests/
 ```
+
+pytest compatibility is **on by default** — `import pytest` resolves to rustest's shim, so
+existing suites just run. (The old `--pytest-compat` flag is gone; it is now the default.
+`--v1` selects the legacy engine while the new one catches up — see CHANGELOG.md.)
 
 See the speedup immediately, then migrate to native rustest for full features.
 
 ## Why Rustest?
 
 - 🚀 **8.5× average speedup** over pytest (up to 19× on large suites)
-- 🧪 **pytest-compatible** — Run existing tests with `--pytest-compat`
+- 🧪 **pytest-compatible** — Run existing tests unchanged; no flag needed
 - ✅ **Familiar API** — Same `@fixture`, `@parametrize`, `@mark` decorators
 - 🔄 **Built-in async & mocking** — No pytest-asyncio or pytest-mock plugins needed
 - 🐛 **Clear error messages** — Vitest-style output with Expected/Received diffs

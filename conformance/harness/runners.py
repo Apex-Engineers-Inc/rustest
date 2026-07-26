@@ -647,8 +647,56 @@ def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
     )
 
 
+#: The pre-flip ``rustest --pytest-compat . --color never --report-json X`` invocation,
+#: reproduced against v1's Python API.
+#:
+#: **Why this is not a CLI call any more.** Phase 1c deleted ``--pytest-compat``: the shim is
+#: unconditional in the v2 worker, so on the default engine the flag could only be a no-op or
+#: a lie. ``--v1`` deliberately did *not* inherit it — the legacy engine's contract is "byte
+#: identical to the pre-flip default", and turning the shim on there would change v1's own
+#: suite (measured: 46 skipped becomes 50, and v1's markdown tier switches off, because
+#: ``src/discovery.rs`` l. 358 refuses code blocks in compat mode).
+#:
+#: But the **v1 ledger** was established with the shim on, and every corpus case does
+#: ``import pytest``. Re-measuring it without the shim would not be "the v1 gate after the
+#: flip", it would be a different gate whose nine waivers all describe a configuration
+#: nothing runs. So this script calls exactly what ``cli.main``'s v1 branch called before the
+#: flip — ``core.run(..., pytest_compat=True)``, ``write_json_report``, and pytest's 2/1/0
+#: exit mapping — and the ledger keeps measuring the same thing. Options are parsed with
+#: rustest's own parser, so a case that sets ``args`` in its ``case.toml`` still works and an
+#: unknown flag still exits 2 with no report (the harness-fault path below).
+#:
+#: When ``--v1`` is removed, this and the whole v1 gate go with it.
+_V1_RUNNER = """\
+import sys
+from rustest.cli import build_parser
+from rustest.core import run
+from rustest.json_report import write_json_report
+
+report_path = sys.argv[1]
+args = build_parser().parse_args(sys.argv[2:])
+mode = "only" if args.last_failed else ("first" if args.failed_first else "none")
+report = run(
+    paths=list(args.paths),
+    pattern=args.pattern,
+    mark_expr=args.mark_expr,
+    workers=args.workers,
+    capture_output=args.capture_output,
+    enable_codeblocks=args.enable_codeblocks,
+    last_failed_mode=mode,
+    fail_fast=args.fail_fast,
+    pytest_compat=True,
+    verbose=args.verbose,
+    ascii=args.ascii,
+    no_color=True,
+)
+write_json_report(report, report_path)
+sys.exit(2 if report.collection_errors else (1 if report.failed else 0))
+"""
+
+
 def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
-    """Run *case_dir* with real rustest, returning normalized results.
+    """Run *case_dir* with real rustest **v1**, returning normalized results.
 
     *case_dir* is resolved so the subprocess cwd and the ID normalization base
     are absolute, matching ``run_pytest``.
@@ -657,21 +705,20 @@ def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
     argv, crash, import-time abort). That is a harness fault, not a case
     outcome, so it raises rather than returning a fabricated all-zeros result
     that would silently grade as a divergence with no explanation.
+
+    See :data:`_V1_RUNNER` for why this drives v1's API rather than its CLI.
     """
     case_dir = case_dir.resolve()
     with tempfile.TemporaryDirectory() as tmp:
         report_path = Path(tmp) / "report.json"
-        # TODO(phase1): --pytest-compat is deleted in v2 (compat-by-default); update this invocation.
         cmd = [
             sys.executable,
-            "-m",
-            "rustest",
+            "-c",
+            _V1_RUNNER,
+            str(report_path),
             ".",
-            "--pytest-compat",
             "--color",
             "never",
-            "--report-json",
-            str(report_path),
             *args,
         ]
         proc = _run(cmd, case_dir)

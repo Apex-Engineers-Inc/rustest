@@ -6,6 +6,11 @@ requests an unknown fixture, including a list of available fixtures.
 
 NOTE: These tests use pytest fixtures and subprocess to test rustest externally.
 They require pytest to run and are skipped when run with rustest.
+
+LEGACY-ENGINE TESTS. Everything asserted here is v1 diagnostic *wording*, which the default
+(v2) engine deliberately does not reproduce -- it emits pytest's own messages instead. So
+every subprocess below is launched with ``--v1``. When ``--v1`` is removed these tests go
+with it; the default engine's equivalents live in ``python/tests/test_v2_*``.
 """
 
 import os
@@ -27,6 +32,7 @@ else:
             python_path,
             "-m",
             "rustest",
+            "--v1",
             str(project_dir),
             "--color",
             "never",

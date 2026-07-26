@@ -6,6 +6,11 @@ files and emits a helpful warning suggesting --pytest-compat mode.
 
 NOTE: These tests use pytest fixtures and subprocess to test rustest externally.
 They require pytest to run and are skipped when run with rustest.
+
+LEGACY-ENGINE TESTS. Everything asserted here is v1 diagnostic *wording*, which the default
+(v2) engine deliberately does not reproduce -- it emits pytest's own messages instead. So
+every subprocess below is launched with ``--v1``. When ``--v1`` is removed these tests go
+with it; the default engine's equivalents live in ``python/tests/test_v2_*``.
 """
 
 import os
@@ -26,6 +31,7 @@ else:
             python_path,
             "-m",
             "rustest",
+            "--v1",
             str(project_dir),
             "--color",
             "never",
@@ -166,22 +172,6 @@ def test_greeting(greeting):
             f"Expected '--pytest-compat' in output:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
-    def test_no_warning_in_compat_mode(pytest_compat_project):
-        """Test that --pytest-compat mode does not emit pytest fixture warnings."""
-        result = _run_rustest(pytest_compat_project, "--pytest-compat")
-
-        stderr = result.stderr
-
-        # Should NOT contain the warning about pytest fixtures
-        assert "Found @pytest.fixture" not in stderr, (
-            f"Did not expect pytest fixture warning in compat mode:\nstderr: {stderr}"
-        )
-
-        # The test should pass
-        assert result.returncode == 0, (
-            f"Expected tests to pass in compat mode:\nstdout: {result.stdout}\nstderr: {stderr}"
-        )
-
     def test_no_warning_when_no_pytest_fixtures(pure_rustest_conftest_project):
         """Test that no warning is emitted when conftest has only @rustest.fixture."""
         result = _run_rustest(pure_rustest_conftest_project)
@@ -229,19 +219,6 @@ def test_uses_local(local_fixture):
         )
         assert "local_fixture" in output, (
             f"Expected 'local_fixture' name in warning output:\n{output}"
-        )
-
-    def test_no_warning_for_inline_fixtures_in_compat_mode(inline_pytest_fixture_project):
-        """In compat mode, inline @pytest.fixture works and no warning shown."""
-        result = _run_rustest(inline_pytest_fixture_project, "--pytest-compat")
-
-        output = result.stdout + result.stderr
-
-        assert result.returncode == 0, (
-            f"Expected success with inline fixtures in compat mode:\n{output}"
-        )
-        assert "Found @pytest.fixture" not in output, (
-            f"Did not expect pytest fixture warning in compat mode:\n{output}"
         )
 
     @pytest.fixture
@@ -340,17 +317,6 @@ def test_raises_error():
             f"Expected --pytest-compat suggestion when import pytest found:\n{output}"
         )
 
-    def test_no_note_in_compat_mode_for_import_pytest(pytest_import_only_project):
-        """In --pytest-compat mode, no import-pytest note needed."""
-        result = _run_rustest(pytest_import_only_project, "--pytest-compat")
-
-        output = result.stdout + result.stderr
-
-        # In compat mode, pytest.raises works natively
-        assert result.returncode == 0, (
-            f"Expected success with pytest.raises in compat mode:\n{output}"
-        )
-
     @pytest.fixture
     def fixture_warning_priority_project(tmp_path):
         """Project with both `import pytest` AND `@pytest.fixture` — tests warning priority."""
@@ -382,9 +348,7 @@ def test_simple():
         stderr = result.stderr
 
         # The specific fixture warning should appear
-        assert "Found @pytest.fixture" in stderr, (
-            f"Expected fixture warning in stderr:\n{stderr}"
-        )
+        assert "Found @pytest.fixture" in stderr, f"Expected fixture warning in stderr:\n{stderr}"
 
         # The generic import note should NOT appear — fixture warning takes priority
         assert "Note: Detected `import pytest`" not in stderr, (
@@ -444,15 +408,26 @@ def test_needs_parent(parent_fixture):
             f"Expected --pytest-compat hint from parent conftest detection:\n{output}"
         )
 
-    def test_help_mentions_pytest_compat_migration(tmp_path):
-        """The --help output describes --pytest-compat's migration purpose."""
-        python_path = sys.executable
-        cmd = [python_path, "-m", "rustest", "--help"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+    def test_pytest_compat_flag_is_rejected_with_a_pointer(tmp_path):
+        """``--pytest-compat`` was deleted at the flip and says so.
 
-        output = result.stdout
-
-        assert "--pytest-compat" in output, f"Expected --pytest-compat in help:\n{output}"
-        assert "migration" in output.lower(), (
-            f"Expected 'migration' mention in --pytest-compat help:\n{output}"
+        The shim it used to enable is now installed unconditionally, so the flag could only
+        be a no-op or a lie. Accepting it silently would leave a CI file asking for a
+        behaviour it already has and never learning the flag is gone -- hence pytest's
+        usage-error exit 4 and a message naming the changelog.
+        """
+        del tmp_path
+        result = subprocess.run(
+            [sys.executable, "-m", "rustest", "--pytest-compat", "."],
+            capture_output=True,
+            text=True,
         )
+
+        assert result.returncode == 4, f"expected pytest's USAGE_ERROR: {result.stderr}"
+        assert "--pytest-compat has been removed" in result.stderr, result.stderr
+        assert "CHANGELOG" in result.stderr, result.stderr
+
+        help_result = subprocess.run(
+            [sys.executable, "-m", "rustest", "--help"], capture_output=True, text=True
+        )
+        assert "--pytest-compat" not in help_result.stdout, help_result.stdout

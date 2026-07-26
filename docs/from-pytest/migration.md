@@ -1,5 +1,11 @@
 # 5-Minute Migration Guide
 
+!!! warning "`--pytest-compat` was removed"
+    Compatibility is **on by default** as of the v2 engine flip: `import pytest`
+    always resolves to rustest's shim, so `rustest tests/` is what every example
+    below means. Passing `--pytest-compat` now exits 4 with a pointer to
+    `CHANGELOG.md`. `--v1` selects the legacy engine.
+
 Migrating from pytest to rustest is straightforward. This guide shows you how to get up and running quickly.
 
 ## Step 0: Try Without Changing Anything
@@ -8,7 +14,7 @@ The fastest way to try rustest is with **zero code changes**:
 
 ```bash
 pip install rustest
-rustest --pytest-compat tests/
+rustest tests/
 ```
 
 The `--pytest-compat` flag intercepts `import pytest` statements and provides rustest implementations. Your existing pytest tests run with rustest's performance.
@@ -37,10 +43,10 @@ Choose your preferred installation method:
 === "Try without installing"
     ```bash
     # Using uvx (instant, no install)
-    uvx rustest --pytest-compat tests/
+    uvx rustest tests/
 
     # Or pipx
-    pipx run rustest --pytest-compat tests/
+    pipx run rustest tests/
     ```
 
 ---
@@ -299,7 +305,7 @@ rustest tests/new/
 rustest tests/migrated/
 
 # Old tests use compatibility mode
-rustest --pytest-compat tests/legacy/
+rustest tests/legacy/
 ```
 
 ### Option 3: Feature Branch Migration
@@ -386,7 +392,7 @@ If all tests pass, you're done! 🎉
 Use this checklist to track your migration:
 
 - [ ] Install rustest (`pip install rustest` or `uv add rustest`)
-- [ ] Try compatibility mode (`rustest --pytest-compat tests/`)
+- [ ] Try compatibility mode (`rustest tests/`)
 - [ ] Update imports in test files (`from rustest import ...`)
 - [ ] Update imports in `conftest.py`
 - [ ] Replace pytest plugin features with rustest built-ins

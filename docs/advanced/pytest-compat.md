@@ -1,5 +1,11 @@
 # Pytest Compatibility Mode
 
+!!! warning "`--pytest-compat` was removed"
+    Compatibility is **on by default** as of the v2 engine flip: `import pytest`
+    always resolves to rustest's shim, so `rustest tests/` is what every example
+    below means. Passing `--pytest-compat` now exits 4 with a pointer to
+    `CHANGELOG.md`. `--v1` selects the legacy engine.
+
 rustest provides a `--pytest-compat` mode that allows you to run existing pytest test suites with minimal or no code changes. This mode intercepts `import pytest` statements and provides rustest implementations transparently.
 
 ## Quick Start
@@ -8,11 +14,11 @@ Try rustest on your existing pytest suite:
 
 ```bash
 # Using uvx (no installation needed)
-uvx rustest --pytest-compat tests/
+uvx rustest tests/
 
 # Or install and run
 pip install rustest
-rustest --pytest-compat tests/
+rustest tests/
 ```
 
 That's it! Your existing pytest tests will run with rustest's performance benefits.
@@ -294,7 +300,7 @@ You don't have to migrate everything at once:
 
 ```bash
 # Test your existing suite
-rustest --pytest-compat tests/
+rustest tests/
 ```
 
 If it works, you're done! Keep using pytest syntax with rustest's speed.
@@ -410,7 +416,7 @@ async def test_async():  # async keyword
 Before migrating, run your suite with `--pytest-compat`:
 
 ```bash
-rustest --pytest-compat tests/ -v
+rustest tests/ -v
 ```
 
 Check for errors and unsupported features.

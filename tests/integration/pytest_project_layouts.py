@@ -7,6 +7,7 @@ can correctly discover and run tests for each layout pattern.
 NOTE: These tests use pytest fixtures and subprocess to test rustest externally.
 They are automatically skipped when run with rustest (via conftest.py).
 """
+
 import subprocess
 import sys
 import tempfile
@@ -15,9 +16,17 @@ from pathlib import Path
 import pytest
 
 
-def run_rustest(project_dir):
+def run_rustest(project_dir, *args):
     """Run rustest on a project directory and return result."""
-    cmd = [sys.executable, "-m", "rustest", str(project_dir / "tests"), "--color", "never"]
+    cmd = [
+        sys.executable,
+        "-m",
+        "rustest",
+        str(project_dir / "tests"),
+        "--color",
+        "never",
+        *args,
+    ]
     result = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True)
     return result
 
@@ -127,12 +136,30 @@ def test_process():
     return tmp_path
 
 
-def test_src_layout(src_layout_project):
-    """Test that src/ layout works without PYTHONPATH."""
-    result = run_rustest(src_layout_project)
+def test_src_layout_matches_pytest_on_the_default_engine(src_layout_project):
+    """A ``src/`` layout is a **collection error** by default, exactly as under pytest.
 
-    assert result.returncode == 0, f"rustest failed: {result.stderr}"
-    assert "3 passed" in result.stderr, f"Expected 3 tests to pass: {result.stderr}"
+    This is an adjudicated behaviour change at the v2 flip, not a regression left unnoticed.
+    v1 silently inserted the project's ``src/`` directory into ``sys.path``, so
+    ``from mypackage import ...`` resolved with no install and no ``PYTHONPATH``. **pytest
+    does not do that** -- probed on this exact layout, ``pytest tests`` reports
+    ``ERROR collecting tests/test_basic.py: ModuleNotFoundError: No module named
+    'mypackage'`` and exits 2 -- and the default engine's contract is pytest's behaviour.
+
+    A src-layout project makes its package importable the way pytest projects always have:
+    an editable install, or ``PYTHONPATH``. (pytest's ``pythonpath`` ini, from its bundled
+    ``_pytest/python_path.py`` plugin, is not read by v2 yet -- Phase 3.)
+
+    ``--v1`` keeps the old convenience, and the second half of this test pins that, so the
+    escape hatch is verified to actually be one.
+    """
+    result = run_rustest(src_layout_project)
+    assert result.returncode == 2, f"expected pytest's collection-error exit: {result.stderr}"
+    assert "No module named 'mypackage'" in result.stdout + result.stderr, result.stderr
+
+    legacy = run_rustest(src_layout_project, "--v1")
+    assert legacy.returncode == 0, f"--v1 must keep the legacy src/ convenience: {legacy.stderr}"
+    assert "3 passed" in legacy.stderr, legacy.stderr
 
 
 def test_flat_layout(flat_layout_project):

@@ -64,8 +64,11 @@ uv run pytest python/tests -v
 # Integration tests
 uv run pytest tests/ examples/tests/ -v
 
-# Run with rustest itself
+# Run with rustest itself (the v2 engine -- the default since the Phase 1c flip)
 uv run python -m rustest tests/ examples/tests/ -v
+
+# ...and with the legacy engine, which is still shipped behind --v1
+uv run python -m rustest --v1 tests/ examples/tests/ -v
 
 # Rust tests
 cargo test
@@ -169,7 +172,8 @@ poe tests     # Run integration and example tests
 - `cargo test` - Rust unit tests
 - `uv run pytest python/tests -v` - Python unit tests (via pytest)
 - `uv run pytest tests/ examples/tests/ -v` - Integration tests (via pytest)
-- `uv run python -m rustest tests/ examples/tests/ -v` - Integration tests (via rustest)
+- `uv run python -m rustest tests/ examples/tests/ -v` - Integration tests (via rustest, v2 engine)
+- `uv run python -m rustest --v1 tests/ examples/tests/ -v` - Integration tests (legacy engine)
 - Documentation code blocks - README and docs Python examples are tested
 
 **CI will fail if ANY of the following exist**:
@@ -186,7 +190,9 @@ poe tests     # Run integration and example tests
 ### Test Execution
 Tests are run through multiple runners to ensure compatibility:
 1. **pytest** - Standard Python test runner
-2. **rustest** - The project's own test runner
+2. **rustest** - The project's own test runner. `rustest <paths>` runs the **v2 engine**
+   (default since the Phase 1c flip, pytest compatibility always on); `--v1` runs the legacy
+   engine. `--pytest-compat` was removed -- passing it exits 4.
 3. **Documentation tests** - Python code blocks in README.md and docs/
 
 ### When Adding Features

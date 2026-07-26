@@ -1,5 +1,11 @@
 # Coming from pytest
 
+!!! warning "`--pytest-compat` was removed"
+    Compatibility is **on by default** as of the v2 engine flip: `import pytest`
+    always resolves to rustest's shim, so `rustest tests/` is what every example
+    below means. Passing `--pytest-compat` now exits 4 with a pointer to
+    `CHANGELOG.md`. `--v1` selects the legacy engine.
+
 ## You're Not Alone
 
 If you've ever waited for a slow test suite to finish, wondering why Python testing can't be as fast as vitest or bun test—**you're in good company.**
@@ -110,7 +116,7 @@ Already have pytest tests? Run them with rustest in 10 seconds:
 
 ```bash
 pip install rustest
-rustest --pytest-compat tests/
+rustest tests/
 ```
 
 The `--pytest-compat` flag intercepts `import pytest` and provides rustest implementations. **No code changes required.**

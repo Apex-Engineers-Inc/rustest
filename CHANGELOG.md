@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed — THE FLIP: the v2 engine is now the default
+
+`rustest <paths>` with no mode flag runs the **v2 engine**: a Rust orchestrator, process
+workers, pytest's config resolution and node ids, pytest's exit codes, and the pytest
+compatibility shim installed unconditionally. Every run is now a compat run.
+
+- **`--pytest-compat` is removed.** The shim it enabled is always on, so the flag could only
+  be a no-op or a lie. Passing it exits **4** (pytest's `USAGE_ERROR`) with a message
+  pointing here.
+- **`--v2` is a no-op alias** and prints a deprecation note, so pipelines that adopted it
+  early keep working.
+- **`--v1` selects the legacy engine**, unchanged from its pre-flip behaviour, and prints a
+  banner. It will be removed in a future release.
+
+### Added
+
+- `-x` / `--exitfirst` on the default engine: dispatch stops after the first failure, the
+  report contains only the tests that ran, and the exit code is 1 — pytest's `--maxfail=1`
+  semantics. Sequential-exact at `-n 1`; with a worker pool, tests already in flight finish.
+- `--lf` / `--ff` on the default engine, backed by a **separate** cache at
+  `.rustest_cache/v2/lastfailed` (v1's `.rustest_cache/lastfailed` is keyed on different id
+  strings and the two must not overwrite each other). The document shape is pytest's own
+  `{nodeid: true}`.
+- `-v` prints one line per test in pytest's verbose wording (`PASSED` / `FAILED` /
+  `SKIPPED (reason)` / `XFAIL` / `XPASS` / `ERROR`) with pytest's percent column; `-q` prints
+  only the summary. `-v -q` cancel out, as under pytest.
+- `-s` / `--no-capture` on the default engine. Uncaptured output reaches you on **stderr**
+  (a worker's stdout is the protocol channel), interleaved across a pool.
+- Markdown code-block tests on the default engine, including directory walking, so
+  `rustest README.md docs/` keeps working. `--no-codeblocks` restores pytest's answer for a
+  `.md` argument.
+- `RUSTEST_ENGINE=v2` in the worker environment (alongside the long-standing
+  `RUSTEST_RUNNING=1`), for suites that need to branch during the transition.
+
+### Fixed
+
+- **A failing `async def` test now fails.** The v2 worker previously called an async test like
+  a sync one, got a coroutine back, raised nothing and reported PASSED. Async fixtures
+  (`async def` and `async def` + `yield`) are likewise awaited instead of handed over as
+  coroutine objects.
+- **A class-scoped fixture requested by a module-level test is rebuilt per test**, as pytest
+  does it (`SubRequest.node` falls back to the function item when there is no class). It was
+  being cached for the whole file.
+- `@parametrize` on a **class** now applies to its methods on the default engine.
+- `mock.patch`-injected arguments are no longer mistaken for fixture requests
+  (pytest's `num_mock_patch_args`).
+- `pytest_plugins = "..."` in a conftest now registers that module's fixtures.
+- `request.node`, `request.applymarker`, `request.instance`, `request.cls`,
+  `request.function`, `request.module` and `request.path` exist on the default engine.
+- `@mark.usefixtures` is honoured by the default engine's fixture closure.
+- `indirect=` parametrization works on the default engine (rustest's semantics — the value
+  names a fixture).
+
+### Known gaps on the default engine (use `--v1`, or wait for Phase 3)
+
+- No parallel async batching: same-`loop_scope` async tests run sequentially, and
+  `loop_scope` itself is accepted and ignored (one event loop per worker).
+- No automatic `src/` layout `sys.path` insertion — pytest does not do it either. Install the
+  package (editable is fine) or set `PYTHONPATH`. pytest's `pythonpath` ini is not read yet.
+- `capfd`, `capfdbinary`, `capsysbinary`, `capteesys`, `caplog`, `cache`, `mocker`,
+  `pytestconfig`, `recwarn`, `tmpdir`, `tmpdir_factory`, `pytester` and friends are not
+  provided; requesting one is a loud error naming the fixture.
+- `session`/`package` scope is per **worker**, not per run.
+- No `pytest_generate_tests` hook, no `xfail_strict` ini, no `--runxfail`, no warnings
+  channel.
+- Capture is stream-level, not fd-level.
+
 ## [0.16.2] - 2026-03-30
 
 ### Fixed
