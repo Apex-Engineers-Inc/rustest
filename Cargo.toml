@@ -27,6 +27,7 @@ indicatif = "0.17"
 
 [dev-dependencies]
 pyo3 = { version = "0.27", features = ["auto-initialize"] }
+tempfile = "3"
 
 [build-dependencies]
 pyo3-build-config = "0.27"
