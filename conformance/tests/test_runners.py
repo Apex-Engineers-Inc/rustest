@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -81,6 +82,74 @@ def test_parse_pytest_collect_ignores_traceback_line_with_double_colon() -> None
         "test_a.py::test_one",
         "test_a.py::TestBox::test_two[x]",
     }
+
+
+COLLECT_OUTPUT_WITH_SLICE_SYNTAX_ERROR = textwrap.dedent(
+    """\
+    test_sibling_ok.py::test_alpha
+
+    =================================== ERRORS ====================================
+    ___________ ERROR collecting test_slice_syntax_error.py ____________
+    E     File "test_slice_syntax_error.py", line 3
+    E       x = data[::2
+    E               ^
+    E   SyntaxError: '[' was never closed
+    =========================== short test summary info ===========================
+    ERROR test_slice_syntax_error.py
+    !!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+    1 test collected, 1 error in 0.29s
+    """
+)
+
+
+def test_parse_pytest_collect_ignores_syntax_error_slice_echo_golden() -> None:
+    """Golden-text regression for the reviewer-found escape (fast, no subprocess).
+
+    A collection-time SyntaxError's echoed source line can itself contain a
+    slice (``data[::2``), which pytest prints as ``E       x = data[::2`` --
+    flush at column 0, matching _NODEID_RE's per-line shape on its own, since a
+    slice's "::" has no preceding bare colon to disqualify it the way
+    "AssertionError: ...::..." does. This is captured verbatim from a real
+    pytest run (see test_parse_pytest_collect_ignores_syntax_error_slice_echo_real_pytest)
+    as a fast golden fixture for CI.
+    """
+    assert parse_pytest_collect(COLLECT_OUTPUT_WITH_SLICE_SYNTAX_ERROR) == {
+        "test_sibling_ok.py::test_alpha",
+    }
+
+
+def test_parse_pytest_collect_ignores_syntax_error_slice_echo_real_pytest(
+    tmp_path: Path,
+) -> None:
+    """Reproduce the reviewer's escape against real pytest, not a hand-written golden.
+
+    ``test_aaa_broken.py`` sorts alphabetically before the valid sibling, which
+    matters: it proves pytest front-loads every successfully collected nodeid
+    before any error block regardless of traversal order, so stopping at the
+    first section boundary in parse_pytest_collect never loses a real id.
+    """
+    (tmp_path / "test_aaa_broken.py").write_text(
+        "def test_placeholder():\n    data = [1, 2, 3]\n    x = data[::2\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_zzz_good.py").write_text(
+        "def test_after_alpha():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "."],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 2  # collection error
+
+    ids = parse_pytest_collect(proc.stdout)
+
+    assert ids == {"test_zzz_good.py::test_after_alpha"}
+    assert not any("data[" in i for i in ids)
 
 
 def test_parse_pytest_summary() -> None:

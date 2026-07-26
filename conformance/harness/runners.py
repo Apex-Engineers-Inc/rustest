@@ -20,10 +20,31 @@ _SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors)")
 # colons or nested brackets, e.g. "test_x.py::test_f[a:b]" or "[a[b]]"). No
 # segment before the trailing suffix may contain a bare colon, and the whole
 # thing must start at column 0 -- both are true of every real nodeid pytest
-# prints and false of every traceback frame, source excerpt, or "E   ..."
-# assertion line, which are always indented and/or contain a single ":" before
-# any incidental "::". See parse_pytest_collect.
+# prints and false of most non-nodeid lines (traceback frames, source excerpts,
+# "E   ..." assertion text are indented, and most contain a single ":" ahead of
+# any incidental "::", e.g. "AssertionError: ...::..."). This is a per-line
+# filter, not a complete guard on its own: an "E   ..." line that verbatim
+# echoes offending source containing a slice (e.g. "E       x = data[::2") has
+# no such preceding colon and DOES match this shape despite sitting at column
+# 0. See parse_pytest_collect, which stops scanning before any such line is
+# ever reached.
 _NODEID_RE = re.compile(r"^[^\s:][^:\n]*(::[^\s:][^:\n]*)+(\[[^\n]*\])?$")
+
+# A pytest -q --collect-only report is structurally two parts: every collected
+# nodeid, printed contiguously first, followed -- only if collection hit
+# trouble -- by an "=== TITLE ===" section header (ERRORS, short test summary
+# info, warnings summary) and its body. Verified against real pytest (see the
+# probe in the Task 7 report): even when the broken file sorts alphabetically
+# *before* a valid sibling, pytest still front-loads every successfully
+# collected nodeid from every file before any error block -- collection
+# errors never interleave with the nodeid list. So stopping at the first
+# boundary line loses no real ids and is a structural guard against any
+# "E   ..." echoed-source line, not just the ones _NODEID_RE's shape happens
+# to reject. Two boundary shapes are recognized: the "=== TITLE ==="
+# section-header line itself (what actually fires in every real case probed),
+# and a bare "E " prefix as a defensive backstop in case an "E   ..." line
+# were ever reached without a preceding recognized header.
+_SECTION_BOUNDARY_RE = re.compile(r"^=+ .+ =+$")
 
 
 @dataclass(frozen=True)
@@ -45,18 +66,28 @@ class RunResult:
 def parse_pytest_collect(text: str) -> set[str]:
     """Extract nodeids from ``pytest --collect-only -q`` output.
 
+    Stops at the first section-boundary line (an "=== TITLE ===" header, or a
+    defensive fallback on a bare "E " prefix) -- see _SECTION_BOUNDARY_RE --
+    since real nodeids are only ever printed before any such boundary.
     Matched against the *raw* line (only trailing whitespace stripped): real
-    nodeids are always flush at column 0, while every other line -- traceback
-    frames, source excerpts copied verbatim into an ERRORS block, "E   ..."
-    assertion text -- is indented by pytest. Stripping leading whitespace
-    before matching (the previous heuristic did) throws that signal away and
-    lets an indented line that happens to contain a literal "::" -- e.g. a
-    quoted path or Rust-style module reference inside an assertion message --
-    read as a phantom test id.
+    nodeids are always flush at column 0, while every other pre-boundary line
+    is indented by pytest. Stripping leading whitespace before matching (the
+    previous heuristic did) throws that signal away and lets an indented line
+    that happens to contain a literal "::" -- e.g. a quoted path or
+    Rust-style module reference inside an assertion message -- read as a
+    phantom test id.
+
+    The boundary check is the load-bearing guard: an "E   ..." line that
+    echoes a SyntaxError's offending source verbatim can contain a slice
+    (e.g. "E       x = data[::2") and would otherwise match _NODEID_RE's
+    per-line shape despite sitting at column 0, since a slice's "::" has no
+    preceding bare colon to disqualify it.
     """
     ids: set[str] = set()
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
+        if _SECTION_BOUNDARY_RE.match(line) or line.startswith("E "):
+            break
         if _NODEID_RE.match(line):
             ids.add(line)
     return ids
