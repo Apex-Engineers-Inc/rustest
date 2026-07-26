@@ -162,8 +162,8 @@ pub fn resolve_config(
         rootdir,
         // All of the following are `type="args"` inis: see the citations on the
         // DEFAULT_* constants, plus `_pytest/main.py` (testpaths) and
-        // `_pytest/config/__init__.py::Config._initini` (addopts, no explicit default
-        // => `get_ini_default_for_type("args")` => `[]`).
+        // `_pytest/config/__init__.py::Config._initini` L1256 (addopts, no explicit
+        // default => `config/argparsing.py::get_ini_default_for_type` L238-258 => `[]`).
         testpaths: getini_args(&inicfg, "testpaths", &[], &err_path)?,
         python_files: getini_args(&inicfg, "python_files", DEFAULT_PYTHON_FILES, &err_path)?,
         python_classes: getini_args(&inicfg, "python_classes", DEFAULT_PYTHON_CLASSES, &err_path)?,
@@ -210,8 +210,10 @@ pub fn matches_name_pattern(name: &str, patterns: &[String]) -> bool {
 /// reduces to `fnmatch.fnmatch(path.name, pattern)`.
 ///
 /// Limitation: `fnmatch_ex` matches a pattern that *contains* a path separator against
-/// the whole path instead of the basename. Callers with such patterns must use the
-/// full-path form; this helper is basename-only by contract.
+/// the whole path instead of the basename (and, on Windows, rewrites a posix-separator
+/// pattern to backslashes first). This helper is basename-only by contract; Phase 1b will
+/// need a full-path `fnmatch_ex` variant alongside it to cover separator-bearing
+/// `python_files` / `norecursedirs` patterns.
 pub fn matches_file_pattern(basename: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pattern| fnmatch(basename, pattern))
 }
@@ -222,10 +224,37 @@ pub fn matches_file_pattern(basename: &str, patterns: &[String]) -> bool {
 
 /// Port of `os.path.normcase`, applied by `fnmatch.fnmatch` to *both* operands.
 ///
-/// On Windows `ntpath.normcase` is `s.replace("/", "\\").lower()`, which makes pytest's
-/// glob matching case-insensitive there and case-sensitive everywhere else. We reproduce
+/// On Windows this makes pytest's glob matching case-insensitive; elsewhere
+/// `posixpath.normcase` is the identity and matching stays case-sensitive. We reproduce
 /// the platform split rather than picking one, because pytest is the oracle on each
 /// platform.
+///
+/// **The real implementation is not `str.lower()`.** `Lib/ntpath.py::normcase` (L50-67)
+/// is:
+///
+/// ```python
+/// return _LCMapStringEx(_LOCALE_NAME_INVARIANT, _LCMAP_LOWERCASE, s.replace('/', '\\'))
+/// ```
+///
+/// i.e. the Win32 invariant-locale case mapping. The `s.replace('/','\\').lower()` form
+/// at L69-77 is only the `except ImportError` fallback for builds without `_winapi`, and
+/// is never what pytest gets on a normal CPython.
+///
+/// **Accepted approximation:** Rust's `str::to_lowercase` implements Unicode full
+/// lowercasing, which matches `str.lower()`, not `LCMapStringEx`. Verified divergences
+/// (against the installed CPython 3.14.2):
+///
+/// | input | `normcase` | `to_lowercase` |
+/// |---|---|---|
+/// | U+212A KELVIN SIGN | U+212A (unchanged) | `k` |
+/// | U+1E9E CAPITAL SHARP S | U+1E9E (unchanged) | U+00DF `ß` |
+/// | U+0130 CAPITAL I WITH DOT | U+0130 (unchanged) | `i` + U+0307 (**grows**) |
+///
+/// `LCMapStringEx` leaves all three alone; `to_lowercase` folds them. So we are *more*
+/// permissive than pytest on those codepoints. On ASCII — every realistic module, class
+/// and function name — the two are identical, so the blast radius is ~zero. The
+/// divergence is pinned by `normcase_kelvin_sign_is_an_accepted_divergence` so Task 5's
+/// oracle diff sees a documented waiver rather than a surprise.
 #[cfg(windows)]
 fn normcase(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(s.replace('/', "\\").to_lowercase())
@@ -465,8 +494,10 @@ fn shlex_split(input: &str, path: &Path) -> Result<Vec<String>, ConfigError> {
 // ---------------------------------------------------------------------------
 
 /// `_pytest/config/findpaths.py::_parse_ini_config` calls `iniconfig.IniConfig(str(path))`,
-/// i.e. the *constructor* path, which pins `strip_inline_comments=False` and
-/// `strip_section_whitespace=False` for backwards compatibility.
+/// i.e. the *constructor* path (iniconfig 2.3.0 `__init__.py` L110-119), which pins
+/// `strip_inline_comments=False` and `strip_section_whitespace=False` for backwards
+/// compatibility. The newer `IniConfig.parse()` classmethod defaults
+/// `strip_inline_comments=True` — that is **not** what pytest gets.
 ///
 /// Limitations vs. `iniconfig`:
 /// * Line splitting is `\n`-based (with a `\r` trim) rather than Python's
@@ -816,8 +847,17 @@ fn normpath(path: &Path) -> PathBuf {
     out
 }
 
-/// `_pytest/pathlib.py::commonpath` == `os.path.commonpath`, `None` on ValueError
-/// (different drives, or a mix of absolute and relative paths).
+/// Stands in for `_pytest/pathlib.py::commonpath`, which wraps `os.path.commonpath` and
+/// returns `None` on `ValueError` (different drives, or a mix of absolute and relative
+/// paths).
+///
+/// Not a byte-exact equivalence. Two known differences, both unreachable from
+/// [`resolve_config`], which only ever calls this with two existing absolute directories:
+/// * Relative pairs with no shared leading component (`"a/b"` vs `"c/d"`): Python returns
+///   `""`, we return `None`.
+/// * Python raises `ValueError` for a mixed absolute/relative pair, which the pytest
+///   wrapper maps to `None`; our component walk would return `None` there too, but by
+///   coincidence of the components differing rather than by an explicit check.
 fn commonpath(path1: &Path, path2: &Path) -> Option<PathBuf> {
     let c1: Vec<_> = path1.components().collect();
     let c2: Vec<_> = path2.components().collect();
@@ -834,8 +874,21 @@ fn commonpath(path1: &Path, path2: &Path) -> Option<PathBuf> {
 
 /// `_pytest/config/findpaths.py::is_fs_root` == `os.path.splitdrive(str(p))[1] == os.sep`.
 ///
-/// Limitation: a bare UNC share (`\\server\share`) has an empty splitdrive tail in Python
-/// and so is *not* a root there; we mirror that by rejecting non-disk prefixes.
+/// UNC divergence (verified against CPython 3.14.2 `os.path.splitdrive`):
+///
+/// | path | Python tail | Python root? | ours |
+/// |---|---|---|---|
+/// | `\\server\share` | `""` | no | no |
+/// | `\\server\share\` | `"\"` | **yes** | **no** |
+/// | `C:\` | `"\"` | yes | yes |
+/// | `C:` | `""` | no | no |
+///
+/// So Python treats the *trailing-separator* UNC share form as a filesystem root and we
+/// do not, because we reject non-disk prefixes outright. Left as a comment rather than
+/// code: this function is only reachable from the deepest `determine_setup` fallback
+/// (no config file, no `setup.py`, nothing in common with the invocation dir), and the
+/// consequence of the divergence there is merely which of two already-degenerate
+/// rootdirs is chosen.
 fn is_fs_root(p: &Path) -> bool {
     use std::path::{Component, Prefix};
     let mut saw_root = false;
@@ -1291,7 +1344,120 @@ mod tests {
         );
     }
 
+    // -- the `dirs != [ancestor]` re-locate branch ---------------------------
+    //
+    // findpaths.py::determine_setup, the `else:` clause of the setup.py for/else:
+    //     if dirs != [ancestor]:
+    //         rootdir, inipath, inicfg = locate_config(invocation_dir, dirs)
+    // Reached only when the common ancestor itself holds no config and no setup.py
+    // exists above it, so the search restarts from each arg dir individually.
+
+    #[test]
+    fn relocate_branch_finds_config_under_a_single_arg_dir() {
+        // Oracle: rootdir=<tmp>/a, inifile=<tmp>/a/pytest.ini, cfg={'python_classes':'FromA'}
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let a = mkdirs(root, "a");
+        let b = mkdirs(root, "b");
+        write(&a, "pytest.ini", "[pytest]\npython_classes = FromA\n");
+
+        let cfg = resolve_config(root, &[a.clone(), b]).unwrap();
+        assert_eq!(cfg.rootdir, a);
+        assert_eq!(
+            cfg.config_file.as_deref(),
+            Some(a.join("pytest.ini").as_path())
+        );
+        assert_eq!(cfg.python_classes, pats(&["FromA"]));
+    }
+
+    #[test]
+    fn relocate_branch_lets_the_first_arg_win() {
+        // `locate_config` iterates args in order and returns on the first qualifying
+        // file, so arg order — not alphabetical order — decides.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let a = mkdirs(root, "a");
+        let b = mkdirs(root, "b");
+        write(&a, "pytest.ini", "[pytest]\npython_classes = FromA\n");
+        write(&b, "pytest.ini", "[pytest]\npython_classes = FromB\n");
+
+        let cfg = resolve_config(root, &[a.clone(), b.clone()]).unwrap();
+        assert_eq!(cfg.rootdir, a);
+        assert_eq!(cfg.python_classes, pats(&["FromA"]));
+
+        // Reversing the args reverses the winner (oracle-confirmed).
+        let cfg = resolve_config(root, &[b.clone(), a]).unwrap();
+        assert_eq!(cfg.rootdir, b);
+        assert_eq!(cfg.python_classes, pats(&["FromB"]));
+    }
+
     // -- ini value normalisation --------------------------------------------
+
+    #[test]
+    fn empty_ini_options_table_is_authoritative() {
+        // `result is not None` is the test in load_config_dict_from_file, so an empty
+        // [tool.pytest.ini_options] still stops the search.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "pyproject.toml", "[tool.pytest.ini_options]\n");
+        write_tox(root);
+
+        let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
+        assert_eq!(
+            cfg.config_file.as_deref(),
+            Some(root.join("pyproject.toml").as_path())
+        );
+        assert_eq!(cfg.python_classes, defaults_owned(DEFAULT_PYTHON_CLASSES));
+    }
+
+    #[test]
+    fn pytest_ini_with_only_a_foreign_section_is_still_authoritative() {
+        // No [pytest] section, but `filepath.name == "pytest.ini"` => return {}.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "pytest.ini", "[flake8]\nmax-line-length = 100\n");
+        write_tox(root);
+
+        let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
+        assert_eq!(
+            cfg.config_file.as_deref(),
+            Some(root.join("pytest.ini").as_path())
+        );
+        assert_eq!(cfg.python_classes, defaults_owned(DEFAULT_PYTHON_CLASSES));
+    }
+
+    #[test]
+    fn ini_values_retain_inline_comments() {
+        // pytest constructs `iniconfig.IniConfig(path)`, which pins
+        // strip_inline_comments=False, so "#" survives into the value and is then just
+        // another shlex token (shlex.split has comments=False).
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]\npython_classes = Check # trailing\n",
+        );
+
+        let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
+        assert_eq!(cfg.python_classes, pats(&["Check", "#", "trailing"]));
+    }
+
+    #[test]
+    fn ini_colon_form_parses() {
+        // iniconfig::_parseline falls back to `line.split(":", 1)` when there is no "=".
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]\npython_classes: Check\npython_files: a_*.py b_*.py\n",
+        );
+
+        let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
+        assert_eq!(cfg.python_classes, pats(&["Check"]));
+        assert_eq!(cfg.python_files, pats(&["a_*.py", "b_*.py"]));
+    }
 
     #[test]
     fn ini_args_values_are_shell_split_and_markers_are_line_split() {
@@ -1450,9 +1616,36 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn fnmatch_is_case_insensitive_on_windows() {
-        // fnmatch.fnmatch normcases both sides; os.path.normcase lowercases on Windows.
+        // fnmatch.fnmatch normcases both sides; ntpath.normcase case-folds on Windows.
         assert!(matches_file_pattern("TEST_FOO.PY", &pats(&["test_*.py"])));
         assert!(matches_name_pattern("TEST_FOO", &pats(&["test_*"])));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normcase_kelvin_sign_is_an_accepted_divergence() {
+        // PINS A KNOWN, ACCEPTED DIVERGENCE — not a claim of pytest parity.
+        //
+        // `ntpath.normcase` is `_LCMapStringEx(_LOCALE_NAME_INVARIANT, _LCMAP_LOWERCASE, ...)`,
+        // which leaves U+212A KELVIN SIGN, U+1E9E CAPITAL SHARP S and U+0130 CAPITAL I
+        // WITH DOT untouched. Rust's `to_lowercase` (== Python `str.lower`) folds all
+        // three. Verified against CPython 3.14.2:
+        //
+        //     os.path.normcase("test_\u{212a}.py") == "test_\u{212a}.py"   (unchanged)
+        //     "test_\u{212a}.py".lower()           == "test_k.py"
+        //     fnmatch.fnmatch("test_\u{212a}.py", "test_k*.py") is False
+        //
+        // So real pytest would NOT collect this file and we WOULD. Task 5's oracle diff
+        // should waive this case rather than treat it as a defect. ASCII names — every
+        // realistic module/class/function name — are unaffected.
+        assert!(
+            matches_file_pattern("test_\u{212a}.py", &pats(&["test_k*.py"])),
+            "expected our to_lowercase-based normcase to match; real pytest returns false"
+        );
+        // Same divergence on the name-matching path's glob branch.
+        assert!(matches_name_pattern("test_\u{212a}", &pats(&["test_k*"])));
+        // The prefix path never normcases, so it agrees with pytest here.
+        assert!(!matches_name_pattern("test_\u{212a}", &pats(&["test_k"])));
     }
 
     #[cfg(not(windows))]
