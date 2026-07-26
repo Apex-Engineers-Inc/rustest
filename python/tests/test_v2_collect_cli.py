@@ -346,8 +346,9 @@ def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> No
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
+        codeblocks: bool,
     ) -> str:
-        del invocation_dir, args, python, workers, keyword, mark_expr
+        del invocation_dir, args, python, workers, keyword, mark_expr, codeblocks
         raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
 
     with stub_rust_module(v2_collect=boom):
@@ -389,16 +390,35 @@ def test_flag_short_circuits_before_v1_run() -> None:
     assert v2.call_count == 1
 
 
-def test_v1_invocation_never_reaches_the_v2_path() -> None:
+def test_a_bare_invocation_reaches_v2_and_never_v1() -> None:
+    """**The flip, asserted at the routing level.**
+
+    Before Phase 1c ``rustest`` with no mode flag called ``core.run`` (v1); it now calls
+    ``core.v2_run``.  Both halves are checked, because a router that called *both* would
+    satisfy either one alone -- and calling v1 as well would re-run every test and leave v1's
+    process-global runtime config set behind the v2 run.
+    """
     with (
         patch("rustest.cli.run") as v1_run,
-        patch("rustest.cli.v2_collect_only") as v2,
+        patch("rustest.cli.v2_run", return_value=0) as v2_run,
+    ):
+        assert cli.main([]) == 0
+
+    v1_run.assert_not_called()
+    assert v2_run.call_count == 1
+
+
+def test_the_v1_flag_reaches_v1_and_never_v2() -> None:
+    """...and the escape hatch is a real one: ``--v1`` must not touch the v2 path."""
+    with (
+        patch("rustest.cli.run") as v1_run,
+        patch("rustest.cli.v2_run") as v2_run,
     ):
         v1_run.return_value.collection_errors = ()
         v1_run.return_value.failed = 0
-        assert cli.main([]) == 0
+        assert cli.main(["--v1"]) == 0
 
-    v2.assert_not_called()
+    v2_run.assert_not_called()
     assert v1_run.call_count == 1
 
 
@@ -414,8 +434,9 @@ def test_absent_path_arguments_are_passed_through_as_none_given() -> None:
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
+        codeblocks: bool,
     ) -> str:
-        del invocation_dir, python, workers, keyword, mark_expr
+        del invocation_dir, python, workers, keyword, mark_expr, codeblocks
         seen.append(list(args))
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'
 
@@ -437,8 +458,9 @@ def test_core_passes_sys_executable_to_the_worker_pool() -> None:
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
+        codeblocks: bool,
     ) -> str:
-        del invocation_dir, args, keyword, mark_expr
+        del invocation_dir, args, keyword, mark_expr, codeblocks
         seen.append(python)
         assert workers >= 1
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'

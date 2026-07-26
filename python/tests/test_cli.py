@@ -41,7 +41,7 @@ class TestCli:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report) as mock_run:
-                exit_code = cli.main(["tests"])
+                exit_code = cli.main(["--v1", "tests"])
 
             mock_run.assert_called_once_with(
                 paths=["tests"],
@@ -65,7 +65,7 @@ class TestCli:
 
         with stub_rust_module(run=raising_run):
             with pytest.raises(RuntimeError):
-                cli.main(["tests"])
+                cli.main(["--v1", "tests"])
 
 
 class TestCliArguments:
@@ -182,7 +182,7 @@ class TestCIDetection:
 
         with patch.dict(os.environ, {"CI": "true"}):
             with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main([])
+                cli.main(["--v1"])
 
             # Should have no_color=True in CI
             assert mock_run.call_args.kwargs["no_color"] is True
@@ -203,7 +203,7 @@ class TestCIDetection:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main([])
+                cli.main(["--v1"])
 
             # Should have no_color=False (colors enabled) locally
             assert mock_run.call_args.kwargs["no_color"] is False
@@ -222,7 +222,7 @@ class TestCIDetection:
 
         with patch.dict(os.environ, {"CI": "true"}):
             with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--color", "always"])
+                cli.main(["--v1", "--color", "always"])
 
             # Should have no_color=False even in CI when --color always is passed
             assert mock_run.call_args.kwargs["no_color"] is False
@@ -309,11 +309,17 @@ class TestCliEdgeCases:
         args = parser.parse_args(["--exitfirst"])
         assert args.fail_fast is True
 
-    def test_pytest_compat_flag(self) -> None:
-        """Test --pytest-compat flag."""
+    def test_pytest_compat_flag_is_gone(self) -> None:
+        """``--pytest-compat`` was deleted at the flip; the parser must not know it.
+
+        Rejection happens *before* parsing (``cli.REMOVED_FLAGS``), so argparse having no
+        such option is the contract here and ``cli.main`` owns the message and the exit code
+        (pinned in ``tests/integration/test_pytest_fixture_detection.py``).
+        """
         parser = cli.build_parser()
-        args = parser.parse_args(["--pytest-compat"])
-        assert args.pytest_compat is True
+        with pytest.raises(SystemExit):
+            _ = parser.parse_args(["--pytest-compat"])
+        assert "--pytest-compat" in cli.REMOVED_FLAGS
 
     def test_no_codeblocks_flag(self) -> None:
         """Test --no-codeblocks flag."""
@@ -362,7 +368,6 @@ class TestCliEdgeCases:
                 "4",
                 "--lf",
                 "-x",
-                "--pytest-compat",
                 "--no-capture",
                 "tests/",
             ]
@@ -375,7 +380,6 @@ class TestCliEdgeCases:
         assert args.workers == 4
         assert args.last_failed is True
         assert args.fail_fast is True
-        assert args.pytest_compat is True
         assert args.capture_output is False
         assert args.paths == ["tests/"]
 
@@ -398,7 +402,7 @@ class TestCliReturnCodes:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
+                exit_code = cli.main(["--v1", "tests"])
 
         assert exit_code == 0
 
@@ -426,7 +430,7 @@ class TestCliReturnCodes:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
+                exit_code = cli.main(["--v1", "tests"])
 
         assert exit_code == 1
 
@@ -451,7 +455,7 @@ class TestCliReturnCodes:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
+                exit_code = cli.main(["--v1", "tests"])
 
         assert exit_code == 2
 
@@ -479,7 +483,7 @@ class TestCliReturnCodes:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
+                exit_code = cli.main(["--v1", "tests"])
 
         assert exit_code == 0
 
@@ -502,7 +506,7 @@ class TestCliOutput:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["-v"])
+                cli.main(["--v1", "-v"])
 
             assert mock_run.call_args.kwargs["verbose"] is True
 
@@ -521,6 +525,6 @@ class TestCliOutput:
         ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
         with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
             with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--ascii"])
+                cli.main(["--v1", "--ascii"])
 
             assert mock_run.call_args.kwargs["ascii"] is True

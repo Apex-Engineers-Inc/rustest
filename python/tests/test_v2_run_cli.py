@@ -1,4 +1,4 @@
-"""The ``rustest --v2`` CLI surface, diffed against REAL pytest.
+"""The default ``rustest`` CLI surface (the v2 engine), diffed against REAL pytest.
 
 This is the second user-reachable v2 surface and the first that *runs* anything: it drives
 the whole v2 spine (config -> walk -> worker pool -> manifest -> ``-k``/``-m`` selection ->
@@ -76,7 +76,13 @@ def _run_pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]
 
 
 def _run_v2(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    return _run([sys.executable, "-m", "rustest", "--v2", *args], tree)
+    """The **default** invocation: since the Phase 1c flip, no mode flag means v2.
+
+    ``--v2`` is still accepted but now prints a deprecation line to stderr, which the
+    stderr-reading assertions below would have to special-case for no benefit.  The alias's
+    own behaviour is pinned in ``test_v2_flip_cli.py``.
+    """
+    return _run([sys.executable, "-m", "rustest", *args], tree)
 
 
 def _pytest_counts(stdout: str) -> dict[str, int]:
@@ -849,8 +855,12 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
+        fail_fast: bool,
+        last_failed_mode: str,
+        no_capture: bool,
+        codeblocks: bool,
     ) -> str:
-        del invocation_dir, python
+        del invocation_dir, python, fail_fast, last_failed_mode, no_capture, codeblocks
         seen.append((list(args), workers, keyword, mark_expr))
         return json.dumps(
             {
@@ -891,8 +901,13 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
+        fail_fast: bool,
+        last_failed_mode: str,
+        no_capture: bool,
+        codeblocks: bool,
     ) -> str:
         del invocation_dir, python, workers, keyword, mark_expr
+        del fail_fast, last_failed_mode, no_capture, codeblocks
         seen.append(list(args))
         return json.dumps(
             {
@@ -934,8 +949,13 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
+        fail_fast: bool,
+        last_failed_mode: str,
+        no_capture: bool,
+        codeblocks: bool,
     ) -> str:
         del invocation_dir, args, python, workers, keyword, mark_expr
+        del fail_fast, last_failed_mode, no_capture, codeblocks
         raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
 
     with stub_rust_module(v2_run=boom):

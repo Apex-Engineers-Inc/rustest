@@ -7,9 +7,10 @@ import io
 import json
 import os
 import sys
-from collections.abc import Iterator, Sequence
+import shutil
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Any, Final, NotRequired, TypedDict, cast
 
 from rich.console import Console
 from rich.panel import Panel
@@ -84,6 +85,27 @@ class _RunReport(TypedDict):
     collection_errors: list[_ManifestError]
     teardown_errors: NotRequired[list[str]]
     worker_stderr: NotRequired[list[str]]
+    stopped_early: NotRequired[bool]
+
+
+#: The word `-v` prints for each status, taken from pytest's own verbose column.  Probed
+#: (`pytest -v` on a file with one of each): `PASSED`, `FAILED`, `SKIPPED (reason)`,
+#: `XFAIL (reason)`, `XPASS (reason)`, `ERROR`.  Note `XFAIL`/`XPASS` are *not* the
+#: report-bucket spellings (`xfailed`/`xpassed`) — the summary line and the per-test column
+#: genuinely use different words, and copying one into the other is the easy mistake.
+_VERBOSE_WORD: Final[Mapping[str, str]] = {
+    "passed": "PASSED",
+    "failed": "FAILED",
+    "skipped": "SKIPPED",
+    "xfailed": "XFAIL",
+    "xpassed": "XPASS",
+    "error": "ERROR",
+}
+
+#: Statuses whose `message` is a *reason* rather than a traceback, so `-v` can append it in
+#: parentheses exactly as pytest does.  A `failed`/`error` message is a traceback and belongs
+#: in the failure section, not on the one-line column.
+_REASON_STATUSES: Final = frozenset({"skipped", "xfailed", "xpassed"})
 
 
 def _print_pytest_compat_banner(use_colors: bool) -> None:
@@ -216,6 +238,7 @@ def v2_collect_only(
     workers: int | None = None,
     keyword: str | None = None,
     mark_expr: str | None = None,
+    codeblocks: bool = True,
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
@@ -267,6 +290,7 @@ def v2_collect_only(
                 _pool_size(workers),
                 keyword,
                 mark_expr,
+                codeblocks,
             )
         except ValueError as exc:
             # pytest's UsageError shape, including its `ERROR: file or directory not
@@ -309,6 +333,26 @@ def v2_collect_only(
     return _EXIT_OK
 
 
+def _progress_line(test: _ReportTest, index: int, total: int) -> str:
+    """One ``-v`` line: ``<nodeid> WORD (reason)`` plus pytest's right-hand percent column.
+
+    pytest pads the id-and-word out and puts ``[ NN%]`` in the last columns
+    (``_pytest/terminal.py::TerminalReporter._write_progress_information_filling_space``).
+    The width is read from the terminal here for the same reason: a fixed 80 would wrap on a
+    narrow console and leave a ragged gutter on a wide one.  A line already wider than the
+    gutter gets a single space rather than a negative pad.
+    """
+    word = _VERBOSE_WORD.get(test["status"], test["status"].upper())
+    line = f"{test['id']} {word}"
+    message = test.get("message")
+    if message and test["status"] in _REASON_STATUSES:
+        line += f" ({message.splitlines()[0]})"
+    percent = (index + 1) * 100 // total
+    width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    pad = max(1, width - len(line) - 8)
+    return f"{line}{' ' * pad}[{percent:3d}%]"
+
+
 def v2_run(
     *,
     paths: Sequence[str],
@@ -316,23 +360,33 @@ def v2_run(
     keyword: str | None = None,
     mark_expr: str | None = None,
     report_json: str | None = None,
+    fail_fast: bool = False,
+    last_failed_mode: str = "none",
+    capture: bool = True,
+    codeblocks: bool = True,
+    verbosity: int = 0,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
-    This is the whole of ``rustest --v2``. It runs the v2 spine end to end -- config
-    resolution, file walk, a worker pool that collects and then stays alive to execute,
-    ``-k``/``-m`` selection in between -- and never touches the v1 discovery or execution
-    path.
+    This is the whole of a default ``rustest <paths>``.  It runs the v2 spine end to end --
+    config resolution, the file walk, a worker pool that collects and then stays alive to
+    execute, ``-k``/``-m`` selection and ``--lf``/``--ff`` reordering in between -- and never
+    touches the v1 discovery or execution path.
 
-    Output is deliberately thin, because output UX is Phase 1c and a half-built progress
-    renderer would have to be thrown away:
+    Output is a three-rung ladder -- pytest's own verbosity ladder, narrowed to what this
+    surface can currently say (the full pytest-shaped progress renderer is Task 2):
 
-    * **stdout** -- nothing at all on a clean run. A failing test's message is printed here
-      under a ``FAILED <id>`` header, which is what makes a red run diagnosable from a
-      terminal without ``--report-json``.
-    * **stderr** -- ``ERROR collecting <path>`` blocks, anything the workers wrote (which
-      legitimately includes class/module teardown output -- see the Task 3 divergence),
-      and the one-line summary in pytest's wording.
+    * ``verbosity < 0`` (``-q``) -- the summary line and nothing else.
+    * ``verbosity == 0`` (default) -- plus a ``FAILED``/``ERROR`` block per failing test,
+      carrying its message, which is what makes a red run diagnosable from a terminal
+      without ``--report-json``.
+    * ``verbosity > 0`` (``-v``) -- plus one line per test in pytest's verbose wording
+      (``PASSED``/``FAILED``/``SKIPPED (reason)``/``XFAIL``/``XPASS``/``ERROR``).
+
+    The stream split is deliberate and unchanged from the ``--v2`` days: **stdout** carries
+    the per-test lines and the failure blocks (the payload), **stderr** carries collection
+    errors, whatever the workers wrote, and the summary (the diagnostics) -- so
+    ``rustest ... > results`` keeps a grep-able file.
 
     Args:
         paths: Files or directories to run. An **empty** sequence means "no path argument
@@ -342,6 +396,11 @@ def v2_run(
         keyword: The raw ``-k`` expression, or ``None``.
         mark_expr: The raw ``-m`` expression, or ``None``.
         report_json: Where to write the schema-v2 JSON report, or ``None``.
+        fail_fast: ``-x`` -- stop dispatching after the first failure.
+        last_failed_mode: ``"none"``, ``"only"`` (``--lf``) or ``"first"`` (``--ff``).
+        capture: ``False`` for ``-s``; the workers stop redirecting a test's streams.
+        codeblocks: Collect python fences from ``.md`` files (``--no-codeblocks`` clears it).
+        verbosity: ``-1`` for ``-q``, ``0`` default, ``1`` for ``-v``.
 
     Returns:
         pytest's exit code: 0 clean, 1 failures (or errors, or an unattributable teardown
@@ -357,6 +416,10 @@ def v2_run(
                 _pool_size(workers),
                 keyword,
                 mark_expr,
+                fail_fast,
+                last_failed_mode,
+                not capture,
+                codeblocks,
             )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -373,13 +436,19 @@ def v2_run(
         if report_json is not None:
             Path(report_json).write_text(json.dumps(report, indent=2), encoding="utf-8")
 
-        for test in report["tests"]:
-            if test["status"] in ("failed", "error"):
-                print(f"{test['status'].upper()} {test['id']}")
-                message = test.get("message")
-                if message:
-                    for line in message.splitlines():
-                        print(f"  {line}")
+        tests = report["tests"]
+        if verbosity > 0:
+            for index, test in enumerate(tests):
+                print(_progress_line(test, index, len(tests)))
+
+        if verbosity >= 0:
+            for test in tests:
+                if test["status"] in ("failed", "error"):
+                    print(f"{test['status'].upper()} {test['id']}")
+                    message = test.get("message")
+                    if message:
+                        for line in message.splitlines():
+                            print(f"  {line}")
 
         for error in report["collection_errors"]:
             print(f"ERROR collecting {error['path']}", file=sys.stderr)
@@ -387,11 +456,18 @@ def v2_run(
                 print(f"  {line}", file=sys.stderr)
 
         # Never graded, never discarded: boundary teardown output lands here on runs that
-        # are entirely green.
+        # are entirely green -- and, under ``-s``, so does every test's own output.
         for chunk in report.get("worker_stderr", []):
             print(chunk, file=sys.stderr, end="" if chunk.endswith("\n") else "\n")
         for failure in report.get("teardown_errors", []):
             print(f"ERROR {failure}", file=sys.stderr)
+
+        if report.get("stopped_early"):
+            # pytest's own wording, from the ``!!!! stopping after 1 failures !!!!`` banner
+            # ``_pytest/main.py`` puts on the terminal when ``maxfail`` trips.  Without it a
+            # ``-x`` run looks like a suite that simply has fewer tests than it does.
+            stopped = report["summary"]["failed"] + report["summary"]["error"]
+            print(f"stopping after {stopped} failures (-x)", file=sys.stderr)
 
         print(
             _run_summary(report["summary"], len(report["collection_errors"])),
