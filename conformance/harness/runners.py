@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,27 @@ class Outcomes:
 class RunResult:
     ids: set[str]
     outcomes: Outcomes
+
+
+@dataclass(frozen=True)
+class CollectResult:
+    """What a *collection-only* run produces, and nothing more.
+
+    Deliberately not a ``RunResult``: a collect-only surface has no pass/fail/skip
+    counts and no collection-error flag distinct from its exit code. Reusing
+    ``RunResult`` would force zeros into those fields, and every case would then
+    silently "agree" on execution neither side performed. The v2-collect gate grades
+    exactly these two things -- the ids on stdout and the process exit code.
+    """
+
+    ids: set[str]
+    exit_code: int
+
+
+# The config filenames pytest's rootdir search recognizes, in its own precedence order
+# (`_pytest/config/findpaths.py::locate_config`), mirrored by `src/v2/config.rs`. Used
+# only to decide whether an isolated case already carries config of its own.
+_CASE_CONFIG_NAMES = ("pytest.ini", ".pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 
 
 def parse_pytest_collect(text: str) -> set[str]:
@@ -177,6 +199,107 @@ def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
         ids={normalize_pytest_nodeid(i) for i in raw_ids},
         outcomes=outcomes,
     )
+
+
+def _check_pytest_collect_exit(proc: subprocess.CompletedProcess[str]) -> None:
+    """Raise on a pytest *collect* fault, leaving real collection outcomes alone.
+
+    Under ``--collect-only`` the gradeable codes are 0 (collected), 2 (a file failed
+    to import) and 5 (nothing collected -- an empty tree, or everything deselected by
+    ``-m``). All three are codes the ``--v2-collect-only`` surface also produces, so
+    the grader must see them. Codes 3 (internal error) and 4 (usage error) mean pytest
+    never collected at all; parsing zero ids out of that would fabricate a divergence
+    with no explanation, so they route to ``_grade_one_collect``'s harness-error
+    channel. Exit 1 cannot occur here -- no test is ever run.
+    """
+    if proc.returncode >= 3 and proc.returncode != 5:
+        raise RuntimeError(f"pytest collect failed (exit {proc.returncode}): {proc.stderr[-500:]}")
+
+
+def _isolate_case(case_dir: Path, dest_parent: Path) -> Path:
+    """Copy *case_dir* under *dest_parent* as a self-contained, config-pinned tree.
+
+    This is the whole v2-collect comparison protocol. ``run_pytest`` (v1 mode) pins
+    rootdir with ``-c <empty ini>`` and ``--rootdir=<case dir>``; the
+    ``--v2-collect-only`` surface has neither flag in 1b.1 and resolves config by
+    walking *up* from its cwd. Run in place, the two therefore disagree about rootdir
+    for every in-repo case -- this repo's own ``pyproject.toml`` carries
+    ``[tool.pytest.ini_options]``, so v2's ids would read ``conformance/corpus/...``
+    while pytest's read ``test_x.py``, and every case would "diverge" on a prefix
+    neither runner is actually getting wrong.
+
+    Copying the case out of the repo removes the disagreement at its source instead of
+    papering over it: with a bare ``pytest.ini`` at the copy's root, *both* runners
+    resolve the same rootdir by their own unmodified rules, and both emit case-relative
+    ids. pytest treats a ``pytest.ini`` as authoritative even when empty
+    (``findpaths.py::load_config_dict_from_file``) and so does v2
+    (``src/v2/config.rs:684``), so no flags are needed on either side -- which matters,
+    because the v2 side has none to offer.
+
+    Two details:
+
+    * a case that ships its own config file keeps it. The bare ini is a fallback for
+      the config-less case, not a rewrite of what a case is testing.
+    * ``__pycache__`` is not copied. It is corpus litter (checked-in ``.pyc`` files
+      from earlier runs), and stale bytecode next to a freshly copied source is
+      exactly the shape of pytest's ``import file mismatch`` error.
+    """
+    dest = dest_parent / case_dir.name
+    shutil.copytree(case_dir, dest, ignore=shutil.ignore_patterns("__pycache__"))
+    if not any((dest / name).exists() for name in _CASE_CONFIG_NAMES):
+        (dest / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    return dest
+
+
+def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
+    """Collect *case_dir* with real pytest in an isolated copy -- the gate's oracle.
+
+    Invoked with no config flags at all: the isolated copy's own ``pytest.ini`` is the
+    authority, exactly as it is for ``run_rustest_v2_collect``. That symmetry is the
+    point -- any flag used here and unavailable there would make the comparison a
+    comparison of harness invocations rather than of runners.
+
+    Ids are taken verbatim, without ``normalize_pytest_nodeid``: the v2 surface's
+    contract is byte-parity with pytest's nodeids, so normalizing either side would
+    hide the precise defect this gate exists to catch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _isolate_case(case_dir.resolve(), Path(tmp))
+        proc = _run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "--collect-only",
+                "-q",
+                *args,
+            ],
+            work,
+        )
+        _check_pytest_collect_exit(proc)
+    return CollectResult(ids=parse_pytest_collect(proc.stdout), exit_code=proc.returncode)
+
+
+def run_rustest_v2_collect(case_dir: Path, args: list[str]) -> CollectResult:
+    """Collect *case_dir* with ``rustest --v2-collect-only`` in an isolated copy.
+
+    stdout carries node ids and *only* node ids, one per line, so it is read with a
+    bare ``splitlines()`` -- no parsing, no filtering. Everything else (the
+    ``N tests collected`` summary, ``ERROR collecting <path>`` blocks) goes to stderr
+    by design, and stderr is never read: its wording deliberately differs from
+    pytest's, so grading anything but ids and the exit code would manufacture
+    divergences out of prose.
+
+    No exit-code guard on this side. Every code v2 produces is a graded outcome,
+    including 3 (``INTERNALERROR``) and 4 (usage error) -- if v2 crashes where pytest
+    collects, that is the divergence, not a harness fault to be raised away.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _isolate_case(case_dir.resolve(), Path(tmp))
+        proc = _run([sys.executable, "-m", "rustest", "--v2-collect-only", *args], work)
+    return CollectResult(ids=set(proc.stdout.splitlines()), exit_code=proc.returncode)
 
 
 def run_rustest(case_dir: Path, args: list[str]) -> RunResult:

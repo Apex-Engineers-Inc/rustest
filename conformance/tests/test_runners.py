@@ -3,16 +3,22 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from conformance.harness.runners import (
+    CollectResult,
+    _check_pytest_collect_exit,
     _check_pytest_exit,
+    _isolate_case,
     parse_pytest_collect,
     parse_pytest_summary,
     run_pytest,
+    run_pytest_collect,
     run_rustest,
+    run_rustest_v2_collect,
 )
 
 COLLECT_OUTPUT = textwrap.dedent(
@@ -250,6 +256,178 @@ def test_run_pytest_accepts_relative_case_dir(
 
     assert result.ids == MINI_IDS
     assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
+
+
+def test_check_pytest_collect_exit_passes_through_collectable_outcomes() -> None:
+    """0 (collected), 2 (collection error) and 5 (nothing collected) are gradeable.
+
+    All three are outcomes the v2 ``--v2-collect-only`` surface also produces, so the
+    grader must see them rather than have the harness raise over them.
+    """
+    for returncode in (0, 2, 5):
+        _check_pytest_collect_exit(_completed(returncode))  # must not raise
+
+
+@pytest.mark.parametrize("returncode", [3, 4])
+def test_check_pytest_collect_exit_raises_on_internal_and_usage_errors(returncode: int) -> None:
+    """A pytest collect run that never happened must not grade as an empty id set.
+
+    Exit 3 (internal error) and 4 (usage error) mean pytest could not do its job at
+    all; parsing zero ids out of that would fabricate a divergence with no
+    explanation. Raising routes it to the harness-error channel instead.
+    """
+    with pytest.raises(RuntimeError, match=r"pytest collect failed \(exit \d+\)"):
+        _check_pytest_collect_exit(_completed(returncode))
+
+
+def test_isolate_case_copies_and_adds_a_bare_ini(tmp_path: Path) -> None:
+    """The isolated copy gets a bare ``pytest.ini`` and the original is untouched.
+
+    The bare ini is what pins rootdir to the copy for *both* runners: pytest treats a
+    ``pytest.ini`` as authoritative even when empty, and so does v2's config search
+    (``src/v2/config.rs``: ``pytest.ini files are always the source of configuration,
+    even if empty``). That is the whole comparison protocol in one file.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+    dest_parent = tmp_path / "work"
+    dest_parent.mkdir()
+
+    work = _isolate_case(case_dir, dest_parent)
+
+    assert work == dest_parent / "case"
+    assert (work / "test_mini.py").read_text(encoding="utf-8") == MINI_SUITE
+    assert (work / "pytest.ini").read_text(encoding="utf-8") == "[pytest]\n"
+    assert not (case_dir / "pytest.ini").exists()
+
+
+def test_isolate_case_keeps_a_case_owned_config_file(tmp_path: Path) -> None:
+    """A case that ships its own config keeps it -- the harness must not clobber intent.
+
+    Overwriting it would silently rewrite what the case is testing. The bare ini is a
+    *fallback* for the (currently universal) config-less case, not a mandate.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
+    dest_parent = tmp_path / "work"
+    dest_parent.mkdir()
+
+    work = _isolate_case(case_dir, dest_parent)
+
+    assert "check_*.py" in (work / "pytest.ini").read_text(encoding="utf-8")
+
+
+def test_isolate_case_drops_pycache(tmp_path: Path) -> None:
+    """``__pycache__`` is corpus litter, not case content, and never gets copied."""
+    case_dir = tmp_path / "case"
+    (case_dir / "__pycache__").mkdir(parents=True)
+    (case_dir / "__pycache__" / "stale.pyc").write_bytes(b"\x00")
+    _write_mini_suite(case_dir)
+    dest_parent = tmp_path / "work"
+    dest_parent.mkdir()
+
+    work = _isolate_case(case_dir, dest_parent)
+
+    assert not (work / "__pycache__").exists()
+
+
+def test_run_pytest_collect_integration(tmp_path: Path) -> None:
+    result = run_pytest_collect(_case_with_mini_suite(tmp_path), [])
+    assert result.ids == MINI_IDS
+    assert result.exit_code == 0
+
+
+def test_run_rustest_v2_collect_integration(tmp_path: Path) -> None:
+    result = run_rustest_v2_collect(_case_with_mini_suite(tmp_path), [])
+    assert result.ids == MINI_IDS
+    assert result.exit_code == 0
+
+
+def _case_with_mini_suite(tmp_path: Path) -> Path:
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+    return case_dir
+
+
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+def test_collect_runners_ignore_a_surrounding_project_config(
+    runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
+) -> None:
+    """Both collect runners must be blind to config *above* the case directory.
+
+    This is the load-bearing protocol test. Run in place, the two runners disagree on
+    rootdir by construction: v2 resolves config by walking up from its cwd and would
+    adopt this ``pytest.ini`` (collecting nothing, since ``python_files`` no longer
+    matches ``test_mini.py``), while ``run_pytest``'s v1-mode isolation flags
+    (``-c`` + ``--rootdir``) pin pytest to the case dir. Copying the case out of the
+    tree removes the disagreement for both sides at once, without either runner
+    needing flags the ``--v2-collect-only`` surface does not have in 1b.1.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
+
+    result = runner(_case_with_mini_suite(tmp_path), [])
+
+    assert result.ids == MINI_IDS
+    assert result.exit_code == 0
+
+
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+def test_collect_runners_agree_on_an_empty_tree(
+    runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
+) -> None:
+    """Zero collectible tests is exit 5 on both sides -- the v1 ledger's waiver is dead here."""
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "test_nothing.py").write_text("def helper():\n    pass\n", encoding="utf-8")
+
+    result = runner(case_dir, [])
+
+    assert result.ids == set()
+    assert result.exit_code == 5
+
+
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+def test_collect_runners_agree_on_a_collection_error(
+    runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
+) -> None:
+    """An unimportable file is data, not a harness fault: healthy ids plus exit 2.
+
+    The broken file sorts first, which is the interesting order: pytest still emits
+    every healthy nodeid before its error block, and v2 keeps ids on stdout with the
+    error on stderr. Neither side's error *prose* is compared -- only ids and code.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "test_aaa_broken.py").write_text("def test_x(:\n", encoding="utf-8")
+    (case_dir / "test_zzz_good.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+
+    result = runner(case_dir, [])
+
+    assert result.ids == {"test_zzz_good.py::test_ok"}
+    assert result.exit_code == 2
+
+
+def test_run_rustest_v2_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
+    """v2's stderr (summary, ``ERROR collecting ...``) must never leak into the id set.
+
+    v2 deliberately puts its summary and error prose on stderr where pytest puts them
+    on stdout; a runner that merged the streams would read ``1 test collected`` as a
+    phantom id and every collection-error case would diverge for the wrong reason.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "test_broken.py").write_text("def test_x(:\n", encoding="utf-8")
+    (case_dir / "test_good.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    result = run_rustest_v2_collect(case_dir, [])
+
+    assert result.ids == {"test_good.py::test_ok"}
+    assert not any("collected" in nodeid for nodeid in result.ids)
 
 
 def test_run_rustest_raises_when_no_report_is_written(tmp_path: Path) -> None:

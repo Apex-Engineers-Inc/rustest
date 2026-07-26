@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .runners import RunResult
+from .runners import CollectResult, RunResult
 
 try:
     import tomllib
@@ -33,6 +33,51 @@ def load_case_args(case_dir: Path) -> list[str]:
         return []
     data = tomllib.loads(config.read_text(encoding="utf-8"))
     return [str(a) for a in data.get("case", {}).get("args", [])]
+
+
+def _adjudicate(name: str, problems: list[str], waivers: dict[str, str]) -> CaseResult:
+    """Turn a case's problem list into a verdict, applying the waiver ledger.
+
+    Shared by both gates so the waiver discipline -- including STALE-WAIVER detection,
+    the check that keeps an inert waiver from quietly surviving a fix -- is written
+    once and cannot drift between the v1 and v2-collect ledgers.
+    """
+    if not problems:
+        if name in waivers:
+            return CaseResult(
+                name,
+                "STALE-WAIVER",
+                f"case matches but is waived: {waivers[name]} — remove the waiver",
+            )
+        return CaseResult(name, "MATCH", "")
+    if name in waivers:
+        return CaseResult(name, "WAIVED", f"{waivers[name]} :: {'; '.join(problems)}")
+    return CaseResult(name, "DIVERGE", "; ".join(problems))
+
+
+def grade_collect_case(
+    name: str,
+    pytest_result: CollectResult,
+    v2_result: CollectResult,
+    waivers: dict[str, str],
+) -> CaseResult:
+    """Grade a case on collection alone: the node-id sets and the exit code.
+
+    Those two *are* the whole ``--v2-collect-only`` contract. There are no outcome
+    counts to compare (nothing is executed) and no separate collection-error flag to
+    compare (pytest signals that as exit 2, and so does v2). Stderr is not read on
+    either side -- see ``run_rustest_v2_collect``.
+    """
+    problems: list[str] = []
+    only_pytest = sorted(pytest_result.ids - v2_result.ids)
+    only_v2 = sorted(v2_result.ids - pytest_result.ids)
+    if only_pytest:
+        problems.append(f"missing from v2: {only_pytest}")
+    if only_v2:
+        problems.append(f"extra in v2: {only_v2}")
+    if pytest_result.exit_code != v2_result.exit_code:
+        problems.append(f"exit codes pytest={pytest_result.exit_code} v2={v2_result.exit_code}")
+    return _adjudicate(name, problems, waivers)
 
 
 def grade_case(
@@ -64,14 +109,4 @@ def grade_case(
         problems.append(
             f"collection-error pytest={po.collection_error} rustest={ro.collection_error}"
         )
-    if not problems:
-        if name in waivers:
-            return CaseResult(
-                name,
-                "STALE-WAIVER",
-                f"case matches but is waived: {waivers[name]} — remove the waiver",
-            )
-        return CaseResult(name, "MATCH", "")
-    if name in waivers:
-        return CaseResult(name, "WAIVED", f"{waivers[name]} :: {'; '.join(problems)}")
-    return CaseResult(name, "DIVERGE", "; ".join(problems))
+    return _adjudicate(name, problems, waivers)

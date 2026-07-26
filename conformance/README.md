@@ -6,11 +6,19 @@ The fitness function for the rustest v2 rewrite
 - `python -m conformance` — run every corpus case through real pytest and real
   rustest, diff collected IDs + outcome counts + exit codes. Exit 1 on any
   unwaived divergence. `--only PREFIX` filters cases.
+- `python -m conformance --v2-collect` — the **Phase 1b.1 gate**: diff pytest's
+  collected node IDs and collection exit code against
+  `rustest --v2-collect-only`. Nothing is executed, so nothing but IDs and the
+  exit code is graded. Uses `waivers-v2-collect.toml`.
 - `conformance/corpus/<area>/<case>/` — one directory per case: `test_*.py`
   files, optional `conftest.py`, optional `case.toml` (`[case] args = [...]`).
 - `conformance/waivers.toml` — every known divergence with a mandatory reason.
   Phase gates are defined as this file shrinking. `NEW-BUG:` prefix marks
   divergences discovered by the corpus that the v1 audit didn't predict.
+- `conformance/waivers-v2-collect.toml` — the same discipline for the
+  `--v2-collect` gate, kept separate because an entry in one ledger says nothing
+  about the other (`collection/class-collection` is waived for v1 and matches
+  under v2; `collection/empty-suite` likewise).
 - `python -m conformance.bench.bench [--quick]` — the three canonical numbers
   (pytest collect / pytest run / rustest run; rustest collect arrives in
   Phase 2).
@@ -29,6 +37,38 @@ Each corpus case is graded into exactly one of four statuses, printed as
 | `~~` | `WAIVED`       | They diverge, but the divergence is recorded in `waivers.toml` with a reason. Exits 0.                                                                       |
 | `XX` | `DIVERGE`      | They diverge and there is no waiver for this case. Fails the run (exit 1).                                                                                    |
 | `!!` | `STALE-WAIVER` | The case now matches, but `waivers.toml` still carries a waiver for it. Fails the run (exit 1) — remove the waiver. Shrinking `waivers.toml` is the phase-gate metric, so a waiver that has quietly gone inert must not go unnoticed. |
+
+Under `--v2-collect` the same four statuses apply, graded on collected IDs and
+the collection exit code alone, against `waivers-v2-collect.toml`.
+
+## The `--v2-collect` comparison protocol
+
+Both runners see the **same** configuration environment, because otherwise they
+would not be answering the same question. `run_pytest` (v1 mode) pins pytest's
+rootdir with `-c <empty ini>` and `--rootdir=<case dir>`; the
+`--v2-collect-only` surface has neither flag in Phase 1b.1 and resolves config by
+walking *up* from its working directory. Run in place, the two disagree about
+rootdir for every in-repo case — this repo's `pyproject.toml` carries
+`[tool.pytest.ini_options]`, so v2's IDs would read `conformance/corpus/…` while
+pytest's read `test_x.py`, and every case would "diverge" on a prefix neither
+runner is getting wrong.
+
+So each case is **copied into a temporary tree** (minus `__pycache__`) with a bare
+`pytest.ini` at its root, and both runners are invoked there with no config flags
+at all. An empty `pytest.ini` is authoritative for pytest
+(`_pytest/config/findpaths.py`) and for v2 (`src/v2/config.rs`), so both resolve
+the same rootdir by their own unmodified rules and both emit case-relative IDs. A
+case that ships its own config file keeps it.
+
+Two further rules the grader follows:
+
+- **Node IDs are compared verbatim**, with no normalization on either side. v2's
+  contract is byte-parity with pytest's node IDs; normalizing would hide exactly
+  the defect this gate exists to catch.
+- **stderr is never read.** v2 deliberately puts its summary and
+  `ERROR collecting <path>` prose on stderr where pytest puts them on stdout, and
+  the wording differs by design. Grading anything but stdout IDs and the exit code
+  manufactures divergences out of diagnostics.
 
 ## Baselines (Phase 0, v1 runner, Windows)
 

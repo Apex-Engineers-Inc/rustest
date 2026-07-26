@@ -37,6 +37,11 @@ jobs:
       - name: Run conformance corpus
         run: uv run python -m conformance
 
+      # Phase 1b.1 gate: pytest's collected node ids and collection exit code vs
+      # `rustest --v2-collect-only`. Graded against waivers-v2-collect.toml.
+      - name: Run conformance corpus (v2 collection)
+        run: uv run python -m conformance --v2-collect
+
       - name: Benchmarks (scheduled/manual only)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv run python -m conformance.bench.bench --out bench_results.json
