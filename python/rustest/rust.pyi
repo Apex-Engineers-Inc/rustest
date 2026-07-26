@@ -145,6 +145,8 @@ def v2_collect(
     args: Sequence[str],
     python_executable: str,
     workers: int,
+    keyword: str | None = ...,
+    mark_expr: str | None = ...,
 ) -> str:
     """Collect tests with the v2 engine; returns a ``CollectionManifest`` JSON string.
 
@@ -152,15 +154,46 @@ def v2_collect(
     must be absolute; ``args`` are raw CLI path arguments, and an empty list lets
     ``testpaths`` decide the roots. ``python_executable`` is the interpreter the collection
     workers run under (``sys.executable``) -- the Rust side never guesses one.
-    ``workers`` is the pool size, clamped to ``[1, number of files]``.
+    ``workers`` is the pool size, clamped to ``[1, number of files]``. ``keyword`` and
+    ``mark_expr`` are the raw ``-k`` / ``-m`` option values, applied after collection
+    exactly as pytest's ``pytest_collection_modifyitems`` applies them.
 
     The JSON object is the manifest frozen in ``src/v2/manifest.rs``: ``schema_version``,
     ``rootdir`` (absolute posix), ``tests`` (each with ``id``, ``path``, ``qualname`` and
-    optional ``class_name``/``param_id``/``marks``/``fixtures``) and ``errors`` (omitted
-    when empty; each with ``path`` and ``message``).
+    optional ``class_name``/``param_id``/``marks``/``fixtures``), ``errors`` (omitted when
+    empty; each with ``path`` and ``message``) and ``deselected`` (omitted when zero).
 
     Raises ``ValueError`` for a usage error (a bad ``invocation_dir``, a path argument that
-    does not exist, or an unusable config file) and ``RuntimeError`` for an orchestration
-    failure. A test file that fails to import raises nothing -- it is data in ``errors``.
+    does not exist, an unusable config file, or a malformed ``-k``/``-m`` expression) and
+    ``RuntimeError`` for an orchestration failure. A test file that fails to import raises
+    nothing -- it is data in ``errors``.
+    """
+    ...
+
+def v2_run(
+    invocation_dir: str,
+    args: Sequence[str],
+    python_executable: str,
+    workers: int,
+    keyword: str | None = ...,
+    mark_expr: str | None = ...,
+) -> str:
+    """Run tests with the v2 engine; returns a schema-v2 ``RunReport`` JSON string.
+
+    Backs ``rustest --v2`` (see ``python/rustest/core.py``). Arguments are ``v2_collect``'s;
+    the difference is that the worker pool stays alive after collection and executes the
+    selected tests, each on the worker that already imported its file.
+
+    The JSON object is frozen in ``src/v2/execute.rs``: ``version`` (2), ``rootdir``,
+    ``exit_code``, ``summary`` (``total``/``passed``/``failed``/``skipped``/``xfailed``/
+    ``xpassed``/``error``/``deselected``/``duration``), ``tests`` (each with ``id``,
+    ``status`` -- one of the six -- ``duration`` and optional ``message``/``stdout``/
+    ``stderr``), ``collection_errors``, and the omitted-when-empty ``teardown_errors`` and
+    ``worker_stderr``.
+
+    ``exit_code`` is pytest's, for the run itself: 0 clean, 1 failures, 2 collection errors,
+    5 nothing collected. Usage errors (4) and orchestration failures (3) arrive as
+    ``ValueError`` and ``RuntimeError`` instead, because neither is a property of a run that
+    completed.
     """
     ...

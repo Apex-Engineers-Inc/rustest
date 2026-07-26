@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import Any, NotRequired, TypedDict, cast
 
 from rich.console import Console
@@ -48,6 +49,41 @@ class _Manifest(TypedDict):
 
     tests: list[_ManifestTest]
     errors: NotRequired[list[_ManifestError]]
+    deselected: NotRequired[int]
+
+
+class _ReportSummary(TypedDict):
+    """The schema-v2 summary. Six status buckets, not v1's three. See `src/v2/execute.rs`."""
+
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    xfailed: int
+    xpassed: int
+    error: int
+    deselected: int
+    duration: float
+
+
+class _ReportTest(TypedDict):
+    id: str
+    status: str
+    duration: float
+    message: NotRequired[str]
+    stdout: NotRequired[str]
+    stderr: NotRequired[str]
+
+
+class _RunReport(TypedDict):
+    version: int
+    rootdir: str
+    exit_code: int
+    summary: _ReportSummary
+    tests: list[_ReportTest]
+    collection_errors: list[_ManifestError]
+    teardown_errors: NotRequired[list[str]]
+    worker_stderr: NotRequired[list[str]]
 
 
 def _print_pytest_compat_banner(use_colors: bool) -> None:
@@ -80,12 +116,48 @@ def _print_pytest_compat_banner(use_colors: bool) -> None:
     console.print()  # Add blank line after banner
 
 
-def _summary(collected: int, errors: int) -> str:
+def _summary(collected: int, errors: int, deselected: int = 0) -> str:
     """The one-line stderr summary, in pytest's wording (`N tests collected, M errors`)."""
     line = f"{collected} {'test' if collected == 1 else 'tests'} collected"
+    if deselected:
+        line += f", {deselected} deselected"
     if errors:
         line += f", {errors} {'error' if errors == 1 else 'errors'}"
     return line
+
+
+def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
+    """The one-line stderr summary for a run, in pytest's wording and bucket order.
+
+    Zero buckets are omitted, exactly as pytest omits them -- a run with no xfails should
+    not have to say ``0 xfailed``. An entirely empty tally becomes ``no tests ran``, which
+    is pytest's own wording for the exit-5 shape.
+
+    ``collection_errors`` folds into the ``error`` bucket because **pytest puts them there**:
+    a file that fails to import is reported as ``1 error``, the same words a broken fixture
+    gets. Keeping them out would print ``no tests ran`` for a run that was interrupted by a
+    broken import -- the wording for an *empty tree*, and the single most misleading thing
+    this line could say about an exit-2 run. The JSON report keeps the two apart
+    (``summary.error`` is a bucket over ``tests``; ``collection_errors`` is its own list),
+    since a machine reader can afford the distinction and a terminal line cannot.
+
+    ``error`` is spelled by count (pytest writes ``1 error`` but ``2 errors``); every other
+    bucket has one spelling. The buckets are listed literally rather than looked up from a
+    table because ``_ReportSummary`` is a ``TypedDict``, whose keys must be literals for the
+    type checker to see them at all.
+    """
+    errors = summary["error"] + collection_errors
+    counts = (
+        (summary["passed"], "passed"),
+        (summary["failed"], "failed"),
+        (summary["skipped"], "skipped"),
+        (summary["deselected"], "deselected"),
+        (summary["xfailed"], "xfailed"),
+        (summary["xpassed"], "xpassed"),
+        (errors, "error" if errors == 1 else "errors"),
+    )
+    parts = [f"{count} {label}" for count, label in counts if count]
+    return ", ".join(parts) if parts else "no tests ran"
 
 
 @contextlib.contextmanager
@@ -124,7 +196,18 @@ def _escaping_unencodable_output() -> Iterator[None]:
             stream.reconfigure(errors=errors)
 
 
-def v2_collect_only(*, paths: Sequence[str], workers: int | None = None) -> int:
+def _pool_size(workers: int | None) -> int:
+    """One worker per CPU unless the caller said otherwise; the Rust side clamps to files."""
+    return workers if workers is not None and workers > 0 else (os.cpu_count() or 1)
+
+
+def v2_collect_only(
+    *,
+    paths: Sequence[str],
+    workers: int | None = None,
+    keyword: str | None = None,
+    mark_expr: str | None = None,
+) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
     This is the whole of ``rustest --v2-collect-only``. It runs the v2 spine end to end
@@ -153,23 +236,33 @@ def v2_collect_only(*, paths: Sequence[str], workers: int | None = None) -> int:
             suppresses ``testpaths``.
         workers: Collection pool size. ``None`` (and any non-positive value) means one
             worker per CPU; the Rust side clamps the pool to the number of files found.
+        keyword: The raw ``-k`` expression, or ``None``. Applied after collection, exactly
+            where pytest applies it, so a file that failed to import still reports its
+            error however aggressively the expression deselects.
+        mark_expr: The raw ``-m`` expression, or ``None``.
 
     Returns:
-        0 with tests, 5 with none, 2 when any file failed to import, 4 for a usage error
-        (a missing path argument or an unusable config file) and 3 for an orchestration
-        failure.
+        0 with tests, 5 with none (including "everything was deselected"), 2 when any file
+        failed to import, 4 for a usage error (a missing path argument, an unusable config
+        file, or a malformed ``-k``/``-m`` expression) and 3 for an orchestration failure.
     """
-    pool_size = workers if workers is not None and workers > 0 else (os.cpu_count() or 1)
-
     # Everything that writes is inside the escaping scope, not just the node ids: a file
     # path or a traceback in an error message can be just as unencodable as an id, and a
     # crash while *reporting* a failure would be the worst place to leave one.
     with _escaping_unencodable_output():
         try:
-            payload = rust.v2_collect(os.getcwd(), list(paths), sys.executable, pool_size)
+            payload = rust.v2_collect(
+                os.getcwd(),
+                list(paths),
+                sys.executable,
+                _pool_size(workers),
+                keyword,
+                mark_expr,
+            )
         except ValueError as exc:
             # pytest's UsageError shape, including its `ERROR: file or directory not
-            # found: x` wording, which the Rust side produces verbatim.
+            # found: x` and `ERROR: Wrong expression passed to '-k': ...` wording, which
+            # the Rust side produces verbatim.
             print(f"ERROR: {exc}", file=sys.stderr)
             return _EXIT_USAGE_ERROR
         except RuntimeError as exc:
@@ -182,6 +275,7 @@ def v2_collect_only(*, paths: Sequence[str], workers: int | None = None) -> int:
         manifest = cast(_Manifest, json.loads(payload))
         tests = manifest["tests"]
         errors = manifest.get("errors", [])
+        deselected = manifest.get("deselected", 0)
 
         for test in tests:
             print(test["id"])
@@ -189,13 +283,113 @@ def v2_collect_only(*, paths: Sequence[str], workers: int | None = None) -> int:
             print(f"ERROR collecting {error['path']}", file=sys.stderr)
             for line in error["message"].splitlines():
                 print(f"  {line}", file=sys.stderr)
-        print(_summary(len(tests), len(errors)), file=sys.stderr)
+        print(_summary(len(tests), len(errors), deselected), file=sys.stderr)
 
+    # The same three branches as `src/v2/execute.rs::exit_code` with `failures = 0`, which
+    # is what a collect-only run always has: collection errors outrank everything, then
+    # "nothing left" -- counted *after* deselection, which is why `-k nomatch` is 5 and not
+    # 0. Kept here rather than read back off the manifest because collection produces no
+    # `exit_code` field. Each branch is diffed against real pytest in
+    # `python/tests/test_v2_collect_cli.py` (`..._exits_5`, `..._exits_2_and_names_the_file`,
+    # `test_deselecting_everything_exits_5_and_says_how_many`, and
+    # `test_selection_does_not_suppress_a_collection_error` for the precedence).
     if errors:
         return _EXIT_INTERRUPTED
     if not tests:
         return _EXIT_NO_TESTS_COLLECTED
     return _EXIT_OK
+
+
+def v2_run(
+    *,
+    paths: Sequence[str],
+    workers: int | None = None,
+    keyword: str | None = None,
+    mark_expr: str | None = None,
+    report_json: str | None = None,
+) -> int:
+    """Run tests with the **v2** engine and return pytest's exit code.
+
+    This is the whole of ``rustest --v2``. It runs the v2 spine end to end -- config
+    resolution, file walk, a worker pool that collects and then stays alive to execute,
+    ``-k``/``-m`` selection in between -- and never touches the v1 discovery or execution
+    path.
+
+    Output is deliberately thin, because output UX is Phase 1c and a half-built progress
+    renderer would have to be thrown away:
+
+    * **stdout** -- nothing at all on a clean run. A failing test's message is printed here
+      under a ``FAILED <id>`` header, which is what makes a red run diagnosable from a
+      terminal without ``--report-json``.
+    * **stderr** -- ``ERROR collecting <path>`` blocks, anything the workers wrote (which
+      legitimately includes class/module teardown output -- see the Task 3 divergence),
+      and the one-line summary in pytest's wording.
+
+    Args:
+        paths: Files or directories to run. An **empty** sequence means "no path argument
+            was given", which lets ``testpaths`` decide the roots exactly as under pytest.
+        workers: Pool size. ``None`` means one worker per CPU; the Rust side clamps it to
+            the number of files found.
+        keyword: The raw ``-k`` expression, or ``None``.
+        mark_expr: The raw ``-m`` expression, or ``None``.
+        report_json: Where to write the schema-v2 JSON report, or ``None``.
+
+    Returns:
+        pytest's exit code: 0 clean, 1 failures (or errors, or an unattributable teardown
+        failure), 2 collection errors, 5 nothing collected, 4 for a usage error and 3 for
+        an orchestration failure.
+    """
+    with _escaping_unencodable_output():
+        try:
+            payload = rust.v2_run(
+                os.getcwd(),
+                list(paths),
+                sys.executable,
+                _pool_size(workers),
+                keyword,
+                mark_expr,
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return _EXIT_USAGE_ERROR
+        except RuntimeError as exc:
+            print(f"INTERNALERROR: {exc}", file=sys.stderr)
+            return _EXIT_INTERNAL_ERROR
+
+        report = cast(_RunReport, json.loads(payload))
+
+        # Written before anything is printed, so a report exists even if rendering the
+        # summary somehow fails -- the conformance harness treats a missing report as a
+        # harness fault rather than a case outcome.
+        if report_json is not None:
+            Path(report_json).write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+        for test in report["tests"]:
+            if test["status"] in ("failed", "error"):
+                print(f"{test['status'].upper()} {test['id']}")
+                message = test.get("message")
+                if message:
+                    for line in message.splitlines():
+                        print(f"  {line}")
+
+        for error in report["collection_errors"]:
+            print(f"ERROR collecting {error['path']}", file=sys.stderr)
+            for line in error["message"].splitlines():
+                print(f"  {line}", file=sys.stderr)
+
+        # Never graded, never discarded: boundary teardown output lands here on runs that
+        # are entirely green.
+        for chunk in report.get("worker_stderr", []):
+            print(chunk, file=sys.stderr, end="" if chunk.endswith("\n") else "\n")
+        for failure in report.get("teardown_errors", []):
+            print(f"ERROR {failure}", file=sys.stderr)
+
+        print(
+            _run_summary(report["summary"], len(report["collection_errors"])),
+            file=sys.stderr,
+        )
+
+    return report["exit_code"]
 
 
 def run(

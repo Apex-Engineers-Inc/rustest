@@ -13,10 +13,12 @@
 
 pub mod collect;
 pub mod config;
+pub mod execute;
 pub mod manifest;
 pub mod nodeid;
 pub mod protocol;
 pub mod py;
+pub mod selection;
 
 use std::path::Path;
 

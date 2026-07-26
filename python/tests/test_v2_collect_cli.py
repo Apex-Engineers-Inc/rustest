@@ -288,6 +288,48 @@ def test_collection_error_exits_2_and_names_the_file(tmp_path: Path) -> None:
     assert "1 test collected, 1 error" in ours.stderr, _context("v2", ours)
 
 
+def test_deselecting_everything_exits_5_and_says_how_many(tmp_path: Path) -> None:
+    """The exit-5 branch counts what is left **after** selection, which is the whole reason
+    the manifest carries a ``deselected`` field.
+
+    Probed: pytest's ``--collect-only -q -m nosuch`` prints ``1 deselected`` and exits 5, not
+    0 -- so a v2 that ignored the option (as it did before 1b.2) reported exit 0 for a run
+    pytest calls empty. This is the case ``marks/deselect-all`` waives in the v2-collect
+    gate.
+    """
+    tree = tmp_path / "deselect"
+    _write(tree / "pytest.ini", "[pytest]\nmarkers =\n    smoke\n")
+    _write(
+        tree / "test_marks.py",
+        "import pytest\n\n\n@pytest.mark.smoke()\ndef test_smoke_only():\n    pass\n",
+    )
+
+    for args in (["-m", "nosuchmark"], ["-k", "nosuchname"]):
+        ours = _run_v2(tree, args)
+        oracle = _run_pytest(tree, args)
+
+        assert ours.returncode == 5, _context("v2", ours)
+        assert oracle.returncode == 5, _context("pytest", oracle)
+        assert ours.stdout == "", _context("v2", ours)
+        assert "0 tests collected, 1 deselected" in ours.stderr, _context("v2", ours)
+
+
+def test_selection_does_not_suppress_a_collection_error(tmp_path: Path) -> None:
+    """Exit 2 outranks exit 5: ``-k`` runs after collection, so deselecting every surviving
+    test cannot hide a file that failed to import."""
+    tree = tmp_path / "selbroken"
+    _write(tree / "pytest.ini", "[pytest]\n")
+    _write(tree / "test_bad.py", BROKEN_MODULE)
+    _write(tree / "test_ok.py", "def test_ok():\n    pass\n")
+
+    ours = _run_v2(tree, ["-k", "nomatch"])
+    oracle = _run_pytest(tree, ["-k", "nomatch"])
+
+    assert ours.returncode == 2, _context("v2", ours)
+    assert oracle.returncode == 2, _context("pytest", oracle)
+    assert "ERROR collecting test_bad.py" in ours.stderr, _context("v2", ours)
+
+
 def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> None:
     """A pool that fails is exit 3 (pytest's INTERNAL_ERROR), never a quiet empty collect.
 
@@ -297,8 +339,15 @@ def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> No
     and this pins what the CLI does with it.
     """
 
-    def boom(invocation_dir: str, args: list[str], python: str, workers: int) -> str:
-        del invocation_dir, args, python, workers
+    def boom(
+        invocation_dir: str,
+        args: list[str],
+        python: str,
+        workers: int,
+        keyword: str | None,
+        mark_expr: str | None,
+    ) -> str:
+        del invocation_dir, args, python, workers, keyword, mark_expr
         raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
 
     with stub_rust_module(v2_collect=boom):
@@ -358,8 +407,15 @@ def test_absent_path_arguments_are_passed_through_as_none_given() -> None:
     given, so the default must not be forwarded as a real argument."""
     seen: list[list[str]] = []
 
-    def fake_collect(invocation_dir: str, args: list[str], python: str, workers: int) -> str:
-        del invocation_dir, python, workers
+    def fake_collect(
+        invocation_dir: str,
+        args: list[str],
+        python: str,
+        workers: int,
+        keyword: str | None,
+        mark_expr: str | None,
+    ) -> str:
+        del invocation_dir, python, workers, keyword, mark_expr
         seen.append(list(args))
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'
 
@@ -374,8 +430,15 @@ def test_core_passes_sys_executable_to_the_worker_pool() -> None:
     """The interpreter is resolved on the Python side; Rust never guesses one."""
     seen: list[str] = []
 
-    def fake_collect(invocation_dir: str, args: list[str], python: str, workers: int) -> str:
-        del invocation_dir, args
+    def fake_collect(
+        invocation_dir: str,
+        args: list[str],
+        python: str,
+        workers: int,
+        keyword: str | None,
+        mark_expr: str | None,
+    ) -> str:
+        del invocation_dir, args, keyword, mark_expr
         seen.append(python)
         assert workers >= 1
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'

@@ -32,6 +32,8 @@ use serde::Serialize;
 
 use super::collect::{collect, CollectError};
 use super::config::{normpath, resolve_config, ResolvedConfig};
+use super::execute::{run, RunError};
+use super::selection::deselect;
 use super::to_posix;
 
 /// Wire form of [`ResolvedConfig`].
@@ -138,15 +140,33 @@ pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<St
 fn collect_error_to_py(err: CollectError) -> PyErr {
     let message = err.to_string();
     match err {
-        CollectError::Config(_) | CollectError::ArgNotFound(_) => PyValueError::new_err(message),
+        CollectError::Config(_) | CollectError::ArgNotFound(_) | CollectError::NoCollectors(_) => {
+            PyValueError::new_err(message)
+        }
         CollectError::Spawn { .. }
         | CollectError::Io { .. }
         | CollectError::Handshake { .. }
         | CollectError::Protocol { .. }
+        | CollectError::ExecuteProtocol { .. }
         | CollectError::WorkerDied { .. }
+        | CollectError::ExecuteWorkerDied { .. }
         | CollectError::Shutdown { .. }
         | CollectError::WorkerPanicked { .. }
-        | CollectError::MissingResponse { .. } => PyRuntimeError::new_err(message),
+        | CollectError::MissingResponse { .. }
+        | CollectError::MissingResult { .. } => PyRuntimeError::new_err(message),
+    }
+}
+
+/// Turn a [`RunError`] into the Python exception whose *kind* carries the exit code.
+///
+/// A malformed `-k`/`-m` expression is pytest's `UsageError` — `_pytest/mark/__init__.py::
+/// _parse_expression` raises it and `wrap_session` maps it to `ExitCode.USAGE_ERROR` (4) —
+/// so it joins the other usage errors as a `ValueError`. Everything else keeps collection's
+/// classification.
+fn run_error_to_py(err: RunError) -> PyErr {
+    match err {
+        RunError::Collect(err) => collect_error_to_py(err),
+        RunError::Selection(err) => PyValueError::new_err(err.to_string()),
     }
 }
 
@@ -170,20 +190,74 @@ fn collect_error_to_py(err: CollectError) -> PyErr {
 /// config file (pytest's `UsageError` shape), and `RuntimeError` for an orchestration
 /// failure. An unimportable *test file* raises nothing: it is data in `errors`.
 #[pyfunction]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None))]
 pub fn v2_collect(
     py: Python<'_>,
     invocation_dir: &str,
     args: Vec<String>,
     python_executable: &str,
     workers: usize,
+    keyword: Option<String>,
+    mark_expr: Option<String>,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
-    let manifest = py
+    let mut manifest = py
         .detach(|| collect(&dir, &args, python_executable, workers))
         .map_err(collect_error_to_py)?;
+
+    // Selection runs **after** collection and before anything is reported, which is where
+    // pytest runs it (`pytest_collection_modifyitems`).  Applying it here rather than in
+    // the walk is what keeps `errors` complete: `-k` cannot hide a file that failed to
+    // import, so a deselecting run still exits 2 when one did.
+    let selection = deselect(manifest.tests, keyword.as_deref(), mark_expr.as_deref())
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    manifest.tests = selection.kept;
+    manifest.deselected = selection.deselected;
+
     Ok(serde_json::to_string(&manifest)
         .expect("CollectionManifest is plain data and always serializes"))
+}
+
+/// Run `args` with the v2 engine and return the [`super::execute::RunReport`] as JSON.
+///
+/// This is the whole of `rustest --v2` seen from Python: config resolution, the file walk,
+/// a worker pool that collects and then *stays alive* to execute, `-k`/`-m` selection
+/// between the two, and pytest's exit code in the report's `exit_code` field.
+///
+/// The GIL is released for the duration — the run blocks on subprocess pipes for as long as
+/// the slowest test takes, and no Python object is touched while it does.
+///
+/// Raises `ValueError` for a usage error (a bad `invocation_dir`, a missing path argument,
+/// an unusable config file, or a malformed `-k`/`-m` expression) and `RuntimeError` for an
+/// orchestration failure. A test file that fails to import raises nothing: it is data in
+/// `collection_errors`, and the report's `exit_code` is 2.
+#[pyfunction]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None))]
+pub fn v2_run(
+    py: Python<'_>,
+    invocation_dir: &str,
+    args: Vec<String>,
+    python_executable: &str,
+    workers: usize,
+    keyword: Option<String>,
+    mark_expr: Option<String>,
+) -> PyResult<String> {
+    let dir = validated_invocation_dir(invocation_dir)?;
+    let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
+    let report = py
+        .detach(|| {
+            run(
+                &dir,
+                &args,
+                python_executable,
+                workers,
+                keyword.as_deref(),
+                mark_expr.as_deref(),
+            )
+        })
+        .map_err(run_error_to_py)?;
+    Ok(serde_json::to_string(&report).expect("RunReport is plain data and always serializes"))
 }
 
 #[cfg(test)]
@@ -428,6 +502,8 @@ mod tests {
                 args,
                 &crate::v2::test_python(),
                 2,
+                None,
+                None,
             )
         })
         .unwrap();
@@ -513,6 +589,8 @@ mod tests {
                 vec!["nope".to_string()],
                 &crate::v2::test_python(),
                 1,
+                None,
+                None,
             )
         })
         .unwrap_err();
@@ -541,6 +619,8 @@ mod tests {
                 Vec::new(),
                 "definitely-not-an-interpreter",
                 1,
+                None,
+                None,
             )
         })
         .unwrap_err();
@@ -562,7 +642,15 @@ mod tests {
     #[test]
     fn collect_rejects_a_relative_invocation_dir() {
         let err = Python::attach(|py| {
-            v2_collect(py, "relative/dir", Vec::new(), &crate::v2::test_python(), 1)
+            v2_collect(
+                py,
+                "relative/dir",
+                Vec::new(),
+                &crate::v2::test_python(),
+                1,
+                None,
+                None,
+            )
         })
         .unwrap_err();
 
@@ -588,6 +676,8 @@ mod tests {
                 Vec::new(),
                 &crate::v2::test_python(),
                 0,
+                None,
+                None,
             )
         })
         .unwrap();

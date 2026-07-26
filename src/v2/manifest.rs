@@ -62,6 +62,23 @@ pub struct CollectionManifest {
     pub tests: Vec<CollectedTest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<CollectionErrorEntry>,
+    /// How many collected tests `-k`/`-m` removed — pytest's `N deselected`.
+    ///
+    /// Deselection belongs on the manifest rather than beside it because pytest performs it
+    /// *inside* collection (`pytest_collection_modifyitems`, called from
+    /// `Session.perform_collect`), and because `tests` alone cannot answer the question the
+    /// exit code depends on: an empty `tests` is exit 5 either way, but "0 collected" and
+    /// "7 collected, 7 deselected" are different sentences and users read both.
+    ///
+    /// Omitted when zero, so a run without selection is byte-identical to what the schema
+    /// froze before this field existed — an additive, compatible change, which is why
+    /// [`MANIFEST_SCHEMA_VERSION`] does not move.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub deselected: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 #[cfg(test)]
@@ -119,6 +136,7 @@ mod tests {
                 path: "tests/test_broken.py".to_string(),
                 message: "ImportError: No module named 'nope'".to_string(),
             }],
+            deselected: 0,
         }
     }
 
@@ -164,8 +182,8 @@ mod tests {
         assert_eq!(decoded, bare);
     }
 
-    /// An empty collection carries no optional noise: `errors` is omitted entirely and
-    /// `tests` is an explicit empty array.
+    /// An empty collection carries no optional noise: `errors` and `deselected` are
+    /// omitted entirely and `tests` is an explicit empty array.
     #[test]
     fn empty_manifest_omits_empty_optional_fields() {
         let manifest = CollectionManifest {
@@ -173,6 +191,7 @@ mod tests {
             rootdir: "/repo".to_string(),
             tests: Vec::new(),
             errors: Vec::new(),
+            deselected: 0,
         };
 
         let encoded = serde_json::to_string(&manifest).expect("manifest serializes");
@@ -184,6 +203,30 @@ mod tests {
 
         let decoded: CollectionManifest =
             serde_json::from_str(&encoded).expect("manifest deserializes without optional fields");
+        assert_eq!(decoded, manifest);
+    }
+
+    /// `deselected` appears **only** when selection removed something, and it round-trips.
+    /// The zero case is pinned above; this is the other half, and together they are what
+    /// let the field be added without moving [`MANIFEST_SCHEMA_VERSION`].
+    #[test]
+    fn deselected_is_on_the_wire_only_when_non_zero() {
+        let manifest = CollectionManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            rootdir: "/repo".to_string(),
+            tests: Vec::new(),
+            errors: Vec::new(),
+            deselected: 3,
+        };
+
+        let encoded = serde_json::to_string(&manifest).expect("manifest serializes");
+        assert_eq!(
+            encoded,
+            r#"{"schema_version":2,"rootdir":"/repo","tests":[],"deselected":3}"#
+        );
+
+        let decoded: CollectionManifest =
+            serde_json::from_str(&encoded).expect("manifest deserializes");
         assert_eq!(decoded, manifest);
     }
 }

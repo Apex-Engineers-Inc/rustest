@@ -90,9 +90,11 @@ fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(getfixturevalue, m)?)?;
 
     // v2 surface: `v2_resolve_config` is internal (exercised by the pytest-oracle
-    // differential tests); `v2_collect` backs `rustest --v2-collect-only`.
+    // differential tests); `v2_collect` backs `rustest --v2-collect-only` and `v2_run`
+    // backs `rustest --v2`.
     m.add_function(wrap_pyfunction!(v2::py::v2_resolve_config, m)?)?;
     m.add_function(wrap_pyfunction!(v2::py::v2_collect, m)?)?;
+    m.add_function(wrap_pyfunction!(v2::py::v2_run, m)?)?;
 
     // Event types for event stream consumers
     m.add_class::<FileStartedEvent>()?;

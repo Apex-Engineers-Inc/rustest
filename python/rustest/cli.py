@@ -6,7 +6,7 @@ import argparse
 import os
 from collections.abc import Sequence
 
-from .core import run, v2_collect_only
+from .core import run, v2_collect_only, v2_run
 
 
 def is_ci_environment() -> bool:
@@ -149,8 +149,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="v2_collect_only",
         help=(
             "Experimental (v2 engine): collect tests and print their node ids one per "
-            "line, without running anything. Exits 0 with tests, 5 with none, 2 on "
-            "collection errors. None of the other options apply."
+            "line, without running anything. Honours -k, -m and -n. Exits 0 with tests, "
+            "5 with none, 2 on collection errors. None of the other options apply."
+        ),
+    )
+    _ = parser.add_argument(
+        "--v2",
+        action="store_true",
+        dest="v2",
+        help=(
+            "Experimental (v2 engine): collect and run. Honours -k, -m, -n and "
+            "--report-json (schema v2). None of the other options apply."
         ),
     )
     parser.set_defaults(
@@ -162,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
         pytest_compat=False,
         report_json=None,
         v2_collect_only=False,
+        v2=False,
     )
     return parser
 
@@ -172,17 +182,34 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # The v2 engine short-circuits here -- before any v1 option is interpreted and before
     # `run()` reaches v1 discovery. v2 resolves its own config, walks its own files and
-    # spawns its own workers, so nothing below applies to it (selection options land in
-    # Phase 1b.2). Keeping the branch at the very top is what guarantees the v1 path is
-    # untouched by this flag's existence.
-    if args.v2_collect_only:
+    # spawns its own workers, so nothing below applies to it. Keeping the branch at the
+    # very top is what guarantees the v1 path is untouched by these flags' existence.
+    #
+    # Four options *do* cross over, and each is forwarded verbatim rather than
+    # re-interpreted here: `-k` and `-m` (the raw strings; v2 owns pytest's expression
+    # grammar and its usage errors), `-n` (pool size) and `--report-json` (schema v2 under
+    # `--v2`, which is a different document from v1's -- see `src/v2/execute.rs`).
+    if args.v2_collect_only or args.v2:
         # argparse hands back the *default object itself* when no positional was supplied,
-        # so identity separates `rustest --v2-collect-only` (no argument, and therefore
-        # `testpaths` decides the roots, as in pytest) from an explicit `.` (an argument,
-        # which suppresses `testpaths`). Forwarding the default would erase that
-        # distinction and quietly diverge from pytest on every `testpaths` project.
+        # so identity separates `rustest --v2` (no argument, and therefore `testpaths`
+        # decides the roots, as in pytest) from an explicit `.` (an argument, which
+        # suppresses `testpaths`). Forwarding the default would erase that distinction and
+        # quietly diverge from pytest on every `testpaths` project.
         paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
-        return v2_collect_only(paths=paths, workers=args.workers)
+        if args.v2_collect_only:
+            return v2_collect_only(
+                paths=paths,
+                workers=args.workers,
+                keyword=args.pattern,
+                mark_expr=args.mark_expr,
+            )
+        return v2_run(
+            paths=paths,
+            workers=args.workers,
+            keyword=args.pattern,
+            mark_expr=args.mark_expr,
+            report_json=args.report_json,
+        )
 
     # Determine last_failed_mode
     if args.last_failed:

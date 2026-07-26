@@ -48,6 +48,7 @@ use std::sync::{Arc, Mutex};
 use crate::v2::config::{
     matches_file_pattern, normpath, resolve_config, ConfigError, ResolvedConfig,
 };
+use crate::v2::execute::{TestOutcome, TestStatus, SHUTDOWN_TEARDOWN_EXIT};
 use crate::v2::manifest::{
     CollectedTest, CollectionErrorEntry, CollectionManifest, MANIFEST_SCHEMA_VERSION,
 };
@@ -71,6 +72,10 @@ pub enum CollectError {
     /// A CLI path argument does not exist.  Mirrors
     /// `_pytest/main.py::resolve_collection_argument`'s `UsageError`.
     ArgNotFound(PathBuf),
+    /// A CLI path argument exists but nothing can collect it — pytest's
+    /// `_pytest/main.py::perform_collect` `found no collectors for {arg}` `UsageError`
+    /// (exit 4).  See [`initial_file_target`] for which suffixes reach it.
+    NoCollectors(PathBuf),
     /// The worker process could not be started at all.
     Spawn { program: String, message: String },
     /// An I/O failure on a live worker's pipes.
@@ -92,6 +97,23 @@ pub enum CollectError {
         detail: String,
         line: String,
     },
+    /// The execute-phase twin of [`CollectError::Protocol`].  A separate variant rather
+    /// than a reused one because the unit in flight is a **test id**, not a file, and an
+    /// error that says "while collecting tests/test_a.py::test_one" would send a reader to
+    /// the wrong phase of the run.
+    ExecuteProtocol {
+        worker: usize,
+        id: String,
+        detail: String,
+        line: String,
+    },
+    /// EOF (or a broken pipe) mid-execute, naming the test in flight.
+    ExecuteWorkerDied {
+        worker: usize,
+        id: String,
+        status: String,
+        stderr: String,
+    },
     /// EOF (or a broken pipe) mid-protocol, naming the file in flight.
     WorkerDied {
         worker: usize,
@@ -110,6 +132,10 @@ pub enum CollectError {
     /// Unreachable by construction, loud rather than silent: a dispatched file that no
     /// worker returned a result for would otherwise vanish from the manifest.
     MissingResponse { path: PathBuf },
+    /// The execute-phase twin: a selected test no worker answered for.  Unreachable by
+    /// construction too, and loud for the same reason — a silently missing test is a
+    /// shorter report that still exits 0.
+    MissingResult { id: String },
 }
 
 impl std::fmt::Display for CollectError {
@@ -118,6 +144,9 @@ impl std::fmt::Display for CollectError {
             CollectError::Config(err) => write!(f, "{err}"),
             CollectError::ArgNotFound(path) => {
                 write!(f, "file or directory not found: {}", path.display())
+            }
+            CollectError::NoCollectors(path) => {
+                write!(f, "found no collectors for {}", path.display())
             }
             CollectError::Spawn { program, message } => write!(
                 f,
@@ -147,6 +176,25 @@ impl std::fmt::Display for CollectError {
                 "worker {worker} sent an invalid response while collecting {}: {detail}\n  raw line: {line}",
                 path.display()
             ),
+            CollectError::ExecuteProtocol {
+                worker,
+                id,
+                detail,
+                line,
+            } => write!(
+                f,
+                "worker {worker} sent an invalid response while running {id}: {detail}\n  raw line: {line}"
+            ),
+            CollectError::ExecuteWorkerDied {
+                worker,
+                id,
+                status,
+                stderr,
+            } => write!(
+                f,
+                "worker {worker} died while running {id}: {status}{}",
+                stderr_block(stderr)
+            ),
             CollectError::WorkerDied {
                 worker,
                 path,
@@ -172,6 +220,9 @@ impl std::fmt::Display for CollectError {
             }
             CollectError::MissingResponse { path } => {
                 write!(f, "no worker returned a result for {}", path.display())
+            }
+            CollectError::MissingResult { id } => {
+                write!(f, "no worker returned a result for the test {id}")
             }
         }
     }
@@ -212,6 +263,21 @@ impl WorkerLauncher {
         }
     }
 
+    /// A stand-in worker: an arbitrary program and argv, so a test can drive the
+    /// orchestrator with a script that mis-speaks the protocol on purpose.
+    ///
+    /// An argument rather than an environment variable: `std::env::set_var` is
+    /// process-global and cargo runs tests on parallel threads, so an env-var switch would
+    /// be a data race between tests.  The seam exercises exactly the code path production
+    /// uses.
+    #[cfg(test)]
+    pub(crate) fn scripted(program: &str, args: Vec<String>) -> Self {
+        Self {
+            program: program.to_string(),
+            args,
+        }
+    }
+
     fn describe(&self) -> String {
         std::iter::once(self.program.clone())
             .chain(self.args.iter().cloned())
@@ -241,32 +307,44 @@ pub fn collect(
 }
 
 /// One file's worth of worker output.
-struct FileOutcome {
-    tests: Vec<CollectedTest>,
-    error: Option<CollectionErrorEntry>,
+pub(crate) struct FileOutcome {
+    pub(crate) tests: Vec<CollectedTest>,
+    pub(crate) error: Option<CollectionErrorEntry>,
 }
 
-fn collect_with_launcher(
+/// Everything a run needs before a single process is spawned: the files, the pool size,
+/// which worker owns which file, and the handshake payload.
+///
+/// Extracted so [`crate::v2::execute`] drives the *same* walk, the *same* routing and the
+/// *same* `init` as collection does.  A second copy of this in the execute path would be
+/// free to drift, and the one property that must not drift is the file→worker mapping:
+/// execution dispatches each test to the worker that collected its file, which is only
+/// sound while both halves compute it identically.
+pub(crate) struct Dispatch {
+    pub(crate) rootdir: String,
+    pub(crate) targets: Vec<PathBuf>,
+    /// Per worker, in walk order: `(target index, path)`.  The target index is what puts
+    /// the manifest back into walk order however the pool interleaves.
+    pub(crate) assignments: Vec<Vec<(usize, PathBuf)>>,
+    init: WorkerRequest,
+}
+
+/// Resolve config, walk, and route — the whole pre-spawn half of a run.
+pub(crate) fn plan(
     invocation_dir: &Path,
     args: &[PathBuf],
-    launcher: &WorkerLauncher,
     workers: usize,
-) -> Result<CollectionManifest, CollectError> {
+) -> Result<Dispatch, CollectError> {
     let (config, targets) = discover(invocation_dir, args)?;
     let rootdir = to_posix(&config.rootdir);
 
-    if targets.is_empty() {
-        return Ok(CollectionManifest {
-            schema_version: MANIFEST_SCHEMA_VERSION,
-            rootdir,
-            tests: Vec::new(),
-            errors: Vec::new(),
-        });
-    }
-
     // More workers than files would spawn interpreters with nothing to do; fewer than one
-    // could not collect at all.
-    let pool_size = workers.clamp(1, targets.len());
+    // could not collect at all.  An empty tree gets an empty pool and spawns nothing.
+    let pool_size = if targets.is_empty() {
+        0
+    } else {
+        workers.clamp(1, targets.len())
+    };
 
     // Routing is by stem hash (see the module docs), and the dispatch index recorded here
     // is what puts the manifest back into walk order afterwards.
@@ -287,20 +365,113 @@ fn collect_with_launcher(
         python_functions: config.python_functions.clone(),
     };
 
-    // Spawn and handshake the whole pool up front, so a bad interpreter or a version skew
-    // is reported before any file is collected.  A failure here drops the workers already
-    // started, and `Worker::drop` kills them.
-    let mut pool = Vec::with_capacity(pool_size);
-    for index in 0..pool_size {
+    Ok(Dispatch {
+        rootdir,
+        targets,
+        assignments,
+        init,
+    })
+}
+
+/// Spawn and handshake the whole pool up front, so a bad interpreter or a version skew is
+/// reported before any file is collected.  A failure here drops the workers already
+/// started, and `Worker::drop` kills them.
+pub(crate) fn spawn_pool(
+    dispatch: &Dispatch,
+    launcher: &WorkerLauncher,
+) -> Result<Vec<Worker>, CollectError> {
+    let mut pool = Vec::with_capacity(dispatch.assignments.len());
+    for index in 0..dispatch.assignments.len() {
         let mut worker = Worker::spawn(index, launcher)?;
-        worker.handshake(&init)?;
+        worker.handshake(&dispatch.init)?;
         pool.push(worker);
     }
+    Ok(pool)
+}
+
+/// Put per-file outcomes back into walk order and split them into tests and errors.
+///
+/// `origin[i]` is the **target index** the i-th test came from, which the execute half
+/// needs in order to route a test back to the worker that collected its file.  Collection
+/// discards it.
+pub(crate) struct Assembled {
+    pub(crate) tests: Vec<CollectedTest>,
+    pub(crate) errors: Vec<CollectionErrorEntry>,
+    pub(crate) origin: Vec<usize>,
+}
+
+pub(crate) fn assemble(
+    targets: &[PathBuf],
+    outcomes: Vec<(usize, FileOutcome)>,
+) -> Result<Assembled, CollectError> {
+    // Reassemble by dispatch index — NOT in completion order.
+    let mut slots: Vec<Option<FileOutcome>> = targets.iter().map(|_| None).collect();
+    for (index, outcome) in outcomes {
+        slots[index] = Some(outcome);
+    }
+
+    let mut tests = Vec::new();
+    let mut errors = Vec::new();
+    let mut origin = Vec::new();
+    for (index, (path, slot)) in targets.iter().zip(slots).enumerate() {
+        let Some(outcome) = slot else {
+            return Err(CollectError::MissingResponse { path: path.clone() });
+        };
+        origin.extend(std::iter::repeat_n(index, outcome.tests.len()));
+        tests.extend(outcome.tests);
+        errors.extend(outcome.error);
+    }
+
+    Ok(Assembled {
+        tests,
+        errors,
+        origin,
+    })
+}
+
+/// Collapse per-worker results, keeping the **first** failure in worker order so the
+/// reported error is deterministic however the pool interleaves.
+pub(crate) fn join_pool<T>(
+    results: Vec<Result<Vec<T>, CollectError>>,
+) -> Result<Vec<T>, CollectError> {
+    let mut merged = Vec::new();
+    let mut failure: Option<CollectError> = None;
+    for result in results {
+        match result {
+            Ok(items) => merged.extend(items),
+            Err(err) => failure = failure.or(Some(err)),
+        }
+    }
+    match failure {
+        Some(err) => Err(err),
+        None => Ok(merged),
+    }
+}
+
+fn collect_with_launcher(
+    invocation_dir: &Path,
+    args: &[PathBuf],
+    launcher: &WorkerLauncher,
+    workers: usize,
+) -> Result<CollectionManifest, CollectError> {
+    let dispatch = plan(invocation_dir, args, workers)?;
+
+    if dispatch.targets.is_empty() {
+        return Ok(CollectionManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            rootdir: dispatch.rootdir,
+            tests: Vec::new(),
+            errors: Vec::new(),
+            deselected: 0,
+        });
+    }
+
+    let pool = spawn_pool(&dispatch, launcher)?;
 
     let results = std::thread::scope(|scope| {
         let handles: Vec<_> = pool
             .into_iter()
-            .zip(assignments)
+            .zip(dispatch.assignments.iter().cloned())
             .map(|(worker, files)| scope.spawn(move || run_worker(worker, files)))
             .collect();
         handles
@@ -314,39 +485,14 @@ fn collect_with_launcher(
             .collect::<Vec<_>>()
     });
 
-    // Reassemble by dispatch index — NOT in completion order.
-    let mut slots: Vec<Option<FileOutcome>> = targets.iter().map(|_| None).collect();
-    let mut failure: Option<CollectError> = None;
-    for result in results {
-        match result {
-            Ok(outcomes) => {
-                for (index, outcome) in outcomes {
-                    slots[index] = Some(outcome);
-                }
-            }
-            // Worker order is deterministic, so the reported failure is too.
-            Err(err) => failure = failure.or(Some(err)),
-        }
-    }
-    if let Some(err) = failure {
-        return Err(err);
-    }
-
-    let mut tests = Vec::new();
-    let mut errors = Vec::new();
-    for (path, slot) in targets.iter().zip(slots) {
-        let Some(outcome) = slot else {
-            return Err(CollectError::MissingResponse { path: path.clone() });
-        };
-        tests.extend(outcome.tests);
-        errors.extend(outcome.error);
-    }
+    let assembled = assemble(&dispatch.targets, join_pool(results)?)?;
 
     Ok(CollectionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
-        rootdir,
-        tests,
-        errors,
+        rootdir: dispatch.rootdir,
+        tests: assembled.tests,
+        errors: assembled.errors,
+        deselected: 0,
     })
 }
 
@@ -366,21 +512,50 @@ fn discover(
     let roots = initial_paths(&invocation_dir, args, &config)?;
 
     let mut targets = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = Seen::default();
     for root in &roots {
         if root.is_dir() {
             walk(root, &config, &mut targets, &mut seen);
-        } else if is_python_source(root) {
-            // An initial path skips the `python_files` filter entirely:
-            // `_pytest/python.py::pytest_collect_file` only consults
-            // `path_matches_patterns` when `not parent.session.isinitpath(file_path)`.
-            // The `.py` suffix test is *outside* that guard, so it still applies — pytest
-            // reports "found no collectors" (exit 4) for a non-Python file argument, which
-            // is exit-code shaping and therefore Task 4's concern, not the walk's.
-            push_target(root, &mut targets, &mut seen);
+        } else if initial_file_target(root)? {
+            seen.push_file_arg(root, &mut targets);
         }
     }
     Ok((config, targets))
+}
+
+/// What to do with an initial path that is a **file**, and the one place pytest's exit-4
+/// `found no collectors` is decided.
+///
+/// An initial path skips the `python_files` filter entirely:
+/// `_pytest/python.py::pytest_collect_file` only consults `path_matches_patterns` when
+/// `not parent.session.isinitpath(file_path)`.  The `.py` suffix test is *outside* that
+/// guard, so it still applies — which leaves the question of what happens to everything
+/// else.  **Probed** (pytest 8.4.2, file named on the command line, no other args):
+///
+/// | argument | pytest exit | why |
+/// |---|---|---|
+/// | `notes.py` | 0 / 5 | collected as a Module |
+/// | `notes.txt` | **5** | `_pytest/doctest.py::_is_doctest` — `path.suffix in (".txt", ".rst") and parent.session.isinitpath(path)` — collects a `DoctestTextfile`, which finds no doctests |
+/// | `notes.rst` | **5** | same branch |
+/// | `notes.dat`, `notes.md` | **4** | no collector claims it; `perform_collect` raises `UsageError("found no collectors for ...")` |
+///
+/// The `.txt`/`.rst` row is the one that would be got wrong by intuition: those are *not*
+/// usage errors, because pytest's doctest tier claims them unconditionally for an initial
+/// path (the `--doctest-glob` default of `test*.txt` governs only files found by *walking*).
+/// v2 has no doctest tier, so it produces no tests for them — the same observable answer,
+/// reached a different way, and recorded here rather than left to coincidence.
+///
+/// Returns `Ok(true)` when the file is a collection target, `Ok(false)` when it is
+/// legitimately empty, and the usage error otherwise.
+fn initial_file_target(path: &Path) -> Result<bool, CollectError> {
+    if is_python_source(path) {
+        return Ok(true);
+    }
+    let suffix = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    if suffix == "txt" || suffix == "rst" {
+        return Ok(false);
+    }
+    Err(CollectError::NoCollectors(path.to_path_buf()))
 }
 
 /// The roots of the walk: CLI args, else `testpaths`, else the invocation dir.
@@ -455,7 +630,7 @@ fn absolutepath(invocation_dir: &Path, path: &Path) -> PathBuf {
 /// key ("always collect `__init__.py` first").  Applying it unconditionally is equivalent:
 /// a directory holding an `__init__.py` *is* a Package, and in any other directory the
 /// first tuple element is constant.
-fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
+fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>, seen: &mut Seen) {
     // `scandir` returns `[]` for a directory that cannot be opened, rather than raising.
     let Ok(reader) = std::fs::read_dir(dir) else {
         return;
@@ -479,7 +654,7 @@ fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>, seen: &mut 
             }
             walk(&path, config, out, seen);
         } else if path.is_file() && is_python_source(&path) && matches_python_files(&path, config) {
-            push_target(&path, out, seen);
+            seen.push_walked(&path, out);
         }
     }
 }
@@ -528,11 +703,75 @@ fn matches_python_files(path: &Path, config: &ResolvedConfig) -> bool {
         .any(|pattern| fnmatch_ex(pattern, path))
 }
 
-fn push_target(path: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
-    // Two args can reach the same file (`rustest tests tests/test_a.py`).  Collecting it
-    // twice would put duplicate nodeids in the manifest and break its addressability
-    // contract, so first sighting wins — which also keeps walk order intact.
-    if seen.insert(path.to_path_buf()) {
+/// Duplicate bookkeeping for the walk — **pytest collects some duplicates and not others**,
+/// and this is where that asymmetry is reproduced.
+///
+/// pytest has no dedup rule as such: it caches collection *per collector node*
+/// (`Session._collection_cache`) and then punches one hole in the cache
+/// (`_pytest/main.py::Session.collect` l. 908-913):
+///
+/// ```text
+/// # For backward compat, files given directly multiple
+/// # times on the command line should not be deduplicated.
+/// handle_dupes = not (
+///     len(matchparts) == 1
+///     and isinstance(matchparts[0], Path)
+///     and matchparts[0].is_file()
+/// )
+/// ```
+///
+/// **Probed** (`--collect-only -q`, tree = `test_a.py` with two tests, `pkg/test_b.py`
+/// with one):
+///
+/// | arguments | pytest collects | v2 |
+/// |---|---|---|
+/// | `test_a.py test_a.py` | `one two one two` (4) | same |
+/// | `test_a.py ./test_a.py` | `one two one two` (4) | same |
+/// | `test_a.py test_a.py test_a.py` | 6 | same |
+/// | `pkg pkg/test_b.py` | `three` (1) | same |
+/// | `pkg/test_b.py pkg` | `three` (1) | same |
+/// | `pkg pkg` | `three` (1) | same |
+/// | `. .` | 3 | same |
+/// | `. test_a.py` | `one two` (2) | **`one two three` (3)** |
+///
+/// The rule that reproduces seven of those eight rows is: a **file named directly as an
+/// argument** is collected once per occurrence, *unless* a directory argument already
+/// emitted it; anything reached by walking is deduplicated against everything emitted so
+/// far.  One pass in argument order is enough, because both orders of the mixed case are
+/// covered by the two halves of that rule.
+///
+/// The last row is a recorded divergence, and it is the one where pytest's mechanism
+/// leaks: re-collecting `Dir(.)` for the file argument overwrites the cache entry, so when
+/// `genitems` later walks the `Dir(.)` node it sees a cache *hit*, treats it as a duplicate
+/// and yields **nothing** — silently dropping `pkg/test_b.py::test_three`, a test the user
+/// asked for by naming `.`.  v2 keeps that test.  Reproducing the drop would mean porting
+/// the node cache, and the behaviour being ported is a bug.
+#[derive(Default)]
+struct Seen {
+    /// Every path already emitted, whatever produced it.
+    emitted: HashSet<PathBuf>,
+    /// The subset emitted by a **directory walk**, which is what suppresses a later file
+    /// argument for the same path.
+    walked: HashSet<PathBuf>,
+}
+
+impl Seen {
+    /// A file found by walking a directory: first sighting wins, which also keeps walk
+    /// order intact.
+    fn push_walked(&mut self, path: &Path, out: &mut Vec<PathBuf>) {
+        self.walked.insert(path.to_path_buf());
+        if self.emitted.insert(path.to_path_buf()) {
+            out.push(path.to_path_buf());
+        }
+    }
+
+    /// A file named directly on the command line: emitted again for every occurrence,
+    /// because pytest's cache hole means each such argument re-collects the file.
+    fn push_file_arg(&mut self, path: &Path, out: &mut Vec<PathBuf>) {
+        if self.walked.contains(path) {
+            return;
+        }
+        self.emitted.insert(path.to_path_buf());
         out.push(path.to_path_buf());
     }
 }
@@ -635,7 +874,7 @@ fn worker_for(path: &Path, workers: usize) -> usize {
 // ---------------------------------------------------------------------------
 
 /// One worker process and its pipes.
-struct Worker {
+pub(crate) struct Worker {
     index: usize,
     child: Child,
     stdin: ChildStdin,
@@ -791,7 +1030,7 @@ impl Worker {
     }
 
     /// `collect_file` -> `collected`, validated on receipt.
-    fn collect_one(&mut self, path: &Path) -> Result<FileOutcome, CollectError> {
+    pub(crate) fn collect_one(&mut self, path: &Path) -> Result<FileOutcome, CollectError> {
         let posix = to_posix(path);
         let request = WorkerRequest::CollectFile {
             path: posix.clone(),
@@ -860,6 +1099,112 @@ impl Worker {
         }
     }
 
+    /// `execute_test` -> `test_result`, validated on receipt.
+    ///
+    /// Three checks, and each exists because the alternative is a *silently wrong report*
+    /// rather than a loud failure:
+    ///
+    /// * the echoed `id` must be the requested one — a worker answering out of order would
+    ///   otherwise attribute one test's outcome to another;
+    /// * the `status` must be one of the documented six.  `src/v2/protocol.rs` leaves the
+    ///   field an unvalidated `String` **on purpose** and says so: an enum would reject the
+    ///   line inside serde with no test id in hand, so the check belongs here, where the
+    ///   request that caused it and the worker's stderr are both available.  An unknown
+    ///   value is protocol drift, and the error names the value;
+    /// * anything that is not a `test_result` at all is drift by op.
+    pub(crate) fn execute_one(&mut self, id: &str) -> Result<TestOutcome, CollectError> {
+        let request = WorkerRequest::ExecuteTest { id: id.to_string() };
+        if let Err(err) = self.send(&request) {
+            return Err(self.execute_died(id, format!("could not send execute_test: {err}")));
+        }
+
+        let line = match self.receive() {
+            Ok(Some(line)) => line,
+            Ok(None) => {
+                return Err(self.execute_died(id, "the worker exited without answering".into()))
+            }
+            Err(err) => {
+                return Err(CollectError::Io {
+                    worker: self.index,
+                    context: format!("reading the result for {id}"),
+                    message: err.to_string(),
+                })
+            }
+        };
+
+        let response: WorkerResponse = match serde_json::from_str(&line) {
+            Ok(response) => response,
+            Err(err) => {
+                return Err(self.execute_protocol(id, format!("undecodable response: {err}"), line))
+            }
+        };
+
+        match response {
+            WorkerResponse::TestResult {
+                id: echoed,
+                status,
+                duration_s,
+                message,
+                stdout,
+                stderr,
+            } => {
+                if echoed != id {
+                    return Err(self.execute_protocol(
+                        id,
+                        format!("the response names `{echoed}`, not the requested test"),
+                        line,
+                    ));
+                }
+                let Some(status) = TestStatus::parse(&status) else {
+                    return Err(self.execute_protocol(
+                        id,
+                        format!("unknown status `{status}`"),
+                        line,
+                    ));
+                };
+                Ok(TestOutcome {
+                    id: echoed,
+                    status,
+                    duration_s,
+                    message,
+                    stdout,
+                    stderr,
+                })
+            }
+            other => Err(self.execute_protocol(
+                id,
+                format!("expected `test_result`, got `{}`", response_op(&other)),
+                line,
+            )),
+        }
+    }
+
+    fn execute_protocol(&self, id: &str, detail: String, line: String) -> CollectError {
+        CollectError::ExecuteProtocol {
+            worker: self.index,
+            id: id.to_string(),
+            detail,
+            line,
+        }
+    }
+
+    fn execute_died(&mut self, id: &str, detail: String) -> CollectError {
+        let status = match self.child.wait() {
+            Ok(status) => {
+                self.reaped = true;
+                status.to_string()
+            }
+            Err(err) => format!("could not wait for the process: {err}"),
+        };
+        let stderr = self.diagnostics();
+        CollectError::ExecuteWorkerDied {
+            worker: self.index,
+            id: id.to_string(),
+            status: format!("{detail} ({status})"),
+            stderr,
+        }
+    }
+
     /// Build the "worker is gone" error for the file that was in flight.
     ///
     /// The `wait()` here is deliberately **unbounded**, unlike the stderr drain's bounded
@@ -889,10 +1234,12 @@ impl Worker {
         }
     }
 
-    /// `shutdown` -> `bye` -> exit 0.  Anything else is a failed run: the worker exits
-    /// non-zero precisely when it hit protocol drift, and swallowing that would turn a
-    /// bug into a quietly short manifest.
-    fn shutdown(&mut self) -> Result<(), CollectError> {
+    /// `shutdown` -> `bye`, then reap.  Returns the process's exit status.
+    ///
+    /// Split out from [`Worker::shutdown`] because the *meaning* of a non-zero status
+    /// differs between the two phases (see [`Worker::shutdown_run`]) while the handshake
+    /// does not, and two copies of a handshake are two chances to drift.
+    fn shutdown_and_reap(&mut self) -> Result<std::process::ExitStatus, CollectError> {
         if let Err(err) = self.send(&WorkerRequest::Shutdown) {
             return Err(self.shutdown_error(format!("could not send shutdown: {err}")));
         }
@@ -925,10 +1272,55 @@ impl Worker {
             }
         };
         self.reaped = true;
-        if !status.success() {
-            return Err(self.shutdown_error(format!("the worker exited with {status}")));
+        Ok(status)
+    }
+
+    /// `shutdown` -> `bye` -> exit 0.  Anything else is a failed run: during **collection**
+    /// the worker opens no fixtures, so the only way it exits non-zero after answering is
+    /// protocol drift, and swallowing that would turn a bug into a quietly short manifest.
+    fn shutdown(&mut self) -> Result<(), CollectError> {
+        let status = self.shutdown_and_reap()?;
+        if status.success() {
+            return Ok(());
         }
-        Ok(())
+        Err(self.shutdown_error(format!("the worker exited with {status}")))
+    }
+
+    /// The **execute** phase's shutdown, where exit 3 is data rather than a fault.
+    ///
+    /// `_v2_worker.py::SHUTDOWN_TEARDOWN_EXIT = 3` means: every response was written, `bye`
+    /// was sent, and *then* a module- or session-scoped fixture teardown raised.  The
+    /// stream is complete; a user's teardown is broken.  That is not orchestration drift
+    /// (exit 2) and collapsing the two destroys the diagnosis — so this returns the failure
+    /// instead of raising it, and the run reports it the way pytest reports a teardown
+    /// error: as an **error, which makes the run exit 1** (probed: a `tearDownClass` that
+    /// raises gives `1 passed, 1 error` and exit 1).
+    ///
+    /// It cannot be attributed to a test — the test that triggered it was already answered,
+    /// correctly, because its body passed — so the worker's stderr, which carries the
+    /// traceback, travels with it.
+    pub(crate) fn shutdown_run(&mut self) -> Result<Option<String>, CollectError> {
+        let status = self.shutdown_and_reap()?;
+        if status.success() {
+            return Ok(None);
+        }
+        if status.code() == Some(SHUTDOWN_TEARDOWN_EXIT) {
+            let stderr = self.diagnostics();
+            return Ok(Some(format!(
+                "worker {}: a fixture teardown failed after the last test was reported{}",
+                self.index,
+                stderr_block(&stderr)
+            )));
+        }
+        Err(self.shutdown_error(format!("the worker exited with {status}")))
+    }
+
+    /// Everything this worker wrote to stderr.  Not a failure signal: class- and
+    /// module-scoped teardown output is drained at a boundary, outside the per-test capture
+    /// window, so a *successful* run's stderr can carry legitimate user output (see the
+    /// 1b.2 Task 3 divergence note).  The run surfaces it; it never grades it.
+    pub(crate) fn take_stderr(&mut self) -> String {
+        self.diagnostics()
     }
 
     fn shutdown_error(&mut self, detail: String) -> CollectError {
@@ -1366,19 +1758,107 @@ mod tests {
         assert_eq!(discovered(&tmp, &[]), vec!["suite/test_in.py"]);
     }
 
-    /// Two args reaching the same file must not collect it twice: a duplicate nodeid
-    /// breaks the manifest's addressability contract.
+    // --- duplicate path arguments (see `Seen` for the probe table) ---------
+
+    /// A directory argument suppresses a file argument for the same file, in **both**
+    /// orders.  Probed: `pytest pkg pkg/test_b.py` and `pytest pkg/test_b.py pkg` each
+    /// collect `test_three` exactly once.
     #[test]
-    fn a_file_reached_twice_is_collected_once() {
+    fn a_directory_arg_and_a_file_inside_it_collect_the_file_once() {
         let tmp = tree(&[("sub/test_a.py", &module("a"))]);
+        let dir = tmp.path().join("sub");
+        let file = tmp.path().join("sub/test_a.py");
+
+        assert_eq!(
+            discovered(&tmp, &[dir.clone(), file.clone()]),
+            vec!["sub/test_a.py"]
+        );
+        assert_eq!(discovered(&tmp, &[file, dir]), vec!["sub/test_a.py"]);
+    }
+
+    /// The same **file** named twice is collected twice — pytest's documented backward-compat
+    /// hole in its collection cache (`Session.collect`: *"files given directly multiple
+    /// times on the command line should not be deduplicated"*).  Probed: `pytest test_a.py
+    /// test_a.py` reports `4 tests collected` for a two-test file, and three occurrences
+    /// give 6.
+    ///
+    /// Deduplicating here would be the *safer-looking* choice and would silently run half
+    /// the tests a `pytest a.py a.py` invocation asks for.
+    #[test]
+    fn the_same_file_argument_twice_is_collected_twice() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
+        let file = tmp.path().join("test_a.py");
+
+        assert_eq!(
+            discovered(&tmp, &[file.clone(), file.clone()]),
+            vec!["test_a.py", "test_a.py"]
+        );
+        assert_eq!(
+            discovered(&tmp, &[file.clone(), file.clone(), file]),
+            vec!["test_a.py", "test_a.py", "test_a.py"]
+        );
+    }
+
+    /// ...and "the same file" is decided after normalisation, not by argument spelling:
+    /// probed, `pytest test_a.py ./test_a.py` also collects 4.
+    #[test]
+    fn two_spellings_of_one_file_argument_still_collect_it_twice() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
 
         assert_eq!(
             discovered(
                 &tmp,
-                &[tmp.path().join("sub"), tmp.path().join("sub/test_a.py")]
+                &[tmp.path().join("test_a.py"), tmp.path().join("./test_a.py"),]
             ),
-            vec!["sub/test_a.py"]
+            vec!["test_a.py", "test_a.py"]
         );
+    }
+
+    /// A directory argument repeated is still walked once — the cache hole is about files,
+    /// so nothing bypasses it here.  Probed: `pytest . .` and `pytest pkg pkg` each collect
+    /// the tree once.
+    #[test]
+    fn a_repeated_directory_argument_is_walked_once() {
+        let tmp = tree(&[("sub/test_a.py", &module("a")), ("test_b.py", &module("b"))]);
+        let root = tmp.path().to_path_buf();
+
+        assert_eq!(
+            discovered(&tmp, &[root.clone(), root]),
+            vec!["sub/test_a.py", "test_b.py"]
+        );
+    }
+
+    // --- non-Python path arguments (see `initial_file_target`) -------------
+
+    /// A `.txt` or `.rst` argument collects **nothing and is not an error**: pytest's
+    /// doctest tier claims it unconditionally for an initial path
+    /// (`_pytest/doctest.py::_is_doctest`), finds no doctests, and exits 5.  v2 has no
+    /// doctest tier and reaches the same observable answer by producing no target.
+    #[test]
+    fn a_text_or_rst_argument_collects_nothing_without_failing() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
+        write_file(&tmp.path().join("notes.txt"), "hi\n");
+        write_file(&tmp.path().join("notes.rst"), "hi\n");
+
+        assert!(discovered(&tmp, &[tmp.path().join("notes.txt")]).is_empty());
+        assert!(discovered(&tmp, &[tmp.path().join("notes.rst")]).is_empty());
+    }
+
+    /// Any other non-Python file argument is a **usage error** — pytest's `found no
+    /// collectors for ...` (exit 4).  Probed with `.dat` and `.md`, both exit 4, against
+    /// `.txt`/`.rst`'s exit 5: the two halves of the same suffix decision.
+    #[test]
+    fn any_other_non_python_argument_is_a_usage_error() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
+        write_file(&tmp.path().join("notes.dat"), "hi\n");
+
+        let path = tmp.path().join("notes.dat");
+        let err = discover(tmp.path(), &[path.clone()]).unwrap_err();
+        assert!(
+            matches!(&err, CollectError::NoCollectors(reported) if reported == &path),
+            "unexpected error: {err}"
+        );
+        assert!(err.to_string().starts_with("found no collectors for"));
     }
 
     // --- routing ----------------------------------------------------------
