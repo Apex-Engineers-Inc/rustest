@@ -1,18 +1,32 @@
 """Differential tests: the v2 config subsystem vs. REAL pytest.
 
 Every assertion here is a diff against pytest itself, not against remembered behaviour.
-Four ``tmp_path`` layouts are built, real pytest is run in each via ``subprocess``, its
-``rootdir:``/``configfile:`` header lines are parsed, and the same layout is handed to
-``rust.v2_resolve_config`` (the Rust port of
-``_pytest/config/findpaths.py::determine_setup``). Any disagreement is a bug in the port.
+Four ``tmp_path`` layouts are built, real pytest is run in each via ``subprocess``, and its
+answers are compared with what ``rust.v2_resolve_config`` (the Rust port of
+``_pytest/config/findpaths.py::determine_setup``) produces for the same layout. Any
+disagreement is a bug in the port.
 
-Header-parsing note (measured, not assumed): the task brief suggested
-``pytest --collect-only -q``, but ``-q`` drives verbosity to ``-1`` and
-``_pytest/terminal.py::TerminalReporter.showheader`` is ``self.verbosity >= 0``, so the
-header — and with it the ``rootdir:`` line — is suppressed entirely. These tests therefore
-run ``--collect-only`` at default verbosity. Observed pytest 8.4.2 output puts
-``configfile:`` on its own line right after ``rootdir:``; older pytest appended
-``, inifile: ...`` to the ``rootdir:`` line itself, so both shapes are handled.
+Two things are diffed, both read out of the *same* subprocess run:
+
+* **rootdir / config file** -- parsed from the session header (``rootdir:`` and
+  ``configfile:`` lines).
+* **the resolved ini values** -- a ``conftest.py`` dropped into each layout implements
+  ``pytest_report_header`` and dumps ``config.getini(...)`` for the keys v2 models, so the
+  comparison is against *pytest's own resolved values* rather than against constants
+  transcribed by hand from the same reading of the pytest source. Hand constants cannot
+  catch a misreading and rot silently on a pytest upgrade; this can.
+
+Header-parsing notes (measured, not assumed):
+
+* The task brief suggested ``pytest --collect-only -q``, but ``-q`` drives verbosity to
+  ``-1`` and ``_pytest/terminal.py::TerminalReporter.showheader`` is ``self.verbosity >= 0``,
+  so the header -- and with it the ``rootdir:`` line -- is suppressed entirely. These tests
+  run ``--collect-only`` at default verbosity.
+* pytest 8.4.2 puts ``configfile:`` on its own line right after ``rootdir:``; older pytest
+  appended ``, inifile: ...`` to the ``rootdir:`` line itself, so both shapes are handled.
+* conftest ``pytest_report_header`` results are printed *before* the core ``rootdir:`` line.
+  Parsing is scoped to the header block (from the ``test session starts`` separator to the
+  first blank line) so nothing in collected output or a traceback can be mistaken for it.
 
 Windows note: the JSON carries posix separators and pytest's header prints native ones, so
 every path comparison goes through ``Path`` + ``os.path.normcase``.
@@ -25,40 +39,51 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from rustest import rust
 
-# --------------------------------------------------------------------------------------
-# ini defaults extracted from the installed pytest source in Task 3 (pytest 8.4.2).
-#
-#   python_files     _pytest/python.py::pytest_addoption
-#                    addini("python_files", type="args", default=["test_*.py", "*_test.py"])
-#   python_classes   _pytest/python.py::pytest_addoption
-#                    addini("python_classes", type="args", default=["Test"])
-#   python_functions _pytest/python.py::pytest_addoption
-#                    addini("python_functions", type="args", default=["test"])
-#                    -- the bare prefix "test", NOT "test_*", which is why `testfoo` is
-#                    collected (corpus case collection/naming-testfoo).
-#   norecursedirs    _pytest/main.py::pytest_addoption
-#                    addini("norecursedirs", type="args", default=[...])
-# --------------------------------------------------------------------------------------
-DEFAULT_PYTHON_FILES = ["test_*.py", "*_test.py"]
-DEFAULT_PYTHON_CLASSES = ["Test"]
-DEFAULT_PYTHON_FUNCTIONS = ["test"]
-DEFAULT_NORECURSEDIRS = [
-    "*.egg",
-    ".*",
-    "_darcs",
-    "build",
-    "CVS",
-    "dist",
-    "node_modules",
-    "venv",
-    "{arch}",
+# ini keys whose resolved values v2 models and pytest can report back to us. `markers` is
+# dumped too but is only subset-checked: plugins append to it via `addinivalue_line`.
+INI_KEYS = [
+    "python_files",
+    "python_classes",
+    "python_functions",
+    "norecursedirs",
+    "addopts",
+    "testpaths",
 ]
 
+CONFTEST = f'''\
+"""Reports pytest's own resolved ini values so the Rust port can be diffed against them."""
+
+import json
+
+INI_KEYS = {INI_KEYS + ["markers"]!r}
+
+
+def pytest_report_header(config):
+    return "inidump: " + json.dumps({{key: list(config.getini(key)) for key in INI_KEYS}})
+'''
+
 TEST_MODULE = "def test_x():\n    assert True\n"
+
+# The one value still asserted against a hand constant, because no differential can reach
+# it: a differential proves we agree with pytest, never that pytest still says what the
+# Phase 0 audit recorded. Source: `_pytest/python.py::pytest_addoption` --
+# `addini("python_functions", type="args", default=["test"])`. The default is the bare
+# prefix `test`, NOT `test_*`, which is why `testfoo` is collected (corpus case
+# `collection/naming-testfoo`). If a pytest upgrade ever changes this, that corpus case and
+# `src/v2/config.rs::DEFAULT_PYTHON_FUNCTIONS` must be re-audited -- so it should fail loudly.
+PYTEST_SOURCE_PYTHON_FUNCTIONS_DEFAULT = ["test"]
+
+
+class PytestAnswer(NamedTuple):
+    """What REAL pytest reported for a layout."""
+
+    rootdir: str
+    configfile: str | None
+    ini: dict[str, list[str]]
 
 
 def _write(path: Path, text: str) -> None:
@@ -71,8 +96,22 @@ def _norm(path: str) -> str:
     return os.path.normcase(str(Path(path)))
 
 
-def _run_real_pytest(cwd: Path, args: list[str]) -> tuple[str, str | None]:
-    """Return ``(rootdir, configfile_or_None)`` as REAL pytest reports them."""
+def _header_lines(stdout: str) -> list[str]:
+    """The session header block only: separator line .. first blank line."""
+    lines = stdout.splitlines()
+    start = next((i for i, line in enumerate(lines) if "test session starts" in line), None)
+    if start is None:
+        raise AssertionError(f"no 'test session starts' separator in pytest output:\n{stdout}")
+    header: list[str] = []
+    for line in lines[start + 1 :]:
+        if not line.strip():
+            break
+        header.append(line)
+    return header
+
+
+def _run_real_pytest(cwd: Path, args: list[str]) -> PytestAnswer:
+    """Run REAL pytest in `cwd`; read rootdir, config file and ini values off its header."""
     env = dict(os.environ)
     for leak in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST"):
         env.pop(leak, None)
@@ -84,9 +123,16 @@ def _run_real_pytest(cwd: Path, args: list[str]) -> tuple[str, str | None]:
         env=env,
         check=False,
     )
+    context = (
+        f"cwd={cwd} args={args} rc={proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    assert proc.returncode == 0, f"pytest did not exit cleanly\n{context}"
+
     rootdir: str | None = None
     configfile: str | None = None
-    for line in proc.stdout.splitlines():
+    ini: dict[str, list[str]] | None = None
+    for line in _header_lines(proc.stdout):
         if line.startswith("rootdir:"):
             value = line[len("rootdir:") :].strip()
             # pytest < 7 put the config file on this same line.
@@ -97,13 +143,13 @@ def _run_real_pytest(cwd: Path, args: list[str]) -> tuple[str, str | None]:
             rootdir = value
         elif line.startswith("configfile:"):
             configfile = line[len("configfile:") :].strip()
+        elif line.startswith("inidump:"):
+            ini = json.loads(line[len("inidump:") :])
     if rootdir is None:
-        raise AssertionError(
-            "no 'rootdir:' line in pytest output\n"
-            f"cwd={cwd} args={args} rc={proc.returncode}\n"
-            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
-        )
-    return rootdir, configfile
+        raise AssertionError(f"no 'rootdir:' line in the pytest header\n{context}")
+    if ini is None:
+        raise AssertionError(f"no 'inidump:' line in the header (conftest unloaded?)\n{context}")
+    return PytestAnswer(rootdir, configfile, ini)
 
 
 def _resolve(cwd: Path, args: list[str]) -> dict[str, Any]:
@@ -112,32 +158,37 @@ def _resolve(cwd: Path, args: list[str]) -> dict[str, Any]:
 
 
 def _assert_agrees_with_pytest(cwd: Path, args: list[str]) -> dict[str, Any]:
-    """Run both oracles on the same layout and assert rootdir + config file agree."""
-    pytest_rootdir, pytest_configfile = _run_real_pytest(cwd, args)
+    """Run both oracles once on the same layout and diff rootdir, config file and ini."""
+    oracle = _run_real_pytest(cwd, args)
     resolved = _resolve(cwd, args)
+    where = f"cwd={cwd} args={args}"
 
-    assert _norm(resolved["rootdir"]) == _norm(pytest_rootdir), (
-        f"rootdir mismatch for cwd={cwd} args={args}: "
-        f"rust={resolved['rootdir']!r} pytest={pytest_rootdir!r}"
-    )
+    # Messages are built before the assert so that both the repo's ruff (0.14) and the
+    # pre-commit-pinned ruff (0.8) agree on the formatting; they wrap `assert cond, msg`
+    # differently and would otherwise fight over this file.
+    detail = f"rust={resolved['rootdir']!r} pytest={oracle.rootdir!r}"
+    assert _norm(resolved["rootdir"]) == _norm(oracle.rootdir), f"rootdir {where}: {detail}"
 
     rust_configfile: str | None = resolved["config_file"]
-    if pytest_configfile is None:
-        assert rust_configfile is None, (
-            f"pytest found no config file for cwd={cwd} args={args}, "
-            f"rust reported {rust_configfile!r}"
-        )
+    if oracle.configfile is None:
+        detail = f"pytest found no config file, rust reported {rust_configfile!r}"
+        assert rust_configfile is None, f"config file {where}: {detail}"
     else:
-        assert rust_configfile is not None, (
-            f"pytest reported configfile {pytest_configfile!r} for cwd={cwd} args={args}, "
-            "rust reported none"
-        )
+        detail = f"pytest reported {oracle.configfile!r}, rust reported none"
+        assert rust_configfile is not None, f"config file {where}: {detail}"
         # pytest's header shows the config file relative to rootdir (bestrelpath).
         relative = os.path.relpath(rust_configfile, resolved["rootdir"])
-        assert _norm(relative) == _norm(pytest_configfile), (
-            f"config file mismatch for cwd={cwd} args={args}: "
-            f"rust={relative!r} pytest={pytest_configfile!r}"
-        )
+        detail = f"rust={relative!r} pytest={oracle.configfile!r}"
+        assert _norm(relative) == _norm(oracle.configfile), f"config file {where}: {detail}"
+
+    for key in INI_KEYS:
+        detail = f"rust={resolved[key]!r} pytest={oracle.ini[key]!r}"
+        assert resolved[key] == oracle.ini[key], f"ini {key!r} {where}: {detail}"
+    # Plugins append to `markers` via `addinivalue_line`, so pytest's list is a superset of
+    # what the ini file declares; v2 reports only the ini's own lines.
+    extra = [m for m in resolved["markers"] if m not in oracle.ini["markers"]]
+    assert not extra, f"markers not known to pytest for {where}: {extra!r}"
+
     return resolved
 
 
@@ -149,6 +200,7 @@ def _assert_agrees_with_pytest(cwd: Path, args: list[str]) -> dict[str, Any]:
 def _layout_bare(tmp_path: Path) -> Path:
     root = tmp_path / "bare"
     _write(root / "test_bare.py", TEST_MODULE)
+    _write(root / "conftest.py", CONFTEST)
     return root
 
 
@@ -160,25 +212,21 @@ def test_bare_directory_rootdir_matches_pytest(tmp_path: Path) -> None:
     assert resolved["config_file"] is None
 
 
-def test_bare_layout_reports_task3_extracted_defaults(tmp_path: Path) -> None:
-    """The registered ini defaults, as extracted from the pytest source in Task 3.
+def test_bare_layout_ini_defaults_match_pytests_own_getini(tmp_path: Path) -> None:
+    """With no config file in play, the diffed ini values *are* the registered defaults.
 
-    Sources (pytest 8.4.2, ``.venv/Lib/site-packages/_pytest/``):
-    ``python.py::pytest_addoption`` for ``python_files`` (``["test_*.py", "*_test.py"]``),
-    ``python_classes`` (``["Test"]``) and ``python_functions`` (``["test"]``);
-    ``main.py::pytest_addoption`` for ``norecursedirs``. ``python_functions`` defaulting to
-    the bare prefix ``test`` is the load-bearing one: it is why ``testfoo`` is a collected
-    test (corpus case ``collection/naming-testfoo``).
+    ``_assert_agrees_with_pytest`` does the work: every key in ``INI_KEYS`` is compared
+    against ``config.getini(key)`` from pytest itself, so this pins v2's defaults to pytest's
+    without transcribing them. The lone hand constant is ``python_functions == ["test"]``
+    (see ``PYTEST_SOURCE_PYTHON_FUNCTIONS_DEFAULT``), which a differential structurally
+    cannot check: it guards against pytest *changing*, not against v2 diverging.
     """
     root = _layout_bare(tmp_path)
-    resolved = _resolve(root, [])
+    resolved = _assert_agrees_with_pytest(root, [])
 
-    # No config file was found, so what follows really is the *default* set.
+    # No config file was found, so what the differential just compared really are defaults.
     assert resolved["config_file"] is None
-    assert resolved["python_files"] == DEFAULT_PYTHON_FILES
-    assert resolved["python_classes"] == DEFAULT_PYTHON_CLASSES
-    assert resolved["python_functions"] == DEFAULT_PYTHON_FUNCTIONS
-    assert resolved["norecursedirs"] == DEFAULT_NORECURSEDIRS
+    assert resolved["python_functions"] == PYTEST_SOURCE_PYTHON_FUNCTIONS_DEFAULT
     assert resolved["testpaths"] == []
     assert resolved["addopts"] == []
     assert resolved["markers"] == []
@@ -193,6 +241,7 @@ def _layout_pytest_ini(tmp_path: Path) -> Path:
     root = tmp_path / "ini_project"
     _write(root / "pytest.ini", "[pytest]\npython_classes = Check\nmarkers =\n    slow\n")
     _write(root / "tests" / "test_ini.py", TEST_MODULE)
+    _write(root / "tests" / "conftest.py", CONFTEST)
     return root
 
 
@@ -220,6 +269,7 @@ def _layout_pyproject(tmp_path: Path) -> Path:
         'testpaths = ["pkg/tests"]\n',
     )
     _write(root / "pkg" / "tests" / "check_toml.py", TEST_MODULE)
+    _write(root / "pkg" / "tests" / "conftest.py", CONFTEST)
     return root
 
 
@@ -241,6 +291,7 @@ def _layout_tox_ini(tmp_path: Path) -> Path:
     root = tmp_path / "tox_project"
     _write(root / "tox.ini", "[tox]\nenvlist = py312\n\n[pytest]\naddopts = -ra --tb=short\n")
     _write(root / "pkg" / "tests" / "test_tox.py", TEST_MODULE)
+    _write(root / "conftest.py", CONFTEST)
     return root
 
 

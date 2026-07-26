@@ -16,7 +16,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use serde::Serialize;
 
-use super::config::{resolve_config, ResolvedConfig};
+use super::config::{normpath, resolve_config, ResolvedConfig};
 
 /// Wire form of [`ResolvedConfig`].
 ///
@@ -74,24 +74,45 @@ fn resolved_to_json(config: &ResolvedConfig) -> String {
 
 /// Resolve pytest's rootdir + ini values for `invocation_dir` and CLI `args`, as JSON.
 ///
-/// `invocation_dir` stands in for `Config.invocation_params.dir` and **must be absolute** —
-/// that is what pytest always passes, and it is what makes the returned `rootdir` absolute.
+/// `invocation_dir` stands in for `Config.invocation_params.dir`, so the three properties
+/// pytest guarantees for that value are enforced here rather than assumed:
+///
+/// * **absolute** — `os.getcwd()` always is, and it is what makes the returned `rootdir`
+///   absolute without a process-CWD dependency;
+/// * **normalized** — `os.getcwd()` never contains `.` / `..` components, so the input is run
+///   through [`super::config::normpath`]; without it a caller passing `C:/a/b/../b` gets that
+///   spelling echoed back in `rootdir` (`b/../b/pytest.ini` really does open), and no
+///   comparison against pytest's rootdir would ever match;
+/// * **existing** — an absolute path that is not a directory would otherwise resolve
+///   happily and hand back plausible-looking defaults for a layout that is not there.
+///
 /// `args` are the raw CLI arguments (option-looking entries and `::` nodeid suffixes are
 /// handled exactly as `_pytest/config/findpaths.py::get_dirs_from_args` handles them).
 ///
-/// Raises `ValueError` for a relative `invocation_dir` and for every
-/// [`super::config::ConfigError`] (pytest raises `UsageError` for the latter).
+/// Raises `ValueError` for an `invocation_dir` that is relative, missing or not a directory,
+/// and for every [`super::config::ConfigError`] (pytest raises `UsageError` for the latter).
 #[pyfunction]
 pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<String> {
-    let dir = Path::new(invocation_dir);
-    if !dir.is_absolute() {
+    let raw = Path::new(invocation_dir);
+    if !raw.is_absolute() {
         return Err(PyValueError::new_err(format!(
             "invocation_dir must be an absolute path, got {invocation_dir:?}"
         )));
     }
+    let dir = normpath(raw);
+    if !dir.exists() {
+        return Err(PyValueError::new_err(format!(
+            "invocation_dir does not exist: {invocation_dir:?}"
+        )));
+    }
+    if !dir.is_dir() {
+        return Err(PyValueError::new_err(format!(
+            "invocation_dir is not a directory: {invocation_dir:?}"
+        )));
+    }
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let config =
-        resolve_config(dir, &args).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        resolve_config(&dir, &args).map_err(|err| PyValueError::new_err(err.to_string()))?;
     Ok(resolved_to_json(&config))
 }
 
@@ -229,6 +250,58 @@ mod tests {
             to_posix(&root.join("pytest.ini"))
         );
         assert_eq!(value["python_classes"][0].as_str().unwrap(), "Check");
+    }
+
+    #[test]
+    fn invocation_dir_is_normalized_before_resolution() {
+        // `os.getcwd()` never has `.`/`..` components, so pytest's rootdir never does either.
+        // Without normalizing at the boundary the unnormalized spelling survives into rootdir,
+        // because `<dir>/tests/../tests/pytest.ini` really does open on both platforms.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = tmp.path().join("tests");
+        std::fs::create_dir_all(&tests).unwrap();
+        std::fs::write(tests.join("pytest.ini"), "[pytest]\n").unwrap();
+
+        let detour = tests.join("..").join("tests");
+        let json = v2_resolve_config(&detour.to_string_lossy(), Vec::new()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["rootdir"].as_str().unwrap(), to_posix(&tests));
+        assert_eq!(
+            value["config_file"].as_str().unwrap(),
+            to_posix(&tests.join("pytest.ini"))
+        );
+    }
+
+    #[test]
+    fn nonexistent_invocation_dir_is_rejected() {
+        // Otherwise a typo'd path resolves happily and hands back plausible defaults.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing = tmp.path().join("no-such-dir");
+
+        let err = v2_resolve_config(&missing.to_string_lossy(), Vec::new()).unwrap_err();
+        Python::attach(|py| {
+            assert!(err.is_instance_of::<PyValueError>(py));
+            assert!(
+                err.value(py).to_string().contains("does not exist"),
+                "unexpected message: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn file_invocation_dir_is_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("pytest.ini");
+        std::fs::write(&file, "[pytest]\n").unwrap();
+
+        let err = v2_resolve_config(&file.to_string_lossy(), Vec::new()).unwrap_err();
+        Python::attach(|py| {
+            assert!(err.is_instance_of::<PyValueError>(py));
+            assert!(
+                err.value(py).to_string().contains("not a directory"),
+                "unexpected message: {err}"
+            );
+        });
     }
 
     #[test]

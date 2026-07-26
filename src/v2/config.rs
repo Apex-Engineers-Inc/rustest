@@ -813,7 +813,10 @@ fn absolutepath(invocation_dir: &Path, path: &Path) -> PathBuf {
 }
 
 /// Lexical `os.path.normpath`.
-fn normpath(path: &Path) -> PathBuf {
+///
+/// `pub(super)` for the PyO3 debug surface, which normalizes `invocation_dir` at the Python
+/// boundary to uphold the guarantee `os.getcwd()` gives pytest for free.
+pub(super) fn normpath(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     let mut normals = 0usize;
