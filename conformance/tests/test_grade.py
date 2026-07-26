@@ -226,11 +226,12 @@ def _run_result(
     xfailed: int = 0,
     xpassed: int = 0,
     errors: int = 0,
+    deselected: int = 0,
     exit_code: int = 0,
 ) -> FullRunResult:
     return FullRunResult(
         ids=ids,
-        outcomes=RunOutcomes(passed, failed, skipped, xfailed, xpassed, errors),
+        outcomes=RunOutcomes(passed, failed, skipped, xfailed, xpassed, errors, deselected),
         exit_code=exit_code,
     )
 
@@ -263,8 +264,8 @@ def test_grade_run_diverge_on_xfailed_alone() -> None:
     )
 
     assert got.status == "DIVERGE"
-    assert "pytest=1/0/0/1/0/0" in got.detail
-    assert "v2=1/0/0/0/0/0" in got.detail
+    assert "pytest=1/0/0/1/0/0/0 " in got.detail
+    assert "v2=1/0/0/0/0/0/0" in got.detail
     assert "passed/failed/skipped/xfailed/xpassed/errors" in got.detail
 
 
@@ -283,8 +284,39 @@ def test_grade_run_diverge_on_xpassed_alone() -> None:
     )
 
     assert got.status == "DIVERGE"
-    assert "pytest=1/0/0/0/1/0" in got.detail
-    assert "v2=1/0/0/0/0/0" in got.detail
+    assert "pytest=1/0/0/0/1/0/0 " in got.detail
+    assert "v2=1/0/0/0/0/0/0" in got.detail
+
+
+def test_grade_run_diverge_on_a_lost_deselected_sibling() -> None:
+    """The false green this gate shipped with, pinned as a regression.
+
+    The scenario, from the gate review: `marks/mark-filter` runs with ``-m smoke``.
+    pytest selects one test and **deselects** its sibling. A v2 that never collected the
+    sibling at all -- lost it outright -- publishes:
+
+    * the same ordered ids (the sibling was never in the graded list either way),
+    * the same six outcome buckets (it did not run under pytest either),
+    * the same exit code (0 both sides).
+
+    Every other graded field is blind to it, and the case graded MATCH. ``deselected``
+    is the one field either side publishes that separates "chosen against" from "never
+    seen", which is why it is compared rather than inferred from the id list.
+    """
+    got = grade_run_case(
+        "marks/mark-filter",
+        _run_result(["test_marks.py::test_selected"], passed=1, deselected=1),
+        _run_result(["test_marks.py::test_selected"], passed=1, deselected=0),
+        {},
+    )
+
+    assert got.status == "DIVERGE"
+    assert "missing from v2" not in got.detail
+    assert "id order" not in got.detail
+    assert "exit codes" not in got.detail
+    assert "pytest=1/0/0/0/0/0/1 " in got.detail
+    assert "v2=1/0/0/0/0/0/0" in got.detail
+    assert "passed/failed/skipped/xfailed/xpassed/errors/deselected" in got.detail
 
 
 def test_grade_run_diverge_on_exit_code_only() -> None:
@@ -389,8 +421,8 @@ def test_grade_run_ignores_v1s_four_value_outcomes() -> None:
     Sharing v1's type would silently drop ``xfailed``/``xpassed`` -- the two buckets the
     whole run gate was added to see -- and every xfail case would grade as a match.
     """
-    assert not hasattr(RunOutcomes(0, 0, 0, 0, 0, 0), "exit_code")
-    assert not hasattr(RunOutcomes(0, 0, 0, 0, 0, 0), "collection_error")
+    assert not hasattr(RunOutcomes(0, 0, 0, 0, 0, 0, 0), "exit_code")
+    assert not hasattr(RunOutcomes(0, 0, 0, 0, 0, 0, 0), "collection_error")
 
 
 def test_load_waivers_and_case_args(tmp_path: Path) -> None:

@@ -225,7 +225,7 @@ def test_grade_one_run_passes_case_args_to_both_runners(tmp_path: Path) -> None:
     def _record(key: str) -> Callable[[Path, list[str]], FullRunResult]:
         def runner(case_dir: Path, args: list[str]) -> FullRunResult:
             seen[key] = args
-            return FullRunResult(ids=[], outcomes=RunOutcomes(0, 0, 0, 0, 0, 0), exit_code=5)
+            return FullRunResult(ids=[], outcomes=RunOutcomes(0, 0, 0, 0, 0, 0, 0), exit_code=5)
 
         return runner
 

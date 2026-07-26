@@ -679,6 +679,21 @@ def test_parse_pytest_summary_does_not_read_xpassed_as_passed() -> None:
     assert out.xpassed == 2
 
 
+def test_parse_pytest_summary_counts_deselected() -> None:
+    """``deselected`` is read off the summary line, and it is not an outcome bucket.
+
+    pytest prints it beside the outcomes (``1 passed, 1 deselected``) but no test ran,
+    so it must not be conflated with ``skipped`` -- the bucket it superficially
+    resembles. The gate compares it because it is the only published field that
+    distinguishes a deselected id from one that was never collected.
+    """
+    out = parse_pytest_summary("1 passed, 2 deselected in 0.01s\n", exit_code=0)
+
+    assert out.deselected == 2
+    assert out.skipped == 0
+    assert out.passed == 1
+
+
 SIX_OUTCOME_SUITE = textwrap.dedent(
     """\
     import pytest
@@ -745,7 +760,7 @@ def test_parse_pytest_summary_matches_real_pytest_on_every_bucket(tmp_path: Path
     result = run_pytest_full(_case_with_six_outcomes(tmp_path), [])
 
     assert result.outcomes == RunOutcomes(
-        passed=1, failed=1, skipped=1, xfailed=1, xpassed=1, errors=1
+        passed=1, failed=1, skipped=1, xfailed=1, xpassed=1, errors=1, deselected=0
     )
 
 
@@ -764,7 +779,7 @@ def test_full_run_runners_agree_on_all_six_outcomes(
 
     assert result.ids == SIX_OUTCOME_IDS_ORDERED
     assert result.outcomes == RunOutcomes(
-        passed=1, failed=1, skipped=1, xfailed=1, xpassed=1, errors=1
+        passed=1, failed=1, skipped=1, xfailed=1, xpassed=1, errors=1, deselected=0
     )
     assert result.exit_code == 1
 
@@ -782,7 +797,7 @@ def test_full_run_runners_agree_on_the_mini_suite(
 
     assert result.ids == MINI_IDS_ORDERED
     assert result.outcomes == RunOutcomes(
-        passed=2, failed=1, skipped=0, xfailed=0, xpassed=0, errors=0
+        passed=2, failed=1, skipped=0, xfailed=0, xpassed=0, errors=0, deselected=0
     )
     assert result.exit_code == 1
 
@@ -819,6 +834,14 @@ def test_full_run_runners_pass_case_args_through(
     ``marks/mark-filter`` is exactly this shape. If a runner dropped the args, the id
     list would silently grow back to the whole file and the case would compare two
     different questions.
+
+    **``deselected=1`` is the load-bearing half.** It is the differential wiring test for
+    the seventh graded count: pytest publishes it on the summary line (``1 passed,
+    1 deselected``) and v2 publishes it as ``summary.deselected``, and this asserts both
+    reach ``RunOutcomes`` through their own separate code paths. Without it the count
+    could be hard-zero on either side and every case would still agree -- which is how
+    the gate shipped with a false green (see
+    ``test_grade_run_diverge_on_a_lost_deselected_sibling``).
     """
     case_dir = tmp_path / "case"
     case_dir.mkdir()
@@ -844,7 +867,7 @@ def test_full_run_runners_pass_case_args_through(
 
     assert result.ids == ["test_marks.py::test_selected"]
     assert result.outcomes == RunOutcomes(
-        passed=1, failed=0, skipped=0, xfailed=0, xpassed=0, errors=0
+        passed=1, failed=0, skipped=0, xfailed=0, xpassed=0, errors=0, deselected=1
     )
     assert result.exit_code == 0
 
@@ -896,7 +919,7 @@ def test_full_run_runners_report_no_executed_ids_when_collection_is_interrupted(
     assert result.exit_code == 2
     assert result.ids == []
     assert result.outcomes == RunOutcomes(
-        passed=0, failed=0, skipped=0, xfailed=0, xpassed=0, errors=1
+        passed=0, failed=0, skipped=0, xfailed=0, xpassed=0, errors=1, deselected=0
     )
     # The oracle half, and the reason the empty list above is an observation rather
     # than a restatement of the branch: the healthy test would have written this file
@@ -904,6 +927,55 @@ def test_full_run_runners_report_no_executed_ids_when_collection_is_interrupted(
     # *pytest*, not about the harness -- so it is carried here rather than as a
     # separate test that would look mutation-covered and not be.
     assert not (case_dir / "ran.marker").exists()
+
+
+def test_run_pytest_full_keeps_its_ids_when_a_test_calls_pytest_exit(tmp_path: Path) -> None:
+    """Exit 2 from ``pytest.exit()`` must NOT be read as "collection failed".
+
+    ``_pytest.outcomes.Exit`` and ``Interrupted`` share exit code 2, so a rule keyed on
+    the **run** pass's code fires for both -- and for ``pytest.exit()`` that produces an
+    oracle contradicting itself: an empty id list beside a tally that says a test passed.
+    Anyone reading that divergence would go hunting for a collection bug that is not
+    there.
+
+    Probed shapes for this tree: collect pass exit 0 with three ids, run pass exit 2 with
+    ``1 passed``. Keying on the **collect** pass -- the authority on whether collection
+    failed -- keeps the ids, so the real disagreement surfaces through the tally and the
+    exit code instead.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "test_bail.py").write_text(
+        textwrap.dedent(
+            """\
+            import pytest
+
+
+            def test_first():
+                assert True
+
+
+            def test_bails():
+                pytest.exit("stopping here")
+
+
+            def test_never():
+                assert True
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_pytest_full(case_dir, [])
+
+    assert result.exit_code == 2
+    # Collection succeeded, so the ids stand: the oracle stays internally consistent.
+    assert result.ids == [
+        "test_bail.py::test_first",
+        "test_bail.py::test_bails",
+        "test_bail.py::test_never",
+    ]
+    assert result.outcomes.passed == 1
 
 
 def test_run_rustest_v2_run_raises_when_no_report_is_written(tmp_path: Path) -> None:

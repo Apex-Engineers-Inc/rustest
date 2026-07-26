@@ -23,11 +23,17 @@ from .ids import normalize_pytest_nodeid, normalize_rustest_id
 # they were here the tokens matched *nothing at all* and an expected failure was
 # tallied as zero of everything -- see the `marks/xfail` waiver, which recorded pytest
 # as 1/0/0/0 for a `1 passed, 1 xfailed` run.
-_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed)")
+#
+# `deselected` is not an outcome -- no test ran -- but it is graded, and it is the ONLY
+# thing that can be. An id missing from the graded list because `-m` deselected it is
+# otherwise indistinguishable from one missing because it was never collected at all:
+# same ids, same buckets, same exit code. See `grade_run_case`.
+_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed|deselected)")
 
 # pytest's exit code for "collection raised, so the run loop never started"
 # (`_pytest/main.py::pytest_runtestloop` raises `Interrupted` before the first item).
-# Named because `run_pytest_full` keys the one rule it owns on this value.
+# Named because `run_pytest_full` keys the one rule it owns on this value -- read off the
+# COLLECT pass, never the run pass; see that function.
 _PYTEST_EXIT_INTERRUPTED = 2
 
 # A pytest nodeid: a path segment, one or more "::"-separated name segments, and
@@ -66,12 +72,12 @@ _SECTION_BOUNDARY_RE = re.compile(r"^=+ .+ =+$")
 class Outcomes:
     """What a v1 end-to-end run tallies, plus the two X buckets pytest also reports.
 
-    ``xfailed``/``xpassed`` are appended **with defaults** rather than slotted in beside
-    ``skipped`` so that positional construction keeps working, and they are deliberately
-    *not* part of ``grade_case``'s comparison: v1 has no xfail concept at all, so the v1
-    gate grades the four buckets it can meaningfully diff and records the rest in its
-    ledger. ``parse_pytest_summary`` fills them because the **full-run** gate reads the
-    same parser and does grade all six.
+    ``xfailed``/``xpassed``/``deselected`` are appended **with defaults** rather than
+    slotted in beside ``skipped`` so that positional construction keeps working, and they
+    are deliberately *not* part of ``grade_case``'s comparison: v1 has no xfail concept at
+    all, so the v1 gate grades the four buckets it can meaningfully diff and records the
+    rest in its ledger. ``parse_pytest_summary`` fills them because the **full-run** gate
+    reads the same parser and does grade all seven.
     """
 
     passed: int
@@ -82,6 +88,7 @@ class Outcomes:
     collection_error: bool
     xfailed: int = 0
     xpassed: int = 0
+    deselected: int = 0
 
 
 @dataclass(frozen=True)
@@ -92,13 +99,22 @@ class RunResult:
 
 @dataclass(frozen=True)
 class RunOutcomes:
-    """The six-value tally schema v2 carries -- the whole outcome half of the run gate.
+    """The seven graded counts schema v2 carries -- the tally half of the run gate.
 
-    Deliberately its own type rather than a reuse of :class:`Outcomes`. Six buckets is
-    the *point*: schema v1's three statuses had nowhere to put an X, which is exactly
-    how ``marks/xfail`` graded as an ordinary failure and ``xpassed`` was invisible
-    (Task 4 report §5.1). A tally that silently dropped either would make the two cases
-    this gate exists to prove match for the wrong reason.
+    Field order mirrors the schema-v2 ``summary`` object's own field order, so the
+    legend printed on a divergence reads like the report it came from.
+
+    Deliberately its own type rather than a reuse of :class:`Outcomes`. Six *outcome*
+    buckets is the point: schema v1's three statuses had nowhere to put an X, which is
+    exactly how ``marks/xfail`` graded as an ordinary failure and ``xpassed`` was
+    invisible (Task 4 report §5.1). A tally that silently dropped either would make the
+    two cases this gate exists to prove match for the wrong reason.
+
+    ``deselected`` is the seventh and is **not an outcome** -- no test ran -- but it is
+    graded, because it is the only thing that can distinguish "this id is absent because
+    ``-m`` deselected it" from "this id is absent because it was never collected". Those
+    two produce identical ids, identical buckets and an identical exit code. Leaving it
+    out was a **false green**: a v2 that lost a deselected sibling entirely graded MATCH.
 
     No ``exit_code`` and no ``collection_error`` field: the exit code belongs to the
     *run*, not to its tally, and lives on :class:`FullRunResult`; a collection error is
@@ -112,11 +128,12 @@ class RunOutcomes:
     xfailed: int
     xpassed: int
     errors: int
+    deselected: int
 
 
 @dataclass(frozen=True)
 class FullRunResult:
-    """What an *executed* run produces: ordered ids, the six-value tally, the exit code.
+    """What an *executed* run produces: ordered ids, the graded counts, the exit code.
 
     ``ids`` is an ordered ``list`` for the same two reasons as
     :attr:`CollectResult.ids` -- execution **order** is observable behaviour (a
@@ -256,10 +273,20 @@ def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
 
     Six buckets, because pytest reports six: ``xfailed`` and ``xpassed`` are their own
     categories and folding either into ``skipped``/``passed`` is precisely what made an
-    X invisible under schema v1. The v1 gate still grades only the four it can
-    represent (see :class:`Outcomes`); the full-run gate grades all six.
+    X invisible under schema v1. ``deselected`` rides along as a seventh count -- not an
+    outcome, but the only evidence that an absent id was *chosen* against rather than
+    never seen. The v1 gate still grades only the four buckets it can represent (see
+    :class:`Outcomes`); the full-run gate grades all seven.
     """
-    counts = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0, "xfailed": 0, "xpassed": 0}
+    counts = {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "xfailed": 0,
+        "xpassed": 0,
+        "deselected": 0,
+    }
     for line in reversed(text.splitlines()):
         found: dict[str, int] = {}
         for match in _SUMMARY_RE.finditer(line):
@@ -272,6 +299,7 @@ def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
             counts["skipped"] = found.get("skipped", 0)
             counts["xfailed"] = found.get("xfailed", 0)
             counts["xpassed"] = found.get("xpassed", 0)
+            counts["deselected"] = found.get("deselected", 0)
             # pytest writes "1 error" but "2 errors"; both mean the same bucket.
             counts["errors"] = found.get("error", 0) + found.get("errors", 0)
             break
@@ -284,6 +312,7 @@ def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
         collection_error=exit_code == 2,
         xfailed=counts["xfailed"],
         xpassed=counts["xpassed"],
+        deselected=counts["deselected"],
     )
 
 
@@ -474,7 +503,17 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
     * ``--collect-only -q`` -> the **ordered node ids of the selected tests**, parsed by
       the same hardened ``parse_pytest_collect`` the collect gate uses. Deselection
       applies here exactly as it does to a run, so ``-m smoke`` shrinks this list.
-    * ``-q --tb=no`` -> the summary line (the six-value tally) and the exit code.
+    * ``-q --tb=no`` -> the summary line (the seven graded counts) and the exit code.
+
+    **The double invocation is an asymmetry with the v2 side, and it is not free.**
+    ``run_rustest_v2_run`` runs the case **once**; this runs it twice, and the second
+    invocation sees a tree the first one has already touched (``.pyc`` files written
+    during collection). Both are pytest, so neither pass is influenced by the other's
+    *results*, and ``-p no:cacheprovider`` keeps pytest's own cache out of it -- but a
+    case whose behaviour depended on being collected twice, or on filesystem state at
+    import time, would be asked a different question here than v2 is asked. No corpus
+    case is of that kind. The alternative -- reading ids out of a single ``-v`` run --
+    was rejected for the stronger reason below.
 
     **Why the ids do not come from a ``-v`` run.** ``-v`` prints one line per *report*,
     and pytest emits up to three reports per test: a body that passes with a teardown
@@ -486,13 +525,33 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
 
     **The one rule keyed on an exit code**, and it is pytest's own: a collection error
     means *nothing runs at all* -- ``pytest_runtestloop`` raises ``Interrupted`` before
-    the first item -- so exit 2 leaves the executed-id list empty however many ids the
-    collect pass listed. v2 encodes the identical rule (``src/v2/execute.rs::stage``
-    returns empty dispatch lists when ``errors`` is non-empty; Task 4 report §2.1,
-    correction 2), so applying it here compares like with like instead of pitting
-    pytest's *collected* set against v2's *executed* one. It is pinned against real
-    pytest from a side effect -- the healthy test would have written a marker file if it
-    had run -- rather than by restating the branch.
+    the first item -- so the executed-id list is empty however many ids the collect pass
+    listed. v2 encodes the identical rule (``src/v2/execute.rs::stage`` returns empty
+    dispatch lists when ``errors`` is non-empty; Task 4 report §2.1, correction 2), so
+    applying it here compares like with like instead of pitting pytest's *collected* set
+    against v2's *executed* one. It is pinned against real pytest from a side effect --
+    the healthy test would have written a marker file if it had run -- rather than by
+    restating the branch.
+
+    **The rule reads the COLLECT pass's exit code, not the run pass's**, and the
+    difference is not cosmetic. Exit 2 is `Interrupted` *or* `Exit`, and
+    ``pytest.exit()`` called from inside a test body raises the latter: the run pass
+    exits 2 with tests already reported. Probed::
+
+        def test_first():  assert True
+        def test_bails():  pytest.exit("stopping here")
+
+        COLLECT pass -> exit 0, 3 ids
+        RUN pass     -> exit 2, "1 passed"
+
+    Keying on the run pass would answer "did collection fail?" with a number that also
+    means "someone called ``pytest.exit()``", producing an **internally inconsistent
+    oracle**: an empty id list beside a tally that says one test passed. Whoever read
+    that divergence would be sent looking for a collection bug that does not exist. The
+    collect pass is the authority on whether collection failed, and keying on it is
+    strictly tighter -- it fires on exactly the cases the rule is about, and the
+    ``pytest.exit()`` run then diverges through the tally and the exit code, where it
+    belongs.
     """
     with tempfile.TemporaryDirectory() as tmp:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
@@ -502,7 +561,8 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
         run = _run([*base, "-q", "--tb=no", *args], work)
         _check_pytest_exit(run, "run")
     outcomes = parse_pytest_summary(run.stdout, run.returncode)
-    ids = [] if run.returncode == _PYTEST_EXIT_INTERRUPTED else parse_pytest_collect(collect.stdout)
+    interrupted = collect.returncode == _PYTEST_EXIT_INTERRUPTED
+    ids = [] if interrupted else parse_pytest_collect(collect.stdout)
     return FullRunResult(
         ids=ids,
         outcomes=RunOutcomes(
@@ -512,6 +572,7 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
             xfailed=outcomes.xfailed,
             xpassed=outcomes.xpassed,
             errors=outcomes.errors,
+            deselected=outcomes.deselected,
         ),
         exit_code=run.returncode,
     )
@@ -580,6 +641,7 @@ def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
             xfailed=summary["xfailed"],
             xpassed=summary["xpassed"],
             errors=summary["error"] + len(collection_errors),
+            deselected=summary["deselected"],
         ),
         exit_code=proc.returncode,
     )

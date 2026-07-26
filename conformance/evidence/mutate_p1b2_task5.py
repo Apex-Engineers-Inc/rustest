@@ -55,8 +55,8 @@ ROWS: list[Row] = [
         1,
         "summary",
         RUN,
-        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed)")',
-        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xpassed)")',
+        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed|deselected)")',
+        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xpassed|deselected)")',
         [
             f"{T_RUN}::test_parse_pytest_summary_reads_all_six_buckets",
             f"{T_RUN}::test_parse_pytest_summary_does_not_read_xfailed_as_failed",
@@ -69,8 +69,8 @@ ROWS: list[Row] = [
         2,
         "summary",
         RUN,
-        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed)")',
-        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed)")',
+        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed|deselected)")',
+        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|deselected)")',
         [
             f"{T_RUN}::test_parse_pytest_summary_reads_all_six_buckets",
             f"{T_RUN}::test_parse_pytest_summary_does_not_read_xpassed_as_passed",
@@ -100,8 +100,7 @@ ROWS: list[Row] = [
         5,
         "pytest oracle",
         RUN,
-        "    ids = [] if run.returncode == _PYTEST_EXIT_INTERRUPTED "
-        + "else parse_pytest_collect(collect.stdout)",
+        "    ids = [] if interrupted else parse_pytest_collect(collect.stdout)",
         "    ids = parse_pytest_collect(collect.stdout)",
         [
             f"{T_RUN}::test_full_run_runners_report_no_executed_ids_when_collection"
@@ -113,10 +112,8 @@ ROWS: list[Row] = [
         6,
         "pytest oracle",
         RUN,
-        "    ids = [] if run.returncode == _PYTEST_EXIT_INTERRUPTED "
-        + "else parse_pytest_collect(collect.stdout)",
-        "    ids = [] if run.returncode != _PYTEST_EXIT_INTERRUPTED "
-        + "else parse_pytest_collect(collect.stdout)",
+        "    interrupted = collect.returncode == _PYTEST_EXIT_INTERRUPTED",
+        "    interrupted = collect.returncode != _PYTEST_EXIT_INTERRUPTED",
         [f"{T_RUN}::test_full_run_runners_agree_on_the_mini_suite[run_pytest_full]"],
         "Interrupted rule inverted: a healthy run reports no ids",
     ),
@@ -322,10 +319,8 @@ ROWS: list[Row] = [
         24,
         "grader",
         GRD,
-        '        f"{outcomes.passed}/{outcomes.failed}/{outcomes.skipped}/"\n'
-        + '        + f"{outcomes.xfailed}/{outcomes.xpassed}/{outcomes.errors}"',
-        '        f"{outcomes.passed}/{outcomes.failed}/{outcomes.skipped}/"\n'
-        + '        + f"{outcomes.xpassed}/{outcomes.xfailed}/{outcomes.errors}"',
+        '        + f"{outcomes.xfailed}/{outcomes.xpassed}/{outcomes.errors}/"',
+        '        + f"{outcomes.xpassed}/{outcomes.xfailed}/{outcomes.errors}/"',
         [
             f"{T_GRD}::test_grade_run_diverge_on_xfailed_alone",
             f"{T_GRD}::test_grade_run_diverge_on_xpassed_alone",
@@ -336,8 +331,7 @@ ROWS: list[Row] = [
         25,
         "grader",
         GRD,
-        "    exists to prove (``marks/xfail``, ``marks/xfail-strict``) match for the "
-        + "wrong reason.\n"
+        "      only field either side publishes that can tell the two apart.\n"
         + '    """\n'
         + "    problems: list[str] = []\n"
         + "    only_pytest = sorted(set(pytest_result.ids) - set(v2_result.ids))\n"
@@ -346,8 +340,7 @@ ROWS: list[Row] = [
         + '        problems.append(f"missing from v2: {only_pytest}")\n'
         + "    if only_v2:\n"
         + '        problems.append(f"extra in v2: {only_v2}")\n',
-        "    exists to prove (``marks/xfail``, ``marks/xfail-strict``) match for the "
-        + "wrong reason.\n"
+        "      only field either side publishes that can tell the two apart.\n"
         + '    """\n'
         + "    problems: list[str] = []\n",
         [f"{T_GRD}::test_grade_run_reports_both_set_diff_and_position"],
@@ -393,6 +386,97 @@ ROWS: list[Row] = [
         "    mode = parser.add_argument_group()",
         [f"{T_MAIN}::test_main_rejects_both_v2_modes_at_once"],
         "both v2 modes accepted at once",
+    ),
+    # ------------------------------------------- deselected (the gate-review false green)
+    Row(
+        31,
+        "deselected",
+        RUN,
+        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed|deselected)")',
+        r'_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed)")',
+        [
+            f"{T_RUN}::test_parse_pytest_summary_counts_deselected",
+            f"{T_RUN}::test_full_run_runners_pass_case_args_through[run_pytest_full]",
+        ],
+        "deselected token dropped on the PYTEST side -- count reads 0",
+    ),
+    Row(
+        32,
+        "deselected",
+        RUN,
+        '            counts["deselected"] = found.get("deselected", 0)',
+        '            counts["deselected"] = found.get("skipped", 0)',
+        [f"{T_RUN}::test_parse_pytest_summary_counts_deselected"],
+        "deselected read off the WRONG token (skipped) -- the bucket it resembles",
+    ),
+    Row(
+        33,
+        "deselected",
+        RUN,
+        '            deselected=summary["deselected"],',
+        "            deselected=0,",
+        [f"{T_RUN}::test_full_run_runners_pass_case_args_through[run_rustest_v2_run]"],
+        "deselected never read off the v2 report -- count reads 0",
+    ),
+    Row(
+        34,
+        "deselected",
+        GRD,
+        '        + f"{outcomes.xfailed}/{outcomes.xpassed}/{outcomes.errors}/"\n'
+        + '        + f"{outcomes.deselected}"',
+        '        + f"{outcomes.xfailed}/{outcomes.xpassed}/{outcomes.errors}"',
+        [f"{T_GRD}::test_grade_run_diverge_on_a_lost_deselected_sibling"],
+        "deselected dropped from the printed tally -- the divergence is unreadable",
+    ),
+    Row(
+        35,
+        "deselected",
+        RUN,
+        "    passed: int\n"
+        + "    failed: int\n"
+        + "    skipped: int\n"
+        + "    xfailed: int\n"
+        + "    xpassed: int\n"
+        + "    errors: int\n"
+        + "    deselected: int",
+        "    passed: int\n"
+        + "    failed: int\n"
+        + "    skipped: int\n"
+        + "    xfailed: int\n"
+        + "    xpassed: int\n"
+        + "    errors: int\n"
+        + "    deselected: int = 0\n"
+        + "\n"
+        + "    def __eq__(self, other: object) -> bool:\n"
+        + "        if not isinstance(other, RunOutcomes):\n"
+        + "            return NotImplemented\n"
+        + "        return (\n"
+        + "            self.passed,\n"
+        + "            self.failed,\n"
+        + "            self.skipped,\n"
+        + "            self.xfailed,\n"
+        + "            self.xpassed,\n"
+        + "            self.errors,\n"
+        + "        ) == (\n"
+        + "            other.passed,\n"
+        + "            other.failed,\n"
+        + "            other.skipped,\n"
+        + "            other.xfailed,\n"
+        + "            other.xpassed,\n"
+        + "            other.errors,\n"
+        + "        )",
+        [f"{T_GRD}::test_grade_run_diverge_on_a_lost_deselected_sibling"],
+        "THE ORIGINAL FALSE GREEN: tally compared on the six outcomes, deselected ignored",
+    ),
+    # --------------------------------------------- the nothing-ran rule's keying pass
+    Row(
+        36,
+        "interrupted",
+        RUN,
+        "    interrupted = collect.returncode == _PYTEST_EXIT_INTERRUPTED",
+        "    interrupted = run.returncode == _PYTEST_EXIT_INTERRUPTED",
+        [f"{T_RUN}::test_run_pytest_full_keeps_its_ids_when_a_test_calls_pytest_exit"],
+        "nothing-ran rule rekeyed on the RUN pass -- pytest.exit() empties the ids",
     ),
     Row(
         30,

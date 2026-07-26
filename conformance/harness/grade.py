@@ -110,19 +110,20 @@ def grade_collect_case(
     return _adjudicate(name, problems, waivers)
 
 
-_RUN_TALLY_LEGEND = "passed/failed/skipped/xfailed/xpassed/errors"
+_RUN_TALLY_LEGEND = "passed/failed/skipped/xfailed/xpassed/errors/deselected"
 
 
 def _format_run_tally(outcomes: RunOutcomes) -> str:
-    """Six numbers on one line, in the order the legend names.
+    """Seven numbers on one line, in the order the legend names.
 
-    Printed with the legend rather than bare, because six anonymous slash-separated
+    Printed with the legend rather than bare, because seven anonymous slash-separated
     integers are unreadable at exactly the moment someone needs to read them -- when a
     gate has just gone red.
     """
     return (
         f"{outcomes.passed}/{outcomes.failed}/{outcomes.skipped}/"
-        + f"{outcomes.xfailed}/{outcomes.xpassed}/{outcomes.errors}"
+        + f"{outcomes.xfailed}/{outcomes.xpassed}/{outcomes.errors}/"
+        + f"{outcomes.deselected}"
     )
 
 
@@ -132,7 +133,7 @@ def grade_run_case(
     v2_result: FullRunResult,
     waivers: dict[str, str],
 ) -> CaseResult:
-    """Grade a case on a full run: ordered ids, the six-value tally, and the exit code.
+    """Grade a case on a full run: ordered ids, the seven graded counts, the exit code.
 
     Those three *are* the whole ``rustest --v2`` contract as a machine reader sees it.
     Nothing else is compared, and each omission is deliberate:
@@ -140,8 +141,14 @@ def grade_run_case(
     * **stdout/stderr prose** -- worded differently by design on the v2 side, and worker
       stderr legitimately carries boundary teardown output on a green run.
     * **durations** -- not a claim about behaviour.
-    * **``deselected``** -- already graded, and more precisely, by the id list: a
-      deselected test is simply absent from it.
+    * **``teardown_errors``** -- not compared as a list, but it cannot hide: each entry
+      counts as a failure for ``exit_code`` (``src/v2/execute.rs`` ``finish``), and the
+      exit code *is* graded. It is deliberately **not** folded into ``errors`` the way
+      collection errors are, because v2's own summary line does not fold it either
+      (``core.py::_run_summary`` takes only ``collection_errors``). pytest does count
+      such a teardown in its error bucket, so a case with an unattributable teardown
+      failure will diverge on the tally -- loudly, which is the point. No corpus case has
+      that shape today; when one arrives it is a real adjudication, not a mapping to add.
     * **a separate collection-error flag** -- that is exit 2 on both sides, so comparing
       it would grade the same fact twice under two names.
 
@@ -151,9 +158,18 @@ def grade_run_case(
     are the readable form of a membership defect; the positional report is what catches
     a pure ordering or duplication defect, which a set cannot see at all.
 
-    The tally is compared as a **six-tuple**. Folding ``xfailed`` into ``skipped`` or
-    ``xpassed`` into ``passed`` -- schema v1's shape -- would make the two cases this gate
-    exists to prove (``marks/xfail``, ``marks/xfail-strict``) match for the wrong reason.
+    The tally is compared as a **seven-tuple**:
+
+    * Folding ``xfailed`` into ``skipped`` or ``xpassed`` into ``passed`` -- schema v1's
+      shape -- would make the two cases this gate exists to prove (``marks/xfail``,
+      ``marks/xfail-strict``) match for the wrong reason.
+    * ``deselected`` is graded because **the id list cannot stand in for it.** An earlier
+      version of this docstring claimed it could -- "a deselected test is simply absent
+      from the list" -- and that was a false green, not a shortcut. Absent-because-
+      deselected and absent-because-never-collected produce byte-identical id lists,
+      identical outcome buckets and an identical exit code. A v2 that lost a deselected
+      sibling outright graded MATCH under ``marks/mark-filter``. ``deselected`` is the
+      only field either side publishes that can tell the two apart.
     """
     problems: list[str] = []
     only_pytest = sorted(set(pytest_result.ids) - set(v2_result.ids))
