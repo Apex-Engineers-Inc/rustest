@@ -6,7 +6,7 @@
 //!
 //! The JSON encoding below is a **frozen wire contract**: field names and the
 //! omit-when-empty rules are consumed by the worker protocol (Phase 1b) and the JSON
-//! report (Phase 1c).  `src/v2/manifest.rs`'s golden-string test pins the exact bytes;
+//! report (Phase 1c).  This module's golden-string test pins the exact bytes;
 //! any incompatible change must bump [`MANIFEST_SCHEMA_VERSION`].
 
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,11 @@ mod tests {
 
     /// Builds the fixed manifest used by both the round-trip and the golden-contract
     /// test: one plain test, one class + parametrized test carrying a mark with args and
-    /// kwargs, and one collection error.
+    /// kwargs plus a bare mark with neither, and one collection error.
+    ///
+    /// The bare `slow` mark is what exercises the omit-when-empty rules on `MarkSpec`:
+    /// without it, `args`/`kwargs` are never empty in any test and the
+    /// `skip_serializing_if`/`default` attributes on both fields would be unpinned.
     fn sample_manifest() -> CollectionManifest {
         let mut kwargs = Map::new();
         kwargs.insert("reason".to_string(), json!("needs windows"));
@@ -96,11 +100,18 @@ mod tests {
                     qualname: "TestBox.test_method".to_string(),
                     class_name: Some("TestBox".to_string()),
                     param_id: Some("x-1".to_string()),
-                    marks: vec![MarkSpec {
-                        name: "skipif".to_string(),
-                        args: vec![Value::Bool(true)],
-                        kwargs,
-                    }],
+                    marks: vec![
+                        MarkSpec {
+                            name: "skipif".to_string(),
+                            args: vec![Value::Bool(true)],
+                            kwargs,
+                        },
+                        MarkSpec {
+                            name: "slow".to_string(),
+                            args: Vec::new(),
+                            kwargs: Map::new(),
+                        },
+                    ],
                     fixtures: vec!["tmp_path".to_string(), "capsys".to_string()],
                 },
             ],
@@ -131,8 +142,26 @@ mod tests {
 
         assert_eq!(
             encoded,
-            r#"{"schema_version":2,"rootdir":"/repo","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"},{"id":"tests/test_math.py::TestBox::test_method[x-1]","path":"tests/test_math.py","qualname":"TestBox.test_method","class_name":"TestBox","param_id":"x-1","marks":[{"name":"skipif","args":[true],"kwargs":{"reason":"needs windows","strict":true}}],"fixtures":["tmp_path","capsys"]}],"errors":[{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}]}"#
+            r#"{"schema_version":2,"rootdir":"/repo","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"},{"id":"tests/test_math.py::TestBox::test_method[x-1]","path":"tests/test_math.py","qualname":"TestBox.test_method","class_name":"TestBox","param_id":"x-1","marks":[{"name":"skipif","args":[true],"kwargs":{"reason":"needs windows","strict":true}},{"name":"slow"}],"fixtures":["tmp_path","capsys"]}],"errors":[{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}]}"#
         );
+    }
+
+    /// A mark with no args and no kwargs is `{"name":"slow"}` on the wire — nothing else —
+    /// and decodes back from exactly that, so producers in 1b may omit both keys.
+    #[test]
+    fn bare_mark_wire_form_is_name_only() {
+        let bare = MarkSpec {
+            name: "slow".to_string(),
+            args: Vec::new(),
+            kwargs: Map::new(),
+        };
+
+        let encoded = serde_json::to_string(&bare).expect("mark serializes");
+        assert_eq!(encoded, r#"{"name":"slow"}"#);
+
+        let decoded: MarkSpec =
+            serde_json::from_str(r#"{"name":"slow"}"#).expect("bare mark deserializes");
+        assert_eq!(decoded, bare);
     }
 
     /// An empty collection carries no optional noise: `errors` is omitted entirely and

@@ -15,8 +15,6 @@ mod model;
 mod output;
 mod python_support;
 
-/// The v2 core (see `docs/superpowers/specs/2026-07-25-rustest-v2-architecture-design.md`).
-/// Built alongside v1; no PyO3 surface yet.
 pub mod v2;
 
 #[cfg(test)]
