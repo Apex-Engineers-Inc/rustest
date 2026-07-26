@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from rustest._v2_worker import (
     PROTOCOL_VERSION,
     CollectionRefusal,
     Naming,
+    NotInitializedError,
     collect_file,
     encode_response,
     enumerate_module,
@@ -719,6 +721,26 @@ def test_ids_are_rootdir_relative_posix(tmp_path: Path) -> None:
     assert entries[0]["path"] == "nested/dir/test_deep.py"
 
 
+def test_import_mismatch_check_honours_py_ignore_importmismatch(tmp_path: Path) -> None:
+    """`PY_IGNORE_IMPORTMISMATCH=1` skips the check, exactly as in
+    `_pytest/pathlib.py::import_path` (`ignore = os.environ.get(...)`)."""
+    first = write(tmp_path / "a" / "test_dup2.py", "def test_a(): pass\n")
+    second = write(tmp_path / "b" / "test_dup2.py", "def test_b(): pass\n")
+
+    previous = os.environ.get("PY_IGNORE_IMPORTMISMATCH")
+    os.environ["PY_IGNORE_IMPORTMISMATCH"] = "1"
+    try:
+        with isolated_import_state():
+            first_module = import_test_module(first, tmp_path)
+            # No refusal: the cached first module comes back for the second path.
+            assert import_test_module(second, tmp_path) is first_module
+    finally:
+        if previous is None:
+            del os.environ["PY_IGNORE_IMPORTMISMATCH"]
+        else:
+            os.environ["PY_IGNORE_IMPORTMISMATCH"] = previous
+
+
 # ---------------------------------------------------------------------------
 # enumeration — parametrize and marks
 # ---------------------------------------------------------------------------
@@ -942,6 +964,197 @@ def test_class_marks_are_appended_after_method_marks(tmp_path: Path) -> None:
     assert entries[0]["marks"] == [{"name": "slow"}, {"name": "integration"}]
 
 
+def test_pytestmark_applies_to_every_test_in_pytest_order(tmp_path: Path) -> None:
+    """Module- and class-level `pytestmark`, in the order pytest reports.
+
+    This is the probe, reproduced: running pytest 8.4.2 over this exact shape and
+    printing `[m.name for m in item.iter_markers()]` from
+    `pytest_collection_modifyitems` gives
+
+        test_top                    ['func', 'modA', 'modB']
+        TestBase::test_inherited    ['basemeth', 'base', 'modA', 'modB']
+        TestChild::test_inherited   ['basemeth', 'base', 'derived', 'modA', 'modB']
+        TestChild::test_own         ['own', 'base', 'derived', 'modA', 'modB']
+
+    i.e. **closest first**: function marks, then the class chain in reversed-MRO
+    (base-first) order, then module marks.  `_pytest/nodes.py::iter_markers_with_node`
+    iterates `iter_parents()`, and `get_closest_marker` takes the first match — so
+    emitting the reverse order would invert "closest wins" for every consumer.
+    Class marks come from each class `__dict__` per reversed MRO
+    (`_pytest/mark/structures.py::get_unpacked_marks`), never plain `getattr`.
+    """
+    entries = collect_source(
+        tmp_path,
+        "test_pytestmark.py",
+        """
+        from rustest import mark
+
+        pytestmark = [mark.modA, mark.modB]
+
+
+        @mark.func
+        def test_top():
+            pass
+
+
+        class TestBase:
+            pytestmark = [mark.base]
+
+            @mark.basemeth
+            def test_inherited(self):
+                pass
+
+
+        class TestChild(TestBase):
+            pytestmark = [mark.derived]
+
+            @mark.own
+            def test_own(self):
+                pass
+        """,
+    )
+
+    names = {
+        str(entry["qualname"]): [mark["name"] for mark in entry.get("marks", [])]
+        for entry in entries
+    }
+    assert names == {
+        "test_top": ["func", "modA", "modB"],
+        "TestBase.test_inherited": ["basemeth", "base", "modA", "modB"],
+        "TestChild.test_inherited": ["basemeth", "base", "derived", "modA", "modB"],
+        "TestChild.test_own": ["own", "base", "derived", "modA", "modB"],
+    }
+
+
+def test_single_pytestmark_is_accepted_unwrapped(tmp_path: Path) -> None:
+    """`pytestmark = mark.solo` (not a list) — `get_unpacked_marks`'s non-list branch."""
+    entries = collect_source(
+        tmp_path,
+        "test_solomark.py",
+        """
+        from rustest import mark
+
+        pytestmark = mark.solo
+
+        def test_x():
+            pass
+        """,
+    )
+
+    assert entries[0]["marks"] == [{"name": "solo"}]
+
+
+def test_pytestmark_carries_args_and_kwargs(tmp_path: Path) -> None:
+    entries = collect_source(
+        tmp_path,
+        "test_markargs.py",
+        """
+        from rustest import mark
+
+        pytestmark = mark.skipif(True, reason="nope")
+
+        def test_x():
+            pass
+        """,
+    )
+
+    assert entries[0]["marks"] == [{"name": "skipif", "args": [True], "kwargs": {"reason": "nope"}}]
+
+
+def test_inherited_rustest_class_marks_are_counted_once(tmp_path: Path) -> None:
+    """The `__rustest_marks__` class walk must not amplify issue #135.
+
+    `decorators.py::MarkDecorator.__call__` seeds its list with
+    `getattr(func, "__rustest_marks__", [])`, so decorating a subclass mutates the
+    BASE class's list in place and leaves both `__dict__` entries pointing at the same
+    object (probed: `A.__dict__[...] is B.__dict__[...]` is True). Reading per
+    reversed-MRO `__dict__` while skipping an already-seen list *by identity* reports
+    that shared list exactly once instead of once per level.
+    """
+    entries = collect_source(
+        tmp_path,
+        "test_sharedmarks.py",
+        """
+        from rustest import mark
+
+        @mark.base
+        class TestBase:
+            def test_m(self):
+                pass
+
+        @mark.derived
+        class TestChild(TestBase):
+            pass
+        """,
+    )
+
+    by_name = {str(entry["qualname"]): entry for entry in entries}
+    # v1 has already merged both marks into the one shared list; the read path must
+    # not double it up into ['base', 'derived', 'base', 'derived'].
+    assert [mark["name"] for mark in by_name["TestChild.test_m"]["marks"]] == [
+        "base",
+        "derived",
+    ]
+
+
+def test_malformed_parametrization_is_a_collection_error(tmp_path: Path) -> None:
+    """Malformed v1 metadata fails loud instead of silently collapsing to one entry."""
+    path = write(
+        tmp_path / "test_badparams.py",
+        """
+        def test_x(value):
+            pass
+
+        test_x.__rustest_parametrization__ = ["not-a-case-dict"]
+        """,
+    )
+
+    with isolated_import_state():
+        module = import_test_module(path, tmp_path)
+        with pytest.raises(CollectionRefusal) as excinfo:
+            _ = enumerate_module(module, path, tmp_path, DEFAULT_NAMING)
+
+    assert "malformed rustest parametrization" in str(excinfo.value)
+
+
+def test_malformed_marks_metadata_is_a_collection_error(tmp_path: Path) -> None:
+    path = write(
+        tmp_path / "test_badmarks.py",
+        """
+        def test_x():
+            pass
+
+        test_x.__rustest_marks__ = ["not-a-mark-dict"]
+        """,
+    )
+
+    with isolated_import_state():
+        module = import_test_module(path, tmp_path)
+        with pytest.raises(CollectionRefusal) as excinfo:
+            _ = enumerate_module(module, path, tmp_path, DEFAULT_NAMING)
+
+    assert "malformed rustest mark metadata" in str(excinfo.value)
+
+
+def test_malformed_pytestmark_is_a_collection_error(tmp_path: Path) -> None:
+    path = write(
+        tmp_path / "test_badpytestmark.py",
+        """
+        pytestmark = ["definitely-not-a-mark"]
+
+        def test_x():
+            pass
+        """,
+    )
+
+    with isolated_import_state():
+        module = import_test_module(path, tmp_path)
+        with pytest.raises(CollectionRefusal) as excinfo:
+            _ = enumerate_module(module, path, tmp_path, DEFAULT_NAMING)
+
+    assert "malformed pytestmark entry" in str(excinfo.value)
+
+
 def test_fixture_parameters_are_listed_in_signature_order(tmp_path: Path) -> None:
     entries = collect_source(
         tmp_path,
@@ -968,6 +1181,123 @@ def test_fixture_parameters_are_listed_in_signature_order(tmp_path: Path) -> Non
     assert by_name["test_mixed"]["fixtures"] == ["tmp_path"]
     # `self` is not a fixture.
     assert by_name["TestBox.test_method"]["fixtures"] == ["tmp_path"]
+
+
+def test_parameters_with_defaults_are_not_fixture_requests(tmp_path: Path) -> None:
+    """Port of `_pytest/compat.py::getfuncargnames` — `p.default is Parameter.empty`.
+
+    Verified against the installed pytest:
+    `getfuncargnames(def test_defaults(tmp_path, flag=1, *, capsys, extra=2))` returns
+    `('tmp_path', 'capsys')`.  pytest would never try to resolve a fixture named
+    `flag`, so emitting one into the frozen manifest is wrong data.
+    """
+    entries = collect_source(
+        tmp_path,
+        "test_defaults.py",
+        """
+        def test_defaults(tmp_path, flag=1, *, capsys, extra=2):
+            pass
+        """,
+    )
+
+    assert entries[0]["fixtures"] == ["tmp_path", "capsys"]
+
+
+def test_bound_first_argument_is_dropped_by_staticmethod_test_not_by_name(
+    tmp_path: Path,
+) -> None:
+    """`getfuncargnames` decides with `inspect.getattr_static(cls, name)`.
+
+    Two shapes a `self`/`cls` name check gets wrong: a method whose first parameter
+    is called something else still loses it, and a `@staticmethod` keeps its first
+    parameter (pytest's comment: "Not using `getattr` because we don't want to
+    resolve the staticmethod").
+    """
+    entries = collect_source(
+        tmp_path,
+        "test_boundargs.py",
+        """
+        class TestOdd:
+            def test_renamed_self(this, tmp_path):
+                pass
+
+            @staticmethod
+            def test_static(tmp_path):
+                pass
+
+            @classmethod
+            def test_classmethod(cls, tmp_path):
+                pass
+        """,
+    )
+
+    by_name = {str(entry["qualname"]): entry for entry in entries}
+    assert by_name["TestOdd.test_renamed_self"]["fixtures"] == ["tmp_path"]
+    assert by_name["TestOdd.test_static"]["fixtures"] == ["tmp_path"]
+    assert by_name["TestOdd.test_classmethod"]["fixtures"] == ["tmp_path"]
+
+
+def test_positional_only_self_does_not_eat_the_first_fixture(tmp_path: Path) -> None:
+    """`getfuncargnames` skips the bound-arg drop when any parameter is positional-only.
+
+    A positional-only `self` never enters the name list in the first place (only
+    POSITIONAL_OR_KEYWORD/KEYWORD_ONLY do), so dropping the first name would delete a
+    real fixture.  Verified against the installed pytest:
+    `getfuncargnames(def test_m(self, /, tmp_path), cls=..., name=...)` returns
+    `('tmp_path',)`.
+    """
+    entries = collect_source(
+        tmp_path,
+        "test_posonly.py",
+        """
+        class TestPosOnly:
+            def test_m(self, /, tmp_path):
+                pass
+        """,
+    )
+
+    assert entries[0]["fixtures"] == ["tmp_path"]
+
+
+def test_fully_populated_entry_matches_the_manifest_golden(tmp_path: Path) -> None:
+    """A REAL collected entry, byte-compared to the `src/v2/manifest.rs` golden.
+
+    The golden fragment is the second test in that module's
+    `manifest_json_matches_golden_contract`.  Producing it from an actual module —
+    rather than hand-building a dict — is what proves the worker's field order,
+    nodeid composition, class chain, param id, mark shape and fixture list all agree
+    with the frozen wire contract at once.
+    """
+    source = """
+        from rustest import parametrize
+        from rustest.decorators import MarkDecorator
+
+        skipif = MarkDecorator("skipif", (True,), {"reason": "needs windows", "strict": True})
+        slow = MarkDecorator("slow", (), {})
+
+
+        class TestBox:
+            @slow
+            @skipif
+            @parametrize("x,y", [("x", 1)])
+            def test_method(self, x, y, tmp_path, capsys):
+                pass
+        """
+    path = write(tmp_path / "tests" / "test_math.py", source)
+
+    with isolated_import_state():
+        module = import_test_module(path, tmp_path)
+        entries = enumerate_module(module, path, tmp_path, DEFAULT_NAMING)
+
+    assert len(entries) == 1
+    assert encode_response(entries[0]) == (
+        '{"id":"tests/test_math.py::TestBox::test_method[x-1]",'
+        '"path":"tests/test_math.py","qualname":"TestBox.test_method",'
+        '"class_name":"TestBox","param_id":"x-1",'
+        '"marks":[{"name":"skipif","args":[true],'
+        '"kwargs":{"reason":"needs windows","strict":true}},{"name":"slow"}],'
+        '"fixtures":["tmp_path","capsys"]}'
+    )
 
 
 def test_entries_omit_every_empty_optional_field(tmp_path: Path) -> None:
@@ -1266,5 +1596,155 @@ def test_worker_subprocess_rejects_an_unknown_op() -> None:
         check=False,
     )
 
-    assert proc.returncode != 0
+    assert proc.returncode == 2
     assert "collect_dir" in proc.stderr
+
+
+def _run_worker(lines: list[dict[str, Any]]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "rustest._v2_worker"],
+        input="".join(json.dumps(line) + "\n" for line in lines),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_collect_file_before_init_is_protocol_fatal(tmp_path: Path) -> None:
+    """Not a bad file — a protocol violation, so exit 2 like every other drift,
+    never an uncaught traceback (exit 1, no framing)."""
+    proc = _run_worker([{"op": "collect_file", "path": (tmp_path / "t.py").as_posix()}])
+
+    assert proc.returncode == 2
+    assert "before init" in proc.stderr
+    assert proc.stdout.strip() == ""
+
+
+def test_collect_file_before_init_raises_not_initialized(tmp_path: Path) -> None:
+    """The in-process half of the same rule (the module-level state is global, so this
+    also documents that `collect_file` never silently invents a rootdir)."""
+    import rustest._v2_worker as worker
+
+    saved = worker._state  # pyright: ignore[reportPrivateUsage]
+    worker._state = None  # pyright: ignore[reportPrivateUsage]
+    try:
+        with pytest.raises(NotInitializedError):
+            _ = collect_file((tmp_path / "t.py").as_posix())
+    finally:
+        worker._state = saved  # pyright: ignore[reportPrivateUsage]
+
+
+def test_collect_file_without_a_path_is_protocol_fatal(tmp_path: Path) -> None:
+    proc = _run_worker(
+        [
+            {
+                "op": "init",
+                "protocol_version": PROTOCOL_VERSION,
+                "rootdir": tmp_path.as_posix(),
+                "python_files": ["test_*.py"],
+                "python_classes": ["Test"],
+                "python_functions": ["test"],
+            },
+            {"op": "collect_file"},
+        ]
+    )
+
+    assert proc.returncode == 2
+    assert "without a path" in proc.stderr
+
+
+def test_worker_subprocess_rejects_an_undecodable_line() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "rustest._v2_worker"],
+        input="{not json\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert proc.returncode == 2
+    assert "undecodable" in proc.stderr
+
+
+def test_install_pytest_shim_registers_the_underscore_pytest_stubs() -> None:
+    """`install_pytest_shim` must also install the `_pytest.*` stubs.
+
+    Mirrors `core.py`'s pytest-compat path (`install_pytest_stubs()`).  Checked in a
+    **fresh interpreter** because the assertion is otherwise vacuous twice over: this
+    test process has real pytest loaded (so `install_pytest_stubs` deliberately
+    no-ops), and this venv has real pytest installed (so `import _pytest.outcomes`
+    would succeed with or without the stubs — verified: it resolves to
+    `.venv/Lib/site-packages/_pytest/outcomes.py`).  Only a subprocess that has
+    imported neither can show which module actually ends up in `sys.modules`.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys;"
+            "from rustest._v2_worker import install_pytest_shim;"
+            "install_pytest_shim();"
+            "print(sys.modules['pytest'].__name__, sys.modules['_pytest'].__name__,"
+            " sys.modules['_pytest.outcomes'].__name__)",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == [
+        "rustest.compat.pytest",
+        "rustest._pytest_stub",
+        "rustest._pytest_stub.outcomes",
+    ]
+
+
+def test_worker_subprocess_collects_a_module_using_pytest_internal_api(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: a module importing `_pytest.*` collects rather than erroring.
+
+    Weaker than it looks in this venv (real `_pytest` is importable, so the import
+    would succeed even with no stubs installed) — the decisive check is
+    `test_install_pytest_shim_registers_the_underscore_pytest_stubs`.  Kept because it
+    pins the *outcome* that matters to the corpus: such a file must not come back as a
+    collection error.
+    """
+    write(
+        tmp_path / "test_internal_import.py",
+        """
+        from _pytest.outcomes import Failed
+        from _pytest.monkeypatch import MonkeyPatch
+
+        def test_uses_internal_api():
+            assert Failed is not None
+        """,
+    )
+    proc = _run_worker(
+        [
+            {
+                "op": "init",
+                "protocol_version": PROTOCOL_VERSION,
+                "rootdir": tmp_path.as_posix(),
+                "python_files": ["test_*.py"],
+                "python_classes": ["Test"],
+                "python_functions": ["test"],
+            },
+            {
+                "op": "collect_file",
+                "path": (tmp_path / "test_internal_import.py").as_posix(),
+            },
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    collected: dict[str, Any] = json.loads(proc.stdout.splitlines()[1])
+    assert "error" not in collected, collected
+    assert [test["id"] for test in collected["tests"]] == [
+        "test_internal_import.py::test_uses_internal_api"
+    ]

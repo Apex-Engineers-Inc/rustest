@@ -66,6 +66,7 @@ __all__ = [
     "DEFAULT_NAMING",
     "PROTOCOL_VERSION",
     "CollectionRefusal",
+    "NotInitializedError",
     "Naming",
     "build_nodeid",
     "collect_file",
@@ -131,6 +132,15 @@ class CollectedResponse(TypedDict):
 
 class ByeResponse(TypedDict):
     op: str
+
+
+class NotInitializedError(Exception):
+    """`collect_file` arrived before `init` — a protocol violation, not a bad file.
+
+    Routed to the fatal-on-drift path in :func:`main` (exit 2), never turned into a
+    ``collected`` error entry: the worker has no rootdir, so it could not even name
+    the file correctly in one.
+    """
 
 
 class CollectionRefusal(Exception):
@@ -237,8 +247,17 @@ def _relative_posix(path: Path, rootdir: Path) -> str:
 
     Source: `_pytest/nodes.py::FSCollector.__init__` —
     ``str(self.path.relative_to(session.config.rootpath))`` with ``os.sep`` rewritten
-    to ``/``.  A path outside rootdir keeps its absolute (posix) form rather than
-    growing ``..`` segments, mirroring pytest's ``bestrelpath`` fallback.
+    to ``/``.
+
+    The outside-rootdir branch is a **v2 choice, not a port**: pytest falls back to
+    ``_check_initialpaths_for_relpath``, which relativises against an *initial path*
+    and returns ``None`` when none matches — pytest never produces an absolute
+    nodeid, it produces no nodeid at all (the caller then requires ``parent`` to
+    supply one).  The worker has no initialpaths and must return something
+    addressable, so it emits the absolute posix path rather than ``..`` segments,
+    which would break the "first segment is a path" nodeid contract in
+    ``src/v2/nodeid.rs``.  Unreachable in practice: the orchestrator only sends files
+    it walked from rootdir.
     """
     try:
         return path.relative_to(rootdir).as_posix()
@@ -379,6 +398,10 @@ def import_test_module(path: Path, rootdir: Path) -> types.ModuleType:
       ``ImportPathMismatchError``, which pytest turns into a collection error.
       Probed against pytest 8.4.2: two ``test_dup.py`` files in different
       non-package directories collect the first and **error** on the second.
+      ``PY_IGNORE_IMPORTMISMATCH=1`` skips the check, exactly as in
+      `import_path` (``ignore = os.environ.get("PY_IGNORE_IMPORTMISMATCH", "")``);
+      the escape hatch exists for build systems that legitimately import the same
+      file under two paths, and honouring it keeps such suites collectable.
 
     ``insert_missing_modules`` is deliberately NOT ported: it exists only for
     ``ImportMode.importlib``'s synthetic dotted names (`_pytest/pathlib.py`
@@ -395,6 +418,8 @@ def import_test_module(path: Path, rootdir: Path) -> types.ModuleType:
     module = sys.modules[module_name]
 
     if path.name == "__init__.py":
+        return module
+    if os.environ.get("PY_IGNORE_IMPORTMISMATCH", "") == "1":
         return module
 
     module_file = getattr(module, "__file__", None)
@@ -545,13 +570,139 @@ def _json_safe(value: object) -> Any:
     return repr(value)
 
 
-def _mark_specs(obj: object) -> list[MarkSpecDict]:
-    """Read rustest's mark metadata into ``MarkSpec`` dicts.
+def _spec_from_mark_dict(raw: object, owner: object) -> MarkSpecDict:
+    """One ``__rustest_marks__`` entry -> one ``MarkSpec``.
 
-    Sources consumed (both set by ``python/rustest/decorators.py``, and reached from
-    ``pytest.mark.*`` through ``python/rustest/compat/pytest.py``):
+    A non-dict entry is malformed metadata and becomes a hard refusal rather than a
+    silent skip: the mark would vanish from the manifest with nothing to show for it,
+    and a mark that silently disappears is exactly the class of failure the protocol's
+    loud-on-drift philosophy exists to prevent.
+    """
+    if not isinstance(raw, dict):
+        raise CollectionRefusal(
+            "malformed rustest mark metadata on "
+            + f"{getattr(owner, '__qualname__', owner)!r}: expected a dict, got {raw!r}"
+        )
+    mark = cast(Mapping[str, object], raw)
+    spec: MarkSpecDict = {"name": str(mark.get("name", ""))}
+    args = [_json_safe(arg) for arg in cast(Sequence[object], mark.get("args", ()))]
+    if args:
+        spec["args"] = args
+    kwargs = {
+        str(key): _json_safe(value)
+        for key, value in cast(Mapping[object, object], mark.get("kwargs", {})).items()
+    }
+    if kwargs:
+        spec["kwargs"] = kwargs
+    return spec
 
-    * ``__rustest_marks__`` — list of ``{"name", "args", "kwargs"}``
+
+def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpecDict:
+    """One ``pytestmark`` entry -> one ``MarkSpec``.
+
+    ``pytestmark`` holds *decorator objects*, not dicts.  Through the compat shim
+    ``pytest.mark.slow`` is ``decorators.py::MarkGenerator._create_mark``'s
+    ``_MarkDecoratorFactory`` (bare, uncalled — it carries only ``mark_name``), while
+    ``pytest.mark.skipif(...)`` is a ``MarkDecorator`` (``name``/``args``/``kwargs``).
+    Real pytest's ``MarkDecorator`` exposes the same three attributes, so the duck
+    typing covers a worker running without the shim too.  Anything else is malformed
+    and refuses the file rather than silently dropping a mark.
+    """
+    name = _safe_getattr(entry, "name", None)
+    if isinstance(name, str):
+        return _spec_from_mark_dict(
+            {
+                "name": name,
+                "args": _safe_getattr(entry, "args", ()),
+                "kwargs": _safe_getattr(entry, "kwargs", {}),
+            },
+            owner,
+        )
+    bare_name = _safe_getattr(entry, "mark_name", None)
+    if isinstance(bare_name, str):
+        return {"name": bare_name}
+    raise CollectionRefusal(
+        "malformed pytestmark entry on "
+        + f"{getattr(owner, '__qualname__', getattr(owner, '__name__', owner))!r}: "
+        + f"{entry!r} is not a mark"
+    )
+
+
+def _pytestmark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpecDict]:
+    """Port of `_pytest/mark/structures.py::get_unpacked_marks`.
+
+    For a class, read ``pytestmark`` out of each ``__dict__`` in **reversed MRO**
+    order (base first) — never plain ``getattr``, which would report a base class's
+    marks as the subclass's own and count them twice.  For anything else, read the
+    attribute and accept either a single mark or a list.
+    """
+    mark_lists: list[object] = []
+    if isinstance(obj, type) and consider_mro:
+        for klass in reversed(obj.__mro__):
+            mark_lists.append(klass.__dict__.get("pytestmark", []))
+    elif isinstance(obj, type):
+        mark_lists.append(obj.__dict__.get("pytestmark", []))
+    else:
+        mark_lists.append(_safe_getattr(obj, "pytestmark", []))
+
+    specs: list[MarkSpecDict] = []
+    for item in mark_lists:
+        entries = cast(Sequence[object], item) if isinstance(item, list) else [item]
+        specs.extend(_spec_from_pytestmark(entry, obj) for entry in entries)
+    return specs
+
+
+def _rustest_mark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpecDict]:
+    """Read ``__rustest_marks__`` with the same reversed-MRO ``__dict__`` discipline.
+
+    For classes this deliberately mirrors `get_unpacked_marks`, for one extra reason:
+    ``decorators.py::MarkDecorator.__call__`` seeds its list with
+    ``getattr(func, "__rustest_marks__", [])``, so decorating a subclass **mutates the
+    base class's list in place** and leaves both classes' ``__dict__`` pointing at the
+    *same* object (issue #135; probed — ``A.__dict__[...] is B.__dict__[...]`` is
+    True).  Plain ``getattr`` would report the merged list once per level; walking
+    ``__dict__`` and skipping a list object already consumed (identity, not equality)
+    reads that corrupted state exactly once, so this path neither amplifies the bug
+    nor pretends it is not there.
+    """
+    mark_lists: list[object] = []
+    if isinstance(obj, type) and consider_mro:
+        seen_ids: set[int] = set()
+        for klass in reversed(obj.__mro__):
+            raw = klass.__dict__.get("__rustest_marks__")
+            if raw is None or id(raw) in seen_ids:
+                continue
+            seen_ids.add(id(raw))
+            mark_lists.append(raw)
+    elif isinstance(obj, type):
+        raw = obj.__dict__.get("__rustest_marks__")
+        if raw is not None:
+            mark_lists.append(raw)
+    else:
+        raw = _safe_getattr(obj, "__rustest_marks__", None)
+        if raw is not None:
+            mark_lists.append(raw)
+
+    specs: list[MarkSpecDict] = []
+    for raw_list in mark_lists:
+        if not isinstance(raw_list, list):
+            raise CollectionRefusal(
+                "malformed rustest mark metadata on "
+                + f"{getattr(obj, '__qualname__', obj)!r}: "
+                + f"__rustest_marks__ must be a list, got {raw_list!r}"
+            )
+        specs.extend(_spec_from_mark_dict(raw, obj) for raw in cast(Sequence[object], raw_list))
+    return specs
+
+
+def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpecDict]:
+    """All marks carried *directly* by *obj*, as ``MarkSpec`` dicts.
+
+    Three sources, in the order pytest itself would report them for one node:
+
+    * ``pytestmark`` — the attribute pytest reads
+      (`_pytest/nodes.py` line 284/1599: ``own_markers.extend(get_unpacked_marks(self.obj))``);
+    * ``__rustest_marks__`` — rustest's own decorator metadata
       (``decorators.py::MarkDecorator.__call__``);
     * ``__rustest_skip__`` — the reason string set by ``decorators.py::skip_decorator``,
       which is what the *compat* ``pytest.mark.skip`` uses instead of a mark entry.
@@ -561,25 +712,8 @@ def _mark_specs(obj: object) -> list[MarkSpecDict]:
     ``skipif`` condition at decoration time, so such a condition arrives already
     reduced to a bool.  The worker adds no evaluation of its own.)
     """
-    specs: list[MarkSpecDict] = []
-    raw_marks = _safe_getattr(obj, "__rustest_marks__", None)
-    if isinstance(raw_marks, list):
-        for raw in cast(list[object], raw_marks):
-            if not isinstance(raw, dict):
-                continue
-            mark = cast(Mapping[str, object], raw)
-            spec: MarkSpecDict = {"name": str(mark.get("name", ""))}
-            args = [_json_safe(arg) for arg in cast(Sequence[object], mark.get("args", ()))]
-            if args:
-                spec["args"] = args
-            kwargs = {
-                str(key): _json_safe(value)
-                for key, value in cast(Mapping[object, object], mark.get("kwargs", {})).items()
-            }
-            if kwargs:
-                spec["kwargs"] = kwargs
-            specs.append(spec)
-
+    specs = _pytestmark_specs(obj, consider_mro=consider_mro)
+    specs.extend(_rustest_mark_specs(obj, consider_mro=consider_mro))
     skip_reason = _safe_getattr(obj, "__rustest_skip__", None)
     if skip_reason is not None:
         specs.append({"name": "skip", "kwargs": {"reason": _json_safe(skip_reason)}})
@@ -605,14 +739,28 @@ def _parametrization(func: object) -> list[tuple[str, frozenset[str]]] | None:
     ``<argname><index>``).  See the task report for the probed table.
     """
     cases = _safe_getattr(func, "__rustest_parametrization__", None)
-    if not isinstance(cases, (list, tuple)) or not cases:
+    if cases is None:
+        return None
+    if not isinstance(cases, (list, tuple)):
+        raise CollectionRefusal(
+            "malformed rustest parametrization on "
+            + f"{getattr(func, '__qualname__', func)!r}: expected a sequence of cases, "
+            + f"got {cases!r}"
+        )
+    if not cases:
         return None
 
     raw_ids: list[str] = []
     argnames: list[frozenset[str]] = []
     for case in cast(Sequence[object], cases):
         if not isinstance(case, dict):
-            return None
+            # Silently collapsing to a single unparametrized entry would delete every
+            # case from the manifest with no error anywhere; refuse the file instead.
+            raise CollectionRefusal(
+                "malformed rustest parametrization on "
+                + f"{getattr(func, '__qualname__', func)!r}: "
+                + f"expected a case dict, got {case!r}"
+            )
         entry = cast(Mapping[str, object], case)
         raw_ids.append(str(entry.get("id", "")))
         values = entry.get("values", {})
@@ -660,23 +808,59 @@ def _unique_parameterset_ids(ids: list[str]) -> list[str]:
     return resolved
 
 
-def _fixture_names(func: object, in_class: bool, param_names: frozenset[str]) -> list[str]:
+def _fixture_names(
+    func: object,
+    name: str,
+    owner: type | None,
+    param_names: frozenset[str],
+) -> list[str]:
     """Direct fixture parameters, in signature order (the manifest's ``fixtures``).
 
+    Port of `_pytest/compat.py::getfuncargnames` (l. 133-171), which is what pytest
+    itself uses to decide what a test *requests*:
+
+    * only ``POSITIONAL_OR_KEYWORD`` and ``KEYWORD_ONLY`` parameters count;
+    * **a parameter with a default is not a fixture request** —
+      ``and p.default is Parameter.empty``.  ``def test_x(tmp_path, flag=1)`` requests
+      only ``tmp_path``; pytest would never try to resolve a fixture named ``flag``.
+      Verified against the installed pytest:
+      ``getfuncargnames(def test_defaults(tmp_path, flag=1, *, capsys, extra=2))``
+      returns ``('tmp_path', 'capsys')``.
+    * the bound-method first argument is dropped when the attribute is *not* a
+      ``staticmethod`` — pytest decides that with
+      ``inspect.getattr_static(cls, name)`` and an explicit comment ("Not using
+      `getattr` because we don't want to resolve the staticmethod"), **not** by
+      looking at the parameter's name.  So a method written ``def test_m(this)``
+      loses ``this``, and a ``@staticmethod`` keeps its first parameter — neither of
+      which a ``self``/``cls`` name test gets right.  The guard on
+      ``POSITIONAL_ONLY`` is ported with it.
+
     Parametrized argnames are supplied by the parametrization, not by a fixture, so
-    they are excluded; ``self``/``cls`` is dropped for methods.  Limitation:
-    ``indirect=True`` parameters are fixtures in pytest but are excluded here as
-    ordinary parametrized names — indirect resolution is 1b.2 territory.
+    they are excluded.  Limitations: ``indirect=True`` parameters are fixtures in
+    pytest but are excluded here as ordinary parametrized names (1b.2 territory), and
+    pytest's ``num_mock_patch_args`` adjustment for ``mock.patch``-wrapped tests is
+    not ported.
     """
     try:
         signature = inspect.signature(cast(Any, func))
     except (TypeError, ValueError):  # pragma: no cover - builtins never reach here
         return []
+    parameters = list(signature.parameters.values())
     accepted = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     names = [
-        parameter.name for parameter in signature.parameters.values() if parameter.kind in accepted
+        parameter.name
+        for parameter in parameters
+        if parameter.kind in accepted and parameter.default is inspect.Parameter.empty
     ]
-    if in_class and names and names[0] in ("self", "cls"):
+    has_positional_only = any(
+        parameter.kind is inspect.Parameter.POSITIONAL_ONLY for parameter in parameters
+    )
+    if (
+        names
+        and not has_positional_only
+        and owner is not None
+        and not isinstance(inspect.getattr_static(owner, name, None), staticmethod)
+    ):
         names = names[1:]
     return [name for name in names if name not in param_names]
 
@@ -715,6 +899,7 @@ def _collect_function(
     name: str,
     rel_path: str,
     parts: tuple[str, ...],
+    owner: type | None,
     outer_marks: list[MarkSpecDict],
 ) -> list[CollectedTestDict]:
     """Port of `_pytest/python.py::pytest_pycollect_makeitem`'s function branch.
@@ -740,10 +925,9 @@ def _collect_function(
 
     marks = _mark_specs(func) + outer_marks
     full_parts = (*parts, name)
-    in_class = bool(parts)
     cases = _parametrization(func)
     if cases is None:
-        fixtures = _fixture_names(func, in_class, frozenset())
+        fixtures = _fixture_names(func, name, owner, frozenset())
         return [_build_entry(rel_path, full_parts, None, marks, fixtures)]
     return [
         _build_entry(
@@ -751,7 +935,7 @@ def _collect_function(
             full_parts,
             param_id,
             marks,
-            _fixture_names(func, in_class, param_names),
+            _fixture_names(func, name, owner, param_names),
         )
         for param_id, param_names in cases
     ]
@@ -777,7 +961,7 @@ def _collect_unittest_class(
     if _safe_getattr(cls, "__test__", True) is False:
         return []
 
-    class_marks = _mark_specs(cls) + outer_marks
+    class_marks = _mark_specs(cls, consider_mro=True) + outer_marks
     child_parts = (*parts, name)
     loader = unittest.TestLoader()
     entries: list[CollectedTestDict] = []
@@ -822,11 +1006,13 @@ def _collect_class(
     if _hasinit(cls) or _hasnew(cls):
         return []
 
-    class_marks = _mark_specs(cls) + outer_marks
+    class_marks = _mark_specs(cls, consider_mro=True) + outer_marks
     child_parts = (*parts, name)
     entries: list[CollectedTestDict] = []
     for member_name, member in _mro_ordered_members(cls):
-        entries.extend(_make_items(member, member_name, rel_path, child_parts, naming, class_marks))
+        entries.extend(
+            _make_items(member, member_name, rel_path, child_parts, cls, naming, class_marks)
+        )
     return entries
 
 
@@ -835,15 +1021,24 @@ def _make_items(
     name: str,
     rel_path: str,
     parts: tuple[str, ...],
+    owner: type | None,
     naming: Naming,
     outer_marks: list[MarkSpecDict],
 ) -> list[CollectedTestDict]:
     """Dispatch one namespace entry, mirroring pytest's ``pytest_pycollect_makeitem`` hooks.
 
-    The ``unittest`` plugin's implementation runs **first** (pluggy calls the most
-    recently registered plugin first, and it is ``firstresult``), which is why a
-    ``TestCase`` subclass is handled before the name filters in
-    `_pytest/python.py::pytest_pycollect_makeitem` ever apply.
+    The unittest branch comes first because the hook is ``firstresult`` and
+    `_pytest/python.py::pytest_pycollect_makeitem` carries ``@hookimpl(trylast=True)``
+    (l. 209) while `_pytest/unittest.py::pytest_pycollect_makeitem` (l. 51) carries no
+    hookimpl marker at all — so python's implementation is deliberately sorted to the
+    end and every other implementation, unittest's included, is consulted before it.
+    That ordering is by decorator, not by registration order, which is why a
+    ``TestCase`` subclass is handled before the ``python_classes`` name filter ever
+    applies.
+
+    *owner* is the class whose ``__dict__`` produced *obj*, or ``None`` at module
+    level; it is what `_fixture_names` needs for pytest's ``getattr_static``
+    staticmethod test.
     """
     if _is_unittest_case(obj):
         return _collect_unittest_class(cast(type, obj), name, rel_path, parts, outer_marks)
@@ -852,7 +1047,7 @@ def _make_items(
             return _collect_class(obj, name, rel_path, parts, naming, outer_marks)
         return []
     if _is_test_function(obj, name, naming):
-        return _collect_function(obj, name, rel_path, parts, outer_marks)
+        return _collect_function(obj, name, rel_path, parts, owner, outer_marks)
     return []
 
 
@@ -875,16 +1070,28 @@ def enumerate_module(
     ``from helpers import test_shared`` collects as ``test_imports.py::test_shared``.
     The ini is not part of the ``init`` message, so the default is hard-coded here;
     honouring a non-default value needs a protocol field.
+
+    **Module-level ``pytestmark`` applies to every test in the file.**  pytest reads
+    it into ``Module.own_markers`` (`_pytest/python.py` l. 284:
+    ``self.own_markers.extend(get_unpacked_marks(self.obj))``) and every item inherits
+    it by walking its parents.  Mark order on each entry is pytest's own, taken from
+    `_pytest/nodes.py::Node.iter_markers_with_node` (which iterates
+    ``iter_parents()``, i.e. **closest first**) and confirmed by probe — for a method
+    of a marked subclass of a marked base in a module with ``pytestmark``, pytest
+    yields ``['own', 'base', 'derived', 'modA', 'modB']``: function marks, then the
+    class chain base-first, then module marks.  Emitting the reverse would silently
+    invert ``get_closest_marker`` for any 1b.2 consumer that takes the first match.
     """
     if _safe_getattr(module, "__test__", True) is False:
         return []
 
+    module_marks = _mark_specs(module)
     rel_path = _relative_posix(path, rootdir)
     entries: list[CollectedTestDict] = []
     for name, obj in list(vars(module).items()):
         if name in IGNORED_ATTRIBUTES:
             continue
-        entries.extend(_make_items(obj, name, rel_path, (), naming, []))
+        entries.extend(_make_items(obj, name, rel_path, (), None, naming, module_marks))
     return entries
 
 
@@ -951,7 +1158,7 @@ def collect_file(path: str) -> CollectedResponse:
     import time should end the process, exactly as it would under pytest.
     """
     if _state is None:
-        raise RuntimeError("collect_file called before init")
+        raise NotInitializedError("collect_file received before init")
     state = _state
 
     file_path = Path(path)
@@ -996,6 +1203,15 @@ def install_pytest_shim() -> None:
     enumeration reads the ``__rustest_*`` metadata that only rustest's decorators
     attach — real pytest's ``@pytest.mark.parametrize`` would leave none.
 
+    The ``_pytest.*`` stubs go in too, mirroring what v1's CLI does alongside the
+    shim (``python/rustest/core.py`` l. 97-102 -> ``compat/pytest.py::install_pytest_stubs``).
+    Test modules and conftests that import pytest's *internal* API — ``from
+    _pytest.outcomes import Failed``, ``from _pytest.monkeypatch import MonkeyPatch``
+    — are common enough in real suites, and without the stubs those files would fail
+    to import and be reported as collection errors instead of collecting.
+    ``install_pytest_stubs`` no-ops when real pytest is already loaded, so this is
+    safe even if something upstream imported it.
+
     Process-global by nature, so it is called from :func:`main` only, never from the
     collection helpers (a unit test importing this module must not have its own
     ``pytest`` swapped out from under it).
@@ -1005,6 +1221,7 @@ def install_pytest_shim() -> None:
 
     sys.modules["pytest"] = compat_pytest
     sys.modules["pytest_asyncio"] = compat_pytest_asyncio
+    compat_pytest.install_pytest_stubs()
 
 
 def _reconfigure(stream: object) -> None:
@@ -1026,9 +1243,12 @@ def main() -> int:
     ``sys.__stdout__`` still would; nothing short of an fd-level dup can stop that,
     and that is Task 3's option if it ever matters.)
 
-    An unparseable line or an unknown ``op`` is fatal, never skipped: the protocol is
-    internal, so drift means a bug and must be loud (``src/v2/protocol.rs`` module
-    docs).
+    Every protocol violation exits **2** on the same path: an unparseable line, an
+    unknown ``op``, a ``collect_file`` with no ``path``, and a ``collect_file`` before
+    ``init``.  The protocol is internal, so drift means a bug and must be loud
+    (``src/v2/protocol.rs`` module docs) — and it must be *distinguishable*, which an
+    uncaught traceback (exit 1, no framing) is not.  A file that merely fails to
+    import is NOT drift: it is data, and it comes back as a ``collected`` error entry.
     """
     install_pytest_shim()
 
@@ -1058,7 +1278,19 @@ def main() -> int:
         if op == "init":
             emit(handle_init(request))
         elif op == "collect_file":
-            emit(collect_file(str(request["path"])))
+            path = request.get("path")
+            if not isinstance(path, str):
+                print(
+                    f"rustest v2 worker: collect_file without a path: {line!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                response = collect_file(path)
+            except NotInitializedError as exc:
+                print(f"rustest v2 worker: {exc}", file=sys.stderr)
+                return 2
+            emit(response)
         elif op == "shutdown":
             emit(handle_shutdown())
             return 0
