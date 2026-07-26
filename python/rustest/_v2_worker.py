@@ -776,13 +776,14 @@ def _spec_from_mark_dict(raw: object, owner: object) -> MarkSpec:
 def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpec:
     """One ``pytestmark`` entry -> one ``MarkSpec``.
 
-    ``pytestmark`` holds *decorator objects*, not dicts.  Through the compat shim
-    ``pytest.mark.slow`` is ``decorators.py::MarkGenerator._create_mark``'s
-    ``_MarkDecoratorFactory`` (bare, uncalled — it carries only ``mark_name``), while
-    ``pytest.mark.skipif(...)`` is a ``MarkDecorator`` (``name``/``args``/``kwargs``).
-    Real pytest's ``MarkDecorator`` exposes the same three attributes, so the duck
-    typing covers a worker running without the shim too.  Anything else is malformed
-    and refuses the file rather than silently dropping a mark.
+    ``pytestmark`` holds *decorator objects*, not dicts.  Through the compat shim an
+    uncalled ``pytest.mark.slow`` is a ``decorators.py::BareOrFactoryMark`` and
+    ``pytest.mark.skipif(...)`` is a ``MarkDecorator``; both expose ``name``/``args``/
+    ``kwargs``, and so does real pytest's ``MarkDecorator``, so the duck typing covers a
+    worker running without the shim too.  The ``mark_name`` fallback below is for the
+    pre-#137 ``_MarkDecoratorFactory`` shape, which carried only that attribute and made an
+    uncalled mark in ``pytestmark`` refuse the whole file.  Anything else is malformed and
+    refuses the file rather than silently dropping a mark.
     """
     name = _safe_getattr(entry, "name", None)
     if isinstance(name, str):
@@ -2908,10 +2909,12 @@ def _skip_kwargs(mark: MarkSpec) -> dict[str, str]:
     """``Skip``'s keyword arguments, stringified.
 
     ``@pytest.mark.skip`` reaches this worker through ``decorators.py::skip_decorator``,
-    which stores ``__rustest_skip__`` as whatever it was handed — a string normally, but the
-    bare (uncalled) decorator form hands it a *function*.  ``Skip.reason`` is a ``str``, and
-    a reason that is quietly not one would reach the wire and the report; coercing here keeps
-    the status right (which is what the oracle pins) and the message printable.
+    which stores ``__rustest_skip__`` as whatever it was handed.  That is a string for every
+    shape the shim now produces — the bare (uncalled) form used to hand it the *test
+    function*, which is defect #136, fixed by ``decorators.py::BareOrFactoryMark``.  The
+    coercion is kept as a boundary guard rather than removed with the defect: this attribute
+    is public and a user may set it directly, ``Skip.reason`` is a ``str``, and a reason that
+    is quietly not one would reach the wire and the report.
     """
     return {str(key): str(value) for key, value in mark.kwargs.items()}
 

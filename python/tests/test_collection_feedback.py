@@ -321,9 +321,11 @@ def test_three():
 
         # Verify files_collected increments
         files_collected_values = [e.files_collected for e in progress_events]
-        assert sorted(files_collected_values) == [1, 2, 3], (
-            f"Expected files_collected to be 1, 2, 3 but got {files_collected_values}"
-        )
+        assert sorted(files_collected_values) == [
+            1,
+            2,
+            3,
+        ], f"Expected files_collected to be 1, 2, 3 but got {files_collected_values}"
 
     def test_collection_events_with_empty_directory(self, tmp_path: Any) -> None:
         """Verify correct events when no tests are found."""

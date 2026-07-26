@@ -516,6 +516,100 @@ class MarkDecorator:
         return f"Mark({self.name!r}, {self.args!r}, {self.kwargs!r})"
 
 
+def _mark_decoration_target(
+    args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> tuple[Any, Any] | None:
+    """Is this call a *decoration*, or a decorator-*factory* call?
+
+    A verbatim port of pytest's own rule, ``_pytest/mark/structures.py::MarkDecorator.__call__``
+    (pytest 8.4.2)::
+
+        if args and not kwargs:
+            func = args[0]
+            is_class = inspect.isclass(func)
+            unwrapped_func = func
+            if isinstance(func, (staticmethod, classmethod)):
+                unwrapped_func = func.__func__
+            if len(args) == 1 and (istestfunc(unwrapped_func) or is_class):
+                store_mark(unwrapped_func, self.mark, stacklevel=3)
+                return func
+        return self.with_args(*args, **kwargs)
+
+    with ``istestfunc(func) = callable(func) and getattr(func, "__name__", "<lambda>") !=
+    "<lambda>"``.
+
+    Returns ``(unwrapped, original)`` for a decoration — the mark is stored on *unwrapped*
+    but *original* is what the decorator expression must evaluate to, so a ``staticmethod``
+    keeps its descriptor — or ``None`` for a factory call.
+
+    Two consequences are deliberate, both confirmed by running pytest 8.4.2:
+
+    * a **lambda** positional is *not* a decoration, so ``@mark.slow(lambda: 1)`` is a
+      factory call carrying the lambda as a condition and the test collects and passes;
+    * a **named callable** positional *is* a decoration even when the user meant it as a
+      condition, so ``@mark.xfail(some_named_function)`` marks and returns that function and
+      then calls it with the test — a collection ``TypeError``. That is pytest's behaviour
+      and rustest reproduces it rather than diverging in the "helpful" direction.
+    """
+    if not args or kwargs or len(args) != 1:
+        return None
+    original: Any = args[0]
+    # `is_class` is computed on the ORIGINAL and before unwrapping, as pytest does.
+    is_class = inspect.isclass(original)
+    unwrapped: Any = original
+    if isinstance(original, (staticmethod, classmethod)):
+        unwrapped = cast(Any, original).__func__
+    is_testfunc = callable(unwrapped) and getattr(unwrapped, "__name__", "<lambda>") != "<lambda>"
+    if is_testfunc or is_class:
+        return unwrapped, cast(Any, original)
+    return None
+
+
+class BareOrFactoryMark:
+    """One ``mark.<name>`` surface that is *both* a decorator and a decorator factory.
+
+    pytest's ``pytest.mark.xfail`` is a single ``MarkDecorator`` object whose ``__call__``
+    decides, per call, whether it was used bare (``@pytest.mark.xfail``) or as a factory
+    (``@pytest.mark.xfail(reason=...)``). rustest used to model the standard marks as plain
+    *methods* instead, which cannot make that distinction: the bare form applied the method
+    itself, so the test function arrived as ``reason``/``condition`` and the module attribute
+    became a closure (#136) or a :class:`MarkDecorator` (#137) — in the latter case the test
+    silently disappeared from collection under both engines.
+
+    ``name``/``args``/``kwargs`` are exposed because the *uncalled* object is a legitimate
+    mark in its own right: ``pytestmark = pytest.mark.xfail`` puts it straight into the list
+    that ``_v2_worker::_spec_from_pytestmark`` reads, and pytest's uncalled ``MarkDecorator``
+    answers exactly these three with the same empty values.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        factory: Callable[..., Any],
+        bare: Callable[[Any], Any] | None = None,
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.args: tuple[Any, ...] = ()
+        self.kwargs: dict[str, Any] = {}
+        self._factory = factory
+        # pytest's bare form stores `Mark(name, (), {})` — empty args *and* empty kwargs.
+        # Empty args is what makes a bare `skipif`/`xfail` unconditional in
+        # `_v2_worker::_conditions`, which is the behaviour real pytest shows.
+        self._bare: Callable[[Any], Any] = bare if bare is not None else MarkDecorator(name, (), {})
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        target = _mark_decoration_target(args, kwargs)
+        if target is None:
+            return self._factory(*args, **kwargs)
+        unwrapped, original = target
+        _ = self._bare(unwrapped)
+        return original
+
+    def __repr__(self) -> str:
+        return f"<mark.{self.name} (bare or factory)>"
+
+
 class MarkGenerator:
     """Namespace for dynamically creating marks like pytest.mark.
 
@@ -529,7 +623,22 @@ class MarkGenerator:
         @mark.xfail(condition=None, *, reason=None, raises=None, run=True, strict=False)
         @mark.usefixtures("fixture1", "fixture2")
         @mark.asyncio(loop_scope="function")
+
+    Every one of these may also be used **bare** — ``@mark.xfail`` with no parentheses is
+    ordinary pytest and means "apply this mark with its defaults". ``skipif``, ``xfail`` and
+    ``usefixtures`` are therefore :class:`BareOrFactoryMark` instances rather than methods,
+    because a method cannot tell a decoration from a factory call and silently ate the test
+    function when used bare (defects #136 and #137). ``asyncio`` keeps its own signature and
+    its own long-standing ``func is not None`` bare branch.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Bound here rather than declared as methods: see BareOrFactoryMark's docstring.
+        # Instance attributes win over `__getattr__`, so `mark.xfail` finds these first.
+        self.skipif = BareOrFactoryMark("skipif", self._skipif)
+        self.xfail = BareOrFactoryMark("xfail", self._xfail)
+        self.usefixtures = BareOrFactoryMark("usefixtures", self._usefixtures)
 
     def asyncio(
         self,
@@ -631,14 +740,14 @@ class MarkGenerator:
             return decorator(func)
         return decorator
 
-    def skipif(
+    def _skipif(
         self,
         condition: bool | str,
         reason: str | None = None,
         *,
         _kw_reason: str | None = None,
     ) -> MarkDecorator:
-        """Skip test if condition is true.
+        """The factory half of ``mark.skipif`` — see :class:`BareOrFactoryMark`.
 
         Args:
             condition: Boolean or string condition to evaluate
@@ -650,6 +759,12 @@ class MarkGenerator:
             @mark.skipif(sys.platform == "win32", "Not supported on Windows")
             def test_unix_only():
                 pass
+
+            # And bare, which pytest treats as an *unconditional* skip
+            # (_pytest/skipping.py::evaluate_skip_marks l. 177-179):
+            @mark.skipif
+            def test_never_runs():
+                pass
         """
         # Support both positional and keyword-only 'reason' for pytest compatibility
         # Some older pytest code uses: skipif(condition, reason) with positional
@@ -657,7 +772,7 @@ class MarkGenerator:
         actual_reason = _kw_reason if _kw_reason is not None else reason
         return MarkDecorator("skipif", (condition,), {"reason": actual_reason})
 
-    def xfail(
+    def _xfail(
         self,
         condition: bool | str | None = None,
         *,
@@ -666,7 +781,7 @@ class MarkGenerator:
         run: bool = True,
         strict: bool = False,
     ) -> MarkDecorator:
-        """Mark test as expected to fail.
+        """The factory half of ``mark.xfail`` — see :class:`BareOrFactoryMark`.
 
         Args:
             condition: Optional condition - if False, mark is ignored
@@ -683,6 +798,11 @@ class MarkGenerator:
             @mark.xfail(sys.platform == "win32", reason="Not implemented on Windows")
             def test_feature():
                 pass
+
+            # And bare, which pytest treats as an unconditional xfail:
+            @mark.xfail
+            def test_known_broken():
+                assert False
         """
         kwargs = {
             "reason": reason,
@@ -693,8 +813,8 @@ class MarkGenerator:
         args = () if condition is None else (condition,)
         return MarkDecorator("xfail", args, kwargs)
 
-    def usefixtures(self, *names: str) -> MarkDecorator:
-        """Use fixtures without explicitly requesting them as parameters.
+    def _usefixtures(self, *names: str) -> MarkDecorator:
+        """The factory half of ``mark.usefixtures`` — see :class:`BareOrFactoryMark`.
 
         Args:
             *names: Names of fixtures to use
@@ -703,6 +823,10 @@ class MarkGenerator:
             @mark.usefixtures("setup_db", "cleanup")
             def test_with_fixtures():
                 pass
+
+        Bare ``@mark.usefixtures`` names no fixtures and so has no effect, which is what
+        pytest does with it (it warns and runs the test). Before the bare form was handled
+        it returned a ``MarkDecorator`` in the test's place and the test vanished.
         """
         return MarkDecorator("usefixtures", names, {})
 
@@ -713,30 +837,18 @@ class MarkGenerator:
             return self._create_parametrize_mark()
         return self._create_mark(name)
 
-    def _create_mark(self, name: str) -> Any:
-        """Create a MarkDecorator that can be called with or without arguments."""
+    def _create_mark(self, name: str) -> BareOrFactoryMark:
+        """A custom mark usable as ``@mark.name`` or ``@mark.name(args)``.
 
-        class _MarkDecoratorFactory:
-            """Factory that allows @mark.name or @mark.name(args)."""
-
-            def __init__(self, mark_name: str) -> None:
-                super().__init__()
-                self.mark_name = mark_name
-
-            def __call__(self, *args: Any, **kwargs: Any) -> Any:
-                # If called with a single argument that's a function, it's @mark.name
-                if (
-                    len(args) == 1
-                    and not kwargs
-                    and callable(args[0])
-                    and hasattr(args[0], "__name__")
-                ):
-                    decorator = MarkDecorator(self.mark_name, (), {})
-                    return decorator(args[0])
-                # Otherwise it's @mark.name(args) - return a decorator
-                return MarkDecorator(self.mark_name, args, kwargs)
-
-        return _MarkDecoratorFactory(name)
+        Custom marks always handled the bare form; what changed with #136/#137 is that the
+        discrimination is now pytest's exact rule rather than an approximation of it. The
+        old test — ``callable(args[0]) and hasattr(args[0], "__name__")`` — accepted a
+        **lambda** (whose ``__name__`` is ``"<lambda>"``), so ``@mark.slow(lambda: 1)``
+        decorated the lambda and then called it with the test function instead of storing it
+        as a mark argument the way pytest does. It also missed ``staticmethod``/
+        ``classmethod`` unwrapping and bare classes without ``__name__`` lookups.
+        """
+        return BareOrFactoryMark(name, lambda *args, **kwargs: MarkDecorator(name, args, kwargs))
 
     def _create_parametrize_mark(self) -> Callable[..., Any]:
         """Create a decorator matching top-level parametrize behaviour."""

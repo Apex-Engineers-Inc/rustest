@@ -15,11 +15,16 @@ runners walk *out* of ``tmp_path`` looking for a config file and land on this re
 ``pyproject.toml`` (it has ``[tool.pytest.ini_options]``), which makes rootdir the repo root
 and every node id repo-relative.
 
-**Why every mark is called.** ``@pytest.mark.xfail`` (uncalled) is destroyed by rustest's v1
-compat shim -- ``MarkGenerator.xfail`` is a plain method, so the bare form passes the test
-function in as ``reason`` and the module attribute becomes the inner closure. Recorded as
-defect #137 in the 1b.2 Task 3 report; corpora here call their marks so these tests are
-about execution rather than about that defect.
+**Why most marks below are called.** The bare (uncalled) forms used to be destroyed by the
+v1 compat shim -- ``mark.skip`` was a plain method and ``mark.xfail``/``mark.skipif`` were
+properties returning bound methods, so the bare form passed the test function in as
+``reason``/``condition`` and the module attribute became a closure (#136) or a
+``MarkDecorator`` (#137, which made the test vanish from collection under both engines).
+Fixed in 1b.2 Task 6 by porting pytest's own discrimination into
+``decorators.py::_mark_decoration_target``, and pinned by the ``marks/bare-marks``
+conformance case, ``python/tests/test_bare_marks.py`` and
+:func:`test_bare_marks_match_pytest_bucket_for_bucket` below. The other corpora here keep
+calling their marks so that each test stays about the one thing it names.
 """
 
 from __future__ import annotations
@@ -234,6 +239,75 @@ def test_a_mixed_tree_matches_pytest_bucket_for_bucket(tmp_path: Path) -> None:
         "xpassed",
         "error",
     ]
+
+
+BARE_MARKS = """\
+import pytest
+
+
+@pytest.mark.skip
+def test_bare_skip():
+    raise AssertionError("must not run")
+
+
+@pytest.mark.skip(reason="called")
+def test_called_skip():
+    raise AssertionError("must not run")
+
+
+@pytest.mark.skipif
+def test_bare_skipif():
+    raise AssertionError("must not run")
+
+
+@pytest.mark.xfail
+def test_bare_xfail():
+    raise AssertionError("expected")
+
+
+@pytest.mark.xfail(reason="called")
+def test_called_xfail():
+    raise AssertionError("expected")
+
+
+def test_control():
+    assert True
+"""
+
+
+def test_bare_marks_match_pytest_bucket_for_bucket(tmp_path: Path) -> None:
+    """Defects #136 and #137, differentially: the bare forms against real pytest.
+
+    Collection is asserted separately from the counts and deliberately *first*, because
+    #137's signature was a test that was simply **not there**: ``test_bare_xfail`` and
+    ``test_bare_skipif`` left no trace in either engine's output, and the run exited 0 with
+    a green summary. A bucket comparison alone cannot see that -- absent tests contribute
+    nothing to any bucket -- so the ids are what pins it.
+
+    Bare ``skipif`` is included because pytest treats a conditionless ``skipif`` as an
+    *unconditional skip* rather than an error (``_pytest/skipping.py::evaluate_skip_marks``
+    l. 177-179), which is a rule worth having pinned against the real thing.
+    """
+    tree = _tree(tmp_path, "baremarks", {"test_bare.py": BARE_MARKS})
+
+    collected = _run_pytest(tree, ["--collect-only"])
+    counts, report = _assert_matches_pytest(tree)
+
+    tests = report["tests"]
+    assert isinstance(tests, list)
+    ours = [str(test["id"]) for test in tests]
+    theirs = [line.strip() for line in collected.stdout.splitlines() if "::" in line]
+    assert ours == theirs, f"collected ids diverge\n{_context('pytest --collect-only', collected)}"
+
+    assert counts == {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 3,
+        "deselected": 0,
+        "xfailed": 2,
+        "xpassed": 0,
+        "error": 0,
+    }
 
 
 def test_results_stay_in_manifest_order_across_a_worker_pool(tmp_path: Path) -> None:

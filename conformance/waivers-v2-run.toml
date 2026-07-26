@@ -16,7 +16,7 @@
 # a waiver whose case starts matching is reported as a STALE-WAIVER and fails the run.
 #
 # Gate: `uv run python -m conformance --v2-run`
-# Scoreboard at 1b.2: 22 cases -- 22 match, 0 waived, 0 stale-waivers, 0 diverged.
+# Scoreboard at 1b.2: 23 cases -- 23 match, 0 waived, 0 stale-waivers, 0 diverged.
 #
 # THIS FILE IS EMPTY ON PURPOSE, and that is the headline result of Phase 1b.2: every
 # execution divergence the corpus found in v1 -- #129 (unittest outcomes swallowed),

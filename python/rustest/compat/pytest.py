@@ -60,6 +60,7 @@ from rustest.decorators import (
     fixture as _rustest_fixture,
     parametrize as _rustest_parametrize,
     skip_decorator as _rustest_skip_decorator,
+    BareOrFactoryMark as _BareOrFactoryMark,
     mark as _rustest_mark,
     raises as _rustest_raises,
     fail as _rustest_fail,
@@ -669,7 +670,25 @@ class _PytestMarkCompat:
         @pytest.mark.skipif(sys.platform == "win32", reason="Unix only")
         def test_unix():
             pass
+
+        @pytest.mark.skip          # bare, no parentheses -- also ordinary pytest
+        def test_never_runs():
+            pass
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # `skip` cannot simply be delegated to `_rustest_mark`: the native `mark.skip` only
+        # records a mark dict in `__rustest_marks__`, and v1's Rust collector reads skips
+        # from the `__rustest_skip__` attribute alone (src/discovery.rs::collect_tests).
+        # The compat surface therefore keeps its own routing to `skip_decorator`, wrapped in
+        # the same bare-or-factory discrimination as the rest -- being a plain *method* is
+        # what made the bare `@pytest.mark.skip` replace the test with a closure (#136).
+        self._skip = _BareOrFactoryMark(
+            "skip",
+            _rustest_skip_decorator,
+            bare=_rustest_skip_decorator(reason=None),
+        )
 
     def __getattr__(self, name: str) -> Any:
         """Delegate all mark.* access to rustest.mark.*"""
@@ -681,22 +700,22 @@ class _PytestMarkCompat:
         """Alias for @pytest.mark.parametrize (same as top-level parametrize)."""
         return _rustest_mark.parametrize
 
-    def skip(self, reason: str | None = None) -> Callable[[F], F]:
-        """Mark test as skipped.
+    @property
+    def skip(self) -> Any:
+        """Mark test as skipped, bare (``@pytest.mark.skip``) or called with a reason.
 
-        This is the @pytest.mark.skip() decorator which should skip the test.
-        Maps to rustest's skip_decorator().
+        Maps to rustest's ``skip_decorator()``.
         """
-        return _rustest_skip_decorator(reason=reason)  # type: ignore[return-value]
+        return self._skip
 
     @property
     def skipif(self) -> Any:
-        """Conditional skip decorator."""
+        """Conditional skip decorator. Bare, it is an unconditional skip, as in pytest."""
         return _rustest_mark.skipif
 
     @property
     def xfail(self) -> Any:
-        """Mark test as expected to fail."""
+        """Mark test as expected to fail. Usable bare or called."""
         return _rustest_mark.xfail
 
     @property
