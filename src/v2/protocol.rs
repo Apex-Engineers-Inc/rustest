@@ -5,9 +5,24 @@
 //! responses come back up its stdout.  A worker's stdout is therefore reserved for
 //! protocol traffic — anything a collected module prints must be redirected elsewhere.
 //!
-//! Both enums are **internally tagged on `op`** with `snake_case` variant names, which
-//! makes an unrecognised op a hard decode error rather than a silently dropped message.
-//! That is deliberate: a version-skewed worker must fail loudly, not half-work.
+//! Both enums are **internally tagged on `op`** with `snake_case` variant names, and both
+//! carry `deny_unknown_fields`.  Two classes of malformed line are therefore hard decode
+//! errors rather than silently dropped or silently empty messages:
+//!
+//! - an unrecognised **op** — a peer speaking a protocol this build does not know;
+//! - an unrecognised **field** — e.g. a `"tsets"` typo, which without that attribute would
+//!   decode as a perfectly clean, perfectly empty collection.
+//!
+//! Strictness is the right default here because the protocol is internal: orchestrator and
+//! worker ship in the same wheel, so cross-release skew does not exist in production. A
+//! mismatch therefore means a bug, and a bug must fail loudly rather than half-work.
+//!
+//! **What serde does not catch.**  [`WorkerResponse::Collected`] is a product type, so a
+//! line carrying *both* `tests` and `error` decodes cleanly — rejecting it would need a
+//! hand-written `Deserialize`, which this contract deliberately avoids.  The orchestrator
+//! must therefore validate on receipt and treat a hybrid `collected` as **protocol-fatal,
+//! exactly as it treats a decode error**.  The test module below documents that tolerance
+//! explicitly so it is never mistaken for coverage.
 //!
 //! Like [`crate::v2::manifest`], the JSON encoding here is a **frozen wire contract** —
 //! field names, the tag key, and the omit-when-empty rules on `Collected` are pinned by
@@ -18,13 +33,14 @@ use serde::{Deserialize, Serialize};
 
 /// Version of the worker wire protocol.  Bump on any incompatible change.
 ///
-/// The orchestrator sends it in [`WorkerRequest::Init`] and the worker echoes what it
-/// speaks in [`WorkerResponse::Ready`]; a mismatch is a fatal handshake error.
+/// The orchestrator sends the version it requires in [`WorkerRequest::Init`], and the
+/// worker declares the version it actually speaks in [`WorkerResponse::Ready`] — never an
+/// echo of `Init`, or the handshake could not detect skew at all.  A mismatch is fatal.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// A message from the orchestrator to a worker, one per stdin line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkerRequest {
     /// Sent once as the first line of a worker's stdin.
     Init {
@@ -44,12 +60,15 @@ pub enum WorkerRequest {
 
 /// A message from a worker to the orchestrator, one per stdout line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkerResponse {
-    Ready {
-        protocol_version: u32,
-    },
+    /// Handshake reply. `protocol_version` declares the protocol the worker **speaks** —
+    /// never an echo of what [`WorkerRequest::Init`] asked for.
+    Ready { protocol_version: u32 },
     /// Per-file result. Either tests or an error entry (import/syntax failure).
+    ///
+    /// The two shapes are exclusive by contract but not by type: a line carrying both is
+    /// decodable, and rejecting it is the orchestrator's job (see the module docs).
     Collected {
         path: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -57,6 +76,8 @@ pub enum WorkerResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<CollectionErrorEntry>,
     },
+    /// Acknowledges [`WorkerRequest::Shutdown`]; the last line a worker writes before
+    /// exiting 0.
     Bye,
 }
 
@@ -182,6 +203,16 @@ mod tests {
         let decoded: WorkerResponse =
             serde_json::from_str(COLLECTED_TESTS_LINE).expect("collected deserializes");
         assert_eq!(decoded, sample_collected_with_tests());
+
+        // Tolerance, documented so Task 2 does not discover it by accident: an explicit
+        // `"error":null` decodes identically to the omitted key.  A producer that always
+        // emits both keys is therefore *accepted* here while still violating the pinned
+        // wire form above — which is why the golden string, not the decoder, is authority.
+        let with_explicit_null: WorkerResponse = serde_json::from_str(
+            r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}],"error":null}"#,
+        )
+        .expect("explicit null error deserializes");
+        assert_eq!(with_explicit_null, sample_collected_with_tests());
     }
 
     /// Failure shape: `error` present, and **no `tests` key at all** (not `[]`).
@@ -199,6 +230,14 @@ mod tests {
         let decoded: WorkerResponse =
             serde_json::from_str(COLLECTED_ERROR_LINE).expect("collected deserializes");
         assert_eq!(decoded, sample_collected_with_error());
+
+        // Mirror tolerance: an explicit `"tests":[]` decodes identically to the omitted
+        // key.  Same caveat as above — accepted by the decoder, still off-contract.
+        let with_explicit_empty: WorkerResponse = serde_json::from_str(
+            r#"{"op":"collected","path":"/repo/tests/test_broken.py","tests":[],"error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#,
+        )
+        .expect("explicit empty tests deserializes");
+        assert_eq!(with_explicit_empty, sample_collected_with_error());
     }
 
     #[test]
@@ -245,10 +284,60 @@ mod tests {
         assert!(serde_json::from_str::<WorkerRequest>(r#"{"path":"/repo/t.py"}"#).is_err());
     }
 
+    /// `deny_unknown_fields`, the reason it is worth having: a `"tsets"` typo in a worker
+    /// would otherwise decode as a flawless, empty collection and silently lose every test
+    /// in the file.  Field drift must be as loud as op drift.  Asserted for both enums —
+    /// the attribute has to be on each one.
+    #[test]
+    fn unknown_field_is_a_hard_error() {
+        let err = serde_json::from_str::<WorkerResponse>(
+            r#"{"op":"collected","path":"/a/t.py","tsets":[]}"#,
+        )
+        .expect_err("unknown response field must not decode");
+        assert!(
+            err.to_string().contains("tsets"),
+            "error should name the unknown field, got: {err}"
+        );
+
+        let err = serde_json::from_str::<WorkerRequest>(
+            r#"{"op":"collect_file","path":"/a/t.py","recurse":true}"#,
+        )
+        .expect_err("unknown request field must not decode");
+        assert!(
+            err.to_string().contains("recurse"),
+            "error should name the unknown field, got: {err}"
+        );
+    }
+
+    /// **Documented tolerance, not coverage.**  `Collected` is a product type, so a line
+    /// carrying both `tests` and `error` — the one malformed shape serde cannot reject
+    /// without a hand-written `Deserialize` — decodes cleanly with both fields populated.
+    ///
+    /// Task 3's orchestrator therefore MUST validate `collected` on receipt and treat the
+    /// hybrid as protocol-fatal, exactly as it treats a decode error.  If that check is
+    /// ever added here as a custom `Deserialize`, this test is the one to invert.
+    #[test]
+    fn hybrid_collected_decodes_and_must_be_rejected_by_the_orchestrator() {
+        let hybrid: WorkerResponse = serde_json::from_str(
+            r#"{"op":"collected","path":"/a/t.py","tests":[{"id":"t.py::test_a","path":"t.py","qualname":"test_a"}],"error":{"path":"t.py","message":"boom"}}"#,
+        )
+        .expect("the hybrid shape decodes — serde cannot reject it here");
+
+        let WorkerResponse::Collected { tests, error, .. } = hybrid else {
+            panic!("expected a Collected response");
+        };
+        assert_eq!(tests.len(), 1, "hybrid keeps the tests it carried");
+        assert!(error.is_some(), "hybrid keeps the error it carried");
+    }
+
     // --- framing ----------------------------------------------------------
 
-    /// The transport is JSON-lines: every message must fit on one line, so no
-    /// encoded form may contain a raw newline.
+    /// The transport is JSON-lines: every message must fit on one line, so no encoded form
+    /// may contain a raw newline.
+    ///
+    /// The sample error carries a **multi-line message** — a traceback is the realistic
+    /// payload, and it is the only field on the wire that can plausibly contain a newline.
+    /// Without it this test would pass vacuously, never exercising serde's escaping path.
     #[test]
     fn every_message_encodes_to_a_single_line() {
         let requests = [
@@ -263,17 +352,38 @@ mod tests {
             assert!(!encoded.contains('\n'), "multi-line request: {encoded}");
         }
 
+        let traceback = WorkerResponse::Collected {
+            path: "/repo/tests/test_broken.py".to_string(),
+            tests: Vec::new(),
+            error: Some(CollectionErrorEntry {
+                path: "tests/test_broken.py".to_string(),
+                message: "Traceback (most recent call last):\n  File \"t.py\", line 1\n    import nope\nModuleNotFoundError: No module named 'nope'".to_string(),
+            }),
+        };
+
         let responses = [
             WorkerResponse::Ready {
                 protocol_version: PROTOCOL_VERSION,
             },
             sample_collected_with_tests(),
             sample_collected_with_error(),
+            traceback.clone(),
             WorkerResponse::Bye,
         ];
         for response in &responses {
             let encoded = serde_json::to_string(response).expect("response serializes");
             assert!(!encoded.contains('\n'), "multi-line response: {encoded}");
         }
+
+        // ...and the escaped newlines survive the round trip, so a traceback reaches the
+        // orchestrator intact rather than truncated at the first line break.
+        let encoded = serde_json::to_string(&traceback).expect("traceback serializes");
+        assert!(
+            encoded.contains(r"\n"),
+            "newlines must be escaped, not dropped"
+        );
+        let decoded: WorkerResponse =
+            serde_json::from_str(&encoded).expect("traceback deserializes");
+        assert_eq!(decoded, traceback);
     }
 }
