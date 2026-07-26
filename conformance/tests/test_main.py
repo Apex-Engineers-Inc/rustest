@@ -3,8 +3,28 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from conformance.__main__ import _grade_one, _summarize
+import pytest
+
+from conformance.__main__ import _grade_one, _load_waivers_or_exit, _summarize
 from conformance.harness.runners import Outcomes, RunResult
+
+
+def test_load_waivers_or_exit_reports_malformed_toml(tmp_path: Path) -> None:
+    """A hand-edited waivers.toml with broken syntax must fail loudly but briefly.
+
+    Previously a syntax error propagated as a raw ``tomllib.TOMLDecodeError``
+    traceback out of ``main()``. It must instead become a one-line ``SystemExit``
+    that names the offending file, so a bad edit is easy to locate and fix.
+    """
+    bad = tmp_path / "waivers.toml"
+    bad.write_text("[cases\nfoo = \n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _load_waivers_or_exit(bad)
+
+    message = str(excinfo.value)
+    assert str(bad) in message
+    assert "\n" not in message
 
 
 def test_grade_one_survives_malformed_case_toml(tmp_path: Path) -> None:

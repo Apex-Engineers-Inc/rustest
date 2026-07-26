@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,6 +12,19 @@ from .harness.grade import CaseResult, grade_case, load_case_args, load_waivers
 from .harness.runners import RunResult, run_pytest, run_rustest
 
 ROOT = Path(__file__).parent
+
+
+def _load_waivers_or_exit(path: Path) -> dict[str, str]:
+    """Load waivers.toml, turning a malformed file into a one-line exit, not a traceback.
+
+    waivers.toml is hand-edited; a syntax error in it is a routine mistake, not a
+    harness bug, and shouldn't dump a raw tomllib.TOMLDecodeError traceback on the
+    user. Naming the file and the parse error is enough to fix it.
+    """
+    try:
+        return load_waivers(path)
+    except tomllib.TOMLDecodeError as exc:
+        raise SystemExit(f"conformance: malformed waivers file {path}: {exc}") from exc
 
 
 def _grade_one(
@@ -63,7 +77,7 @@ def main() -> int:
     parser.add_argument("--only", default="", help="Only run cases whose name starts with PREFIX")
     args = parser.parse_args()
 
-    waivers = load_waivers(ROOT / "waivers.toml")
+    waivers = _load_waivers_or_exit(ROOT / "waivers.toml")
     corpus = ROOT / "corpus"
     cases = sorted(
         d for d in corpus.glob("*/*/") if any(d.glob("test_*.py")) or (d / "case.toml").exists()

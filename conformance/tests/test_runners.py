@@ -53,6 +53,36 @@ def test_parse_pytest_collect() -> None:
     }
 
 
+COLLECT_OUTPUT_WITH_TRACEBACK = textwrap.dedent(
+    """\
+    test_a.py::test_one
+    test_a.py::TestBox::test_two[x]
+
+    =================================== ERRORS ====================================
+    ______________________ ERROR collecting test_broken.py ________________________
+        assert path == "src::main::foo"
+    E   AssertionError: mismatch bar::baz
+
+    2 tests collected, 1 error in 0.01s
+    """
+)
+
+
+def test_parse_pytest_collect_ignores_traceback_line_with_double_colon() -> None:
+    """A traceback/source line containing ``::`` must never read as a phantom nodeid.
+
+    Both extra lines below contain a literal ``::`` and would have slipped past the
+    old heuristic (which only excluded blank lines and a fixed set of prefixes) had
+    they not happened to start with one of those prefixes. They must still be
+    excluded: real nodeids are always flush at column 0, and an indented source
+    line or an ``E   ...`` assertion line is not.
+    """
+    assert parse_pytest_collect(COLLECT_OUTPUT_WITH_TRACEBACK) == {
+        "test_a.py::test_one",
+        "test_a.py::TestBox::test_two[x]",
+    }
+
+
 def test_parse_pytest_summary() -> None:
     out = parse_pytest_summary("1 failed, 2 passed, 1 skipped in 0.05s\n", exit_code=1)
     assert (out.passed, out.failed, out.skipped, out.errors) == (2, 1, 1, 0)

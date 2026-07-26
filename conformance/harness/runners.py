@@ -15,6 +15,16 @@ from .ids import normalize_pytest_nodeid, normalize_rustest_id
 
 _SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors)")
 
+# A pytest nodeid: a path segment, one or more "::"-separated name segments, and
+# an optional trailing "[...]" parametrize suffix (which may itself contain
+# colons or nested brackets, e.g. "test_x.py::test_f[a:b]" or "[a[b]]"). No
+# segment before the trailing suffix may contain a bare colon, and the whole
+# thing must start at column 0 -- both are true of every real nodeid pytest
+# prints and false of every traceback frame, source excerpt, or "E   ..."
+# assertion line, which are always indented and/or contain a single ":" before
+# any incidental "::". See parse_pytest_collect.
+_NODEID_RE = re.compile(r"^[^\s:][^:\n]*(::[^\s:][^:\n]*)+(\[[^\n]*\])?$")
+
 
 @dataclass(frozen=True)
 class Outcomes:
@@ -33,13 +43,22 @@ class RunResult:
 
 
 def parse_pytest_collect(text: str) -> set[str]:
-    """Extract nodeids from ``pytest --collect-only -q`` output."""
+    """Extract nodeids from ``pytest --collect-only -q`` output.
+
+    Matched against the *raw* line (only trailing whitespace stripped): real
+    nodeids are always flush at column 0, while every other line -- traceback
+    frames, source excerpts copied verbatim into an ERRORS block, "E   ..."
+    assertion text -- is indented by pytest. Stripping leading whitespace
+    before matching (the previous heuristic did) throws that signal away and
+    lets an indented line that happens to contain a literal "::" -- e.g. a
+    quoted path or Rust-style module reference inside an assertion message --
+    read as a phantom test id.
+    """
     ids: set[str] = set()
     for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or "::" not in line or line.startswith(("=", "warning", "ERROR")):
-            continue
-        ids.add(line)
+        line = raw_line.rstrip()
+        if _NODEID_RE.match(line):
+            ids.add(line)
     return ids
 
 
