@@ -245,6 +245,29 @@ def test_xfail_default_values():
     assert marks[0]["kwargs"]["strict"] is False
 
 
+def test_xfail_bare_decorator_preserves_function():
+    """Bare @pytest.mark.xfail (uncalled) must not replace the test function.
+
+    Regression test for #137: the uncalled decorator form previously left a
+    MarkDecorator bound to the test name, silently dropping the test from
+    collection. The function must survive decoration and carry the xfail mark.
+    """
+    from rustest.compat.pytest import mark as compat_mark
+
+    @compat_mark.xfail
+    def test_bare_xfail():
+        pass
+
+    # The decorated object must still be a callable function, not a MarkDecorator
+    assert callable(test_bare_xfail)
+    assert test_bare_xfail.__name__ == "test_bare_xfail"
+
+    # The xfail mark must be attached
+    marks = getattr(test_bare_xfail, "__rustest_marks__", [])
+    assert len(marks) == 1
+    assert marks[0]["name"] == "xfail"
+
+
 def test_skipif_with_string_condition():
     """Test skipif with string condition (for evaluation)."""
 

@@ -70,6 +70,7 @@ from rustest.decorators import (
     skip as _rustest_skip_function,
     ExceptionInfo,
     ParameterSet,
+    MarkDecorator as _rustest_MarkDecorator,
 )
 from rustest.approx import approx as _rustest_approx
 from rustest.builtin_fixtures import (
@@ -654,6 +655,31 @@ XFailed = _rustest_XFailed
 xfail = _rustest_xfail
 
 
+class _XfailMarker:
+    """Callable that supports both ``@pytest.mark.xfail`` and ``@pytest.mark.xfail(...)``.
+
+    When used as a bare decorator, Python calls ``_xfail_marker(func)`` — the
+    function is the first positional argument. We detect that case and apply
+    the mark directly, returning the original function so the test is still
+    collected.
+
+    When called with keyword arguments (``reason="..."``, ``strict=True``, …)
+    or a condition, we delegate to ``_rustest_mark.xfail`` which returns a
+    ``MarkDecorator`` for the parameterized form.
+    """
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # Bare decorator: @pytest.mark.xfail  →  _xfail_marker(func)
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            decorator = _rustest_MarkDecorator("xfail", (), {})
+            return decorator(args[0])
+        # Factory form: @pytest.mark.xfail(reason="...") or @pytest.mark.xfail(condition, ...)
+        return _rustest_mark.xfail(*args, **kwargs)
+
+
+_xfail_marker = _XfailMarker()
+
+
 class _PytestMarkCompat:
     """
     Compatibility wrapper for pytest.mark.
@@ -696,8 +722,13 @@ class _PytestMarkCompat:
 
     @property
     def xfail(self) -> Any:
-        """Mark test as expected to fail."""
-        return _rustest_mark.xfail
+        """Mark test as expected to fail.
+
+        Returns a callable that works both as a bare decorator
+        (``@pytest.mark.xfail``) and as a factory
+        (``@pytest.mark.xfail(reason="...")``).
+        """
+        return _xfail_marker
 
     @property
     def asyncio(self) -> Any:
