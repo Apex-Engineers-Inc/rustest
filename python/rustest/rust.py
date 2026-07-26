@@ -38,3 +38,10 @@ def run(
 def getfixturevalue(_name: str) -> Any:
     """Placeholder matching the native helper exported by the extension."""
     raise RuntimeError("request.getfixturevalue() is only available inside an active rustest test")
+
+
+def v2_resolve_config(_invocation_dir: str, _args: Sequence[str]) -> str:
+    """Placeholder for the v2 config debug surface (see ``src/v2/py.rs``)."""
+    raise NotImplementedError(
+        "rustest.rust.v2_resolve_config() is only available when the native extension is built."
+    )

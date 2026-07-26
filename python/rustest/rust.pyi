@@ -127,3 +127,15 @@ def run(
 def getfixturevalue(name: str) -> object:
     """Resolve a fixture through the active test resolver."""
     ...
+
+def v2_resolve_config(invocation_dir: str, args: Sequence[str]) -> str:
+    """Resolve the v2 rootdir + ini configuration, returned as a JSON object string.
+
+    Internal debug surface for the v2 core (see ``src/v2/py.rs``). ``invocation_dir`` must
+    be absolute. The JSON object has the keys ``rootdir`` (absolute posix path),
+    ``config_file`` (absolute posix path or ``null``), ``testpaths``, ``python_files``,
+    ``python_classes``, ``python_functions``, ``norecursedirs``, ``addopts`` and
+    ``markers``. Raises ``ValueError`` for a relative ``invocation_dir`` or an unusable
+    config file.
+    """
+    ...
