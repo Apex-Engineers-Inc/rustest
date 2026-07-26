@@ -12,6 +12,12 @@
 #
 # Gate: `uv run python -m conformance --v2-collect`
 # Scoreboard at 1b.1: 21 cases -- 18 match, 3 waived, 0 stale-waivers, 0 diverged.
+# Scoreboard at 1b.2: 22 cases -- 22 match, 0 waived, 0 stale-waivers, 0 diverged.
+#
+# THIS FILE IS NOW EMPTY. The three 1b.1 deferrals were retired by the commits that
+# closed them, each forced by stale-waiver detection rather than noticed by hand:
+# 4b448fa (fixtures/parametrized-fixture -- closure ids byte-match pytest) and 1a1e1b4
+# (marks/mark-filter and marks/deselect-all -- the -k/-m engine landed in 051b9c5).
 #
 # Node ids are compared as an ORDERED list, so a case can diverge on collection order
 # or on a duplicated id with the id sets identical on both sides. None does today.

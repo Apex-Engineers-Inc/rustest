@@ -1,0 +1,27 @@
+# Documented divergences between a real pytest run and `rustest --v2`.
+#
+# This is the Phase 1b.2 full-run gate's ledger, kept separate from waivers.toml (the
+# v1 end-to-end ledger) and waivers-v2-collect.toml (the v2 collection ledger) because
+# an entry in one says nothing about the others. `collection/unittest-basic` is waived
+# for v1 (#129: every unittest outcome graded PASSED), matches under v2-collect, and
+# matches here; `marks/xfail-strict` is waived for v1 (no xfail concept at all) and
+# matches under both v2 gates.
+#
+# Graded: the ORDERED node ids the schema-v2 report carries, the six-value outcome
+# tally (passed/failed/skipped/xfailed/xpassed/error), and the process exit code.
+# Nothing else -- stdout and stderr prose differ from pytest's by design, and worker
+# stderr legitimately carries boundary teardown output on a green run.
+#
+# Every entry MUST carry the mechanism and a file:line. Phase gates shrink this file;
+# a waiver whose case starts matching is reported as a STALE-WAIVER and fails the run.
+#
+# Gate: `uv run python -m conformance --v2-run`
+# Scoreboard at 1b.2: 22 cases -- 22 match, 0 waived, 0 stale-waivers, 0 diverged.
+#
+# THIS FILE IS EMPTY ON PURPOSE, and that is the headline result of Phase 1b.2: every
+# execution divergence the corpus found in v1 -- #129 (unittest outcomes swallowed),
+# #130 (conftest loaded twice), #131 (skipif ignored), xfail with no outcome to put it
+# in, strict xfail, and the missing exit-5 branch in two cases -- is fixed in v2, so
+# there is nothing left to waive. `test_v2_run_ledger_is_empty` in
+# conformance/tests/test_main.py enforces that a new entry cannot appear quietly.
+[cases]

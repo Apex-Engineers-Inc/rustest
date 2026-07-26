@@ -10,6 +10,8 @@ import pytest
 
 from conformance.harness.runners import (
     CollectResult,
+    FullRunResult,
+    RunOutcomes,
     _check_pytest_collect_exit,
     _run,
     _check_pytest_exit,
@@ -18,8 +20,10 @@ from conformance.harness.runners import (
     parse_pytest_summary,
     run_pytest,
     run_pytest_collect,
+    run_pytest_full,
     run_rustest,
     run_rustest_v2_collect,
+    run_rustest_v2_run,
 )
 
 COLLECT_OUTPUT = textwrap.dedent(
@@ -624,6 +628,324 @@ def test_run_rustest_v2_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
 
     assert result.ids == ["test_good.py::test_ok"]
     assert not any("collected" in nodeid for nodeid in result.ids)
+
+
+# --------------------------------------------------------------------------------------
+# The full-run (`--v2-run`) gate: real pytest execution vs `rustest --v2 --report-json`.
+# --------------------------------------------------------------------------------------
+
+
+def test_parse_pytest_summary_reads_all_six_buckets() -> None:
+    """The six-value mapping, from the one line pytest prints when all six occur.
+
+    Captured verbatim from real pytest 8.4.2 (see
+    ``test_parse_pytest_summary_matches_real_pytest_on_every_bucket``); kept as a fast
+    golden so the parser has a subprocess-free regression too.
+    """
+    out = parse_pytest_summary(
+        "1 failed, 1 passed, 1 skipped, 1 xfailed, 1 xpassed, 1 error in 0.09s\n",
+        exit_code=1,
+    )
+
+    assert (out.passed, out.failed, out.skipped, out.errors) == (1, 1, 1, 1)
+    assert (out.xfailed, out.xpassed) == (1, 1)
+
+
+def test_parse_pytest_summary_does_not_read_xfailed_as_failed() -> None:
+    """``xfailed`` ends in ``failed`` and must never be counted as one.
+
+    This is not hypothetical: before ``xfailed`` was in the alternation the token
+    simply did not match at all, and ``marks/xfail`` recorded pytest as ``1/0/0/0``
+    -- an *expected failure silently tallied as nothing*. The dangerous direction is
+    the other one, though: a pattern that matched ``failed`` inside ``xfailed`` would
+    turn an entirely green pytest run into ``1 failed`` and make v2 look broken.
+    """
+    out = parse_pytest_summary("1 passed, 2 xfailed in 0.01s\n", exit_code=0)
+
+    assert out.failed == 0
+    assert out.xfailed == 2
+    assert out.passed == 1
+
+
+def test_parse_pytest_summary_does_not_read_xpassed_as_passed() -> None:
+    """``xpassed`` ends in ``passed``; the same trap, in the bucket that hides it best.
+
+    An xpass folded into ``passed`` is invisible -- both are green -- which is exactly
+    why schema v2 gave it its own bucket (Task 4 §5.1).
+    """
+    out = parse_pytest_summary("2 xpassed in 0.01s\n", exit_code=0)
+
+    assert out.passed == 0
+    assert out.xpassed == 2
+
+
+SIX_OUTCOME_SUITE = textwrap.dedent(
+    """\
+    import pytest
+
+
+    def test_pass():
+        assert True
+
+
+    def test_fail():
+        assert False
+
+
+    @pytest.mark.skip(reason="s")
+    def test_skip():
+        pass
+
+
+    @pytest.mark.xfail(reason="broken")
+    def test_xfail():
+        assert False
+
+
+    @pytest.mark.xfail(reason="already fixed")
+    def test_xpass():
+        assert True
+
+
+    @pytest.fixture
+    def broken():
+        raise RuntimeError("boom")
+
+
+    def test_error(broken):
+        pass
+    """
+)
+
+SIX_OUTCOME_IDS_ORDERED = [
+    "test_six.py::test_pass",
+    "test_six.py::test_fail",
+    "test_six.py::test_skip",
+    "test_six.py::test_xfail",
+    "test_six.py::test_xpass",
+    "test_six.py::test_error",
+]
+
+
+def _case_with_six_outcomes(tmp_path: Path) -> Path:
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "test_six.py").write_text(SIX_OUTCOME_SUITE, encoding="utf-8")
+    return case_dir
+
+
+def test_parse_pytest_summary_matches_real_pytest_on_every_bucket(tmp_path: Path) -> None:
+    """The golden above, re-derived from live pytest rather than trusted.
+
+    A hand-written summary literal can only pin whatever the author believed pytest
+    prints -- the failure mode that put the stderr summary line in the wrong bucket
+    order in Task 4 (report §A). Driving real pytest is what makes the parser's
+    contract a fact about pytest instead of a fact about this file.
+    """
+    result = run_pytest_full(_case_with_six_outcomes(tmp_path), [])
+
+    assert result.outcomes == RunOutcomes(
+        passed=1, failed=1, skipped=1, xfailed=1, xpassed=1, errors=1
+    )
+
+
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+def test_full_run_runners_agree_on_all_six_outcomes(
+    runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
+) -> None:
+    """One tree, all six statuses, both runners -- the whole graded contract at once.
+
+    Parametrizing over the two runners is what makes this a *differential* assertion
+    rather than two independent ones: the same literal expectation has to hold for
+    pytest and for ``rustest --v2``, so a change to either side that this file did not
+    anticipate fails here rather than being absorbed into a matching expectation.
+    """
+    result = runner(_case_with_six_outcomes(tmp_path), [])
+
+    assert result.ids == SIX_OUTCOME_IDS_ORDERED
+    assert result.outcomes == RunOutcomes(
+        passed=1, failed=1, skipped=1, xfailed=1, xpassed=1, errors=1
+    )
+    assert result.exit_code == 1
+
+
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+def test_full_run_runners_agree_on_the_mini_suite(
+    runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
+) -> None:
+    """Ids are ORDERED and in execution order; two passes and one failure exit 1."""
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+
+    result = runner(case_dir, [])
+
+    assert result.ids == MINI_IDS_ORDERED
+    assert result.outcomes == RunOutcomes(
+        passed=2, failed=1, skipped=0, xfailed=0, xpassed=0, errors=0
+    )
+    assert result.exit_code == 1
+
+
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+def test_full_run_runners_ignore_a_surrounding_project_config(
+    runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
+) -> None:
+    """The isolation protocol, on the run surface: config above the case is invisible.
+
+    Identical in kind to the collect gate's protocol test, and load-bearing for the
+    same reason: ``rustest --v2`` resolves config by walking up from its cwd and has no
+    ``-c``/``--rootdir`` to pin it, so without the copy-out both runners would answer
+    different questions about rootdir and every case would "diverge" on an id prefix
+    neither is getting wrong.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+
+    result = runner(case_dir, [])
+
+    assert result.ids == MINI_IDS_ORDERED
+    assert result.exit_code == 1
+
+
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+def test_full_run_runners_pass_case_args_through(
+    runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
+) -> None:
+    """``case.toml`` args reach both runners, and deselection shrinks the graded ids.
+
+    ``marks/mark-filter`` is exactly this shape. If a runner dropped the args, the id
+    list would silently grow back to the whole file and the case would compare two
+    different questions.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "test_marks.py").write_text(
+        textwrap.dedent(
+            """\
+            import pytest
+
+
+            @pytest.mark.smoke
+            def test_selected():
+                assert True
+
+
+            def test_unselected():
+                assert False
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner(case_dir, ["-m", "smoke"])
+
+    assert result.ids == ["test_marks.py::test_selected"]
+    assert result.outcomes == RunOutcomes(
+        passed=1, failed=0, skipped=0, xfailed=0, xpassed=0, errors=0
+    )
+    assert result.exit_code == 0
+
+
+def _case_with_a_broken_import(tmp_path: Path) -> Path:
+    """A tree where one file cannot be imported and the other would leave a footprint.
+
+    The sentinel is the point: it turns "nothing ran" from an assertion about exit
+    codes into an observation about the filesystem.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "test_aaa_broken.py").write_text("def test_x(:\n", encoding="utf-8")
+    (case_dir / "test_zzz_good.py").write_text(
+        "from pathlib import Path\n\n\ndef test_ok():\n    Path('ran.marker').write_text('y')\n",
+        encoding="utf-8",
+    )
+    return case_dir
+
+
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+def test_full_run_runners_report_no_executed_ids_when_collection_is_interrupted(
+    runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
+) -> None:
+    """A collection error means *nothing runs*, so the executed-id list is empty.
+
+    This is the one rule ``run_pytest_full`` keys on an exit code, and it is pytest's
+    own: ``pytest_runtestloop`` raises ``Interrupted`` before the first item. The
+    ``--collect-only`` pass still lists ``test_zzz_good.py::test_ok``, so taking those
+    ids verbatim would pit pytest's *collected* set against v2's *executed* one and
+    manufacture a divergence out of a rule both engines implement identically
+    (``src/v2/execute.rs::stage`` returns empty dispatch lists when ``errors`` is
+    non-empty -- Task 4 report §2.1, correction 2).
+
+    Asserted from a **side effect**, not from the exit code: if the healthy test had
+    run, it would have left ``ran.marker`` behind. That is what makes the empty list an
+    observation rather than a restatement of the branch under test.
+
+    ``errors == 1`` is the *broken file*, not a test: pytest reports a failed import as
+    ``1 error``, and ``run_rustest_v2_run`` folds ``collection_errors`` into the same
+    bucket so the two tallies are comparable. This expectation is the reason the fold
+    exists -- the first version of this test asserted ``errors=0`` for both runners and
+    the differential parametrization proved it wrong on the pytest side.
+    """
+    case_dir = _case_with_a_broken_import(tmp_path)
+
+    result = runner(case_dir, [])
+
+    assert result.exit_code == 2
+    assert result.ids == []
+    assert result.outcomes == RunOutcomes(
+        passed=0, failed=0, skipped=0, xfailed=0, xpassed=0, errors=1
+    )
+    # The oracle half, and the reason the empty list above is an observation rather
+    # than a restatement of the branch: the healthy test would have written this file
+    # had it run. No harness mutation can flip this assertion -- it is a claim about
+    # *pytest*, not about the harness -- so it is carried here rather than as a
+    # separate test that would look mutation-covered and not be.
+    assert not (case_dir / "ran.marker").exists()
+
+
+def test_run_rustest_v2_run_raises_when_no_report_is_written(tmp_path: Path) -> None:
+    """``rustest --v2`` dying before it writes a report is a loud failure, never zeros.
+
+    Fabricating an all-zeros ``FullRunResult`` here would grade as a divergence with no
+    explanation attached -- and on a case whose pytest side is also empty (an empty
+    tree), it would grade as a **MATCH** for a run that never happened.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+
+    with pytest.raises(RuntimeError, match="rustest --v2 wrote no report"):
+        run_rustest_v2_run(case_dir, ["--definitely-not-a-real-flag"])
+
+
+def test_run_rustest_v2_run_grades_the_process_exit_code_not_the_reports_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The graded exit code is what the process returned, not what the report says.
+
+    They are pinned to agree by ``python/tests/test_v2_run_cli.py``; if they ever stop
+    agreeing, the gate must side with the number CI and users actually observe.
+    Stubbing the process boundary is the only way to drive them apart on purpose.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+    real_run = _run
+
+    def _fake_run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        proc = real_run(cmd, cwd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=99, stdout=proc.stdout, stderr=proc.stderr
+        )
+
+    monkeypatch.setattr("conformance.harness.runners._run", _fake_run)
+
+    result = run_rustest_v2_run(case_dir, [])
+
+    assert result.exit_code == 99
 
 
 def test_run_rustest_raises_when_no_report_is_written(tmp_path: Path) -> None:

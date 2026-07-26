@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .runners import CollectResult, RunResult
+from .runners import CollectResult, FullRunResult, RunOutcomes, RunResult
 
 try:
     import tomllib
@@ -105,6 +105,71 @@ def grade_collect_case(
         problems.append(f"extra in v2: {only_v2}")
     if pytest_result.ids != v2_result.ids:
         problems.append(_describe_first_id_divergence(pytest_result.ids, v2_result.ids))
+    if pytest_result.exit_code != v2_result.exit_code:
+        problems.append(f"exit codes pytest={pytest_result.exit_code} v2={v2_result.exit_code}")
+    return _adjudicate(name, problems, waivers)
+
+
+_RUN_TALLY_LEGEND = "passed/failed/skipped/xfailed/xpassed/errors"
+
+
+def _format_run_tally(outcomes: RunOutcomes) -> str:
+    """Six numbers on one line, in the order the legend names.
+
+    Printed with the legend rather than bare, because six anonymous slash-separated
+    integers are unreadable at exactly the moment someone needs to read them -- when a
+    gate has just gone red.
+    """
+    return (
+        f"{outcomes.passed}/{outcomes.failed}/{outcomes.skipped}/"
+        + f"{outcomes.xfailed}/{outcomes.xpassed}/{outcomes.errors}"
+    )
+
+
+def grade_run_case(
+    name: str,
+    pytest_result: FullRunResult,
+    v2_result: FullRunResult,
+    waivers: dict[str, str],
+) -> CaseResult:
+    """Grade a case on a full run: ordered ids, the six-value tally, and the exit code.
+
+    Those three *are* the whole ``rustest --v2`` contract as a machine reader sees it.
+    Nothing else is compared, and each omission is deliberate:
+
+    * **stdout/stderr prose** -- worded differently by design on the v2 side, and worker
+      stderr legitimately carries boundary teardown output on a green run.
+    * **durations** -- not a claim about behaviour.
+    * **``deselected``** -- already graded, and more precisely, by the id list: a
+      deselected test is simply absent from it.
+    * **a separate collection-error flag** -- that is exit 2 on both sides, so comparing
+      it would grade the same fact twice under two names.
+
+    Ids are compared **positionally**, like the collect gate's, and for one more reason
+    here: execution order is observable behaviour, since a module-scoped fixture is torn
+    down when the runner leaves the file. Set differences are still reported because they
+    are the readable form of a membership defect; the positional report is what catches
+    a pure ordering or duplication defect, which a set cannot see at all.
+
+    The tally is compared as a **six-tuple**. Folding ``xfailed`` into ``skipped`` or
+    ``xpassed`` into ``passed`` -- schema v1's shape -- would make the two cases this gate
+    exists to prove (``marks/xfail``, ``marks/xfail-strict``) match for the wrong reason.
+    """
+    problems: list[str] = []
+    only_pytest = sorted(set(pytest_result.ids) - set(v2_result.ids))
+    only_v2 = sorted(set(v2_result.ids) - set(pytest_result.ids))
+    if only_pytest:
+        problems.append(f"missing from v2: {only_pytest}")
+    if only_v2:
+        problems.append(f"extra in v2: {only_v2}")
+    if pytest_result.ids != v2_result.ids:
+        problems.append(_describe_first_id_divergence(pytest_result.ids, v2_result.ids))
+    if pytest_result.outcomes != v2_result.outcomes:
+        problems.append(
+            f"outcomes ({_RUN_TALLY_LEGEND}) "
+            + f"pytest={_format_run_tally(pytest_result.outcomes)} "
+            + f"v2={_format_run_tally(v2_result.outcomes)}"
+        )
     if pytest_result.exit_code != v2_result.exit_code:
         problems.append(f"exit codes pytest={pytest_result.exit_code} v2={v2_result.exit_code}")
     return _adjudicate(name, problems, waivers)

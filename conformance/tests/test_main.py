@@ -9,20 +9,33 @@ import pytest
 
 from conformance.__main__ import (
     V2_COLLECT_WAIVERS,
+    V2_RUN_WAIVERS,
     WAIVERS,
     _grade_one,
     _grade_one_collect,
+    _grade_one_run,
     _load_waivers_or_exit,
     _summarize,
     discover_cases,
     main,
 )
-from conformance.harness.runners import CollectResult, Outcomes, RunResult
+from conformance.harness.runners import (
+    CollectResult,
+    FullRunResult,
+    Outcomes,
+    RunOutcomes,
+    RunResult,
+)
 
 # The only divergences Phase 1b.1 pre-authorizes. Everything else must be adjudicated
 # in the report and named here deliberately -- the point of the gate is that the ledger
 # cannot grow silently.
 PREAUTHORIZED_V2_COLLECT_WAIVERS: set[str] = set()
+
+# Phase 1b.2's target state for the full-run gate: every v1 execution bug is fixed in
+# v2, so nothing is pre-authorized here either. A residual divergence is a finding to
+# adjudicate in the task report with a cited mechanism, not a line to add quietly.
+PREAUTHORIZED_V2_RUN_WAIVERS: set[str] = set()
 
 
 def test_load_waivers_or_exit_reports_malformed_toml(tmp_path: Path) -> None:
@@ -137,7 +150,7 @@ def test_corpus_case_count_is_pinned() -> None:
     weaken the gate while every summary still read green. Pinning the count makes that
     a test failure. Bump this number in the same commit that adds or removes a case.
     """
-    assert len(discover_cases()) == 21
+    assert len(discover_cases()) == 22
 
 
 def test_every_ledger_key_names_a_real_case() -> None:
@@ -150,7 +163,7 @@ def test_every_ledger_key_names_a_real_case() -> None:
     """
     known = {name for name, _ in discover_cases()}
 
-    for ledger in (WAIVERS, V2_COLLECT_WAIVERS):
+    for ledger in (WAIVERS, V2_COLLECT_WAIVERS, V2_RUN_WAIVERS):
         unknown = set(_load_waivers_or_exit(ledger)) - known
         assert not unknown, f"{ledger.name} waives cases that do not exist: {sorted(unknown)}"
 
@@ -168,6 +181,102 @@ def test_v2_collect_ledger_holds_only_preauthorized_waivers() -> None:
     assert set(waived) == PREAUTHORIZED_V2_COLLECT_WAIVERS
     for name, reason in waived.items():
         assert "1b.2" in reason, f"{name} waiver must name the phase that closes it"
+
+
+def test_v2_run_ledger_is_empty() -> None:
+    """Phase 1b.2's headline claim, enforced: `rustest --v2` needs no run waivers.
+
+    The v1 ledger documents six execution bugs (#129, #130, #131, xfail, and the
+    exit-5 gap in two cases). If any of them survived into v2 there would be an entry
+    here; there is none, and a new one cannot appear without this test failing and a
+    reviewer asking which bug came back.
+    """
+    waived = _load_waivers_or_exit(V2_RUN_WAIVERS)
+
+    assert set(waived) == PREAUTHORIZED_V2_RUN_WAIVERS
+
+
+def test_grade_one_run_survives_runner_exception(tmp_path: Path) -> None:
+    """A full-run blowup is contained to its own case, like both other gates'."""
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+
+    def _raise(case_dir: Path, args: list[str]) -> FullRunResult:
+        raise subprocess.TimeoutExpired(cmd="pytest", timeout=1)
+
+    result = _grade_one_run(case_dir, "area/case", {}, run_pytest_fn=_raise)
+
+    assert result.status == "DIVERGE"
+    assert "harness error" in result.detail
+
+
+def test_grade_one_run_passes_case_args_to_both_runners(tmp_path: Path) -> None:
+    """``case.toml`` args reach both runners unchanged, as in the other two gates.
+
+    ``marks/mark-filter`` and ``marks/deselect-all`` are graded on what ``-m`` selects;
+    dropping the args for one side would compare two different runs and turn a real
+    selection defect into a match.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "case.toml").write_text('[case]\nargs = ["-m", "smoke"]\n', encoding="utf-8")
+    seen: dict[str, list[str]] = {}
+
+    def _record(key: str) -> Callable[[Path, list[str]], FullRunResult]:
+        def runner(case_dir: Path, args: list[str]) -> FullRunResult:
+            seen[key] = args
+            return FullRunResult(ids=[], outcomes=RunOutcomes(0, 0, 0, 0, 0, 0), exit_code=5)
+
+        return runner
+
+    _grade_one_run(
+        case_dir,
+        "area/case",
+        {},
+        run_pytest_fn=_record("pytest"),
+        run_v2_fn=_record("v2"),
+    )
+
+    assert seen == {"pytest": ["-m", "smoke"], "v2": ["-m", "smoke"]}
+
+
+def test_main_v2_run_mode_grades_the_case_v1_silently_passes(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end through the real CLI on the worst v1 bug the corpus found.
+
+    ``collection/unittest-basic`` is #129: v1 discards ``TestCase.run()``'s result, so a
+    genuinely failing ``unittest`` suite reports **all green**. It is waived in the v1
+    ledger and must MATCH here -- a red run that v2 reports as red is the entire point
+    of the execution gate.
+    """
+    monkeypatch.setattr(sys, "argv", ["conformance", "--v2-run", "--only", "collection/unittest"])
+
+    exit_code = main()
+
+    out = capsys.readouterr().out
+    assert "[ok] collection/unittest-basic" in out
+    assert "1 cases: 1 match, 0 waived, 0 stale-waivers, 0 diverged" in out
+    assert exit_code == 0
+
+
+def test_main_rejects_both_v2_modes_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--v2-collect`` and ``--v2-run`` grade different contracts against different
+    ledgers, so asking for both is a mistake argparse must refuse rather than a
+    silent precedence rule the caller has to know.
+
+    ``--only`` names nothing so that a build which *accepts* both flags grades zero
+    cases and returns promptly. Without it, the failure mode of this test would be a
+    full corpus run -- minutes of subprocesses -- rather than an assertion.
+    """
+    monkeypatch.setattr(
+        sys, "argv", ["conformance", "--v2-collect", "--v2-run", "--only", "no/such-case"]
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 2
 
 
 def test_main_v2_collect_mode_grades_a_real_case(

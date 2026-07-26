@@ -1,4 +1,4 @@
-"""Conformance CLI: python -m conformance [--only PREFIX] [--v2-collect]"""
+"""Conformance CLI: python -m conformance [--only PREFIX] [--v2-collect | --v2-run]"""
 
 from __future__ import annotations
 
@@ -12,27 +12,34 @@ from .harness.grade import (
     CaseResult,
     grade_case,
     grade_collect_case,
+    grade_run_case,
     load_case_args,
     load_waivers,
 )
 from .harness.runners import (
     CollectResult,
+    FullRunResult,
     RunResult,
     run_pytest,
     run_pytest_collect,
+    run_pytest_full,
     run_rustest,
     run_rustest_v2_collect,
+    run_rustest_v2_run,
 )
 
 ROOT = Path(__file__).parent
 
-# Two gates, two ledgers. The v1 ledger records where the shipping runner diverges from
-# pytest end to end; the v2-collect ledger records only what `rustest --v2-collect-only`
-# cannot yet reproduce about pytest's *collection*. They are kept apart because a v1
-# entry says nothing about v2 and vice versa -- `collection/empty-suite`, for instance,
-# is waived for v1 (exit 0 where pytest exits 5) and matches under v2.
+# Three gates, three ledgers. The v1 ledger records where the shipping runner diverges
+# from pytest end to end; the v2-collect ledger records only what
+# `rustest --v2-collect-only` cannot reproduce about pytest's *collection*; the v2-run
+# ledger the same for `rustest --v2`'s *execution*. They are kept apart because an entry
+# in one says nothing about the others -- `collection/empty-suite`, for instance, is
+# waived for v1 (exit 0 where pytest exits 5) and matches under both v2 gates, and
+# `marks/xfail-strict` is waived for v1 (no xfail concept at all) and matches under both.
 WAIVERS = ROOT / "waivers.toml"
 V2_COLLECT_WAIVERS = ROOT / "waivers-v2-collect.toml"
+V2_RUN_WAIVERS = ROOT / "waivers-v2-run.toml"
 CORPUS = ROOT / "corpus"
 
 
@@ -124,6 +131,29 @@ def _grade_one_collect(
     return _contained(name, waivers, grade)
 
 
+def _grade_one_run(
+    case_dir: Path,
+    name: str,
+    waivers: dict[str, str],
+    run_pytest_fn: Callable[[Path, list[str]], FullRunResult] = run_pytest_full,
+    run_v2_fn: Callable[[Path, list[str]], FullRunResult] = run_rustest_v2_run,
+) -> CaseResult:
+    """Grade a single case on a full run, pytest vs ``rustest --v2``.
+
+    ``case.toml`` args go to *both* runners unchanged, for the same reason they do in the
+    collect gate: passing them to one side only asks the two runners different questions
+    and turns a real selection defect into an accidental match.
+    """
+
+    def grade() -> CaseResult:
+        case_args = load_case_args(case_dir)
+        pytest_result = run_pytest_fn(case_dir, case_args)
+        v2_result = run_v2_fn(case_dir, case_args)
+        return grade_run_case(name, pytest_result, v2_result, waivers)
+
+    return _contained(name, waivers, grade)
+
+
 def _summarize(results: list[CaseResult]) -> tuple[str, int]:
     """Build the trailing summary line and the process exit code for *results*.
 
@@ -146,7 +176,11 @@ def _summarize(results: list[CaseResult]) -> tuple[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="conformance")
     parser.add_argument("--only", default="", help="Only run cases whose name starts with PREFIX")
-    parser.add_argument(
+    # Mutually exclusive because the two v2 gates grade different contracts against
+    # different ledgers; asking for both is a mistake to refuse, not a precedence rule
+    # the caller has to memorize.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--v2-collect",
         action="store_true",
         help=(
@@ -154,10 +188,24 @@ def main() -> int:
             "`rustest --v2-collect-only` -- using waivers-v2-collect.toml"
         ),
     )
+    mode.add_argument(
+        "--v2-run",
+        action="store_true",
+        help=(
+            "Grade a full run -- pytest's ordered node ids, six-value outcome tally and "
+            "exit code against `rustest --v2 --report-json` -- using waivers-v2-run.toml"
+        ),
+    )
     args = parser.parse_args()
 
-    waivers = _load_waivers_or_exit(V2_COLLECT_WAIVERS if args.v2_collect else WAIVERS)
-    grade_one = _grade_one_collect if args.v2_collect else _grade_one
+    if args.v2_run:
+        ledger: Path = V2_RUN_WAIVERS
+        grade_one: Callable[[Path, str, dict[str, str]], CaseResult] = _grade_one_run
+    elif args.v2_collect:
+        ledger, grade_one = V2_COLLECT_WAIVERS, _grade_one_collect
+    else:
+        ledger, grade_one = WAIVERS, _grade_one
+    waivers = _load_waivers_or_exit(ledger)
     results: list[CaseResult] = []
     for name, case_dir in discover_cases():
         if not name.startswith(args.only):

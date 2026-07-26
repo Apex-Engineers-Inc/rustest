@@ -16,7 +16,19 @@ from typing import Any, cast
 
 from .ids import normalize_pytest_nodeid, normalize_rustest_id
 
-_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors)")
+# The summary-line tokens the harness counts. `xfailed`/`xpassed` are listed even
+# though they end in `failed`/`passed`: the alternation is only ever tried at the
+# character right after `<digits> `, so "1 xfailed" cannot match `failed` (that would
+# need the token to start mid-word) and the two Xs get buckets of their own. Before
+# they were here the tokens matched *nothing at all* and an expected failure was
+# tallied as zero of everything -- see the `marks/xfail` waiver, which recorded pytest
+# as 1/0/0/0 for a `1 passed, 1 xfailed` run.
+_SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed)")
+
+# pytest's exit code for "collection raised, so the run loop never started"
+# (`_pytest/main.py::pytest_runtestloop` raises `Interrupted` before the first item).
+# Named because `run_pytest_full` keys the one rule it owns on this value.
+_PYTEST_EXIT_INTERRUPTED = 2
 
 # A pytest nodeid: a path segment, one or more "::"-separated name segments, and
 # an optional trailing "[...]" parametrize suffix (which may itself contain
@@ -52,18 +64,69 @@ _SECTION_BOUNDARY_RE = re.compile(r"^=+ .+ =+$")
 
 @dataclass(frozen=True)
 class Outcomes:
+    """What a v1 end-to-end run tallies, plus the two X buckets pytest also reports.
+
+    ``xfailed``/``xpassed`` are appended **with defaults** rather than slotted in beside
+    ``skipped`` so that positional construction keeps working, and they are deliberately
+    *not* part of ``grade_case``'s comparison: v1 has no xfail concept at all, so the v1
+    gate grades the four buckets it can meaningfully diff and records the rest in its
+    ledger. ``parse_pytest_summary`` fills them because the **full-run** gate reads the
+    same parser and does grade all six.
+    """
+
     passed: int
     failed: int
     skipped: int
     errors: int
     exit_code: int
     collection_error: bool
+    xfailed: int = 0
+    xpassed: int = 0
 
 
 @dataclass(frozen=True)
 class RunResult:
     ids: set[str]
     outcomes: Outcomes
+
+
+@dataclass(frozen=True)
+class RunOutcomes:
+    """The six-value tally schema v2 carries -- the whole outcome half of the run gate.
+
+    Deliberately its own type rather than a reuse of :class:`Outcomes`. Six buckets is
+    the *point*: schema v1's three statuses had nowhere to put an X, which is exactly
+    how ``marks/xfail`` graded as an ordinary failure and ``xpassed`` was invisible
+    (Task 4 report §5.1). A tally that silently dropped either would make the two cases
+    this gate exists to prove match for the wrong reason.
+
+    No ``exit_code`` and no ``collection_error`` field: the exit code belongs to the
+    *run*, not to its tally, and lives on :class:`FullRunResult`; a collection error is
+    exit 2 on both sides by construction, so carrying it here would grade the same fact
+    twice under two names.
+    """
+
+    passed: int
+    failed: int
+    skipped: int
+    xfailed: int
+    xpassed: int
+    errors: int
+
+
+@dataclass(frozen=True)
+class FullRunResult:
+    """What an *executed* run produces: ordered ids, the six-value tally, the exit code.
+
+    ``ids`` is an ordered ``list`` for the same two reasons as
+    :attr:`CollectResult.ids` -- execution **order** is observable behaviour (a
+    module-scoped fixture tears down when the runner leaves the file) and a duplicated
+    id collapses into a set silently.
+    """
+
+    ids: list[str]
+    outcomes: RunOutcomes
+    exit_code: int
 
 
 @dataclass(frozen=True)
@@ -189,8 +252,14 @@ def parse_pytest_collect(text: str) -> list[str]:
 
 
 def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
-    """Extract pass/fail/skip/error counts from a pytest terminal summary line."""
-    counts = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0}
+    """Extract the outcome tally from a pytest terminal summary line.
+
+    Six buckets, because pytest reports six: ``xfailed`` and ``xpassed`` are their own
+    categories and folding either into ``skipped``/``passed`` is precisely what made an
+    X invisible under schema v1. The v1 gate still grades only the four it can
+    represent (see :class:`Outcomes`); the full-run gate grades all six.
+    """
+    counts = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0, "xfailed": 0, "xpassed": 0}
     for line in reversed(text.splitlines()):
         found: dict[str, int] = {}
         for match in _SUMMARY_RE.finditer(line):
@@ -201,6 +270,8 @@ def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
             counts["passed"] = found.get("passed", 0)
             counts["failed"] = found.get("failed", 0)
             counts["skipped"] = found.get("skipped", 0)
+            counts["xfailed"] = found.get("xfailed", 0)
+            counts["xpassed"] = found.get("xpassed", 0)
             # pytest writes "1 error" but "2 errors"; both mean the same bucket.
             counts["errors"] = found.get("error", 0) + found.get("errors", 0)
             break
@@ -211,6 +282,8 @@ def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
         errors=counts["errors"],
         exit_code=exit_code,
         collection_error=exit_code == 2,
+        xfailed=counts["xfailed"],
+        xpassed=counts["xpassed"],
     )
 
 
@@ -384,6 +457,132 @@ def run_rustest_v2_collect(case_dir: Path, args: list[str]) -> CollectResult:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
         proc = _run([sys.executable, "-m", "rustest", "--v2-collect-only", *args], work)
     return CollectResult(ids=proc.stdout.splitlines(), exit_code=proc.returncode)
+
+
+def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
+    """Collect **and run** *case_dir* with real pytest in an isolated copy -- the run oracle.
+
+    Isolation protocol (a), identical to ``run_pytest_collect``: ``copytree`` minus the
+    caches, a content-qualified check for a config file the case ships itself, and a bare
+    ``[pytest]`` ini otherwise. Like the collect oracle it is invoked with **no config
+    flags at all**, because ``rustest --v2`` has none to offer and a flag used on one side
+    only would make the gate a comparison of harness invocations rather than of runners.
+
+    Two invocations in the one isolated tree, because pytest publishes the two halves of
+    the graded contract on two different surfaces:
+
+    * ``--collect-only -q`` -> the **ordered node ids of the selected tests**, parsed by
+      the same hardened ``parse_pytest_collect`` the collect gate uses. Deselection
+      applies here exactly as it does to a run, so ``-m smoke`` shrinks this list.
+    * ``-q --tb=no`` -> the summary line (the six-value tally) and the exit code.
+
+    **Why the ids do not come from a ``-v`` run.** ``-v`` prints one line per *report*,
+    and pytest emits up to three reports per test: a body that passes with a teardown
+    that raises prints the id **twice**, ``PASSED`` then ``ERROR``. The schema-v2 report
+    carries one **reduced** status per test (Task 4 report §7.1), so grading pytest's
+    reports against v2's tests would compare different units and manufacture an id
+    divergence out of a difference that is real only in the *counts*, where this gate
+    already reports it.
+
+    **The one rule keyed on an exit code**, and it is pytest's own: a collection error
+    means *nothing runs at all* -- ``pytest_runtestloop`` raises ``Interrupted`` before
+    the first item -- so exit 2 leaves the executed-id list empty however many ids the
+    collect pass listed. v2 encodes the identical rule (``src/v2/execute.rs::stage``
+    returns empty dispatch lists when ``errors`` is non-empty; Task 4 report §2.1,
+    correction 2), so applying it here compares like with like instead of pitting
+    pytest's *collected* set against v2's *executed* one. It is pinned against real
+    pytest from a side effect -- the healthy test would have written a marker file if it
+    had run -- rather than by restating the branch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _isolate_case(case_dir.resolve(), Path(tmp))
+        base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
+        collect = _run([*base, "--collect-only", "-q", *args], work)
+        _check_pytest_collect_exit(collect)
+        run = _run([*base, "-q", "--tb=no", *args], work)
+        _check_pytest_exit(run, "run")
+    outcomes = parse_pytest_summary(run.stdout, run.returncode)
+    ids = [] if run.returncode == _PYTEST_EXIT_INTERRUPTED else parse_pytest_collect(collect.stdout)
+    return FullRunResult(
+        ids=ids,
+        outcomes=RunOutcomes(
+            passed=outcomes.passed,
+            failed=outcomes.failed,
+            skipped=outcomes.skipped,
+            xfailed=outcomes.xfailed,
+            xpassed=outcomes.xpassed,
+            errors=outcomes.errors,
+        ),
+        exit_code=run.returncode,
+    )
+
+
+def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
+    """Run *case_dir* with ``rustest --v2 --report-json`` in an isolated copy.
+
+    The report is the whole read surface. stdout (``FAILED <id>`` plus the message) and
+    stderr (``ERROR collecting`` blocks, **worker stderr**, the summary line) are never
+    parsed: the wording deliberately differs from pytest's, and worker stderr can carry
+    legitimate user output on a completely green run because class- and module-scoped
+    teardown output is drained at a boundary outside the per-test capture window (Task 3's
+    documented divergence, Task 4 report §5). Grading either stream would manufacture
+    divergences out of prose.
+
+    Ids are taken **verbatim and in order** from ``tests[]`` -- no normalization, no
+    sorting, no de-duplication. Byte-parity with pytest's node ids is the contract, and
+    the isolated copy makes both sides case-relative, so any transformation here would
+    hide the defect the gate exists to catch.
+
+    The graded exit code is the **process** exit code, not ``report["exit_code"]``. The
+    two are pinned to agree by ``python/tests/test_v2_run_cli.py``; if they ever stop
+    agreeing, the gate must side with the number CI and users observe rather than with
+    v2's claim about it.
+
+    **Collection errors fold into the ``errors`` bucket**, because pytest puts them there:
+    a file that fails to import is reported as ``1 error``, the same words a broken fixture
+    gets, and that is the number the summary line this gate grades against carries. The
+    schema-v2 report deliberately keeps the two apart (``summary.error`` is a bucket over
+    ``tests``; ``collection_errors`` is its own list) since a machine reader can afford the
+    distinction -- so the harness applies the *same* mapping v2's own terminal line already
+    applies (``python/rustest/core.py::_run_summary``, Task 4 report §9.2). Without the
+    fold every collection-error case would diverge on a tally difference that is a
+    difference of report *schema*, not of behaviour. Nothing is double-counted: a run
+    interrupted by a broken import dispatches no tests, so ``summary.error`` is 0.
+
+    A missing report means ``rustest --v2`` died before writing one, and that raises. The
+    alternative -- an all-zeros ``FullRunResult`` -- would grade as a **MATCH** against a
+    pytest side that is also empty (an empty tree, or everything deselected), certifying a
+    run that never happened.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _isolate_case(case_dir.resolve(), Path(tmp))
+        # Beside the copy, never inside it: a file dropped into the case tree is one more
+        # thing the runner under test can see, and this one changes size mid-run.
+        report_path = Path(tmp) / "report.json"
+        proc = _run(
+            [sys.executable, "-m", "rustest", "--v2", "--report-json", str(report_path), *args],
+            work,
+        )
+        if not report_path.exists():
+            raise RuntimeError(
+                f"rustest --v2 wrote no report (exit {proc.returncode}): {proc.stderr[-500:]}"
+            )
+        data: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
+    summary: dict[str, int] = data["summary"]
+    tests: list[dict[str, Any]] = data["tests"]
+    collection_errors: list[dict[str, Any]] = data["collection_errors"]
+    return FullRunResult(
+        ids=[str(test["id"]) for test in tests],
+        outcomes=RunOutcomes(
+            passed=summary["passed"],
+            failed=summary["failed"],
+            skipped=summary["skipped"],
+            xfailed=summary["xfailed"],
+            xpassed=summary["xpassed"],
+            errors=summary["error"] + len(collection_errors),
+        ),
+        exit_code=proc.returncode,
+    )
 
 
 def run_rustest(case_dir: Path, args: list[str]) -> RunResult:

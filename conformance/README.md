@@ -10,15 +10,22 @@ The fitness function for the rustest v2 rewrite
   collected node IDs and collection exit code against
   `rustest --v2-collect-only`. Nothing is executed, so nothing but IDs and the
   exit code is graded. Uses `waivers-v2-collect.toml`.
+- `python -m conformance --v2-run` — the **Phase 1b.2 gate**: diff a real pytest
+  run against `rustest --v2 --report-json`. Graded on the **ordered** node IDs
+  the schema-v2 report carries, the **six-value** outcome tally
+  (`passed/failed/skipped/xfailed/xpassed/error`) and the exit code. Uses
+  `waivers-v2-run.toml`. `--v2-collect` and `--v2-run` are mutually exclusive.
 - `conformance/corpus/<area>/<case>/` — one directory per case: `test_*.py`
   files, optional `conftest.py`, optional `case.toml` (`[case] args = [...]`).
 - `conformance/waivers.toml` — every known divergence with a mandatory reason.
   Phase gates are defined as this file shrinking. `NEW-BUG:` prefix marks
   divergences discovered by the corpus that the v1 audit didn't predict.
-- `conformance/waivers-v2-collect.toml` — the same discipline for the
-  `--v2-collect` gate, kept separate because an entry in one ledger says nothing
-  about the other (`collection/class-collection` is waived for v1 and matches
-  under v2; `collection/empty-suite` likewise).
+- `conformance/waivers-v2-collect.toml` and `conformance/waivers-v2-run.toml` —
+  the same discipline for the two v2 gates, kept separate because an entry in one
+  ledger says nothing about the others (`collection/class-collection` is waived
+  for v1 and matches under both v2 gates; `marks/xfail-strict` likewise).
+  **Both v2 ledgers are empty**, which is the Phase 1b.2 result: every collection
+  and execution divergence the corpus found in v1 is fixed in v2.
 - `python -m conformance.bench.bench [--quick]` — the three canonical numbers
   (pytest collect / pytest run / rustest run; rustest collect arrives in
   Phase 2).
@@ -39,7 +46,9 @@ Each corpus case is graded into exactly one of four statuses, printed as
 | `!!` | `STALE-WAIVER` | The case now matches, but `waivers.toml` still carries a waiver for it. Fails the run (exit 1) — remove the waiver. Shrinking `waivers.toml` is the phase-gate metric, so a waiver that has quietly gone inert must not go unnoticed. |
 
 Under `--v2-collect` the same four statuses apply, graded on collected IDs and
-the collection exit code alone, against `waivers-v2-collect.toml`.
+the collection exit code alone, against `waivers-v2-collect.toml`. Under
+`--v2-run` they apply to ordered IDs, the six-value tally and the exit code,
+against `waivers-v2-run.toml`.
 
 ## The `--v2-collect` comparison protocol
 
@@ -80,6 +89,38 @@ Two further rules the grader follows:
   `ERROR collecting <path>` prose on stderr where pytest puts them on stdout, and
   the wording differs by design. Grading anything but stdout IDs and the exit code
   manufactures divergences out of diagnostics.
+
+## The `--v2-run` comparison protocol
+
+The same isolation protocol — copy the case out of the repo, drop a bare
+`pytest.ini` unless the case ships config that would really anchor the search,
+invoke both runners with no config flags. What differs is where the two halves of
+the graded contract are read from.
+
+**pytest** is invoked twice in the one isolated tree: `--collect-only -q` supplies
+the **ordered IDs of the selected tests**, and `-q --tb=no` supplies the summary
+line and the exit code. The IDs deliberately do *not* come from a `-v` run: `-v`
+prints one line per *report*, and a body that passes with a teardown that raises
+prints its ID twice (`PASSED` then `ERROR`), while the schema-v2 report carries one
+reduced status per test. Grading reports against tests would manufacture an ID
+divergence out of a difference that is real only in the counts.
+
+**`rustest --v2`** is read entirely from `--report-json`: IDs verbatim and in order
+from `tests[]`, the six buckets from `summary`, the exit code from the process.
+Neither stream is parsed — worker stderr legitimately carries class/module teardown
+output on a completely green run.
+
+Two mappings the harness applies so the two sides answer the same question:
+
+- **A collection error means nothing ran.** pytest's `pytest_runtestloop` raises
+  `Interrupted` before the first item, so exit 2 leaves the executed-ID list empty
+  however many IDs the collect pass listed; `src/v2/execute.rs::stage` encodes the
+  identical rule. Without this the gate would pit pytest's *collected* set against
+  v2's *executed* one.
+- **Collection errors count in the `error` bucket**, because pytest reports a failed
+  import as `1 error`. The JSON report keeps `collection_errors` separate from
+  `summary.error` on purpose; the harness folds them exactly as v2's own terminal
+  summary line does (`python/rustest/core.py::_run_summary`).
 
 ## Baselines (Phase 0, v1 runner, Windows)
 
