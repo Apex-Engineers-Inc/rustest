@@ -32,6 +32,8 @@ import subprocess
 import sys
 from unittest.mock import patch
 
+import pytest
+
 # The compiled extension is built and installed by `python/tests/__init__.py`, which runs
 # `ensure_develop_installed()` before any test module is imported -- these subprocess tests
 # exercise the real `rust.v2_collect`, not the pure-Python fallback stub.
@@ -86,6 +88,17 @@ def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        env=_clean_env(),
+        check=False,
+    )
+
+
+def _run_bytes(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[bytes]:
+    """Like :func:`_run` but undecoded, for comparisons that are about *bytes*."""
+    return subprocess.run(
+        argv,
+        cwd=str(cwd),
+        capture_output=True,
         env=_clean_env(),
         check=False,
     )
@@ -201,6 +214,44 @@ def test_testpaths_decide_the_roots_when_no_argument_is_given(tmp_path: Path) ->
     assert ids == ["suite/test_in.py::test_in"], ids
 
 
+def test_unencodable_nodeids_are_escaped_exactly_as_pytest_escapes_them(tmp_path: Path) -> None:
+    """A CJK test name must not crash the process, and must print pytest's bytes.
+
+    ``def test_測試():`` is legal Python, so node ids are not ASCII by construction. On a
+    redirected Windows stdout (cp1252 here) a bare ``print`` of that id raises
+    ``UnicodeEncodeError`` -- the process would die with a traceback and exit 1, escaping
+    the whole exit-code contract. Probed on both runners before the fix: pytest emitted
+    ``test_u.py::test_\\u6e2c\\u8a66`` and exited 0; v2 exited 1 with a truncated stdout.
+
+    The comparison is on **raw bytes** on purpose. Decoding both sides would normalise away
+    the very difference being tested -- whether the escape happened at all.
+    """
+    tree = tmp_path / "unicode"
+    _write(tree / "pytest.ini", "[pytest]\n")
+    _write(tree / "test_u.py", "def test_ascii():\n    pass\n\n\ndef test_測試():\n    pass\n")
+
+    oracle = _run_bytes(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"], tree
+    )
+    ours = _run_bytes([sys.executable, "-m", "rustest", "--v2-collect-only"], tree)
+
+    where = (
+        f"pytest rc={oracle.returncode} {oracle.stdout!r}\nv2 rc={ours.returncode} {ours.stdout!r}"
+    )
+    assert ours.returncode == 0, where
+    assert oracle.returncode == 0, where
+    # pytest's id block ends at the first blank line; splitting on a literal b"\n\n" would
+    # miss it, because the child's newlines are CRLF here.
+    expected: list[bytes] = []
+    for line in oracle.stdout.splitlines():
+        if not line.strip():
+            break
+        expected.append(line)
+    assert ours.stdout.splitlines() == expected, where
+    # ...and the escape really is present, so the test cannot pass by both sides skipping it.
+    assert any(b"\\u6e2c" in line for line in expected), where
+
+
 # --------------------------------------------------------------------------------------
 # Exit codes -- the v2 exit-code contract's first beachhead
 # --------------------------------------------------------------------------------------
@@ -235,6 +286,27 @@ def test_collection_error_exits_2_and_names_the_file(tmp_path: Path) -> None:
     assert "ERROR collecting test_bad.py" in ours.stderr, _context("v2", ours)
     assert "SyntaxError" in ours.stderr, _context("v2", ours)
     assert "1 test collected, 1 error" in ours.stderr, _context("v2", ours)
+
+
+def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> None:
+    """A pool that fails is exit 3 (pytest's INTERNAL_ERROR), never a quiet empty collect.
+
+    Reaching this branch for real needs a broken worker pool, so the failure is injected at
+    the boundary instead: the Rust side raises ``RuntimeError`` for exactly this class of
+    error (pinned on that side by ``v2::py::tests::an_unspawnable_interpreter_is_a_runtime_error``),
+    and this pins what the CLI does with it.
+    """
+
+    def boom(invocation_dir: str, args: list[str], python: str, workers: int) -> str:
+        del invocation_dir, args, python, workers
+        raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
+
+    with stub_rust_module(v2_collect=boom):
+        assert core.v2_collect_only(paths=[], workers=1) == 3
+
+    captured = capsys.readouterr()
+    assert captured.out == "", captured
+    assert captured.err.startswith("INTERNALERROR: could not spawn"), captured
 
 
 def test_missing_path_argument_is_a_usage_error(tmp_path: Path) -> None:

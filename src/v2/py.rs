@@ -130,11 +130,23 @@ pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<St
 /// or a config file pytest itself would refuse — exits 4, while anything that goes wrong
 /// inside the machinery is an internal error (exit 3). Collapsing both into one exception
 /// type would make the CLI report a broken worker pool as the user's typo.
+///
+/// The match is **exhaustive on purpose** — no `_` arm. A new [`CollectError`] variant must
+/// be classified as usage-or-internal here, at compile time; a wildcard would silently
+/// default it to exit 3 and the miscategorisation would only ever show up as a confusing
+/// exit code in the field.
 fn collect_error_to_py(err: CollectError) -> PyErr {
     let message = err.to_string();
     match err {
         CollectError::Config(_) | CollectError::ArgNotFound(_) => PyValueError::new_err(message),
-        _ => PyRuntimeError::new_err(message),
+        CollectError::Spawn { .. }
+        | CollectError::Io { .. }
+        | CollectError::Handshake { .. }
+        | CollectError::Protocol { .. }
+        | CollectError::WorkerDied { .. }
+        | CollectError::Shutdown { .. }
+        | CollectError::WorkerPanicked { .. }
+        | CollectError::MissingResponse { .. } => PyRuntimeError::new_err(message),
     }
 }
 

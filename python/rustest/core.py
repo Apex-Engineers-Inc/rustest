@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
-from collections.abc import Sequence
-from typing import NotRequired, TypedDict, cast
+from collections.abc import Iterator, Sequence
+from typing import Any, NotRequired, TypedDict, cast
 
 from rich.console import Console
 from rich.panel import Panel
@@ -86,6 +88,42 @@ def _summary(collected: int, errors: int) -> str:
     return line
 
 
+@contextlib.contextmanager
+def _escaping_unencodable_output() -> Iterator[None]:
+    """Print node ids that the console encoding cannot represent, exactly as pytest does.
+
+    A test function may be named in any script Python accepts -- ``def test_測試():`` is
+    legal -- so node ids are not ASCII by construction. On Windows a redirected stdout uses
+    the locale encoding (cp1252 here), and a bare ``print`` of such an id raises
+    ``UnicodeEncodeError``: the process would die with a traceback and exit 1, *outside* the
+    0/2/3/4/5 exit-code contract this surface exists to honour.
+
+    pytest survives the same id by escaping at write time rather than at id-construction
+    time -- ``pytest --collect-only -q`` emits the bytes ``test_u.py::test_\\u6e2c\\u8a66``
+    -- which is precisely ``errors="backslashreplace"``. Setting only ``errors`` and never
+    ``encoding`` is what makes the output byte-identical: forcing UTF-8 would emit the raw
+    characters and diverge.
+
+    The change is scoped and restored, so importing ``rustest`` and calling
+    :func:`v2_collect_only` as a library never leaves the caller's streams reconfigured.
+    Streams that are not real text wrappers (a replaced ``sys.stdout`` in an embedding host)
+    are skipped: there is nothing to reconfigure, and printing is unchanged for them.
+    """
+    # `TextIOWrapper` is generic in its buffer type, which `isinstance` cannot infer; the
+    # annotation supplies it so the list is fully typed rather than partially unknown.
+    streams: list[io.TextIOWrapper[Any]] = [
+        stream for stream in (sys.stdout, sys.stderr) if isinstance(stream, io.TextIOWrapper)
+    ]
+    previous = [stream.errors for stream in streams]
+    for stream in streams:
+        stream.reconfigure(errors="backslashreplace")
+    try:
+        yield
+    finally:
+        for stream, errors in zip(streams, previous):
+            stream.reconfigure(errors=errors)
+
+
 def v2_collect_only(*, paths: Sequence[str], workers: int | None = None) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
@@ -123,30 +161,35 @@ def v2_collect_only(*, paths: Sequence[str], workers: int | None = None) -> int:
     """
     pool_size = workers if workers is not None and workers > 0 else (os.cpu_count() or 1)
 
-    try:
-        payload = rust.v2_collect(os.getcwd(), list(paths), sys.executable, pool_size)
-    except ValueError as exc:
-        # pytest's UsageError shape, including its `ERROR: file or directory not found: x`
-        # wording, which the Rust side produces verbatim.
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return _EXIT_USAGE_ERROR
-    except RuntimeError as exc:
-        # The pool itself failed (a worker died, protocol drift, an unusable interpreter).
-        # Loud and distinct from a user error -- never a quietly empty collection.
-        print(f"INTERNALERROR: {exc}", file=sys.stderr)
-        return _EXIT_INTERNAL_ERROR
+    # Everything that writes is inside the escaping scope, not just the node ids: a file
+    # path or a traceback in an error message can be just as unencodable as an id, and a
+    # crash while *reporting* a failure would be the worst place to leave one.
+    with _escaping_unencodable_output():
+        try:
+            payload = rust.v2_collect(os.getcwd(), list(paths), sys.executable, pool_size)
+        except ValueError as exc:
+            # pytest's UsageError shape, including its `ERROR: file or directory not
+            # found: x` wording, which the Rust side produces verbatim.
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return _EXIT_USAGE_ERROR
+        except RuntimeError as exc:
+            # The pool itself failed (a worker died, protocol drift, an unusable
+            # interpreter). Loud and distinct from a user error -- never a quietly empty
+            # collection.
+            print(f"INTERNALERROR: {exc}", file=sys.stderr)
+            return _EXIT_INTERNAL_ERROR
 
-    manifest = cast(_Manifest, json.loads(payload))
-    tests = manifest["tests"]
-    errors = manifest.get("errors", [])
+        manifest = cast(_Manifest, json.loads(payload))
+        tests = manifest["tests"]
+        errors = manifest.get("errors", [])
 
-    for test in tests:
-        print(test["id"])
-    for error in errors:
-        print(f"ERROR collecting {error['path']}", file=sys.stderr)
-        for line in error["message"].splitlines():
-            print(f"  {line}", file=sys.stderr)
-    print(_summary(len(tests), len(errors)), file=sys.stderr)
+        for test in tests:
+            print(test["id"])
+        for error in errors:
+            print(f"ERROR collecting {error['path']}", file=sys.stderr)
+            for line in error["message"].splitlines():
+                print(f"  {line}", file=sys.stderr)
+        print(_summary(len(tests), len(errors)), file=sys.stderr)
 
     if errors:
         return _EXIT_INTERRUPTED
