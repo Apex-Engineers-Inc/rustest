@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from conformance.harness.runners import (
+    _check_pytest_exit,
     parse_pytest_collect,
     parse_pytest_summary,
     run_pytest,
@@ -65,6 +67,39 @@ def test_parse_pytest_summary_counts_errors() -> None:
     assert (singular.passed, singular.failed, singular.skipped, singular.errors) == (2, 0, 0, 1)
     plural = parse_pytest_summary("1 failed, 3 errors in 0.10s\n", exit_code=1)
     assert (plural.passed, plural.failed, plural.skipped, plural.errors) == (0, 1, 0, 3)
+
+
+def test_parse_pytest_summary_exit_5_is_not_collection_error() -> None:
+    """Exit 5 (no tests collected) is a real outcome, distinct from the exit-2 bucket.
+
+    ``collection_error`` is keyed off exit code 2 specifically; exit 5 must not be
+    conflated with it even though both leave zero tests in the passed/failed/skipped
+    buckets.
+    """
+    out = parse_pytest_summary("no tests ran in 0.01s\n", exit_code=5)
+    assert out.exit_code == 5
+    assert out.collection_error is False
+    assert (out.passed, out.failed, out.skipped, out.errors) == (0, 0, 0, 0)
+
+
+def _completed(returncode: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr="boom")
+
+
+def test_check_pytest_exit_passes_through_exit_5() -> None:
+    """Exit 5 (no tests collected) is a comparable outcome, not a harness fault.
+
+    ``pytest -m nosuchmark`` genuinely exits 5 while rustest exits 0 for the same
+    invocation -- a real product divergence the grader must see, not one the harness
+    should mask by raising.
+    """
+    _check_pytest_exit(_completed(5), "run")  # must not raise
+
+
+@pytest.mark.parametrize("returncode", [3, 4])
+def test_check_pytest_exit_raises_on_internal_and_usage_errors(returncode: int) -> None:
+    with pytest.raises(RuntimeError, match=r"pytest run failed \(exit \d+\)"):
+        _check_pytest_exit(_completed(returncode), "run")
 
 
 def _write_mini_suite(root: Path) -> None:

@@ -77,13 +77,17 @@ def _check_pytest_exit(proc: subprocess.CompletedProcess[str], phase: str) -> No
     """Raise on a pytest *harness* fault, leaving real test outcomes alone.
 
     pytest exit codes 0 (all passed), 1 (tests failed) and 2 (collection error /
-    interrupted) are legitimate case outcomes the corpus grades on. Codes >= 3
-    mean pytest itself could not do its job -- 3 internal error, 4 usage error
-    (e.g. a bad rootdir), 5 no tests collected -- and silently parsing an empty
-    summary out of those would fabricate a 0/0/0/0 result. Raising routes them to
+    interrupted) are legitimate case outcomes the corpus grades on. So is 5 (no
+    tests collected, e.g. ``-m nosuchmark`` deselecting everything): it is a real,
+    comparable outcome under the v2 exit-code contract (spec: "Contracts are
+    pytest's: exit codes 0-5"), not a harness fault -- rustest exiting 0 for the
+    same invocation is exactly the kind of divergence the corpus exists to catch.
+    Codes 3 (internal error) and 4 (usage error, e.g. a bad rootdir) mean pytest
+    itself could not do its job, and silently parsing an empty summary out of
+    those would fabricate a 0/0/0/0 result. Raising routes them to
     ``_grade_one``'s harness-error channel instead.
     """
-    if proc.returncode >= 3:
+    if proc.returncode >= 3 and proc.returncode != 5:
         raise RuntimeError(f"pytest {phase} failed (exit {proc.returncode}): {proc.stderr[-500:]}")
 
 
