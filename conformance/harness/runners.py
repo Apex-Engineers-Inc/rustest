@@ -73,6 +73,20 @@ def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120)
 
 
+def _check_pytest_exit(proc: subprocess.CompletedProcess[str], phase: str) -> None:
+    """Raise on a pytest *harness* fault, leaving real test outcomes alone.
+
+    pytest exit codes 0 (all passed), 1 (tests failed) and 2 (collection error /
+    interrupted) are legitimate case outcomes the corpus grades on. Codes >= 3
+    mean pytest itself could not do its job -- 3 internal error, 4 usage error
+    (e.g. a bad rootdir), 5 no tests collected -- and silently parsing an empty
+    summary out of those would fabricate a 0/0/0/0 result. Raising routes them to
+    ``_grade_one``'s harness-error channel instead.
+    """
+    if proc.returncode >= 3:
+        raise RuntimeError(f"pytest {phase} failed (exit {proc.returncode}): {proc.stderr[-500:]}")
+
+
 def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
     """Collect and run *case_dir* with real pytest, returning normalized results.
 
@@ -80,10 +94,15 @@ def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
     ``-c`` and the rootdir is pinned to *case_dir*, so pytest never walks up and
     adopts a surrounding project's ``[tool.pytest.ini_options]`` (this repo's own
     ``pyproject.toml`` would otherwise apply to every corpus case).
+
+    *case_dir* is resolved first: ``--rootdir`` is interpreted relative to
+    pytest's own cwd, so a relative case directory would point pytest at a
+    nonexistent rootdir and abort with a usage error (exit 4).
     """
+    case_dir = case_dir.resolve()
     with tempfile.TemporaryDirectory() as tmp:
         empty_ini = Path(tmp) / "pytest.ini"
-        empty_ini.write_text("", encoding="utf-8")
+        empty_ini.write_text("[pytest]\n", encoding="utf-8")
         base = [
             sys.executable,
             "-m",
@@ -95,8 +114,10 @@ def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
             f"--rootdir={case_dir}",
         ]
         collect = _run([*base, "--collect-only", "-q", *args], case_dir)
+        _check_pytest_exit(collect, "collect")
         raw_ids = parse_pytest_collect(collect.stdout)
         run = _run([*base, "-q", "--tb=no", *args], case_dir)
+        _check_pytest_exit(run, "run")
     outcomes = parse_pytest_summary(run.stdout, run.returncode)
     return RunResult(
         ids={normalize_pytest_nodeid(i) for i in raw_ids},
@@ -105,9 +126,20 @@ def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
 
 
 def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
-    """Run *case_dir* with real rustest, returning normalized results."""
+    """Run *case_dir* with real rustest, returning normalized results.
+
+    *case_dir* is resolved so the subprocess cwd and the ID normalization base
+    are absolute, matching ``run_pytest``.
+
+    A missing report file means rustest died before it could write one (bad
+    argv, crash, import-time abort). That is a harness fault, not a case
+    outcome, so it raises rather than returning a fabricated all-zeros result
+    that would silently grade as a divergence with no explanation.
+    """
+    case_dir = case_dir.resolve()
     with tempfile.TemporaryDirectory() as tmp:
         report_path = Path(tmp) / "report.json"
+        # TODO(phase1): --pytest-compat is deleted in v2 (compat-by-default); update this invocation.
         cmd = [
             sys.executable,
             "-m",
@@ -122,9 +154,8 @@ def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
         ]
         proc = _run(cmd, case_dir)
         if not report_path.exists():
-            return RunResult(
-                ids=set(),
-                outcomes=Outcomes(0, 0, 0, 0, proc.returncode, collection_error=True),
+            raise RuntimeError(
+                f"rustest wrote no report (exit {proc.returncode}): {proc.stderr[-500:]}"
             )
         data: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
     summary: dict[str, int] = data["summary"]

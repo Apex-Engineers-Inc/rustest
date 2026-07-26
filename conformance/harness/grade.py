@@ -60,6 +60,10 @@ def grade_case(
         problems.append(f"outcomes pytest={pytest_counts} rustest={rustest_counts}")
     if po.exit_code != ro.exit_code:
         problems.append(f"exit codes pytest={po.exit_code} rustest={ro.exit_code}")
+    if po.collection_error != ro.collection_error:
+        problems.append(
+            f"collection-error pytest={po.collection_error} rustest={ro.collection_error}"
+        )
     if not problems:
         if name in waivers:
             return CaseResult(

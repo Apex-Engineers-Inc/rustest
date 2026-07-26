@@ -52,6 +52,18 @@ def test_grade_diverge_on_errors_only() -> None:
     assert "rustest=1/0/0/0" in got.detail
 
 
+def test_grade_diverge_on_collection_error_only() -> None:
+    """Same counts and exit code, but only one runner reported a collection error."""
+    same_ids = {"test_a.py::test_x"}
+    pytest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 0, 0, True))
+    rustest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 0, 0, False))
+
+    got = grade_case("area/case", pytest_result, rustest_result, {})
+
+    assert got.status == "DIVERGE"
+    assert "collection-error pytest=True rustest=False" in got.detail
+
+
 def test_grade_stale_waiver() -> None:
     a = _result({"test_a.py::test_x"})
 

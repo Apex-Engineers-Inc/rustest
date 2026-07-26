@@ -3,6 +3,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from conformance.harness.runners import (
     parse_pytest_collect,
     parse_pytest_summary,
@@ -94,3 +96,38 @@ def test_run_pytest_ignores_surrounding_project_config(tmp_path: Path) -> None:
     result = run_pytest(case_dir, [])
     assert result.ids == MINI_IDS
     assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
+
+
+def test_run_pytest_accepts_relative_case_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative case dir is resolved, so ``--rootdir`` stays valid.
+
+    ``--rootdir`` is resolved against pytest's own cwd, not the harness's, so an
+    unresolved relative path used to hand pytest a nonexistent rootdir and abort
+    with a usage error (exit 4) that the summary parser read as 0/0/0/0.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+    monkeypatch.chdir(tmp_path)
+
+    result = run_pytest(Path("case"), [])
+
+    assert result.ids == MINI_IDS
+    assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
+
+
+def test_run_rustest_raises_when_no_report_is_written(tmp_path: Path) -> None:
+    """A rustest invocation that dies before writing the report is a harness fault.
+
+    An unrecognized flag makes the rustest CLI bail out in argparse, so no report
+    file exists. Returning a fabricated all-zeros result here would grade as a
+    silent divergence; the harness must surface the real failure instead. This
+    drives the real CLI rather than a monkeypatched stand-in, so it stays honest
+    if the failure mode changes.
+    """
+    _write_mini_suite(tmp_path)
+
+    with pytest.raises(RuntimeError, match="rustest wrote no report"):
+        run_rustest(tmp_path, ["--definitely-not-a-real-flag"])
