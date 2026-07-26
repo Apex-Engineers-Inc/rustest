@@ -38,11 +38,11 @@ uv --version
 !!! info "What is uv?"
     Think of it as a faster, more modern alternative to pip and virtualenv. It manages Python dependencies and virtual environments.
 
-### 3. Python 3.10-3.14
+### 3. Python 3.12-3.14
 
 ```bash
 # Check your Python version
-python3 --version  # Should be 3.10 through 3.14
+python3 --version  # Should be 3.12 through 3.14
 ```
 
 ## Setup

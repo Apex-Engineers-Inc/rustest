@@ -140,7 +140,7 @@ async def test_async_api():
 <div class="grid cards" markdown>
 
 -   :white_check_mark: MIT Licensed
--   :white_check_mark: Python 3.10-3.14
+-   :white_check_mark: Python 3.12-3.14
 -   :white_check_mark: Active Development
 
 -   :white_check_mark: Built-in async support

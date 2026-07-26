@@ -53,7 +53,7 @@ pip install rustest
 uv add rustest
 ```
 
-**Python 3.10-3.14 supported.** [📖 Installation Guide →](https://apex-engineers-inc.github.io/rustest/getting-started/installation/)
+**Python 3.12-3.14 supported.** [📖 Installation Guide →](https://apex-engineers-inc.github.io/rustest/getting-started/installation/)
 
 ## Quick Start
 

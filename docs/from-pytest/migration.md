@@ -417,7 +417,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       - name: Install dependencies
         run: |
           pip install -e .
@@ -435,7 +435,7 @@ jobs:
 ```yaml
 # .gitlab-ci.yml
 test:
-  image: python:3.11
+  image: python:3.12
   script:
     - pip install -e .
     - pip install rustest coverage

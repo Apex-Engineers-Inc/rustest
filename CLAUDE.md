@@ -8,7 +8,7 @@ This file provides guidance for Claude Code when working with the rustest codeba
 
 - **Languages**: Rust (core engine) + Python (user API/CLI)
 - **Build System**: Maturin (PyO3 bridge for Rust-Python integration)
-- **Python Support**: 3.10 - 3.14
+- **Python Support**: 3.12 - 3.14
 - **License**: MIT
 
 ## Project Structure
@@ -217,7 +217,7 @@ Tests are run through multiple runners to ensure compatibility:
 
 ## CI/CD Pipeline
 
-The CI workflow (`ci.yml`) runs all checks across Python 3.10-3.14. **ALL must pass**:
+The CI workflow (`ci.yml`) runs all checks across Python 3.12-3.14. **ALL must pass**:
 
 ### Tests
 - Python unit tests via pytest

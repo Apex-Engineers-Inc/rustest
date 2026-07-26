@@ -1,6 +1,6 @@
 # Installation
 
-Rustest supports Python **3.10 through 3.14**.
+Rustest supports Python **3.12 through 3.14**.
 
 ## Using pip
 
