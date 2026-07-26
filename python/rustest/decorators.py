@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import inspect
 import sys
-from typing import Any, ParamSpec, TypeVar, overload, cast
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, overload, cast
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -610,6 +610,62 @@ class BareOrFactoryMark:
         return f"<mark.{self.name} (bare or factory)>"
 
 
+if TYPE_CHECKING:
+    # Static-only signatures for the three dual-purpose marks.
+    #
+    # This is **pytest's own pattern**, ported: `_pytest/mark/structures.py` l. 476-557
+    # declares `_SkipMarkDecorator`, `_SkipifMarkDecorator`, `_XfailMarkDecorator`,
+    # `_ParametrizeMarkDecorator`, `_UsefixturesMarkDecorator` and
+    # `_FilterwarningsMarkDecorator` inside `if TYPE_CHECKING:` and then re-declares
+    # `MarkGenerator.skipif` / `.xfail` / `.usefixtures` as those types.
+    #
+    # The reason is exactly the one rustest has: at runtime the attribute must be an object
+    # that decides *per call* whether it was used bare or as a factory
+    # (:class:`BareOrFactoryMark`), which forces `__call__` to be `(*args: Any, **kwargs:
+    # Any) -> Any`.  That signature type-checks every call, including
+    # `@mark.skipif(reason=3)`.  Declaring the narrow shape here restores the argument
+    # checking without changing a byte of runtime behaviour -- a type checker reads these,
+    # the interpreter never sees them.
+    #
+    # The bare overload is what makes the *uncalled* form type-check too:
+    # `@mark.xfail` applied directly to a function returns the function.
+
+    class _SkipifMark(BareOrFactoryMark):
+        @overload
+        def __call__(self, arg: TFunc, /) -> TFunc: ...
+        @overload
+        def __call__(
+            self,
+            condition: bool | str,
+            reason: str | None = ...,
+            *,
+            _kw_reason: str | None = ...,
+        ) -> MarkDecorator: ...
+        def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    class _XfailMark(BareOrFactoryMark):
+        @overload
+        def __call__(self, arg: TFunc, /) -> TFunc: ...
+        @overload
+        def __call__(
+            self,
+            condition: bool | str | None = ...,
+            *,
+            reason: str | None = ...,
+            raises: type[BaseException] | tuple[type[BaseException], ...] | None = ...,
+            run: bool = ...,
+            strict: bool = ...,
+        ) -> MarkDecorator: ...
+        def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    class _UsefixturesMark(BareOrFactoryMark):
+        @overload
+        def __call__(self, arg: TFunc, /) -> TFunc: ...
+        @overload
+        def __call__(self, *names: str) -> MarkDecorator: ...
+        def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
 class MarkGenerator:
     """Namespace for dynamically creating marks like pytest.mark.
 
@@ -632,13 +688,23 @@ class MarkGenerator:
     its own long-standing ``func is not None`` bare branch.
     """
 
+    if TYPE_CHECKING:
+        # Declared for the type checker only, exactly as `_pytest/mark/structures.py`
+        # l. 551-557 does it. The runtime attributes are the `BareOrFactoryMark` instances
+        # `__init__` binds below; these annotations narrow their `__call__` and nothing else.
+        skipif: _SkipifMark
+        xfail: _XfailMark
+        usefixtures: _UsefixturesMark
+
     def __init__(self) -> None:
         super().__init__()
         # Bound here rather than declared as methods: see BareOrFactoryMark's docstring.
         # Instance attributes win over `__getattr__`, so `mark.xfail` finds these first.
-        self.skipif = BareOrFactoryMark("skipif", self._skipif)
-        self.xfail = BareOrFactoryMark("xfail", self._xfail)
-        self.usefixtures = BareOrFactoryMark("usefixtures", self._usefixtures)
+        self.skipif = cast("_SkipifMark", BareOrFactoryMark("skipif", self._skipif))
+        self.xfail = cast("_XfailMark", BareOrFactoryMark("xfail", self._xfail))
+        self.usefixtures = cast(
+            "_UsefixturesMark", BareOrFactoryMark("usefixtures", self._usefixtures)
+        )
 
     def asyncio(
         self,

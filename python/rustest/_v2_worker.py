@@ -68,9 +68,31 @@ traceback filtering — because those distinguish one outcome from another.
   ``BaseExceptionGroup`` — which :meth:`FixtureRunner.teardown` raises when several fixtures
   fail at once — are rendered unfiltered, so a runner frame can still appear inside a group's
   sub-traceback.  The status is unaffected; only the message is noisier.
-* *No ``pytest_generate_tests`` hook and no ``indirect=`` parametrization.*  Decorator
-  metadata and fixture ``params=`` are the only two sources of parametrization; a module-
-  or class-level ``pytest_generate_tests`` is not called.
+* *No ``pytest_generate_tests`` hook.*  Decorator metadata (function **and** class level)
+  and fixture ``params=`` are the only sources of parametrization; a module- or class-level
+  ``pytest_generate_tests`` is not called.
+* *``indirect=`` is rustest's, not pytest's.*  ``@parametrize("data", ["big"],
+  indirect=True)`` treats each value as **the name of a fixture** and hands the test that
+  fixture's value (`decorators.py::parametrize`, and :meth:`FixtureRunner.setup`); pytest
+  passes the value to a same-named fixture as ``request.param``.  The two are different
+  features wearing one keyword.  v1's semantics are reproduced because v1's suites depend on
+  them and pytest refuses the call outright (`_parametrize() got an unexpected keyword
+  argument 'indirect'` through the compat shim) — there is no behaviour to be compatible
+  *with*.
+* *Class-level ``@parametrize`` cross-products in v1's order, not pytest's.*  See
+  :func:`_cross_product_cases`: pytest emits ``test[10-1]`` where this emits ``test[1-10]``.
+* *One asyncio event loop per worker, and no concurrency.*  :meth:`FixtureRunner.run_coroutine`
+  drives every coroutine — async test bodies, ``async def`` fixtures, ``async def`` + ``yield``
+  fixtures — on a single loop that lives as long as the worker.  Two consequences:
+  ``@mark.asyncio(loop_scope=...)`` is accepted and ignored (all scopes share the loop), and
+  same-scope async tests run **sequentially** where v1's ``async_executor.py`` batches them
+  into one ``asyncio.gather``.  A suite that asserts wall-clock overlap between two async
+  tests sees the difference; one that only asserts results does not.
+* *No warning for a bare ``@usefixtures``.*  pytest warns that it has no effect
+  (`_pytest/fixtures.py::_getusefixturesnames`); with no warnings channel the mark is simply
+  inert, which is the same *behaviour* and one fewer line of output.
+* *Markdown code blocks are a rustest tier with no pytest counterpart.*  See
+  :func:`collect_markdown`.
 * *No item reordering, and the visible symptom is a **setup-count** difference, not just an
   ordering one.*  pytest groups tests sharing a higher-scoped parametrized fixture
   (`_pytest/fixtures.py::reorder_items`); that pass needs the whole session's item list,
@@ -88,8 +110,10 @@ traceback filtering — because those distinguish one outcome from another.
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
+import contextlib
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 import fnmatch
@@ -952,6 +976,47 @@ def _parametrization(func: object) -> list[tuple[str, Mapping[str, object]]] | N
     return list(zip(_unique_parameterset_ids(raw_ids), valuesets, strict=True))
 
 
+#: One parametrization case: its id component and the values it supplies.
+_Case = tuple[str, Mapping[str, object]]
+
+
+def _cross_product_cases(outer: list[_Case], inner: list[_Case]) -> list[_Case]:
+    """Combine an enclosing class's cases with a method's own — v1's rule, verbatim.
+
+    Mirror of ``python/rustest/decorators.py::_cross_product_cases``: ids join with ``-``
+    **outer first**, values merge with the inner call winning a name collision, and the outer
+    dimension varies slowest.
+
+    **Divergence from pytest, measured and kept.**  For a class carrying
+    ``@parametrize("x", [1, 2])`` whose method carries ``@parametrize("y", [10, 20])``,
+    pytest 8.4.2 emits ``test_combined[10-1]`` (method component first, method varying
+    slowest) and rustest v1 emits ``test_combined[1-10]``.  v1's spelling is kept because
+    this worker consumes v1's decorator metadata and its pre-computed ids verbatim — see
+    :func:`_parametrization` — so re-ordering here would produce ids that match neither
+    engine, and would silently break every ``-k "test_combined[1-10]"`` a user has written.
+    The whole id-generation family is already a documented v1-inherited divergence; this is
+    one more row in it, not a new class of problem.
+    """
+    return [
+        (f"{outer_id}-{inner_id}", {**outer_values, **inner_values})
+        for outer_id, outer_values in outer
+        for inner_id, inner_values in inner
+    ]
+
+
+def _indirect_names(func: object) -> frozenset[str]:
+    """Argnames a ``@parametrize(..., indirect=...)`` marked as fixture *references*.
+
+    Read from ``__rustest_parametrization_indirect__``, which
+    ``decorators.py::parametrize`` writes.  See :meth:`FixtureRunner.setup` for what the
+    values mean — and for why rustest's ``indirect`` is not pytest's.
+    """
+    raw = _safe_getattr(func, "__rustest_parametrization_indirect__", None)
+    if not isinstance(raw, (list, tuple)):
+        return frozenset()
+    return frozenset(str(name) for name in cast(Sequence[object], raw))
+
+
 def _unique_parameterset_ids(ids: list[str]) -> list[str]:
     """Port of `_pytest/python.py::IdMaker.make_unique_parameterset_ids`.
 
@@ -1019,8 +1084,12 @@ def _requested_argnames(
     (`_pytest/fixtures.py::getfixtureinfo` l. 1565-1578).  Keeping them here is what makes
     :func:`build_closure` a faithful port.
 
-    Limitation: pytest's ``num_mock_patch_args`` adjustment for ``mock.patch``-wrapped
-    tests is not ported.
+    ``mock.patch``-injected parameters are stripped last, exactly as
+    ``getfuncargnames`` l. 169-171 does it: ``if hasattr(function, "__wrapped__"):
+    arg_names = arg_names[num_mock_patch_args(function):]``.  Without it a
+    ``@patch("mod.thing")``-decorated test asks for a fixture named after its mock argument
+    and reports ``fixture 'mock_thing' not found`` — a setup error for a perfectly correct
+    test, which is what the self-suite's ``test_patch_decorator.py`` was reporting.
     """
     try:
         signature = inspect.signature(cast(Any, func))
@@ -1043,7 +1112,40 @@ def _requested_argnames(
         and not isinstance(inspect.getattr_static(owner, name, None), staticmethod)
     ):
         names = names[1:]
+    if hasattr(func, "__wrapped__"):
+        names = names[_num_mock_patch_args(func) :]
     return names
+
+
+def _num_mock_patch_args(func: object) -> int:
+    """Port of `_pytest/compat.py::num_mock_patch_args` (l. 88-104).
+
+    ``mock.patch`` records one ``_patch`` object per decorator on the wrapper's
+    ``patchings``, and prepends a positional argument for each one that has **no**
+    ``attribute_name`` (i.e. is not ``patch.object(..., new_callable=...)`` style naming its
+    own target) and whose ``new`` is still the ``DEFAULT`` sentinel (i.e. the user did not
+    supply a replacement, so a ``MagicMock`` is created and passed in).  A ``patch`` with an
+    explicit ``new=`` injects nothing and must not shift the count.
+
+    Both sentinels are consulted — ``mock.DEFAULT`` and ``unittest.mock.DEFAULT`` — because
+    the standalone ``mock`` backport and the stdlib module are different objects, and pytest
+    looks each up in ``sys.modules`` rather than importing either.
+    """
+    patchings = _safe_getattr(func, "patchings", None)
+    if not patchings:
+        return 0
+    sentinels = [
+        _safe_getattr(sys.modules.get(module), "DEFAULT", object())
+        for module in ("mock", "unittest.mock")
+    ]
+    return len(
+        [
+            patching
+            for patching in cast(Sequence[object], patchings)
+            if not _safe_getattr(patching, "attribute_name", None)
+            and any(_safe_getattr(patching, "new", None) is sentinel for sentinel in sentinels)
+        ]
+    )
 
 
 def _fixture_names(
@@ -1367,19 +1469,39 @@ class FixtureClosure:
     registry: FixtureRegistry
 
 
+def usefixtures_names(marks: Sequence[MarkSpec]) -> list[str]:
+    """The names every ``usefixtures`` mark on a test contributes, closest-first.
+
+    Port of `_pytest/fixtures.py::FixtureManager._getusefixturesnames` (l. 1613-1626):
+    ``for marker_node, mark in node.iter_markers_with_node(name="usefixtures"): yield from
+    mark.args``.  *marks* arrives in ``iter_markers`` order already (:func:`_mark_specs`
+    emits function, then the class chain, then module), so the ordering is inherited rather
+    than re-derived.
+
+    **Divergence, deliberate:** pytest additionally *warns* for a bare ``@usefixtures``
+    (``usefixtures() in <nodeid> without arguments has no effect``).  The protocol has no
+    warnings channel, so an argument-less mark contributes nothing and says nothing — the
+    same observable effect on the run, one fewer line of output.  Recorded in the module
+    docstring's scope-limit list.
+    """
+    return [str(arg) for mark in marks if mark.name == "usefixtures" for arg in mark.args]
+
+
 def build_closure(
     registry: FixtureRegistry,
     argnames: Sequence[str],
     ignore_args: AbstractSet[str] = frozenset(),
+    usefixtures: Sequence[str] = (),
 ) -> FixtureClosure:
     """Port of `_pytest/fixtures.py::FixtureManager.getfixtureclosure` (l. 1624-1664).
 
     The initial set is ``deduplicate_names(autousenames, usefixturesnames, argnames)``
     (`getfixtureinfo` l. 1568-1570) — **autouse first**, which is why an autouse
     parametrized fixture contributes the *leftmost* id component even for a test that
-    never mentions it (probed: ``test_auto_only[1]``/``[2]``).  ``usefixtures`` is not
-    read: the mark travels as data on the wire but nothing evaluates marks until Task 3,
-    so honouring it here would be half a feature; recorded as a Task 3 obligation.
+    never mentions it (probed: ``test_auto_only[1]``/``[2]``) — then ``usefixtures``, then
+    the requested names.  The middle slot is load-bearing for ids in exactly the same way:
+    a parametrized fixture pulled in by ``usefixtures`` contributes its id component ahead
+    of one the signature asks for.
 
     The fixpoint loop is pytest's verbatim, including iterating the list *while appending
     to it* — that is load-bearing, since a dependency discovered mid-pass must be resolved
@@ -1394,7 +1516,7 @@ def build_closure(
     languages, so same-scope names keep their discovery order; a name with no fixturedef
     sorts as ``Function`` (pytest's ``except KeyError`` branch).
     """
-    closure = list(dict.fromkeys([*registry.autouse_names, *argnames]))
+    closure = list(dict.fromkeys([*registry.autouse_names, *usefixtures, *argnames]))
     arg2defs: dict[str, tuple[FixtureDef, ...]] = {}
     lastlen = -1
     while lastlen != len(closure):
@@ -1478,6 +1600,10 @@ class ExecutionPlan:
     marks: tuple[MarkSpec, ...]
     unittest_case: type | None = None
     unittest_method: str | None = None
+    #: ``argname -> fixture name`` for rustest's ``indirect=`` parametrization; empty for
+    #: every ordinary test.  Disjoint from :attr:`direct_params` by construction, since a
+    #: name is either a value or a fixture reference and never both.
+    indirect_params: Mapping[str, str] = field(default_factory=lambda: {})
 
     @property
     def class_name(self) -> str | None:
@@ -1490,6 +1616,88 @@ class ExecutionPlan:
         return ".".join(self.parts[:-1]) if len(self.parts) > 1 else None
 
 
+class _ItemNode:
+    """The collection-tree node ``request.node`` returns — pytest's ``Function`` item.
+
+    v2 has no collection tree (the manifest replaced it), so this is a **façade** over the
+    :class:`ExecutionPlan` carrying the attributes real conftests actually read.  It exists
+    because "no tree" is an implementation choice and ``request.node.name`` is a public
+    pytest API: rustest's own ``tests/test_conftest_nested`` uses it in an autouse fixture,
+    and 21 of its tests were erroring on ``'_SubRequest' object has no attribute 'node'``.
+
+    What is *not* here is as deliberate as what is: no ``session``, no ``config``, no
+    ``parent``, no ``listchain`` — each would need a tree, and returning a stub that answers
+    plausibly would be worse than an ``AttributeError`` that names the missing feature.
+
+    ``own_markers`` is a live list, which is what makes :meth:`add_marker` observable to
+    ``get_closest_marker``.  Marks added at *run* time do not retroactively change the
+    outcome, because pytest evaluates ``skip``/``xfail`` in ``pytest_runtest_setup``
+    (`_pytest/skipping.py`, ``tryfirst``) — before fixtures, let alone before the body.  A
+    ``request.applymarker(pytest.mark.skipif(...))`` from a test body is therefore
+    bookkeeping under pytest too, which is exactly what the self-suite asserts.
+    """
+
+    def __init__(self, plan: ExecutionPlan, instance: object | None) -> None:
+        super().__init__()
+        self._plan = plan
+        #: pytest's ``Item.name`` is the last ``::`` segment, parametrization included
+        #: (``test_add[1-2]``); ``nodeid`` is the whole thing.
+        self.name: Final = plan.id.rsplit("::", 1)[-1]
+        self.nodeid: Final = plan.id
+        self.path: Final = plan.path
+        #: ``fspath`` is pytest's deprecated ``py.path`` spelling, kept as the same value so
+        #: an old conftest reading it gets a path rather than an ``AttributeError``.
+        self.fspath: Final = plan.path
+        self.cls: Final = plan.owner
+        self.module: Final = plan.module
+        self.function: Final = plan.func
+        self.instance: Final = instance
+        self.own_markers: list[MarkSpec] = list(plan.marks)
+
+    @property
+    def originalname(self) -> str:
+        """`_pytest/python.py::Function.originalname` — the name without the ``[params]``."""
+        return self._plan.parts[-1] if self._plan.parts else self.name
+
+    @property
+    def keywords(self) -> Mapping[str, object]:
+        """A read-only stand-in for pytest's ``Node.keywords`` chain-map.
+
+        Real ``keywords`` is a `NodeKeywords` that also carries the node's name and every
+        parent's; this carries the mark names and the node name, which is what a
+        ``"slow" in item.keywords`` check needs.
+        """
+        return {mark.name: True for mark in self.own_markers} | {self.name: True}
+
+    def add_marker(self, marker: object, append: bool = True) -> None:
+        """Port of `_pytest/nodes.py::Node.add_marker` (l. 265-287).
+
+        ``append=False`` prepends, which is how pytest lets a late marker win
+        ``get_closest_marker``.  A raw string is accepted for the same reason pytest accepts
+        one (``item.add_marker("slow")``).
+        """
+        spec = (
+            MarkSpec(name=marker)
+            if isinstance(marker, str)
+            else _spec_from_pytestmark(marker, self._plan.func)
+        )
+        if append:
+            self.own_markers.append(spec)
+        else:
+            self.own_markers.insert(0, spec)
+
+    def iter_markers(self, name: str | None = None) -> Iterator[MarkSpec]:
+        """Port of `Node.iter_markers` — closest first, which is the order
+        :func:`_mark_specs` already emits (function, class chain, module)."""
+        for mark in self.own_markers:
+            if name is None or mark.name == name:
+                yield mark
+
+    def get_closest_marker(self, name: str, default: MarkSpec | None = None) -> MarkSpec | None:
+        """Port of `Node.get_closest_marker` — the first match in ``iter_markers`` order."""
+        return next(self.iter_markers(name), default)
+
+
 class _SubRequest:
     """The ``request`` object a fixture (or a test) receives.
 
@@ -1498,10 +1706,11 @@ class _SubRequest:
     here — which is why ``request`` appearing in a closure never raises "not found".
 
     Deliberately smaller than pytest's ``SubRequest``: ``param``, ``scope``,
-    ``fixturename``, ``addfinalizer`` and ``getfixturevalue`` are what fixtures actually
-    use; ``node``/``config``/``instance``/``module`` need collection-tree objects the
-    worker does not build.  ``param`` is *absent* (not ``None``) on an unparametrized
-    fixture, so ``request.param`` raises ``AttributeError`` exactly as under pytest.
+    ``fixturename``, ``addfinalizer``, ``getfixturevalue``, ``node``, ``applymarker``,
+    ``instance``, ``cls``, ``function``, ``module`` and ``path`` are what fixtures actually
+    use; ``config`` and ``session`` need objects the worker does not build.  ``param`` is
+    *absent* (not ``None``) on an unparametrized fixture, so ``request.param`` raises
+    ``AttributeError`` exactly as under pytest.
     """
 
     def __init__(
@@ -1518,6 +1727,10 @@ class _SubRequest:
         self._closure = closure
         self._params = params
         self._chain = chain
+        # Captured now rather than read from the runner on access: a finalizer runs during
+        # some *later* test's boundary drain, and a `request.node` that answered with
+        # whatever test is current then would misattribute the teardown it belongs to.
+        self._node = runner.current_node
         self.fixturename: Final = fixturename
         #: The **declared** scope of the fixture holding this request — ``"session"`` stays
         #: ``"session"`` even though the runner caches it in the worker-lifetime bucket.
@@ -1553,6 +1766,56 @@ class _SubRequest:
             argname, self._closure, self._params, self._chain, self.scope
         )
         return value
+
+    @property
+    def node(self) -> _ItemNode:
+        """The collection node for the test being set up — see :class:`_ItemNode`.
+
+        pytest's ``SubRequest.node`` returns the node for the *request's own scope* (l. 758-778):
+        a module-scoped fixture's request answers with the ``Module``.  There is only one
+        node kind here, so every scope answers with the item; a session-scoped fixture asking
+        ``request.node.name`` therefore gets the name of whichever test happened to trigger
+        its setup, which is the same value pytest's ``TopRequest`` would give a
+        function-scoped fixture and is *not* what pytest gives a session-scoped one.
+        Recorded rather than papered over: the alternative is a tree.
+        """
+        node = self._node
+        if node is None:
+            raise AttributeError(
+                "request.node is only available while a test is being set up or run"
+            )
+        return node
+
+    @property
+    def instance(self) -> object | None:
+        """The test-class instance, or ``None`` at module level (`FixtureRequest.instance`)."""
+        return self._runner.instance
+
+    @property
+    def cls(self) -> type | None:
+        return self.node.cls
+
+    @property
+    def function(self) -> object:
+        return self.node.function
+
+    @property
+    def module(self) -> types.ModuleType:
+        return self.node.module
+
+    @property
+    def path(self) -> Path:
+        return self.node.path
+
+    def applymarker(self, marker: object) -> None:
+        """Port of `FixtureRequest.applymarker` (l. 449-458): ``self.node.add_marker(marker)``.
+
+        pytest's own docstring is the whole semantics — "Apply a marker to a single test
+        function invocation" — and the timing caveat lives in :class:`_ItemNode`: marks
+        applied from a fixture or a body are recorded, not retroactively evaluated, because
+        `skipping.py::pytest_runtest_setup` has already run.
+        """
+        self.node.add_marker(marker)
 
 
 @dataclass
@@ -1630,6 +1893,13 @@ class FixtureRunner:
         #: fixture see the same object (`resolve_fixture_function` l. 1142-1164, which
         #: rebinds the fixture to ``request.instance``).  ``None`` for a module-level test.
         self.instance: object | None = None
+        #: The node ``request.node`` answers with, rebuilt per test by :meth:`setup`.  It is
+        #: state rather than an argument because a fixture reaches its request object several
+        #: frames below the call that knows which test is running.
+        self.current_node: _ItemNode | None = None
+        #: This worker's asyncio event loop, created on first use by :meth:`run_coroutine`
+        #: and closed by :meth:`teardown_all`.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # -- setup ------------------------------------------------------------
 
@@ -1654,7 +1924,19 @@ class FixtureRunner:
         self.instance = (
             plan.owner() if plan.owner is not None and plan.unittest_case is None else None
         )
+        self.current_node = _ItemNode(plan, self.instance)
         values: dict[str, object] = dict(plan.direct_params)
+        # An `indirect` name's parametrized value is the *name of a fixture*, not the value:
+        # `@parametrize("data", ["big", "small"], indirect=True)` runs the test once with the
+        # `big` fixture's value and once with `small`'s.  That is rustest's own spelling of
+        # `indirect` (`decorators.py::parametrize`) and it is **not pytest's**, which passes
+        # the value to a same-named fixture as `request.param`; the two are documented as
+        # divergent in the module docstring.  Resolution goes through the ordinary
+        # `_resolve_active` path — including its registry fallback for a name outside the
+        # static closure — so an indirect fixture is scope-checked and torn down like any
+        # other.
+        for name, fixture_name in plan.indirect_params.items():
+            values[name] = self.resolve(fixture_name, plan.closure, plan.fixture_params, ())
         for name in plan.closure.names:
             if name in values:
                 continue
@@ -1672,11 +1954,27 @@ class FixtureRunner:
         setup:TestB, B.three, teardown:TestB`` for one class-scoped fixture used by two
         classes.
 
+        **A module-level test always ends class scope**, which is not the same rule as
+        "the class changed".  `_pytest/fixtures.py::SubRequest.node` (l. 758-778) resolves the
+        node a class-scoped fixture is finalised with, and for a test that is not in a class
+        ``get_scope_node`` returns ``None``, whereupon::
+
+            if node is None and scope is Scope.Class:
+                # Fallback to function item itself.
+                node = self._pyfuncitem
+
+        — so the fixture is torn down with that *one test*, exactly like a function-scoped
+        one.  Probed: three module-level tests requesting one ``scope="class"`` fixture see
+        three different values (the self-suite's ``test_isolation_1/2/3`` assert exactly
+        ``1``, ``2``, ``3``).  Comparing ``None != None`` and concluding "same class" caches
+        the first value for the whole file, which is a silently wrong result rather than an
+        error — 14 of them in rustest's own suite before this branch existed.
+
         Called automatically by :meth:`setup`; exposed for callers that want to drive the
         boundary themselves.  A module change is handled by ``teardown("module")``, which
         drains class scope and resets this marker on the way past.
         """
-        if class_name != self._current_class:
+        if class_name is None or class_name != self._current_class:
             self.teardown("class")
         self._current_class = class_name
 
@@ -1862,29 +2160,89 @@ class FixtureRunner:
         method gets — `resolve_fixture_function` l. 1152-1163
         (``fixturefunc.__get__(instance)``).  Without it the fixture would be called with
         ``self`` missing.
+
+        An **async** fixture is driven on this worker's event loop: an ``async def`` body is
+        awaited to its value, and an ``async def`` + ``yield`` body is advanced to the yield
+        at setup and to exhaustion at teardown.  That is pytest-asyncio's model
+        (``_pytest_asyncio/plugin.py``'s ``_wrap_async``/``_wrap_asyncgen``), and it is not
+        optional here: without it the fixture value handed to a test is a **coroutine
+        object**, which is silently truthy and fails only wherever the test first uses it.
         """
         func = fixturedef.func
         if fixturedef.needs_instance and self.instance is not None:
             func = cast(Callable[..., object], cast(Any, func).__get__(self.instance))
         self._extras_stack.append(finalizer.calls)
         try:
-            if inspect.isgeneratorfunction(func):
+            if inspect.isasyncgenfunction(func):
+                agen = cast(Any, func)(**kwargs)
+                try:
+                    value = self.run_coroutine(agen.__anext__())
+                except StopAsyncIteration:
+                    raise FixtureLookupError(f"{fixturedef.name} did not yield a value") from None
+                teardown: Callable[[], object] | None = functools.partial(
+                    _teardown_async_yield, self, fixturedef, agen
+                )
+            elif inspect.isgeneratorfunction(func):
                 generator = cast(Any, func)(**kwargs)
                 try:
                     value = cast(object, next(generator))
                 except StopIteration:
                     raise FixtureLookupError(f"{fixturedef.name} did not yield a value") from None
-                teardown: Callable[[], object] | None = functools.partial(
-                    _teardown_yield, fixturedef, generator
-                )
+                teardown = functools.partial(_teardown_yield, fixturedef, generator)
             else:
                 value = func(**kwargs)
+                # Detected on the **value**, not on the function: rustest's `@fixture`
+                # decorator wraps the body, so `iscoroutinefunction` on the registered
+                # callable can be false for a fixture that is async underneath.
+                if inspect.iscoroutine(value):
+                    value = self.run_coroutine(value)
                 teardown = None
         finally:
             _ = self._extras_stack.pop()
         if teardown is not None:
             finalizer.calls.append(teardown)
         return value
+
+    # -- asyncio ----------------------------------------------------------
+
+    def run_coroutine(self, coro: Any) -> object:
+        """Drive *coro* to completion on this worker's event loop.
+
+        **One loop per worker, for the worker's whole life.**  pytest-asyncio's default is a
+        *function*-scoped loop (`asyncio_default_test_loop_scope`), and rustest v1 offers
+        `@mark.asyncio(loop_scope=...)` with four scopes implemented in the Rust executor
+        (`python/rustest/async_executor.py`).  Neither is reproduced here: a single loop is
+        the only choice that lets a module- or session-scoped async fixture outlive the test
+        that created it, which is the shape that breaks *loudly and wrongly* under a
+        per-test loop ("attached to a different loop").
+
+        The observable divergence is that two tests declaring **different** `loop_scope`s
+        share a loop where v1 would give them separate ones, so a test asserting
+        `id(get_event_loop())` differs across scopes sees the same id.  Recorded in the
+        module docstring's scope-limit list and on the Phase 3 list; the fix is a
+        scope-keyed loop cache hung off the same buckets the fixture finalizers use.
+
+        `asyncio.set_event_loop` is called as well as `new_event_loop`, because a test body
+        that calls `asyncio.get_event_loop()` — or any library that does — must find the loop
+        its coroutine is running on rather than create a second one.
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+        return loop.run_until_complete(coro)
+
+    def _close_loop(self) -> None:
+        """Close the worker's event loop, after every async fixture has been unwound.
+
+        Called from :meth:`teardown_all` only — closing it at a narrower boundary would
+        strand a module- or session-scoped async fixture holding a task on a dead loop.
+        """
+        loop, self._loop = self._loop, None
+        if loop is not None and not loop.is_closed():
+            loop.close()
+            asyncio.set_event_loop(None)
 
     def add_finalizer(self, finalizer: Callable[[], object]) -> None:
         """Attach a ``request.addfinalizer`` callable to the fixture being set up.
@@ -1933,8 +2291,16 @@ class FixtureRunner:
             raise BaseExceptionGroup("errors while tearing down fixtures", exceptions[::-1])
 
     def teardown_all(self) -> None:
-        """Unwind every scope — the worker is shutting down."""
-        self.teardown("session")
+        """Unwind every scope — the worker is shutting down.
+
+        The event loop is closed **after** the unwind, in a ``finally``, so a session-scoped
+        async fixture still has a live loop to be torn down on and the loop is released even
+        when that teardown raises.
+        """
+        try:
+            self.teardown("session")
+        finally:
+            self._close_loop()
 
     def _finish(self, finalizer: _Finalizer) -> None:
         """Drain one fixture's teardown and drop its cached value, even if it raised.
@@ -1974,6 +2340,24 @@ class FixtureRunner:
             raise BaseExceptionGroup(
                 f"errors while tearing down fixture {name!r}", exceptions[::-1]
             )
+
+
+def _teardown_async_yield(runner: FixtureRunner, fixturedef: FixtureDef, generator: object) -> None:
+    """The async twin of :func:`_teardown_yield`: resume an ``async def`` + ``yield`` fixture.
+
+    Same contract — exhausting the generator is success, a second yield is the user error
+    pytest calls "fixture function has more than one 'yield'" — driven through the worker's
+    loop instead of ``next()``.
+    """
+
+    async def drain() -> None:
+        try:
+            _ = await cast(Any, generator).__anext__()
+        except StopAsyncIteration:
+            return
+        raise ValueError(f"fixture {fixturedef.name} has more than one 'yield'")
+
+    _ = runner.run_coroutine(drain())
 
 
 def _teardown_yield(fixturedef: FixtureDef, generator: object) -> None:
@@ -2183,9 +2567,63 @@ def build_registry(path: Path, rootdir: Path) -> tuple[types.ModuleType, Fixture
     for conftest in conftest_chain(path, rootdir):
         conftest_module = import_conftest(conftest, rootdir)
         registry.parse_factories(conftest_module, _conftest_baseid(conftest, rootdir))
+        _register_declared_plugins(conftest_module, registry)
     module = import_test_module(path, rootdir)
     registry.parse_factories(module, _relative_posix(path, rootdir))
+    _register_declared_plugins(module, registry)
     return module, registry
+
+
+def _plugin_specs(raw: object) -> list[str]:
+    """``pytest_plugins`` as a list of module names, accepting pytest's two spellings.
+
+    Port of `_pytest/config/__init__.py::_get_plugin_specs_as_list` (pytest 8.4.2): a single
+    ``str`` is one name, a non-string sequence is a list of names, anything else is ignored
+    here (pytest raises ``UsageError``; refusing the whole file over a malformed declaration
+    would be a harsher failure than the feature warrants, and the fixtures it would have
+    contributed then show up as an ordinary "fixture not found").
+    """
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, (list, tuple)):
+        return [str(name) for name in cast(Sequence[object], raw)]
+    return []
+
+
+def _register_declared_plugins(module: types.ModuleType, registry: FixtureRegistry) -> None:
+    """Honour a module's ``pytest_plugins`` declaration by registering its fixtures.
+
+    pytest reaches this through
+    `_pytest/config/__init__.py::PytestPluginManager.consider_module` ->
+    ``_import_plugin_specs(getattr(mod, "pytest_plugins", []))`` -> ``import_plugin`` ->
+    ``register`` -> ``FixtureManager.pytest_plugin_registered`` -> ``parsefactories(plugin)``
+    **with no nodeid**, which is why plugin fixtures are visible everywhere rather than only
+    below the conftest that named them.  ``baseid=""`` reproduces that ("For other plugins,
+    the baseid is the empty string" — `FixtureDef.__init__`).
+
+    This is the *fixture* half of the plugin protocol and nothing else: hooks a named module
+    defines are not called, because v2 has no hook system.  A plugin that only supplies
+    fixtures — the overwhelmingly common shape, and the one rustest's own
+    ``tests/test_pytest_plugins_and_applymarker`` exercises — works; one that implements
+    ``pytest_collection_modifyitems`` is silently inert, exactly as it is under v1.
+
+    An unimportable plugin raises out of here into :func:`collect_file`, which turns it into a
+    collection error entry for the file — the same treatment a broken ``import`` in the
+    conftest itself gets.
+    """
+    for name in _plugin_specs(_safe_getattr(module, "pytest_plugins", None)):
+        registry.parse_factories(importlib.import_module(name), "")
+
+
+def _markdown_registry(path: Path, rootdir: Path) -> FixtureRegistry:
+    """:func:`build_registry` minus the module import — a `.md` file has none to import."""
+    registry = FixtureRegistry()
+    _register_builtin_fixtures(registry)
+    for conftest in conftest_chain(path, rootdir):
+        conftest_module = import_conftest(conftest, rootdir)
+        registry.parse_factories(conftest_module, _conftest_baseid(conftest, rootdir))
+        _register_declared_plugins(conftest_module, registry)
+    return registry
 
 
 def _build_entry(
@@ -2239,6 +2677,7 @@ def _collect_function(
     outer_marks: list[MarkSpec],
     registry: FixtureRegistry,
     context: _CollectContext,
+    outer_cases: list[_Case] | None = None,
 ) -> list[CollectedTestDict]:
     """Port of `_pytest/python.py::pytest_pycollect_makeitem`'s function branch.
 
@@ -2273,14 +2712,26 @@ def _collect_function(
 
     marks = _mark_specs(func) + outer_marks
     full_parts = (*parts, name)
-    cases = _parametrization(func)
+    own_cases = _parametrization(func)
+    if outer_cases:
+        cases = (
+            list(outer_cases) if own_cases is None else _cross_product_cases(outer_cases, own_cases)
+        )
+    else:
+        cases = own_cases
     direct_cases: list[tuple[str | None, Mapping[str, object]]] = (
         [(None, {})] if cases is None else [(case_id, values) for case_id, values in cases]
     )
     direct_argnames = frozenset(name for _case_id, values in direct_cases for name in values)
+    indirect = _indirect_names(func) & direct_argnames
 
     argnames = _requested_argnames(func, name, owner)
-    closure = build_closure(registry, argnames, ignore_args=direct_argnames)
+    closure = build_closure(
+        registry,
+        argnames,
+        ignore_args=direct_argnames,
+        usefixtures=usefixtures_names(marks),
+    )
     dimensions = fixture_param_dimensions(closure, direct_argnames)
 
     entries: list[CollectedTestDict] = []
@@ -2310,9 +2761,14 @@ def _collect_function(
                     owner=owner,
                     closure=closure,
                     fixture_params=fixture_params,
-                    direct_params=case_values,
+                    direct_params={
+                        key: value for key, value in case_values.items() if key not in indirect
+                    },
                     argnames=tuple(argnames),
                     marks=tuple(marks),
+                    indirect_params={
+                        key: str(value) for key, value in case_values.items() if key in indirect
+                    },
                 )
             )
     return entries
@@ -2388,7 +2844,7 @@ def _collect_unittest_class(
     class_marks = _mark_specs(cls, consider_mro=True) + outer_marks
     child_parts = (*parts, name)
     class_registry = _unittest_class_registry(cls, child_parts, registry, context)
-    closure = build_closure(class_registry, ())
+    closure = build_closure(class_registry, (), usefixtures=usefixtures_names(class_marks))
     loader = unittest.TestLoader()
     entries: list[CollectedTestDict] = []
 
@@ -2431,6 +2887,7 @@ def _collect_class(
     outer_marks: list[MarkSpec],
     registry: FixtureRegistry,
     context: _CollectContext,
+    outer_cases: list[_Case] | None = None,
 ) -> list[CollectedTestDict]:
     """Port of `_pytest/python.py::Class.collect`.
 
@@ -2458,10 +2915,30 @@ def _collect_class(
     child_parts = (*parts, name)
     class_registry = registry.child()
     class_registry.parse_factories(cls, f"{context.rel_path}::{'::'.join(child_parts)}", cls)
+    # A class-level `@parametrize` writes its cases onto the **class object**
+    # (`decorators.py::parametrize` is target-agnostic), where a method cannot see them:
+    # functions do not inherit class attributes.  So the cases are read here and handed down
+    # explicitly, which is also what keeps them out of `_parametrization(func)` and stops the
+    # same dimension being counted twice.  `_safe_getattr` walks the MRO, so a subclass of a
+    # parametrized class inherits the parametrization exactly as it inherits pytest's marks.
+    class_cases = _parametrization(cls)
+    if class_cases is not None:
+        outer_cases = (
+            class_cases if outer_cases is None else _cross_product_cases(outer_cases, class_cases)
+        )
     entries: list[CollectedTestDict] = []
     for member_name, member in _mro_ordered_members(cls):
         entries.extend(
-            _make_items(member, member_name, child_parts, cls, class_marks, class_registry, context)
+            _make_items(
+                member,
+                member_name,
+                child_parts,
+                cls,
+                class_marks,
+                class_registry,
+                context,
+                outer_cases,
+            )
         )
     return entries
 
@@ -2474,6 +2951,7 @@ def _make_items(
     outer_marks: list[MarkSpec],
     registry: FixtureRegistry,
     context: _CollectContext,
+    outer_cases: list[_Case] | None = None,
 ) -> list[CollectedTestDict]:
     """Dispatch one namespace entry, mirroring pytest's ``pytest_pycollect_makeitem`` hooks.
 
@@ -2494,10 +2972,12 @@ def _make_items(
         return _collect_unittest_class(cast(type, obj), name, parts, outer_marks, registry, context)
     if inspect.isclass(obj):
         if _is_test_class(obj, name, context.naming):
-            return _collect_class(obj, name, parts, outer_marks, registry, context)
+            return _collect_class(obj, name, parts, outer_marks, registry, context, outer_cases)
         return []
     if _is_test_function(obj, name, context.naming):
-        return _collect_function(obj, name, parts, owner, outer_marks, registry, context)
+        return _collect_function(
+            obj, name, parts, owner, outer_marks, registry, context, outer_cases
+        )
     return []
 
 
@@ -2586,6 +3066,169 @@ def enumerate_module(
     """:func:`collect_module`'s manifest half — the wire entries, without the plans."""
     entries, _execution_plans = collect_module(module, path, rootdir, naming)
     return entries
+
+
+# ---------------------------------------------------------------------------
+# markdown code blocks — rustest's own tier, ported from v1
+# ---------------------------------------------------------------------------
+
+#: HTML comments that mark the *next* fenced block as "do not execute".  All three spellings
+#: are v1's (`src/discovery.rs::extract_python_code_blocks`): rustest's own, pytest's, and
+#: pytest-codeblocks', because a project migrating from either already has them in its docs.
+MARKDOWN_SKIP_MARKERS: Final = (
+    "<!--rustest.mark.skip-->",
+    "<!--pytest.mark.skip-->",
+    "<!--pytest-codeblocks:skip-->",
+)
+
+#: What a skipped block reports as its reason — v1's wording, kept so the two engines'
+#: output reads the same.
+MARKDOWN_SKIP_REASON: Final = "Skipped via HTML comment marker"
+
+
+def extract_python_code_blocks(content: str) -> list[tuple[str, int, bool]]:
+    """``(code, opening-fence line number, skip?)`` for every ```` ```python ```` block.
+
+    Line-for-line port of `src/discovery.rs::extract_python_code_blocks` (v1), including the
+    two rules that are easy to get subtly different:
+
+    * the language is the **lowercased** text after the fence, so ```` ```Python ```` counts
+      and ```` ```pycon ```` does not;
+    * a skip marker survives only across *comment* lines — the `last_line_was_comment` latch
+      — so `<!--pytest.mark.skip-->` followed by a paragraph and then a fence does **not**
+      skip that fence.  Reproducing the latch matters: getting it wrong either executes
+      blocks the author disabled (loud, wrong failures) or silently stops testing the docs.
+
+    The line number is 1-based and points at the opening fence, which is what v1 puts in the
+    test id and in the compiled block's filename.
+    """
+    blocks: list[tuple[str, int, bool]] = []
+    in_block = False
+    current: list[str] = []
+    language = ""
+    start_line = 0
+    skip_marker = False
+    previous_was_comment = False
+
+    for index, line in enumerate(content.splitlines()):
+        stripped = line.strip()
+
+        if not in_block and any(marker in stripped for marker in MARKDOWN_SKIP_MARKERS):
+            skip_marker = True
+            previous_was_comment = True
+            continue
+
+        if stripped.startswith("```"):
+            if in_block:
+                if language == "python":
+                    blocks.append(("\n".join(current), start_line, skip_marker))
+                current = []
+                language = ""
+                in_block = False
+                skip_marker = False
+            else:
+                in_block = True
+                start_line = index + 1
+                language = stripped[3:].strip().lower()
+        elif in_block:
+            current.append(line)
+        elif not previous_was_comment:
+            skip_marker = False
+
+        previous_was_comment = False
+
+    return blocks
+
+
+def _codeblock_callable(code: str, path: Path, line_number: int) -> Callable[[], object]:
+    """Compile one block into a zero-argument callable, as v1 does.
+
+    Port of `src/discovery.rs::create_codeblock_callable`: the block is indented into a
+    ``def`` and compiled with the filename ``<file>:L<line>``, so a traceback points at the
+    markdown source rather than at a nameless ``<string>``.  Each block gets its **own**
+    namespace — v1 execs into a fresh dict per block — so one block cannot see another's
+    names, and a doc example is therefore forced to be self-contained exactly as the
+    documentation guidelines say it must be.
+    """
+    body = "\n".join(f"    {line}" for line in code.splitlines()) or "    pass"
+    source = f"# Code block from {path} (line {line_number})\ndef run_codeblock():\n{body}\n"
+    namespace: dict[str, object] = {}
+    exec(compile(source, f"{path}:L{line_number}", "exec"), namespace)  # noqa: S102
+    return cast(Callable[[], object], namespace["run_codeblock"])
+
+
+def collect_markdown(
+    path: Path,
+    rootdir: Path,
+    registry: FixtureRegistry | None = None,
+) -> tuple[list[CollectedTestDict], list[ExecutionPlan]]:
+    """Enumerate a ``.md`` file's python fences as tests.
+
+    **This tier has no pytest counterpart** — it is rustest's, shipped since v1
+    (`src/discovery.rs::collect_from_markdown`) and switched off by ``--no-codeblocks``.  It
+    is here rather than left behind at the flip because rustest's own README and guide are
+    tested this way, and so are its users'.
+
+    Two shapes differ from v1 and both are cosmetic, recorded rather than discovered later:
+
+    * the node id is ``docs/guide/fixtures.md::codeblock_0_line_15`` — v1's *test name*
+      verbatim — where v1 *displayed* ``...::codeblock_0::line_15``.  v2 ids are
+      rootdir-relative posix and a second ``::`` would claim the block is a class member;
+    * a block marked skipped carries a real ``skip`` mark instead of v1's out-of-band
+      ``skip_reason``, so it travels on the wire and is evaluated by the same
+      :func:`evaluate_skip_marks` every other skip goes through.
+
+    Every block also carries the ``codeblock`` mark v1 attaches, so ``-m codeblock`` and
+    ``-m "not codeblock"`` keep working.
+
+    A code block requests no fixtures, so the closure is the registry's autouse set and
+    nothing else; *registry* is accepted (and the conftest chain is loaded for it in
+    :func:`collect_file`) so an autouse conftest fixture still applies to a doc example,
+    which is what v1's ``merge_conftest_fixtures`` did for markdown too.
+    """
+    if registry is None:
+        registry = FixtureRegistry()
+        _register_builtin_fixtures(registry)
+
+    rel_path = _relative_posix(path, rootdir)
+    # A synthetic module, never imported and never in `sys.modules`: `ExecutionPlan` needs a
+    # module object for the string-condition namespace, and a markdown file has none.
+    module = types.ModuleType(f"rustest_codeblocks_{abs(hash(rel_path))}")
+    module.__file__ = str(path)
+
+    content = path.read_text(encoding="utf-8")
+    closure = build_closure(registry, ())
+    entries: list[CollectedTestDict] = []
+    plans: list[ExecutionPlan] = []
+    for index, (code, line_number, skipped) in enumerate(extract_python_code_blocks(content)):
+        marks = [MarkSpec(name="codeblock")]
+        if skipped:
+            marks.append(MarkSpec(name="skip", kwargs={"reason": MARKDOWN_SKIP_REASON}))
+        parts = (f"codeblock_{index}_line_{line_number}",)
+        entry = _build_entry(rel_path, parts, None, marks, [])
+        entries.append(entry)
+        plans.append(
+            ExecutionPlan(
+                id=entry["id"],
+                path=path,
+                module=module,
+                parts=parts,
+                # A skipped block is **not compiled**.  v1 compiled every block up front, so
+                # a `<!--rustest.mark.skip-->` fence containing pseudo-code turned the whole
+                # file into a collection error — which defeats the purpose of the marker, and
+                # the project's own documentation guidelines tell authors to use it for
+                # "pseudo-code or incomplete snippets".  A skip mark short-circuits before
+                # the body under any engine, so there is nothing to compile it *for*.
+                func=(lambda: None) if skipped else _codeblock_callable(code, path, line_number),
+                owner=None,
+                closure=closure,
+                fixture_params={},
+                direct_params={},
+                argnames=(),
+                marks=tuple(marks),
+            )
+        )
+    return entries, plans
 
 
 # ---------------------------------------------------------------------------
@@ -3291,6 +3934,47 @@ class _Capture:
 #: closure is what broke an otherwise-passing phase, that phase's failure message.
 CAPTURE_CLOSED_MESSAGE: Final = "<capture closed by the test>"
 
+#: Set to ``no`` by the orchestrator under ``-s`` / ``--no-capture``
+#: (`src/v2/collect.rs::CAPTURE_ENV`, which **must be renamed in the same commit** as this).
+#:
+#: An environment variable rather than a protocol field because capture is *spawn*
+#: configuration: it is constant for a worker's whole life and identical for every worker in
+#: the pool, exactly like the interpreter path and the argv.  Putting it on the wire would
+#: mean a `PROTOCOL_VERSION` bump for a value that can never vary between two messages.
+CAPTURE_ENV: Final = "RUSTEST_V2_CAPTURE"
+
+
+def capture_enabled() -> bool:
+    """Whether a test's ``sys.stdout``/``sys.stderr`` are redirected into :class:`_Capture`.
+
+    Read per call rather than cached in a module constant so a test of this worker can set
+    the variable and observe the effect without reloading the module.
+    """
+    return os.environ.get(CAPTURE_ENV, "").lower() not in ("no", "0", "false")
+
+
+@contextlib.contextmanager
+def _capture_window(capture: _Capture) -> Iterator[None]:
+    """Redirect the test's streams into *capture* — unless ``-s`` turned capture off.
+
+    Under ``-s`` this is a no-op, so a test's ``print`` lands on whatever ``sys.stdout`` is,
+    which :func:`main` has already rebound to the worker's **stderr**: the worker's real
+    stdout is the protocol channel and a stray `print` there would corrupt the JSON-lines
+    framing.  The orchestrator forwards that stderr verbatim through
+    ``RunReport::worker_stderr``.
+
+    So `-s` under v2 means "not captured, not attributed to a test, forwarded live-ordered
+    per worker" rather than pytest's "written straight to the terminal".  Documented
+    divergence; the alternative — an extra inherited fd per worker — is Phase 2 plumbing for
+    a flag whose whole purpose is `pdb`-style debugging, where `-n 1` is the sane setting
+    anyway.
+    """
+    if not capture_enabled():
+        yield
+        return
+    with redirect_stdout(capture.stdout), redirect_stderr(capture.stderr):
+        yield
+
 
 # -- the execute op ---------------------------------------------------------
 
@@ -3324,9 +4008,19 @@ def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, o
     if func is None:  # pragma: no cover - collection always supplies one of the two
         raise RuntimeError(f"collected test {plan.id!r} has no function and no unittest case")
     if runner.instance is not None:
-        _ = func(runner.instance, **kwargs)
+        result = func(runner.instance, **kwargs)
     else:
-        _ = func(**kwargs)
+        result = func(**kwargs)
+    # **The false-green guard.**  An `async def` test called like a sync one returns a
+    # coroutine and raises nothing, so the run reports PASSED for a body that never executed
+    # — measured before this line existed: `async def test(): assert 1 == 2` reported
+    # `1 passed` under v2 while both pytest and rustest v1 reported `1 failed`.  Awaiting it
+    # is what makes an async suite mean anything.  pytest reaches the same place through
+    # pytest-asyncio's `pytest_pyfunc_call` hook, which runs the coroutine on its loop; the
+    # detection is on the returned value rather than on the function because rustest's
+    # `@mark.asyncio` wraps the body.
+    if inspect.iscoroutine(result):
+        _ = runner.run_coroutine(result)
 
 
 def drain_boundaries(plan: ExecutionPlan, runner: FixtureRunner) -> BaseException | None:
@@ -3475,7 +4169,7 @@ def execute_test(test_id: str) -> ResultResponse:
 
     capture = _Capture()
     started = time.perf_counter()
-    with redirect_stdout(capture.stdout), redirect_stderr(capture.stderr):
+    with _capture_window(capture):
         reports = _run_phases(plan, runner, capture, boundary_exc)
     duration = time.perf_counter() - started
 
@@ -3636,8 +4330,17 @@ def collect_file(path: str) -> CollectedResponse:
     file_path = Path(path)
     response: CollectedResponse = {"op": "collected", "path": path}
     try:
-        module, registry = build_registry(file_path, state.rootdir)
-        tests, plans = collect_module(module, file_path, state.rootdir, state.naming, registry)
+        if file_path.suffix == ".md":
+            # The markdown tier: no module to import, but the conftest chain is still loaded
+            # so an autouse fixture reaches a doc example exactly as v1's
+            # `merge_conftest_fixtures` made it.  The orchestrator only ever sends a `.md`
+            # path when code blocks are enabled (`src/v2/collect.rs::is_markdown`).
+            tests, plans = collect_markdown(
+                file_path, state.rootdir, _markdown_registry(file_path, state.rootdir)
+            )
+        else:
+            module, registry = build_registry(file_path, state.rootdir)
+            tests, plans = collect_module(module, file_path, state.rootdir, state.naming, registry)
         for plan in plans:
             _execution_plans[plan.id] = plan
     except CollectionRefusal as exc:
