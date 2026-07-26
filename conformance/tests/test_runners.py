@@ -46,18 +46,22 @@ MINI_SUITE = textwrap.dedent(
     """
 )
 
-MINI_IDS = {
+# pytest emits a module's ids in source order, so this doubles as the ordered
+# expectation for the collect gate. MINI_IDS stays a set for the v1 runners, which
+# grade on membership only.
+MINI_IDS_ORDERED = [
     "test_mini.py::test_one",
     "test_mini.py::test_two",
     "test_mini.py::TestBox::test_in_class",
-}
+]
+MINI_IDS = set(MINI_IDS_ORDERED)
 
 
 def test_parse_pytest_collect() -> None:
-    assert parse_pytest_collect(COLLECT_OUTPUT) == {
+    assert parse_pytest_collect(COLLECT_OUTPUT) == [
         "test_a.py::test_one",
         "test_a.py::TestBox::test_two[x]",
-    }
+    ]
 
 
 COLLECT_OUTPUT_WITH_TRACEBACK = textwrap.dedent(
@@ -84,10 +88,10 @@ def test_parse_pytest_collect_ignores_traceback_line_with_double_colon() -> None
     excluded: real nodeids are always flush at column 0, and an indented source
     line or an ``E   ...`` assertion line is not.
     """
-    assert parse_pytest_collect(COLLECT_OUTPUT_WITH_TRACEBACK) == {
+    assert parse_pytest_collect(COLLECT_OUTPUT_WITH_TRACEBACK) == [
         "test_a.py::test_one",
         "test_a.py::TestBox::test_two[x]",
-    }
+    ]
 
 
 COLLECT_OUTPUT_WITH_SLICE_SYNTAX_ERROR = textwrap.dedent(
@@ -119,9 +123,9 @@ def test_parse_pytest_collect_ignores_syntax_error_slice_echo_golden() -> None:
     pytest run (see test_parse_pytest_collect_ignores_syntax_error_slice_echo_real_pytest)
     as a fast golden fixture for CI.
     """
-    assert parse_pytest_collect(COLLECT_OUTPUT_WITH_SLICE_SYNTAX_ERROR) == {
+    assert parse_pytest_collect(COLLECT_OUTPUT_WITH_SLICE_SYNTAX_ERROR) == [
         "test_sibling_ok.py::test_alpha",
-    }
+    ]
 
 
 def test_parse_pytest_collect_ignores_syntax_error_slice_echo_real_pytest(
@@ -154,7 +158,7 @@ def test_parse_pytest_collect_ignores_syntax_error_slice_echo_real_pytest(
 
     ids = parse_pytest_collect(proc.stdout)
 
-    assert ids == {"test_zzz_good.py::test_after_alpha"}
+    assert ids == ["test_zzz_good.py::test_after_alpha"]
     assert not any("data[" in i for i in ids)
 
 
@@ -319,29 +323,102 @@ def test_isolate_case_keeps_a_case_owned_config_file(tmp_path: Path) -> None:
     assert "check_*.py" in (work / "pytest.ini").read_text(encoding="utf-8")
 
 
-def test_isolate_case_drops_pycache(tmp_path: Path) -> None:
-    """``__pycache__`` is corpus litter, not case content, and never gets copied."""
+@pytest.mark.parametrize("cache_dir", ["__pycache__", ".pytest_cache", ".rustest_cache"])
+def test_isolate_case_drops_caches(cache_dir: str, tmp_path: Path) -> None:
+    """Caches are litter, not case content, and never get copied.
+
+    ``__pycache__`` is checked into the corpus from earlier runs and stale bytecode
+    beside freshly copied source is the shape of pytest's ``import file mismatch``;
+    the two runner caches would carry one run's state into the next.
+    """
     case_dir = tmp_path / "case"
-    (case_dir / "__pycache__").mkdir(parents=True)
-    (case_dir / "__pycache__" / "stale.pyc").write_bytes(b"\x00")
+    (case_dir / cache_dir).mkdir(parents=True)
+    (case_dir / cache_dir / "stale.bin").write_bytes(b"\x00")
     _write_mini_suite(case_dir)
     dest_parent = tmp_path / "work"
     dest_parent.mkdir()
 
     work = _isolate_case(case_dir, dest_parent)
 
-    assert not (work / "__pycache__").exists()
+    assert not (work / cache_dir).exists()
+
+
+# (filename, contents, qualifies) -- the content rules both runners apply, per
+# `_pytest/config/findpaths.py::load_config_dict_from_file` and its port in
+# `src/v2/config.rs`. A file that does NOT qualify must still get the bare ini.
+CONFIG_QUALIFICATION_CASES = [
+    ("pyproject.toml", '[project]\nname = "x"\n', False),
+    ("pyproject.toml", '[tool.pytest.ini_options]\nminversion = "7"\n', True),
+    ("tox.ini", "[tox]\nenvlist = py312\n", False),
+    ("tox.ini", "[pytest]\nminversion = 7\n", True),
+    ("setup.cfg", "[metadata]\nname = x\n", False),
+    ("setup.cfg", "[tool:pytest]\nminversion = 7\n", True),
+    (".pytest.ini", "", False),
+    (".pytest.ini", "[pytest]\n", True),
+    ("pytest.ini", "", True),
+]
+
+
+@pytest.mark.parametrize(("filename", "contents", "qualifies"), CONFIG_QUALIFICATION_CASES)
+def test_isolate_case_qualifies_config_by_content(
+    filename: str, contents: str, qualifies: bool, tmp_path: Path
+) -> None:
+    """A shipped config file is honored only if it would really anchor the search.
+
+    ``pytest.ini`` qualifies on its *name* even when empty; every other candidate
+    qualifies only on content, and a section-less ``.pytest.ini`` does not qualify at
+    all. When a case's file does not qualify, the bare ini must still be written --
+    otherwise nothing anchors the isolated copy.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+    (case_dir / filename).write_text(contents, encoding="utf-8")
+    dest_parent = tmp_path / "work"
+    dest_parent.mkdir()
+
+    work = _isolate_case(case_dir, dest_parent)
+
+    if qualifies:
+        assert (work / filename).read_text(encoding="utf-8") == contents
+        if filename != "pytest.ini":
+            assert not (work / "pytest.ini").exists()
+    else:
+        assert (work / "pytest.ini").read_text(encoding="utf-8") == "[pytest]\n"
+
+
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+def test_non_qualifying_case_config_still_isolates_from_a_poisoned_parent(
+    runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
+) -> None:
+    """The vacuous-MATCH trap: a ``[project]``-only pyproject.toml anchors nothing.
+
+    Treating the file's mere *existence* as "this case brings its own config" skips
+    the bare ini; both runners then walk up out of the isolated copy, find the parent
+    ``pytest.ini`` whose ``python_files`` matches nothing here, and both collect
+    zero tests. They would AGREE -- on the wrong rootdir -- and the case would record
+    a MATCH that proves nothing. With content-based qualification the bare ini is
+    written, the parent is unreachable, and the suite is collected.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
+    case_dir = _case_with_mini_suite(tmp_path)
+    (case_dir / "pyproject.toml").write_text('[project]\nname = "case"\n', encoding="utf-8")
+
+    result = runner(case_dir, [])
+
+    assert result.ids == MINI_IDS_ORDERED
+    assert result.exit_code == 0
 
 
 def test_run_pytest_collect_integration(tmp_path: Path) -> None:
     result = run_pytest_collect(_case_with_mini_suite(tmp_path), [])
-    assert result.ids == MINI_IDS
+    assert result.ids == MINI_IDS_ORDERED
     assert result.exit_code == 0
 
 
 def test_run_rustest_v2_collect_integration(tmp_path: Path) -> None:
     result = run_rustest_v2_collect(_case_with_mini_suite(tmp_path), [])
-    assert result.ids == MINI_IDS
+    assert result.ids == MINI_IDS_ORDERED
     assert result.exit_code == 0
 
 
@@ -370,7 +447,7 @@ def test_collect_runners_ignore_a_surrounding_project_config(
 
     result = runner(_case_with_mini_suite(tmp_path), [])
 
-    assert result.ids == MINI_IDS
+    assert result.ids == MINI_IDS_ORDERED
     assert result.exit_code == 0
 
 
@@ -385,7 +462,7 @@ def test_collect_runners_agree_on_an_empty_tree(
 
     result = runner(case_dir, [])
 
-    assert result.ids == set()
+    assert result.ids == []
     assert result.exit_code == 5
 
 
@@ -408,8 +485,95 @@ def test_collect_runners_agree_on_a_collection_error(
 
     result = runner(case_dir, [])
 
-    assert result.ids == {"test_zzz_good.py::test_ok"}
+    assert result.ids == ["test_zzz_good.py::test_ok"]
     assert result.exit_code == 2
+
+
+def _write_interleaved_tree(case_dir: Path) -> None:
+    """A tree whose walk order is only correct if directories sort in with files."""
+    (case_dir / "sub").mkdir(parents=True)
+    (case_dir / "sub" / "test_b.py").write_text(
+        "def test_in_subdir():\n    assert True\n", encoding="utf-8"
+    )
+    (case_dir / "test_a.py").write_text(
+        "def test_alpha():\n    assert True\n\n\ndef test_beta():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (case_dir / "zz_test.py").write_text("def test_gamma():\n    assert True\n", encoding="utf-8")
+
+
+INTERLEAVED_IDS_ORDERED = [
+    "sub/test_b.py::test_in_subdir",
+    "test_a.py::test_alpha",
+    "test_a.py::test_beta",
+    "zz_test.py::test_gamma",
+]
+
+
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+def test_collect_runners_agree_on_interleaved_walk_order(
+    runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
+) -> None:
+    """Collection ORDER is graded, and this is the tree that makes order observable.
+
+    ``sub/`` is descended at the position its own *name* sorts to -- before
+    ``test_a.py``, not after every root file -- so a runner that walked files first
+    and directories second would produce the same id *set* in a different order. A
+    set comparison cannot see that at all; an ordered one fails on index 0.
+    ``zz_test.py`` also pins the second default ``python_files`` pattern
+    (``*_test.py``) and anchors the tail of the order.
+    """
+    case_dir = tmp_path / "case"
+    _write_interleaved_tree(case_dir)
+
+    result = runner(case_dir, [])
+
+    assert result.ids == INTERLEAVED_IDS_ORDERED
+    assert result.exit_code == 0
+
+
+def test_parse_pytest_collect_preserves_duplicate_ids() -> None:
+    """pytest really does print a node id twice when a path is passed twice.
+
+    Verified against live pytest: ``pytest --collect-only -q test_a.py test_a.py``
+    prints the id twice and reports ``2 tests collected``. The parser must not
+    quietly fold that back into one.
+    """
+    assert parse_pytest_collect("test_a.py::test_x\ntest_a.py::test_x\n") == [
+        "test_a.py::test_x",
+        "test_a.py::test_x",
+    ]
+
+
+def test_run_rustest_v2_collect_never_deduplicates_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runner reports exactly the lines v2 printed, duplicates included.
+
+    A v2 collector that emitted the same id twice would be a real defect, and
+    ``set(...)`` or ``dict.fromkeys(...)`` in the runner would erase the evidence
+    before the grader ever saw it -- the runner would be *hiding* the bug it exists
+    to expose. No live v2 invocation produces a duplicate today (a repeated path
+    argument collapses; see the Task 5 report's findings), so the process boundary is
+    stubbed rather than waiting for the defect to appear in the wild.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _write_mini_suite(case_dir)
+
+    def _fake_run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="test_mini.py::test_one\ntest_mini.py::test_one\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("conformance.harness.runners._run", _fake_run)
+
+    result = run_rustest_v2_collect(case_dir, [])
+
+    assert result.ids == ["test_mini.py::test_one", "test_mini.py::test_one"]
 
 
 def test_run_rustest_v2_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
@@ -426,7 +590,7 @@ def test_run_rustest_v2_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
 
     result = run_rustest_v2_collect(case_dir, [])
 
-    assert result.ids == {"test_good.py::test_ok"}
+    assert result.ids == ["test_good.py::test_ok"]
     assert not any("collected" in nodeid for nodeid in result.ids)
 
 

@@ -33,6 +33,23 @@ ROOT = Path(__file__).parent
 # is waived for v1 (exit 0 where pytest exits 5) and matches under v2.
 WAIVERS = ROOT / "waivers.toml"
 V2_COLLECT_WAIVERS = ROOT / "waivers-v2-collect.toml"
+CORPUS = ROOT / "corpus"
+
+
+def discover_cases(corpus: Path = CORPUS) -> list[tuple[str, Path]]:
+    """Every corpus case as ``(name, directory)``, sorted -- the gate's input set.
+
+    A directory counts as a case when it holds ``test_*.py`` files or declares a
+    ``case.toml``. Note what the first half of that does *not* cover: a case whose
+    only test files match the second default ``python_files`` pattern (``*_test.py``)
+    is picked up via its sibling ``test_*.py`` files or its ``case.toml``, not by the
+    glob alone.
+    """
+    return sorted(
+        (f"{d.parent.name}/{d.name}", d)
+        for d in corpus.glob("*/*/")
+        if any(d.glob("test_*.py")) or (d / "case.toml").exists()
+    )
 
 
 def _load_waivers_or_exit(path: Path) -> dict[str, str]:
@@ -141,13 +158,8 @@ def main() -> int:
 
     waivers = _load_waivers_or_exit(V2_COLLECT_WAIVERS if args.v2_collect else WAIVERS)
     grade_one = _grade_one_collect if args.v2_collect else _grade_one
-    corpus = ROOT / "corpus"
-    cases = sorted(
-        d for d in corpus.glob("*/*/") if any(d.glob("test_*.py")) or (d / "case.toml").exists()
-    )
     results: list[CaseResult] = []
-    for case_dir in cases:
-        name = f"{case_dir.parent.name}/{case_dir.name}"
+    for name, case_dir in discover_cases():
         if not name.startswith(args.only):
             continue
         result = grade_one(case_dir, name, waivers)

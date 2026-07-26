@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .ids import normalize_pytest_nodeid, normalize_rustest_id
 
@@ -73,19 +75,86 @@ class CollectResult:
     ``RunResult`` would force zeros into those fields, and every case would then
     silently "agree" on execution neither side performed. The v2-collect gate grades
     exactly these two things -- the ids on stdout and the process exit code.
+
+    ``ids`` is an ordered ``list``, not a ``set``. Collection **order** is part of what
+    v2 reproduces -- Task 3's name-sorted interleaved walk descends a directory at the
+    position its own name sorts to, which a set comparison cannot see at all -- and so
+    is **cardinality**: a duplicated id collapses into a set silently, while an ordered
+    list surfaces it as a plain length/position mismatch.
     """
 
-    ids: set[str]
+    ids: list[str]
     exit_code: int
 
 
 # The config filenames pytest's rootdir search recognizes, in its own precedence order
 # (`_pytest/config/findpaths.py::locate_config`), mirrored by `src/v2/config.rs`. Used
-# only to decide whether an isolated case already carries config of its own.
+# only to decide whether an isolated case already carries config of its own -- see
+# `_qualifies_as_config`, which decides that on *content*, the way both runners do.
 _CASE_CONFIG_NAMES = ("pytest.ini", ".pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 
 
-def parse_pytest_collect(text: str) -> set[str]:
+def _has_ini_section(path: Path, section: str) -> bool:
+    """Does *path* parse as an ini file carrying ``[section]``?
+
+    An unreadable or malformed file answers False rather than raising: the only
+    question being asked is "would this file stop the config search", and a file
+    neither runner can parse into a pytest section does not.
+    """
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read_string(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        return False
+    return parser.has_section(section)
+
+
+def _qualifies_as_config(path: Path) -> bool:
+    """Would *path* actually stop pytest's (and v2's) upward config search?
+
+    Existence is not the question -- **content** is, and both runners already agree on
+    the rules. Port of ``_pytest/config/findpaths.py::load_config_dict_from_file``,
+    mirrored by ``src/v2/config.rs::load_config_dict_from_file`` (lines 673-730):
+
+    * ``.ini`` qualifies with a ``[pytest]`` section; ``pytest.ini`` qualifies by
+      *name* even when empty ("pytest.ini files are always the source of
+      configuration, even if empty"), while a section-less ``.pytest.ini`` does NOT --
+      the name check is keyed on the exact filename.
+    * ``.cfg`` (``setup.cfg``) qualifies only with ``[tool:pytest]``.
+    * ``.toml`` (``pyproject.toml``) qualifies only with ``[tool.pytest.ini_options]``.
+
+    Getting this wrong is not cosmetic. A case shipping a ``pyproject.toml`` that has
+    only ``[project]`` in it does **not** anchor either runner; if the harness took its
+    mere existence as "this case brings its own config" and skipped the bare ini, both
+    runners would walk up out of the isolated copy and into whatever sits above the
+    temp directory. Both would then agree -- on the wrong thing -- and the case would
+    record a **vacuous MATCH**.
+    """
+    if not path.is_file():
+        # Checked first because the `pytest.ini` rule below qualifies on *name* alone;
+        # without this, a case that ships no config at all would "qualify" on the very
+        # file the caller is about to write.
+        return False
+    suffix = path.suffix
+    if suffix == ".ini":
+        return path.name == "pytest.ini" or _has_ini_section(path, "pytest")
+    if suffix == ".cfg":
+        return _has_ini_section(path, "tool:pytest")
+    if suffix == ".toml":
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return False
+        table: object = data
+        for key in ("tool", "pytest", "ini_options"):
+            if not isinstance(table, dict):
+                return False
+            table = cast(dict[str, object], table).get(key)
+        return table is not None
+    return False
+
+
+def parse_pytest_collect(text: str) -> list[str]:
     """Extract nodeids from ``pytest --collect-only -q`` output.
 
     Stops at the first section-boundary line (an "=== TITLE ===" header, or a
@@ -104,14 +173,18 @@ def parse_pytest_collect(text: str) -> set[str]:
     (e.g. "E       x = data[::2") and would otherwise match _NODEID_RE's
     per-line shape despite sitting at column 0, since a slice's "::" has no
     preceding bare colon to disqualify it.
+
+    Ids are returned **in emission order**, with duplicates kept. pytest prints them
+    in collection order, which the v2-collect gate compares directly; callers that
+    only care about membership (``run_pytest``, the v1 gate) wrap this in a ``set``.
     """
-    ids: set[str] = set()
+    ids: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
         if _SECTION_BOUNDARY_RE.match(line) or line.startswith("E "):
             break
         if _NODEID_RE.match(line):
-            ids.add(line)
+            ids.append(line)
     return ids
 
 
@@ -238,15 +311,24 @@ def _isolate_case(case_dir: Path, dest_parent: Path) -> Path:
 
     Two details:
 
-    * a case that ships its own config file keeps it. The bare ini is a fallback for
-      the config-less case, not a rewrite of what a case is testing.
-    * ``__pycache__`` is not copied. It is corpus litter (checked-in ``.pyc`` files
-      from earlier runs), and stale bytecode next to a freshly copied source is
-      exactly the shape of pytest's ``import file mismatch`` error.
+    * a case that ships a **qualifying** config file keeps it, and gets no bare ini.
+      Qualifying is decided on content by ``_qualifies_as_config``, exactly as both
+      runners decide it -- a ``pyproject.toml`` with only ``[project]`` in it anchors
+      nothing, so such a case still needs the bare ini or both runners would walk up
+      out of the temp tree and agree on the wrong rootdir (a vacuous MATCH). The bare
+      ini is a fallback for the unanchored case, not a rewrite of what a case tests.
+    * caches are not copied. ``__pycache__`` is corpus litter (checked-in ``.pyc``
+      files from earlier runs), and stale bytecode next to freshly copied source is
+      exactly the shape of pytest's ``import file mismatch`` error;
+      ``.pytest_cache``/``.rustest_cache`` would carry one run's state into the next.
     """
     dest = dest_parent / case_dir.name
-    shutil.copytree(case_dir, dest, ignore=shutil.ignore_patterns("__pycache__"))
-    if not any((dest / name).exists() for name in _CASE_CONFIG_NAMES):
+    shutil.copytree(
+        case_dir,
+        dest,
+        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".rustest_cache"),
+    )
+    if not any(_qualifies_as_config(dest / name) for name in _CASE_CONFIG_NAMES):
         (dest / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     return dest
 
@@ -259,9 +341,10 @@ def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
     point -- any flag used here and unavailable there would make the comparison a
     comparison of harness invocations rather than of runners.
 
-    Ids are taken verbatim, without ``normalize_pytest_nodeid``: the v2 surface's
-    contract is byte-parity with pytest's nodeids, so normalizing either side would
-    hide the precise defect this gate exists to catch.
+    Ids are taken verbatim and **in order**, without ``normalize_pytest_nodeid``: the
+    v2 surface's contract is byte-parity with pytest's nodeids in pytest's own
+    collection order, so normalizing or sorting either side would hide the precise
+    defect this gate exists to catch.
     """
     with tempfile.TemporaryDirectory() as tmp:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
@@ -285,8 +368,9 @@ def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
 def run_rustest_v2_collect(case_dir: Path, args: list[str]) -> CollectResult:
     """Collect *case_dir* with ``rustest --v2-collect-only`` in an isolated copy.
 
-    stdout carries node ids and *only* node ids, one per line, so it is read with a
-    bare ``splitlines()`` -- no parsing, no filtering. Everything else (the
+    stdout carries node ids and *only* node ids, one per line, in manifest order, so
+    it is read with a bare ``splitlines()`` -- no parsing, no filtering, no sorting
+    and no de-duplication, all four of which would discard signal. Everything else (the
     ``N tests collected`` summary, ``ERROR collecting <path>`` blocks) goes to stderr
     by design, and stderr is never read: its wording deliberately differs from
     pytest's, so grading anything but ids and the exit code would manufacture
@@ -299,7 +383,7 @@ def run_rustest_v2_collect(case_dir: Path, args: list[str]) -> CollectResult:
     with tempfile.TemporaryDirectory() as tmp:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
         proc = _run([sys.executable, "-m", "rustest", "--v2-collect-only", *args], work)
-    return CollectResult(ids=set(proc.stdout.splitlines()), exit_code=proc.returncode)
+    return CollectResult(ids=proc.stdout.splitlines(), exit_code=proc.returncode)
 
 
 def run_rustest(case_dir: Path, args: list[str]) -> RunResult:

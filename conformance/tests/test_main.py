@@ -9,10 +9,12 @@ import pytest
 
 from conformance.__main__ import (
     V2_COLLECT_WAIVERS,
+    WAIVERS,
     _grade_one,
     _grade_one_collect,
     _load_waivers_or_exit,
     _summarize,
+    discover_cases,
     main,
 )
 from conformance.harness.runners import CollectResult, Outcomes, RunResult
@@ -88,10 +90,10 @@ def test_grade_one_collect_grades_ids_and_exit_code(tmp_path: Path) -> None:
     case_dir.mkdir()
 
     def _pytest(case_dir: Path, args: list[str]) -> CollectResult:
-        return CollectResult(ids={"test_a.py::test_x"}, exit_code=0)
+        return CollectResult(ids=["test_a.py::test_x"], exit_code=0)
 
     def _v2(case_dir: Path, args: list[str]) -> CollectResult:
-        return CollectResult(ids=set(), exit_code=5)
+        return CollectResult(ids=[], exit_code=5)
 
     result = _grade_one_collect(case_dir, "area/case", {}, run_pytest_fn=_pytest, run_v2_fn=_v2)
 
@@ -116,7 +118,7 @@ def test_grade_one_collect_passes_case_args_to_both_runners(tmp_path: Path) -> N
     def _record(key: str) -> Callable[[Path, list[str]], CollectResult]:
         def runner(case_dir: Path, args: list[str]) -> CollectResult:
             seen[key] = args
-            return CollectResult(ids=set(), exit_code=0)
+            return CollectResult(ids=[], exit_code=0)
 
         return runner
 
@@ -129,6 +131,32 @@ def test_grade_one_collect_passes_case_args_to_both_runners(tmp_path: Path) -> N
     )
 
     assert seen == {"pytest": ["-m", "smoke"], "v2": ["-m", "smoke"]}
+
+
+def test_corpus_case_count_is_pinned() -> None:
+    """The gate's input set is asserted, not merely whatever happens to be on disk.
+
+    Both gates report "N cases: ..." and exit 0 on a *shrinking* corpus exactly as
+    happily as on a full one, so a deleted or accidentally renamed case would quietly
+    weaken the gate while every summary still read green. Pinning the count makes that
+    a test failure. Bump this number in the same commit that adds or removes a case.
+    """
+    assert len(discover_cases()) == 21
+
+
+def test_every_ledger_key_names_a_real_case() -> None:
+    """A waiver for a case that no longer exists is dead weight, and hides a rename.
+
+    Stale-waiver detection only fires for cases the run actually grades, so a waiver
+    whose case was renamed or deleted is invisible to it -- it is never graded, never
+    matches, and never gets reported. Checking both ledgers against the discovered
+    names closes that hole from the other side.
+    """
+    known = {name for name, _ in discover_cases()}
+
+    for ledger in (WAIVERS, V2_COLLECT_WAIVERS):
+        unknown = set(_load_waivers_or_exit(ledger)) - known
+        assert not unknown, f"{ledger.name} waives cases that do not exist: {sorted(unknown)}"
 
 
 def test_v2_collect_ledger_holds_only_preauthorized_waivers() -> None:

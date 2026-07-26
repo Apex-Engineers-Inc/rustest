@@ -79,15 +79,15 @@ def test_grade_stale_waiver() -> None:
 
 
 def test_grade_collect_match() -> None:
-    a = CollectResult(ids={"test_a.py::test_x"}, exit_code=0)
+    a = CollectResult(ids=["test_a.py::test_x"], exit_code=0)
     assert grade_collect_case("area/case", a, a, {}).status == "MATCH"
 
 
 def test_grade_collect_diverge_on_ids() -> None:
     got = grade_collect_case(
         "area/case",
-        CollectResult(ids={"test_a.py::test_x[1]", "test_a.py::test_x[2]"}, exit_code=0),
-        CollectResult(ids={"test_a.py::test_x"}, exit_code=0),
+        CollectResult(ids=["test_a.py::test_x[1]", "test_a.py::test_x[2]"], exit_code=0),
+        CollectResult(ids=["test_a.py::test_x"], exit_code=0),
         {},
     )
     assert got.status == "DIVERGE"
@@ -104,12 +104,68 @@ def test_grade_collect_diverge_on_exit_code_only() -> None:
     """
     got = grade_collect_case(
         "area/case",
-        CollectResult(ids=set(), exit_code=5),
-        CollectResult(ids=set(), exit_code=0),
+        CollectResult(ids=[], exit_code=5),
+        CollectResult(ids=[], exit_code=0),
         {},
     )
     assert got.status == "DIVERGE"
     assert "exit codes pytest=5 v2=0" in got.detail
+
+
+def test_grade_collect_diverge_on_order_alone() -> None:
+    """Identical id SETS in a different order is a real divergence, not a match.
+
+    v2 reproduces pytest's collection order deliberately (the name-sorted interleaved
+    walk descends a directory at the position its own name sorts to). A set
+    comparison is blind to this shape, so it is the one the ordered comparison exists
+    for -- and the set-diff problems must stay silent, leaving the positional report
+    to say everything.
+    """
+    got = grade_collect_case(
+        "area/case",
+        CollectResult(ids=["sub/test_b.py::test_x", "test_a.py::test_y"], exit_code=0),
+        CollectResult(ids=["test_a.py::test_y", "sub/test_b.py::test_x"], exit_code=0),
+        {},
+    )
+    assert got.status == "DIVERGE"
+    assert "missing from v2" not in got.detail
+    assert "extra in v2" not in got.detail
+    assert (
+        "id order: first divergence at index 0 "
+        "(pytest='sub/test_b.py::test_x', v2='test_a.py::test_y')" in got.detail
+    )
+
+
+def test_grade_collect_diverge_on_a_duplicated_id() -> None:
+    """A duplicate collapses into a set silently; the ordered list reports it.
+
+    Same membership on both sides, different cardinality -- reported as a count
+    divergence naming the index where the sequences part company.
+    """
+    got = grade_collect_case(
+        "area/case",
+        CollectResult(ids=["test_a.py::test_x"], exit_code=0),
+        CollectResult(ids=["test_a.py::test_x", "test_a.py::test_x"], exit_code=0),
+        {},
+    )
+    assert got.status == "DIVERGE"
+    assert "missing from v2" not in got.detail
+    assert "extra in v2" not in got.detail
+    assert "id count: pytest=1 v2=2, diverging at index 1" in got.detail
+    assert "pytest='<end>', v2='test_a.py::test_x'" in got.detail
+
+
+def test_grade_collect_reports_both_set_diff_and_position() -> None:
+    """A membership defect gets the readable set diff *and* the positional anchor."""
+    got = grade_collect_case(
+        "area/case",
+        CollectResult(ids=["test_a.py::test_x", "test_a.py::test_y"], exit_code=0),
+        CollectResult(ids=["test_a.py::test_y"], exit_code=0),
+        {},
+    )
+    assert got.status == "DIVERGE"
+    assert "missing from v2: ['test_a.py::test_x']" in got.detail
+    assert "id order: first divergence at index 0" in got.detail
 
 
 def test_grade_collect_ignores_run_outcomes_entirely() -> None:
@@ -119,14 +175,14 @@ def test_grade_collect_ignores_run_outcomes_entirely() -> None:
     surface has no outcomes, and inventing zeros for them would make every case look
     like it agreed on execution it never performed.
     """
-    assert not hasattr(CollectResult(ids=set(), exit_code=0), "outcomes")
+    assert not hasattr(CollectResult(ids=[], exit_code=0), "outcomes")
 
 
 def test_grade_collect_waived() -> None:
     got = grade_collect_case(
         "area/case",
-        CollectResult(ids={"test_a.py::test_x"}, exit_code=0),
-        CollectResult(ids=set(), exit_code=5),
+        CollectResult(ids=["test_a.py::test_x"], exit_code=0),
+        CollectResult(ids=[], exit_code=5),
         {"area/case": "selection args land in 1b.2"},
     )
     assert got.status == "WAIVED"
@@ -139,7 +195,7 @@ def test_grade_collect_stale_waiver() -> None:
     Shrinking the ledger is the phase-gate metric, so a waiver that has gone inert
     must fail the run rather than quietly persist.
     """
-    a = CollectResult(ids={"test_a.py::test_x"}, exit_code=0)
+    a = CollectResult(ids=["test_a.py::test_x"], exit_code=0)
 
     got = grade_collect_case("area/case", a, a, {"area/case": "selection args land in 1b.2"})
 

@@ -60,11 +60,22 @@ at all. An empty `pytest.ini` is authoritative for pytest
 the same rootdir by their own unmodified rules and both emit case-relative IDs. A
 case that ships its own config file keeps it.
 
+A shipped config file is honored only when it would *actually* anchor the search,
+decided on **content** the way both runners decide it (`pyproject.toml` needs
+`[tool.pytest.ini_options]`; `tox.ini` needs `[pytest]`; `setup.cfg` needs
+`[tool:pytest]`; `pytest.ini` qualifies by name even when empty, a section-less
+`.pytest.ini` does not). Qualifying on mere existence would skip the bare ini for
+a case shipping, say, a `[project]`-only `pyproject.toml` — both runners would then
+walk up out of the copy, agree on the wrong rootdir, and record a **vacuous MATCH**.
+
 Two further rules the grader follows:
 
-- **Node IDs are compared verbatim**, with no normalization on either side. v2's
-  contract is byte-parity with pytest's node IDs; normalizing would hide exactly
-  the defect this gate exists to catch.
+- **Node IDs are compared verbatim and in order**, with no normalization, sorting
+  or de-duplication on either side. v2's contract is byte-parity with pytest's node
+  IDs *in pytest's collection order* — the name-sorted interleaved walk descends a
+  directory at the position its own name sorts to, which a set comparison cannot
+  see — and a duplicated ID collapses into a set silently. On a mismatch the grader
+  reports the set difference (readable) *and* the first divergent index (complete).
 - **stderr is never read.** v2 deliberately puts its summary and
   `ERROR collecting <path>` prose on stderr where pytest puts them on stdout, and
   the wording differs by design. Grading anything but stdout IDs and the exit code

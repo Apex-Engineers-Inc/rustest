@@ -11,7 +11,10 @@
 # a waiver whose case starts matching is reported as a STALE-WAIVER and fails the run.
 #
 # Gate: `uv run python -m conformance --v2-collect`
-# Scoreboard at 1b.1: 20 cases -- 17 match, 3 waived, 0 stale-waivers, 0 diverged.
+# Scoreboard at 1b.1: 21 cases -- 18 match, 3 waived, 0 stale-waivers, 0 diverged.
+#
+# Node ids are compared as an ORDERED list, so a case can diverge on collection order
+# or on a duplicated id with the id sets identical on both sides. None does today.
 [cases]
 
 "marks/mark-filter" = "PREDICTED (plan pre-authorizes; selection args land in 1b.2). case.toml passes `-m smoke`. pytest applies mark selection during --collect-only, so it emits only test_smoke_only and deselects test_unmarked; v2 emits both (`extra in v2: ['test_marks.py::test_unmarked']`). Exit codes agree (0/0). Mechanism, in argument order: (1) the CLI never forwards the option -- python/rustest/cli.py:178-185 short-circuits on `--v2-collect-only` and calls `v2_collect_only(paths=..., workers=...)`, so `args.mark_expr` is parsed and then dropped on the floor; (2) even if it reached the Rust side, an option-looking argument is skipped by both path consumers, src/v2/collect.rs:401 (`initial_paths`) and src/v2/config.rs:928 (`get_dirs_from_args`), each a faithful port of `_pytest/config/findpaths.py::get_dirs_from_args`; (3) the worker does carry the mark as data -- `_rustest_mark_specs` reads `__rustest_marks__` (python/rustest/_v2_worker.py:655) -- but never evaluates it, which the module documents as a deliberate scope limit at python/rustest/_v2_worker.py:29-31 ('Marks are carried, never evaluated ... evaluation is Phase 1b.2'). So the mark metadata needed for selection is already on the wire; what is missing is a selection stage, which belongs with the execution engine in 1b.2. NOT a collection-rule defect: with the `-m` removed, this case's two ids match pytest byte for byte."
