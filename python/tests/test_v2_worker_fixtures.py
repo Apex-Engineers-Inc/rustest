@@ -933,10 +933,18 @@ def test_yield_teardown_runs_after_the_test_that_used_it(tmp_path: Path) -> None
 
 
 def test_teardown_is_reverse_setup_order(tmp_path: Path) -> None:
-    """`FixtureDef.finish` (l. 1053-1072) pops its finalizer stack; so does the runner.
+    """A **dependent** fixture is torn down before the fixture it was built from.
 
     ``outer`` depends on ``inner``, so setup is inner-then-outer and teardown must be
-    outer-then-inner.  A FIFO drain would report ``["inner", "outer"]``.
+    outer-then-inner.
+
+    What this row actually pins is the **#4871 dependency cascade**, not the scope bucket's
+    LIFO: since `FixtureDef.execute` l. 1115-1121 was ported, every dependency carries a
+    finalizer that finishes its dependents first, and that alone produces this order even
+    from a bucket drained FIFO.  The docstring used to claim a FIFO drain would fail here;
+    it would not, and a claim a mutation cannot make true is worse than no claim.
+    ``test_independent_fixtures_tear_down_in_reverse_setup_order`` is the row that pins the
+    bucket order, because two *independent* fixtures leave nothing else to produce it.
     """
     target = write(
         tmp_path / "test_order.py",
@@ -1558,11 +1566,8 @@ def test_the_class_boundary_compares_the_whole_class_chain(tmp_path: Path) -> No
     )
     with isolated_import_state():
         module, registry = load(target, tmp_path)
-        ids = [
-            entry["id"]
-            for entry in collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)[0]
-        ]
-        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        ids = [entry["id"] for entry in entries]
         assert [plan.class_name for plan in plans] == [
             "TestOuterA.TestInner",
             "TestOuterB.TestInner",

@@ -28,27 +28,37 @@ then the module and any test class — because that closure is what expands a
 registry drives setup, scope caching and reverse-order teardown at execute time
 (:class:`FixtureRunner`), so what was collected and what runs cannot drift apart.
 
-**Known scope limits of this worker** (each deliberate, none silent):
+**The execute half** (core 4) turns a collected id into a ``test_result`` line.  Three rules
+carry the whole design: outcomes are classified **by exception type**, never by matching a
+message (`_pytest/outcomes.py` defines ``Skipped``/``Failed``/``XFailed`` as classes for
+exactly that reason); ``failed`` and ``error`` are separated by the **phase** that raised,
+not by the exception; and a ``unittest.TestCase`` runs through ``unittest`` with a real
+``TestResult`` whose callbacks are translated back into those same exception types, which is
+how pytest itself does it (`_pytest/unittest.py::TestCaseFunction`) and what keeps one
+classifier for both worlds.
 
-* *No execute op yet.*  The wire is at protocol v2, which defines ``execute_test`` /
-  ``test_result`` (``src/v2/protocol.rs``); this module provides collection and the
-  fixture machinery an execute half needs, but not the op itself.  An ``execute_test``
-  request therefore falls through to :func:`main`'s unknown-op branch and exits 2 rather
-  than being answered or ignored.
+**Known scope limits of this worker** (each deliberate, none silent):
 
 * *No warning channel.*  pytest reports a class with ``__init__``/``__new__`` via
   ``PytestCollectionWarning`` and still exits 0.  The protocol has no warnings field,
   so such a class is skipped and **no error entry is emitted** — emitting one would
   turn pytest's exit 0 into the orchestrator's exit 2 and diverge from the oracle.
-* *Marks are carried, never evaluated.*  ``skipif``/``xfail`` conditions travel as
-  data; evaluation is the next task.
+* *No ``xfail_strict`` ini and no ``--runxfail``.*  Neither is on the wire, so ``strict``
+  defaults to ``False`` per mark (`_pytest/skipping.py::pytest_addoption`) and xfail is
+  always honoured.  A suite setting ``xfail_strict = true`` needs a protocol field.
+* *Capture is stream-level, not fd-level.*  ``print`` and anything writing to
+  ``sys.stdout``/``sys.stderr`` is captured; a subprocess or a C extension writing to the
+  underlying descriptors is not.  Same trade-off as v1's ``capsys``; fd capture is 1c.
 * *No ``pytest_generate_tests`` hook and no ``indirect=`` parametrization.*  Decorator
   metadata and fixture ``params=`` are the only two sources of parametrization; a module-
   or class-level ``pytest_generate_tests`` is not called.
-* *No item reordering.*  pytest groups tests sharing a higher-scoped parametrized fixture
+* *No item reordering, and the visible symptom is a **setup-count** difference, not just an
+  ordering one.*  pytest groups tests sharing a higher-scoped parametrized fixture
   (`_pytest/fixtures.py::reorder_items`); that pass needs the whole session's item list,
-  which a per-file worker does not have.  Ids stay correct; order can differ for a module-
-  or wider-scoped parametrized fixture.
+  which a per-file worker does not have.  Ids stay correct, but two tests sharing a
+  module-scoped ``params=["a","b"]`` fixture cost **2** setups under pytest (grouped
+  ``a a b b``) and **4** here (interleaved ``a b a b``) — both measured — so anything the
+  fixture accumulates is reset twice as often.  See :func:`collect_module`.
 * *``session`` and ``package`` scope are per-worker.*  See :data:`_SCOPE_BUCKET`.
 * *A file is enumerated exactly as handed over.*  pytest never collects ``conftest.py``
   as a test module (it matches no ``python_files`` pattern and is loaded as a plugin),
@@ -60,7 +70,8 @@ registry drives setup, scope caching and reverse-order teardown at execute time
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 import fnmatch
 import functools
@@ -72,17 +83,22 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import sys
+import time
 import traceback
 import types
-from typing import Any, Final, NotRequired, TypedDict, cast
+from typing import Any, Final, NoReturn, NotRequired, TextIO, TypedDict, cast
 import unittest
+import warnings
 
 __all__ = [
     "BUILTIN_FIXTURES",
     "DEFAULT_NAMING",
+    "PHASES",
     "PROTOCOL_VERSION",
     "SCOPE_NAMES",
+    "STATUSES",
     "UNSUPPORTED_BUILTIN_FIXTURES",
     "CollectionRefusal",
     "FixtureClosure",
@@ -90,9 +106,14 @@ __all__ = [
     "FixtureLookupError",
     "FixtureRegistry",
     "FixtureRunner",
+    "MarkSpec",
     "NotInitializedError",
     "Naming",
+    "PhaseReport",
+    "UnknownTestError",
     "ScopeMismatch",
+    "Skip",
+    "Xfail",
     "ExecutionPlan",
     "build_closure",
     "build_nodeid",
@@ -102,6 +123,10 @@ __all__ = [
     "conftest_chain",
     "encode_response",
     "enumerate_module",
+    "evaluate_condition",
+    "evaluate_skip_marks",
+    "evaluate_xfail_marks",
+    "execute_test",
     "fixture_param_dimensions",
     "handle_init",
     "handle_shutdown",
@@ -110,6 +135,8 @@ __all__ = [
     "install_pytest_shim",
     "main",
     "matches_name_pattern",
+    "reduce_reports",
+    "report_for_phase",
     "resolve_module_identity",
     "execution_plan",
 ]
@@ -119,10 +146,7 @@ __all__ = [
 #: number turns every run into a handshake error.
 #:
 #: v2 adds the execute ops (``execute_test`` -> ``test_result``) and ``init.invocation_dir``.
-#: This worker declares 2 because it speaks v2's *handshake*; the execute half lands in the
-#: next tasks, and until then an ``execute_test`` request takes the unknown-op path in
-#: :func:`main` — exit 2, loudly, never a silent skip (pinned by
-#: ``test_execute_test_is_not_implemented_yet_and_is_protocol_fatal``).
+#: Both halves are implemented here: :func:`collect_file` and :func:`execute_test`.
 PROTOCOL_VERSION: Final = 2
 
 
@@ -170,6 +194,26 @@ class CollectedResponse(TypedDict):
     error: NotRequired[CollectionErrorDict]
 
 
+class ResultResponse(TypedDict):
+    """``WorkerResponse::TestResult`` (``src/v2/protocol.rs``), key order = serde field order.
+
+    Named for the *response*, not for the wire tag: a ``TestResultDict`` would match the
+    default ``python_classes = ["Test"]`` prefix and be probed for collection in every module
+    that imports it — the same trap that renamed ``TestPlan`` to :class:`ExecutionPlan`.
+
+    ``message``/``stdout``/``stderr`` are **omitted, never empty** — an unremarkable pass is
+    the four-key line, which is the shape the golden string pins.
+    """
+
+    op: str
+    id: str
+    status: str
+    duration_s: float
+    message: NotRequired[str]
+    stdout: NotRequired[str]
+    stderr: NotRequired[str]
+
+
 class ByeResponse(TypedDict):
     op: str
 
@@ -180,6 +224,20 @@ class NotInitializedError(Exception):
     Routed to the fatal-on-drift path in :func:`main` (exit 2), never turned into a
     ``collected`` error entry: the worker has no rootdir, so it could not even name
     the file correctly in one.
+    """
+
+
+class UnknownTestError(Exception):
+    """``execute_test`` named an id this worker never collected.
+
+    The orchestrator routes an execute back to the worker that collected the file
+    (``src/v2/collect.rs`` stem-hash routing), so an id that is not in this worker's index
+    is **routing drift, not data**.  ``WorkerResponse`` has no error variant for the execute
+    op, and the two candidate answers are not equivalent: replying ``status:"error"`` would
+    put a fabricated test into the report and let a whole worker's worth of mis-routed ids
+    look like ordinary failures.  So this takes the same path as an unknown op — stderr and
+    exit 2 — which is what ``WorkerRequest::ExecuteTest``'s doc means by "a protocol error
+    response, not a silent skip".
     """
 
 
@@ -610,8 +668,49 @@ def _json_safe(value: object) -> Any:
     return repr(value)
 
 
-def _spec_from_mark_dict(raw: object, owner: object) -> MarkSpecDict:
-    """One ``__rustest_marks__`` entry -> one ``MarkSpec``.
+#: Shared empty kwargs mapping for :class:`MarkSpec`.  A ``MappingProxyType`` rather than a
+#: ``{}`` for two reasons: ``dataclasses`` refuses a ``dict`` as a field default outright
+#: (mutable-default guard), and a read-only proxy cannot be mutated through one mark and
+#: silently appear on every other mark that shares it.
+_NO_KWARGS: Final[Mapping[str, object]] = types.MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class MarkSpec:
+    """One mark as collected — arguments still **live Python objects**.
+
+    The wire form (:class:`MarkSpecDict`) is JSON-safe: :func:`_json_safe` replaces anything
+    JSON cannot represent by its ``repr()``.  That is right for a manifest, which only ever
+    *displays* marks, and fatal for the execute half, which has to *evaluate* them:
+
+    * ``@pytest.mark.xfail(raises=ValueError)`` would arrive as the string
+      ``"<class 'ValueError'>"``, and ``isinstance(exc, "<class 'ValueError'>")`` is not a
+      check, it is a ``TypeError``;
+    * a ``skipif`` condition that is falsy but not a builtin — a ``numpy.bool_(False)``, an
+      object with ``__bool__`` — would arrive as a **non-empty repr string**, i.e. truthy,
+      and silently skip a test that should have run.
+
+    So collection keeps the objects and :meth:`to_wire` projects them lossily at the wire
+    boundary only.  :attr:`ExecutionPlan.marks` therefore holds ``MarkSpec``, and
+    ``CollectedTest.marks`` holds ``MarkSpecDict``; there is exactly one producer for both.
+    """
+
+    name: str
+    args: tuple[object, ...] = ()
+    kwargs: Mapping[str, object] = _NO_KWARGS
+
+    def to_wire(self) -> MarkSpecDict:
+        """The JSON-safe ``MarkSpec`` of ``src/v2/manifest.rs``, empty fields omitted."""
+        spec: MarkSpecDict = {"name": self.name}
+        if self.args:
+            spec["args"] = [_json_safe(arg) for arg in self.args]
+        if self.kwargs:
+            spec["kwargs"] = {key: _json_safe(value) for key, value in self.kwargs.items()}
+        return spec
+
+
+def _spec_from_mark_dict(raw: object, owner: object) -> MarkSpec:
+    """One ``__rustest_marks__`` entry -> one :class:`MarkSpec`.
 
     A non-dict entry is malformed metadata and becomes a hard refusal rather than a
     silent skip: the mark would vanish from the manifest with nothing to show for it,
@@ -624,20 +723,17 @@ def _spec_from_mark_dict(raw: object, owner: object) -> MarkSpecDict:
             + f"{getattr(owner, '__qualname__', owner)!r}: expected a dict, got {raw!r}"
         )
     mark = cast(Mapping[str, object], raw)
-    spec: MarkSpecDict = {"name": str(mark.get("name", ""))}
-    args = [_json_safe(arg) for arg in cast(Sequence[object], mark.get("args", ()))]
-    if args:
-        spec["args"] = args
-    kwargs = {
-        str(key): _json_safe(value)
-        for key, value in cast(Mapping[object, object], mark.get("kwargs", {})).items()
-    }
-    if kwargs:
-        spec["kwargs"] = kwargs
-    return spec
+    return MarkSpec(
+        name=str(mark.get("name", "")),
+        args=tuple(cast(Sequence[object], mark.get("args", ()))),
+        kwargs={
+            str(key): value
+            for key, value in cast(Mapping[object, object], mark.get("kwargs", {})).items()
+        },
+    )
 
 
-def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpecDict:
+def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpec:
     """One ``pytestmark`` entry -> one ``MarkSpec``.
 
     ``pytestmark`` holds *decorator objects*, not dicts.  Through the compat shim
@@ -660,7 +756,7 @@ def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpecDict:
         )
     bare_name = _safe_getattr(entry, "mark_name", None)
     if isinstance(bare_name, str):
-        return {"name": bare_name}
+        return MarkSpec(bare_name)
     raise CollectionRefusal(
         "malformed pytestmark entry on "
         + f"{getattr(owner, '__qualname__', getattr(owner, '__name__', owner))!r}: "
@@ -668,7 +764,7 @@ def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpecDict:
     )
 
 
-def _pytestmark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpecDict]:
+def _pytestmark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpec]:
     """Port of `_pytest/mark/structures.py::get_unpacked_marks`.
 
     For a class, read ``pytestmark`` out of each ``__dict__`` in **reversed MRO**
@@ -685,14 +781,14 @@ def _pytestmark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpecDict]:
     else:
         mark_lists.append(_safe_getattr(obj, "pytestmark", []))
 
-    specs: list[MarkSpecDict] = []
+    specs: list[MarkSpec] = []
     for item in mark_lists:
         entries = cast(Sequence[object], item) if isinstance(item, list) else [item]
         specs.extend(_spec_from_pytestmark(entry, obj) for entry in entries)
     return specs
 
 
-def _rustest_mark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpecDict]:
+def _rustest_mark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpec]:
     """Read ``__rustest_marks__`` with the same reversed-MRO ``__dict__`` discipline.
 
     For classes this deliberately mirrors `get_unpacked_marks`, for one extra reason:
@@ -723,7 +819,7 @@ def _rustest_mark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpecDict
         if raw is not None:
             mark_lists.append(raw)
 
-    specs: list[MarkSpecDict] = []
+    specs: list[MarkSpec] = []
     for raw_list in mark_lists:
         if not isinstance(raw_list, list):
             raise CollectionRefusal(
@@ -735,8 +831,8 @@ def _rustest_mark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpecDict
     return specs
 
 
-def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpecDict]:
-    """All marks carried *directly* by *obj*, as ``MarkSpec`` dicts.
+def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
+    """All marks carried *directly* by *obj*, as :class:`MarkSpec` objects.
 
     Three sources, in the order pytest itself would report them for one node:
 
@@ -747,16 +843,19 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpecDict
     * ``__rustest_skip__`` — the reason string set by ``decorators.py::skip_decorator``,
       which is what the *compat* ``pytest.mark.skip`` uses instead of a mark entry.
 
-    Conditions are **not** evaluated here.  (Note a v1-ism inherited through the
+    Conditions are **not** evaluated here — :func:`evaluate_skip_marks` and
+    :func:`evaluate_xfail_marks` do that at *execute* time, which is where pytest does it
+    (`_pytest/skipping.py::pytest_runtest_setup`).  (Note a v1-ism inherited through the
     shim: ``decorators.py::MarkDecorator._normalize_args`` evaluates a *string*
-    ``skipif`` condition at decoration time, so such a condition arrives already
-    reduced to a bool.  The worker adds no evaluation of its own.)
+    ``skipif`` condition at decoration time, so such a condition usually arrives already
+    reduced to a bool; ``xfail`` string conditions are not normalised and reach the
+    evaluator intact.)
     """
     specs = _pytestmark_specs(obj, consider_mro=consider_mro)
     specs.extend(_rustest_mark_specs(obj, consider_mro=consider_mro))
     skip_reason = _safe_getattr(obj, "__rustest_skip__", None)
     if skip_reason is not None:
-        specs.append({"name": "skip", "kwargs": {"reason": _json_safe(skip_reason)}})
+        specs.append(MarkSpec("skip", kwargs={"reason": skip_reason}))
     return specs
 
 
@@ -1335,7 +1434,7 @@ class ExecutionPlan:
     fixture_params: Mapping[str, object]
     direct_params: Mapping[str, object]
     argnames: tuple[str, ...]
-    marks: tuple[MarkSpecDict, ...]
+    marks: tuple[MarkSpec, ...]
     unittest_case: type | None = None
     unittest_method: str | None = None
 
@@ -1482,6 +1581,9 @@ class FixtureRunner:
         #: The class chain of the last test :meth:`note_test_boundary` saw, so a change of
         #: class can drain class scope.  ``None`` means "module level, or nothing yet".
         self._current_class: str | None = None
+        #: The file of the last test :meth:`note_module_boundary` saw — the module-scope
+        #: analogue of :attr:`_current_class`.  ``None`` means "nothing yet".
+        self._current_module: Path | None = None
         #: The test-class instance the current test (and its class fixtures) is bound to.
         #: pytest builds one per ``Function`` and both the test method and any class-body
         #: fixture see the same object (`resolve_fixture_function` l. 1142-1164, which
@@ -1536,6 +1638,28 @@ class FixtureRunner:
         if class_name != self._current_class:
             self.teardown("class")
         self._current_class = class_name
+
+    def note_module_boundary(self, path: Path) -> None:
+        """Tear down module scope when the incoming test belongs to a different file.
+
+        The module-scope twin of :meth:`note_test_boundary`, and it exists for the same
+        reason: pytest unwinds the ``Module`` node from the collection tree
+        (`SetupState.teardown_exact`) and a worker has no tree.  Without it a module-scoped
+        fixture would live until Shutdown — and, worse, two files each defining ``class
+        TestA`` would compare equal at the *class* boundary, so the first file's class-scoped
+        fixtures would never be finalised either.
+
+        **Divergence, deliberate and documented.**  pytest tears a module down during the
+        *outgoing* test's teardown phase, because ``runtestprotocol`` is handed ``nextitem``.
+        The execute wire has no lookahead, so this fires at the start of the *incoming*
+        test and a module-fixture teardown failure is reported against that test's setup —
+        the wrong test, but loudly, which beats losing the failure entirely.  Called by
+        :func:`_run_phases`, not by :meth:`setup`, so the fixture engine's contract is
+        unchanged and a caller driving the runner itself keeps the choice.
+        """
+        if path != self._current_module:
+            self.teardown("module")
+        self._current_module = path
 
     def resolve(
         self,
@@ -1752,6 +1876,8 @@ class FixtureRunner:
             # Leaving the class (or anything wider) invalidates the boundary marker, so the
             # next `note_test_boundary` compares against nothing rather than a dead class.
             self._current_class = None
+        if limit >= _BUCKET_ORDER.index("module"):
+            self._current_module = None
         exceptions: list[BaseException] = []
         for bucket in _BUCKET_ORDER[: limit + 1]:
             stack = self._finalizers[bucket]
@@ -1777,6 +1903,17 @@ class FixtureRunner:
         body registered, in reverse — collecting exceptions rather than stopping, and
         invalidating the cache regardless ("Even if finalization fails, we invalidate the
         cached fixture value").
+
+        The eviction is guarded on **identity**, and that guard is load-bearing.  pytest
+        finalises a ``FixtureDef`` object and clears *its own* ``cached_result``; here the
+        cache is a dict keyed by fixturedef, and a finalizer can outlive the entry it was
+        made for — a parametrization change finishes the old instance and immediately caches
+        a new one, while the *old* finalizer is still sitting on its scope bucket waiting to
+        be drained.  Popping unconditionally would then evict the **live** value at the end
+        of the scope, and the next request would rebuild a fixture that was supposed to be
+        cached (or, worse, re-run a session fixture mid-run).  Comparing
+        ``cached.finalizer is finalizer`` makes a stale drain a no-op, exactly as pytest's
+        per-object model makes it one.
         """
         exceptions: list[BaseException] = []
         while finalizer.calls:
@@ -1786,7 +1923,9 @@ class FixtureRunner:
             except BaseException as exc:  # noqa: BLE001 - re-raised below, never dropped
                 exceptions.append(exc)
         if finalizer.fixturedef is not None:
-            _ = self._cache.pop(finalizer.fixturedef, None)
+            cached = self._cache.get(finalizer.fixturedef)
+            if cached is not None and cached.finalizer is finalizer:
+                del self._cache[finalizer.fixturedef]
         if len(exceptions) == 1:
             raise exceptions[0]
         if exceptions:
@@ -2012,7 +2151,7 @@ def _build_entry(
     rel_path: str,
     parts: tuple[str, ...],
     param_id: str | None,
-    marks: list[MarkSpecDict],
+    marks: list[MarkSpec],
     fixtures: list[str],
 ) -> CollectedTestDict:
     """Assemble one ``CollectedTest``, omitting every empty optional field.
@@ -2020,6 +2159,9 @@ def _build_entry(
     ``class_name`` carries the whole class chain (``TestBox.TestInner``), which is
     identical to the innermost class name for every non-nested case; ``qualname``
     already carries the same chain plus the function name.
+
+    This is the **only** place a :class:`MarkSpec` is projected onto the wire, so the
+    lossy ``_json_safe`` step cannot leak into the copy the execute half evaluates.
     """
     entry: CollectedTestDict = {
         "id": build_nodeid(rel_path, parts, param_id),
@@ -2031,7 +2173,7 @@ def _build_entry(
     if param_id is not None:
         entry["param_id"] = param_id
     if marks:
-        entry["marks"] = marks
+        entry["marks"] = [spec.to_wire() for spec in marks]
     if fixtures:
         entry["fixtures"] = fixtures
     return entry
@@ -2053,7 +2195,7 @@ def _collect_function(
     name: str,
     parts: tuple[str, ...],
     owner: type | None,
-    outer_marks: list[MarkSpecDict],
+    outer_marks: list[MarkSpec],
     registry: FixtureRegistry,
     context: _CollectContext,
 ) -> list[CollectedTestDict]:
@@ -2135,11 +2277,48 @@ def _collect_function(
     return entries
 
 
+def _unittest_class_registry(
+    cls: type,
+    parts: tuple[str, ...],
+    registry: FixtureRegistry,
+    context: _CollectContext,
+) -> FixtureRegistry:
+    """The registry a ``TestCase``'s methods resolve against.
+
+    A **child** of the module's, exactly as `_pytest/python.py::Class.collect` uses a child
+    nodeid, carrying at most one extra fixture: the class-scoped autouse wrapper around
+    ``setUpClass``/``tearDownClass`` (`_pytest/unittest.py` l. 116-170).
+
+    pytest skips registering it entirely for a ``@unittest.skip``-decorated class (l. 92-96)
+    — ``TestCase.run`` reports that skip itself, and building the class would run
+    ``setUpClass`` for a class nobody is going to test.  Ported, so a skipped class with a
+    deliberately-exploding ``setUpClass`` still reports SKIPPED rather than ERROR.
+    """
+    class_registry = registry.child()
+    if _is_unittest_skipped(cls):
+        return class_registry
+    fixture = _unittest_class_fixture(cls)
+    if fixture is None:
+        return class_registry
+    class_registry.register(
+        FixtureDef(
+            name=f"_unittest_setUpClass_fixture_{cls.__qualname__}",
+            func=fixture,
+            scope="class",
+            params=None,
+            autouse=True,
+            baseid=f"{context.rel_path}::{'::'.join(parts)}",
+            argnames=(),
+        )
+    )
+    return class_registry
+
+
 def _collect_unittest_class(
     cls: type,
     name: str,
     parts: tuple[str, ...],
-    outer_marks: list[MarkSpecDict],
+    outer_marks: list[MarkSpec],
     registry: FixtureRegistry,
     context: _CollectContext,
 ) -> list[CollectedTestDict]:
@@ -2167,10 +2346,12 @@ def _collect_unittest_class(
 
     class_marks = _mark_specs(cls, consider_mro=True) + outer_marks
     child_parts = (*parts, name)
+    class_registry = _unittest_class_registry(cls, child_parts, registry, context)
+    closure = build_closure(class_registry, ())
     loader = unittest.TestLoader()
     entries: list[CollectedTestDict] = []
 
-    def record(method_name: str, marks: list[MarkSpecDict]) -> None:
+    def record(method_name: str, marks: list[MarkSpec]) -> None:
         entry = _build_entry(context.rel_path, (*child_parts, method_name), None, marks, [])
         entries.append(entry)
         context.plans.append(
@@ -2181,7 +2362,7 @@ def _collect_unittest_class(
                 parts=(*child_parts, method_name),
                 func=None,
                 owner=cls,
-                closure=build_closure(registry, ()),
+                closure=closure,
                 fixture_params={},
                 direct_params={},
                 argnames=(),
@@ -2206,7 +2387,7 @@ def _collect_class(
     cls: type,
     name: str,
     parts: tuple[str, ...],
-    outer_marks: list[MarkSpecDict],
+    outer_marks: list[MarkSpec],
     registry: FixtureRegistry,
     context: _CollectContext,
 ) -> list[CollectedTestDict]:
@@ -2249,7 +2430,7 @@ def _make_items(
     name: str,
     parts: tuple[str, ...],
     owner: type | None,
-    outer_marks: list[MarkSpecDict],
+    outer_marks: list[MarkSpec],
     registry: FixtureRegistry,
     context: _CollectContext,
 ) -> list[CollectedTestDict]:
@@ -2367,6 +2548,776 @@ def enumerate_module(
 
 
 # ---------------------------------------------------------------------------
+# core 4: execution — outcomes by type, mark semantics, unittest translation
+# ---------------------------------------------------------------------------
+
+#: pytest's three test phases, in the order `_pytest/runner.py::runtestprotocol` runs them.
+#: The phase a failure happened in is what separates ``"failed"`` from ``"error"`` on the
+#: wire — see :attr:`PhaseReport.status`.
+PHASES: Final = ("setup", "call", "teardown")
+
+#: The closed set of wire statuses (``src/v2/protocol.rs``, `TestResult::status`).  These
+#: are pytest's *reporting categories* (its `.`/`F`/`s`/`x`/`X`/`E` letters), not
+#: ``TestReport.outcome``, which only ever holds three of them.
+STATUSES: Final = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
+
+
+def _import_outcome_classes() -> tuple[type[BaseException], ...]:
+    """The outcome exception classes this worker classifies **by type**.
+
+    Returns ``(Skipped, StubSkipped, XFailed, Failed, StubFailed)``.  Two sources, because a
+    real suite reaches rustest's outcomes by two different import paths and both must mean
+    the same thing:
+
+    * ``rustest.decorators`` — what ``pytest.skip()`` / ``pytest.fail()`` / ``pytest.xfail()``
+      raise through the compat shim (``compat/pytest.py`` l. 649-654 rebinds them verbatim);
+    * ``rustest._pytest_stub.outcomes`` — what ``from _pytest.outcomes import Skipped``
+      gives a suite that reaches into pytest's internals, which
+      :func:`install_pytest_shim` installs as ``sys.modules["_pytest.outcomes"]``.  They are
+      **different classes**, so an ``isinstance`` against only one of them would silently
+      reclassify half the ways a suite can skip.
+
+    The stub warns on import by design (it is a deprecation shim); the worker imports it for
+    its *types*, not to use it, so the warning is suppressed here — it is emitted anyway the
+    moment :func:`install_pytest_shim` runs.
+    """
+    from rustest.decorators import Failed, Skipped, XFailed
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from rustest._pytest_stub.outcomes import Failed as StubFailed
+        from rustest._pytest_stub.outcomes import Skipped as StubSkipped
+
+    return (Skipped, StubSkipped, XFailed, Failed, StubFailed)
+
+
+_Skipped, _StubSkipped, _XFailed, _Failed, _StubFailed = _import_outcome_classes()
+
+#: "The test asked not to run."  Port of `_pytest/outcomes.py::Skipped` semantics.
+#:
+#: ``unittest.SkipTest`` is in here because pytest converts it explicitly —
+#: `_pytest/unittest.py::pytest_runtest_makereport` l. 377-387, *"Convert unittest.SkipTest
+#: to pytest.skip"* — and probed: a plain function raising ``unittest.SkipTest`` reports
+#: SKIPPED under pytest 8.4.2, not FAILED.
+SKIPPED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
+    _Skipped,
+    _StubSkipped,
+    unittest.SkipTest,
+)
+
+#: "The test declared itself an expected failure while running."  Port of
+#: `_pytest/outcomes.py::XFailed`, consumed by `_pytest/skipping.py` l. 279-282, which turns
+#: it into ``outcome="skipped"`` plus ``wasxfail`` — i.e. the ``xfailed`` category —
+#: **whatever phase raised it**.
+#:
+#: Checked *before* :data:`FAILED_EXCEPTIONS`: pytest declares ``class XFailed(Failed)``, so
+#: on real pytest the order is load-bearing.  rustest's ``XFailed`` happens to derive
+#: straight from ``Exception``, which makes the order look irrelevant — it is not, and
+#: relying on that accident would break the day the hierarchy is aligned.
+XFAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_XFailed,)
+
+#: "The test failed on purpose" — ``pytest.fail()``.  Listed for documentation and for the
+#: unittest translation (an unexpected success becomes one of these); classification does
+#: not branch on it, because :func:`report_for_phase`'s **default** is already ``failed``,
+#: which is also where a plain ``AssertionError`` and every other exception land.
+FAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Failed, _StubFailed)
+
+
+def _visible_frames(exc: BaseException) -> list[bool]:
+    """Which of *exc*'s traceback frames belong in a user-facing message.
+
+    Port of the two filters pytest applies before printing a traceback, both of which key on
+    the **frame**, never on the text of the message:
+
+    * `_pytest/unittest.py::TestCaseFunction._traceback_filter` (l. 355-364) drops frames
+      whose globals carry ``__unittest`` — the marker ``unittest.case`` sets on itself — so a
+      failed ``assertEqual`` points at the assertion, not at four frames of
+      ``testPartExecutor``/``_callTestMethod`` plumbing;
+    * `_pytest/_code/code.py::TracebackEntry.ishidden` drops frames whose locals set
+      ``__tracebackhide__``, which is how ``rustest.fail()`` and every user-written assertion
+      helper keep themselves out of the report.
+
+    This worker's own frames go too: ``_run_phases`` and ``_run_call`` are between the
+    protocol loop and the test, and naming them in a failure message would send an operator
+    reading it into the runner instead of into their test.
+    """
+    visible: list[bool] = []
+    tb = exc.__traceback__
+    while tb is not None:
+        frame_globals = tb.tb_frame.f_globals
+        hidden = (
+            frame_globals.get("__name__") == __name__
+            or bool(frame_globals.get("__unittest"))
+            or bool(tb.tb_frame.f_locals.get("__tracebackhide__"))
+        )
+        visible.append(not hidden)
+        tb = tb.tb_next
+    return visible
+
+
+def _format_exception(exc: BaseException) -> str:
+    """A failure message: the exception's traceback, runner and plumbing frames removed.
+
+    pytest's own fallback is ported with the filter: *"if not ntraceback: ntraceback =
+    traceback"* — a traceback filtered down to nothing is shown unfiltered, because an
+    exception with no visible frame at all is less useful than a noisy one.
+    """
+    rendered = traceback.TracebackException.from_exception(exc)
+    visible = _visible_frames(exc)
+    if any(visible) and len(visible) == len(rendered.stack):
+        rendered.stack = traceback.StackSummary.from_list(
+            [frame for frame, keep in zip(rendered.stack, visible, strict=True) if keep]
+        )
+    return "".join(rendered.format()).rstrip()
+
+
+# -- marks at execution -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Skip:
+    """The result of :func:`evaluate_skip_marks`.  Port of `_pytest/skipping.py::Skip`."""
+
+    reason: str = "unconditional skip"
+
+
+@dataclass(frozen=True)
+class Xfail:
+    """The result of :func:`evaluate_xfail_marks`.  Port of `_pytest/skipping.py::Xfail`."""
+
+    reason: str
+    run: bool
+    strict: bool
+    raises: tuple[type[BaseException], ...] | None
+
+
+def _fail(message: str) -> NoReturn:
+    """Raise rustest's ``Failed`` — the worker's stand-in for ``fail(..., pytrace=False)``."""
+    raise _Failed(message)
+
+
+def evaluate_condition(
+    mark: MarkSpec, condition: object, namespace: Mapping[str, object]
+) -> tuple[bool, str]:
+    """Port of `_pytest/skipping.py::evaluate_condition` (l. 88-158).
+
+    A **string** condition is compiled and ``eval``'d against ``os``/``sys``/``platform``
+    plus the test function's own globals — pytest's ``globals_`` dict, minus ``config`` and
+    the ``pytest_markeval_namespace`` hook, neither of which exists on this wire.  Anything
+    else is ``bool()``-ed.
+
+    Evaluating strings is not optional even though ``decorators.py::_normalize_args``
+    already reduces *skipif* strings at decoration time: it does **not** touch ``xfail``, so
+    ``@pytest.mark.xfail("1 == 1", reason=...)`` would otherwise be judged by the truthiness
+    of the source text — always true, for every condition, including the ones meant to be
+    false.  Probed: pytest reports that test XFAIL, and reports the same test with a
+    would-be-false string condition FAILED.
+
+    Both failure shapes pytest turns into ``fail(..., pytrace=False)`` are ported, message
+    included: a broken condition, and a **boolean condition with no ``reason=``** — probed,
+    pytest reports ``@pytest.mark.skipif(True)`` as an ERROR at setup, not as a skip.
+    Swallowing that would skip a test whose author never said why.
+    """
+    result: object
+    if isinstance(condition, str):
+        globals_: dict[str, object] = {"os": os, "sys": sys, "platform": platform}
+        globals_.update(namespace)
+        try:
+            condition_code = compile(condition, f"<{mark.name} condition>", "eval")
+            # `eval` is the ported behaviour, not a shortcut: the string is an expression the
+            # user wrote in their own test file, which this process is already importing and
+            # executing, so it grants no capability the test module does not already have.
+            # `ast.literal_eval` cannot express `sys.platform == "win32"`, which is the whole
+            # point of a string condition.  Source: `_pytest/skipping.py` l. 115-118.
+            result = eval(condition_code, globals_)  # noqa: S307 - pytest's own semantics
+        except SyntaxError as exc:
+            _fail(
+                "\n".join(
+                    [
+                        f"Error evaluating {mark.name!r} condition",
+                        "    " + condition,
+                        "    " + " " * (exc.offset or 0) + "^",
+                        "SyntaxError: invalid syntax",
+                    ]
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - pytest reports, never propagates
+            _fail(
+                "\n".join(
+                    [
+                        f"Error evaluating {mark.name!r} condition",
+                        "    " + condition,
+                        *traceback.format_exception_only(type(exc), exc),
+                    ]
+                )
+            )
+    else:
+        try:
+            result = bool(condition)
+        except Exception as exc:  # noqa: BLE001 - pytest reports, never propagates
+            _fail(
+                "\n".join(
+                    [
+                        f"Error evaluating {mark.name!r} condition as a boolean",
+                        *traceback.format_exception_only(type(exc), exc),
+                    ]
+                )
+            )
+
+    reason = mark.kwargs.get("reason", None)
+    if reason is None:
+        if isinstance(condition, str):
+            return bool(result), "condition: " + condition
+        _fail(
+            f"Error evaluating {mark.name!r}: "
+            + "you need to specify reason=STRING when using booleans as conditions."
+        )
+    return bool(result), str(reason)
+
+
+def _reason(mark: MarkSpec) -> str:
+    """A mark's ``reason=`` as a string, treating an explicit ``None`` as absent.
+
+    pytest reads ``mark.kwargs.get("reason", "")`` and never sees a ``None``, because
+    ``pytest.mark.xfail`` stores only the keywords the user actually passed.  rustest's
+    ``MarkGenerator`` normalises instead: ``@pytest.mark.xfail()`` arrives carrying
+    ``reason=None``, ``raises=None``, ``run=True``, ``strict=False`` in full.  Without this,
+    ``str(None)`` would put the literal word ``"None"`` in the report where pytest puts
+    nothing.  (The *missing-reason-with-a-boolean-condition* error in
+    :func:`evaluate_condition` is a different rule and still fires — there, ``None`` means
+    the user genuinely did not say why.)
+    """
+    reason = mark.kwargs.get("reason")
+    return "" if reason is None else str(reason)
+
+
+def _conditions(mark: MarkSpec) -> tuple[object, ...]:
+    """``mark.kwargs["condition"]`` if given, else the positional args.
+
+    Port of the identical four lines in `evaluate_skip_marks` (l. 171-174) and
+    `evaluate_xfail_marks` (l. 219-222): the keyword form takes precedence and collapses to
+    a single condition, the positional form is a disjunction.
+    """
+    if "condition" in mark.kwargs:
+        return (mark.kwargs["condition"],)
+    return mark.args
+
+
+def evaluate_skip_marks(marks: Sequence[MarkSpec], namespace: Mapping[str, object]) -> Skip | None:
+    """Port of `_pytest/skipping.py::evaluate_skip_marks` (l. 168-193) — the #131 root fix.
+
+    **Every ``skipif`` is considered before any ``skip``**, which is pytest's structure (two
+    separate loops), not an accident of ordering: a test carrying both is skipped for the
+    *condition's* reason when the condition holds.  Within each loop, *marks* is closest-first
+    — the order :func:`collect_module` records and pytest's ``iter_markers`` yields — so the
+    nearest mark wins.
+
+    An unconditional ``skipif`` (no args at all) skips with ``reason=`` as-is, including the
+    empty string; that is pytest's l. 177-179 and it is why the empty-reason case is not an
+    error here while the *boolean-condition-without-reason* case is.
+    """
+    for mark in marks:
+        if mark.name != "skipif":
+            continue
+        conditions = _conditions(mark)
+        if not conditions:
+            return Skip(_reason(mark))
+        for condition in conditions:
+            result, reason = evaluate_condition(mark, condition, namespace)
+            if result:
+                return Skip(reason)
+
+    for mark in marks:
+        if mark.name != "skip":
+            continue
+        try:
+            return Skip(*(str(arg) for arg in mark.args), **_skip_kwargs(mark))
+        except TypeError as exc:
+            raise TypeError(str(exc) + " - maybe you meant pytest.mark.skipif?") from None
+    return None
+
+
+def _skip_kwargs(mark: MarkSpec) -> dict[str, str]:
+    """``Skip``'s keyword arguments, stringified.
+
+    ``@pytest.mark.skip`` reaches this worker through ``decorators.py::skip_decorator``,
+    which stores ``__rustest_skip__`` as whatever it was handed — a string normally, but the
+    bare (uncalled) decorator form hands it a *function*.  ``Skip.reason`` is a ``str``, and
+    a reason that is quietly not one would reach the wire and the report; coercing here keeps
+    the status right (which is what the oracle pins) and the message printable.
+    """
+    return {str(key): str(value) for key, value in mark.kwargs.items()}
+
+
+def _as_raises(raw: object) -> tuple[type[BaseException], ...] | None:
+    """``xfail(raises=...)`` as a tuple of exception classes, or ``None`` for "any".
+
+    pytest passes the value straight to ``isinstance`` (`skipping.py` l. 286-289); a value
+    that is not an exception class would therefore raise ``TypeError`` from deep inside the
+    reporting path, where it has nowhere to go.  This validates up front and reports it as a
+    setup failure naming the mark instead — the same class of "loud beats mysterious" choice
+    the rest of this worker makes.
+
+    (pytest's ``AbstractRaises`` branch — ``raises=pytest.RaisesGroup(...)`` — is not ported;
+    rustest has no such object.)
+    """
+    if raw is None:
+        return None
+    candidates: tuple[object, ...] = (
+        cast(tuple[object, ...], raw) if isinstance(raw, tuple) else (raw,)
+    )
+    for candidate in candidates:
+        if not (isinstance(candidate, type) and issubclass(candidate, BaseException)):
+            _fail(
+                "Error evaluating 'xfail': raises= must be an exception class or a tuple of "
+                + f"them, got {raw!r}"
+            )
+    return cast(tuple[type[BaseException], ...], candidates)
+
+
+def evaluate_xfail_marks(
+    marks: Sequence[MarkSpec], namespace: Mapping[str, object]
+) -> Xfail | None:
+    """Port of `_pytest/skipping.py::evaluate_xfail_marks` (l. 213-235).
+
+    ``strict`` defaults to pytest's ``xfail_strict`` ini, which is ``False``
+    (`skipping.py::pytest_addoption` l. 40-46).  The ini is **not on this wire**, so a suite
+    that sets ``xfail_strict = true`` gets non-strict behaviour here; closing that needs a
+    protocol field, and is recorded as such rather than guessed.
+    """
+    for mark in marks:
+        if mark.name != "xfail":
+            continue
+        run = bool(mark.kwargs.get("run", True))
+        strict = bool(mark.kwargs.get("strict", False))
+        raises = _as_raises(mark.kwargs.get("raises", None))
+        conditions = _conditions(mark)
+        if not conditions:
+            return Xfail(_reason(mark), run, strict, raises)
+        for condition in conditions:
+            result, reason = evaluate_condition(mark, condition, namespace)
+            if result:
+                return Xfail(reason, run, strict, raises)
+    return None
+
+
+# -- outcome classification, by type ----------------------------------------
+
+
+@dataclass(frozen=True)
+class PhaseReport:
+    """One phase's outcome — this worker's ``TestReport`` for ``setup``/``call``/``teardown``.
+
+    ``outcome`` holds only pytest's three ``TestReport.outcome`` values
+    (`_pytest/reports.py` l. 64); the six-value wire *category* is :attr:`status`, derived
+    exactly as pytest's ``pytest_report_teststatus`` chain derives its letters.
+    """
+
+    phase: str
+    outcome: str
+    message: str | None = None
+    #: Set (possibly to ``""``) when this report was promoted by an xfail — pytest's
+    #: ``rep.wasxfail``.  Presence is the signal, **not** truthiness: a
+    #: ``@unittest.expectedFailure`` carries an empty reason and is still an xfail.
+    wasxfail: str | None = None
+
+    @property
+    def plain_pass(self) -> bool:
+        """A pass with nothing to report — pytest's ``.``, the only status that is not news."""
+        return self.outcome == "passed" and self.wasxfail is None
+
+    @property
+    def status(self) -> str:
+        """The wire category.  Port of the ``pytest_report_teststatus`` hook chain:
+
+        * `_pytest/skipping.py` l. 310-316 runs first and owns ``wasxfail``: a *skipped*
+          report becomes ``xfailed``, a *passed* one ``xpassed``;
+        * `_pytest/runner.py` l. 214-223 turns a failed ``setup``/``teardown`` into
+          ``error``;
+        * `_pytest/terminal.py` l. 325-337 restates the same rule as the fallback
+          (``if report.when in ("collect", "setup", "teardown") and outcome == "failed"``).
+
+        So ``failed`` means "the body ran and disagreed" and ``error`` means "the body never
+        properly ran".  A *strict* xpass is deliberately not in the xfail branch: pytest
+        rewrites it to ``rep.outcome = "failed"`` before this hook sees it (l. 300-303), so
+        it arrives here already carrying no ``wasxfail``.
+        """
+        if self.wasxfail is not None:
+            if self.outcome == "skipped":
+                return "xfailed"
+            if self.outcome == "passed":
+                return "xpassed"
+        if self.outcome == "skipped":
+            return "skipped"
+        if self.outcome == "passed":
+            return "passed"
+        return "error" if self.phase in ("setup", "teardown") else "failed"
+
+
+def report_for_phase(phase: str, exc: BaseException | None, xfailed: Xfail | None) -> PhaseReport:
+    """Classify one phase **by exception type**, then apply pytest's xfail promotion.
+
+    Two stages, both ports, and neither one does any string matching — the type *is* the
+    classification (`_pytest/outcomes.py`: ``Skipped``, ``Failed``, ``XFailed`` are classes
+    precisely so that this decision never has to read a message):
+
+    1. *Raw outcome.*  :data:`XFAILED_EXCEPTIONS` -> ``skipped`` **with** ``wasxfail``
+       (`skipping.py` l. 279-282, which fires for any phase);
+       :data:`SKIPPED_EXCEPTIONS` -> ``skipped``; no exception -> ``passed``; **everything
+       else** -> ``failed``, which is where ``AssertionError``, ``pytest.fail()``'s
+       ``Failed`` and an arbitrary ``ValueError`` all land.
+    2. *The xfail mark's promotion* (`skipping.py` l. 283-306), applied only to a report that
+       is not already skipped — pytest's ``elif not rep.skipped and xfailed``, which is why a
+       ``skip`` mark beats an ``xfail`` mark (probed: SKIPPED):
+
+       * an exception matching ``raises=`` (or no ``raises=`` at all) -> ``skipped`` +
+         ``wasxfail``, i.e. ``xfailed`` — **including in setup and teardown**, probed: a test
+         with a broken fixture and an ``xfail`` mark reports XFAIL, not ERROR;
+       * an exception *not* matching ``raises=`` -> ``failed``;
+       * no exception, and only in the ``call`` phase -> ``xpassed``, or ``failed`` with
+         pytest's ``"[XPASS(strict)] "`` prefix when ``strict=True`` (l. 300-303).
+    """
+    if exc is None:
+        outcome, message, wasxfail = "passed", None, None
+    elif isinstance(exc, XFAILED_EXCEPTIONS):
+        outcome, message, wasxfail = "skipped", None, str(exc)
+    elif isinstance(exc, SKIPPED_EXCEPTIONS):
+        outcome, message, wasxfail = "skipped", str(exc), None
+    else:
+        outcome, message, wasxfail = "failed", _format_exception(exc), None
+
+    if wasxfail is None and outcome != "skipped" and xfailed is not None:
+        if exc is not None:
+            if xfailed.raises is None or isinstance(exc, xfailed.raises):
+                outcome, message, wasxfail = "skipped", None, xfailed.reason
+            else:
+                outcome = "failed"
+        elif phase == "call":
+            if xfailed.strict:
+                outcome, message = "failed", "[XPASS(strict)] " + xfailed.reason
+            else:
+                outcome, wasxfail = "passed", xfailed.reason
+
+    if wasxfail is not None and not message:
+        message = wasxfail or None
+    return PhaseReport(phase=phase, outcome=outcome, message=message, wasxfail=wasxfail)
+
+
+def reduce_reports(reports: Sequence[PhaseReport]) -> PhaseReport:
+    """Collapse pytest's up-to-three reports into the one the wire carries.
+
+    **The earliest phase that is not a plain pass wins.**  pytest prints one line per report
+    and lets the terminal sum them; ``WorkerResponse::TestResult`` carries a single status,
+    and its docs put that reduction on the worker precisely so the orchestrator never has to
+    guess how many phases there were.
+
+    The rule is the reading of pytest's own output, checked against every probed shape:
+    a broken fixture is ``ERROR`` (setup); a passing body with a broken teardown is
+    ``PASSED`` + ``ERROR`` and reduces to ``error``; a *failing* body with a broken teardown
+    is ``FAILED`` + ``ERROR`` and reduces to ``failed``, which is the headline pytest itself
+    puts in its short summary.  It also gets the xfail corners right for free: an ``xpassed``
+    call is not a plain pass, so it wins over a later teardown report.
+    """
+    for report in reports:
+        if not report.plain_pass:
+            return report
+    return reports[-1]
+
+
+# -- unittest, via an explicit TestResult -----------------------------------
+
+_SysExcInfo = (
+    tuple[type[BaseException], BaseException, types.TracebackType] | tuple[None, None, None]
+)
+
+
+class _UnittestOutcomeRecorder(unittest.TestResult):
+    """The ``unittest.TestResult`` this worker hands to ``TestCase(name)(result)``.
+
+    **This is the #129 fix, and it is a translation, not a reinterpretation.**  pytest does
+    not read ``result.failures`` / ``result.errors`` either — its ``TestCaseFunction`` *is*
+    the result object, and every callback converts back into the exception the ordinary
+    report machinery already understands (`_pytest/unittest.py` l. 267-314):
+
+    | ``TestResult`` callback  | pytest raises        | classified as | wire status |
+    | ------------------------ | -------------------- | ------------- | ----------- |
+    | ``addSuccess``           | *nothing*            | passed        | ``passed``  |
+    | ``addFailure``           | the raw exception    | failed        | ``failed``  |
+    | ``addError``             | the raw exception    | failed        | ``failed``  |
+    | ``addSkip``              | ``skip.Exception``   | skipped       | ``skipped`` |
+    | ``addExpectedFailure``   | ``xfail.Exception``  | xfail         | ``xfailed`` |
+    | ``addUnexpectedSuccess`` | ``fail.Exception``   | failed        | ``failed``  |
+
+    Two rows are worth stating because the obvious guess is wrong, and both were **probed
+    against pytest 8.4.2** rather than assumed:
+
+    * ``addError`` is ``failed``, not ``error``.  pytest drives the whole ``TestCase`` inside
+      the *call* phase, so a ``ValueError`` in the body — or in ``setUp`` — is a call-phase
+      failure (``F``).  ``error`` is reserved for what breaks *outside* the test, which for a
+      ``TestCase`` means ``setUpClass`` (a class-scoped fixture, hence the setup phase).
+    * ``addUnexpectedSuccess`` is ``failed``, not ``xpassed``.  pytest says so in a comment
+      at l. 307 — *"Preserve unittest behaviour - fail the test. Explicitly not an XPASS."* —
+      and probed, ``@unittest.expectedFailure`` over a passing test reports FAILED.
+
+    Recording an ordered *list* is also pytest's shape: ``_addexcinfo`` appends and
+    ``pytest_runtest_makereport`` pops ``[0]`` (l. 370-371), so when a body fails **and**
+    ``tearDown`` raises, the body's failure is what the test is reported as.  Probed: pytest
+    prints ``FAILED`` then a separate teardown ``ERROR`` for exactly that shape.
+    """
+
+    def __init__(
+        self,
+        stream: TextIO | None = None,
+        descriptions: bool | None = None,
+        verbosity: int | None = None,
+    ) -> None:
+        super().__init__(stream, descriptions, verbosity)
+        #: Callbacks converted to exceptions, in the order unittest reported them.
+        self.outcomes: list[BaseException] = []
+
+    def first_outcome(self) -> BaseException | None:
+        """The exception the call phase is reported as — pytest's ``_excinfo.pop(0)``."""
+        return self.outcomes[0] if self.outcomes else None
+
+    def _record_raw(self, err: _SysExcInfo) -> None:
+        value = err[1]
+        if value is None:  # pragma: no cover - unittest never passes the empty triple here
+            value = RuntimeError("unittest reported a failure with no exception")
+        self.outcomes.append(value)
+
+    def addError(self, test: unittest.TestCase, err: _SysExcInfo) -> None:
+        self._record_raw(err)
+
+    def addFailure(self, test: unittest.TestCase, err: _SysExcInfo) -> None:
+        self._record_raw(err)
+
+    def addSkip(self, test: unittest.TestCase, reason: str) -> None:
+        self.outcomes.append(_Skipped(reason))
+
+    def addExpectedFailure(self, test: unittest.TestCase, err: _SysExcInfo) -> None:
+        self.outcomes.append(_XFailed(""))
+
+    def addUnexpectedSuccess(self, test: unittest.TestCase) -> None:
+        self.outcomes.append(_Failed("Unexpected success"))
+
+    def addSuccess(self, test: unittest.TestCase) -> None:
+        """Nothing to record — pytest's ``addSuccess`` is a ``pass`` too (l. 313-314)."""
+
+
+def _is_unittest_skipped(obj: object) -> bool:
+    """Port of `_pytest/unittest.py::_is_skipped` (l. 390-392) — ``@unittest.skip`` applied."""
+    return bool(_safe_getattr(obj, "__unittest_skip__", False))
+
+
+def _unittest_class_fixture(cls: type) -> Callable[..., Iterator[None]] | None:
+    """``setUpClass``/``tearDownClass`` as a class-scoped autouse fixture, or ``None``.
+
+    Port of `_pytest/unittest.py::UnitTestCase._register_unittest_setup_class_fixture`
+    (l. 116-170).  It has to be a *fixture* rather than something the call phase does,
+    because ``unittest.TestCase.run`` does not invoke ``setUpClass`` at all — ``TestSuite``
+    does — so a worker that only calls ``TestCase(name)(result)`` would run every method of a
+    class whose class-level setup never happened.  That is silently wrong for a mainstream
+    shape, and it is also what puts a ``setUpClass`` failure in the **setup** phase, where
+    probed pytest reports it as ERROR rather than FAILED.
+
+    ``doClassCleanups`` and the ``tearDown_exceptions`` drain are ported with it (l. 123-161),
+    including unittest's own rule that cleanups run for ``Exception`` but not for a bare
+    ``BaseException``.
+
+    Not ported: ``_register_unittest_setup_method_fixture`` (pytest-style ``setup_method`` on
+    a ``TestCase``, l. 172-200) and ``parsefactories`` over the instance — an autouse
+    ``@pytest.fixture`` written inside a ``TestCase`` body is not picked up.  Both are
+    recorded gaps, not silent ones.
+    """
+    setup = _safe_getattr(cls, "setUpClass", None)
+    teardown = _safe_getattr(cls, "tearDownClass", None)
+    if setup is None and teardown is None:
+        return None
+    cleanup = cast(Callable[[], object], _safe_getattr(cls, "doClassCleanups", lambda: None))
+
+    def process_teardown_exceptions() -> None:
+        exc_infos = _safe_getattr(cls, "tearDown_exceptions", None)
+        if not exc_infos:
+            return
+        exceptions: list[Any] = [exc for (_type, exc, _tb) in cast(Sequence[Any], exc_infos)]
+        if len(exceptions) == 1:
+            raise cast(BaseException, exceptions[0])
+        raise BaseExceptionGroup("Unittest class cleanup errors", exceptions)
+
+    def unittest_setup_class_fixture() -> Iterator[None]:
+        if setup is not None:
+            try:
+                _ = cast(Callable[[], object], setup)()
+            except Exception:
+                _ = cleanup()
+                process_teardown_exceptions()
+                raise
+        yield
+        try:
+            if teardown is not None:
+                _ = cast(Callable[[], object], teardown)()
+        finally:
+            _ = cleanup()
+            process_teardown_exceptions()
+
+    return unittest_setup_class_fixture
+
+
+# -- capture ----------------------------------------------------------------
+
+
+@dataclass
+class _Capture:
+    """Per-test ``stdout``/``stderr``, captured by rebinding the streams.
+
+    Stream-level, not fd-level: a test that writes to ``sys.stdout`` or ``sys.stderr`` — or
+    calls ``print()`` — is captured, and one that writes to the *file descriptors* behind
+    them (a subprocess, a C extension) is not.  That is v1's ``capsys``, and matching it is
+    deliberate: the two compose (``capsys`` saves and restores whatever it finds, which here
+    is this buffer), and true fd-level capture is Phase 1c.
+
+    It also keeps the protocol safe.  ``main`` rebinds ``sys.stdout`` to stderr before any
+    test module is imported so that a stray ``print`` cannot corrupt the JSON-lines stream;
+    this redirects the same name again, one layer in, and the protocol stream is held in a
+    local that neither touches.
+    """
+
+    stdout: io.StringIO = field(default_factory=io.StringIO)
+    stderr: io.StringIO = field(default_factory=io.StringIO)
+
+
+# -- the execute op ---------------------------------------------------------
+
+
+def _condition_namespace(plan: ExecutionPlan) -> Mapping[str, object]:
+    """The globals a string ``skipif``/``xfail`` condition is evaluated against.
+
+    pytest uses ``item.obj.__globals__`` (`skipping.py` l. 113-114).  For a ``TestCase``
+    method — where the plan carries no function — the module's namespace is the same dict.
+    """
+    globals_ = _safe_getattr(plan.func, "__globals__", None)
+    if isinstance(globals_, dict):
+        return cast(Mapping[str, object], globals_)
+    return vars(plan.module)
+
+
+def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, object]) -> None:
+    """Run the test body: a ``TestCase`` through ``unittest``, anything else directly."""
+    if plan.unittest_case is not None:
+        recorder = _UnittestOutcomeRecorder()
+        case = cast(Callable[[str], unittest.TestCase], plan.unittest_case)(
+            plan.unittest_method or "runTest"
+        )
+        case(result=recorder)
+        outcome = recorder.first_outcome()
+        if outcome is not None:
+            raise outcome
+        return
+
+    func = plan.func
+    if func is None:  # pragma: no cover - collection always supplies one of the two
+        raise RuntimeError(f"collected test {plan.id!r} has no function and no unittest case")
+    if runner.instance is not None:
+        _ = func(runner.instance, **kwargs)
+    else:
+        _ = func(**kwargs)
+
+
+def _run_phases(plan: ExecutionPlan, runner: FixtureRunner) -> list[PhaseReport]:
+    """setup -> call -> teardown, with per-phase exception capture.
+
+    Port of `_pytest/runner.py::runtestprotocol` (l. 122-147), including the two structural
+    rules that are easy to lose:
+
+    * **the call phase runs only if setup passed** (``if rep.passed:``), and ``passed`` there
+      means *after* the xfail promotion, so an ``xfail``-marked test whose fixture blew up
+      never executes its body;
+    * **teardown runs regardless**, so a fixture that was half set up is still unwound and a
+      teardown failure is still reported.
+
+    Marks are evaluated inside the setup phase because that is where pytest evaluates them
+    (`skipping.py::pytest_runtest_setup`, ``tryfirst``): a ``skip`` mark therefore short-
+    circuits **before any fixture is built** — probed, a skipped test whose fixture raises
+    reports SKIPPED — and a mark that cannot be evaluated at all is a setup *error*.
+    """
+    namespace = _condition_namespace(plan)
+    xfailed: Xfail | None = None
+    setup_exc: BaseException | None = None
+    kwargs: Mapping[str, object] = {}
+    try:
+        runner.note_module_boundary(plan.path)
+        skipped = evaluate_skip_marks(plan.marks, namespace)
+        if skipped is not None:
+            raise _Skipped(skipped.reason)
+        xfailed = evaluate_xfail_marks(plan.marks, namespace)
+        if xfailed is not None and not xfailed.run:
+            raise _XFailed("[NOTRUN] " + xfailed.reason)
+        kwargs = runner.setup(plan)
+    except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
+        setup_exc = exc
+
+    reports = [report_for_phase("setup", setup_exc, xfailed)]
+
+    if reports[0].outcome == "passed":
+        call_exc: BaseException | None = None
+        try:
+            _run_call(plan, runner, kwargs)
+        except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
+            call_exc = exc
+        reports.append(report_for_phase("call", call_exc, xfailed))
+
+    teardown_exc: BaseException | None = None
+    try:
+        runner.teardown("function")
+    except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
+        teardown_exc = exc
+    reports.append(report_for_phase("teardown", teardown_exc, xfailed))
+    return reports
+
+
+def execute_test(test_id: str) -> ResultResponse:
+    """Run one collected test and build its ``test_result`` response.
+
+    The plan comes from this worker's own collection index, so the module is warm and the
+    function object is the one enumeration saw; an id that is not in the index is
+    :class:`UnknownTestError` — protocol drift, handled in :func:`main`, never answered with
+    a fabricated result.
+
+    ``duration_s`` is ``time.perf_counter`` around all three phases — a monotonic clock, so
+    it cannot go backwards over an NTP step — and covers fixture setup and teardown as well
+    as the body, which is what makes the orchestrator's sum comparable to wall time.
+    """
+    try:
+        plan = execution_plan(test_id)
+    except KeyError as exc:
+        raise UnknownTestError(str(exc.args[0]) if exc.args else test_id) from None
+
+    runner = _execution_runner()
+    capture = _Capture()
+    started = time.perf_counter()
+    with redirect_stdout(capture.stdout), redirect_stderr(capture.stderr):
+        reports = _run_phases(plan, runner)
+    duration = time.perf_counter() - started
+
+    report = reduce_reports(reports)
+    result: ResultResponse = {
+        "op": "test_result",
+        "id": plan.id,
+        "status": report.status,
+        "duration_s": duration,
+    }
+    if report.message:
+        result["message"] = report.message
+    captured_out = capture.stdout.getvalue()
+    if captured_out:
+        result["stdout"] = captured_out
+    captured_err = capture.stderr.getvalue()
+    if captured_err:
+        result["stderr"] = captured_err
+    return result
+
+
+# ---------------------------------------------------------------------------
 # protocol
 # ---------------------------------------------------------------------------
 
@@ -2387,6 +3338,19 @@ _state: WorkerState | None = None
 #: warm module object it points at — is always here.  An id that is not is a routing bug,
 #: and :func:`execution_plan` says so loudly rather than returning ``None``.
 _execution_plans: dict[str, ExecutionPlan] = {}
+
+#: The one :class:`FixtureRunner` for this worker's whole lifetime.  It has to outlive a
+#: single ``execute_test``, or module- and session-scoped fixtures would be rebuilt per test
+#: and the scope caching would mean nothing.
+_runner: FixtureRunner | None = None
+
+
+def _execution_runner() -> FixtureRunner:
+    """This worker's runner, created on first use."""
+    global _runner
+    if _runner is None:
+        _runner = FixtureRunner()
+    return _runner
 
 
 def execution_plan(test_id: str) -> ExecutionPlan:
@@ -2434,7 +3398,30 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
 
 
 def handle_shutdown() -> ByeResponse:
-    """Handle ``shutdown``; reply ``bye`` — the last line the worker writes."""
+    """Handle ``shutdown``; reply ``bye`` — the last line the worker writes.
+
+    Every scope still open is unwound first, so a module- or session-scoped fixture's
+    teardown runs before the process ends rather than being abandoned — a fixture that
+    stops a container or removes a directory must get its turn.
+
+    **Known protocol gap.**  A failure in that final drain belongs to no test: the last test
+    of the run has already been answered, and ``WorkerResponse`` has no session-level error.
+    It is written to stderr and the worker still replies ``bye`` and exits 0, because exit 2
+    means *protocol drift* and a user's broken teardown is not that.  A session-scope error
+    is therefore visible but not attributable — recorded for 1c, where session scope becomes
+    run-wide and needs a channel anyway.
+    """
+    global _runner
+    runner, _runner = _runner, None
+    if runner is not None:
+        try:
+            runner.teardown_all()
+        except BaseException as exc:  # noqa: BLE001 - reported on stderr, never dropped
+            print(
+                "rustest v2 worker: errors while tearing down fixtures at shutdown:\n"
+                + _format_exception(exc),
+                file=sys.stderr,
+            )
     return {"op": "bye"}
 
 
@@ -2587,6 +3574,19 @@ def main() -> int:
                 print(f"rustest v2 worker: {exc}", file=sys.stderr)
                 return 2
             emit(response)
+        elif op == "execute_test":
+            test_id = request.get("id")
+            if not isinstance(test_id, str):
+                print(
+                    f"rustest v2 worker: execute_test without an id: {line!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                emit(execute_test(test_id))
+            except UnknownTestError as exc:
+                print(f"rustest v2 worker: {exc}", file=sys.stderr)
+                return 2
         elif op == "shutdown":
             emit(handle_shutdown())
             return 0

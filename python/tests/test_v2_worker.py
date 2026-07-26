@@ -1656,22 +1656,20 @@ def test_collect_file_without_a_path_is_protocol_fatal(tmp_path: Path) -> None:
     assert "without a path" in proc.stderr
 
 
-def test_execute_test_is_not_implemented_yet_and_is_protocol_fatal(tmp_path: Path) -> None:
-    """The wire is at v2, this worker implements only the collection half.
+def test_execute_test_for_a_file_this_worker_never_collected_is_protocol_fatal(
+    tmp_path: Path,
+) -> None:
+    """The execute op exists now; what must still fail loudly is an id nobody collected.
 
-    `execute_test` is a *real* op in `src/v2/protocol.rs`, so the interesting question is
-    not whether an invented op fails but whether the op this worker is expected to grow
-    fails **the same way** in the meantime — and it must fail on the path a real
-    orchestrator takes, i.e. *after* `init`/`ready` has already agreed on protocol 2.  A
-    bare-stdin probe would leave open whether the exit 2 came from the handshake instead,
-    which is why the init line is sent first and the `ready` reply is asserted.
+    This is the successor to the placeholder that pinned "the op is not implemented yet".
+    The failure it guards is the one that survives implementation: the orchestrator routes an
+    execute back to the worker that collected the file, so an id this worker has never seen
+    is **routing drift**.  It must fail on the path a real orchestrator takes — after
+    `init`/`ready` has agreed on protocol 2, so exit 2 cannot be mistaken for a handshake
+    rejection — and leave **nothing on stdout beyond `ready`**, never a swallowed request
+    that blocks the orchestrator on a `test_result` line that is never coming.
 
-    It must then take the unknown-op path: exit 2, naming the op, and **nothing on stdout
-    beyond `ready`** — never a swallowed request that leaves the orchestrator blocked on a
-    `test_result` line that is never coming.
-
-    Delete this test in the task that implements the op; until then it is what keeps the
-    version bump honest.
+    The behavioural table for the op lives in `test_v2_worker_execute.py`.
     """
     proc = _run_worker(
         [
@@ -1689,7 +1687,7 @@ def test_execute_test_is_not_implemented_yet_and_is_protocol_fatal(tmp_path: Pat
     )
 
     assert proc.returncode == 2
-    assert "execute_test" in proc.stderr
+    assert "tests/test_math.py::test_add" in proc.stderr
     assert proc.stdout.splitlines() == [f'{{"op":"ready","protocol_version":{PROTOCOL_VERSION}}}']
 
 
