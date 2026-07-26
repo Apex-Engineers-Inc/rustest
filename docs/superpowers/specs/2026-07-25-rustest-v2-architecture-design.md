@@ -54,7 +54,7 @@ flag and the compat banner are removed.
 - Discovery imports the world serially under the GIL, uncached (`src/discovery.rs:395`);
   `-k`/`-m` filter after import (`discovery.rs:903`); `TestCase` carries live callables
   (`discovery.rs:1199`) blocking cache/workers/static tier.
-- `starts_with("test")` collects `testfoo`; pytest's `test_*` does not (`discovery.rs:1173`).
+- Corpus-verified non-issue: pytest's default python_functions is prefix "test", so both runners collect testfoo (Phase 0 case collection/naming-testfoo MATCHes). v2's config subsystem still owns configurable naming patterns.
 - Compat is an opt-in mode with a reduced feature set (`compat/pytest.py` docstring).
 - Skip detection string-matches exception messages (`execution.rs:649`).
 - GIL-dependent unsafe resolver tunnel (`execution.rs:160`).
