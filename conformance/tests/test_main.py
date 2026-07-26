@@ -25,7 +25,6 @@ from conformance.harness.runners import CollectResult, Outcomes, RunResult
 PREAUTHORIZED_V2_COLLECT_WAIVERS = {
     "marks/mark-filter",
     "marks/deselect-all",
-    "fixtures/parametrized-fixture",
 }
 
 
