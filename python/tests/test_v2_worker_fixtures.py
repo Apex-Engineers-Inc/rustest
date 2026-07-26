@@ -1,0 +1,1317 @@
+"""Tests for the v2 worker's fixture engine (`rustest._v2_worker`).
+
+Four things are under test, and the six `conformance/corpus/fixtures/*` cases are the
+acceptance table for all of them:
+
+1. **Registry** — builtins, then the conftest chain rootdir-down, then the module, so
+   ``defs[-1]`` is the nearest definition (`fixtures/override-nearest`).
+2. **Closure** — autouse first, then requested names, then transitive dependencies, then
+   a stable scope sort (`fixtures/autouse`).  An unknown name is not a collection error;
+   it errors at *setup* with pytest's `fixture '<name>' not found` wording.
+3. **Scopes and teardown** — function fixtures are fresh per test and torn down right
+   after it, module fixtures are cached across the file, and teardown runs in **reverse**
+   setup order (`fixtures/scope-function`, `fixtures/scope-module`,
+   `fixtures/yield-teardown`).
+4. **Closure-driven param ids** — a `params=[...]` fixture in the closure multiplies the
+   test, with pytest's id ordering (`fixtures/parametrized-fixture`).
+
+The id half is **differential**: :func:`test_fixture_param_ids_match_pytest` runs real
+pytest on the same tree in a subprocess and compares the ids byte for byte, so every id
+row is anchored to the oracle rather than to a hand-written expectation.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
+import types
+
+import pytest
+
+from rustest._v2_worker import (
+    DEFAULT_NAMING,
+    SCOPE_NAMES,
+    FixtureDef,
+    FixtureLookupError,
+    FixtureRegistry,
+    FixtureRunner,
+    ScopeMismatch,
+    ExecutionPlan,
+    build_closure,
+    build_registry,
+    collect_module,
+    conftest_chain,
+    fixture_param_dimensions,
+    import_test_module,
+)
+import rustest._v2_worker as worker
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def isolated_import_state() -> Iterator[None]:
+    """Run the worker's imports the way the worker does, then undo every mutation.
+
+    Two things, both mandatory:
+
+    * **The compat shim is installed for the duration.**  These tests run *under* real
+      pytest, so a generated module's ``import pytest`` would otherwise bind real pytest,
+      whose ``@pytest.fixture`` leaves none of the ``__rustest_*`` metadata the registry
+      reads — every fixture would silently vanish.  :func:`install_pytest_shim` is what the
+      worker calls in ``main()``; doing it here is running the same code path.
+    * **`sys.path` / `sys.modules` / the conftest cache are restored.**  The worker mutates
+      all three by design (module identity is the #130 fix, the conftest cache is pytest's
+      ``_importconftest`` plugin cache), and a stale ``sys.modules["conftest"]`` would make
+      a later test pass for the wrong reason.
+    """
+    saved_path = list(sys.path)
+    saved_modules = dict(sys.modules)
+    saved_conftests = dict(worker._conftest_modules)  # pyright: ignore[reportPrivateUsage]
+    try:
+        worker.install_pytest_shim()
+        yield
+    finally:
+        sys.path[:] = saved_path
+        for name in set(sys.modules) - set(saved_modules):
+            del sys.modules[name]
+        sys.modules.update(saved_modules)
+        worker._conftest_modules.clear()  # pyright: ignore[reportPrivateUsage]
+        worker._conftest_modules.update(saved_conftests)  # pyright: ignore[reportPrivateUsage]
+
+
+def write(path: Path, source: str) -> Path:
+    """Write dedented *source* to *path*, creating parents."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
+    return path
+
+
+def load(path: Path, rootdir: Path) -> tuple[types.ModuleType, FixtureRegistry]:
+    """Import *path* the way `collect_file` does — conftest chain first, then the module."""
+    registry = FixtureRegistry()
+    worker._register_builtin_fixtures(registry)  # pyright: ignore[reportPrivateUsage]
+    for conftest in conftest_chain(path, rootdir):
+        conftest_module = worker.import_conftest(conftest, rootdir)
+        registry.parse_factories(
+            conftest_module,
+            worker._conftest_baseid(conftest, rootdir),  # pyright: ignore[reportPrivateUsage]
+        )
+    module = import_test_module(path, rootdir)
+    registry.parse_factories(
+        module,
+        worker._relative_posix(path, rootdir),  # pyright: ignore[reportPrivateUsage]
+    )
+    return module, registry
+
+
+def collect(path: Path, rootdir: Path) -> tuple[list[str], list[ExecutionPlan]]:
+    """Collect *path* and return ``(ids, plans)``."""
+    module, registry = load(path, rootdir)
+    entries, plans = collect_module(module, path, rootdir, DEFAULT_NAMING, registry)
+    return [entry["id"] for entry in entries], plans
+
+
+def run_all(plans: list[ExecutionPlan]) -> list[tuple[str, str]]:
+    """Run every plan through a single :class:`FixtureRunner`, as a worker would.
+
+    Returns ``(id, status)`` pairs where status is ``passed`` or ``<phase>:<message>``, so
+    a test can assert on outcomes without importing the execute half (Task 3).
+
+    A test method is called with ``runner.instance`` as ``self`` — the same object its
+    class-body fixtures were bound to, which is the contract Task 3 inherits.
+    """
+    runner = FixtureRunner()
+    results: list[tuple[str, str]] = []
+    for plan in plans:
+        status = "passed"
+        try:
+            kwargs = runner.setup(plan)
+            assert plan.func is not None
+            if runner.instance is not None:
+                _ = plan.func(runner.instance, **kwargs)
+            else:
+                _ = plan.func(**kwargs)
+        except BaseException as exc:  # noqa: BLE001 - the worker classifies, this records
+            status = f"setup-or-call:{type(exc).__name__}:{exc}"
+        try:
+            runner.teardown("function")
+        except BaseException as exc:  # noqa: BLE001
+            status = f"teardown:{type(exc).__name__}:{exc}"
+        results.append((plan.id, status))
+    runner.teardown_all()
+    return results
+
+
+def pytest_ids(tree: Path) -> list[str]:
+    """Real pytest's collected ids for *tree*, in emission order — the id oracle."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ids: list[str] = []
+    for line in proc.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("=", "no tests ran")):
+            break
+        if "::" in stripped:
+            ids.append(stripped.replace("\\", "/"))
+    assert ids, f"pytest collected nothing:\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# 1. registry — chain, shadowing, metadata
+# ---------------------------------------------------------------------------
+
+
+def test_conftest_chain_is_rootdir_down_and_stops_at_rootdir(tmp_path: Path) -> None:
+    """Port of `_pytest/config/__init__.py::_loadconftestmodules` with default confcutdir.
+
+    Outermost first (pytest's ``reversed((directory, *directory.parents))``), the conftest
+    **at** rootdir included, anything above it excluded (``_is_in_confcutdir`` is
+    ``path not in confcutdir.parents``, and confcutdir defaults to rootdir).
+    """
+    above = write(tmp_path / "conftest.py", "")
+    root = tmp_path / "suite"
+    top = write(root / "conftest.py", "")
+    nested = write(root / "pkg" / "conftest.py", "")
+    target = write(root / "pkg" / "test_a.py", "def test_x(): pass\n")
+
+    assert conftest_chain(target, root) == [top, nested]
+    assert above not in conftest_chain(target, root)
+
+
+def test_module_fixture_shadows_the_conftest_one(tmp_path: Path) -> None:
+    """Corpus `fixtures/override-nearest`: nearest definition wins.
+
+    Registration order is furthest-to-nearest, so ``defs[-1]`` is the nearest —
+    pytest's own convention (`_get_active_fixturedef`: "sorted from furthest to closest").
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def value():
+            return "conftest"
+        """,
+    )
+    target = write(
+        tmp_path / "test_override.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def value():
+            return "module"
+
+        def test_nearest_wins(value):
+            assert value == "module"
+        """,
+    )
+
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        defs = registry.getfixturedefs("value")
+        assert defs is not None
+        assert [d.baseid for d in defs] == ["", "test_override.py"]
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert run_all(plans) == [("test_override.py::test_nearest_wins", "passed")]
+
+
+def test_conftest_is_imported_once_and_shared_with_the_test_module(tmp_path: Path) -> None:
+    """Corpus `fixtures/autouse`: the conftest the worker parses IS the one the test imports.
+
+    v1's bug (#, ledger entry "conftest loaded twice as two module objects") made the
+    autouse fixture append to a different list than the test read.  The plugin-style cache
+    in :func:`import_conftest` plus real-identity import is what closes it.
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        applied = []
+
+        @pytest.fixture(autouse=True)
+        def always():
+            applied.append(1)
+        """,
+    )
+    target = write(
+        tmp_path / "test_autouse.py",
+        """
+        from conftest import applied
+
+        def test_autouse_applied():
+            assert len(applied) == 1
+        """,
+    )
+
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        assert run_all(plans) == [("test_autouse.py::test_autouse_applied", "passed")]
+
+
+def test_a_conftest_is_imported_once_per_worker_however_many_files_use_it(
+    tmp_path: Path,
+) -> None:
+    """Port of `_importconftest`'s ``get_plugin(str(conftestpath))`` cache (l. 695-698).
+
+    Two test files in one directory share one conftest *object*.  Re-importing it per file
+    would reset its module-level state — the exact shape of v1's double-import bug — and
+    would go unnoticed in any suite whose conftest happens to be stateless.
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        loads = []
+        loads.append(1)
+
+        @pytest.fixture
+        def load_count():
+            return len(loads)
+        """,
+    )
+    first = write(tmp_path / "test_one.py", "def test_a(load_count):\n    assert load_count == 1\n")
+    second = write(
+        tmp_path / "test_two.py", "def test_b(load_count):\n    assert load_count == 1\n"
+    )
+
+    with isolated_import_state():
+        modules: list[object] = []
+        for target in (first, second):
+            module, registry = load(target, tmp_path)
+            del module
+            defs = registry.getfixturedefs("load_count")
+            assert defs is not None
+            modules.append(defs[-1].func)
+            _ids, plans = collect(target, tmp_path)
+            assert [status for _id, status in run_all(plans)] == ["passed"]
+        assert modules[0] is modules[1]
+
+
+def test_sibling_conftests_do_not_collide(tmp_path: Path) -> None:
+    """Port of `_importconftest`'s ``del sys.modules[conftestpath.stem]``.
+
+    Probed against pytest 8.4.2: two non-package directories each with a ``conftest.py``
+    collect and pass.  Without the eviction the second one is an import-file mismatch.
+    """
+    for label in ("a", "b"):
+        write(
+            tmp_path / label / "conftest.py",
+            f"""
+            import pytest
+
+            @pytest.fixture
+            def v():
+                return {label!r}
+            """,
+        )
+        write(
+            tmp_path / label / f"test_{label}.py",
+            f"""
+            def test_{label}(v):
+                assert v == {label!r}
+            """,
+        )
+
+    with isolated_import_state():
+        for label in ("a", "b"):
+            _ids, plans = collect(tmp_path / label / f"test_{label}.py", tmp_path)
+            assert run_all(plans) == [(f"{label}/test_{label}.py::test_{label}", "passed")]
+
+
+def test_fixture_metadata_is_read_from_the_decorator(tmp_path: Path) -> None:
+    """scope / autouse / name / params come off ``decorators.py::fixture``'s attributes."""
+    target = write(
+        tmp_path / "test_meta.py",
+        """
+        import pytest
+
+        @pytest.fixture(scope="module", autouse=True, name="renamed")
+        def _hidden():
+            return 1
+
+        @pytest.fixture(params=[1, 2], ids=["one", "two"])
+        def choice(request):
+            return request.param
+
+        def test_x(renamed, choice):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        _module, registry = load(target, tmp_path)
+        renamed = registry.getfixturedefs("renamed")
+        assert renamed is not None and renamed[-1].scope == "module"
+        assert renamed[-1].autouse is True
+        assert registry.getfixturedefs("_hidden") is None
+        choice = registry.getfixturedefs("choice")
+        assert choice is not None
+        assert choice[-1].params == (("one", 1), ("two", 2))
+        assert registry.autouse_names == ("renamed",)
+
+
+def test_class_fixtures_are_invisible_outside_the_class(tmp_path: Path) -> None:
+    """Port of `Class.collect`'s ``parsefactories(self.newinstance(), self.nodeid)``."""
+    target = write(
+        tmp_path / "test_cls.py",
+        """
+        import pytest
+
+        class TestBox:
+            @pytest.fixture
+            def boxed(self):
+                return "in-class"
+
+            def test_inside(self, boxed):
+                assert boxed == "in-class"
+
+        def test_outside(boxed):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        results = dict(run_all(plans))
+    assert results["test_cls.py::TestBox::test_inside"] == "passed"
+    assert results["test_cls.py::test_outside"].startswith(
+        "setup-or-call:FixtureLookupError:fixture 'boxed' not found"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2. closure — transitive deps, autouse, ordering, unknown names
+# ---------------------------------------------------------------------------
+
+
+def _registry(*defs: FixtureDef) -> FixtureRegistry:
+    registry = FixtureRegistry()
+    for fixturedef in defs:
+        registry.register(fixturedef)
+    return registry
+
+
+def _def(
+    name: str,
+    argnames: tuple[str, ...] = (),
+    scope: str = "function",
+    autouse: bool = False,
+    params: tuple[tuple[str, object], ...] | None = None,
+    baseid: str = "",
+) -> FixtureDef:
+    return FixtureDef(
+        name=name,
+        func=lambda: None,
+        scope=scope,
+        params=params,
+        autouse=autouse,
+        baseid=baseid,
+        argnames=argnames,
+    )
+
+
+def test_closure_pulls_transitive_dependencies() -> None:
+    """`getfixtureclosure`'s fixpoint loop: deps of deps land in the closure."""
+    registry = _registry(_def("a", ("b",)), _def("b", ("c",)), _def("c"))
+    closure = build_closure(registry, ["a"])
+    assert closure.names == ("a", "b", "c")
+    assert set(closure.arg2defs) == {"a", "b", "c"}
+
+
+def test_closure_puts_autouse_names_first() -> None:
+    """``deduplicate_names(autousenames, usefixturesnames, argnames)`` — autouse leads.
+
+    Load-bearing for ids: an autouse parametrized fixture contributes the leftmost id
+    component even for a test that never names it (probed: ``test_auto_only[1]``).
+    """
+    registry = _registry(_def("auto", autouse=True), _def("asked"))
+    assert build_closure(registry, ["asked"]).names == ("auto", "asked")
+
+
+def test_closure_sorts_wider_scopes_first_and_is_stable() -> None:
+    """``fixturenames_closure.sort(key=sort_by_scope, reverse=True)`` — a STABLE sort.
+
+    Probed: ``test_scope_order[m1-1-f1]`` for a module fixture requested after a function
+    one, so the module id component leads.  Two same-scope names keep discovery order.
+    """
+    registry = _registry(
+        _def("f1"), _def("m1", scope="module"), _def("f2"), _def("s1", scope="session")
+    )
+    assert build_closure(registry, ["f1", "m1", "f2", "s1"]).names == ("s1", "m1", "f1", "f2")
+
+
+def test_closure_keeps_but_never_resolves_directly_parametrized_names() -> None:
+    """``ignore_args`` from `_get_direct_parametrize_args`: the name is shadowed, not resolved."""
+    registry = _registry(_def("direct", ("dep",)), _def("dep"))
+    closure = build_closure(registry, ["direct"], ignore_args=frozenset({"direct"}))
+    assert closure.names == ("direct",)
+    assert closure.arg2defs == {}
+
+
+def test_closure_takes_transitive_deps_from_the_NEAREST_definition() -> None:
+    """``for arg in fixturedefs[-1].argnames`` — the nearest def decides what else is needed.
+
+    A conftest ``thing()`` overridden by a module ``thing(helper)``: only the nearest def
+    knows about ``helper``, so reading the furthest one would leave it out of the closure
+    and the test would die with "fixture 'helper' not found" at setup.
+    """
+    registry = FixtureRegistry()
+    registry.register(_def("thing", baseid=""))
+    registry.register(_def("thing", ("helper",), baseid="test_x.py"))
+    registry.register(_def("helper"))
+    assert build_closure(registry, ["thing"]).names == ("thing", "helper")
+
+
+def test_closure_needs_more_than_one_pass_over_a_snapshot() -> None:
+    """The fixpoint loop and the live-list iteration are one mechanism, not two.
+
+    pytest iterates ``fixturenames_closure`` *while appending to it*, so a dependency found
+    mid-pass is resolved in the same pass; the ``while lastlen != len(...)`` wrapper is what
+    makes the algorithm correct if that ever stops being true.  A four-deep chain needs
+    either property, so this pins the pair.
+    """
+    registry = _registry(_def("a", ("b",)), _def("b", ("c",)), _def("c", ("d",)), _def("d"))
+    assert build_closure(registry, ["a"]).names == ("a", "b", "c", "d")
+
+
+def test_request_is_never_a_registered_fixture(tmp_path: Path) -> None:
+    """pytest special-cases ``request`` in `_get_active_fixturedef` (l. 566-570).
+
+    It lands in the closure with no fixturedef and must not raise "not found".
+    """
+    target = write(
+        tmp_path / "test_req.py",
+        """
+        import pytest
+
+        @pytest.fixture(params=["only"])
+        def flavour(request):
+            return request.param
+
+        def test_uses(flavour):
+            assert flavour == "only"
+        """,
+    )
+    with isolated_import_state():
+        _module, registry = load(target, tmp_path)
+        closure = build_closure(registry, ["flavour"])
+        assert "request" in closure.names
+        assert "request" not in closure.arg2defs
+        _ids, plans = collect(target, tmp_path)
+        assert run_all(plans) == [("test_req.py::test_uses[only]", "passed")]
+
+
+def test_unknown_fixture_errors_at_setup_with_pytests_wording(tmp_path: Path) -> None:
+    """`FixtureLookupError.formatrepr` l. 875-877, verbatim — and NOT a collection error.
+
+    pytest collects the test fine and reports an **error** at setup; so does this.
+    """
+    target = write(
+        tmp_path / "test_missing.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def known():
+            return 1
+
+        def test_needs_ghost(ghost):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        ids, plans = collect(target, tmp_path)
+        assert ids == ["test_missing.py::test_needs_ghost"]
+        runner = FixtureRunner()
+        with pytest.raises(FixtureLookupError) as excinfo:
+            _ = runner.setup(plans[0])
+    message = str(excinfo.value)
+    assert message.splitlines()[0] == "fixture 'ghost' not found"
+    assert " available fixtures: " in message
+    assert "known" in message
+    assert message.endswith(" use 'pytest --fixtures [testpath]' for help on them.")
+
+
+def test_unsupported_builtin_says_so_instead_of_not_found(tmp_path: Path) -> None:
+    """``caplog`` is a gap in this worker, not a fixture the user forgot to write."""
+    target = write(
+        tmp_path / "test_caplog.py",
+        "def test_logs(caplog):\n    pass\n",
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        with pytest.raises(FixtureLookupError) as excinfo:
+            _ = FixtureRunner().setup(plans[0])
+    assert "not supported by the rustest v2 worker yet" in str(excinfo.value)
+    assert "not found" not in str(excinfo.value)
+
+
+def test_a_wider_fixture_may_not_request_a_narrower_one(tmp_path: Path) -> None:
+    """Port of `FixtureRequest._check_scope` — silently caching the narrow one is worse."""
+    target = write(
+        tmp_path / "test_mismatch.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def narrow():
+            return 1
+
+        @pytest.fixture(scope="module")
+        def wide(narrow):
+            return narrow
+
+        def test_x(wide):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        with pytest.raises(ScopeMismatch):
+            _ = FixtureRunner().setup(plans[0])
+
+
+def test_an_override_can_request_the_fixture_it_overrides(tmp_path: Path) -> None:
+    """`_get_active_fixturedef` l. 596-608: one level up per matching request in the chain."""
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def value():
+            return "base"
+        """,
+    )
+    target = write(
+        tmp_path / "test_super.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def value(value):
+            return value + "+module"
+
+        def test_chained(value):
+            assert value == "base+module"
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        assert run_all(plans) == [("test_super.py::test_chained", "passed")]
+
+
+# ---------------------------------------------------------------------------
+# 3. scopes and teardown order
+# ---------------------------------------------------------------------------
+
+
+def test_function_scope_is_fresh_per_test(tmp_path: Path) -> None:
+    """Corpus `fixtures/scope-function`, verbatim."""
+    target = write(
+        tmp_path / "test_scope_function.py",
+        """
+        import itertools
+
+        import pytest
+
+        counter = itertools.count()
+
+        @pytest.fixture
+        def fresh():
+            return next(counter)
+
+        def test_first(fresh):
+            assert fresh == 0
+
+        def test_second(fresh):
+            assert fresh == 1
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        assert [status for _id, status in run_all(plans)] == ["passed", "passed"]
+
+
+def test_module_scope_is_cached_across_the_file(tmp_path: Path) -> None:
+    """Corpus `fixtures/scope-module`, verbatim — and the cache survives function teardown."""
+    target = write(
+        tmp_path / "test_scope_module.py",
+        """
+        import itertools
+
+        import pytest
+
+        counter = itertools.count()
+
+        @pytest.fixture(scope="module")
+        def shared():
+            return next(counter)
+
+        def test_first(shared):
+            assert shared == 0
+
+        def test_second(shared):
+            assert shared == 0
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        assert [status for _id, status in run_all(plans)] == ["passed", "passed"]
+
+
+def test_yield_teardown_runs_after_the_test_that_used_it(tmp_path: Path) -> None:
+    """Corpus `fixtures/yield-teardown`, verbatim — the case that pins *when* teardown runs.
+
+    The second test asserts the first test's fixture was already finalised, so a teardown
+    deferred to shutdown fails it.
+    """
+    target = write(
+        tmp_path / "test_teardown.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture
+        def resource():
+            events.append("setup")
+            yield "value"
+            events.append("teardown")
+
+        def test_uses_resource(resource):
+            assert resource == "value"
+            assert events == ["setup"]
+
+        def test_teardown_ran_after_previous_test():
+            assert events == ["setup", "teardown"]
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        assert [status for _id, status in run_all(plans)] == ["passed", "passed"]
+
+
+def test_teardown_is_reverse_setup_order(tmp_path: Path) -> None:
+    """`FixtureDef.finish` (l. 1053-1072) pops its finalizer stack; so does the runner.
+
+    ``outer`` depends on ``inner``, so setup is inner-then-outer and teardown must be
+    outer-then-inner.  A FIFO drain would report ``["inner", "outer"]``.
+    """
+    target = write(
+        tmp_path / "test_order.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture
+        def inner():
+            events.append("setup:inner")
+            yield 1
+            events.append("teardown:inner")
+
+        @pytest.fixture
+        def outer(inner):
+            events.append("setup:outer")
+            yield 2
+            events.append("teardown:outer")
+
+        def test_uses(outer):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert run_all(plans) == [("test_order.py::test_uses", "passed")]
+        events = getattr(module, "events")
+    assert events == ["setup:inner", "setup:outer", "teardown:outer", "teardown:inner"]
+
+
+def test_wider_scopes_tear_down_after_narrower_ones(tmp_path: Path) -> None:
+    """`SetupState.teardown_exact` unwinds narrowest-first; :meth:`teardown` mirrors it."""
+    target = write(
+        tmp_path / "test_scoped_order.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module")
+        def modfix():
+            events.append("setup:module")
+            yield 1
+            events.append("teardown:module")
+
+        @pytest.fixture
+        def funcfix(modfix):
+            events.append("setup:function")
+            yield 2
+            events.append("teardown:function")
+
+        def test_uses(funcfix):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert run_all(plans) == [("test_scoped_order.py::test_uses", "passed")]
+        events = getattr(module, "events")
+    assert events == [
+        "setup:module",
+        "setup:function",
+        "teardown:function",
+        "teardown:module",
+    ]
+
+
+def test_a_teardown_exception_surfaces_and_still_finalises_the_rest(tmp_path: Path) -> None:
+    """`FixtureDef.finish` re-raises but always clears the cache ("Even if finalization fails").
+
+    pytest reports a teardown failure as an **error** even when the body passed, which is
+    why this must not be swallowed.
+    """
+    target = write(
+        tmp_path / "test_bad_teardown.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture
+        def good():
+            yield 1
+            events.append("good-torn-down")
+
+        @pytest.fixture
+        def bad(good):
+            yield 2
+            raise RuntimeError("boom")
+
+        def test_body_passes(bad):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        _ = runner.setup(plans[0])
+        with pytest.raises(RuntimeError, match="boom"):
+            runner.teardown("function")
+        events = getattr(module, "events")
+    assert events == ["good-torn-down"]
+
+
+def test_several_teardown_exceptions_become_a_group(tmp_path: Path) -> None:
+    """``BaseExceptionGroup`` for >1, mirroring `FixtureDef.finish` l. 1069-1072."""
+    target = write(
+        tmp_path / "test_two_bad.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def first():
+            yield 1
+            raise RuntimeError("first")
+
+        @pytest.fixture
+        def second(first):
+            yield 2
+            raise RuntimeError("second")
+
+        def test_x(second):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        runner = FixtureRunner()
+        _ = runner.setup(plans[0])
+        with pytest.raises(BaseExceptionGroup) as excinfo:
+            runner.teardown("function")
+    assert [str(exc) for exc in excinfo.value.exceptions] == ["first", "second"]
+
+
+def test_session_scope_is_worker_lifetime(tmp_path: Path) -> None:
+    """The documented 1b.2 limitation: session == per-worker, torn down at Shutdown."""
+    target = write(
+        tmp_path / "test_session.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="session")
+        def wide():
+            events.append("setup")
+            yield 1
+            events.append("teardown")
+
+        def test_a(wide):
+            pass
+
+        def test_b(wide):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        for plan in plans:
+            _ = runner.setup(plan)
+            runner.teardown("function")
+        events = list(getattr(module, "events"))
+        assert events == ["setup"]
+        runner.teardown_all()
+        events = getattr(module, "events")
+    assert events == ["setup", "teardown"]
+
+
+def test_teardown_of_a_wide_scope_unwinds_the_narrow_ones_first(tmp_path: Path) -> None:
+    """One `teardown("module")` call must unwind function scope before module scope.
+
+    Port of `SetupState.teardown_exact`, which pops the node stack from the deepest node
+    upwards.  Driven directly (no intervening ``teardown("function")``) because that is the
+    only shape in which the *within-call* bucket order is observable — Task 3's normal
+    sequence tears function scope down after every test, which hides it.
+    """
+    target = write(
+        tmp_path / "test_unwind.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module")
+        def modfix():
+            yield 1
+            events.append("teardown:module")
+
+        @pytest.fixture
+        def funcfix(modfix):
+            yield 2
+            events.append("teardown:function")
+
+        def test_uses(funcfix):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        _ = runner.setup(plans[0])
+        runner.teardown("module")
+        events = getattr(module, "events")
+    assert events == ["teardown:function", "teardown:module"]
+
+
+def test_teardown_of_module_scope_leaves_session_scope_alone(tmp_path: Path) -> None:
+    """``session`` is a strictly wider bucket: moving to the next module must not drain it."""
+    target = write(
+        tmp_path / "test_keep_session.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="session")
+        def wide():
+            yield 1
+            events.append("teardown:session")
+
+        @pytest.fixture(scope="module")
+        def narrow(wide):
+            yield 2
+            events.append("teardown:module")
+
+        def test_uses(narrow):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        _ = runner.setup(plans[0])
+        runner.teardown("module")
+        assert getattr(module, "events") == ["teardown:module"]
+        runner.teardown_all()
+        events = getattr(module, "events")
+    assert events == ["teardown:module", "teardown:session"]
+
+
+def test_request_addfinalizer_belongs_to_its_fixture_and_runs_once(tmp_path: Path) -> None:
+    """Port of `SubRequest.addfinalizer` + `FixtureDef.finish`'s LIFO drain.
+
+    A module-scoped parametrized fixture is finalised *early* when its parameter changes, so
+    this pins three things at once: the finalizer travels with the fixture (not the scope),
+    it runs after the post-yield teardown (LIFO), and it runs exactly **once** per instance.
+    """
+    target = write(
+        tmp_path / "test_addfinalizer.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module", params=["a", "b"])
+        def flavour(request):
+            request.addfinalizer(lambda: events.append(f"final:{request.param}"))
+            yield request.param
+            events.append(f"yield:{request.param}")
+
+        def test_uses(flavour):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        for plan in plans:
+            _ = runner.setup(plan)
+            runner.teardown("function")
+        runner.teardown_all()
+        events = getattr(module, "events")
+    assert events == ["yield:a", "final:a", "yield:b", "final:b"]
+
+
+@pytest.mark.parametrize("scope", list(SCOPE_NAMES))
+def test_every_declared_scope_maps_to_a_teardown_bucket(scope: str) -> None:
+    """No scope may fall through to "never torn down" — that would leak a generator."""
+    runner = FixtureRunner()
+    runner.teardown(scope)  # must not raise KeyError
+
+
+# ---------------------------------------------------------------------------
+# 4. builtin fixtures
+# ---------------------------------------------------------------------------
+
+
+def test_supported_builtins_resolve(tmp_path: Path) -> None:
+    """tmp_path / monkeypatch / capsys come from v1's `builtin_fixtures`, wrapped not forked."""
+    target = write(
+        tmp_path / "test_builtins.py",
+        """
+        import os
+        from pathlib import Path
+
+        def test_builtins(tmp_path, monkeypatch, capsys):
+            assert isinstance(tmp_path, Path) and tmp_path.is_dir()
+            monkeypatch.setenv("RUSTEST_V2_PROBE", "1")
+            assert os.environ["RUSTEST_V2_PROBE"] == "1"
+            print("hello")
+            assert capsys.readouterr().out == "hello\\n"
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        assert run_all(plans) == [("test_builtins.py::test_builtins", "passed")]
+    assert "RUSTEST_V2_PROBE" not in __import__("os").environ
+
+
+# ---------------------------------------------------------------------------
+# 5. closure-driven param ids — the fixtures/parametrized-fixture un-waiver
+# ---------------------------------------------------------------------------
+
+
+#: Each row is a whole test module; ids are compared against real pytest, never asserted
+#: by hand.  Together they cover every ordering rule `fixture_param_dimensions` encodes.
+ID_CASES: dict[str, str] = {
+    "corpus_parametrized_fixture": """
+        import pytest
+
+        @pytest.fixture(params=[1, 2])
+        def number(request):
+            return request.param
+
+        def test_number(number):
+            assert number in (1, 2)
+    """,
+    "two_fixtures_signature_order_irrelevant": """
+        import pytest
+
+        @pytest.fixture(params=[1, 2])
+        def number(request):
+            return request.param
+
+        @pytest.fixture(params=["a", "b"])
+        def letter(request):
+            return request.param
+
+        def test_forward(number, letter):
+            pass
+
+        def test_reverse(letter, number):
+            pass
+    """,
+    "explicit_ids": """
+        import pytest
+
+        @pytest.fixture(params=[10, 20], ids=["ten", "twenty"])
+        def named(request):
+            return request.param
+
+        def test_named(named):
+            pass
+    """,
+    "fixture_components_precede_direct_ones": """
+        import pytest
+
+        @pytest.fixture(params=[1, 2])
+        def number(request):
+            return request.param
+
+        @pytest.mark.parametrize("direct", [7, 8])
+        def test_mixed(direct, number):
+            pass
+
+        @pytest.mark.parametrize("direct", [7, 8])
+        def test_mixed_rev(number, direct):
+            pass
+    """,
+    "transitive_parametrized_dependency": """
+        import pytest
+
+        @pytest.fixture(params=[1, 2])
+        def number(request):
+            return request.param
+
+        @pytest.fixture(params=["x", "y"])
+        def outer(request, number):
+            return request.param
+
+        def test_chain(outer):
+            pass
+    """,
+    "autouse_parametrized_fixture_leads": """
+        import pytest
+
+        @pytest.fixture(params=["p", "q"], autouse=True)
+        def auto(request):
+            return request.param
+
+        def test_never_asks():
+            pass
+    """,
+    "direct_parametrize_shadows_the_fixture": """
+        import pytest
+
+        @pytest.fixture(params=[1, 2])
+        def value(request):
+            return request.param
+
+        @pytest.mark.parametrize("value", ["shadow"])
+        def test_shadowed(value):
+            assert value == "shadow"
+    """,
+    "conftest_parametrized_fixture": """
+        def test_from_conftest(shared):
+            pass
+    """,
+    "duplicate_param_values_get_unique_ids": """
+        import pytest
+
+        @pytest.fixture(params=[1, 1])
+        def twin(request):
+            return request.param
+
+        def test_twin(twin):
+            pass
+    """,
+    "class_method_with_parametrized_fixture": """
+        import pytest
+
+        @pytest.fixture(params=["u", "v"])
+        def flavour(request):
+            return request.param
+
+        class TestBox:
+            def test_method(self, flavour):
+                pass
+    """,
+}
+
+
+@pytest.mark.parametrize("case", sorted(ID_CASES))
+def test_fixture_param_ids_match_pytest(case: str, tmp_path: Path) -> None:
+    """Differential: the worker's ids vs real pytest's, byte for byte, in order.
+
+    This is the acceptance oracle for corpus `fixtures/parametrized-fixture` and for every
+    ordering rule in :func:`fixture_param_dimensions` — component order (closure order,
+    scope-sorted, autouse first), fixture-before-direct, and per-call id de-duplication.
+    """
+    root = tmp_path / case
+    _ = write(root / "pytest.ini", "[pytest]\n")
+    write(
+        root / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture(params=["c1", "c2"])
+        def shared(request):
+            return request.param
+        """,
+    )
+    target = write(root / f"test_{case}.py", ID_CASES[case])
+
+    expected = pytest_ids(root)
+    with isolated_import_state():
+        ids, _execution_plans = collect(target, root)
+    assert ids == expected
+
+
+def test_parametrized_fixture_values_reach_the_test(tmp_path: Path) -> None:
+    """Ids alone are not enough — each expanded test must receive ITS parameter."""
+    target = write(
+        tmp_path / "test_values.py",
+        """
+        import pytest
+
+        seen = []
+
+        @pytest.fixture(params=[1, 2])
+        def number(request):
+            return request.param
+
+        def test_number(number):
+            seen.append(number)
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [status for _id, status in run_all(plans)] == ["passed", "passed"]
+        seen = getattr(module, "seen")
+    assert seen == [1, 2]
+
+
+def test_a_module_scoped_parametrized_fixture_is_rebuilt_per_parameter(tmp_path: Path) -> None:
+    """`FixtureDef.execute`'s cache-key branch: a different ``request.param`` finalises first."""
+    target = write(
+        tmp_path / "test_reparam.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module", params=["a", "b"])
+        def flavour(request):
+            events.append(f"setup:{request.param}")
+            yield request.param
+            events.append(f"teardown:{request.param}")
+
+        def test_x(flavour):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        for plan in plans:
+            _ = runner.setup(plan)
+            runner.teardown("function")
+        runner.teardown_all()
+        events = getattr(module, "events")
+    assert events == ["setup:a", "teardown:a", "setup:b", "teardown:b"]
+
+
+def test_fixture_param_dimensions_skips_names_the_test_parametrizes() -> None:
+    """Unit view of the "give the test precedence" branch of `pytest_generate_tests`.
+
+    The closure is deliberately built **without** ``ignore_args`` so the fixturedef IS
+    present: `_collect_function` always ignores the same names it passes here, so the
+    branch is otherwise shadowed by the ``not defs`` short-circuit and would be untestable
+    (and unkillable) through the collection path.
+    """
+    registry = _registry(_def("value", params=(("1", 1), ("2", 2))))
+    closure = build_closure(registry, ["value"])
+    assert fixture_param_dimensions(closure, frozenset()) == [("value", (("1", 1), ("2", 2)))]
+    assert fixture_param_dimensions(closure, frozenset({"value"})) == []
+
+
+def test_fixture_param_dimensions_walks_overrides_nearest_first() -> None:
+    """pytest #1953: an override requesting its super fixture keeps looking for params.
+
+    Two rows in one: the override's OWN params win when it has them (``reversed`` starts at
+    the nearest), and the super fixture's params are reached when it does not.
+    """
+    both = FixtureRegistry()
+    both.register(_def("value", params=(("far", "far"),), baseid=""))
+    both.register(_def("value", ("value",), params=(("near", "near"),), baseid="test_x.py"))
+    assert fixture_param_dimensions(build_closure(both, ["value"]), frozenset()) == [
+        ("value", (("near", "near"),))
+    ]
+
+    registry = FixtureRegistry()
+    registry.register(_def("value", params=(("p", "p"),), baseid=""))
+    registry.register(_def("value", argnames=("value",), baseid="test_x.py"))
+    closure = build_closure(registry, ["value"])
+    assert fixture_param_dimensions(closure, frozenset()) == [("value", (("p", "p"),))]
+
+
+def test_an_override_that_ignores_its_super_fixture_stops_the_walk() -> None:
+    """The ``if argname not in fixturedef.argnames: break`` branch — no params inherited."""
+    registry = FixtureRegistry()
+    registry.register(_def("value", params=(("p", "p"),), baseid=""))
+    registry.register(_def("value", baseid="test_x.py"))
+    closure = build_closure(registry, ["value"])
+    assert fixture_param_dimensions(closure, frozenset()) == []
+
+
+def test_build_registry_orders_builtins_conftests_then_module(tmp_path: Path) -> None:
+    """The single ordering rule the whole shadowing story rests on."""
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def tmp_path():
+            return "conftest-wins-over-builtin"
+        """,
+    )
+    target = write(tmp_path / "test_shadow.py", "def test_x(tmp_path):\n    pass\n")
+    with isolated_import_state():
+        module = import_test_module(target, tmp_path)
+        registry = build_registry(module, target, tmp_path)
+        defs = registry.getfixturedefs("tmp_path")
+        assert defs is not None
+        # Builtin first (baseid "" = total visibility), rootdir conftest second and
+        # therefore nearest -- `defs[-1]` is what the closure resolves.  Both carry
+        # baseid "" because pytest normalises a rootdir conftest's "." to "" itself
+        # (`pytest_plugin_registered` l. 1597-1598).
+        assert len(defs) == 2
+        assert [d.baseid for d in defs] == ["", ""]
+        assert defs[-1].func() == "conftest-wins-over-builtin"
+        assert defs[0].func is not defs[-1].func
