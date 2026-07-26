@@ -127,7 +127,7 @@ pub enum WorkerResponse {
 ### Task 5: Conformance harness v2-collection mode — the 1b.1 gate
 
 **Files:**
-- Modify: `conformance/harness/runners.py` (add `run_rustest_v2_collect(case_dir, args) -> set[str]` using `--v2-collect-only`), `conformance/harness/grade.py` (collection-only grading path), `conformance/__main__.py` (`--v2-collect` flag: grade ONLY collected-ID sets + collection exit codes, pytest vs v2)
+- Modify: `conformance/harness/runners.py` (add `run_rustest_v2_collect(case_dir, args) -> CollectResult(ids: list[str], exit_code: int)` using `--v2-collect-only` [AMENDED per Task 5 review: ordered list + exit code, never a bare set — ordering parity is graded]), `conformance/harness/grade.py` (collection-only grading path), `conformance/__main__.py` (`--v2-collect` flag: grade ONLY collected-ID sets + collection exit codes, pytest vs v2)
 - Create: `conformance/waivers-v2-collect.toml` (separate ledger for the v2-collection gate)
 - Test: extend `conformance/tests/`
 
