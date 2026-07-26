@@ -22,10 +22,7 @@ from conformance.harness.runners import CollectResult, Outcomes, RunResult
 # The only divergences Phase 1b.1 pre-authorizes. Everything else must be adjudicated
 # in the report and named here deliberately -- the point of the gate is that the ledger
 # cannot grow silently.
-PREAUTHORIZED_V2_COLLECT_WAIVERS = {
-    "marks/mark-filter",
-    "marks/deselect-all",
-}
+PREAUTHORIZED_V2_COLLECT_WAIVERS: set[str] = set()
 
 
 def test_load_waivers_or_exit_reports_malformed_toml(tmp_path: Path) -> None:
