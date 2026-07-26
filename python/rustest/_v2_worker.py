@@ -965,6 +965,13 @@ _SCOPE_INDEX: Final[Mapping[str, int]] = {name: index for index, name in enumera
 #: is not torn down at the package boundary.  No corpus case exercises either
 #: (`fixtures/*` are all function/module scope); Phase 1c owns the corpus additions and
 #: the cross-worker session protocol.
+#:
+#: ``class`` has its own bucket and a real boundary, but the boundary is **caller-driven**:
+#: pytest gets it from the collection tree (`SetupState.teardown_exact` unwinds every node
+#: the next item does not share), and a worker has no tree, so
+#: :meth:`FixtureRunner.note_test_boundary` compares ``CollectedTest.class_name`` instead.
+#: :meth:`FixtureRunner.setup` calls it, so a caller cannot forget; a caller that drives the
+#: runner some other way must call it, or one class's fixtures leak into the next.
 _SCOPE_BUCKET: Final[Mapping[str, str]] = {
     "function": "function",
     "class": "class",
@@ -1332,6 +1339,16 @@ class ExecutionPlan:
     unittest_case: type | None = None
     unittest_method: str | None = None
 
+    @property
+    def class_name(self) -> str | None:
+        """The class chain this test belongs to, or ``None`` at module level.
+
+        Identical to ``CollectedTest.class_name`` on the wire.  It is what marks a
+        **class-scope boundary**: :meth:`FixtureRunner.note_test_boundary` compares it
+        against the previous test's and tears class scope down when it changes.
+        """
+        return ".".join(self.parts[:-1]) if len(self.parts) > 1 else None
+
 
 class _SubRequest:
     """The ``request`` object a fixture (or a test) receives.
@@ -1354,7 +1371,7 @@ class _SubRequest:
         params: Mapping[str, object],
         fixturename: str | None,
         scope: str,
-        chain: tuple[str, ...],
+        chain: tuple[FixtureDef, ...],
     ) -> None:
         super().__init__()
         self._runner = runner
@@ -1362,6 +1379,10 @@ class _SubRequest:
         self._params = params
         self._chain = chain
         self.fixturename: Final = fixturename
+        #: The **declared** scope of the fixture holding this request — ``"session"`` stays
+        #: ``"session"`` even though the runner caches it in the worker-lifetime bucket.
+        #: `SubRequest._scope` is the declared scope, it is what ``ScopeMismatch`` reports,
+        #: and a fixture reading ``request.scope`` must see what it wrote.
         self.scope: Final = scope
         if fixturename is not None and fixturename in params:
             self.param: object = params[fixturename]
@@ -1380,12 +1401,18 @@ class _SubRequest:
         self._runner.add_finalizer(finalizer)
 
     def getfixturevalue(self, argname: str) -> object:
-        """Port of `FixtureRequest.getfixturevalue` (l. 527-...): resolve a name on demand.
+        """Port of `FixtureRequest.getfixturevalue` (l. 527-534): resolve a name on demand.
 
-        Names outside the static closure are looked up in the registry, which is what
-        pytest's ``getfixturedefs(argname, self._pyfuncitem)`` fallback does.
+        Routed through the same `_get_active_fixturedef` path a declared dependency takes —
+        which is pytest's structure exactly (``getfixturevalue`` *is* a thin wrapper over
+        it) — so a dynamic request is scope-checked too.  Names outside the static closure
+        fall back to the registry, mirroring pytest's
+        ``getfixturedefs(argname, self._pyfuncitem)`` branch (l. 583-587).
         """
-        return self._runner.resolve(argname, self._closure, self._params, self._chain)
+        value, _fixturedef = self._runner._resolve_active(  # pyright: ignore[reportPrivateUsage]
+            argname, self._closure, self._params, self._chain, self.scope
+        )
+        return value
 
 
 @dataclass
@@ -1397,19 +1424,29 @@ class _Cached:
 
 @dataclass
 class _Finalizer:
-    """One fixture's teardown: its post-yield half plus anything ``addfinalizer`` added.
+    """One fixture's teardown list — a direct model of ``FixtureDef._finalizers``.
 
-    Mirrors ``FixtureDef._finalizers``, which `call_fixture_func` appends the yield teardown
-    to *after* the body has run — so draining LIFO means yield teardown first, then the
-    body's own finalizers in reverse registration order.
+    Three kinds of entry land here, and the order they are appended in is the whole
+    contract, because `FixtureDef.finish` drains it **LIFO**
+    (l. 1055-1061, ``while self._finalizers: fin = self._finalizers.pop()``):
+
+    1. whatever the fixture body registered through ``request.addfinalizer``;
+    2. the post-yield teardown, appended by `call_fixture_func` *after* the body ran;
+    3. one entry per **dependent** fixture, appended by `FixtureDef.execute`
+       (l. 1115-1121) as each consumer is set up.
+
+    Popping that stack therefore runs dependents first (newest), then this fixture's own
+    post-yield half, then the body's finalizers in reverse — which is what makes tearing
+    down a parametrized fixture tear its dependents down first (pytest #4871).
     """
 
+    #: Draining is **destructive** — ``while calls: calls.pop()`` — which is both pytest's
+    #: own loop and the entire reason a finalizer cannot run twice.  A fixture finished early
+    #: by a parametrization change is still sitting on its scope bucket, and the bucket drain
+    #: finds its list already empty.  No "already done" flag: a guard no test can kill is a
+    #: guard that is not doing anything.
     fixturedef: FixtureDef | None
-    call: Callable[[], object] | None
-    extras: list[Callable[[], object]] = field(default_factory=list)
-    #: Set the moment :meth:`FixtureRunner._finish` starts, so a finalizer already run by a
-    #: parametrization change is skipped when its bucket is drained — never run twice.
-    done: bool = False
+    calls: list[Callable[[], object]] = field(default_factory=list)
 
 
 _NO_PARAM: Final = object()
@@ -1442,6 +1479,9 @@ class FixtureRunner:
         self._finalizers: dict[str, list[_Finalizer]] = {name: [] for name in _BUCKET_ORDER}
         #: One entry per fixture body currently executing; ``addfinalizer`` targets the top.
         self._extras_stack: list[list[Callable[[], object]]] = []
+        #: The class chain of the last test :meth:`note_test_boundary` saw, so a change of
+        #: class can drain class scope.  ``None`` means "module level, or nothing yet".
+        self._current_class: str | None = None
         #: The test-class instance the current test (and its class fixtures) is bound to.
         #: pytest builds one per ``Function`` and both the test method and any class-body
         #: fixture see the same object (`resolve_fixture_function` l. 1142-1164, which
@@ -1462,7 +1502,12 @@ class FixtureRunner:
         Directly parametrized argnames are seeded from ``plan.direct_params`` rather than
         resolved, which is how pytest's pre-filled ``funcargs`` avoids looking up a
         fixture that does not exist for a ``@parametrize``d name.
+
+        :meth:`note_test_boundary` is called first so a class-scope fixture cannot leak
+        across a class boundary.  It is public as well, so a caller can drive the boundary
+        explicitly, but calling it here means Task 3 cannot forget to.
         """
+        self.note_test_boundary(plan.class_name)
         self.instance = (
             plan.owner() if plan.owner is not None and plan.unittest_case is None else None
         )
@@ -1473,35 +1518,97 @@ class FixtureRunner:
             values[name] = self.resolve(name, plan.closure, plan.fixture_params, ())
         return {name: values[name] for name in plan.argnames if name in values}
 
+    def note_test_boundary(self, class_name: str | None) -> None:
+        """Tear down class scope when the incoming test belongs to a different class.
+
+        pytest gets this from the collection tree: `SetupState.teardown_exact` unwinds every
+        node the next item does not share, so leaving ``TestA`` for ``TestB`` finalises
+        ``TestA``'s class-scoped fixtures before ``TestB`` sets up.  A worker has no tree, so
+        the boundary is the change in ``CollectedTest.class_name`` within a module — probed
+        against pytest 8.4.2, which emits ``setup:TestA, A.one, A.two, teardown:TestA,
+        setup:TestB, B.three, teardown:TestB`` for one class-scoped fixture used by two
+        classes.
+
+        Called automatically by :meth:`setup`; exposed for callers that want to drive the
+        boundary themselves.  A module change is handled by ``teardown("module")``, which
+        drains class scope and resets this marker on the way past.
+        """
+        if class_name != self._current_class:
+            self.teardown("class")
+        self._current_class = class_name
+
     def resolve(
         self,
         name: str,
         closure: FixtureClosure,
         params: Mapping[str, object],
-        chain: tuple[str, ...],
+        chain: tuple[FixtureDef, ...],
     ) -> object:
         """Return one fixture's value, executing and caching it if needed.
 
-        Port of `_get_active_fixturedef` (l. 566-641) + `FixtureDef.execute` (l. 1074-1140).
-        ``chain`` is the fixture names currently being resolved, which is pytest's
-        ``_iter_chain`` walk: an overriding fixture that requests its own name gets the
+        The test itself is the requester here, so the requesting scope is ``function`` —
+        pytest's ``TopRequest._scope`` (l. 690-692) with its ``_check_scope`` that "always
+        has function scope so always valid" (l. 701-707).
+        """
+        value, _fixturedef = self._resolve_active(name, closure, params, chain, "function")
+        return value
+
+    def _resolve_active(
+        self,
+        name: str,
+        closure: FixtureClosure,
+        params: Mapping[str, object],
+        chain: tuple[FixtureDef, ...],
+        requesting_scope: str,
+    ) -> tuple[object, FixtureDef | None]:
+        """Port of `_get_active_fixturedef` (l. 566-641) + `FixtureDef.execute` (l. 1074-1140).
+
+        Returns the value **and** the fixturedef that produced it, because the caller needs
+        the def to register itself as a dependent (see below).  ``None`` for ``request``,
+        which is pytest's ``PseudoFixtureDef`` and is excluded from both the scope check and
+        the dependency cascade.
+
+        ``chain`` is the fixturedefs currently being resolved, outermost first — pytest's
+        ``_iter_chain`` walk. An overriding fixture that requests its own name gets the
         *next* definition up (l. 596-608, ``index = -1``, decremented once per matching
-        request), and exhausting the levels is an error rather than infinite recursion.
+        request in the chain), and exhausting the levels is an error rather than infinite
+        recursion.
+
+        **The dependency order is pytest #4871 and it is not an optimisation.**  Dependencies
+        are resolved BEFORE this fixture's own cache is consulted, because resolving them can
+        finalise *us*: pytest's comment at l. 1077-1082 says so outright — "This needs to be
+        done before checking if we have a cached value, since if a dependent fixture has
+        their cache invalidated, e.g. due to parametrization, they finalize themselves and
+        fixtures depending on it (which will likely include this fixture) setting
+        `self.cached_result = None`."  Then every dependency gets a finalizer that finishes
+        *this* fixture (l. 1115-1121, ``requested_fixtures_that_should_finalize_us``), so
+        tearing a dependency down tears its dependents down first.  Registering that only
+        after the cache check is pytest #12135 ("avoid adding our finalizer multiple times").
+
+        Without both halves a module-scoped fixture built on a module-scoped **parametrized**
+        fixture is handed a stale value: probed, pytest re-creates it per parameter and emits
+        ``setup:base:a, setup:derived(a), test, teardown:derived(a), teardown:base:a,
+        setup:base:b, setup:derived(b), test``.
         """
         if name == "request":
             requester = chain[-1] if chain else None
-            scope = "function"
-            if requester is not None:
-                defs = closure.arg2defs.get(requester)
-                if defs:
-                    scope = defs[-1].scope
-            return _SubRequest(self, closure, params, requester, _SCOPE_BUCKET[scope], chain)
+            return (
+                _SubRequest(
+                    self,
+                    closure,
+                    params,
+                    requester.name if requester is not None else None,
+                    requester.scope if requester is not None else "function",
+                    chain,
+                ),
+                None,
+            )
 
         defs = closure.arg2defs.get(name) or closure.registry.getfixturedefs(name)
         if not defs:
             raise FixtureLookupError(_fixture_not_found_message(name, closure.registry))
 
-        index = -1 - sum(1 for entry in chain if entry == name)
+        index = -1 - sum(1 for entry in chain if entry.name == name)
         if -index > len(defs):
             raise FixtureLookupError(
                 f" recursive dependency involving fixture '{name}' detected"
@@ -1509,50 +1616,74 @@ class FixtureRunner:
             )
         fixturedef = defs[index]
 
+        # Checked against the SELECTED def, not the nearest one: an override chain can put a
+        # differently scoped definition at `index`, and pytest checks the def it is about to
+        # execute (l. 633, `self._check_scope(fixturedef, fixturedef._scope)`).
+        self._check_scope(fixturedef, requesting_scope, chain)
+
+        sub_chain = (*chain, fixturedef)
+        kwargs: dict[str, object] = {}
+        dependencies: list[FixtureDef] = []
+        for argname in fixturedef.argnames:
+            value, dependency = self._resolve_active(
+                argname, closure, params, sub_chain, fixturedef.scope
+            )
+            kwargs[argname] = value
+            if dependency is not None:
+                dependencies.append(dependency)
+
         param_key = params.get(name, _NO_PARAM)
         cached = self._cache.get(fixturedef)
         if cached is not None:
             if cached.param_key is param_key or cached.param_key == param_key:
-                return cached.value
+                return cached.value, fixturedef
             # "We have a previous but differently parametrized fixture instance so we
             # need to tear it down before creating a new one." (FixtureDef.execute
             # l. 1119-1122).  It is the *registered* finalizer that runs -- running a
-            # freshly made empty one would drop the cache and silently skip the
-            # post-yield teardown.  Probed: pytest emits setup:a, teardown:a, setup:b,
-            # teardown:b for a module-scoped params=["a","b"] fixture.
+            # freshly made empty one would drop the cache and silently skip both the
+            # post-yield teardown and the dependents hanging off it.
             self._finish(cached.finalizer)
 
-        bucket = _SCOPE_BUCKET[fixturedef.scope]
-        sub_chain = (*chain, name)
-        kwargs: dict[str, object] = {}
-        for argname in fixturedef.argnames:
-            if argname == "request":
-                kwargs[argname] = _SubRequest(self, closure, params, name, bucket, sub_chain)
-                continue
-            self._check_scope(fixturedef, argname, closure)
-            kwargs[argname] = self.resolve(argname, closure, params, sub_chain)
+        finalizer = _Finalizer(fixturedef)
+        for dependency in dependencies:
+            dependency_cache = self._cache.get(dependency)
+            if dependency_cache is not None:
+                dependency_cache.finalizer.calls.append(functools.partial(self._finish, finalizer))
 
-        value, finalizer = self._call(fixturedef, kwargs, bucket)
+        value = self._call(fixturedef, kwargs, finalizer)
+        self._finalizers[_SCOPE_BUCKET[fixturedef.scope]].append(finalizer)
         self._cache[fixturedef] = _Cached(value, param_key, finalizer)
-        return value
+        return value, fixturedef
 
-    def _check_scope(self, fixturedef: FixtureDef, argname: str, closure: FixtureClosure) -> None:
-        """Port of `FixtureRequest._check_scope` — a wider fixture may not request a narrower one."""
-        defs = closure.arg2defs.get(argname)
-        if not defs:
+    def _check_scope(
+        self,
+        fixturedef: FixtureDef,
+        requesting_scope: str,
+        chain: tuple[FixtureDef, ...],
+    ) -> None:
+        """Port of `SubRequest._check_scope` (l. 780-801) — including its message, verbatim.
+
+        A wider-scoped fixture may not request a narrower-scoped one; allowing it would cache
+        the narrow value for the wide lifetime, which is silently wrong rather than an error.
+
+        One divergence, unavoidable: pytest renders each frame's path with ``bestrelpath``
+        against ``session.path`` (l. 803-809); the runner has no session, so the path is
+        absolute.  Everything else — the sentence, the two headings, the
+        ``path:lineno:  def name(sig)`` frame format — is byte-identical.
+        """
+        if _SCOPE_INDEX[requesting_scope] <= _SCOPE_INDEX[fixturedef.scope]:
             return
-        requested = defs[-1]
-        if _SCOPE_INDEX[requested.scope] < _SCOPE_INDEX[fixturedef.scope]:
-            raise ScopeMismatch(
-                f"You tried to access the {requested.scope} scoped fixture "
-                + f"{argname!r} with a {fixturedef.scope} scoped request object, "
-                + "involved factories: "
-                + f"{fixturedef.name!r}"
-            )
+        fixture_stack = "\n".join(_format_fixturedef_line(entry) for entry in chain)
+        raise ScopeMismatch(
+            f"ScopeMismatch: You tried to access the {fixturedef.scope} scoped "
+            + f"fixture {fixturedef.name} with a {requesting_scope} scoped request object. "
+            + f"Requesting fixture stack:\n{fixture_stack}\n"
+            + f"Requested fixture:\n{_format_fixturedef_line(fixturedef)}"
+        )
 
     def _call(
-        self, fixturedef: FixtureDef, kwargs: Mapping[str, object], bucket: str
-    ) -> tuple[object, _Finalizer]:
+        self, fixturedef: FixtureDef, kwargs: Mapping[str, object], finalizer: _Finalizer
+    ) -> object:
         """Port of `call_fixture_func` (l. 916-932) — run to the yield, defer the rest.
 
         The finalizer is registered *after* the body runs, so a finalizer the body added
@@ -1560,8 +1691,7 @@ class FixtureRunner:
         after it, matching pytest's single per-fixture LIFO list.  A finalizer is appended
         even for a non-yield fixture: `FixtureDef.execute` schedules ``finish`` in a
         ``finally`` regardless (l. 1132-1136), and that is what drops the cached value at
-        the end of the scope.  It is returned as well as stacked so the cache can run it
-        early when a parametrization change invalidates the entry.
+        the end of the scope.
 
         A fixture defined in a test-class body is bound to the same instance the test
         method gets — `resolve_fixture_function` l. 1152-1163
@@ -1571,8 +1701,7 @@ class FixtureRunner:
         func = fixturedef.func
         if fixturedef.needs_instance and self.instance is not None:
             func = cast(Callable[..., object], cast(Any, func).__get__(self.instance))
-        extras: list[Callable[[], object]] = []
-        self._extras_stack.append(extras)
+        self._extras_stack.append(finalizer.calls)
         try:
             if inspect.isgeneratorfunction(func):
                 generator = cast(Any, func)(**kwargs)
@@ -1588,9 +1717,9 @@ class FixtureRunner:
                 teardown = None
         finally:
             _ = self._extras_stack.pop()
-        finalizer = _Finalizer(fixturedef, teardown, extras)
-        self._finalizers[bucket].append(finalizer)
-        return value, finalizer
+        if teardown is not None:
+            finalizer.calls.append(teardown)
+        return value
 
     def add_finalizer(self, finalizer: Callable[[], object]) -> None:
         """Attach a ``request.addfinalizer`` callable to the fixture being set up.
@@ -1602,7 +1731,7 @@ class FixtureRunner:
         if self._extras_stack:
             self._extras_stack[-1].append(finalizer)
         else:
-            self._finalizers["function"].append(_Finalizer(None, finalizer))
+            self._finalizers["function"].append(_Finalizer(None, [finalizer]))
 
     # -- teardown ---------------------------------------------------------
 
@@ -1619,6 +1748,10 @@ class FixtureRunner:
         the test body passed, so the execute half maps this to status ``error``.
         """
         limit = _BUCKET_ORDER.index(_SCOPE_BUCKET.get(scope, scope))
+        if limit >= _BUCKET_ORDER.index("class"):
+            # Leaving the class (or anything wider) invalidates the boundary marker, so the
+            # next `note_test_boundary` compares against nothing rather than a dead class.
+            self._current_class = None
         exceptions: list[BaseException] = []
         for bucket in _BUCKET_ORDER[: limit + 1]:
             stack = self._finalizers[bucket]
@@ -1645,15 +1778,9 @@ class FixtureRunner:
         invalidating the cache regardless ("Even if finalization fails, we invalidate the
         cached fixture value").
         """
-        if finalizer.done:
-            return
-        finalizer.done = True
-        calls: list[Callable[[], object]] = []
-        if finalizer.call is not None:
-            calls.append(finalizer.call)
-        calls.extend(reversed(finalizer.extras))
         exceptions: list[BaseException] = []
-        for call in calls:
+        while finalizer.calls:
+            call = finalizer.calls.pop()
             try:
                 _ = call()
             except BaseException as exc:  # noqa: BLE001 - re-raised below, never dropped
@@ -1679,6 +1806,26 @@ def _teardown_yield(fixturedef: FixtureDef, generator: object) -> None:
     except StopIteration:
         return
     raise FixtureLookupError(f"fixture function has more than one 'yield': {fixturedef.name}")
+
+
+def _format_fixturedef_line(fixturedef: FixtureDef) -> str:
+    """Port of `SubRequest._format_fixturedef_line` (l. 803-809).
+
+    ``getfslineno`` returns a **0-based** line and pytest prints ``lineno + 1``; that is
+    exactly ``co_firstlineno``, which is what this reads.  The path is absolute where pytest
+    would relativise against the session — see :meth:`FixtureRunner._check_scope`.
+    """
+    func = fixturedef.func
+    try:
+        path = inspect.getsourcefile(cast(Any, func)) or "<unknown>"
+        lineno = cast(Any, func).__code__.co_firstlineno
+    except (OSError, TypeError, AttributeError):  # pragma: no cover - exotic callables
+        path, lineno = "<unknown>", 1
+    try:
+        signature = str(inspect.signature(cast(Any, func)))
+    except (TypeError, ValueError):  # pragma: no cover - builtins never reach here
+        signature = "(...)"
+    return f"{path}:{lineno}:  def {getattr(func, '__name__', fixturedef.name)}{signature}"
 
 
 def _available_fixtures_suffix(registry: FixtureRegistry) -> str:
@@ -1832,25 +1979,33 @@ def _register_builtin_fixtures(registry: FixtureRegistry) -> None:
         )
 
 
-def build_registry(module: types.ModuleType, path: Path, rootdir: Path) -> FixtureRegistry:
-    """Assemble the fixture registry for one test file: builtins, conftests, module.
+def build_registry(path: Path, rootdir: Path) -> tuple[types.ModuleType, FixtureRegistry]:
+    """Import one test file with its conftest chain and assemble its fixture registry.
 
-    Registration order *is* the shadowing rule: builtins, then each conftest from rootdir
-    down to the file's own directory, then the module itself.  ``defs[-1]`` is therefore
-    the nearest definition, which is what corpus ``fixtures/override-nearest`` asserts (a
-    module ``value`` beating the conftest's).
+    **The single entry point :func:`collect_file` uses**, so the path the tests exercise is
+    the path production takes — there is no second, subtly different assembly to drift from.
 
-    The conftest chain is imported here, during collection, because the closure it feeds
-    is what expands parametrized fixtures into separate nodeids — the registry cannot wait
-    for execution.
+    Order is load-bearing twice over:
+
+    * *Conftests before the module*, as pytest loads them (they are plugins, resolved during
+      ``_set_initial_conftests``, long before any test module is imported).  It is what makes
+      a test module's own ``import conftest`` reach the object the registry just parsed —
+      corpus ``fixtures/autouse``, and the shape v1 got wrong by importing it twice.
+    * *Builtins, then each conftest rootdir-down, then the module* — registration order **is**
+      the shadowing rule, so ``defs[-1]`` is the nearest definition, which is what corpus
+      ``fixtures/override-nearest`` asserts.
+
+    All of it happens during collection, not at execute time, because the closure this feeds
+    is what expands parametrized fixtures into separate nodeids.
     """
     registry = FixtureRegistry()
     _register_builtin_fixtures(registry)
     for conftest in conftest_chain(path, rootdir):
         conftest_module = import_conftest(conftest, rootdir)
         registry.parse_factories(conftest_module, _conftest_baseid(conftest, rootdir))
+    module = import_test_module(path, rootdir)
     registry.parse_factories(module, _relative_posix(path, rootdir))
-    return registry
+    return module, registry
 
 
 def _build_entry(
@@ -1999,6 +2154,13 @@ def _collect_unittest_class(
     ``fixtures`` field is left empty rather than filled from the signature, and the
     :class:`ExecutionPlan` carries an empty closure so Task 3's execute path can tell a
     ``TestCase`` method (which it must drive through ``unittest``) from a plain function.
+
+    The ``runTest`` fallback is **only** reached when the loop yielded nothing, and it is
+    never itself subject to the ``__test__`` filter — pytest sets ``foundsomething = True``
+    *after* that filter and then checks ``if not foundsomething``.  Probed: a ``TestCase``
+    whose only ``test_*`` method carries ``__test__ = False`` and which also defines
+    ``runTest`` collects as ``Legacy::runTest`` under pytest 8.4.2.  (pytest additionally
+    skips ``twisted.trial``'s inherited ``runTest``; twisted is not in scope here.)
     """
     if _safe_getattr(cls, "__test__", True) is False:
         return []
@@ -2007,14 +2169,8 @@ def _collect_unittest_class(
     child_parts = (*parts, name)
     loader = unittest.TestLoader()
     entries: list[CollectedTestDict] = []
-    method_names = list(loader.getTestCaseNames(cast(type[unittest.TestCase], cls)))
-    if not method_names and getattr(cls, "runTest", None) is not None:
-        method_names = ["runTest"]
-    for method_name in method_names:
-        method = _safe_getattr(cls, method_name, None)
-        if method is not None and _safe_getattr(method, "__test__", True) is False:
-            continue
-        marks = (_mark_specs(_unwrap(method)) if method is not None else []) + class_marks
+
+    def record(method_name: str, marks: list[MarkSpecDict]) -> None:
         entry = _build_entry(context.rel_path, (*child_parts, method_name), None, marks, [])
         entries.append(entry)
         context.plans.append(
@@ -2034,6 +2190,15 @@ def _collect_unittest_class(
                 unittest_method=method_name,
             )
         )
+
+    for method_name in loader.getTestCaseNames(cast(type[unittest.TestCase], cls)):
+        method = _safe_getattr(cls, method_name, None)
+        if _safe_getattr(method, "__test__", True) is False:
+            continue
+        record(method_name, _mark_specs(_unwrap(method)) + class_marks)
+
+    if not entries and getattr(cls, "runTest", None) is not None:
+        record("runTest", class_marks)
     return entries
 
 
@@ -2151,14 +2316,20 @@ def collect_module(
     deliberately skips conftests so a caller that only has a module in hand gets a
     predictable, self-contained registry; :func:`collect_file` always passes the real one).
 
-    **Known ordering limitation.**  pytest reorders collected items after the fact so that
-    tests sharing a higher-scoped parametrized fixture run consecutively
-    (`_pytest/fixtures.py::reorder_items`, invoked from ``pytest_collection_modifyitems``).
-    That pass is a no-op for ``function`` scope (``reorder_items_atscope`` returns early on
-    ``scope is Scope.Function``) and operates on the whole session's item list, which a
-    per-file worker does not have.  So a **module- or wider-scoped parametrized fixture**
-    yields pytest-correct ids in a non-pytest order; no corpus case has one, and closing it
-    needs the reorder to live in the orchestrator's manifest assembly.
+    **Known limitation, and it is a behavioural one, not a cosmetic one.**  pytest reorders
+    collected items so that tests sharing a higher-scoped parametrized fixture run
+    consecutively (`_pytest/fixtures.py::reorder_items`, invoked from
+    ``pytest_collection_modifyitems``).  That pass is a no-op for ``function`` scope
+    (``reorder_items_atscope`` returns early on ``scope is Scope.Function``) and operates on
+    the whole session's item list, which a per-file worker does not have.
+
+    The visible consequence is **how many times a fixture is set up**, not just what order
+    the ids come in.  Probed: two tests sharing a module-scoped ``params=["a","b"]`` fixture
+    run ``2`` setups under pytest (grouped ``a a b b``) and ``4`` here (interleaved
+    ``a b a b``, each switch re-creating the fixture).  For an expensive fixture that is a
+    performance and a semantics difference — anything the fixture accumulates is reset twice
+    as often.  No corpus case has one; closing it needs the reorder in the orchestrator's
+    manifest assembly, where the whole run's items exist.
     """
     if _safe_getattr(module, "__test__", True) is False:
         return [], []
@@ -2287,17 +2458,7 @@ def collect_file(path: str) -> CollectedResponse:
     file_path = Path(path)
     response: CollectedResponse = {"op": "collected", "path": path}
     try:
-        # Conftests first, exactly as pytest loads them before any test module: the
-        # registry they build is what expands parametrized fixtures into separate ids,
-        # and a test module's own ``import conftest`` must find the chain already in
-        # ``sys.modules`` (issue #130 / corpus fixtures/autouse).
-        registry = FixtureRegistry()
-        _register_builtin_fixtures(registry)
-        for conftest in conftest_chain(file_path, state.rootdir):
-            conftest_module = import_conftest(conftest, state.rootdir)
-            registry.parse_factories(conftest_module, _conftest_baseid(conftest, state.rootdir))
-        module = import_test_module(file_path, state.rootdir)
-        registry.parse_factories(module, _relative_posix(file_path, state.rootdir))
+        module, registry = build_registry(file_path, state.rootdir)
         tests, plans = collect_module(module, file_path, state.rootdir, state.naming, registry)
         for plan in plans:
             _execution_plans[plan.id] = plan

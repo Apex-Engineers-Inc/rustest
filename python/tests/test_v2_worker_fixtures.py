@@ -24,7 +24,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import itertools
 from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
@@ -35,18 +37,17 @@ import pytest
 from rustest._v2_worker import (
     DEFAULT_NAMING,
     SCOPE_NAMES,
+    ExecutionPlan,
     FixtureDef,
     FixtureLookupError,
     FixtureRegistry,
     FixtureRunner,
     ScopeMismatch,
-    ExecutionPlan,
     build_closure,
     build_registry,
     collect_module,
     conftest_chain,
     fixture_param_dimensions,
-    import_test_module,
 )
 import rustest._v2_worker as worker
 
@@ -95,21 +96,13 @@ def write(path: Path, source: str) -> Path:
 
 
 def load(path: Path, rootdir: Path) -> tuple[types.ModuleType, FixtureRegistry]:
-    """Import *path* the way `collect_file` does — conftest chain first, then the module."""
-    registry = FixtureRegistry()
-    worker._register_builtin_fixtures(registry)  # pyright: ignore[reportPrivateUsage]
-    for conftest in conftest_chain(path, rootdir):
-        conftest_module = worker.import_conftest(conftest, rootdir)
-        registry.parse_factories(
-            conftest_module,
-            worker._conftest_baseid(conftest, rootdir),  # pyright: ignore[reportPrivateUsage]
-        )
-    module = import_test_module(path, rootdir)
-    registry.parse_factories(
-        module,
-        worker._relative_posix(path, rootdir),  # pyright: ignore[reportPrivateUsage]
-    )
-    return module, registry
+    """Import *path* and build its registry — literally what `collect_file` calls.
+
+    Deliberately **not** a re-implementation: a helper that assembled the registry its own
+    way could keep passing while production drifted, which is exactly the failure mode this
+    indirection exists to prevent.
+    """
+    return build_registry(path, rootdir)
 
 
 def collect(path: Path, rootdir: Path) -> tuple[list[str], list[ExecutionPlan]]:
@@ -176,6 +169,33 @@ def pytest_ids(tree: Path) -> list[str]:
             ids.append(stripped.replace("\\", "/"))
     assert ids, f"pytest collected nothing:\nstdout={proc.stdout}\nstderr={proc.stderr}"
     return ids
+
+
+def pytest_scope_mismatch(tree: Path) -> str:
+    """Real pytest's ``ScopeMismatch`` block for *tree* — the message oracle."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = proc.stdout.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("ScopeMismatch:"):
+            rest = list(itertools.takewhile(lambda row: not row.startswith("="), lines[index:]))
+            return "\n".join(rest)
+    raise AssertionError(f"pytest did not report a ScopeMismatch:\n{proc.stdout}")
+
+
+def _basenames(message: str) -> str:
+    """Strip directory prefixes so an absolute path compares equal to a relative one.
+
+    The single documented divergence from pytest's wording: `_format_fixturedef_line` renders
+    the frame path with ``bestrelpath`` against ``session.path``, and the worker has no
+    session.  Everything else in the message must match byte for byte.
+    """
+    return re.sub(r"[^\s]*[/\\](?=[^/\\\s]+\.py:)", "", message)
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +333,40 @@ def test_a_conftest_is_imported_once_per_worker_however_many_files_use_it(
         assert modules[0] is modules[1]
 
 
+def test_collect_file_uses_the_same_registry_assembly_as_build_registry(tmp_path: Path) -> None:
+    """The protocol entry point must go through :func:`build_registry`, not its own copy.
+
+    Everything else in this file drives `build_registry` directly; if `collect_file` assembled
+    the registry a second way, all of it could stay green while the shipped path lost its
+    conftest chain.  So this drives ``collect_file`` — the function ``main()`` calls — and
+    asserts the conftest's parametrized fixture still expands the ids.
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture(params=["c1", "c2"])
+        def shared(request):
+            return request.param
+        """,
+    )
+    target = write(tmp_path / "test_via_protocol.py", "def test_uses(shared):\n    pass\n")
+
+    with isolated_import_state():
+        _ = worker.handle_init({"rootdir": str(tmp_path)})
+        try:
+            response = worker.collect_file(target.as_posix())
+        finally:
+            worker._state = None  # pyright: ignore[reportPrivateUsage]
+            worker._execution_plans.clear()  # pyright: ignore[reportPrivateUsage]
+    assert "error" not in response, response.get("error")
+    assert [entry["id"] for entry in response.get("tests", [])] == [
+        "test_via_protocol.py::test_uses[c1]",
+        "test_via_protocol.py::test_uses[c2]",
+    ]
+
+
 def test_sibling_conftests_do_not_collide(tmp_path: Path) -> None:
     """Port of `_importconftest`'s ``del sys.modules[conftestpath.stem]``.
 
@@ -373,6 +427,56 @@ def test_fixture_metadata_is_read_from_the_decorator(tmp_path: Path) -> None:
         assert choice is not None
         assert choice[-1].params == (("one", 1), ("two", 2))
         assert registry.autouse_names == ("renamed",)
+
+
+def test_runtest_is_collected_when_every_test_method_is_hidden(tmp_path: Path) -> None:
+    """Port of `_pytest/unittest.py::UnitTestCase.collect`'s ``foundsomething`` flag.
+
+    pytest sets ``foundsomething`` only for methods that survive the ``__test__`` filter, and
+    the ``runTest`` fallback is never itself filtered.  So a ``TestCase`` whose only
+    ``test_*`` method is hidden still collects ``runTest`` — probed against pytest 8.4.2,
+    which emits ``test_runtest.py::Legacy::runTest``.  Computing the method list up front
+    (fallback before the filter, then filtering the fallback too) gets this backwards in
+    both directions and collects nothing.
+    """
+    target = write(
+        tmp_path / "test_runtest.py",
+        """
+        import unittest
+
+        class Legacy(unittest.TestCase):
+            def test_hidden(self):
+                pass
+            test_hidden.__test__ = False
+
+            def runTest(self):
+                pass
+        """,
+    )
+    with isolated_import_state():
+        ids, plans = collect(target, tmp_path)
+    assert ids == ["test_runtest.py::Legacy::runTest"]
+    assert [plan.unittest_method for plan in plans] == ["runTest"]
+
+
+def test_runtest_is_not_collected_when_a_real_test_method_survives(tmp_path: Path) -> None:
+    """The other side of ``if not foundsomething`` — one visible method suppresses runTest."""
+    target = write(
+        tmp_path / "test_runtest_skipped.py",
+        """
+        import unittest
+
+        class Legacy(unittest.TestCase):
+            def test_visible(self):
+                pass
+
+            def runTest(self):
+                pass
+        """,
+    )
+    with isolated_import_state():
+        ids, _plans = collect(target, tmp_path)
+    assert ids == ["test_runtest_skipped.py::Legacy::test_visible"]
 
 
 def test_class_fixtures_are_invisible_outside_the_class(tmp_path: Path) -> None:
@@ -571,7 +675,13 @@ def test_unsupported_builtin_says_so_instead_of_not_found(tmp_path: Path) -> Non
 
 
 def test_a_wider_fixture_may_not_request_a_narrower_one(tmp_path: Path) -> None:
-    """Port of `FixtureRequest._check_scope` — silently caching the narrow one is worse."""
+    """Port of `SubRequest._check_scope` (l. 780-801) — message and all.
+
+    Silently caching the narrow value for the wide lifetime is the alternative, which is
+    wrong-answer-shaped rather than error-shaped.  The wording is pytest's verbatim; only the
+    frame paths are absolute, because the runner has no session to relativise against.
+    """
+    _ = write(tmp_path / "pytest.ini", "[pytest]\n")
     target = write(
         tmp_path / "test_mismatch.py",
         """
@@ -591,8 +701,114 @@ def test_a_wider_fixture_may_not_request_a_narrower_one(tmp_path: Path) -> None:
     )
     with isolated_import_state():
         _ids, plans = collect(target, tmp_path)
+        with pytest.raises(ScopeMismatch) as excinfo:
+            _ = FixtureRunner().setup(plans[0])
+    assert _basenames(str(excinfo.value)) == _basenames(pytest_scope_mismatch(tmp_path))
+
+
+def test_the_scope_check_uses_the_selected_definition_not_the_nearest(tmp_path: Path) -> None:
+    """`_get_active_fixturedef` checks the def it is *about to execute* (l. 633).
+
+    An override chain can hold definitions of different scopes.  Here the nearest ``value``
+    is module-scoped and legal for a module-scoped consumer, but the one actually selected —
+    the super fixture, reached because the override requests its own name — is function
+    scoped and must be rejected.  Reading ``defs[-1]`` would wave it through and cache a
+    function-scoped value for the module's lifetime.
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def value():
+            return "narrow"
+        """,
+    )
+    target = write(
+        tmp_path / "test_selected.py",
+        """
+        import pytest
+
+        @pytest.fixture(scope="module")
+        def value(value):
+            return value
+
+        def test_x(value):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
+        with pytest.raises(ScopeMismatch) as excinfo:
+            _ = FixtureRunner().setup(plans[0])
+    assert "the function scoped fixture value with a module scoped request object" in str(
+        excinfo.value
+    )
+
+
+def test_getfixturevalue_is_scope_checked_like_a_declared_dependency(tmp_path: Path) -> None:
+    """`getfixturevalue` is a thin wrapper over `_get_active_fixturedef`, so it checks too."""
+    target = write(
+        tmp_path / "test_dynamic.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def narrow():
+            return 1
+
+        @pytest.fixture(scope="module")
+        def wide(request):
+            return request.getfixturevalue("narrow")
+
+        def test_x(wide):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        _ids, plans = collect(target, tmp_path)
         with pytest.raises(ScopeMismatch):
             _ = FixtureRunner().setup(plans[0])
+
+
+def test_request_scope_reports_the_declared_scope_not_the_cache_bucket(tmp_path: Path) -> None:
+    """``session`` must read back as ``session``, even though it caches with ``package``."""
+    target = write(
+        tmp_path / "test_req_scope.py",
+        """
+        import pytest
+
+        seen = {}
+
+        @pytest.fixture(scope="session")
+        def wide(request):
+            seen["wide"] = request.scope
+            return 1
+
+        @pytest.fixture(scope="class")
+        def middling(request):
+            seen["middling"] = request.scope
+            return 2
+
+        @pytest.fixture(scope="package")
+        def boxed(request):
+            seen["boxed"] = request.scope
+            return 3
+
+        def test_x(wide, middling, boxed):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [status for _id, status in run_all(plans)] == ["passed"]
+        seen = getattr(module, "seen")
+    # ``package`` is the one scope whose bucket differs from its name (`_SCOPE_BUCKET` maps it
+    # onto the worker-lifetime bucket), so it is the only row that can catch a runner
+    # reporting its internal bucket instead of what the author wrote.
+    assert seen == {"wide": "session", "middling": "class", "boxed": "package"}
 
 
 def test_an_override_can_request_the_fixture_it_overrides(tmp_path: Path) -> None:
@@ -753,6 +969,80 @@ def test_teardown_is_reverse_setup_order(tmp_path: Path) -> None:
     assert events == ["setup:inner", "setup:outer", "teardown:outer", "teardown:inner"]
 
 
+def test_independent_fixtures_tear_down_in_reverse_setup_order(tmp_path: Path) -> None:
+    """The scope bucket's own LIFO, with the dependency cascade taken out of the picture.
+
+    ``test_teardown_is_reverse_setup_order`` uses a dependency chain, and since #4871 landed
+    the cascade alone would produce the right answer there — the bucket order is no longer
+    load-bearing in that shape.  Two **independent** fixtures leave nothing but the bucket:
+    probed, pytest emits ``teardown:beta, teardown:alpha`` for ``test(alpha, beta)``.
+    """
+    target = write(
+        tmp_path / "test_indep.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture
+        def alpha():
+            yield 1
+            events.append("teardown:alpha")
+
+        @pytest.fixture
+        def beta():
+            yield 2
+            events.append("teardown:beta")
+
+        def test_uses(alpha, beta):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [status for _id, status in run_all(plans)] == ["passed"]
+        events = getattr(module, "events")
+    assert events == ["teardown:beta", "teardown:alpha"]
+
+
+def test_independent_scopes_unwind_narrowest_first(tmp_path: Path) -> None:
+    """Same reasoning across scopes: no dependency edge, so only the bucket order can save it.
+
+    A function fixture that does **not** request the module one still has to be finalised
+    first — pytest unwinds the deeper node before the shallower one.
+    """
+    target = write(
+        tmp_path / "test_indep_scopes.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module")
+        def wide():
+            yield 1
+            events.append("teardown:module")
+
+        @pytest.fixture
+        def narrow():
+            yield 2
+            events.append("teardown:function")
+
+        def test_uses(wide, narrow):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        _ = runner.setup(plans[0])
+        runner.teardown("module")
+        events = getattr(module, "events")
+    assert events == ["teardown:function", "teardown:module"]
+
+
 def test_wider_scopes_tear_down_after_narrower_ones(tmp_path: Path) -> None:
     """`SetupState.teardown_exact` unwinds narrowest-first; :meth:`teardown` mirrors it."""
     target = write(
@@ -895,6 +1185,165 @@ def test_session_scope_is_worker_lifetime(tmp_path: Path) -> None:
     assert events == ["setup", "teardown"]
 
 
+def test_a_dependent_fixture_is_rebuilt_when_its_parametrized_dependency_changes(
+    tmp_path: Path,
+) -> None:
+    """pytest #4871: the dependency cascade, in full.
+
+    Two module-scoped fixtures where the *dependency* is parametrized. Without the cascade a
+    worker hands the second test a ``derived`` built from ``base == "a"`` — a **silently
+    wrong value**, not a crash — and tears ``derived`` down after the thing it was built
+    from.
+
+    Both halves of pytest's mechanism are pinned by the event list: dependencies resolved
+    before the cache check (`FixtureDef.execute` l. 1077-1088, so ``derived`` notices it was
+    invalidated), and each dependency carrying a finalizer for its dependents (l. 1115-1121,
+    so ``derived`` is torn down *before* ``base``). The sequence below is real pytest 8.4.2
+    output, copied from the probe.
+    """
+    target = write(
+        tmp_path / "test_cascade.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module", params=["a", "b"])
+        def base(request):
+            events.append(f"setup:base:{request.param}")
+            yield request.param
+            events.append(f"teardown:base:{request.param}")
+
+        @pytest.fixture(scope="module")
+        def derived(base):
+            events.append(f"setup:derived({base})")
+            yield f"derived-of-{base}"
+            events.append(f"teardown:derived({base})")
+
+        def test_pair(base, derived):
+            events.append("test")
+            assert derived == f"derived-of-{base}"
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        results = run_all(plans)
+        events = list(getattr(module, "events"))
+    assert [status for _id, status in results] == ["passed", "passed"]
+    # The first eight entries are what the reviewer's probe printed from inside the run; the
+    # last two are the module teardown, which `pytest_sessionfinish` confirms pytest emits
+    # too (the in-run probe simply could not see them yet).  `run_all` ends with
+    # `teardown_all`, so both halves are visible here.
+    assert events == [
+        "setup:base:a",
+        "setup:derived(a)",
+        "test",
+        "teardown:derived(a)",
+        "teardown:base:a",
+        "setup:base:b",
+        "setup:derived(b)",
+        "test",
+        "teardown:derived(b)",
+        "teardown:base:b",
+    ]
+
+
+def test_a_dependent_notices_it_was_invalidated_while_resolving_its_own_dependency(
+    tmp_path: Path,
+) -> None:
+    """pytest #4871 **half 1**: the cache is read only after the dependencies are resolved.
+
+    The test above requests ``base`` *and* ``derived``, so the closure resolves ``base``
+    first and ``derived``'s frame starts after the cascade has already run — which makes it
+    blind to the ordering inside ``_resolve_active``.  A mutation pass proved exactly that:
+    hoisting the cache read above the dependency loop left that test green.
+
+    Requesting **only the dependent** is the shape #4871 was filed about.  ``derived``'s
+    frame reads its own cache *while* the ``base`` underneath it is being re-parametrized;
+    reading it too early returns the stale ``derived-of-a`` for the ``b`` round and never
+    re-runs the fixture body.  Probed sequence below is real pytest 8.4.2 (2 passed).
+    """
+    target = write(
+        tmp_path / "test_only_dependent.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module", params=["a", "b"])
+        def base(request):
+            events.append(f"setup:base:{request.param}")
+            yield request.param
+            events.append(f"teardown:base:{request.param}")
+
+        @pytest.fixture(scope="module")
+        def derived(base):
+            events.append(f"setup:derived({base})")
+            yield f"derived-of-{base}"
+            events.append(f"teardown:derived({base})")
+
+        def test_only_derived(derived):
+            events.append(f"test({derived})")
+            assert derived in ("derived-of-a", "derived-of-b")
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [status for _id, status in run_all(plans)] == ["passed", "passed"]
+        events = getattr(module, "events")
+    assert events == [
+        "setup:base:a",
+        "setup:derived(a)",
+        "test(derived-of-a)",
+        "teardown:derived(a)",
+        "teardown:base:a",
+        "setup:base:b",
+        "setup:derived(b)",
+        "test(derived-of-b)",
+        "teardown:derived(b)",
+        "teardown:base:b",
+    ]
+
+
+def test_a_dependent_is_torn_down_before_its_dependency_at_scope_end(tmp_path: Path) -> None:
+    """The cascade's other half, on the ordinary path: dependents finish first.
+
+    `FixtureDef.execute` l. 1115-1121 registers this fixture's ``finish`` on **every**
+    fixture it requested, "ensuring that if a requested fixture gets torn down we get torn
+    down first". With no parametrization in sight, draining the module bucket must still
+    finalise ``derived`` before ``base``.
+    """
+    target = write(
+        tmp_path / "test_dep_order.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="module")
+        def base():
+            yield 1
+            events.append("teardown:base")
+
+        @pytest.fixture(scope="module")
+        def derived(base):
+            yield 2
+            events.append("teardown:derived")
+
+        def test_uses(derived):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [status for _id, status in run_all(plans)] == ["passed"]
+        events = getattr(module, "events")
+    assert events == ["teardown:derived", "teardown:base"]
+
+
 def test_teardown_of_a_wide_scope_unwinds_the_narrow_ones_first(tmp_path: Path) -> None:
     """One `teardown("module")` call must unwind function scope before module scope.
 
@@ -1005,11 +1454,210 @@ def test_request_addfinalizer_belongs_to_its_fixture_and_runs_once(tmp_path: Pat
     assert events == ["yield:a", "final:a", "yield:b", "final:b"]
 
 
+CLASS_SCOPE_MODULE = """
+    import pytest
+
+    events = []
+
+    @pytest.fixture(scope="class")
+    def per_class():
+        events.append("setup")
+        yield object()
+        events.append("teardown")
+
+    class TestA:
+        def test_one(self, per_class):
+            events.append("A.one")
+
+        def test_two(self, per_class):
+            events.append("A.two")
+
+    class TestB:
+        def test_three(self, per_class):
+            events.append("B.three")
+"""
+
+
+def test_class_scope_is_torn_down_at_the_class_boundary(tmp_path: Path) -> None:
+    """A class-scoped fixture must not survive into the next class.
+
+    pytest gets the boundary from the collection tree; a worker gets it from the change in
+    ``CollectedTest.class_name``, which :meth:`FixtureRunner.setup` notices via
+    ``note_test_boundary``. Probed against pytest 8.4.2, whose event sequence for exactly
+    this module is reproduced below — one setup per class, torn down before the next class
+    starts.
+    """
+    target = write(tmp_path / "test_cls_scope.py", CLASS_SCOPE_MODULE)
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [status for _id, status in run_all(plans)] == ["passed"] * 3
+        events = getattr(module, "events")
+    assert events == [
+        "setup",
+        "A.one",
+        "A.two",
+        "teardown",
+        "setup",
+        "B.three",
+        "teardown",
+    ]
+
+
+def test_the_class_boundary_is_what_separates_the_instances(tmp_path: Path) -> None:
+    """Without the boundary one class-scoped value silently leaks into every later class.
+
+    Asserts the *object identity* the reviewer's probe caught: `TestA`'s two methods share
+    an instance, and `TestB` gets a different one.
+    """
+    target = write(tmp_path / "test_cls_identity.py", CLASS_SCOPE_MODULE)
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        seen: list[object] = []
+        for plan in plans:
+            kwargs = runner.setup(plan)
+            seen.append(kwargs["per_class"])
+            runner.teardown("function")
+        runner.teardown_all()
+    assert seen[0] is seen[1]
+    assert seen[2] is not seen[0]
+
+
+def test_the_class_boundary_compares_the_whole_class_chain(tmp_path: Path) -> None:
+    """Two nested classes with the same leaf name are still two different classes.
+
+    ``CollectedTest.class_name`` is the whole chain (``TestOuter.TestInner``); comparing only
+    the innermost part would see one unbroken ``TestInner`` and share a class-scoped fixture
+    across two unrelated classes — a silent leak, not a crash.
+    """
+    target = write(
+        tmp_path / "test_nested_cls.py",
+        """
+        import pytest
+
+        events = []
+
+        @pytest.fixture(scope="class")
+        def per_class():
+            events.append("setup")
+            yield object()
+            events.append("teardown")
+
+        class TestOuterA:
+            class TestInner:
+                def test_a(self, per_class):
+                    pass
+
+        class TestOuterB:
+            class TestInner:
+                def test_b(self, per_class):
+                    pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        ids = [
+            entry["id"]
+            for entry in collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)[0]
+        ]
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [plan.class_name for plan in plans] == [
+            "TestOuterA.TestInner",
+            "TestOuterB.TestInner",
+        ]
+        assert [status for _id, status in run_all(plans)] == ["passed", "passed"]
+        events = getattr(module, "events")
+    assert ids == [
+        "test_nested_cls.py::TestOuterA::TestInner::test_a",
+        "test_nested_cls.py::TestOuterB::TestInner::test_b",
+    ]
+    assert events == ["setup", "teardown", "setup", "teardown"]
+
+
+def test_note_test_boundary_is_a_no_op_within_one_class(tmp_path: Path) -> None:
+    """Only a *change* of class tears class scope down — repeating a name must not."""
+    target = write(tmp_path / "test_cls_stable.py", CLASS_SCOPE_MODULE)
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        runner = FixtureRunner()
+        _ = runner.setup(plans[0])
+        runner.teardown("function")
+        runner.note_test_boundary("TestA")
+        runner.note_test_boundary("TestA")
+        assert getattr(module, "events") == ["setup"]
+        runner.teardown_all()
+        assert getattr(module, "events") == ["setup", "teardown"]
+
+
+#: ``teardown(scope)`` must drain that scope AND every narrower one, and nothing wider.
+#: A test that only asserted "does not raise" would pass with every branch deleted, which
+#: is what the previous version of this table did.
+SCOPE_TEARDOWN_TABLE: dict[str, list[str]] = {
+    "function": ["function"],
+    "class": ["function", "class"],
+    "module": ["function", "class", "module"],
+    # package and session share the worker-lifetime bucket -- see `_SCOPE_BUCKET`.
+    "package": ["function", "class", "module", "package", "session"],
+    "session": ["function", "class", "module", "package", "session"],
+}
+
+
 @pytest.mark.parametrize("scope", list(SCOPE_NAMES))
-def test_every_declared_scope_maps_to_a_teardown_bucket(scope: str) -> None:
-    """No scope may fall through to "never torn down" — that would leak a generator."""
-    runner = FixtureRunner()
-    runner.teardown(scope)  # must not raise KeyError
+def test_teardown_drains_exactly_its_scope_and_the_narrower_ones(
+    scope: str, tmp_path: Path
+) -> None:
+    """One fixture per declared scope; assert precisely which ones `teardown(scope)` ends."""
+    assert set(SCOPE_TEARDOWN_TABLE) == set(SCOPE_NAMES)
+    target = write(
+        tmp_path / f"test_scopes_{scope}.py",
+        """
+        import pytest
+
+        events = []
+
+        def _make(scope_name):
+            @pytest.fixture(scope=scope_name, name=scope_name)
+            def _fixture():
+                yield scope_name
+                events.append(scope_name)
+            return _fixture
+
+        session = _make("session")
+        package = _make("package")
+        module = _make("module")
+        klass = _make("class")
+        function = _make("function")
+
+        def test_all(session, package, module):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module_obj, registry = load(target, tmp_path)
+        closure = build_closure(registry, ["session", "package", "module", "class", "function"])
+        plan = ExecutionPlan(
+            id="probe",
+            path=target,
+            module=module_obj,
+            parts=("test_all",),
+            func=lambda **_kwargs: None,
+            owner=None,
+            closure=closure,
+            fixture_params={},
+            direct_params={},
+            argnames=(),
+            marks=(),
+        )
+        runner = FixtureRunner()
+        _ = runner.setup(plan)
+        assert getattr(module_obj, "events") == []
+        runner.teardown(scope)
+        drained = sorted(getattr(module_obj, "events"))
+        runner.teardown_all()
+    assert drained == sorted(SCOPE_TEARDOWN_TABLE[scope])
 
 
 # ---------------------------------------------------------------------------
@@ -1303,8 +1951,7 @@ def test_build_registry_orders_builtins_conftests_then_module(tmp_path: Path) ->
     )
     target = write(tmp_path / "test_shadow.py", "def test_x(tmp_path):\n    pass\n")
     with isolated_import_state():
-        module = import_test_module(target, tmp_path)
-        registry = build_registry(module, target, tmp_path)
+        _module, registry = build_registry(target, tmp_path)
         defs = registry.getfixturedefs("tmp_path")
         assert defs is not None
         # Builtin first (baseid "" = total visibility), rootdir conftest second and
