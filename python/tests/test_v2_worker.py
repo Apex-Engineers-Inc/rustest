@@ -1602,32 +1602,6 @@ def test_worker_subprocess_rejects_an_unknown_op() -> None:
     assert "collect_dir" in proc.stderr
 
 
-def test_execute_test_is_not_implemented_yet_and_is_protocol_fatal() -> None:
-    """The wire is at v2, this worker implements only the collection half.
-
-    `execute_test` is a *real* op in `src/v2/protocol.rs`, so the interesting question is
-    not whether an invented op fails but whether the op this worker is expected to grow
-    fails **the same way** in the meantime.  It must take the unknown-op path — exit 2,
-    naming the op, nothing on stdout — never a swallowed request that leaves the
-    orchestrator blocked on a `test_result` line that is never coming.
-
-    Delete this test in the task that implements the op; until then it is what keeps the
-    version bump honest.
-    """
-    proc = subprocess.run(
-        [sys.executable, "-m", "rustest._v2_worker"],
-        input=json.dumps({"op": "execute_test", "id": "tests/test_math.py::test_add"}) + "\n",
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-
-    assert proc.returncode == 2
-    assert "execute_test" in proc.stderr
-    assert proc.stdout.strip() == ""
-
-
 def _run_worker(lines: list[dict[str, Any]]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "rustest._v2_worker"],
@@ -1680,6 +1654,43 @@ def test_collect_file_without_a_path_is_protocol_fatal(tmp_path: Path) -> None:
 
     assert proc.returncode == 2
     assert "without a path" in proc.stderr
+
+
+def test_execute_test_is_not_implemented_yet_and_is_protocol_fatal(tmp_path: Path) -> None:
+    """The wire is at v2, this worker implements only the collection half.
+
+    `execute_test` is a *real* op in `src/v2/protocol.rs`, so the interesting question is
+    not whether an invented op fails but whether the op this worker is expected to grow
+    fails **the same way** in the meantime — and it must fail on the path a real
+    orchestrator takes, i.e. *after* `init`/`ready` has already agreed on protocol 2.  A
+    bare-stdin probe would leave open whether the exit 2 came from the handshake instead,
+    which is why the init line is sent first and the `ready` reply is asserted.
+
+    It must then take the unknown-op path: exit 2, naming the op, and **nothing on stdout
+    beyond `ready`** — never a swallowed request that leaves the orchestrator blocked on a
+    `test_result` line that is never coming.
+
+    Delete this test in the task that implements the op; until then it is what keeps the
+    version bump honest.
+    """
+    proc = _run_worker(
+        [
+            {
+                "op": "init",
+                "protocol_version": PROTOCOL_VERSION,
+                "rootdir": tmp_path.as_posix(),
+                "invocation_dir": tmp_path.as_posix(),
+                "python_files": ["test_*.py"],
+                "python_classes": ["Test"],
+                "python_functions": ["test"],
+            },
+            {"op": "execute_test", "id": "tests/test_math.py::test_add"},
+        ]
+    )
+
+    assert proc.returncode == 2
+    assert "execute_test" in proc.stderr
+    assert proc.stdout.splitlines() == [f'{{"op":"ready","protocol_version":{PROTOCOL_VERSION}}}']
 
 
 def test_worker_subprocess_rejects_an_undecodable_line() -> None:

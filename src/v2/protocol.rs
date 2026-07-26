@@ -117,11 +117,12 @@ pub enum WorkerResponse {
     },
     /// Outcome of one [`WorkerRequest::ExecuteTest`], one line per executed test.
     ///
-    /// pytest produces *three* reports per test — setup, call, teardown
-    /// (`_pytest/runner.py::runtestprotocol`) — and its terminal output is the collapse of
-    /// them into one category.  This wire carries the collapsed form directly, so the
-    /// worker owns that reduction and the orchestrator never has to re-derive it from
-    /// phases it cannot see.
+    /// pytest produces *up to three* reports per test — setup, call, teardown
+    /// (`_pytest/runner.py::runtestprotocol`, which skips the call phase when setup failed,
+    /// so a broken fixture yields two) — and its terminal output is the collapse of them
+    /// into one category.  This wire carries the collapsed form directly, so the worker owns
+    /// that reduction and the orchestrator never has to re-derive it from phases it cannot
+    /// see — least of all guess how many there were.
     TestResult {
         /// The manifest id echoed from the request, so a response can never be attributed
         /// to the wrong test even if a worker ever answers out of order.
@@ -251,6 +252,7 @@ mod tests {
         // orchestrator already holds ids from collection, and re-deriving one worker-side
         // would be a second, divergent implementation of `nodeid.rs`.
         assert!(!EXECUTE_TEST_LINE.contains(r#""path":"#));
+        assert!(!EXECUTE_TEST_LINE.contains(r#""qualname":"#));
     }
 
     #[test]
@@ -555,6 +557,108 @@ mod tests {
         assert!(serde_json::from_str::<WorkerRequest>(r#"{"path":"/repo/t.py"}"#).is_err());
     }
 
+    /// The exact `init` line a **v1 orchestrator** sends: right op, right version field,
+    /// no `invocation_dir`.  It must not decode.
+    ///
+    /// This is the single most likely wrong line to arrive on a v2 worker's stdin, and the
+    /// one shape where a missing field would be silently *plausible* — a decoder that
+    /// defaulted `invocation_dir` to `""` would hand every worker an empty invocation
+    /// directory and only misbehave later, in whatever fixture resolved a path against it.
+    #[test]
+    fn a_v1_shaped_init_line_is_a_hard_error() {
+        let err = serde_json::from_str::<WorkerRequest>(
+            r#"{"op":"init","protocol_version":1,"rootdir":"/repo","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#,
+        )
+        .expect_err("a v1 init line must not decode");
+        assert!(
+            err.to_string().contains("invocation_dir"),
+            "error should name the missing field, got: {err}"
+        );
+    }
+
+    /// **Every non-optional field is required**, in both directions.  Serde gives that for
+    /// free — right up until someone adds `#[serde(default)]` to quiet a producer, at which
+    /// point a truncated line decodes as a well-formed message carrying `""` or `0.0`.  The
+    /// `default`s that *are* deliberate (`tests`, `error`, `message`, `stdout`, `stderr`)
+    /// are pinned by the omission goldens above; this pins the complement, so the two
+    /// together say exactly which fields may be absent.
+    ///
+    /// Each line below is a real golden with **one key removed** — nothing else — so a
+    /// failure here names precisely the field that stopped being required.
+    #[test]
+    fn every_non_optional_field_is_required() {
+        let requests = [
+            (
+                "protocol_version",
+                r#"{"op":"init","rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#,
+            ),
+            (
+                "rootdir",
+                r#"{"op":"init","protocol_version":2,"invocation_dir":"/repo/tests","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#,
+            ),
+            (
+                "invocation_dir",
+                r#"{"op":"init","protocol_version":2,"rootdir":"/repo","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#,
+            ),
+            (
+                "python_files",
+                r#"{"op":"init","protocol_version":2,"rootdir":"/repo","invocation_dir":"/repo/tests","python_classes":["Test*"],"python_functions":["test*"]}"#,
+            ),
+            ("path", r#"{"op":"collect_file"}"#),
+            ("id", r#"{"op":"execute_test"}"#),
+        ];
+        for (field, line) in requests {
+            let err = serde_json::from_str::<WorkerRequest>(line)
+                .unwrap_err_or_panic(field, "request", line);
+            assert!(
+                err.contains(field),
+                "error should name the missing `{field}`, got: {err}"
+            );
+        }
+
+        let responses = [
+            ("protocol_version", r#"{"op":"ready"}"#),
+            ("path", r#"{"op":"collected","tests":[]}"#),
+            (
+                "id",
+                r#"{"op":"test_result","status":"passed","duration_s":0.125}"#,
+            ),
+            (
+                "status",
+                r#"{"op":"test_result","id":"t.py::test_a","duration_s":0.125}"#,
+            ),
+            (
+                "duration_s",
+                r#"{"op":"test_result","id":"t.py::test_a","status":"passed"}"#,
+            ),
+        ];
+        for (field, line) in responses {
+            let err = serde_json::from_str::<WorkerResponse>(line)
+                .unwrap_err_or_panic(field, "response", line);
+            assert!(
+                err.contains(field),
+                "error should name the missing `{field}`, got: {err}"
+            );
+        }
+    }
+
+    /// Turns "this line decoded when it should not have" into a failure that says *which*
+    /// line and *which* field, instead of serde's `called `Result::unwrap_err()` on an `Ok`.
+    trait RequiredFieldExt {
+        fn unwrap_err_or_panic(self, field: &str, direction: &str, line: &str) -> String;
+    }
+
+    impl<T: std::fmt::Debug> RequiredFieldExt for Result<T, serde_json::Error> {
+        fn unwrap_err_or_panic(self, field: &str, direction: &str, line: &str) -> String {
+            match self {
+                Err(err) => err.to_string(),
+                Ok(decoded) => {
+                    panic!("a {direction} missing `{field}` decoded: {decoded:?}\n  line: {line}")
+                }
+            }
+        }
+    }
+
     /// `deny_unknown_fields`, the reason it is worth having: a `"tsets"` typo in a worker
     /// would otherwise decode as a flawless, empty collection and silently lose every test
     /// in the file.  Field drift must be as loud as op drift.  Asserted for both enums —
@@ -576,6 +680,32 @@ mod tests {
         .expect_err("unknown request field must not decode");
         assert!(
             err.to_string().contains("recurse"),
+            "error should name the unknown field, got: {err}"
+        );
+    }
+
+    /// The same rule on the v2 variants, asserted rather than assumed: `deny_unknown_fields`
+    /// is an *enum*-level attribute, so it covers a newly added variant automatically — and
+    /// the way to keep that true is to have a test that fails if a variant is ever split out
+    /// with its own `Deserialize`.  The plausible drift is a field a future revision adds
+    /// (`timeout_s`, `phase`) reaching a build that predates it.
+    #[test]
+    fn unknown_field_on_the_execute_ops_is_a_hard_error() {
+        let err = serde_json::from_str::<WorkerRequest>(
+            r#"{"op":"execute_test","id":"t.py::test_a","timeout_s":30}"#,
+        )
+        .expect_err("unknown execute_test field must not decode");
+        assert!(
+            err.to_string().contains("timeout_s"),
+            "error should name the unknown field, got: {err}"
+        );
+
+        let err = serde_json::from_str::<WorkerResponse>(
+            r#"{"op":"test_result","id":"t.py::test_a","status":"passed","duration_s":0.0,"phase":"call"}"#,
+        )
+        .expect_err("unknown test_result field must not decode");
+        assert!(
+            err.to_string().contains("phase"),
             "error should name the unknown field, got: {err}"
         );
     }
