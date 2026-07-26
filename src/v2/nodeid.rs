@@ -22,8 +22,12 @@
 //!   bracket is always the tail of the nodeid.  Source:
 //!   `_pytest/python.py::PyCollector._genfunctions` —
 //!   `subname = f"{name}[{callspec.id}]" if callspec._idlist else name`.
-//!   Note the `if`: an empty id list yields **no** brackets rather than `[]`, so
-//!   "unparametrized" is `None` here and never `Some("")`.
+//!   Note the `if` guards on `_idlist` — the list of id *components* — not on the joined
+//!   `callspec.id`.  So an unparametrized function gets **no** brackets (`None` here),
+//!   while a function parametrized with an empty-string id keeps its brackets around
+//!   nothing: `@parametrize("s", ["", "a"])` really does emit `test_strings[]`, and pytest
+//!   selects on that id.  `None` and `Some("")` are therefore **distinct, both reachable**
+//!   states, and `split_nodeid` preserves the difference.
 //!
 //! No escaping happens in this module.  pytest sanitizes ids when it *generates* them
 //! (`_pytest/python.py::IdMaker`), not when it assembles the nodeid; param ids therefore
@@ -49,6 +53,11 @@
 //! first `::` is pytest's own convention (`_pytest/main.py::resolve_collection_argument`,
 //! `strpath, *parts = base.split("::")`; likewise `_pytest/reports.py::BaseReport.fspath`
 //! and `_pytest/cacheprovider.py`, both `nodeid.split("::")[0]`).
+//!
+//! The param id is then everything between that first `[` and the **final** character of
+//! the nodeid, which must be `]`.  Anchoring the close on the last byte rather than
+//! bracket-matching is what makes unbalanced ids work, and pytest emits those: `ids=["p]q"]`
+//! gives `test_x[p]q]` and `ids=["trail["]` gives `test_y[trail[]`.  Both round-trip here.
 
 /// Build a pytest-byte-compatible nodeid.
 ///
@@ -68,9 +77,16 @@ pub fn build_nodeid(path: &str, parts: &[&str], param_id: Option<&str>) -> Strin
         !path.contains('\\'),
         "nodeid paths must be posix-separated before reaching build_nodeid, got {path:?}"
     );
+    // `split_nodeid` finds the path by cutting at the first `::`, so a path containing one
+    // would be truncated and its tail mistaken for a class chain.
+    debug_assert!(
+        !path.contains("::"),
+        "a nodeid path may not contain `::` — it delimits the path from the class chain, got {path:?}"
+    );
     // pytest hangs the bracket off the *function* name (`_genfunctions`), so a param id
-    // with no name to attach to is not a shape pytest can produce — and is the one shape
-    // `split_nodeid` cannot invert, since the bracket would land inside the path segment.
+    // with no name to attach to is not a shape pytest can produce.  It is also not
+    // invertible: the bracket would land inside the path segment, where `split_nodeid`
+    // correctly refuses to read it as a param (paths may legitimately contain brackets).
     debug_assert!(
         param_id.is_none() || !parts.is_empty(),
         "a param id needs a function name to attach to, got path {path:?} with {param_id:?}"
@@ -178,6 +194,23 @@ mod tests {
                 None,
                 "tests/[dir]/test_b.py",
             ),
+            // An empty-string param id keeps its brackets and is distinct from "no param":
+            // `@parametrize("s", ["", "a"])` emits `test_strings[]` (see module docs).
+            (
+                "t.py",
+                vec!["test_strings"],
+                Some(""),
+                "t.py::test_strings[]",
+            ),
+            // Unbalanced brackets inside a param id.  pytest emits both of these
+            // (`ids=["p]q"]`, `ids=["trail["]`); they pin the `ends_with(']')` anchor.
+            ("t.py", vec!["test_x"], Some("p]q"), "t.py::test_x[p]q]"),
+            (
+                "t.py",
+                vec!["test_y"],
+                Some("trail["),
+                "t.py::test_y[trail[]",
+            ),
         ]
     }
 
@@ -191,13 +224,21 @@ mod tests {
     }
 
     /// pytest attaches the bracket to the function name, never to a bare file
-    /// (`_pytest/python.py::PyCollector._genfunctions`), and it is the one shape
-    /// [`split_nodeid`] could not invert.
+    /// (`_pytest/python.py::PyCollector._genfunctions`), and the shape is not invertible.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "needs a function name")]
     fn build_rejects_a_param_id_with_no_function_name_in_debug_builds() {
         build_nodeid("tests/test_a.py", &[], Some("x-1"));
+    }
+
+    /// `::` delimits the path from the class chain, so a path carrying one would be
+    /// truncated by [`split_nodeid`] — the symmetric producer-bug guard to the `\` one.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "may not contain")]
+    fn build_rejects_double_colons_in_the_path_in_debug_builds() {
+        build_nodeid("tests/od::d.py", &["test_x"], None);
     }
 
     #[test]
@@ -301,6 +342,10 @@ mod tests {
             "tests/test_a.py::test_top[a::b]",
             "tests/test_a.py::TestBox::TestInner::test_m[data[0]]",
             "tests/test_a.py::test_plain",
+            "test_p.py::test_strings[]",
+            "test_p.py::test_strings[a]",
+            "test_p.py::test_x[p]q]",
+            "test_p.py::test_y[trail[]",
         ];
         for nodeid in observed {
             let (path, parts, param) = split_nodeid(nodeid);
