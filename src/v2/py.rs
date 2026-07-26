@@ -30,9 +30,10 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use serde::Serialize;
 
+use super::cache::LastFailedMode;
 use super::collect::{collect, CollectError};
 use super::config::{normpath, resolve_config, ResolvedConfig};
-use super::execute::{run, RunError};
+use super::execute::{run, RunError, RunOptions};
 use super::selection::deselect;
 use super::to_posix;
 
@@ -190,7 +191,8 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// config file (pytest's `UsageError` shape), and `RuntimeError` for an orchestration
 /// failure. An unimportable *test file* raises nothing: it is data in `errors`.
 #[pyfunction]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None))]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=true))]
+#[allow(clippy::too_many_arguments)]
 pub fn v2_collect(
     py: Python<'_>,
     invocation_dir: &str,
@@ -199,11 +201,12 @@ pub fn v2_collect(
     workers: usize,
     keyword: Option<String>,
     mark_expr: Option<String>,
+    codeblocks: bool,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let mut manifest = py
-        .detach(|| collect(&dir, &args, python_executable, workers))
+        .detach(|| collect(&dir, &args, python_executable, workers, codeblocks))
         .map_err(collect_error_to_py)?;
 
     // Selection runs **after** collection and before anything is reported, which is where
@@ -232,8 +235,37 @@ pub fn v2_collect(
 /// an unusable config file, or a malformed `-k`/`-m` expression) and `RuntimeError` for an
 /// orchestration failure. A test file that fails to import raises nothing: it is data in
 /// `collection_errors`, and the report's `exit_code` is 2.
+/// The wire spelling of `--lf`/`--ff` on this boundary: `"none"`, `"only"`, `"first"`.
+///
+/// A string rather than two booleans because the two flags are mutually exclusive and a
+/// `(lf, ff)` pair has a fourth state that means nothing.  The spellings are v1's
+/// (`core.run`'s `last_failed_mode`), so the two engines' CLIs describe the same option the
+/// same way even though the caches are separate.
+fn parse_last_failed(mode: &str) -> PyResult<LastFailedMode> {
+    match mode {
+        "none" => Ok(LastFailedMode::None),
+        "only" => Ok(LastFailedMode::Only),
+        "first" => Ok(LastFailedMode::First),
+        other => Err(PyValueError::new_err(format!(
+            "last_failed_mode must be one of 'none', 'only', 'first', got {other:?}"
+        ))),
+    }
+}
+
 #[pyfunction]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None))]
+#[pyo3(signature = (
+    invocation_dir,
+    args,
+    python_executable,
+    workers,
+    keyword=None,
+    mark_expr=None,
+    fail_fast=false,
+    last_failed_mode="none",
+    no_capture=false,
+    codeblocks=true,
+))]
+#[allow(clippy::too_many_arguments)]
 pub fn v2_run(
     py: Python<'_>,
     invocation_dir: &str,
@@ -242,9 +274,19 @@ pub fn v2_run(
     workers: usize,
     keyword: Option<String>,
     mark_expr: Option<String>,
+    fail_fast: bool,
+    last_failed_mode: &str,
+    no_capture: bool,
+    codeblocks: bool,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
+    let options = RunOptions {
+        fail_fast,
+        last_failed: parse_last_failed(last_failed_mode)?,
+        no_capture,
+        codeblocks,
+    };
     let report = py
         .detach(|| {
             run(
@@ -254,6 +296,7 @@ pub fn v2_run(
                 workers,
                 keyword.as_deref(),
                 mark_expr.as_deref(),
+                options,
             )
         })
         .map_err(run_error_to_py)?;
@@ -504,6 +547,7 @@ mod tests {
                 2,
                 None,
                 None,
+                true,
             )
         })
         .unwrap();
@@ -591,6 +635,7 @@ mod tests {
                 1,
                 None,
                 None,
+                true,
             )
         })
         .unwrap_err();
@@ -621,6 +666,7 @@ mod tests {
                 1,
                 None,
                 None,
+                true,
             )
         })
         .unwrap_err();
@@ -650,6 +696,7 @@ mod tests {
                 1,
                 None,
                 None,
+                true,
             )
         })
         .unwrap_err();
@@ -678,6 +725,7 @@ mod tests {
                 0,
                 None,
                 None,
+                true,
             )
         })
         .unwrap();

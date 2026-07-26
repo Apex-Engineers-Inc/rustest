@@ -11,6 +11,7 @@
 //! single rule is what makes the manifest cache, spawn-based process workers, and the
 //! static (AST) collection tier possible.
 
+pub mod cache;
 pub mod collect;
 pub mod config;
 pub mod execute;

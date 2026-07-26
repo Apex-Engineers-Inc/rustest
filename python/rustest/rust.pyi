@@ -147,6 +147,7 @@ def v2_collect(
     workers: int,
     keyword: str | None = ...,
     mark_expr: str | None = ...,
+    codeblocks: bool = ...,
 ) -> str:
     """Collect tests with the v2 engine; returns a ``CollectionManifest`` JSON string.
 
@@ -177,6 +178,10 @@ def v2_run(
     workers: int,
     keyword: str | None = ...,
     mark_expr: str | None = ...,
+    fail_fast: bool = ...,
+    last_failed_mode: str = ...,
+    no_capture: bool = ...,
+    codeblocks: bool = ...,
 ) -> str:
     """Run tests with the v2 engine; returns a schema-v2 ``RunReport`` JSON string.
 

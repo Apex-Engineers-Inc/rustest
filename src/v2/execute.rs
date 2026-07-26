@@ -44,11 +44,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::v2::cache::LastFailedMode;
+use crate::v2::cache::{last_failed_order, merge_last_failed, read_last_failed, write_last_failed};
 use crate::v2::collect::{
     assemble, plan, spawn_pool, CollectError, Dispatch, FileOutcome, Worker, WorkerLauncher,
 };
@@ -64,8 +67,41 @@ use crate::v2::selection::{select_mask, SelectionError};
 /// [`crate::v2::collect::Worker::shutdown_run`].
 pub const SHUTDOWN_TEARDOWN_EXIT: i32 = 3;
 
-/// Version of the run-report wire format (`--report-json` under `--v2`).
+/// Version of the run-report wire format (`--report-json`).
 pub const REPORT_SCHEMA_VERSION: u32 = 2;
+
+/// Everything about a run that is not "which tests", i.e. the flags that change *how* the
+/// selected tests are executed rather than which ones are selected.
+///
+/// A struct rather than four positional `bool`s because every one of them would be a `bool`
+/// and a transposed pair would compile silently.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunOptions {
+    /// `-x` / `--exitfirst`: stop dispatching once a test has failed.  See [`run_with_launcher`].
+    pub fail_fast: bool,
+    /// `--lf` / `--ff`: how the last-failed cache reorders the selection.
+    pub last_failed: LastFailedMode,
+    /// `-s` / `--no-capture`: the worker does not redirect a test's streams.
+    pub no_capture: bool,
+    /// Collect python fences out of `.md` files (rustest's own extension; `--no-codeblocks`
+    /// turns it off).
+    pub codeblocks: bool,
+}
+
+impl RunOptions {
+    /// The defaults a plain `rustest <paths>` uses: capture on, codeblocks on, no `-x`, no
+    /// `--lf`.  `Default::default()` cannot be it, because `codeblocks` defaults to *true*
+    /// and `bool::default()` is false — a silent feature removal for anyone who built a
+    /// `RunOptions` with `..Default::default()`.
+    pub fn defaults() -> Self {
+        Self {
+            fail_fast: false,
+            last_failed: LastFailedMode::None,
+            no_capture: false,
+            codeblocks: true,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Outcomes
@@ -223,6 +259,18 @@ pub struct RunReport {
     /// `print` from a teardown; treating it as a failure signal would fail green runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worker_stderr: Vec<String>,
+    /// `-x` fired: dispatch stopped after a failure and the selection is only partly run.
+    ///
+    /// Omitted when false, so the schema-v2 golden document is byte-unchanged for every run
+    /// that did not stop early — which is every run the conformance harness makes.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stopped_early: bool,
+}
+
+/// `skip_serializing_if` needs a predicate over a reference; `bool::not` is not one.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 // ---------------------------------------------------------------------------
@@ -331,14 +379,22 @@ pub fn run(
     workers: usize,
     keyword: Option<&str>,
     mark: Option<&str>,
+    options: RunOptions,
 ) -> Result<RunReport, RunError> {
+    let launcher = WorkerLauncher::module(python_executable);
+    let launcher = if options.no_capture {
+        launcher.without_capture()
+    } else {
+        launcher
+    };
     run_with_launcher(
         invocation_dir,
         args,
-        &WorkerLauncher::module(python_executable),
+        &launcher,
         workers,
         keyword,
         mark,
+        options,
     )
 }
 
@@ -359,6 +415,27 @@ type CollectMessage = (usize, CollectedFiles);
 /// The main thread's slot per worker; `None` means that worker never reported (a panic).
 type CollectInbox = Vec<Option<CollectedFiles>>;
 
+/// The whole of a run, with the worker launcher injected.
+///
+/// # `-x` / `--exitfirst`
+///
+/// pytest's `-x` is `--maxfail=1`: `Session.pytest_runtest_logreport` increments
+/// `testsfailed` and sets `shouldfail` once it reaches `maxfail`, and
+/// `_pytest/main.py::pytest_runtestloop` raises `session.Failed` at the top of the *next*
+/// iteration — so the failing test is reported and **nothing after it runs**.  `wrap_session`
+/// catches `Failed` as `ExitCode.TESTS_FAILED`.  Probed (pytest 8.4.2) on a four-test file
+/// whose second test fails: `1 failed, 1 passed`, exit **1**, and `test_c`/`test_d` appear
+/// nowhere — not as skipped, not as anything.
+///
+/// Two properties follow, and the report reproduces both: the exit code is the ordinary
+/// failure code (1), and the summary counts **only the tests that ran**.
+///
+/// **Parallel semantics, stated because they cannot be pytest's.**  With `-n 1` this is
+/// exactly pytest: one worker, sequential dispatch, stop at the first failing result.  With a
+/// pool, every worker checks the shared flag before each dispatch, so the tests already in
+/// flight finish and *then* everything stops — "at most one failure" becomes "at least one
+/// failure, and no test started after it was seen".  Which extra tests ran is therefore
+/// timing-dependent under `-n >1`, and `rustest -x` is documented as sequential-exact.
 fn run_with_launcher(
     invocation_dir: &Path,
     args: &[PathBuf],
@@ -366,9 +443,11 @@ fn run_with_launcher(
     workers: usize,
     keyword: Option<&str>,
     mark: Option<&str>,
+    options: RunOptions,
 ) -> Result<RunReport, RunError> {
     let started = Instant::now();
-    let dispatch = plan(invocation_dir, args, workers)?;
+    let dispatch = plan(invocation_dir, args, workers, options.codeblocks)?;
+    let previously_failed = read_last_failed(&dispatch.rootdir_path);
 
     if dispatch.targets.is_empty() {
         // Still compile the expressions. `deselect_by_keyword` parses **before** it loops
@@ -380,8 +459,8 @@ fn run_with_launcher(
             Vec::new(),
             Vec::new(),
             0,
-            Vec::new(),
-            Vec::new(),
+            WorkerResidue::default(),
+            false,
             started,
         ));
     }
@@ -398,6 +477,13 @@ fn run_with_launcher(
         exec_rxs.push(rx);
     }
 
+    // One flag for the whole pool: set by whichever worker first sees a failing result, read
+    // by every worker before each dispatch.  `SeqCst` because the cost is irrelevant next to
+    // a subprocess round trip and the ordering question is then not one anybody has to think
+    // about again.
+    let stop = AtomicBool::new(false);
+    let stop = &stop;
+
     std::thread::scope(|scope| {
         let handles: Vec<_> = pool
             .into_iter()
@@ -406,7 +492,17 @@ fn run_with_launcher(
             .enumerate()
             .map(|(index, ((worker, files), exec_rx))| {
                 let collect_tx = collect_tx.clone();
-                scope.spawn(move || worker_life(index, worker, files, collect_tx, exec_rx))
+                scope.spawn(move || {
+                    worker_life(
+                        index,
+                        worker,
+                        files,
+                        collect_tx,
+                        exec_rx,
+                        options.fail_fast,
+                        stop,
+                    )
+                })
             })
             .collect();
         // The clones live in the threads; this one would otherwise keep the channel open
@@ -425,7 +521,14 @@ fn run_with_launcher(
             inbox[index] = Some(result);
         }
 
-        let staged = stage(&dispatch, inbox, keyword, mark);
+        let staged = stage(
+            &dispatch,
+            inbox,
+            keyword,
+            mark,
+            &previously_failed,
+            options.last_failed,
+        );
 
         // Hand out the work — or drop every sender, which unblocks the workers to shut
         // down — *before* joining, or the join deadlocks on threads still at the barrier.
@@ -449,8 +552,7 @@ fn run_with_launcher(
         let staged = staged?;
 
         let mut slots: Vec<Option<TestOutcome>> = staged.selected.iter().map(|_| None).collect();
-        let mut teardown_errors = Vec::new();
-        let mut worker_stderr = Vec::new();
+        let mut residue = WorkerResidue::default();
         let mut failure: Option<CollectError> = None;
         for run in runs {
             match run {
@@ -458,9 +560,9 @@ fn run_with_launcher(
                     for (slot, outcome) in run.results {
                         slots[slot] = Some(outcome);
                     }
-                    teardown_errors.extend(run.teardown);
+                    residue.teardown_errors.extend(run.teardown);
                     if !run.stderr.is_empty() {
-                        worker_stderr.push(run.stderr);
+                        residue.stderr.push(run.stderr);
                     }
                 }
                 // Worker order is deterministic, so the reported failure is too.
@@ -471,26 +573,67 @@ fn run_with_launcher(
             return Err(RunError::Collect(err));
         }
 
+        // A missing slot is normally a protocol bug — a test the pool never answered — and
+        // saying so is the whole reason `MissingResult` exists.  Under a fired `-x` it is
+        // instead the *expected* shape: dispatch stopped, so the tail of the selection has no
+        // result and must be dropped from the report rather than invented.  The flag is the
+        // only thing that tells the two apart, which is why the check is on it and not on
+        // `options.fail_fast` (a `-x` run that never failed must still catch a lost result).
+        let stopped_early = stop.load(Ordering::SeqCst);
         let mut outcomes = Vec::with_capacity(slots.len());
         for (test, slot) in staged.selected.iter().zip(slots) {
-            let Some(outcome) = slot else {
-                return Err(RunError::Collect(CollectError::MissingResult {
-                    id: test.id.clone(),
-                }));
-            };
-            outcomes.push(outcome);
+            match slot {
+                Some(outcome) => outcomes.push(outcome),
+                None if stopped_early => {}
+                None => {
+                    return Err(RunError::Collect(CollectError::MissingResult {
+                        id: test.id.clone(),
+                    }))
+                }
+            }
         }
 
-        Ok(finish(
+        let report = finish(
             dispatch.rootdir.clone(),
             outcomes,
             staged.errors,
             staged.deselected,
-            teardown_errors,
-            worker_stderr,
+            residue,
+            stopped_early,
             started,
-        ))
+        );
+        record_last_failed(&dispatch.rootdir_path, &previously_failed, &report);
+        Ok(report)
     })
+}
+
+/// Fold this run's outcomes into the last-failed cache.
+///
+/// Unconditional: pytest writes `cache/lastfailed` on every session that has a cache
+/// (`LFPlugin.pytest_sessionfinish`), not only when `--lf` was asked for — a cache written
+/// only when read would never have anything in it.  `-p no:cacheprovider` is pytest's opt-out
+/// and rustest has no plugin flags, so there is no way to suppress it yet; the file is inside
+/// the already-gitignored `.rustest_cache/`.
+fn record_last_failed(
+    rootdir: &Path,
+    previous: &std::collections::HashSet<String>,
+    report: &RunReport,
+) {
+    let outcomes = report
+        .tests
+        .iter()
+        .map(|test| (test.id.clone(), test.status.is_failure()));
+    let errors = report
+        .collection_errors
+        .iter()
+        .map(|entry| entry.path.clone());
+    let merged = merge_last_failed(previous, outcomes, errors);
+    // pytest's `if saved_lastfailed != self.lastfailed` — an unchanged cache is not rewritten,
+    // so a green repeat run does not keep touching a file (and a read-only tree stays quiet).
+    let unchanged = merged.len() == previous.len() && merged.keys().all(|id| previous.contains(id));
+    if !unchanged {
+        let _ = write_last_failed(rootdir, &merged);
+    }
 }
 
 /// The selected manifest plus the per-worker dispatch lists derived from it.
@@ -509,6 +652,8 @@ fn stage(
     inbox: CollectInbox,
     keyword: Option<&str>,
     mark: Option<&str>,
+    previously_failed: &std::collections::HashSet<String>,
+    last_failed: LastFailedMode,
 ) -> Result<Staged, RunError> {
     let pool_size = inbox.len();
     let mut outcomes = Vec::new();
@@ -530,7 +675,31 @@ fn stage(
     // *before* `pytest_runtestloop` can interrupt, so a malformed `-k` is a usage error (4)
     // that outranks the collection error (2).
     let keep = select_mask(&assembled.tests, keyword, mark)?;
-    let deselected = keep.iter().filter(|keep| !**keep).count();
+    let mut deselected = keep.iter().filter(|keep| !**keep).count();
+
+    // `--lf`/`--ff` run **after** `-k`/`-m`.  `LFPlugin.pytest_collection_modifyitems` is a
+    // `wrapper=True, tryfirst=True` hookimpl whose body is *after* the `yield`, so it sees
+    // the item list every other `pytest_collection_modifyitems` — the mark plugin's keyword
+    // and mark deselection among them — has already filtered.  Applying it first would let
+    // `--lf -k something-else` resurrect deselected tests.
+    let surviving: Vec<usize> = (0..assembled.tests.len())
+        .filter(|index| keep[*index])
+        .collect();
+    let order = last_failed_order(
+        surviving
+            .iter()
+            .map(|index| assembled.tests[*index].id.clone()),
+        previously_failed,
+        last_failed,
+    );
+    // The tests `--lf` drops are **deselected**, not vanished: pytest calls
+    // `config.hook.pytest_deselected(items=previously_passed)` on them, so they land in the
+    // same bucket `-k` uses and the summary says `N deselected`.
+    let ordered: Vec<usize> = match &order {
+        Some(order) => order.iter().map(|slot| surviving[*slot]).collect(),
+        None => surviving,
+    };
+    deselected += keep.iter().filter(|keep| **keep).count() - ordered.len();
 
     // `_pytest/main.py::pytest_runtestloop`: `if session.testsfailed and not
     // continue_on_collection_errors: raise session.Interrupted(...)`.  A single unimportable
@@ -567,10 +736,8 @@ fn stage(
     let mut grouped: Vec<Vec<Vec<(usize, String)>>> = vec![Vec::new(); pool_size];
     let mut selected = Vec::new();
 
-    for (index, test) in assembled.tests.into_iter().enumerate() {
-        if !keep[index] {
-            continue;
-        }
+    for index in ordered {
+        let test = assembled.tests[index].clone();
         let target = assembled.origin[index];
         let path = &dispatch.targets[target];
         let worker = owner[target];
@@ -597,20 +764,33 @@ fn stage(
     })
 }
 
+/// What the pool left behind that belongs to no single test.
+///
+/// The two fields are both `Vec<String>` and mean opposite things — one reddens the run, the
+/// other is never graded — so they travel as a named pair rather than as two adjacent
+/// positional arguments a transposition would silently swap.
+#[derive(Default)]
+struct WorkerResidue {
+    /// Teardown failures with no test left to own them; each counts as a failure.
+    teardown_errors: Vec<String>,
+    /// Whatever the workers wrote to stderr. Carried, never graded.
+    stderr: Vec<String>,
+}
+
 fn finish(
     rootdir: String,
     tests: Vec<TestOutcome>,
     collection_errors: Vec<CollectionErrorEntry>,
     deselected: usize,
-    teardown_errors: Vec<String>,
-    worker_stderr: Vec<String>,
+    residue: WorkerResidue,
+    stopped_early: bool,
     started: Instant,
 ) -> RunReport {
     let summary = RunSummary::tally(&tests, deselected, started.elapsed().as_secs_f64());
     // A teardown failure that belongs to no test is still a failure: pytest reports the
     // same shape (`1 passed, 1 error`) and exits 1.
-    let failures =
-        tests.iter().filter(|test| test.status.is_failure()).count() + teardown_errors.len();
+    let failures = tests.iter().filter(|test| test.status.is_failure()).count()
+        + residue.teardown_errors.len();
     let exit = exit_code(tests.len(), collection_errors.len(), failures);
     RunReport {
         version: REPORT_SCHEMA_VERSION,
@@ -619,8 +799,9 @@ fn finish(
         summary,
         tests,
         collection_errors,
-        teardown_errors,
-        worker_stderr,
+        teardown_errors: residue.teardown_errors,
+        worker_stderr: residue.stderr,
+        stopped_early,
     }
 }
 
@@ -631,6 +812,8 @@ fn worker_life(
     files: Vec<(usize, PathBuf)>,
     collect_tx: Sender<CollectMessage>,
     exec_rx: Receiver<Vec<(usize, String)>>,
+    fail_fast: bool,
+    stop: &AtomicBool,
 ) -> Result<WorkerRun, CollectError> {
     let mut outcomes = Vec::with_capacity(files.len());
     for (target, path) in &files {
@@ -657,7 +840,18 @@ fn worker_life(
 
     let mut results = Vec::with_capacity(assignment.len());
     for (slot, id) in assignment {
-        results.push((slot, worker.execute_one(&id)?));
+        // Checked *before* dispatch, not after: the point of `-x` is that nothing starts
+        // after a failure is known.  `shutdown_run` below still happens, so the fixtures this
+        // worker opened are unwound exactly as they would be on a complete run — an aborted
+        // run must not leak a container or a temp tree.
+        if fail_fast && stop.load(Ordering::SeqCst) {
+            break;
+        }
+        let outcome = worker.execute_one(&id)?;
+        if fail_fast && outcome.status.is_failure() {
+            stop.store(true, Ordering::SeqCst);
+        }
+        results.push((slot, outcome));
     }
 
     let teardown = worker.shutdown_run()?;
@@ -699,8 +893,11 @@ mod tests {
             tests,
             errors,
             0,
-            teardown,
-            stderr,
+            WorkerResidue {
+                teardown_errors: teardown,
+                stderr,
+            },
+            false,
             Instant::now(),
         )
     }
@@ -955,6 +1152,7 @@ mod tests {
             collection_errors: Vec::new(),
             teardown_errors: Vec::new(),
             worker_stderr: Vec::new(),
+            stopped_early: false,
         };
 
         assert_eq!(
@@ -987,8 +1185,30 @@ mod tests {
         WorkerLauncher::module(&test_python())
     }
 
+    /// [`run_with_launcher`] with the CLI's own defaults, which is the shape every test
+    /// written before `RunOptions` existed assumes.  The option-carrying behaviours (`-x`,
+    /// `--lf`/`--ff`, `-s`) have their own tests and pass their own options.
+    fn run_default(
+        dir: &Path,
+        args: &[PathBuf],
+        launcher: &WorkerLauncher,
+        workers: usize,
+        keyword: Option<&str>,
+        mark: Option<&str>,
+    ) -> Result<RunReport, RunError> {
+        run_with_launcher(
+            dir,
+            args,
+            launcher,
+            workers,
+            keyword,
+            mark,
+            RunOptions::defaults(),
+        )
+    }
+
     fn run_tree(tmp: &TempDir, workers: usize) -> RunReport {
-        run_with_launcher(tmp.path(), &[], &real_worker(), workers, None, None)
+        run_default(tmp.path(), &[], &real_worker(), workers, None, None)
             .expect("the run completes")
     }
 
@@ -1129,22 +1349,21 @@ def test_error(boom):
         )]);
 
         let by_keyword =
-            run_with_launcher(tmp.path(), &[], &real_worker(), 1, Some("one"), None).unwrap();
+            run_default(tmp.path(), &[], &real_worker(), 1, Some("one"), None).unwrap();
         assert_eq!(
             statuses(&by_keyword),
             vec![("test_sel.py::test_one".to_string(), "passed")]
         );
         assert_eq!(by_keyword.summary.deselected, 1);
 
-        let by_mark =
-            run_with_launcher(tmp.path(), &[], &real_worker(), 1, None, Some("slow")).unwrap();
+        let by_mark = run_default(tmp.path(), &[], &real_worker(), 1, None, Some("slow")).unwrap();
         assert_eq!(
             statuses(&by_mark),
             vec![("test_sel.py::test_one".to_string(), "passed")]
         );
 
         let nothing =
-            run_with_launcher(tmp.path(), &[], &real_worker(), 1, Some("nomatch"), None).unwrap();
+            run_default(tmp.path(), &[], &real_worker(), 1, Some("nomatch"), None).unwrap();
         assert!(nothing.tests.is_empty());
         assert_eq!(nothing.summary.deselected, 2);
         assert_eq!(nothing.exit_code, 5);
@@ -1156,7 +1375,7 @@ def test_error(boom):
     fn a_malformed_expression_aborts_the_run_as_a_usage_error() {
         let tmp = tree(&[("test_a.py", "def test_a():\n    pass\n")]);
 
-        let err = run_with_launcher(tmp.path(), &[], &real_worker(), 1, Some("and and"), None)
+        let err = run_default(tmp.path(), &[], &real_worker(), 1, Some("and and"), None)
             .expect_err("invalid expression");
         assert!(matches!(err, RunError::Selection(_)), "{err}");
         assert_eq!(
@@ -1171,7 +1390,7 @@ def test_error(boom):
     #[test]
     fn a_malformed_expression_is_a_usage_error_on_an_empty_tree() {
         let tmp = tree(&[]);
-        let err = run_with_launcher(tmp.path(), &[], &real_worker(), 1, None, Some("m("))
+        let err = run_default(tmp.path(), &[], &real_worker(), 1, None, Some("m("))
             .expect_err("invalid expression");
         assert!(err
             .to_string()
@@ -1194,7 +1413,7 @@ def test_error(boom):
         let tmp = tree(&[("test_dup.py", "def test_one():\n    pass\n")]);
         let file = tmp.path().join("test_dup.py");
 
-        let report = run_with_launcher(
+        let report = run_default(
             tmp.path(),
             &[file.clone(), file],
             &real_worker(),
@@ -1258,6 +1477,268 @@ def test_error(boom):
                 .any(|s| s.contains("TEARDOWN-MODULE")),
             "{:?}",
             report.worker_stderr
+        );
+    }
+
+    // =====================================================================
+    // -x / --exitfirst
+    // =====================================================================
+
+    /// Four tests, the second fails.  Probed against pytest 8.4.2 on this exact file:
+    /// `pytest -x -q` prints `1 failed, 1 passed`, exits **1**, and never mentions `test_c`
+    /// or `test_d`.  All three properties are asserted, because each is a different way to
+    /// get `-x` wrong: run everything and report it (no stop), stop but report the tail as
+    /// skipped (invented outcomes), or stop and exit 2 (wrong code).
+    const FOUR_WITH_A_FAILURE: &str = "\
+def test_a():
+    pass
+
+
+def test_b():
+    assert 0
+
+
+def test_c():
+    assert 0
+
+
+def test_d():
+    pass
+";
+
+    fn run_options(tmp: &TempDir, workers: usize, options: RunOptions) -> RunReport {
+        run_with_launcher(
+            tmp.path(),
+            &[],
+            &real_worker(),
+            workers,
+            None,
+            None,
+            options,
+        )
+        .expect("the run completes")
+    }
+
+    #[test]
+    fn fail_fast_stops_after_the_first_failure_and_reports_only_what_ran() {
+        let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                fail_fast: true,
+                ..RunOptions::defaults()
+            },
+        );
+
+        assert_eq!(
+            statuses(&report),
+            vec![
+                ("test_x.py::test_a".to_string(), "passed"),
+                ("test_x.py::test_b".to_string(), "failed"),
+            ]
+        );
+        assert_eq!((report.summary.passed, report.summary.failed), (1, 1));
+        assert_eq!(report.summary.total, 2, "the tail must not be counted");
+        assert_eq!(report.exit_code, 1, "-x is TESTS_FAILED, not INTERRUPTED");
+        assert!(report.stopped_early);
+    }
+
+    /// The same tree without `-x` — the control, so the test above cannot pass because the
+    /// tree happens to be short.
+    #[test]
+    fn without_fail_fast_the_whole_file_runs() {
+        let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
+        let report = run_tree(&tmp, 1);
+        assert_eq!(report.summary.total, 4);
+        assert_eq!((report.summary.passed, report.summary.failed), (2, 2));
+        assert!(!report.stopped_early);
+    }
+
+    /// `-x` on a green tree changes nothing at all: every test runs, and `stopped_early`
+    /// stays false so a reader cannot mistake a clean run for a truncated one.
+    #[test]
+    fn fail_fast_on_a_green_tree_is_a_normal_run() {
+        let tmp = tree(&[(
+            "test_g.py",
+            "def test_a():\n    pass\ndef test_b():\n    pass\n",
+        )]);
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                fail_fast: true,
+                ..RunOptions::defaults()
+            },
+        );
+        assert_eq!(report.summary.total, 2);
+        assert_eq!(report.exit_code, 0);
+        assert!(!report.stopped_early);
+    }
+
+    /// An `error` (a broken fixture) stops the run too: `TestStatus::is_failure` is what
+    /// `-x` consults, and pytest's `maxfail` counter is driven by `report.failed`, which a
+    /// setup error sets just as an assertion does.
+    #[test]
+    fn a_setup_error_trips_fail_fast() {
+        let tmp = tree(&[(
+            "test_e.py",
+            "import pytest\n\n\n@pytest.fixture\ndef boom():\n    raise ValueError('x')\n\n\ndef test_a(boom):\n    pass\n\n\ndef test_b():\n    pass\n",
+        )]);
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                fail_fast: true,
+                ..RunOptions::defaults()
+            },
+        );
+        assert_eq!(
+            statuses(&report),
+            vec![("test_e.py::test_a".to_string(), "error")]
+        );
+        assert_eq!(report.exit_code, 1);
+    }
+
+    // =====================================================================
+    // --lf / --ff and the cache
+    // =====================================================================
+
+    /// Every run writes the cache, `--lf` or not — pytest's `LFPlugin.pytest_sessionfinish`
+    /// is unconditional, and a cache written only when read would always be empty.
+    #[test]
+    fn an_ordinary_run_writes_the_last_failed_cache() {
+        let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
+        let _ = run_tree(&tmp, 1);
+
+        assert_eq!(
+            crate::v2::cache::read_last_failed(tmp.path()),
+            [
+                "test_x.py::test_b".to_string(),
+                "test_x.py::test_c".to_string()
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// `--lf` runs only what failed, and the rest are **deselected** (pytest calls
+    /// `pytest_deselected` on them), so the summary accounts for them rather than losing
+    /// them.
+    #[test]
+    fn last_failed_only_runs_the_previously_failed() {
+        let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
+        let _ = run_tree(&tmp, 1);
+
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                last_failed: LastFailedMode::Only,
+                ..RunOptions::defaults()
+            },
+        );
+        assert_eq!(
+            statuses(&report),
+            vec![
+                ("test_x.py::test_b".to_string(), "failed"),
+                ("test_x.py::test_c".to_string(), "failed"),
+            ]
+        );
+        assert_eq!(report.summary.deselected, 2);
+        assert_eq!(report.exit_code, 1);
+    }
+
+    /// `--ff` keeps everything and moves the failures to the front — and the report is in
+    /// *that* order, because pytest reorders `session.items` themselves.
+    #[test]
+    fn failed_first_reorders_without_dropping_anything() {
+        let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
+        let _ = run_tree(&tmp, 1);
+
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                last_failed: LastFailedMode::First,
+                ..RunOptions::defaults()
+            },
+        );
+        assert_eq!(
+            report
+                .tests
+                .iter()
+                .map(|test| test.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "test_x.py::test_b",
+                "test_x.py::test_c",
+                "test_x.py::test_a",
+                "test_x.py::test_d",
+            ]
+        );
+        assert_eq!(report.summary.deselected, 0);
+    }
+
+    /// The cache converges: fix one of the two failures and only the other survives.
+    #[test]
+    fn a_fixed_test_leaves_the_cache() {
+        let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
+        let _ = run_tree(&tmp, 1);
+        write_file(
+            &tmp.path().join("test_x.py"),
+            &FOUR_WITH_A_FAILURE.replace("def test_b():\n    assert 0", "def test_b():\n    pass"),
+        );
+        let _ = run_tree(&tmp, 1);
+
+        assert_eq!(
+            crate::v2::cache::read_last_failed(tmp.path()),
+            ["test_x.py::test_c".to_string()].into_iter().collect()
+        );
+    }
+
+    /// `--lf` runs **after** `-k`: a keyword that excludes every recorded failure leaves the
+    /// `-k` selection intact (pytest's "known failures not in selected tests" branch) rather
+    /// than resurrecting the deselected tests.
+    #[test]
+    fn last_failed_applies_after_keyword_selection() {
+        let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
+        let _ = run_tree(&tmp, 1);
+
+        let report = run_with_launcher(
+            tmp.path(),
+            &[],
+            &real_worker(),
+            1,
+            Some("test_a or test_d"),
+            None,
+            RunOptions {
+                last_failed: LastFailedMode::Only,
+                ..RunOptions::defaults()
+            },
+        )
+        .expect("the run completes");
+
+        assert_eq!(
+            report
+                .tests
+                .iter()
+                .map(|test| test.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["test_x.py::test_a", "test_x.py::test_d"]
+        );
+        assert_eq!(report.exit_code, 0);
+    }
+
+    /// A collection error is cached under the **file's** id, so `--lf` after a broken import
+    /// has something to re-run.
+    #[test]
+    fn a_collection_error_is_cached_under_the_file() {
+        let tmp = tree(&[("test_broken.py", "import nope_does_not_exist\n")]);
+        let _ = run_tree(&tmp, 1);
+        assert_eq!(
+            crate::v2::cache::read_last_failed(tmp.path()),
+            ["test_broken.py".to_string()].into_iter().collect()
         );
     }
 
@@ -1346,7 +1827,7 @@ def test_error(boom):
         let a = tmp.path().join("test_a.py");
         let b = tmp.path().join("test_b.py");
 
-        let report = run_with_launcher(
+        let report = run_default(
             tmp.path(),
             &[a.clone(), b, a],
             &recording_worker(logs.path(), 2),
@@ -1395,7 +1876,7 @@ def test_error(boom):
         let tmp = tree(&[("test_a.py", ""), ("test_b.py", "")]);
         let logs = TempDir::new().unwrap();
 
-        let report = run_with_launcher(
+        let report = run_default(
             tmp.path(),
             &[],
             &recording_worker(logs.path(), 1),
@@ -1449,7 +1930,7 @@ def test_error(boom):
              \x20   sys.stdout.flush()\n"
         );
 
-        let err = run_with_launcher(tmp.path(), &[], &scripted(&script), 1, None, None)
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
             .expect_err("an unknown status is fatal");
         let message = err.to_string();
         assert!(message.contains("unknown status `xpass`"), "{message}");
@@ -1487,7 +1968,7 @@ def test_error(boom):
              \x20   sys.stdout.flush()\n"
         );
 
-        let err = run_with_launcher(tmp.path(), &[], &scripted(&script), 1, None, None)
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
             .expect_err("a mis-addressed result is fatal");
         assert!(err.to_string().contains("not the requested test"), "{err}");
     }
@@ -1518,7 +1999,7 @@ def test_error(boom):
              \x20   sys.stdout.flush()\n"
         );
 
-        let err = run_with_launcher(tmp.path(), &[], &scripted(&script), 1, None, None)
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
             .expect_err("a dead worker is fatal");
         let message = err.to_string();
         assert!(message.contains("test_a.py::test_one"), "{message}");
@@ -1537,7 +2018,7 @@ def test_error(boom):
              sys.stdout.flush()\n\
              sys.stdin.readline()\n";
 
-        let err = run_with_launcher(tmp.path(), &[], &scripted(script), 1, None, None)
+        let err = run_default(tmp.path(), &[], &scripted(script), 1, None, None)
             .expect_err("version skew is fatal");
         let message = err.to_string();
         assert!(message.contains("speaks protocol 1"), "{message}");

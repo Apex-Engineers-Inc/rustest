@@ -252,7 +252,38 @@ fn stderr_block(stderr: &str) -> String {
 pub struct WorkerLauncher {
     program: String,
     args: Vec<String>,
+    /// Extra environment for the child, layered over the parent's.
+    ///
+    /// The one thing that travels this way rather than on the wire is **capture**
+    /// ([`Self::without_capture`]).  It is spawn configuration, constant for a worker's whole
+    /// life and identical for every worker in the pool — exactly like `program` and `args` —
+    /// so putting it here keeps [`crate::v2::protocol::PROTOCOL_VERSION`] where it is.  A
+    /// per-message option would have to be re-sent with every request it cannot vary across.
+    envs: Vec<(String, String)>,
 }
+
+/// Set in a worker's environment by [`WorkerLauncher::without_capture`]; read by
+/// `python/rustest/_v2_worker.py`.  Mirrored there and **must be renamed in the same
+/// commit**.
+pub const CAPTURE_ENV: &str = "RUSTEST_V2_CAPTURE";
+
+/// v1's "a rustest run is in progress" flag, set for every worker.
+///
+/// v1 sets it around `rust.run` (`python/rustest/core.py`), and real suites branch on it —
+/// rustest's own `tests/integration/*` skip themselves under it, and
+/// `tests/test_conftest_nested/*` *enable* themselves with it.  The v2 worker is where user
+/// code runs, so the worker process is where it has to be set; leaving it unset made every
+/// one of those files take the wrong branch the moment v2 became the default.
+pub const RUNNING_ENV: &str = "RUSTEST_RUNNING";
+
+/// Which engine a test body is running under: `"v2"` in every v2 worker, unset under v1.
+///
+/// A transition-period affordance, and a deliberate one.  The two engines are not feature
+/// identical yet (see the Phase 3 list in `.superpowers/sdd/p1c-task-1-report.md`), and a
+/// suite that needs to branch — rustest's own does, for the async-batching gap — otherwise
+/// has to sniff behaviour.  Reading an environment variable is what `RUSTEST_RUNNING` already
+/// taught every rustest suite to do.
+pub const ENGINE_ENV: &str = "RUSTEST_ENGINE";
 
 impl WorkerLauncher {
     /// `python_executable -m rustest._v2_worker` — the real worker.
@@ -260,7 +291,24 @@ impl WorkerLauncher {
         Self {
             program: python_executable.to_string(),
             args: vec!["-m".to_string(), "rustest._v2_worker".to_string()],
+            envs: vec![
+                (RUNNING_ENV.to_string(), "1".to_string()),
+                (ENGINE_ENV.to_string(), "v2".to_string()),
+            ],
         }
+    }
+
+    /// Ask the worker not to redirect a test's `sys.stdout`/`sys.stderr` — `-s` / `--no-capture`.
+    ///
+    /// The worker's stdout is the protocol channel, so "not captured" cannot mean "goes to
+    /// this process's stdout": `main` has already rebound `sys.stdout` to stderr before any
+    /// test module is imported.  What `-s` switches off is the *second* redirect, the
+    /// per-test `_Capture`, so output flows to the worker's stderr and reaches the user
+    /// through `RunReport::worker_stderr` — live-ordered within a worker, interleaved across
+    /// a pool.  Documented divergence from pytest, which writes straight to the terminal.
+    pub fn without_capture(mut self) -> Self {
+        self.envs.push((CAPTURE_ENV.to_string(), "no".to_string()));
+        self
     }
 
     /// A stand-in worker: an arbitrary program and argv, so a test can drive the
@@ -275,6 +323,7 @@ impl WorkerLauncher {
         Self {
             program: program.to_string(),
             args,
+            envs: Vec::new(),
         }
     }
 
@@ -297,12 +346,14 @@ pub fn collect(
     args: &[PathBuf],
     python_executable: &str,
     workers: usize,
+    codeblocks: bool,
 ) -> Result<CollectionManifest, CollectError> {
     collect_with_launcher(
         invocation_dir,
         args,
         &WorkerLauncher::module(python_executable),
         workers,
+        codeblocks,
     )
 }
 
@@ -322,6 +373,10 @@ pub(crate) struct FileOutcome {
 /// sound while both halves compute it identically.
 pub(crate) struct Dispatch {
     pub(crate) rootdir: String,
+    /// The same rootdir as a native path.  Carried rather than rebuilt from the posix
+    /// string, because anything that writes *next to* the rootdir — the last-failed cache —
+    /// needs a path the platform's own APIs accept.
+    pub(crate) rootdir_path: PathBuf,
     pub(crate) targets: Vec<PathBuf>,
     /// Per worker, in walk order: `(target index, path)`.  The target index is what puts
     /// the manifest back into walk order however the pool interleaves.
@@ -334,8 +389,9 @@ pub(crate) fn plan(
     invocation_dir: &Path,
     args: &[PathBuf],
     workers: usize,
+    codeblocks: bool,
 ) -> Result<Dispatch, CollectError> {
-    let (config, targets) = discover(invocation_dir, args)?;
+    let (config, targets) = discover(invocation_dir, args, codeblocks)?;
     let rootdir = to_posix(&config.rootdir);
 
     // More workers than files would spawn interpreters with nothing to do; fewer than one
@@ -367,6 +423,7 @@ pub(crate) fn plan(
 
     Ok(Dispatch {
         rootdir,
+        rootdir_path: config.rootdir.clone(),
         targets,
         assignments,
         init,
@@ -453,8 +510,9 @@ fn collect_with_launcher(
     args: &[PathBuf],
     launcher: &WorkerLauncher,
     workers: usize,
+    codeblocks: bool,
 ) -> Result<CollectionManifest, CollectError> {
-    let dispatch = plan(invocation_dir, args, workers)?;
+    let dispatch = plan(invocation_dir, args, workers, codeblocks)?;
 
     if dispatch.targets.is_empty() {
         return Ok(CollectionManifest {
@@ -504,6 +562,7 @@ fn collect_with_launcher(
 fn discover(
     invocation_dir: &Path,
     args: &[PathBuf],
+    codeblocks: bool,
 ) -> Result<(ResolvedConfig, Vec<PathBuf>), CollectError> {
     // `os.getcwd()` — what pytest's `invocation_params.dir` always is — is absolute and
     // free of `.`/`..`; normalising here gives callers the same guarantee for free.
@@ -515,8 +574,8 @@ fn discover(
     let mut seen = Seen::default();
     for root in &roots {
         if root.is_dir() {
-            walk(root, &config, &mut targets, &mut seen);
-        } else if initial_file_target(root)? {
+            walk(root, &config, codeblocks, &mut targets, &mut seen);
+        } else if initial_file_target(root, codeblocks)? {
             seen.push_file_arg(root, &mut targets);
         }
     }
@@ -547,8 +606,15 @@ fn discover(
 ///
 /// Returns `Ok(true)` when the file is a collection target, `Ok(false)` when it is
 /// legitimately empty, and the usage error otherwise.
-fn initial_file_target(path: &Path) -> Result<bool, CollectError> {
+///
+/// `.md` is rustest's own row and the only departure from the table: pytest answers **4**
+/// for `notes.md`, rustest collects its python fences (see [`is_markdown`]).  With
+/// `--no-codeblocks` the pytest answer is restored exactly.
+fn initial_file_target(path: &Path, codeblocks: bool) -> Result<bool, CollectError> {
     if is_python_source(path) {
+        return Ok(true);
+    }
+    if codeblocks && is_markdown(path) {
         return Ok(true);
     }
     let suffix = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
@@ -630,7 +696,13 @@ fn absolutepath(invocation_dir: &Path, path: &Path) -> PathBuf {
 /// key ("always collect `__init__.py` first").  Applying it unconditionally is equivalent:
 /// a directory holding an `__init__.py` *is* a Package, and in any other directory the
 /// first tuple element is constant.
-fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>, seen: &mut Seen) {
+fn walk(
+    dir: &Path,
+    config: &ResolvedConfig,
+    codeblocks: bool,
+    out: &mut Vec<PathBuf>,
+    seen: &mut Seen,
+) {
     // `scandir` returns `[]` for a directory that cannot be opened, rather than raising.
     let Ok(reader) = std::fs::read_dir(dir) else {
         return;
@@ -652,8 +724,11 @@ fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>, seen: &mut 
             if should_prune(&name, &path, config) {
                 continue;
             }
-            walk(&path, config, out, seen);
-        } else if path.is_file() && is_python_source(&path) && matches_python_files(&path, config) {
+            walk(&path, config, codeblocks, out, seen);
+        } else if path.is_file()
+            && ((is_python_source(&path) && matches_python_files(&path, config))
+                || (codeblocks && is_markdown(&path)))
+        {
             seen.push_walked(&path, out);
         }
     }
@@ -693,6 +768,23 @@ fn is_virtualenv(path: &Path) -> bool {
 /// `.suffix` is case-sensitive, so `.PY` is not a Python file even on Windows.
 fn is_python_source(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "py")
+}
+
+/// A markdown file, i.e. a **code-block** target.
+///
+/// This is the one place v2 collects something pytest would not: rustest has tested the
+/// python fences in `.md` files since v1 (`src/discovery.rs::collect_from_markdown`, reached
+/// through `build_markdown_glob` whenever `enable_codeblocks` is on — which is the default),
+/// and the project's own docs suite depends on it.  Dropping the feature at the flip would
+/// have been a silent regression for every user testing their README.
+///
+/// Kept as a *separate* predicate rather than folded into `python_files` because the two
+/// answer different questions: `python_files` is pytest's ini-configurable pattern list and
+/// must stay a faithful port, while this is a rustest extension governed by
+/// `--no-codeblocks`.  A `.md` file is never matched against `python_files`, so a project
+/// setting `python_files = *` does not suddenly acquire two collectors for the same file.
+fn is_markdown(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "md")
 }
 
 /// `_pytest/python.py::path_matches_patterns` over the config's `python_files`.
@@ -889,6 +981,7 @@ impl Worker {
     fn spawn(index: usize, launcher: &WorkerLauncher) -> Result<Self, CollectError> {
         let mut child = Command::new(&launcher.program)
             .args(&launcher.args)
+            .envs(launcher.envs.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1391,6 +1484,26 @@ mod tests {
         WorkerLauncher::module(&worker_python())
     }
 
+    /// [`discover`] with code blocks **on**, which is the CLI default.  Every walk test below
+    /// predates the `.md` tier and asserts on `.py` trees, so the flag is invisible to them;
+    /// [`is_markdown`]'s own behaviour is pinned by the codeblock tests further down.
+    fn discover_default(
+        invocation_dir: &Path,
+        args: &[PathBuf],
+    ) -> Result<(ResolvedConfig, Vec<PathBuf>), CollectError> {
+        discover(invocation_dir, args, true)
+    }
+
+    /// [`collect_with_launcher`] with code blocks on — same reasoning as [`discover_default`].
+    fn collect_default(
+        invocation_dir: &Path,
+        args: &[PathBuf],
+        launcher: &WorkerLauncher,
+        workers: usize,
+    ) -> Result<CollectionManifest, CollectError> {
+        collect_with_launcher(invocation_dir, args, launcher, workers, true)
+    }
+
     /// A stand-in worker: a `python -c` script speaking (or mis-speaking) the protocol.
     ///
     /// This is the seam the crash/drift tests need.  It is an argument rather than an
@@ -1406,10 +1519,7 @@ mod tests {
             READY.contains(&format!(r#""protocol_version":{PROTOCOL_VERSION}"#)),
             "the scripted `ready` line is stale for protocol {PROTOCOL_VERSION}: {READY}"
         );
-        WorkerLauncher {
-            program: worker_python(),
-            args: vec!["-c".to_string(), script.to_string()],
-        }
+        WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
     const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":2}\n')"#;
@@ -1504,7 +1614,7 @@ mod tests {
 
     /// Rootdir-relative posix paths of everything the walk selected, in walk order.
     fn discovered(tmp: &TempDir, args: &[PathBuf]) -> Vec<String> {
-        let (config, targets) = discover(tmp.path(), args).unwrap();
+        let (config, targets) = discover_default(tmp.path(), args).unwrap();
         targets
             .iter()
             .map(|path| {
@@ -1736,7 +1846,7 @@ mod tests {
     fn a_missing_arg_is_a_loud_error() {
         let tmp = tree(&[("test_a.py", &module("a"))]);
 
-        let err = discover(tmp.path(), &[tmp.path().join("nope")]).unwrap_err();
+        let err = discover_default(tmp.path(), &[tmp.path().join("nope")]).unwrap_err();
         assert!(
             err.to_string().contains("not found"),
             "unexpected message: {err}"
@@ -1853,12 +1963,99 @@ mod tests {
         write_file(&tmp.path().join("notes.dat"), "hi\n");
 
         let path = tmp.path().join("notes.dat");
-        let err = discover(tmp.path(), &[path.clone()]).unwrap_err();
+        let err = discover_default(tmp.path(), &[path.clone()]).unwrap_err();
         assert!(
             matches!(&err, CollectError::NoCollectors(reported) if reported == &path),
             "unexpected error: {err}"
         );
         assert!(err.to_string().starts_with("found no collectors for"));
+    }
+
+    // --- markdown code blocks (rustest's own tier) ------------------------
+
+    /// A `.md` argument **is** a target with code blocks on — the one row where rustest
+    /// deliberately answers something pytest does not (pytest: exit 4, `found no collectors`).
+    #[test]
+    fn a_markdown_argument_is_a_target_when_codeblocks_are_on() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
+        write_file(
+            &tmp.path().join("guide.md"),
+            "```python\nassert True\n```\n",
+        );
+
+        let (_config, targets) =
+            discover(tmp.path(), &[tmp.path().join("guide.md")], true).unwrap();
+        assert_eq!(targets, vec![tmp.path().join("guide.md")]);
+    }
+
+    /// ...and with `--no-codeblocks` the pytest answer is restored exactly, which is what
+    /// makes the extension opt-out rather than unavoidable.
+    #[test]
+    fn a_markdown_argument_is_a_usage_error_when_codeblocks_are_off() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
+        let path = tmp.path().join("guide.md");
+        write_file(&path, "```python\nassert True\n```\n");
+
+        let err = discover(tmp.path(), &[path.clone()], false).unwrap_err();
+        assert!(
+            matches!(&err, CollectError::NoCollectors(reported) if reported == &path),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The walk finds `.md` files too — `rustest docs/` has to work, not just
+    /// `rustest docs/guide.md` — and they take their place in the same name-sorted order as
+    /// everything else rather than being appended.
+    #[test]
+    fn the_walk_finds_markdown_in_name_order() {
+        let tmp = tree(&[("test_b.py", &module("b"))]);
+        write_file(
+            &tmp.path().join("guide.md"),
+            "```python\nassert True\n```\n",
+        );
+
+        assert_eq!(discovered(&tmp, &[]), vec!["guide.md", "test_b.py"]);
+    }
+
+    /// ...and does not, with the tier off.  Pinned as its own case because a walk that
+    /// ignored the flag would still pass the argument-level test above.
+    #[test]
+    fn the_walk_ignores_markdown_when_codeblocks_are_off() {
+        let tmp = tree(&[("test_b.py", &module("b"))]);
+        write_file(
+            &tmp.path().join("guide.md"),
+            "```python\nassert True\n```\n",
+        );
+
+        let (config, targets) = discover(tmp.path(), &[], false).unwrap();
+        let names: Vec<String> = targets
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&config.rootdir)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(names, vec!["test_b.py"]);
+    }
+
+    /// `python_files` governs `.py` and nothing else: a project narrowing it must not lose
+    /// its markdown tier, and must not acquire a second collector for a `.md` file either.
+    #[test]
+    fn markdown_is_not_matched_against_python_files() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            &tmp.path().join("pytest.ini"),
+            "[pytest]\npython_files = check_*.py\n",
+        );
+        write_file(
+            &tmp.path().join("guide.md"),
+            "```python\nassert True\n```\n",
+        );
+        write_file(&tmp.path().join("test_a.py"), &module("a"));
+
+        assert_eq!(discovered(&tmp, &[]), vec!["guide.md"]);
     }
 
     // --- routing ----------------------------------------------------------
@@ -1909,7 +2106,7 @@ mod tests {
         let sub = tmp.path().join("sub");
 
         let manifest =
-            collect_with_launcher(&sub.join("."), &[], &init_recording_worker(&log), 1).unwrap();
+            collect_default(&sub.join("."), &[], &init_recording_worker(&log), 1).unwrap();
         assert!(manifest.tests.is_empty(), "the stand-in collects nothing");
 
         let line = fs::read_to_string(&log).unwrap();
@@ -1946,14 +2143,14 @@ mod tests {
 
         // Without this the fixture could quietly become a one-worker test the day the hash
         // changes, and would then assert nothing about ordering across workers at all.
-        let (_, targets) = discover(tmp.path(), &[]).unwrap();
+        let (_, targets) = discover_default(tmp.path(), &[]).unwrap();
         let used: HashSet<usize> = targets.iter().map(|path| worker_for(path, 2)).collect();
         assert!(
             used.len() >= 2,
             "the fixture must actually spread over both workers, got {used:?}"
         );
 
-        let manifest = collect_with_launcher(tmp.path(), &[], &real_worker(), 2).unwrap();
+        let manifest = collect_default(tmp.path(), &[], &real_worker(), 2).unwrap();
 
         assert_eq!(
             ids(&manifest),
@@ -1984,7 +2181,7 @@ mod tests {
             ("beta/test_dup.py", &module("beta")),
         ]);
 
-        let manifest = collect_with_launcher(tmp.path(), &[], &real_worker(), 2).unwrap();
+        let manifest = collect_default(tmp.path(), &[], &real_worker(), 2).unwrap();
 
         assert_eq!(ids(&manifest), vec!["alpha/test_dup.py::test_alpha"]);
         assert_eq!(manifest.errors.len(), 1, "{:?}", manifest.errors);
@@ -2005,7 +2202,7 @@ mod tests {
             ("test_ok.py", &module("ok")),
         ]);
 
-        let manifest = collect_with_launcher(tmp.path(), &[], &real_worker(), 1).unwrap();
+        let manifest = collect_default(tmp.path(), &[], &real_worker(), 1).unwrap();
 
         assert_eq!(ids(&manifest), vec!["test_ok.py::test_ok"]);
         assert_eq!(manifest.errors.len(), 1, "{:?}", manifest.errors);
@@ -2026,8 +2223,7 @@ mod tests {
         let tmp = tree(&[("test_a.py", &module("a")), ("test_b.py", &module("b"))]);
         let logs = TempDir::new().unwrap();
 
-        let manifest =
-            collect_with_launcher(tmp.path(), &[], &counting_worker(logs.path()), 8).unwrap();
+        let manifest = collect_default(tmp.path(), &[], &counting_worker(logs.path()), 8).unwrap();
         assert!(
             manifest.tests.is_empty() && manifest.errors.is_empty(),
             "the counting worker reports no tests of its own"
@@ -2057,12 +2253,9 @@ mod tests {
     #[test]
     fn an_empty_tree_spawns_no_worker() {
         let tmp = tree(&[("notes.txt", "nothing here")]);
-        let impossible = WorkerLauncher {
-            program: "rustest-no-such-interpreter".to_string(),
-            args: Vec::new(),
-        };
+        let impossible = WorkerLauncher::scripted("rustest-no-such-interpreter", Vec::new());
 
-        let manifest = collect_with_launcher(tmp.path(), &[], &impossible, 4).unwrap();
+        let manifest = collect_default(tmp.path(), &[], &impossible, 4).unwrap();
 
         assert!(manifest.tests.is_empty());
         assert!(manifest.errors.is_empty());
@@ -2072,12 +2265,9 @@ mod tests {
     #[test]
     fn a_worker_that_cannot_spawn_is_loud() {
         let tmp = tree(&[("test_a.py", &module("a"))]);
-        let impossible = WorkerLauncher {
-            program: "rustest-no-such-interpreter".to_string(),
-            args: Vec::new(),
-        };
+        let impossible = WorkerLauncher::scripted("rustest-no-such-interpreter", Vec::new());
 
-        let err = collect_with_launcher(tmp.path(), &[], &impossible, 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &impossible, 1).unwrap_err();
         assert!(
             err.to_string().contains("rustest-no-such-interpreter"),
             "unexpected message: {err}"
@@ -2097,7 +2287,7 @@ mod tests {
              sys.stdout.flush()\n\
              sys.stdin.readline()\n";
 
-        let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(script), 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &scripted_worker(script), 1).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("999"), "unexpected message: {message}");
         assert!(
@@ -2120,7 +2310,7 @@ mod tests {
              sys.exit(3)\n"
         );
 
-        let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains("test_inflight.py"),
@@ -2150,7 +2340,7 @@ mod tests {
              sys.stdin.readline()\n"
         );
 
-        let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains(r#"{"op":"progress","done":3}"#),
@@ -2177,7 +2367,7 @@ mod tests {
              sys.stdin.readline()\n"
         );
 
-        let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains("tests") && message.contains("error"),
@@ -2205,7 +2395,7 @@ mod tests {
              sys.stdin.readline()\n"
         );
 
-        let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains("test_z.py"),
@@ -2231,7 +2421,7 @@ mod tests {
              sys.exit(7)\n"
         );
 
-        let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
         // The status is genuinely absent on this path — the worker vanished before `bye`,
         // so nothing was waited for — which makes its stderr the only diagnosis there is.
@@ -2262,7 +2452,7 @@ mod tests {
              sys.exit(9)\n"
         );
 
-        let err = collect_with_launcher(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
+        let err = collect_default(tmp.path(), &[], &scripted_worker(&script), 1).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains(&exit_status_phrase(9)),
