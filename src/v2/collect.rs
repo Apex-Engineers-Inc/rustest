@@ -629,6 +629,11 @@ pub(crate) fn plan_with_options(
         python_files: config.python_files.clone(),
         python_classes: config.python_classes.clone(),
         python_functions: config.python_functions.clone(),
+        // Already validated by `resolve_config`, which exits 4 before a worker is spawned;
+        // passed through verbatim so there is exactly one implementation of the rules.
+        asyncio_mode: config.asyncio_mode.clone(),
+        asyncio_default_fixture_loop_scope: config.asyncio_default_fixture_loop_scope.clone(),
+        asyncio_default_test_loop_scope: config.asyncio_default_test_loop_scope.clone(),
     };
 
     Ok(Dispatch {
@@ -1958,7 +1963,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":3}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":4}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

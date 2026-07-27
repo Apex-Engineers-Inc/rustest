@@ -254,7 +254,11 @@ def isset(x: Any) -> TypeGuard[AbstractSet[Any]]:
 
 
 def isnamedtuple(obj: Any) -> bool:
-    return isinstance(obj, tuple) and getattr(obj, "_fields", None) is not None
+    # The narrowing from `Any` to `tuple[Unknown, ...]` is what basedpyright objects to, not
+    # anything about the call; ignored rather than cast so the line stays byte-identical to
+    # pytest's, which is the property that keeps this module diffable against upstream. Same
+    # convention as `_assertion_rewrite.py` l. 574/578.
+    return isinstance(obj, tuple) and getattr(obj, "_fields", None) is not None  # pyright: ignore[reportUnknownArgumentType]
 
 
 def isdatacls(obj: Any) -> bool:

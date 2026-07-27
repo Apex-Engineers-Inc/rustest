@@ -363,8 +363,8 @@ pub fn v2_run(
 mod tests {
     use super::*;
     use crate::v2::config::{
-        DEFAULT_NORECURSEDIRS, DEFAULT_PYTHON_CLASSES, DEFAULT_PYTHON_FILES,
-        DEFAULT_PYTHON_FUNCTIONS,
+        DEFAULT_ASYNCIO_MODE, DEFAULT_ASYNCIO_TEST_LOOP_SCOPE, DEFAULT_NORECURSEDIRS,
+        DEFAULT_PYTHON_CLASSES, DEFAULT_PYTHON_FILES, DEFAULT_PYTHON_FUNCTIONS,
     };
 
     /// An absolute path with a native prefix, so the posix rewrite is actually exercised.
@@ -393,6 +393,9 @@ mod tests {
             norecursedirs: owned(DEFAULT_NORECURSEDIRS),
             addopts: owned(&["-ra"]),
             markers: owned(&["slow: marks tests as slow"]),
+            asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
+            asyncio_default_fixture_loop_scope: None,
+            asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
         }
     }
 

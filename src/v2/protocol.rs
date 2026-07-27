@@ -56,10 +56,19 @@ use serde::{Deserialize, Serialize};
 /// * [`WorkerRequest::ExecuteBatch`] / [`WorkerResponse::BatchDone`] — a whole file's tests
 ///   in one request, results streamed back and terminated by `batch_done`.
 ///
+/// **v4** (Phase 3 Task 1) adds the three asyncio ini values to [`WorkerRequest::Init`]:
+/// `asyncio_mode`, `asyncio_default_fixture_loop_scope` and `asyncio_default_test_loop_scope`.
+/// They belong on `init` rather than on each `execute_batch` because they are whole-run facts
+/// resolved once by `src/v2/config.rs`, and because the worker needs them at **collection**
+/// time as well as at execution time — `asyncio_mode` decides whether an `async def` + `yield`
+/// test acquires a synthesised `xfail` mark. The change is incompatible in the direction that
+/// matters: a v3 worker would silently apply its own defaults to a suite that configured
+/// something else, which is the failure mode a declared version exists to make impossible.
+///
 /// `python/rustest/_v2_worker.py` mirrors this constant and **must be bumped in the same
 /// commit**; a worker still declaring the old number turns every run into a handshake
 /// error.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// A message from the orchestrator to a worker, one per stdin line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,6 +98,25 @@ pub enum WorkerRequest {
         python_files: Vec<String>,
         python_classes: Vec<String>,
         python_functions: Vec<String>,
+        /// `auto` or `strict`, already validated by `config::resolve_config`.
+        ///
+        /// The worker does not re-validate: a second implementation of the rule is a second
+        /// thing that can disagree, and the orchestrator has already exited 4 for a bad value
+        /// before any worker was spawned.
+        asyncio_mode: String,
+        /// The `asyncio_default_fixture_loop_scope` ini, **omitted from the wire when unset**.
+        ///
+        /// Absence is a distinct third answer, not a synonym for `"function"`:
+        /// `pytest_asyncio/plugin.py::pytest_fixture_setup` (l. 736-741) resolves an async
+        /// fixture's loop scope as `mark ?? this_option ?? fixturedef.scope`, so with the
+        /// option unset a `scope="module"` async fixture gets a *module*-scoped loop. Sending
+        /// `"function"` in its place would move every wider async fixture onto a loop that
+        /// dies under it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asyncio_default_fixture_loop_scope: Option<String>,
+        /// The `asyncio_default_test_loop_scope` ini — always present, since the oracle gives
+        /// it a real default (`"function"`, plugin.py l. 123-128).
+        asyncio_default_test_loop_scope: String,
     },
     /// Collect one file. path: absolute posix.
     CollectFile {
@@ -280,10 +308,19 @@ mod tests {
             python_files: vec!["test_*.py".to_string(), "*_test.py".to_string()],
             python_classes: vec!["Test*".to_string()],
             python_functions: vec!["test*".to_string()],
+            asyncio_mode: "auto".to_string(),
+            // The sample carries the *unset* fixture scope, because omission is the shape
+            // that is easy to get wrong: `INIT_LINE` below asserts the key is absent rather
+            // than `null`, exactly as the Tier D `collect_file` golden asserts for
+            // `assert_key`.  `init_request_carries_a_set_fixture_loop_scope` covers the
+            // present form.
+            asyncio_default_fixture_loop_scope: None,
+            asyncio_default_test_loop_scope: "session".to_string(),
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":3,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":4,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":4,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -299,6 +336,49 @@ mod tests {
 
         let decoded: WorkerRequest = serde_json::from_str(INIT_LINE).expect("init deserializes");
         assert_eq!(decoded, sample_init());
+    }
+
+    /// The set form of `asyncio_default_fixture_loop_scope`, and the reason the omission
+    /// above is asserted separately: `None` and `Some("function")` are different
+    /// instructions to the worker (`plugin.py::pytest_fixture_setup` l. 736-741 falls back
+    /// to the fixture's own scope only for the former), so a wire form that could not tell
+    /// them apart would be a silent downgrade of every module- and session-scoped async
+    /// fixture.
+    #[test]
+    fn init_request_carries_a_set_fixture_loop_scope() {
+        let WorkerRequest::Init {
+            protocol_version,
+            rootdir,
+            invocation_dir,
+            python_files,
+            python_classes,
+            python_functions,
+            asyncio_mode,
+            asyncio_default_test_loop_scope,
+            ..
+        } = sample_init()
+        else {
+            unreachable!("sample_init builds an Init")
+        };
+        let with_scope = WorkerRequest::Init {
+            protocol_version,
+            rootdir,
+            invocation_dir,
+            python_files,
+            python_classes,
+            python_functions,
+            asyncio_mode,
+            asyncio_default_fixture_loop_scope: Some("session".to_string()),
+            asyncio_default_test_loop_scope,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&with_scope).expect("init serializes"),
+            INIT_LINE_WITH_FIXTURE_SCOPE
+        );
+        let decoded: WorkerRequest =
+            serde_json::from_str(INIT_LINE_WITH_FIXTURE_SCOPE).expect("init deserializes");
+        assert_eq!(decoded, with_scope);
     }
 
     /// The Tier D shape: **no `assert_key` key at all** (not `null`), so every line a
@@ -461,7 +541,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":3}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":4}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -788,15 +868,26 @@ mod tests {
             ),
             (
                 "rootdir",
-                r#"{"op":"init","protocol_version":2,"invocation_dir":"/repo/tests","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#,
+                r#"{"op":"init","protocol_version":2,"invocation_dir":"/repo/tests","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"function"}"#,
             ),
             (
                 "invocation_dir",
-                r#"{"op":"init","protocol_version":2,"rootdir":"/repo","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#,
+                r#"{"op":"init","protocol_version":2,"rootdir":"/repo","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"function"}"#,
             ),
             (
                 "python_files",
-                r#"{"op":"init","protocol_version":2,"rootdir":"/repo","invocation_dir":"/repo/tests","python_classes":["Test*"],"python_functions":["test*"]}"#,
+                r#"{"op":"init","protocol_version":2,"rootdir":"/repo","invocation_dir":"/repo/tests","python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"function"}"#,
+            ),
+            // The two asyncio fields that are NOT optional.  A worker that defaulted them
+            // would apply `auto`/`function` to a suite whose ini said otherwise, and the
+            // resulting wrong-loop failures would point at the test, not at the handshake.
+            (
+                "asyncio_mode",
+                r#"{"op":"init","protocol_version":4,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_default_test_loop_scope":"function"}"#,
+            ),
+            (
+                "asyncio_default_test_loop_scope",
+                r#"{"op":"init","protocol_version":4,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto"}"#,
             ),
             ("path", r#"{"op":"collect_file"}"#),
             ("id", r#"{"op":"execute_test"}"#),

@@ -81,13 +81,29 @@ traceback filtering — because those distinguish one outcome from another.
   *with*.
 * *Class-level ``@parametrize`` cross-products in v1's order, not pytest's.*  See
   :func:`_cross_product_cases`: pytest emits ``test[10-1]`` where this emits ``test[1-10]``.
-* *One asyncio event loop per worker, and no concurrency.*  :meth:`FixtureRunner.run_coroutine`
-  drives every coroutine — async test bodies, ``async def`` fixtures, ``async def`` + ``yield``
-  fixtures — on a single loop that lives as long as the worker.  Two consequences:
-  ``@mark.asyncio(loop_scope=...)`` is accepted and ignored (all scopes share the loop), and
-  same-scope async tests run **sequentially** where v1's ``async_executor.py`` batches them
-  into one ``asyncio.gather``.  A suite that asserts wall-clock overlap between two async
-  tests sees the difference; one that only asserts results does not.
+* *Async tests sharing a loop run **sequentially**, where rustest v1 batched them.*  v1's
+  ``async_executor.py::run_coroutines_parallel`` collects every async test in a loop scope
+  wider than ``function`` into one ``asyncio.gather`` (dispatched from
+  ``src/execution.rs``, l. 92-131).  That is **not** ported, and the reason is the oracle:
+  pytest-asyncio drives each coroutine through ``asyncio.Runner.run``
+  (`plugin.py::_synchronize_coroutine` l. 708-723), which runs one coroutine to completion
+  and cannot be re-entered — so tests sharing a loop scope never overlap under it.  Probed
+  on pytest 8.4.2 + pytest-asyncio 1.2.0 with two tests each awaiting ``asyncio.sleep(0.30)``
+  on one session-scoped loop: 0.613 s wall, the second starting 3 ms *after* the first
+  finished.  Batching would have been a wall-clock feature bought with a divergence in
+  execution order, output interleaving and failure attribution, on the exact axis this phase
+  exists to make faithful; a suite that wants the concurrency can still ``gather`` inside one
+  test.  The loop-scope machinery batching would need is now here (:meth:`
+  FixtureRunner.loop_runner`), so the decision is reversible behind an opt-in if a real suite
+  ever pays for it.
+* *``asyncio_debug`` is not on the wire.*  pytest-asyncio builds its runner with
+  ``Runner(debug=_get_asyncio_debug(config))`` (l. 809-811); this worker always uses the
+  default.  Debug mode changes only the loop's own diagnostics — slow-callback warnings,
+  coroutine-origin tracking — and no test outcome.
+* *``asyncio_mode`` defaults to ``auto``, where pytest-asyncio defaults to ``strict``.*  Both
+  modes are implemented faithfully; only the default differs, and only because rustest cannot
+  be uninstalled the way a plugin can.  The reasoning is at ``src/v2/config.rs::
+  DEFAULT_ASYNCIO_MODE`` and the measurement is ``conformance/corpus/async/mode-default``.
 * *No warning for a bare ``@usefixtures``.*  pytest warns that it has no effect
   (`_pytest/fixtures.py::_getusefixturesnames`); with no warnings channel the mark is simply
   inert, which is the same *behaviour* and one fewer line of output.
@@ -152,6 +168,7 @@ if TYPE_CHECKING:
     import asyncio
 
 __all__ = [
+    "AsyncioConfig",
     "BUILTIN_FIXTURES",
     "DEFAULT_NAMING",
     "ABORT_EXCEPTIONS",
@@ -161,6 +178,8 @@ __all__ = [
     "SESSION_EXIT_EXIT",
     "SHUTDOWN_TEARDOWN_EXIT",
     "SCOPE_NAMES",
+    "DEFAULT_ASYNCIO_MODE",
+    "DEFAULT_ASYNCIO_TEST_LOOP_SCOPE",
     "STATUSES",
     "UNSUPPORTED_BUILTIN_FIXTURES",
     "CollectionRefusal",
@@ -218,7 +237,13 @@ __all__ = [
 #: v3 adds ``collect_file.assert_key`` (assertion rewriting, :func:`collect_file`) and the
 #: batch execute op (``execute_batch`` -> N x ``test_result`` + ``batch_done``,
 #: :func:`execute_batch`).
-PROTOCOL_VERSION: Final = 3
+#:
+#: v4 adds the three asyncio ini values to ``init`` (:class:`AsyncioConfig`).  They are read
+#: at *collection* time as well as at execution time — ``asyncio_mode`` decides whether an
+#: ``async def`` + ``yield`` test acquires the synthesised ``xfail`` mark
+#: (:func:`_async_generator_xfail`) — which is why they ride on ``init`` rather than on the
+#: execute ops.
+PROTOCOL_VERSION: Final = 4
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -1104,7 +1129,7 @@ ASYNC_NOT_SUPPORTED_MESSAGE: Final = (
 )
 
 
-def _async_generator_xfail(func: object, name: str) -> MarkSpec | None:
+def _async_generator_xfail(func: object, name: str, is_asyncio_test: bool) -> MarkSpec | None:
     """An `xfail(run=False)` mark for an ``async def`` + ``yield`` test, or ``None``.
 
     **Port of `pytest_asyncio/plugin.py::AsyncGenerator._from_function` (l. 512-531)**, which
@@ -1134,8 +1159,18 @@ def _async_generator_xfail(func: object, name: str) -> MarkSpec | None:
     The mark is prepended so it is the *closest* `xfail`, which is what
     :func:`evaluate_xfail_marks` takes; a test that also carries its own ``@xfail`` still gets
     `run=False`, because a body that cannot run cannot run either way.
+
+    **Only when the test is an asyncio test**, which is what *is_asyncio_test* carries.
+    pytest-asyncio synthesises the mark inside ``AsyncGenerator._from_function``, and
+    ``_from_function`` is only reached for an item the collection hook actually *converted*
+    (l. 606-614) — in ``strict`` mode an unmarked async generator test is never converted, so
+    it acquires no xfail, is called like any other function, returns an async generator object
+    and fails through ``_pytest/python.py::async_fail``. Probed in strict mode: **failed**,
+    not xfailed. Synthesising the mark unconditionally turned that red into a green ``xfailed``
+    — a *worse* answer than the old silent pass, because an xfail is a result the reader
+    trusts.
     """
-    if not inspect.isasyncgenfunction(func):
+    if not is_asyncio_test or not inspect.isasyncgenfunction(func):
         return None
     reason = f"Tests based on asynchronous generators are not supported. {name} will be ignored."
     return MarkSpec(name="xfail", kwargs={"run": False, "reason": reason})
@@ -1324,6 +1359,218 @@ _SCOPE_BUCKET: Final[Mapping[str, str]] = {
 
 #: Teardown buckets, narrowest first — the order :meth:`FixtureRunner.teardown` unwinds.
 _BUCKET_ORDER: Final = ("function", "class", "module", "session")
+
+
+# ---------------------------------------------------------------------------
+# asyncio — the loop-scope model, ported from pytest_asyncio/plugin.py (1.2.0)
+# ---------------------------------------------------------------------------
+#
+# pytest-asyncio implements "a loop per scope" as **fixtures**: `_create_scoped_runner_fixture`
+# (l. 799-835) registers one `_{scope}_scoped_runner` fixture per `Scope` member, each holding
+# an `asyncio.Runner`, and an async test or fixture *requests* the one matching its loop scope
+# (l. 459-467, l. 742-743).  The scope of the fixture is the lifetime of the loop, for free.
+#
+# This worker has the same two ingredients — a scope-keyed cache and per-scope teardown
+# buckets — so the port keeps the shape rather than the mechanism: :attr:`FixtureRunner._loops`
+# is keyed by scope name and each entry registers its close on the matching bucket
+# (:data:`_SCOPE_BUCKET`), which is drained at exactly the boundary the fixture would have
+# been finalised at.  Because a runner's close finalizer is pushed *before* the finalizer of
+# whatever fixture caused it to exist, the bucket's LIFO drain closes the loop **after** every
+# async fixture that ran on it — the same ordering the request graph gives pytest.
+#
+# The keying is on the **scope name**, not on the teardown bucket: `package` and `session`
+# collapse to one bucket here (see :data:`_SCOPE_BUCKET`) but pytest-asyncio has two distinct
+# runner fixtures, so two distinct loops.  Sharing the bucket costs the `package` loop a
+# too-late close, which is the already-documented package-scope divergence; sharing the *loop*
+# would have made `id(get_running_loop())` compare equal across two scopes pytest keeps apart.
+
+#: pytest-asyncio's default `asyncio_default_test_loop_scope` (plugin.py l. 123-128).
+DEFAULT_ASYNCIO_TEST_LOOP_SCOPE: Final = "function"
+
+#: rustest's default `asyncio_mode`.  pytest-asyncio's is ``strict``; the reasoning for the
+#: difference lives with the config that produces it (``src/v2/config.rs::
+#: DEFAULT_ASYNCIO_MODE``) and is measured by ``conformance/corpus/async/mode-default``.
+DEFAULT_ASYNCIO_MODE: Final = "auto"
+
+#: The kwargs ``@mark.asyncio`` accepts.
+#:
+#: pytest-asyncio's ``_get_marked_loop_scope`` (l. 763-781) allows ``{"loop_scope", "scope"}``
+#: and raises ``ValueError`` for anything else.  ``timeout`` is added because it is **rustest's
+#: own** documented extension — v1's ``decorators.py::asyncio`` accepts it and
+#: ``src/execution.rs`` (l. 825-830) applies it — and ``docs/guide/async-testing.md`` names it
+#: as the thing "pytest-asyncio lacks out of the box".  Dropping it would have broken a
+#: shipped feature to gain conformance on an error message for a keyword pytest-asyncio has no
+#: meaning for.
+_ASYNCIO_MARK_KWARGS: Final = frozenset({"loop_scope", "scope", "timeout"})
+
+#: `plugin.py::_DUPLICATE_LOOP_SCOPE_DEFINITION_ERROR` (l. 752-755), verbatim.
+_DUPLICATE_LOOP_SCOPE_ERROR: Final = (
+    'An asyncio pytest marker defines both "scope" and "loop_scope", '
+    'but it should only use "loop_scope".\n'
+)
+
+
+@dataclass(frozen=True)
+class AsyncioConfig:
+    """The three ``asyncio_*`` ini values, as ``init`` delivered them.
+
+    Immutable and passed by value because it is read from two halves of the worker that must
+    not be able to disagree: collection consults :attr:`mode` to decide whether an async
+    generator test is xfailed, and execution consults all three to decide which loop a
+    coroutine runs on.
+    """
+
+    #: ``auto`` or ``strict``; validated orchestrator-side (``src/v2/config.rs``).
+    mode: str = DEFAULT_ASYNCIO_MODE
+    #: ``None`` when unset, and that is a **third answer**, not a synonym for ``"function"``:
+    #: `plugin.py::pytest_fixture_setup` l. 736-741 resolves an async fixture's loop scope as
+    #: ``mark ?? this ?? fixturedef.scope``, so an unset option leaves a ``scope="module"``
+    #: async fixture on a *module*-scoped loop.
+    default_fixture_loop_scope: str | None = None
+    #: Always set — the oracle gives it the real default ``"function"``.
+    default_test_loop_scope: str = DEFAULT_ASYNCIO_TEST_LOOP_SCOPE
+
+
+#: The configuration a :class:`FixtureRunner` built without one uses.
+_DEFAULT_ASYNCIO: Final = AsyncioConfig()
+
+
+def _is_asyncio_fixture_function(func: object) -> bool:
+    """Port of `plugin.py::_is_asyncio_fixture_function` (l. 186-188).
+
+    The attribute is set by ``pytest_asyncio.fixture`` (l. 191-197, via
+    ``_make_asyncio_fixture_function``) and by nothing else — in particular **not** by
+    ``pytest.fixture``/``rustest.fixture``, which is the whole distinction ``strict`` mode
+    turns on.  ``rustest/compat/pytest_asyncio.py`` sets it for the shimmed decorator.
+    """
+    func = getattr(func, "__func__", func)
+    return bool(_safe_getattr(func, "_force_asyncio_fixture", False))
+
+
+def _is_coroutine_or_asyncgen(func: object) -> bool:
+    """Port of `plugin.py::_is_coroutine_or_asyncgen` (l. 199-200)."""
+    return inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
+
+
+def _asyncio_mark(marks: Sequence[MarkSpec]) -> MarkSpec | None:
+    """The closest ``asyncio`` mark, or ``None`` — pytest's ``get_closest_marker``.
+
+    :func:`_mark_specs` already emits function marks before class-chain marks before module
+    marks, which is ``iter_markers`` order, so "first match" is "closest".
+    """
+    return next((mark for mark in marks if mark.name == "asyncio"), None)
+
+
+def _marked_loop_scope(mark: MarkSpec, default_loop_scope: str) -> str:
+    """Port of `plugin.py::_get_marked_loop_scope` (l. 763-781), errors included.
+
+    Three rules, each with a probe under it:
+
+    * a positional argument, or a keyword outside :data:`_ASYNCIO_MARK_KWARGS`, is a
+      ``ValueError`` naming the only keyword the mark takes;
+    * ``scope=`` is a deprecated alias for ``loop_scope=`` and **both together** is an error
+      (l. 771-774; pytest-asyncio raises ``pytest.UsageError``, which this raises as a
+      ``ValueError`` carrying the same message — both land in the setup phase and are
+      reported as the same ``error`` outcome, and importing pytest here is forbidden).
+      pytest-asyncio also warns for the alias alone, which this worker has no channel for
+      (the documented no-warnings gap);
+    * an absent (or falsy) scope falls back to ``asyncio_default_test_loop_scope``.
+
+    The final ``assert scope in {...}`` is reproduced as a real error rather than an
+    ``assert``: a mark carrying ``loop_scope="sesion"`` must not depend on ``-O`` to be
+    caught, and "loop scope silently became the default" is precisely the silent-wrong-answer
+    shape the rest of this module refuses.
+    """
+    if mark.args or (set(mark.kwargs) - _ASYNCIO_MARK_KWARGS):
+        raise ValueError("mark.asyncio accepts only a keyword argument 'loop_scope'.")
+    if "scope" in mark.kwargs and "loop_scope" in mark.kwargs:
+        raise ValueError(_DUPLICATE_LOOP_SCOPE_ERROR)
+    scope = mark.kwargs.get("loop_scope") or mark.kwargs.get("scope") or default_loop_scope
+    if scope not in _SCOPE_INDEX:
+        raise ValueError(
+            f"{scope!r} is not a valid loop_scope. Valid scopes are: {', '.join(SCOPE_NAMES)}."
+        )
+    return cast(str, scope)
+
+
+def _default_event_loop_policy() -> object:
+    """Port of `plugin.py::_get_event_loop_policy` (l. 634-637), warning filter included.
+
+    ``asyncio.get_event_loop_policy`` is deprecated from 3.12 and emits a
+    ``DeprecationWarning`` the plugin suppresses; a suite running with ``-W error`` would
+    otherwise fail inside rustest's own machinery rather than in anything it wrote.  On an
+    interpreter that has removed the API the answer is ``None``, which
+    :func:`_temporary_event_loop_policy` treats as "leave the policy alone" — the loop is
+    then built by whatever the interpreter's default is, which is the same loop pytest-asyncio
+    would end up with once the policy concept is gone.
+    """
+    import asyncio
+
+    getter = _safe_getattr(asyncio, "get_event_loop_policy", None)
+    if getter is None:  # pragma: no cover - 3.16+, where policies are removed
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return cast(Callable[[], object], getter)()
+
+
+@contextlib.contextmanager
+def _temporary_event_loop_policy(policy: object) -> Iterator[None]:
+    """Port of `plugin.py::_temporary_event_loop_policy` (l. 619-631).
+
+    The policy is installed only for as long as it takes to *build* the loop, and the previous
+    policy **and the previous current-loop** are both restored afterwards.  Restoring the loop
+    matters as much as restoring the policy: ``set_event_loop_policy`` resets the policy's
+    idea of the current loop, so without the restore a nested scope's loop creation would
+    detach the outer scope's loop from ``asyncio.get_event_loop()`` and a library that calls
+    it mid-test would build a second one.
+    """
+    import asyncio
+
+    if policy is None:  # pragma: no cover - 3.16+, where policies are removed
+        yield
+        return
+    old_policy = _default_event_loop_policy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            old_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            old_loop = None
+        asyncio.set_event_loop_policy(cast(Any, policy))
+        try:
+            yield
+        finally:
+            asyncio.set_event_loop_policy(cast(Any, old_policy))
+            asyncio.set_event_loop(old_loop)
+
+
+def _asyncio_timeout(mark: MarkSpec | None) -> float | None:
+    """rustest's own ``@mark.asyncio(timeout=...)``, or ``None``.
+
+    **Not from the oracle** — pytest-asyncio has no timeout at all, which is exactly what
+    ``docs/guide/async-testing.md`` advertises rustest as adding.  The semantics ported are
+    v1's: ``src/execution.rs`` l. 825-830 reads the kwarg off the mark and
+    ``async_executor.py::_wrap_test_for_gather`` l. 58-60 applies it as
+    ``asyncio.wait_for(coro, timeout)``, so a test that overruns is *cancelled* rather than
+    left running, and the message is v1's.
+
+    A non-numeric or non-positive value is rejected by ``decorators.py::asyncio`` at decoration
+    time; this re-checks because a mark can also arrive through ``pytest.mark.asyncio``, which
+    performs no validation, and a string timeout would otherwise surface as a ``TypeError``
+    from deep inside ``asyncio``.
+    """
+    if mark is None:
+        return None
+    raw = mark.kwargs.get("timeout")
+    if raw is None:
+        return None
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        raise ValueError(f"asyncio mark timeout must be a number, got {raw!r}")
+    if raw <= 0:
+        raise ValueError(f"asyncio mark timeout must be positive, got {raw!r}")
+    return float(raw)
+
 
 #: Builtin fixtures this worker provides, taken from v1 (``builtin_fixtures.py``).
 #: ``tmp_path_factory`` is here because ``tmp_path`` requests it.
@@ -1976,8 +2223,11 @@ class FixtureRunner:
     value").
     """
 
-    def __init__(self) -> None:
+    def __init__(self, asyncio_config: AsyncioConfig = _DEFAULT_ASYNCIO) -> None:
         super().__init__()
+        #: The three ``asyncio_*`` ini values.  Defaulted so a caller driving the runner
+        #: directly (this module's own tests) need not thread config it is not testing.
+        self.asyncio: Final = asyncio_config
         self._cache: dict[FixtureDef, _Cached] = {}
         self._finalizers: dict[str, list[_Finalizer]] = {name: [] for name in _BUCKET_ORDER}
         #: One entry per fixture body currently executing; ``addfinalizer`` targets the top.
@@ -1997,9 +2247,20 @@ class FixtureRunner:
         #: state rather than an argument because a fixture reaches its request object several
         #: frames below the call that knows which test is running.
         self.current_node: _ItemNode | None = None
-        #: This worker's asyncio event loop, created on first use by :meth:`run_coroutine`
-        #: and closed by :meth:`teardown_all`.
-        self._loop: asyncio.AbstractEventLoop | None = None
+        #: One ``asyncio.Runner`` per **loop scope name**, created on first use by
+        #: :meth:`loop_runner` and closed when that scope's teardown bucket drains.  This is
+        #: pytest-asyncio's ``_{scope}_scoped_runner`` fixture family (plugin.py l. 799-835)
+        #: without the fixture machinery — see the module-level note above
+        #: :class:`AsyncioConfig` for why the keying is on the scope and not on the bucket.
+        self._loops: dict[str, asyncio.Runner] = {}
+        #: Loop scopes currently being *created*, so resolving a user ``event_loop_policy``
+        #: fixture that is itself async cannot recurse into loop creation forever.
+        self._loops_opening: set[str] = set()
+        #: The closure and fixture params of the test being set up, so :meth:`loop_runner`
+        #: can resolve an ``event_loop_policy`` override through the ordinary fixture path.
+        #: ``None`` before the first :meth:`setup`, which is when a runner driven directly by
+        #: a test of this module can still ask for a loop.
+        self._active: tuple[FixtureClosure, Mapping[str, object]] | None = None
 
     # -- setup ------------------------------------------------------------
 
@@ -2021,6 +2282,8 @@ class FixtureRunner:
         explicitly, but calling it here means Task 3 cannot forget to.
         """
         self.note_test_boundary(plan.class_name)
+        self._active = (plan.closure, plan.fixture_params)
+        self._open_test_loop(plan)
         self.instance = (
             plan.owner() if plan.owner is not None and plan.unittest_case is None else None
         )
@@ -2042,6 +2305,38 @@ class FixtureRunner:
                 continue
             values[name] = self.resolve(name, plan.closure, plan.fixture_params, ())
         return {name: values[name] for name in plan.argnames if name in values}
+
+    def _open_test_loop(self, plan: ExecutionPlan) -> None:
+        """Resolve — and build — an async test's event loop during **setup**.
+
+        pytest-asyncio does both here, not at call time: `PytestAsyncioFunction.setup`
+        (l. 459-463) appends ``_{self._loop_scope}_scoped_runner`` to the item's fixture names
+        before delegating to ``super().setup()``, so the scope is computed and the runner
+        fixture is instantiated as part of the setup phase.
+
+        Both halves are observable and neither is cosmetic:
+
+        * **the phase a bad mark fails in.**  ``@pytest.mark.asyncio(loop_scope="x", scope="y")``
+          raises while the loop scope is being resolved, so pytest reports it as an ``ERROR``
+          at setup and exits 1.  Resolving it lazily at call time instead reported ``failed``
+          — a different outcome word, a different section of the report, and a different
+          answer to "did this test run".  Measured both ways against pytest 8.4.2.
+        * **when the loop comes into existence.**  Building it here puts its close finalizer
+          *underneath* every fixture finalizer of the same bucket, so the LIFO drain closes
+          the loop after the fixtures that may need it, whichever of them asked for a loop
+          first.
+
+        Restricted to a body that is genuinely ``async def``, because that is the condition
+        under which pytest-asyncio's collection hook substitutes its own item class at all
+        (l. 606-614).  A **sync** test in ``auto`` mode has a nominal loop scope and no loop:
+        creating one would cost every synchronous test in every suite an event loop it never
+        touches.
+        """
+        if plan.func is None or not _is_coroutine_or_asyncgen(plan.func):
+            return
+        scope = self.test_loop_scope(plan)
+        if scope is not None:
+            _ = self.loop_runner(scope)
 
     def note_test_boundary(self, class_name: str | None) -> None:
         """Tear down class scope when the incoming test belongs to a different class.
@@ -2261,26 +2556,34 @@ class FixtureRunner:
         (``fixturefunc.__get__(instance)``).  Without it the fixture would be called with
         ``self`` missing.
 
-        An **async** fixture is driven on this worker's event loop: an ``async def`` body is
-        awaited to its value, and an ``async def`` + ``yield`` body is advanced to the yield
-        at setup and to exhaustion at teardown.  That is pytest-asyncio's model
-        (``_pytest_asyncio/plugin.py``'s ``_wrap_async``/``_wrap_asyncgen``), and it is not
-        optional here: without it the fixture value handed to a test is a **coroutine
-        object**, which is silently truthy and fails only wherever the test first uses it.
+        An **async** fixture is driven on the event loop of its own *loop scope*
+        (:meth:`fixture_loop_scope`): an ``async def`` body is awaited to its value, and an
+        ``async def`` + ``yield`` body is advanced to the yield at setup and to exhaustion at
+        teardown — on the **same** loop, which is why the scope is captured into the teardown
+        partial rather than recomputed.  That is pytest-asyncio's model
+        (`plugin.py::_wrap_async_fixture`/`_wrap_asyncgen_fixture`, l. 299-382), and without
+        it the fixture value handed to a test is a **coroutine object**, silently truthy,
+        failing only wherever the test first uses it.
+
+        Whether the body is driven at all is :meth:`wraps_async_fixture`'s decision, and in
+        ``strict`` mode the answer for a plain ``@pytest.fixture async def`` is *no* — the
+        oracle's behaviour, reproduced deliberately.
         """
         func = fixturedef.func
         if fixturedef.needs_instance and self.instance is not None:
             func = cast(Callable[..., object], cast(Any, func).__get__(self.instance))
+        wraps_async = self.wraps_async_fixture(fixturedef.func)
         self._extras_stack.append(finalizer.calls)
         try:
-            if inspect.isasyncgenfunction(func):
+            if wraps_async and inspect.isasyncgenfunction(func):
+                loop_scope = self.fixture_loop_scope(fixturedef)
                 agen = cast(Any, func)(**kwargs)
                 try:
-                    value = self.run_coroutine(agen.__anext__())
+                    value = self.run_coroutine(agen.__anext__(), loop_scope)
                 except StopAsyncIteration:
                     raise FixtureLookupError(f"{fixturedef.name} did not yield a value") from None
                 teardown: Callable[[], object] | None = functools.partial(
-                    _teardown_async_yield, self, fixturedef, agen
+                    _teardown_async_yield, self, fixturedef, agen, loop_scope
                 )
             elif inspect.isgeneratorfunction(func):
                 generator = cast(Any, func)(**kwargs)
@@ -2304,8 +2607,15 @@ class FixtureRunner:
                 # `iscoroutine` says False for every one of them, so the narrow check handed
                 # the test an un-awaited object. Same false green as the test-body one, one
                 # layer along.
-                if hasattr(value, "__await__"):
-                    value = self.run_coroutine(value)
+                #
+                # Gated on `wraps_async` so it does not leak into `strict` mode, where the
+                # oracle's rule is "an async fixture the user did not mark is not the
+                # plugin's business" (see `wraps_async_fixture`). In `auto` this is reached
+                # for a *sync* fixture too, where pytest-asyncio returns early -- that is the
+                # extension, and it is confined to the mode that already means "rustest runs
+                # async things for you".
+                if wraps_async and hasattr(value, "__await__"):
+                    value = self.run_coroutine(value, self.fixture_loop_scope(fixturedef))
                 teardown = None
         finally:
             _ = self._extras_stack.pop()
@@ -2315,48 +2625,238 @@ class FixtureRunner:
 
     # -- asyncio ----------------------------------------------------------
 
-    def run_coroutine(self, coro: Any) -> object:
-        """Drive *coro* to completion on this worker's event loop.
+    def run_coroutine(self, coro: Any, scope: str, timeout: float | None = None) -> object:
+        """Drive *coro* to completion on the event loop of *scope*.
 
-        **One loop per worker, for the worker's whole life.**  pytest-asyncio's default is a
-        *function*-scoped loop (`asyncio_default_test_loop_scope`), and rustest v1 offers
-        `@mark.asyncio(loop_scope=...)` with four scopes implemented in the Rust executor
-        (`python/rustest/async_executor.py`).  Neither is reproduced here: a single loop is
-        the only choice that lets a module- or session-scoped async fixture outlive the test
-        that created it, which is the shape that breaks *loudly and wrongly* under a
-        per-test loop ("attached to a different loop").
+        *scope* is **required and has no default**, which is the point: every one of the four
+        call sites has already resolved a loop scope from the config and the marks, and a
+        default here would let a fifth one silently pick a loop rather than fail to compile.
+        "It ran on the wrong loop" is diagnosed three frames inside somebody's library.
 
-        The observable divergence is that two tests declaring **different** `loop_scope`s
-        share a loop where v1 would give them separate ones, so a test asserting
-        `id(get_event_loop())` differs across scopes sees the same id.  Recorded in the
-        module docstring's scope-limit list and on the Phase 3 list; the fix is a
-        scope-keyed loop cache hung off the same buckets the fixture finalizers use.
+        **One loop per loop-scope, for that scope's lifetime** — the model this replaced was
+        one loop per *worker*, which made ``@mark.asyncio(loop_scope=...)`` decorative and
+        made two tests asking for different scopes compare ``id(get_running_loop())`` equal.
+        The loop comes from :meth:`loop_runner`, so its lifetime is the matching teardown
+        bucket's; see the note above :class:`AsyncioConfig`.
 
-        `asyncio.set_event_loop` is called as well as `new_event_loop`, because a test body
-        that calls `asyncio.get_event_loop()` — or any library that does — must find the loop
-        its coroutine is running on rather than create a second one.
+        Execution is `asyncio.Runner.run`, which is what pytest-asyncio uses
+        (`_synchronize_coroutine` l. 708-723, `runner.run(coro, context=context)`) rather
+        than a bare ``loop.run_until_complete``.  The difference is not cosmetic: ``Runner``
+        wraps the coroutine in a Task, installs and restores a SIGINT handler around the run,
+        and on close drains async generators and the default executor before closing the
+        loop.
+
+        **Sequential, one coroutine at a time, and that is the oracle's behaviour** —
+        `Runner.run` cannot be re-entered, so two tests sharing a loop scope do not overlap
+        under pytest-asyncio.  Probed on pytest 8.4.2 + pytest-asyncio 1.2.0: two tests each
+        awaiting ``asyncio.sleep(0.30)`` on one *session*-scoped loop take 0.613 s wall, with
+        the second starting 0.003 s after the first ended.  rustest v1 batched such tests into
+        one ``asyncio.gather`` (`async_executor.py::run_coroutines_parallel`); that is not
+        reproduced here — see the module docstring's scope-limit list.
+
+        *timeout* is rustest's own extension (:func:`_asyncio_timeout`) and is applied
+        **inside** the loop with ``asyncio.wait_for``, so an overrunning test is cancelled on
+        the loop it is running on rather than abandoned.
         """
         import asyncio
 
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self._loop = loop
-        return loop.run_until_complete(coro)
+        runner = self.loop_runner(scope)
+        if timeout is not None:
+            coro = asyncio.wait_for(coro, timeout)
+            try:
+                return runner.run(coro)
+            except TimeoutError:
+                # v1's wording (`async_executor.py` l. 85), kept so a suite that greps its
+                # CI output for the phrase keeps finding it.
+                _fail(f"Test timed out after {timeout} seconds")
+        return runner.run(coro)
 
-    def _close_loop(self) -> None:
-        """Close the worker's event loop, after every async fixture has been unwound.
+    def loop_runner(self, scope: str) -> asyncio.Runner:
+        """The ``asyncio.Runner`` for *scope*, created on first use.
 
-        Called from :meth:`teardown_all` only — closing it at a narrower boundary would
-        strand a module- or session-scoped async fixture holding a task on a dead loop.
+        Port of `plugin.py::_create_scoped_runner_fixture` (l. 799-829)::
+
+            with _temporary_event_loop_policy(new_loop_policy):
+                runner = Runner(debug=debug_mode).__enter__()
+
+        — with the fixture's *scope* becoming an entry on the matching teardown bucket.  The
+        close finalizer is registered **before** the caller's own finalizer can be (a fixture's
+        finalizer is pushed only after its body returns, and the body is what asks for the
+        loop), so the bucket's LIFO drain closes the loop last: every async fixture that ran
+        on it has already been unwound.  That is the ordering pytest gets from the runner
+        fixture being *requested* by the fixtures that need it.
+
+        ``debug`` is not honoured: ``asyncio_debug`` is not on the wire.  It changes only the
+        loop's own diagnostics (slow-callback warnings, coroutine-origin tracking) and no test
+        outcome, so it is a named gap rather than a silent one.
         """
-        loop, self._loop = self._loop, None
-        if loop is not None and not loop.is_closed():
-            import asyncio
+        import asyncio
 
-            loop.close()
-            asyncio.set_event_loop(None)
+        existing = self._loops.get(scope)
+        if existing is not None:
+            return existing
+        policy = self._event_loop_policy(scope)
+        with _temporary_event_loop_policy(policy):
+            runner = asyncio.Runner()
+            # `__enter__` is `_lazy_init` — it builds the loop *now*, which has to happen
+            # inside the policy context or the policy would have no effect on it.
+            _ = runner.__enter__()
+        self._loops[scope] = runner
+        self._finalizers[_SCOPE_BUCKET[scope]].append(
+            _Finalizer(None, [functools.partial(self._close_loop, scope)])
+        )
+        return runner
+
+    def _event_loop_policy(self, scope: str) -> object:
+        """The event loop policy a new loop for *scope* is built under.
+
+        pytest-asyncio ships ``event_loop_policy`` as a **session-scoped autouse fixture**
+        returning ``asyncio.get_event_loop_policy()`` (l. 838-841), and each runner fixture
+        requests it (l. 804-808).  Overriding that fixture is the documented way to run a
+        suite on ``uvloop`` — so the override has to go through the ordinary fixture path,
+        not a special case: a user's ``event_loop_policy`` may itself request fixtures, and it
+        is scope-checked like any other (a ``scope="function"`` override feeding a
+        session-scoped loop is the same :class:`ScopeMismatch` pytest raises).
+
+        Two guards:
+
+        * before the first :meth:`setup` there is no closure to resolve against, so the
+          default policy is used — that is the path a test of this module driving
+          :meth:`run_coroutine` by hand takes;
+        * a scope already being opened returns the default rather than recursing, which is
+          what an ``async def event_loop_policy`` would otherwise do forever.  pytest-asyncio
+          cannot hit this (its fixture is sync by contract); reaching it here means the
+          override is unusable, and a default policy is a better answer than a
+          ``RecursionError``.
+        """
+        if self._active is None or scope in self._loops_opening:
+            return _default_event_loop_policy()
+        closure, params = self._active
+        if not closure.registry.getfixturedefs("event_loop_policy"):
+            return _default_event_loop_policy()
+        self._loops_opening.add(scope)
+        try:
+            value, _def = self._resolve_active("event_loop_policy", closure, params, (), scope)
+        finally:
+            self._loops_opening.discard(scope)
+        return value
+
+    def _close_loop(self, scope: str) -> None:
+        """Close one scope's runner — the teardown half of :meth:`loop_runner`.
+
+        Port of the `_scoped_runner` fixture's exit path (l. 817-827): close the runner, and
+        turn the ``RuntimeError`` a test that closed the loop out from under it provokes into
+        a warning rather than a teardown failure, because the runner is already gone either
+        way and failing here would attribute the fault to whatever scope happened to end.
+        pytest-asyncio raises it as a ``RuntimeWarning``; with no warnings channel it goes to
+        stderr, with the plugin's own text so the phrase is greppable.
+        """
+        runner = self._loops.pop(scope, None)
+        if runner is None:
+            return
+        try:
+            runner.close()
+        except RuntimeError:
+            print(
+                "An exception occurred during teardown of an asyncio.Runner. "
+                + "The reason is likely that you closed the underlying event loop in a test, "
+                + "which prevents the cleanup of asynchronous generators by the runner.\n"
+                + traceback.format_exc(),
+                file=sys.stderr,
+            )
+
+    def _close_loops(self) -> None:
+        """Close every runner still open — the belt to :meth:`loop_runner`'s braces.
+
+        Every runner registers its own close on a teardown bucket, and
+        :meth:`teardown_all` drains every bucket, so this normally finds nothing.  It exists
+        because "the loop was left open" is a leak with no symptom in the run that caused it:
+        the process exits, the loop is collected, and the missing ``shutdown_asyncgens`` is
+        never reported.
+        """
+        for scope in list(self._loops):
+            self._close_loop(scope)
+
+    def fixture_loop_scope(self, fixturedef: FixtureDef) -> str:
+        """The loop scope an async *fixture* runs on.
+
+        Port of `plugin.py::pytest_fixture_setup` (l. 736-741), verbatim in precedence::
+
+            loop_scope = (
+                getattr(fixturedef.func, "_loop_scope", None)
+                or default_loop_scope
+                or fixturedef.scope
+            )
+
+        The third fallback is the one that surprises: with ``asyncio_default_fixture_loop_scope``
+        unset, an async fixture's loop scope is **its own caching scope**, so a
+        ``scope="module"`` async fixture gets a module-lived loop without anyone configuring
+        one.  That is why the option travels as an ``Option`` all the way from
+        ``src/v2/config.rs``: collapsing "unset" into ``"function"`` would put every wider
+        async fixture on a loop that dies before it does.
+        """
+        func = getattr(fixturedef.func, "__func__", fixturedef.func)
+        marked = _safe_getattr(func, "_loop_scope", None)
+        scope = marked or self.asyncio.default_fixture_loop_scope or fixturedef.scope
+        if scope not in _SCOPE_INDEX:
+            raise ValueError(
+                f"{scope!r} is not a valid loop_scope for fixture {fixturedef.name!r}. "
+                + f"Valid scopes are: {', '.join(SCOPE_NAMES)}."
+            )
+        return cast(str, scope)
+
+    def wraps_async_fixture(self, func: object) -> bool:
+        """Would pytest-asyncio drive this fixture's body on a loop?
+
+        Port of `plugin.py::pytest_fixture_setup`'s two early returns (l. 728-735)::
+
+            if not _is_asyncio_fixture_function(fixturedef.func):
+                if asyncio_mode == Mode.STRICT:
+                    return (yield)          # left alone entirely
+                if not _is_coroutine_or_asyncgen(fixturedef.func):
+                    return (yield)
+
+        In **strict** mode an ``async def`` fixture written with a plain ``@pytest.fixture``
+        is therefore *not* awaited, and the test is handed a **coroutine object** — probed
+        under pytest 8.4.2 + pytest-asyncio 1.2.0, which additionally emits pytest's own
+        ``PytestRemovedIn9Warning`` about it.  That looks like a false green and is one; it is
+        also exactly what the oracle does, and the escape hatches are the two the oracle
+        offers: ``@pytest_asyncio.fixture`` or ``asyncio_mode = auto``.
+
+        The ``auto`` answer here is ``True`` for a *sync* fixture as well, where the oracle
+        returns early.  The difference is only reachable through rustest's own extension —
+        :meth:`_call` awaits a sync fixture that *returns* an awaitable — and keeping the
+        extension inside the ``auto`` branch is what stops strict mode from acquiring a
+        behaviour the oracle has no counterpart for.
+        """
+        return _is_asyncio_fixture_function(func) or self.asyncio.mode != "strict"
+
+    def test_loop_scope(self, plan: ExecutionPlan) -> str | None:
+        """The loop scope a *test body* runs on, or ``None`` if rustest must not run it.
+
+        ``None`` is the strict-mode answer for an unmarked coroutine test, and it is what
+        makes the mode observable at all.  pytest-asyncio decides this at collection, in
+        `pytest_pycollect_makeitem_convert_async_functions_to_subclass` (l. 606-614)::
+
+            if _get_asyncio_mode(node.config) == Mode.AUTO and not node.get_closest_marker("asyncio"):
+                node.add_marker("asyncio")
+            if node.get_closest_marker("asyncio"):
+                updated_item = specialized_item_class._from_function(node)
+
+        — i.e. auto marks every async function, and only a marked item is converted.  An
+        unconverted one falls through to pytest's own ``pytest_pyfunc_call``, which calls it
+        and hits ``async_fail`` (`_pytest/python.py` l. 150-159).  Probed: in strict mode an
+        unmarked ``async def test_x`` and an unmarked ``async def`` + ``yield`` test both
+        report **failed** with :data:`ASYNC_NOT_SUPPORTED_MESSAGE`, while a marked one runs.
+
+        The scope itself is `PytestAsyncioFunction._loop_scope` (l. 476-489): the closest
+        ``asyncio`` mark's ``loop_scope``, else ``asyncio_default_test_loop_scope``.
+        """
+        mark = _asyncio_mark(plan.marks)
+        if mark is None and self.asyncio.mode == "strict":
+            return None
+        default = self.asyncio.default_test_loop_scope
+        return default if mark is None else _marked_loop_scope(mark, default)
 
     def add_finalizer(self, finalizer: Callable[[], object]) -> None:
         """Attach a ``request.addfinalizer`` callable to the fixture being set up.
@@ -2407,14 +2907,17 @@ class FixtureRunner:
     def teardown_all(self) -> None:
         """Unwind every scope — the worker is shutting down.
 
-        The event loop is closed **after** the unwind, in a ``finally``, so a session-scoped
-        async fixture still has a live loop to be torn down on and the loop is released even
-        when that teardown raises.
+        Every loop's close is already an entry on a teardown bucket (:meth:`loop_runner`), so
+        ``teardown("session")`` closes them in the right order by itself: a session-scoped
+        async fixture is unwound on a live loop and the loop is closed after it.  The sweep in
+        the ``finally`` is the backstop for a loop whose bucket never drained — an
+        already-failed teardown, or a runner built outside any setup — and for the ordinary
+        case it finds nothing.
         """
         try:
             self.teardown("session")
         finally:
-            self._close_loop()
+            self._close_loops()
 
     def _finish(self, finalizer: _Finalizer) -> None:
         """Drain one fixture's teardown and drop its cached value, even if it raised.
@@ -2456,12 +2959,21 @@ class FixtureRunner:
             )
 
 
-def _teardown_async_yield(runner: FixtureRunner, fixturedef: FixtureDef, generator: object) -> None:
+def _teardown_async_yield(
+    runner: FixtureRunner, fixturedef: FixtureDef, generator: object, loop_scope: str
+) -> None:
     """The async twin of :func:`_teardown_yield`: resume an ``async def`` + ``yield`` fixture.
 
     Same contract — exhausting the generator is success, a second yield is the user error
-    pytest calls "fixture function has more than one 'yield'" — driven through the worker's
-    loop instead of ``next()``.
+    pytest calls "fixture function has more than one 'yield'" — driven through the loop
+    instead of ``next()``.
+
+    *loop_scope* is the scope :meth:`FixtureRunner._call` resolved at **setup** and is passed
+    through rather than recomputed, so the second half of the generator runs on the same loop
+    as the first.  Recomputing would give the same answer today and would silently stop doing
+    so the moment anything about the fixture's loop scope became state rather than a pure
+    function of the fixturedef — and "the async generator resumed on a different loop" is an
+    error message that names the generator, not the mistake.
     """
 
     async def drain() -> None:
@@ -2471,7 +2983,7 @@ def _teardown_async_yield(runner: FixtureRunner, fixturedef: FixtureDef, generat
             return
         raise ValueError(f"fixture {fixturedef.name} has more than one 'yield'")
 
-    _ = runner.run_coroutine(drain())
+    _ = runner.run_coroutine(drain(), loop_scope)
 
 
 def _teardown_yield(fixturedef: FixtureDef, generator: object) -> None:
@@ -2781,6 +3293,11 @@ class _CollectContext:
     rel_path: str
     naming: Naming
     plans: list[ExecutionPlan]
+    #: Collection reads exactly one thing from it -- :attr:`AsyncioConfig.mode`, which
+    #: decides whether an async generator test is xfailed (:func:`_async_generator_xfail`).
+    #: Carried on the context rather than passed down the four call levels that separate
+    #: :func:`collect_module` from :func:`_collect_function`.
+    asyncio: AsyncioConfig = _DEFAULT_ASYNCIO
 
 
 def _collect_function(
@@ -2825,7 +3342,11 @@ def _collect_function(
         )
 
     marks = _mark_specs(func) + outer_marks
-    async_generator_mark = _async_generator_xfail(func, name)
+    # `plugin.py` l. 609-613: auto mode marks every async function, and only a marked item is
+    # converted into the plugin's own item class.  The two together are "is this an asyncio
+    # test", and that is the only thing collection needs the mode for.
+    is_asyncio_test = context.asyncio.mode != "strict" or _asyncio_mark(marks) is not None
+    async_generator_mark = _async_generator_xfail(func, name, is_asyncio_test)
     if async_generator_mark is not None:
         marks = [async_generator_mark, *marks]
     full_parts = (*parts, name)
@@ -3104,6 +3625,7 @@ def collect_module(
     rootdir: Path,
     naming: Naming,
     registry: FixtureRegistry | None = None,
+    asyncio_config: AsyncioConfig = _DEFAULT_ASYNCIO,
 ) -> tuple[list[CollectedTestDict], list[ExecutionPlan]]:
     """Enumerate *module* into ``CollectedTest`` dicts **and** their execution plans.
 
@@ -3164,6 +3686,7 @@ def collect_module(
         rel_path=_relative_posix(path, rootdir),
         naming=naming,
         plans=[],
+        asyncio=asyncio_config,
     )
     module_marks = _mark_specs(module)
     entries: list[CollectedTestDict] = []
@@ -4185,13 +4708,18 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
         elif result is not None:
             warnings.warn(PytestReturnNotNoneWarning(...))
 
-    ...with one deliberate substitution: where pytest calls ``async_fail`` for an awaitable
-    ("async def functions are not natively supported. You need to install a suitable
-    plugin"), rustest **is** that plugin, so an awaitable is awaited. The duck-typed
-    ``__await__`` test rather than ``inspect.iscoroutine`` is the point of porting it: a
-    custom awaitable — an object with ``__await__``, a ``Future``, an ``anyio`` task wrapper —
-    is not a coroutine, and the narrower check dropped it silently, which is the same
-    false-green one layer along.
+    ...with one substitution, and it is **conditional on the asyncio mode**: where pytest
+    calls ``async_fail`` for an awaitable ("async def functions are not natively supported.
+    You need to install a suitable plugin"), rustest is that plugin *when it has been asked to
+    be*. :meth:`FixtureRunner.test_loop_scope` answers that — a scope when the test is an
+    asyncio test, ``None`` when ``asyncio_mode = strict`` and nothing marked it — and ``None``
+    routes to pytest's own failure. Probed on pytest 8.4.2 + pytest-asyncio 1.2.0 in strict
+    mode: an unmarked ``async def test_x`` reports **failed** with exactly that message.
+
+    The duck-typed ``__await__`` test rather than ``inspect.iscoroutine`` is the point of
+    porting it: a custom awaitable — an object with ``__await__``, a ``Future``, an ``anyio``
+    task wrapper — is not a coroutine, and the narrower check dropped it silently, which is
+    the same false-green one layer along.
 
     ``__aiter__`` without ``__await__`` is an **async generator object**, which nothing can
     run as a test: pytest fails it and pytest-asyncio refuses it at collection
@@ -4202,9 +4730,11 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
     ``PytestReturnNotNoneWarning``. v2 has no warnings channel, so it is silently ignored,
     exactly as before; the outcome is identical either way.
     """
-    del plan
     if hasattr(result, "__await__"):
-        _ = runner.run_coroutine(result)
+        scope = runner.test_loop_scope(plan)
+        if scope is None:
+            _fail(ASYNC_NOT_SUPPORTED_MESSAGE)
+        _ = runner.run_coroutine(result, scope, _asyncio_timeout(_asyncio_mark(plan.marks)))
     elif hasattr(result, "__aiter__"):
         _fail(ASYNC_NOT_SUPPORTED_MESSAGE)
 
@@ -4388,6 +4918,10 @@ class WorkerState:
 
     rootdir: Path
     naming: Naming
+    #: The three ``asyncio_*`` ini values (protocol v4).  Defaulted so every test in this
+    #: repo that builds a state by hand keeps working and states, by omission, that it is
+    #: not exercising the mode.
+    asyncio: AsyncioConfig = _DEFAULT_ASYNCIO
 
 
 _state: WorkerState | None = None
@@ -4406,10 +4940,17 @@ _runner: FixtureRunner | None = None
 
 
 def _execution_runner() -> FixtureRunner:
-    """This worker's runner, created on first use."""
+    """This worker's runner, created on first use.
+
+    The asyncio config comes from :data:`_state`, i.e. from ``init``.  It is read **here**
+    rather than stored at ``init`` time because the runner outlives no state and the state
+    outlives no runner: reading it at construction keeps one source of truth and makes a
+    runner built before ``init`` (only this module's own tests do that) fall back to the
+    documented defaults instead of to whatever a previous test left behind.
+    """
     global _runner
     if _runner is None:
-        _runner = FixtureRunner()
+        _runner = FixtureRunner(_state.asyncio if _state is not None else _DEFAULT_ASYNCIO)
     return _runner
 
 
@@ -4422,6 +4963,28 @@ def execution_plan(test_id: str) -> ExecutionPlan:
             f"no collected test with id {test_id!r} in this worker "
             + "(the orchestrator must execute a test in the worker that collected it)"
         ) from None
+
+
+def _asyncio_config_from_init(message: Mapping[str, object]) -> AsyncioConfig:
+    """Read the three ``asyncio_*`` fields off an ``init`` line.
+
+    ``asyncio_default_fixture_loop_scope`` is **absent from the wire when unset**
+    (`src/v2/protocol.rs`, `skip_serializing_if`), so ``message.get`` returning ``None`` is
+    the option's real third state and is stored as such -- see
+    :meth:`FixtureRunner.fixture_loop_scope` for what it means.
+
+    No value is re-validated here.  ``src/v2/config.rs`` already rejected a bad mode or scope
+    with pytest-asyncio's own message and exit 4, before this process existed; a second
+    implementation of the rules would be a second thing free to disagree with the first.
+    """
+    fixture_scope = message.get("asyncio_default_fixture_loop_scope")
+    return AsyncioConfig(
+        mode=str(message.get("asyncio_mode", DEFAULT_ASYNCIO_MODE)),
+        default_fixture_loop_scope=None if fixture_scope is None else str(fixture_scope),
+        default_test_loop_scope=str(
+            message.get("asyncio_default_test_loop_scope", DEFAULT_ASYNCIO_TEST_LOOP_SCOPE)
+        ),
+    )
 
 
 def _pattern_tuple(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -4464,6 +5027,7 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
                 message.get("python_functions"), DEFAULT_PYTHON_FUNCTIONS
             ),
         ),
+        asyncio=_asyncio_config_from_init(message),
     )
     return {"op": "ready", "protocol_version": PROTOCOL_VERSION}
 
@@ -4551,7 +5115,9 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
             )
         else:
             module, registry = build_registry(file_path, state.rootdir)
-            tests, plans = collect_module(module, file_path, state.rootdir, state.naming, registry)
+            tests, plans = collect_module(
+                module, file_path, state.rootdir, state.naming, registry, state.asyncio
+            )
         for plan in plans:
             _execution_plans[plan.id] = plan
     except CollectionRefusal as exc:

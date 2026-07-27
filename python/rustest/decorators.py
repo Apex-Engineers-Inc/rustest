@@ -711,6 +711,7 @@ class MarkGenerator:
         func: Callable[..., Any] | None = None,
         *,
         loop_scope: str | None = None,
+        scope: str | None = None,
         timeout: float | None = None,
     ) -> Callable[..., Any]:
         """Mark an async test function to be executed with asyncio.
@@ -722,11 +723,18 @@ class MarkGenerator:
         Args:
             func: The function to decorate (when used without parentheses)
             loop_scope: The scope of the event loop. One of:
-                - None: Auto-detect based on fixture dependencies (default, recommended)
+                - None: fall back to the ``asyncio_default_test_loop_scope`` ini
+                  (pytest-asyncio's default for that is ``"function"``)
                 - "function": New loop for each test function
                 - "class": Shared loop across all test methods in a class
                 - "module": Shared loop across all tests in a module
-                - "session": Shared loop across all tests in the session
+                - "package"/"session": Shared loop across the worker
+            scope: pytest-asyncio's **deprecated** spelling of ``loop_scope``
+                (`pytest_asyncio/plugin.py::_get_marked_loop_scope` l. 771-777). Accepted so
+                a suite written against pytest-asyncio < 1.0 keeps working; passing both is
+                an error, raised where the oracle raises it -- at setup, with the oracle's
+                message -- rather than here, so the two runners agree on the outcome and the
+                exit code.
             timeout: Optional timeout in seconds for the test. If the test takes
                 longer than this, it will be cancelled with asyncio.TimeoutError.
                 This works correctly with parallel test execution - each test has
@@ -756,10 +764,20 @@ class MarkGenerator:
         """
         import inspect
 
-        valid_scopes = {"function", "class", "module", "session"}
+        # "package" joins the four v1 accepted, because `_pytest/scope.py` has five members
+        # and pytest-asyncio validates against all of them (`_validate_scope` l. 237-245).
+        valid_scopes = {"function", "class", "module", "package", "session"}
         if loop_scope is not None and loop_scope not in valid_scopes:
             valid = ", ".join(sorted(valid_scopes))
             msg = f"Invalid loop_scope '{loop_scope}'. Must be one of: {valid}"
+            raise ValueError(msg)
+        # NOT validated here, deliberately: `scope` is the deprecated alias and the only
+        # thing that can be wrong about it -- being passed alongside `loop_scope` -- is what
+        # pytest-asyncio reports at setup time. Rejecting it at decoration would turn a
+        # per-test `error` at exit 1 into a collection error at exit 2.
+        if scope is not None and scope not in valid_scopes:
+            valid = ", ".join(sorted(valid_scopes))
+            msg = f"Invalid scope '{scope}'. Must be one of: {valid}"
             raise ValueError(msg)
 
         # Validate timeout
@@ -778,6 +796,8 @@ class MarkGenerator:
             mark_kwargs: dict[str, Any] = {}
             if loop_scope is not None:
                 mark_kwargs["loop_scope"] = loop_scope
+            if scope is not None:
+                mark_kwargs["scope"] = scope
             if timeout is not None:
                 mark_kwargs["timeout"] = timeout
 

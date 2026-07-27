@@ -107,6 +107,21 @@ rustest = { path = "." }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Set explicitly, which is what pytest-asyncio's own PytestDeprecationWarning asks every
+# project to do ("The event loop scope for asynchronous fixtures will default to the fixture
+# caching scope. Future versions ... will default ... to function scope. Set the default
+# fixture loop scope explicitly in order to avoid unexpected behavior in the future").
+#
+# `session`/`session` is also the shape rustest's own async suites were written against.
+# They predate the loop-scope model (they exercise v1's "widest fixture scope wins"
+# auto-detection) and assume every fixture and every test share one loop; under the ported
+# pytest-asyncio model with these options UNSET, a session-scoped async fixture gets a
+# session loop while a test gets a function loop, and `tests/test_async_fixture_event_loop_issue.py`
+# reports "Task got Future attached to a different loop" -- which real pytest + pytest-asyncio
+# does too, measured on the same file. Declaring the scopes is the fix pytest-asyncio
+# documents, not a workaround for rustest.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 python_files = ["test_*.py", "*_test.py", "pytest_*.py"]
 # Ignore tests that use rustest-specific features not compatible with pytest
 addopts = "--ignore=tests/test_indirect_parametrization.py"

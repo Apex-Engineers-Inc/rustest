@@ -60,7 +60,9 @@ use rayon::prelude::*;
 use ruff_python_ast::{Expr, Stmt};
 use ruff_python_parser::parse_module;
 
-use crate::v2::config::{matches_name_pattern, ResolvedConfig};
+use crate::v2::config::{
+    matches_name_pattern, ResolvedConfig, DEFAULT_ASYNCIO_MODE, DEFAULT_ASYNCIO_TEST_LOOP_SCOPE,
+};
 use crate::v2::manifest::{CollectedTest, MarkSpec, Tier};
 use crate::v2::manifest_cache::{digest_of_chain, DirCache, FreshByDir, ManifestCache};
 use crate::v2::nodeid::build_nodeid;
@@ -2758,6 +2760,9 @@ fn conftest_scan_config() -> ResolvedConfig {
         norecursedirs: Vec::new(),
         addopts: Vec::new(),
         markers: Vec::new(),
+        asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
+        asyncio_default_fixture_loop_scope: None,
+        asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
     }
 }
 

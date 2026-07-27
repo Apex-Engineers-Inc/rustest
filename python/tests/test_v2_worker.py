@@ -1336,13 +1336,13 @@ def test_ready_declares_the_version_the_worker_speaks(tmp_path: Path) -> None:
     assert response == {"op": "ready", "protocol_version": PROTOCOL_VERSION}
     # Pinned as a literal, not read from the constant: this and `PROTOCOL_VERSION` in
     # `src/v2/protocol.rs` must move together, so bumping one alone has to fail here.
-    assert PROTOCOL_VERSION == 3
+    assert PROTOCOL_VERSION == 4
 
 
 def test_ready_line_matches_the_rust_golden() -> None:
     assert (
         encode_response({"op": "ready", "protocol_version": PROTOCOL_VERSION})
-        == '{"op":"ready","protocol_version":3}'
+        == '{"op":"ready","protocol_version":4}'
     )
 
 

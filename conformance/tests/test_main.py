@@ -51,6 +51,12 @@ ADJUDICATED_V2_RUN_WAIVERS: set[str] = {
     # `pytest.exit()` reaches the compat shim's catch-all `__getattr__` and is a silent
     # no-op, so the session never stops.
     "marks/pytest-exit",
+    # THE ONLY DELIBERATE ONE. rustest defaults `asyncio_mode` to `auto` where
+    # pytest-asyncio defaults to `strict`; both modes are implemented faithfully and every
+    # case that sets the option explicitly matches. See `src/v2/config.rs`'s
+    # `DEFAULT_ASYNCIO_MODE` for the argument and `python/rustest/_v2_worker.py`'s
+    # `FixtureRunner.test_loop_scope` for the rule the default selects between.
+    "async/mode-default",
 }
 
 
@@ -302,7 +308,7 @@ def test_corpus_case_count_is_pinned() -> None:
     weaken the gate while every summary still read green. Pinning the count makes that
     a test failure. Bump this number in the same commit that adds or removes a case.
     """
-    assert len(discover_cases()) == 27
+    assert len(discover_cases()) == 32
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

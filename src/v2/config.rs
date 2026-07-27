@@ -54,6 +54,40 @@ pub const DEFAULT_NORECURSEDIRS: &[&str] = &[
 const CFG_PYTEST_SECTION: &str =
     "[pytest] section in setup.cfg files is no longer supported, change to [tool:pytest] instead.";
 
+/// The loop/fixture scopes `asyncio_default_*_loop_scope` accepts, in `_pytest/scope.py`'s
+/// declaration order — which is the order pytest-asyncio's error message lists them in
+/// (`pytest_asyncio/plugin.py::_validate_scope`, l. 237-245: `[s.value for s in Scope]`).
+const ASYNCIO_SCOPES: &[&str] = &["function", "class", "module", "package", "session"];
+
+/// Source: `pytest_asyncio/plugin.py::pytest_addoption` l. 123-128 —
+/// `addini("asyncio_default_test_loop_scope", type="string", default="function")`.
+pub const DEFAULT_ASYNCIO_TEST_LOOP_SCOPE: &str = "function";
+
+/// rustest's default `asyncio_mode`, and **the one place this file knowingly departs from
+/// the oracle**.
+///
+/// pytest-asyncio declares `addini("asyncio_mode", default="strict")`
+/// (`pytest_asyncio/plugin.py` l. 106-110) and its own help text says why: strict exists
+/// "for autoprocessing disabling (useful if different async frameworks should be tested
+/// together, e.g. both pytest-asyncio and pytest-trio are used in the same project)"
+/// (l. 82-87). That default is a *coexistence* setting for one installable plugin among
+/// several.
+///
+/// rustest has no async-plugin ecosystem and no way to be "not installed": it runs `async
+/// def` tests natively, and `asyncio_mode = strict` is how a suite turns that off. Shipping
+/// `strict` as the default would ship the runner with its own documented async support
+/// switched off, and would answer an unmarked `async def` test with `_pytest/python.py::
+/// async_fail`'s advice — "install a suitable plugin for your async framework, for example
+/// ... pytest-asyncio" — addressed to a user who is already running that plugin's
+/// replacement.
+///
+/// Everything *else* about the option is the oracle's: both values, their precedence, and
+/// their effect on tests and fixtures. Only this default differs, it is one ini line to
+/// erase in either direction, and a suite that sets `asyncio_mode` explicitly behaves
+/// identically under both runners. Recorded in `conformance/waivers-v2-run.toml` under
+/// `async/mode-default`, which is the corpus case that measures it.
+pub const DEFAULT_ASYNCIO_MODE: &str = "auto";
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -96,6 +130,19 @@ pub struct ResolvedConfig {
     pub norecursedirs: Vec<String>,
     pub addopts: Vec<String>,
     pub markers: Vec<String>,
+    /// `auto` or `strict` — validated at resolve time. See [`DEFAULT_ASYNCIO_MODE`] for the
+    /// one place rustest's default departs from pytest-asyncio's.
+    pub asyncio_mode: String,
+    /// `None` when unset, which is **not** the same as `"function"`: pytest-asyncio falls
+    /// back to *the fixture's own caching scope* when this is absent
+    /// (`plugin.py::pytest_fixture_setup` l. 736-741, `... or default_loop_scope or
+    /// fixturedef.scope`), so the absence has to survive as an absence all the way to the
+    /// worker. Collapsing it to a default here would silently move every module- and
+    /// session-scoped async fixture onto a function-scoped loop.
+    pub asyncio_default_fixture_loop_scope: Option<String>,
+    /// Defaults to `function` (`plugin.py` l. 123-128) — unlike the fixture option above,
+    /// this one has a real default in the oracle, so `None` never reaches the worker.
+    pub asyncio_default_test_loop_scope: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +224,20 @@ pub fn resolve_config(
         addopts: getini_args(&inicfg, "addopts", &[], &err_path)?,
         // `_pytest/mark/__init__.py::pytest_addoption` — addini("markers", ..., "linelist").
         markers: getini_linelist(&inicfg, "markers"),
+        // The three asyncio inis are `type=None`/`type="string"`, so they are taken raw
+        // rather than shlex-split (`plugin.py::pytest_addoption` l. 106-128).
+        asyncio_mode: getini_asyncio_mode(&inicfg, &err_path)?,
+        asyncio_default_fixture_loop_scope: getini_asyncio_scope(
+            &inicfg,
+            "asyncio_default_fixture_loop_scope",
+            &err_path,
+        )?,
+        asyncio_default_test_loop_scope: getini_asyncio_scope(
+            &inicfg,
+            "asyncio_default_test_loop_scope",
+            &err_path,
+        )?
+        .unwrap_or_else(|| DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string()),
         config_file: inipath,
     })
 }
@@ -784,6 +845,78 @@ fn getini_args(
 /// `type == "linelist"`: `[t for t in map(str.strip, value.split("\n")) if t]`.
 ///
 /// The registered default is `[]` (`get_ini_default_for_type("linelist")`).
+/// A `type="string"` ini value, taken raw — or `None` when the key is absent.
+///
+/// **Absent and empty are different answers**, and the difference is load-bearing for
+/// `asyncio_default_fixture_loop_scope`: absent means "fall back to the fixture's own
+/// scope", while `asyncio_default_fixture_loop_scope =` with nothing after it is a value of
+/// `""`, which pytest-asyncio rejects (`_validate_scope` returns early only for `None`).
+/// Probed on pytest 8.4.2 + pytest-asyncio 1.2.0: the empty form exits 4 with
+/// `'' is not a valid asyncio_default_fixture_loop_scope.`
+///
+/// A TOML **list** reaches an untyped ini option unchanged in pytest (`Config._getini`
+/// returns `value` as-is when `type is None`), whereupon the plugin's own `Mode(val)` /
+/// `scope not in valid_scopes` check rejects it. Joining the items reproduces that
+/// rejection with the offending value visible in the message, rather than silently reading
+/// the first element.
+fn getini_string(cfg: &ConfigDict, name: &str) -> Option<String> {
+    match lookup(cfg, name) {
+        None => None,
+        Some(IniValue::Str(s)) => Some(s.clone()),
+        Some(IniValue::List(items)) => Some(items.join(" ")),
+    }
+}
+
+/// Port of `pytest_asyncio/plugin.py::_validate_scope` (l. 237-245), message included.
+///
+/// Applied to both `asyncio_default_fixture_loop_scope` and
+/// `asyncio_default_test_loop_scope`, which is where the plugin applies it
+/// (`pytest_configure`, l. 248-255) — so an invalid scope is a **usage** error, exit 4 on
+/// both runners. Probed: `asyncio_default_test_loop_scope = bogus` exits 4 under pytest
+/// with exactly the string below.
+fn getini_asyncio_scope(
+    cfg: &ConfigDict,
+    name: &str,
+    path: &Path,
+) -> Result<Option<String>, ConfigError> {
+    let Some(scope) = getini_string(cfg, name) else {
+        return Ok(None);
+    };
+    if !ASYNCIO_SCOPES.contains(&scope.as_str()) {
+        return Err(ConfigError::Usage {
+            path: path.to_path_buf(),
+            message: format!(
+                "'{scope}' is not a valid {name}. Valid scopes are: {}.",
+                ASYNCIO_SCOPES.join(", ")
+            ),
+        });
+    }
+    Ok(Some(scope))
+}
+
+/// Port of `pytest_asyncio/plugin.py::_get_asyncio_mode` (l. 203-213), message included.
+///
+/// **One deliberate divergence, and it is in the *timing*, not the rule.** pytest-asyncio
+/// validates the mode lazily — `_get_asyncio_mode` is first reached from
+/// `pytest_fixture_setup`, so a typo'd mode surfaces as a per-test ERROR and the run exits
+/// **1** (probed: `asyncio_mode = bogus` → `1 error`, exit 1), while a typo'd *scope*, which
+/// the same plugin validates in `pytest_configure`, exits 4. rustest resolves the whole
+/// config before a worker is spawned and has nowhere to defer to, so both typos are usage
+/// errors here and both exit 4. Reporting a config typo as a test error was never the
+/// behaviour worth reproducing; the message is.
+fn getini_asyncio_mode(cfg: &ConfigDict, path: &Path) -> Result<String, ConfigError> {
+    let Some(mode) = getini_string(cfg, "asyncio_mode") else {
+        return Ok(DEFAULT_ASYNCIO_MODE.to_string());
+    };
+    if mode != "auto" && mode != "strict" {
+        return Err(ConfigError::Usage {
+            path: path.to_path_buf(),
+            message: format!("'{mode}' is not a valid asyncio_mode. Valid modes: auto, strict."),
+        });
+    }
+    Ok(mode)
+}
+
 fn getini_linelist(cfg: &ConfigDict, name: &str) -> Vec<String> {
     match lookup(cfg, name) {
         None => Vec::new(),
@@ -1273,6 +1406,136 @@ mod tests {
         let cfg =
             resolve_config(root, &[PathBuf::from("-q"), PathBuf::from("--tb=short")]).unwrap();
         assert_eq!(cfg.rootdir, root);
+    }
+
+    // -- asyncio inis --------------------------------------------------------
+
+    #[test]
+    fn asyncio_inis_default_to_the_ported_values() {
+        // plugin.py l. 106-128: mode default "strict" (rustest: "auto", see
+        // DEFAULT_ASYNCIO_MODE), fixture loop scope default None, test loop scope
+        // default "function".
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "pytest.ini", "[pytest]\n");
+
+        let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
+        assert_eq!(cfg.asyncio_mode, "auto");
+        assert_eq!(cfg.asyncio_default_fixture_loop_scope, None);
+        assert_eq!(cfg.asyncio_default_test_loop_scope, "function");
+    }
+
+    #[test]
+    fn asyncio_inis_are_read_verbatim() {
+        // The Member Designer acceptance shape: auto mode, both defaults session.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]\nasyncio_mode = auto\nasyncio_default_fixture_loop_scope = session\n\
+             asyncio_default_test_loop_scope = session\n",
+        );
+
+        let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
+        assert_eq!(cfg.asyncio_mode, "auto");
+        assert_eq!(
+            cfg.asyncio_default_fixture_loop_scope.as_deref(),
+            Some("session")
+        );
+        assert_eq!(cfg.asyncio_default_test_loop_scope, "session");
+    }
+
+    #[test]
+    fn asyncio_inis_are_not_shlex_split() {
+        // `type="string"`, not `type="args"`: a value keeps its spaces rather than
+        // becoming a word list.  Asserted through the rejection, since no valid scope
+        // contains a space.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]\nasyncio_default_test_loop_scope = session function\n",
+        );
+
+        let err = resolve_config(root, &[root.to_path_buf()]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'session function' is not a valid asyncio_default_test_loop_scope. \
+             Valid scopes are: function, class, module, package, session."
+        );
+    }
+
+    #[test]
+    fn an_invalid_asyncio_mode_is_a_usage_error() {
+        // plugin.py::_get_asyncio_mode l. 209-213, message verbatim.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "pytest.ini", "[pytest]\nasyncio_mode = bogus\n");
+
+        let err = resolve_config(root, &[root.to_path_buf()]).unwrap_err();
+        assert!(matches!(err, ConfigError::Usage { .. }), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "'bogus' is not a valid asyncio_mode. Valid modes: auto, strict."
+        );
+    }
+
+    #[test]
+    fn an_invalid_asyncio_scope_is_a_usage_error_naming_the_option() {
+        // plugin.py::_validate_scope l. 237-245 — the option name is interpolated, so
+        // the two scope options produce two different messages.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]\nasyncio_default_fixture_loop_scope = bogus\n",
+        );
+
+        let err = resolve_config(root, &[root.to_path_buf()]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'bogus' is not a valid asyncio_default_fixture_loop_scope. \
+             Valid scopes are: function, class, module, package, session."
+        );
+    }
+
+    #[test]
+    fn an_empty_asyncio_scope_is_rejected_rather_than_treated_as_unset() {
+        // `_validate_scope` returns early for None only, so `""` reaches the membership
+        // test.  Probed on pytest 8.4.2: exit 4 with this exact string.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]\nasyncio_default_fixture_loop_scope =\n",
+        );
+
+        let err = resolve_config(root, &[root.to_path_buf()]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'' is not a valid asyncio_default_fixture_loop_scope. \
+             Valid scopes are: function, class, module, package, session."
+        );
+    }
+
+    #[test]
+    fn package_is_a_valid_asyncio_scope_even_though_v2_buckets_it_with_session() {
+        // `Scope` has five members and the plugin accepts all five; what a worker *does*
+        // with `package` is `_SCOPE_BUCKET`'s business, not this file's.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]\nasyncio_default_test_loop_scope = package\n",
+        );
+
+        let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
+        assert_eq!(cfg.asyncio_default_test_loop_scope, "package");
     }
 
     #[test]

@@ -14,6 +14,11 @@
 # Scoreboard at 1b.1: 21 cases -- 18 match, 3 waived, 0 stale-waivers, 0 diverged.
 # Scoreboard at 1b.2: 23 cases -- 23 match, 0 waived, 0 stale-waivers, 0 diverged.
 # Scoreboard at 1c.2: 27 cases -- 26 match, 1 waived, 0 stale-waivers, 0 diverged.
+# Scoreboard at P3.1: 32 cases -- 31 match, 1 waived, 0 stale-waivers, 0 diverged.
+#   All five Phase 3 Task 1 async additions MATCH here. asyncio_mode reaches collection
+#   (it decides whether an async generator test acquires a synthesised xfail mark), but
+#   no async shape changes which node ids exist -- which is why the mode divergence shows
+#   up only once something is EXECUTED, in waivers-v2-run.toml.
 #
 # THIS FILE WAS EMPTY AT 1b.2 AND IS NO LONGER: the single entry below arrived with the
 # 1c Task 2 corpus additions -- a shape the earlier corpus did not contain, not a

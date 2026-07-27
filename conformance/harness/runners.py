@@ -346,11 +346,26 @@ def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
     adopts a surrounding project's ``[tool.pytest.ini_options]`` (this repo's own
     ``pyproject.toml`` would otherwise apply to every corpus case).
 
+    **Unless the case ships its own config**, in which case ``-c`` points at *that* and the
+    case's declared ini values apply. The qualifying rule is ``_qualifies_as_config``, the
+    same content check ``_isolate_case`` uses for the two v2 gates, so a case is configured
+    identically on all three -- which is the whole reason for the exception. Without it a
+    case whose subject *is* a configuration value (``conformance/corpus/async/*``, where
+    ``asyncio_mode`` decides whether an unmarked ``async def`` test runs at all) would be
+    asked one question by the v2 gates and a different one here, and the v1 ledger would
+    fill up with entries describing an empty ini rather than a divergence between runners.
+    The forced-empty ini remains the default and remains the point: a case that declares
+    nothing must not inherit this repo's ``[tool.pytest.ini_options]``.
+
     *case_dir* is resolved first: ``--rootdir`` is interpreted relative to
     pytest's own cwd, so a relative case directory would point pytest at a
     nonexistent rootdir and abort with a usage error (exit 4).
     """
     case_dir = case_dir.resolve()
+    own_config = next(
+        (case_dir / name for name in _CASE_CONFIG_NAMES if _qualifies_as_config(case_dir / name)),
+        None,
+    )
     with tempfile.TemporaryDirectory() as tmp:
         empty_ini = Path(tmp) / "pytest.ini"
         empty_ini.write_text("[pytest]\n", encoding="utf-8")
@@ -361,7 +376,7 @@ def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
             "-p",
             "no:cacheprovider",
             "-c",
-            str(empty_ini),
+            str(own_config or empty_ini),
             f"--rootdir={case_dir}",
         ]
         collect = _run([*base, "--collect-only", "-q", *args], case_dir)

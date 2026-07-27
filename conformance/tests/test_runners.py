@@ -270,6 +270,54 @@ def test_run_pytest_ignores_surrounding_project_config(tmp_path: Path) -> None:
     assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
 
 
+def test_run_pytest_honours_a_case_owned_config(tmp_path: Path) -> None:
+    """A case that ships a qualifying config is run under it, not under the empty ini.
+
+    The v1 gate forces ``-c <empty ini>`` so a case cannot inherit this repo's
+    ``[tool.pytest.ini_options]``; that default is unchanged and is asserted by
+    ``test_run_pytest_ignores_surrounding_project_config`` above. The exception exists
+    because a case whose SUBJECT is a configuration value -- ``conformance/corpus/async/*``,
+    where ``asyncio_mode`` decides whether an unmarked ``async def`` test runs at all -- was
+    otherwise asked one question by the two v2 gates (which keep a case-owned config, see
+    ``_isolate_case``) and a different one here, filling the v1 ledger with entries
+    describing an empty ini rather than a divergence between runners.
+
+    Asserted through ``python_files``, which changes the *ids* and therefore cannot pass by
+    accident: under the empty ini ``check_mini.py`` collects nothing and pytest exits 5.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _ = (case_dir / "pytest.ini").write_text(
+        "[pytest]\npython_files = check_*.py\n", encoding="utf-8"
+    )
+    _ = (case_dir / "check_mini.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+
+    result = run_pytest(case_dir, [])
+
+    assert result.ids == {"check_mini.py::test_ok"}, result.ids
+    assert (result.outcomes.passed, result.outcomes.failed) == (1, 0)
+
+
+def test_run_pytest_ignores_a_non_qualifying_case_file(tmp_path: Path) -> None:
+    """...and *qualifying* is decided on content, exactly as `_qualifies_as_config` decides it.
+
+    A ``pyproject.toml`` carrying only ``[project]`` anchors nothing under either runner, so
+    it must not be handed to ``-c`` -- doing so would make pytest read a file it would have
+    walked straight past, which is the mirror image of the bug the exception exists to fix.
+    """
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    _ = (case_dir / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+    _write_mini_suite(case_dir)
+
+    result = run_pytest(case_dir, [])
+
+    assert result.ids == MINI_IDS
+    assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
+
+
 def test_run_pytest_accepts_relative_case_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

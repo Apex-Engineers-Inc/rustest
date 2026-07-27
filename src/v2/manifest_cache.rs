@@ -252,6 +252,9 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
         norecursedirs,
         addopts,
         markers,
+        asyncio_mode,
+        asyncio_default_fixture_loop_scope,
+        asyncio_default_test_loop_scope,
     } = config;
 
     let mut hasher = blake3::Hasher::new();
@@ -279,6 +282,24 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
     field("norecursedirs", norecursedirs);
     field("addopts", addopts);
     field("markers", markers);
+    // `asyncio_mode` is a **collection** input, not only an execution one: in `auto` mode an
+    // `async def` + `yield` test acquires a synthesised `xfail(run=False)` mark
+    // (`_v2_worker.py::_async_generator_xfail`) that it does not get in `strict` mode, and the
+    // mark travels in the cached manifest entry.  A run that flips the mode and reuses a
+    // manifest built under the other one would serve the wrong mark set.
+    field("asyncio_mode", std::slice::from_ref(asyncio_mode));
+    // Hashed as **zero or one** values rather than as a string, so `None` (fall back to the
+    // fixture's own scope) and `Some("")` do not collide: the length prefix separates them.
+    field(
+        "asyncio_default_fixture_loop_scope",
+        asyncio_default_fixture_loop_scope
+            .as_ref()
+            .map_or(&[][..], std::slice::from_ref),
+    );
+    field(
+        "asyncio_default_test_loop_scope",
+        std::slice::from_ref(asyncio_default_test_loop_scope),
+    );
     *hasher.finalize().as_bytes()
 }
 
@@ -728,7 +749,8 @@ pub type FreshByDir = HashMap<PathBuf, BTreeMap<String, (Digest, Vec<CollectedTe
 mod tests {
     use super::*;
     use crate::v2::config::{
-        DEFAULT_PYTHON_CLASSES, DEFAULT_PYTHON_FILES, DEFAULT_PYTHON_FUNCTIONS,
+        DEFAULT_ASYNCIO_MODE, DEFAULT_ASYNCIO_TEST_LOOP_SCOPE, DEFAULT_PYTHON_CLASSES,
+        DEFAULT_PYTHON_FILES, DEFAULT_PYTHON_FUNCTIONS,
     };
     use tempfile::TempDir;
 
@@ -747,6 +769,9 @@ mod tests {
             norecursedirs: Vec::new(),
             addopts: Vec::new(),
             markers: Vec::new(),
+            asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
+            asyncio_default_fixture_loop_scope: None,
+            asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
         }
     }
 

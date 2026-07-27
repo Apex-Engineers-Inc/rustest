@@ -207,27 +207,41 @@ async def test_explicit_session_with_fixture(session_counter):
 # Test 5: Class-based Tests with loop scopes
 # =============================================================================
 
+CLASS_LOOPS: dict[str, int] = {}
+
+
 @mark.asyncio(loop_scope="class")
 class TestClassLoopScope:
-    """Class with class-scoped loop for all async tests."""
+    """Class with class-scoped loop for all async tests.
+
+    The claim under test is what `loop_scope="class"` *means*: the methods of this class
+    share one loop with each other, and a method of a different class does not get that
+    same loop. It is asserted between the methods rather than against `class_counter`'s
+    loop, because a fixture's loop scope is not its caching scope -- with
+    `asyncio_default_fixture_loop_scope = session` in this repo's pyproject a
+    `scope="class"` fixture runs on the *session* loop
+    (`pytest_asyncio/plugin.py::pytest_fixture_setup` l. 736-741), so comparing the two
+    would be asserting a coincidence of configuration rather than the mark's behaviour.
+    `class_counter` is still requested, so its class-scoped *caching* is still exercised.
+    """
 
     async def test_class_method_1(self, class_counter):
         """First method should use class loop."""
         class_counter["value"] += 1
-        current_loop_id = id(asyncio.get_event_loop())
-        # Should share loop with class_counter
-        assert current_loop_id == class_counter["loop_id"]
+        CLASS_LOOPS["first"] = id(asyncio.get_event_loop())
 
     async def test_class_method_2(self, class_counter):
         """Second method should reuse same class loop."""
         class_counter["value"] += 1
-        current_loop_id = id(asyncio.get_event_loop())
-        # Should share loop with class_counter and previous test
-        assert current_loop_id == class_counter["loop_id"]
+        assert id(asyncio.get_event_loop()) == CLASS_LOOPS["first"]
 
 
 class TestAutoDetectInClass:
     """Class without explicit loop_scope - should auto-detect."""
+
+    async def test_a_different_class_gets_a_different_class_loop(self):
+        """The other half of `loop_scope="class"`: it is per class, not per file."""
+        assert id(asyncio.get_event_loop()) != CLASS_LOOPS["first"]
 
     async def test_auto_session_in_class(self, session_counter):
         """Method using session fixture should auto-detect session loop."""
