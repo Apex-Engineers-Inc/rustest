@@ -56,6 +56,7 @@ use crate::v2::collect::{
     assemble, plan, spawn_pool, CollectError, Dispatch, FileOutcome, Worker, WorkerLauncher,
 };
 use crate::v2::manifest::{CollectedTest, CollectionErrorEntry};
+use crate::v2::protocol::CoverageWire;
 use crate::v2::selection::{select_mask, SelectionError};
 
 /// `_v2_worker.py::SHUTDOWN_TEARDOWN_EXIT`.
@@ -89,7 +90,11 @@ pub const REPORT_SCHEMA_VERSION: u32 = 2;
 ///
 /// A struct rather than four positional `bool`s because every one of them would be a `bool`
 /// and a transposed pair would compile silently.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// `Copy` was dropped when `coverage` landed: the field owns two heap allocations, and the
+/// alternative — borrowing the wire object through the run — would put a lifetime on a type
+/// that is otherwise plain configuration. Cloning it happens exactly once per run.
+#[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     /// `-x` / `--exitfirst`: stop dispatching once a test has failed.  See [`run_with_launcher`].
     pub fail_fast: bool,
@@ -109,6 +114,13 @@ pub struct RunOptions {
     /// manifest cache's, so "recompute the answer without it" has to be askable from a
     /// subprocess without editing anything.
     pub assert_rewrite: bool,
+    /// `--cov`: the source trees to measure and the directory the workers write their
+    /// per-process coverage data into, or `None` for a run that measures nothing.
+    ///
+    /// `None` is not "measure everything and report nothing": it means **no worker registers a
+    /// `sys.monitoring` tool at all**, which is what keeps a plain run's per-test cost exactly
+    /// what it was before this option existed (`python/rustest/_v2_coverage.py`).
+    pub coverage: Option<CoverageWire>,
 }
 
 impl RunOptions {
@@ -124,6 +136,7 @@ impl RunOptions {
             no_capture: false,
             codeblocks: true,
             assert_rewrite: true,
+            coverage: None,
         }
     }
 }
@@ -535,6 +548,7 @@ fn run_with_launcher(
         workers,
         options.codeblocks,
         options.assert_rewrite,
+        options.coverage.clone(),
     )?;
     let previously_failed = read_last_failed(&dispatch.rootdir_path);
 
@@ -2029,7 +2043,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":4}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":5}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(

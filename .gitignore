@@ -14,6 +14,11 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .rustest_cache/
+# `rustest --cov` writes coverage.py's own data file here, and the parallel-mode files
+# a worker writes before they are combined.
+.coverage
+.coverage.*
+coverage.xml
 .DS_Store
 /external
 /rustest/

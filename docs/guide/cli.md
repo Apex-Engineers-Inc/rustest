@@ -458,6 +458,9 @@ rustest [OPTIONS] [PATHS...]
 | `--lf, --last-failed` | Rerun only tests that failed in the last run |
 | `--ff, --failed-first` | Run failed tests first, then all other tests |
 | `-x, --exitfirst` | Exit instantly on first error or failed test |
+| `--cov [SOURCE]` | Measure line coverage of `SOURCE` (a directory; repeatable, no value means the rootdir). Needs `pip install 'rustest[cov]'`. See [Coverage](../advanced/coverage.md) |
+| `--cov-report TYPE` | `term` (default) or `xml[:PATH]`. Repeatable |
+| `--cov-branch` | Refused: branch coverage is not implemented, and measuring lines instead would overstate it |
 | `--pytest-compat` | Enable pytest compatibility mode. Intercepts `import pytest` so existing pytest tests run without code changes. See [Pytest Compatibility](../advanced/pytest-compat.md) |
 | `-h, --help` | Show help message and exit |
 
@@ -592,11 +595,26 @@ rustest -k "user and (create or update)" --no-capture
 
 #### With Coverage
 
+rustest measures line coverage itself, and writes coverage.py's own data format:
+
 ```bash
-# Using coverage.py
-coverage run -m rustest
+pip install 'rustest[cov]'
+
+rustest --cov=src tests/                  # terminal table
+rustest --cov=src --cov-report=xml tests/ # Cobertura XML
+
+# the run wrote an ordinary .coverage, so every other report is one command away
+coverage html
+```
+
+Branch coverage is not implemented; run rustest under coverage.py for that:
+
+```bash
+coverage run --branch --source=src -m rustest tests/
 coverage report
 ```
+
+See [Coverage](../advanced/coverage.md) for the full surface and its accuracy.
 
 #### With Timeout
 

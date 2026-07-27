@@ -573,6 +573,130 @@ def _print_failure_sections(tests: Sequence[_ReportTest]) -> None:
         print(f"{test['status'].upper()} {test['id']}")
 
 
+class _CoverageRun:
+    """``--cov`` seen from the orchestrator: the wire value, the scratch directory, the report.
+
+    A context manager, because the per-worker data files must outlive the run and **not**
+    outlive the report: they are intermediate state in a directory this process created, and
+    leaving them behind on a failed run would seed the next run's ``combine`` with a previous
+    run's lines.
+
+    :meth:`disabled` is the no-coverage instance and is what every ordinary run gets. It holds
+    no directory, sends ``None`` on the wire, and renders nothing -- so the coverage path costs
+    a run without ``--cov`` one object allocation and two `if`s.
+    """
+
+    def __init__(
+        self,
+        sources: list[str] | None,
+        reports: list[tuple[str, str | None]],
+        data_dir: str | None,
+    ) -> None:
+        super().__init__()
+        self._sources: list[str] | None = sources
+        self._reports: list[tuple[str, str | None]] = reports
+        self._data_dir: str | None = data_dir
+
+    @classmethod
+    def disabled(cls) -> _CoverageRun:
+        return cls(None, [], None)
+
+    @classmethod
+    def prepare(
+        cls,
+        cov: Sequence[str] | None,
+        cov_report: Sequence[str] | None,
+        paths: list[str],
+    ) -> _CoverageRun:
+        """Validate the options, resolve the sources, and make the scratch directory.
+
+        Raises `ValueError` for every user-facing mistake -- an unknown report type, a
+        ``--cov=PATH`` that is not a directory, a missing ``coverage`` install -- so the caller
+        can answer with pytest's usage exit code before a single worker is spawned.
+
+        The rootdir a bare ``--cov`` resolves to is obtained from
+        :func:`rustest.rust.v2_resolve_config`, i.e. from the **same** resolver the run itself
+        will use, rather than from ``os.getcwd()``. They differ for every run started below a
+        config file, and a coverage report scoped to the wrong tree is not obviously wrong when
+        you read it.
+        """
+        if cov is None:
+            return cls.disabled()
+
+        from ._v2_coverage import parse_report_spec, require_coverage, resolve_sources
+
+        require_coverage()
+        reports = [parse_report_spec(spec) for spec in (cov_report or ["term"])]
+        rootdir: str = json.loads(rust.v2_resolve_config(os.getcwd(), paths))["rootdir"]
+        sources = resolve_sources(cov, rootdir)
+
+        import tempfile
+
+        return cls(sources, reports, tempfile.mkdtemp(prefix="rustest-cov-"))
+
+    @property
+    def wire(self) -> str | None:
+        """The ``coverage`` argument for ``rust.v2_run`` -- `None` when coverage is off.
+
+        A JSON object matching ``src/v2/protocol.rs::CoverageWire`` exactly, because it *is*
+        that object: the Rust boundary parses it with `serde` and forwards it onto every
+        worker's ``init`` line unchanged, so there is one description of the shape rather than
+        a Python encoder and a Rust decoder free to drift.
+        """
+        if self._sources is None or self._data_dir is None:
+            return None
+        return json.dumps(
+            {
+                "sources": [_posix(source) for source in self._sources],
+                "data_dir": _posix(self._data_dir),
+            },
+            separators=(",", ":"),
+        )
+
+    def render(self, stream: Any) -> None:
+        """Combine the workers' data files and write the requested reports.
+
+        Errors are **reported, not raised**: the exit code belongs to the tests. A coverage
+        report that cannot be produced is a loud line on stderr next to a test result that is
+        still true.
+        """
+        if self._sources is None or self._data_dir is None:
+            return
+        from ._v2_coverage import combine_and_report
+
+        try:
+            _ = combine_and_report(
+                data_dir=self._data_dir,
+                sources=self._sources,
+                # coverage.py's own default name and location, so `coverage html` or
+                # `coverage report` after a `rustest --cov` run works with no arguments.
+                data_file=os.path.abspath(".coverage"),
+                reports=self._reports,
+                stream=stream,
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken report must not change the verdict
+            print(f"ERROR: could not produce the coverage report: {exc}", file=sys.stderr)
+
+    def cleanup(self) -> None:
+        if self._data_dir is None:
+            return
+        import shutil
+
+        shutil.rmtree(self._data_dir, ignore_errors=True)
+        self._data_dir = None
+
+    def __enter__(self) -> _CoverageRun:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.cleanup()
+
+
+def _posix(path: str) -> str:
+    """Absolute path with forward slashes -- the spelling every v2 wire field uses."""
+    return os.path.abspath(path).replace("\\", "/")
+
+
 def v2_run(
     *,
     paths: Sequence[str],
@@ -585,6 +709,8 @@ def v2_run(
     capture: bool = True,
     codeblocks: bool = True,
     verbosity: int = 0,
+    cov: Sequence[str] | None = None,
+    cov_report: Sequence[str] | None = None,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
@@ -625,13 +751,26 @@ def v2_run(
         capture: ``False`` for ``-s``; the workers stop redirecting a test's streams.
         codeblocks: Collect python fences from ``.md`` files (``--no-codeblocks`` clears it).
         verbosity: ``-1`` for ``-q``, ``0`` default, ``1`` for ``-v``.
+        cov: ``--cov`` values -- source directories, with ``""`` for a bare ``--cov`` (the
+            rootdir).  ``None`` means no coverage at all, which is the only value that leaves
+            the workers with no ``sys.monitoring`` tool registered.
+        cov_report: ``--cov-report`` values (``term``, ``xml[:PATH]``); ``term`` when a
+            ``--cov`` run gives none, matching pytest-cov's default.
 
     Returns:
         pytest's exit code: 0 clean, 1 failures (or errors, or an unattributable teardown
         failure), 2 collection errors, 5 nothing collected, 4 for a usage error and 3 for
         an orchestration failure.
     """
-    with _escaping_unencodable_output():
+    try:
+        coverage = _CoverageRun.prepare(cov, cov_report, list(paths))
+    except ValueError as exc:
+        # `--cov` argument errors are pytest's usage errors, and they are raised **before**
+        # any worker is spawned: a bad `--cov-report` spelling must cost a line, not a run.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return _EXIT_USAGE_ERROR
+
+    with _escaping_unencodable_output(), coverage:
         try:
             payload = rust.v2_run(
                 os.getcwd(),
@@ -645,6 +784,7 @@ def v2_run(
                 not capture,
                 codeblocks,
                 os.environ.get(_ASSERT_REWRITE_ENV, "auto"),
+                coverage.wire,
             )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -708,6 +848,14 @@ def v2_run(
         # not, which is why every parity comparison in the suite strips it. `summary.duration`
         # is the orchestrator's wall clock over the staged run (`src/v2/execute.rs`), so it
         # excludes interpreter startup where pytest's includes its own session setup.
+        # Rendered **before** the summary line and on **stdout**, which places it where
+        # pytest-cov puts it: its `pytest_terminal_summary` hook runs after the failure
+        # sections and the short test summary, and before pytest's own `= N passed =` line.
+        # Failures here are reported and do not change the exit code -- the tests' verdict is
+        # the run's verdict, and a broken report must not turn a red run green or a green one
+        # red.
+        coverage.render(sys.stdout)
+
         summary_line = _run_summary(report["summary"], len(report["collection_errors"]))
         tail = _format_duration(report["summary"]["duration"])
         print(f"{summary_line} in {tail}", file=sys.stderr)

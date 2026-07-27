@@ -34,6 +34,7 @@ use super::cache::LastFailedMode;
 use super::collect::{collect, CollectError, CollectOptions, TierMode};
 use super::config::{normpath, resolve_config, ResolvedConfig};
 use super::execute::{run, RunError, RunOptions};
+use super::protocol::CoverageWire;
 use super::static_collect::CacheMode;
 use super::to_posix;
 
@@ -263,6 +264,10 @@ pub fn v2_collect(
         // plan would cost a read and a parse per file on the one surface whose whole point
         // is latency.  The run path turns it on (`collect::plan`).
         assert_rewrite: false,
+        // `--cov` has no collect-only form: nothing is executed, so the only lines a measured
+        // collect-only run could report are the import-time ones, which is a number nobody
+        // asked for and every worker would pay a monitoring registration to produce.
+        coverage: None,
     };
     let manifest = py
         .detach(|| collect(&dir, &args, python_executable, workers, &options))
@@ -302,6 +307,34 @@ fn parse_last_failed(mode: &str) -> PyResult<LastFailedMode> {
     }
 }
 
+/// Decode the `coverage` argument — a JSON [`CoverageWire`] object, or `None` for no `--cov`.
+///
+/// **One serialized value rather than a pair of arguments**, which is this module's own rule
+/// ("the boundary stays a single serialized value, so nothing about v2's internal types leaks
+/// into the Python layer and the wire form is testable from both sides"). Two optional
+/// arguments — sources and a data directory — would have a fourth state (one without the
+/// other) that means nothing, and a `Vec<String>` plus a sentinel would need this function to
+/// re-implement a shape `serde` already owns. Passing the wire object itself also means the
+/// Python side's dict *is* the thing the worker receives, so there is exactly one description
+/// of the contract.
+///
+/// A malformed value is a `ValueError` (exit 4, pytest's usage error): it can only come from
+/// this repository's own CLI, so it is a bug, and a bug on the argument that decides whether
+/// anything is measured must not be silently downgraded to "no coverage".
+fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
+    let Some(raw) = coverage else {
+        return Ok(None);
+    };
+    let wire: CoverageWire = serde_json::from_str(raw)
+        .map_err(|err| PyValueError::new_err(format!("malformed coverage argument: {err}")))?;
+    if wire.sources.is_empty() {
+        return Err(PyValueError::new_err(
+            "coverage was requested with no source trees to measure",
+        ));
+    }
+    Ok(Some(wire))
+}
+
 #[pyfunction]
 #[pyo3(signature = (
     invocation_dir,
@@ -315,6 +348,7 @@ fn parse_last_failed(mode: &str) -> PyResult<LastFailedMode> {
     no_capture=false,
     codeblocks=true,
     assert_rewrite="auto",
+    coverage=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn v2_run(
@@ -330,6 +364,7 @@ pub fn v2_run(
     no_capture: bool,
     codeblocks: bool,
     assert_rewrite: &str,
+    coverage: Option<&str>,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
@@ -342,6 +377,7 @@ pub fn v2_run(
         // and `CacheMode::from_wire` do: a typo in a debug knob must not turn a user's run
         // into a usage error.
         assert_rewrite: !matches!(assert_rewrite, "off" | "no" | "0"),
+        coverage: parse_coverage(coverage)?,
     };
     let report = py
         .detach(|| {

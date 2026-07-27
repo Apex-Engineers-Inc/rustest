@@ -65,10 +65,47 @@ use serde::{Deserialize, Serialize};
 /// matters: a v3 worker would silently apply its own defaults to a suite that configured
 /// something else, which is the failure mode a declared version exists to make impossible.
 ///
+/// **v5** (Phase 3 Task 3) adds `coverage` to [`WorkerRequest::Init`] — the `--cov` surface's
+/// only wire footprint. It is an `Option<`[`CoverageWire`]`>` rather than a pair of optional
+/// scalars because "measure these trees, into this directory" is one instruction with one
+/// presence signal: two independent `Option`s would have a fourth state (`data_dir` without
+/// `sources`, or the reverse) that means nothing, and the codebase's own rule for that shape
+/// is `parse_last_failed`'s — one value, not a pair with a dead corner.
+///
+/// Omitted entirely when `--cov` is absent, so a plain run's `init` line is byte-identical to
+/// v4's apart from the version number, and the worker registers **no `sys.monitoring` tool at
+/// all** (`python/rustest/_v2_coverage.py`). The bump is nonetheless real and not cosmetic in
+/// the direction that matters: a v4 worker handed a v5 `init` would reject the unknown field
+/// (`deny_unknown_fields`) — and, worse, a v4 worker that *tolerated* it would run the whole
+/// suite and write no coverage data at all, reporting 0 % for a run the user asked to measure.
+///
 /// `python/rustest/_v2_worker.py` mirrors this constant and **must be bumped in the same
 /// commit**; a worker still declaring the old number turns every run into a handshake
 /// error.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
+
+/// The `--cov` instruction carried on [`WorkerRequest::Init`].
+///
+/// Both fields are **required** when the object is present, and the object is absent when
+/// coverage is off. There is no "empty sources means everything" reading: the orchestrator
+/// resolves a bare `--cov` to the rootdir *before* the wire (`python/rustest/core.py`), so a
+/// worker never has to guess what "everything" means, and an empty list reaching a worker is a
+/// bug the worker reports rather than a mode it invents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageWire {
+    /// Absolute posix directories whose files are measured — coverage.py's `source` setting
+    /// (`coverage/inorout.py::check_include_omit_etc`, which answers "falls outside the
+    /// --source spec" for anything else).
+    pub sources: Vec<String>,
+    /// Absolute posix directory each worker writes its own `.coverage.<suffix>` file into.
+    ///
+    /// A **directory**, never a file: the pool is N processes and coverage.py's parallel-mode
+    /// naming (`coverage/data.py::filename_suffix`) is what keeps their writes from colliding,
+    /// exactly as `coverage run -p` does across processes. The orchestrator combines them
+    /// afterwards with `Coverage.combine`.
+    pub data_dir: String,
+}
 
 /// A message from the orchestrator to a worker, one per stdin line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -117,6 +154,16 @@ pub enum WorkerRequest {
         /// The `asyncio_default_test_loop_scope` ini — always present, since the oracle gives
         /// it a real default (`"function"`, plugin.py l. 123-128).
         asyncio_default_test_loop_scope: String,
+        /// `--cov`: what to measure and where to write it, or **absent** for a run with no
+        /// coverage at all.  See [`CoverageWire`] and [`PROTOCOL_VERSION`]'s v5 note.
+        ///
+        /// It belongs on `init` rather than on `execute_batch` for the same reason the asyncio
+        /// options do, plus one that is specific to coverage: measurement has to be running
+        /// **before the first `collect_file`**, because a module's import-time lines are lines
+        /// coverage.py counts (it starts before pytest's collection), and a worker told to
+        /// start measuring at execution time would miss every one of them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        coverage: Option<CoverageWire>,
     },
     /// Collect one file. path: absolute posix.
     CollectFile {
@@ -316,11 +363,16 @@ mod tests {
             // present form.
             asyncio_default_fixture_loop_scope: None,
             asyncio_default_test_loop_scope: "session".to_string(),
+            // The sample carries **no** coverage, because absence is the shape a plain run
+            // sends and the one that has to stay byte-identical to v4's line.  The present
+            // form is pinned separately by `init_request_carries_the_coverage_instruction`.
+            coverage: None,
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":4,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":4,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":5,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":5,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":5,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -346,31 +398,15 @@ mod tests {
     /// fixture.
     #[test]
     fn init_request_carries_a_set_fixture_loop_scope() {
-        let WorkerRequest::Init {
-            protocol_version,
-            rootdir,
-            invocation_dir,
-            python_files,
-            python_classes,
-            python_functions,
-            asyncio_mode,
-            asyncio_default_test_loop_scope,
-            ..
-        } = sample_init()
-        else {
-            unreachable!("sample_init builds an Init")
-        };
-        let with_scope = WorkerRequest::Init {
-            protocol_version,
-            rootdir,
-            invocation_dir,
-            python_files,
-            python_classes,
-            python_functions,
-            asyncio_mode,
-            asyncio_default_fixture_loop_scope: Some("session".to_string()),
-            asyncio_default_test_loop_scope,
-        };
+        let with_scope = init_with(|init| {
+            if let WorkerRequest::Init {
+                asyncio_default_fixture_loop_scope,
+                ..
+            } = init
+            {
+                *asyncio_default_fixture_loop_scope = Some("session".to_string());
+            }
+        });
 
         assert_eq!(
             serde_json::to_string(&with_scope).expect("init serializes"),
@@ -379,6 +415,84 @@ mod tests {
         let decoded: WorkerRequest =
             serde_json::from_str(INIT_LINE_WITH_FIXTURE_SCOPE).expect("init deserializes");
         assert_eq!(decoded, with_scope);
+    }
+
+    /// [`sample_init`] with one field changed — so a new field on `Init` cannot silently
+    /// escape the variant tests by being forgotten in a hand-written literal.
+    fn init_with(edit: impl FnOnce(&mut WorkerRequest)) -> WorkerRequest {
+        let mut init = sample_init();
+        edit(&mut init);
+        init
+    }
+
+    /// The `--cov` shape, asserted as a **key that is present** the same way the Tier D
+    /// `collect_file` golden asserts one that is absent.
+    ///
+    /// The omission is the load-bearing half and it is asserted in
+    /// `init_request_matches_golden_contract` above: a run without `--cov` must send no
+    /// `coverage` key, because the worker keys "register a `sys.monitoring` tool at all" on
+    /// that absence, and an explicit `{"sources":[],"data_dir":""}` would turn every plain run
+    /// into a measured one.
+    #[test]
+    fn init_request_carries_the_coverage_instruction() {
+        let with_coverage = init_with(|init| {
+            if let WorkerRequest::Init { coverage, .. } = init {
+                *coverage = Some(CoverageWire {
+                    sources: vec!["/repo/src".to_string()],
+                    data_dir: "/tmp/rustest-cov-abc".to_string(),
+                });
+            }
+        });
+
+        assert_eq!(
+            serde_json::to_string(&with_coverage).expect("init serializes"),
+            INIT_LINE_WITH_COVERAGE
+        );
+        let decoded: WorkerRequest =
+            serde_json::from_str(INIT_LINE_WITH_COVERAGE).expect("init deserializes");
+        assert_eq!(decoded, with_coverage);
+
+        assert!(
+            !INIT_LINE.contains(r#""coverage":"#),
+            "a run without --cov must not carry the key at all"
+        );
+    }
+
+    /// Both `CoverageWire` fields are required, and the struct denies unknown fields.
+    ///
+    /// Pinned apart from `every_non_optional_field_is_required` because `deny_unknown_fields`
+    /// is an attribute on *this* struct, not something the enclosing enum's attribute reaches:
+    /// a nested type added without it accepts `{"sources":[],"data_dir":"/x","branch":true}`
+    /// and silently drops the field, which on this particular struct would mean accepting a
+    /// `--cov-branch` request and measuring lines.
+    #[test]
+    fn the_coverage_object_is_strict_about_its_own_fields() {
+        for (field, object) in [
+            ("sources", r#"{"data_dir":"/tmp/cov"}"#),
+            ("data_dir", r#"{"sources":["/repo/src"]}"#),
+        ] {
+            let line = INIT_LINE.replace(
+                r#""asyncio_default_test_loop_scope":"session""#,
+                &format!(r#""asyncio_default_test_loop_scope":"session","coverage":{object}"#),
+            );
+            let err = serde_json::from_str::<WorkerRequest>(&line)
+                .unwrap_err_or_panic(field, "request", &line);
+            assert!(
+                err.contains(field),
+                "error should name the missing `{field}`, got: {err}"
+            );
+        }
+
+        let line = INIT_LINE.replace(
+            r#""asyncio_default_test_loop_scope":"session""#,
+            r#""asyncio_default_test_loop_scope":"session","coverage":{"sources":[],"data_dir":"/tmp/cov","branch":true}"#,
+        );
+        let err = serde_json::from_str::<WorkerRequest>(&line)
+            .expect_err("an unknown coverage field must not decode");
+        assert!(
+            err.to_string().contains("branch"),
+            "error should name the unknown field, got: {err}"
+        );
     }
 
     /// The Tier D shape: **no `assert_key` key at all** (not `null`), so every line a
@@ -541,7 +655,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":4}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":5}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;

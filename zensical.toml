@@ -33,6 +33,7 @@ nav = [
     { "Assertion Utilities" = "api/approx.md" }
   ]},
   { "Advanced" = [
+    { "Coverage" = "advanced/coverage.md" },
     { "Performance" = "advanced/performance.md" },
     { "Comparison with pytest" = "advanced/comparison.md" },
     { "Development" = "advanced/development.md" }

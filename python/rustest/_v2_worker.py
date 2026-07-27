@@ -246,7 +246,12 @@ __all__ = [
 #: ``async def`` + ``yield`` test acquires the synthesised ``xfail`` mark
 #: (:func:`_async_generator_xfail`) — which is why they ride on ``init`` rather than on the
 #: execute ops.
-PROTOCOL_VERSION: Final = 4
+#:
+#: v5 adds ``init.coverage`` — ``--cov``'s only wire footprint (:mod:`rustest._v2_coverage`).
+#: **Absent** for a run without ``--cov``, and the absence is load-bearing: it is what makes
+#: the worker register no ``sys.monitoring`` tool at all.  Measurement has to start at ``init``
+#: rather than at execution, because a module's import-time lines are lines coverage.py counts.
+PROTOCOL_VERSION: Final = 5
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -5318,6 +5323,14 @@ class WorkerState:
 
 _state: WorkerState | None = None
 
+#: Whether ``init`` carried a ``coverage`` object and :func:`rustest._v2_coverage.start`
+#: succeeded.
+#:
+#: A plain `bool` rather than a reference to the monitor, so that :func:`main`'s ``finally``
+#: can decide whether to write coverage data **without importing anything**: a run with no
+#: ``--cov`` must not pay an import on its shutdown path, and `False` here is the whole check.
+_coverage_started: bool = False
+
 #: Execution plans for every test this worker has collected, keyed by manifest id.
 #: Worker-local by design: the orchestrator routes an ``execute_test`` back to the worker
 #: that collected the file (``src/v2/collect.rs`` stem-hash routing), so the plan — and the
@@ -5411,6 +5424,18 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     from . import _assertion_rewrite
 
     _ = _assertion_rewrite.install_hook(str(rootdir / ".rustest_cache" / "v2-assert"))
+
+    # Coverage starts **here**, before the first `collect_file`, because a module's
+    # import-time lines are lines coverage.py counts: `coverage run -m pytest` starts before
+    # pytest imports anything.  The import is inside the branch so a run without `--cov` never
+    # loads `_v2_coverage` — or, behind it, `coverage` — at all.
+    coverage_wire = message.get("coverage")
+    if coverage_wire is not None:
+        global _coverage_started
+        from . import _v2_coverage
+
+        _ = _v2_coverage.start(cast("Mapping[str, object]", coverage_wire))
+        _coverage_started = True
 
     naming = Naming(
         python_files=_pattern_tuple(message.get("python_files"), DEFAULT_PYTHON_FILES),
@@ -5755,6 +5780,21 @@ def main() -> int:
             print(f"Exit: {exc}", file=sys.stderr)
             return SESSION_EXIT_EXIT
     finally:
+        # Coverage is stopped and written on **every** exit path, for the same reason the
+        # flush below covers every exit path: `pytest.exit()` and a propagating
+        # `KeyboardInterrupt` both leave through here, and a worker that measured a thousand
+        # tests and wrote nothing is indistinguishable from one that never ran.  Guarded on a
+        # plain flag so a run without `--cov` imports nothing here.
+        #
+        # It runs **before** the flush, and after `drain_at_shutdown` on the ordinary path, so
+        # module- and session-scoped fixture teardowns are measured — as they are under pytest.
+        if _coverage_started:
+            from . import _v2_coverage
+
+            try:
+                _ = _v2_coverage.stop_and_write()
+            except Exception as exc:  # noqa: BLE001 - a broken write must not hide the results
+                print(f"rustest v2 worker: could not write coverage data: {exc}", file=sys.stderr)
         # **Every** exit path flushes, including the two that leave through an exception:
         # `pytest.exit()` above and a `KeyboardInterrupt` that propagates out of `main`.  A
         # batch writes its results with `emit_buffered`, so an abort mid-batch can be holding

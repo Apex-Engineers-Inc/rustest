@@ -275,6 +275,39 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Write a machine-readable JSON report to PATH.",
     )
+    # `nargs="?"` + `const=""` is pytest-cov's `--cov [SOURCE]` shape: the flag takes an
+    # optional value, and `""` (bare `--cov`) means the rootdir. `append` because the option
+    # is multi-allowed there too, and a project with two source trees is ordinary.
+    #
+    # `--cov` is a **v2-only** surface. `--v1` with it is refused in `main`, rather than
+    # ignored, for the same reason `--v2-collect-only` is: silently running unmeasured is the
+    # worst possible answer to "measure this".
+    _ = parser.add_argument(
+        "--cov",
+        dest="cov",
+        nargs="?",
+        const="",
+        default=None,
+        action="append",
+        metavar="SOURCE",
+        help=(
+            "Measure line coverage of SOURCE (a directory; repeatable). "
+            "With no value, measures the rootdir. Needs the `cov` extra."
+        ),
+    )
+    _ = parser.add_argument(
+        "--cov-report",
+        dest="cov_report",
+        action="append",
+        metavar="TYPE",
+        help="Coverage report to produce: `term` (default) or `xml[:PATH]`. Repeatable.",
+    )
+    _ = parser.add_argument(
+        "--cov-branch",
+        dest="cov_branch",
+        action="store_true",
+        help="Not implemented: rustest measures line coverage only. Refused rather than ignored.",
+    )
     _ = parser.add_argument(
         "--v2-collect-only",
         action="store_true",
@@ -308,6 +341,9 @@ def build_parser() -> argparse.ArgumentParser:
         v2_collect_only=False,
         v2=False,
         v1=False,
+        cov=None,
+        cov_report=None,
+        cov_branch=False,
     )
     return parser
 
@@ -349,6 +385,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(raw)
 
+    # Checked before the engine split, because every one of these is a refusal whichever
+    # engine was asked for, and because `--cov-branch` must be refused even when it is the
+    # *only* coverage flag given (a `--cov-branch` with no `--cov` is still a request rustest
+    # cannot honour, and answering it with a silent nothing is the failure mode
+    # `_v2_coverage.branch_refusal` exists to name).
+    if args.cov_branch:
+        from ._v2_coverage import branch_refusal
+
+        print(f"ERROR: {branch_refusal()}", file=sys.stderr)
+        return 4
+    if args.cov is not None and args.v1:
+        print(
+            "ERROR: --cov is a v2-engine surface and cannot be combined with --v1"
+            + " (the legacy engine has no coverage support). Drop --v1.",
+            file=sys.stderr,
+        )
+        return 4
+    if args.cov is None and args.cov_report:
+        print(
+            "ERROR: --cov-report was given without --cov, so there is nothing to report on."
+            + " Add --cov (optionally --cov=PATH).",
+            file=sys.stderr,
+        )
+        return 4
+
     if args.v1:
         if args.v2_collect_only:
             # `--v2-collect-only` is a v2 surface; there is no v1 collect-only mode. Before
@@ -378,6 +439,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
 
     if args.v2_collect_only:
+        if args.cov is not None:
+            # Collect-only runs no test, so the only lines it could report are import-time
+            # ones. Refused rather than answered with a number that means nothing.
+            print(
+                "ERROR: --cov and --v2-collect-only ask for different things: collect-only"
+                + " runs no test, so there is no execution to measure. Drop one.",
+                file=sys.stderr,
+            )
+            return 4
         return v2_collect_only(
             paths=paths,
             workers=args.workers,
@@ -403,6 +473,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         capture=args.capture_output,
         codeblocks=args.enable_codeblocks,
         verbosity=_verbosity(args),
+        cov=args.cov,
+        cov_report=args.cov_report,
     )
 
 

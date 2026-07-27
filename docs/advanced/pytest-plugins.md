@@ -32,7 +32,7 @@ rustest **DOES NOT support** actual pytest plugins:
 
 - ❌ pluggy hook system (pytest_configure, pytest_collection_modifyitems, etc.)
 - ❌ setuptools entry points (`pytest11`)
-- ❌ Plugin packages from PyPI (pytest-django, pytest-cov, etc.)
+- ❌ Plugin packages from PyPI (pytest-django, etc.) -- but see `--cov` below, which replaces pytest-cov's core surface
 - ❌ Hook wrappers and hook ordering (tryfirst, trylast)
 
 **The distinction:**
@@ -115,7 +115,8 @@ Based on download statistics (October 2025), here's how to migrate from the most
 
 **What it does**: Code coverage reporting
 
-**Migration strategy**: Use Python's built-in `coverage.py` directly
+**Migration strategy**: rustest has its own `--cov`, and it writes coverage.py's own data
+format. See [Coverage](coverage.md) for the whole surface.
 
 === "With pytest-cov"
     ```bash
@@ -124,13 +125,22 @@ Based on download statistics (October 2025), here's how to migrate from the most
 
 === "With rustest"
     ```bash
-    # Option 1: Use coverage.py directly
-    coverage run -m rustest tests/
-    coverage report
-    coverage html
+    pip install 'rustest[cov]'
 
-    # Option 2: Use coverage.py with rustest as a module
-    coverage run --source=myproject -m rustest tests/
+    # `term` and `xml` are built in
+    rustest --cov=myproject --cov-report=term tests/
+
+    # ...and every other report is one `coverage` command away, because the run wrote
+    # an ordinary `.coverage` file
+    rustest --cov=myproject tests/
+    coverage html
+    ```
+
+    Branch coverage is not implemented yet -- `--cov-branch` is refused rather than
+    silently downgraded to lines. For branches, run rustest under coverage.py instead:
+
+    ```bash
+    coverage run --branch --source=myproject -m rustest tests/
     coverage html
     ```
 

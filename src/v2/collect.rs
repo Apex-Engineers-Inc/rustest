@@ -54,7 +54,7 @@ use crate::v2::manifest::{
 };
 #[cfg(test)]
 use crate::v2::manifest_cache::ManifestCache;
-use crate::v2::protocol::{WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
+use crate::v2::protocol::{CoverageWire, WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
 use crate::v2::selection::{select_mask, SelectionError};
 use crate::v2::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
 use crate::v2::to_posix;
@@ -387,6 +387,19 @@ pub struct CollectOptions {
     /// would pay a read and a parse per file for a plan it then throws away, on the one
     /// surface whose entire point is latency.
     pub assert_rewrite: bool,
+    /// `--cov`: forwarded verbatim onto every worker's `init` line, or `None`.
+    ///
+    /// Verbatim is the whole contract. The sources are already absolute and already resolved
+    /// (a bare `--cov` became the rootdir on the Python side, where the report is rendered and
+    /// therefore where the same list has to be known anyway); re-deriving or re-validating
+    /// them here would be a second implementation of a rule whose only other implementation
+    /// lives next to coverage.py's own `source` handling.
+    ///
+    /// `--v2-collect-only` never sets it: collect-only imports nothing in the sense that
+    /// matters — it does import modules, but it runs no test and reports no coverage, so
+    /// measuring would cost every worker a `sys.monitoring` registration for data nothing
+    /// reads.
+    pub coverage: Option<CoverageWire>,
 }
 
 impl CollectOptions {
@@ -519,6 +532,7 @@ pub(crate) fn plan(
     workers: usize,
     codeblocks: bool,
     assert_rewrite: bool,
+    coverage: Option<CoverageWire>,
 ) -> Result<Dispatch, CollectError> {
     plan_with_options(
         invocation_dir,
@@ -526,6 +540,7 @@ pub(crate) fn plan(
         workers,
         &CollectOptions {
             codeblocks,
+            coverage,
             tier: TierMode::DynamicOnly,
             // Belt and braces: `TierMode::DynamicOnly` never reaches the static pass, so the
             // cache is unreachable from the run path anyway.  Saying so explicitly is what
@@ -634,6 +649,9 @@ pub(crate) fn plan_with_options(
         asyncio_mode: config.asyncio_mode.clone(),
         asyncio_default_fixture_loop_scope: config.asyncio_default_fixture_loop_scope.clone(),
         asyncio_default_test_loop_scope: config.asyncio_default_test_loop_scope.clone(),
+        // Cloned rather than moved because `options` is borrowed; `None` here is what makes a
+        // run without `--cov` register no monitoring tool in any worker.
+        coverage: options.coverage.clone(),
     };
 
     Ok(Dispatch {
@@ -1963,7 +1981,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":4}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":5}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked
@@ -2567,6 +2585,53 @@ mod tests {
             rootdir, invocation_dir,
             "the fixture must keep the two apart, or this test proves nothing"
         );
+    }
+
+    /// `--cov` reaches the worker on `init`, and a run without it carries **no key at all**.
+    ///
+    /// Both halves are asserted against the raw line a stand-in worker received, because the
+    /// absence is what the worker keys "register a `sys.monitoring` tool" on: a producer that
+    /// always sent `"coverage":null` would still decode (the documented `Option` tolerance) and
+    /// would still be off-contract, and nothing else in this suite would notice.
+    #[test]
+    fn init_carries_the_coverage_instruction_only_when_coverage_was_asked_for() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
+        let logs = TempDir::new().unwrap();
+
+        let plain = logs.path().join("plain.json");
+        let _ = collect_default(tmp.path(), &[], &init_recording_worker(&plain), 1).unwrap();
+        let line = fs::read_to_string(&plain).unwrap();
+        assert!(
+            !line.contains(r#""coverage":"#),
+            "a run without --cov must not carry the key: {line}"
+        );
+
+        let measured = logs.path().join("measured.json");
+        let wire = CoverageWire {
+            sources: vec![to_posix(&tmp.path().join("src"))],
+            data_dir: to_posix(logs.path()),
+        };
+        let _ = collect_with_launcher(
+            tmp.path(),
+            &[],
+            &init_recording_worker(&measured),
+            1,
+            &CollectOptions {
+                codeblocks: true,
+                tier: TierMode::DynamicOnly,
+                cache: CacheMode::Off,
+                coverage: Some(wire.clone()),
+                ..CollectOptions::default()
+            },
+        )
+        .unwrap();
+
+        let line = fs::read_to_string(&measured).unwrap();
+        let init: WorkerRequest = serde_json::from_str(line.trim()).unwrap();
+        let WorkerRequest::Init { coverage, .. } = init else {
+            panic!("expected an init request, got: {line}");
+        };
+        assert_eq!(coverage, Some(wire));
     }
 
     // --- end to end, with the real worker ---------------------------------

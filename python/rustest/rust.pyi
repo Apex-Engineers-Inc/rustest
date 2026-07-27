@@ -198,6 +198,7 @@ def v2_run(
     no_capture: bool = ...,
     codeblocks: bool = ...,
     assert_rewrite: str = ...,
+    coverage: str | None = ...,
 ) -> str:
     """Run tests with the v2 engine; returns a schema-v2 ``RunReport`` JSON string.
 
@@ -216,5 +217,11 @@ def v2_run(
     5 nothing collected. Usage errors (4) and orchestration failures (3) arrive as
     ``ValueError`` and ``RuntimeError`` instead, because neither is a property of a run that
     completed.
+
+    ``coverage`` is ``--cov``'s whole footprint on this boundary: a JSON
+    ``src/v2/protocol.rs::CoverageWire`` object (``sources``, ``data_dir``), forwarded onto
+    every worker's ``init`` line unchanged, or ``None``. ``None`` is not "measure and discard":
+    it means no worker registers a ``sys.monitoring`` tool at all. A malformed value, or one
+    with an empty ``sources``, is a ``ValueError``.
     """
     ...

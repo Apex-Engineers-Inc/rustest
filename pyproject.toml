@@ -28,8 +28,21 @@ dependencies = [
 scripts = { rustest = "rustest.__main__:main" }
 
 [project.optional-dependencies]
+# `--cov` is opt-in packaging, not a hard dependency: see
+# `python/rustest/_v2_coverage.py`'s module docstring for the decision (coverage.py's data
+# API over a hand-rolled lcov writer) and `docs/advanced/coverage.md` for the user-facing
+# half. A run without `--cov` never imports `coverage`, so the extra costs a user who does
+# not ask for coverage exactly nothing.
+cov = [
+    "coverage>=7.6",
+]
 dev = [
     "basedpyright>=1.19",
+    # The `cov` extra, present here so this repository's own gates can exercise the coverage
+    # path and diff it against coverage.py.  `coverage` registers no pytest plugin (unlike
+    # pytest-cov, which is deliberately NOT installed), so its presence changes nothing about
+    # what the pytest leg of the conformance gates loads.
+    "coverage>=7.6",
     "maturin>=1.4,<2",
     "packaging>=20.0",
     "poethepoet>=0.22",
