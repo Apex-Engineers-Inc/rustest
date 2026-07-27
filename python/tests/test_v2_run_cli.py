@@ -870,8 +870,10 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         last_failed_mode: str,
         no_capture: bool,
         codeblocks: bool,
+        assert_rewrite: str,
     ) -> str:
         del invocation_dir, python, fail_fast, last_failed_mode, no_capture, codeblocks
+        del assert_rewrite
         seen.append((list(args), workers, keyword, mark_expr))
         return json.dumps(
             {
@@ -916,9 +918,10 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         last_failed_mode: str,
         no_capture: bool,
         codeblocks: bool,
+        assert_rewrite: str,
     ) -> str:
         del invocation_dir, python, workers, keyword, mark_expr
-        del fail_fast, last_failed_mode, no_capture, codeblocks
+        del fail_fast, last_failed_mode, no_capture, codeblocks, assert_rewrite
         seen.append(list(args))
         return json.dumps(
             {
@@ -964,9 +967,10 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         last_failed_mode: str,
         no_capture: bool,
         codeblocks: bool,
+        assert_rewrite: str,
     ) -> str:
         del invocation_dir, args, python, workers, keyword, mark_expr
-        del fail_fast, last_failed_mode, no_capture, codeblocks
+        del fail_fast, last_failed_mode, no_capture, codeblocks, assert_rewrite
         raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
 
     with stub_rust_module(v2_run=boom):

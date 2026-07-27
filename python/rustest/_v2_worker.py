@@ -115,7 +115,12 @@ traceback filtering — because those distinguish one outcome from another.
 
 from __future__ import annotations
 
-import asyncio
+# `asyncio` is deliberately NOT imported here: it costs ~240 ms on the reference machine and
+# a worker pays it N times per run (one process per pool slot) for a suite that may contain
+# no async test at all.  The two functions that need it -- `FixtureRunner.run_coroutine` and
+# `FixtureRunner._close_loop` -- import it in their own bodies, and the only module-scope
+# reference left is the annotation on `self._loop`, which `from __future__ import
+# annotations` never evaluates.  Measured, Phase 2 Task 3: worker boot 550 ms -> 300 ms.
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
 import contextlib
@@ -136,9 +141,15 @@ import sys
 import time
 import traceback
 import types
-from typing import Any, Final, NoReturn, NotRequired, TextIO, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, NoReturn, NotRequired, TextIO, TypedDict, cast
 import unittest
 import warnings
+
+if TYPE_CHECKING:
+    # Type-check-only, so the ~240 ms runtime import stays deferred (see the note above
+    # the stdlib imports).  `from __future__ import annotations` makes every annotation a
+    # string, so nothing here is evaluated at import time.
+    import asyncio
 
 __all__ = [
     "BUILTIN_FIXTURES",
@@ -162,6 +173,7 @@ __all__ = [
     "NotInitializedError",
     "Naming",
     "PhaseReport",
+    "BatchDoneResponse",
     "UnknownTestError",
     "ScopeMismatch",
     "Skip",
@@ -180,6 +192,7 @@ __all__ = [
     "evaluate_condition",
     "evaluate_skip_marks",
     "evaluate_xfail_marks",
+    "execute_batch",
     "execute_test",
     "fixture_param_dimensions",
     "handle_init",
@@ -201,7 +214,11 @@ __all__ = [
 #:
 #: v2 adds the execute ops (``execute_test`` -> ``test_result``) and ``init.invocation_dir``.
 #: Both halves are implemented here: :func:`collect_file` and :func:`execute_test`.
-PROTOCOL_VERSION: Final = 2
+#:
+#: v3 adds ``collect_file.assert_key`` (assertion rewriting, :func:`collect_file`) and the
+#: batch execute op (``execute_batch`` -> N x ``test_result`` + ``batch_done``,
+#: :func:`execute_batch`).
+PROTOCOL_VERSION: Final = 3
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -282,6 +299,21 @@ class ResultResponse(TypedDict):
     message: NotRequired[str]
     stdout: NotRequired[str]
     stderr: NotRequired[str]
+
+
+class BatchDoneResponse(TypedDict):
+    """``WorkerResponse::BatchDone`` (``src/v2/protocol.rs``) — the batch stream terminator.
+
+    Both fields are always written. ``executed`` is counted here, independently of the
+    orchestrator's own tally, so a result that never reached the wire becomes a loud protocol
+    error instead of a test quietly missing from the report; ``stopped`` says the batch ended
+    early because ``-x`` fired, which the orchestrator must be able to tell apart from that
+    same lost result.
+    """
+
+    op: str
+    executed: int
+    stopped: bool
 
 
 class ByeResponse(TypedDict):
@@ -2304,6 +2336,8 @@ class FixtureRunner:
         that calls `asyncio.get_event_loop()` — or any library that does — must find the loop
         its coroutine is running on rather than create a second one.
         """
+        import asyncio
+
         loop = self._loop
         if loop is None or loop.is_closed():
             loop = asyncio.new_event_loop()
@@ -2319,6 +2353,8 @@ class FixtureRunner:
         """
         loop, self._loop = self._loop, None
         if loop is not None and not loop.is_closed():
+            import asyncio
+
             loop.close()
             asyncio.set_event_loop(None)
 
@@ -4408,8 +4444,19 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     carry an unread value that could silently go stale.
     """
     global _state
+    rootdir = Path(str(message["rootdir"]))
+
+    # The assertion-rewriting hook goes on `sys.meta_path` here rather than in `main`,
+    # because its bytecode cache lives under the *rootdir* and `init` is the first moment
+    # the worker knows one.  It is installed unconditionally and rewrites nothing until a
+    # `collect_file` registers a path, so a run with no Tier S files pays one extra
+    # `find_spec` delegation per import and nothing else.
+    from . import _assertion_rewrite
+
+    _ = _assertion_rewrite.install_hook(str(rootdir / ".rustest_cache" / "v2-assert"))
+
     _state = WorkerState(
-        rootdir=Path(str(message["rootdir"])),
+        rootdir=rootdir,
         naming=Naming(
             python_files=_pattern_tuple(message.get("python_files"), DEFAULT_PYTHON_FILES),
             python_classes=_pattern_tuple(message.get("python_classes"), DEFAULT_PYTHON_CLASSES),
@@ -4460,13 +4507,22 @@ def handle_shutdown() -> ByeResponse:
     return {"op": "bye"}
 
 
-def collect_file(path: str) -> CollectedResponse:
+def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
     """Collect one file and build its ``collected`` response.
 
     ``path`` is echoed verbatim (absolute posix, as sent); the nested entries carry
     rootdir-relative paths per the manifest contract.  Exactly one of ``tests`` /
     ``error`` is present — and neither appears as an empty value: a file that
     legitimately collects nothing is ``{"op":"collected","path":...}`` alone.
+
+    ``assert_key`` is the Tier S manifest cache key when the orchestrator certified this
+    file as statically analysable, and ``None`` otherwise.  When it is present the file is
+    **registered for assertion rewriting** before the import below, so the module the worker
+    ends up holding is the rewritten one — registration has to happen first, because the
+    rewrite hook makes its decision inside ``importlib.import_module`` and there is no second
+    chance once the module is in ``sys.modules``.  When it is absent nothing is registered
+    and the ordinary machinery imports the file unchanged, which is the plan's "Tier D files
+    keep plain asserts".
 
     Any import-time exception becomes an error entry rather than killing the worker,
     since one unimportable file must not lose the whole run.  ``BaseException`` is
@@ -4476,6 +4532,11 @@ def collect_file(path: str) -> CollectedResponse:
     if _state is None:
         raise NotInitializedError("collect_file received before init")
     state = _state
+
+    if assert_key is not None:
+        from . import _assertion_rewrite
+
+        _assertion_rewrite.register(path, assert_key)
 
     file_path = Path(path)
     response: CollectedResponse = {"op": "collected", "path": path}
@@ -4516,6 +4577,41 @@ def collect_file(path: str) -> CollectedResponse:
     if tests:
         response["tests"] = tests
     return response
+
+
+def execute_batch(
+    ids: Sequence[str],
+    stop_on_failure: bool,
+    emit: Callable[[Mapping[str, object]], None],
+) -> BatchDoneResponse:
+    """Run a whole file's tests, emitting one ``test_result`` each, then ``batch_done``.
+
+    The results are *streamed* — :func:`main`'s ``emit`` is called per test rather than a
+    list being returned — so the orchestrator can start reading before the batch finishes,
+    and so a batch of a thousand parametrized cases does not build a thousand-line string in
+    memory before anything is written. The saving that motivates the op comes from the
+    **request** side (one write and one blocking read per file instead of per test) and from
+    flushing once at the end, not from withholding the results.
+
+    ``stop_on_failure`` is ``-x`` reaching inside the batch. Checked *after* each result is
+    emitted, because pytest reports the failing test and then stops: the failure is data the
+    user needs, and only what comes after it is cancelled. See
+    ``src/v2/protocol.rs::WorkerRequest::ExecuteBatch``.
+
+    :class:`UnknownTestError` propagates rather than being answered, exactly as it does for a
+    single ``execute_test``: an id this worker never collected is a routing bug, and the
+    results already emitted stay on the wire for the orchestrator to keep.
+    """
+    executed = 0
+    stopped = False
+    for test_id in ids:
+        result = execute_test(test_id)
+        emit(result)
+        executed += 1
+        if stop_on_failure and result["status"] in ("failed", "error"):
+            stopped = True
+            break
+    return {"op": "batch_done", "executed": executed, "stopped": stopped}
 
 
 def encode_response(response: Mapping[str, object]) -> str:
@@ -4608,11 +4704,26 @@ def main() -> int:
     sys.stdout = sys.stderr
 
     def emit(response: Mapping[str, object]) -> None:
+        """Write one response line and flush, so the orchestrator sees it immediately."""
         _ = protocol_out.write(encode_response(response) + "\n")
         protocol_out.flush()
 
+    def emit_buffered(response: Mapping[str, object]) -> None:
+        """Write one response line **without** flushing.
+
+        Used inside a batch only, and it is where the batch op's saving actually lands: N
+        flushes become one, so a 10-test file costs one pipe write-through instead of ten.
+        The line still reaches the pipe when the wrapper's buffer fills, and
+        :func:`_protocol_loop` flushes unconditionally after ``batch_done`` — so a batch
+        larger than the buffer streams as it goes and a small one arrives in a single write.
+
+        There is no deadlock in the "worker fills the pipe" case: the orchestrator is
+        already blocked reading this batch's results and drains as they arrive.
+        """
+        _ = protocol_out.write(encode_response(response) + "\n")
+
     try:
-        return _protocol_loop(emit)
+        return _protocol_loop(emit, emit_buffered, protocol_out.flush)
     except _Exit as exc:
         # `pytest.exit()`.  The banner is pytest's own wording
         # (`_pytest/main.py::wrap_session`: `sys.stderr.write(f"{type(exc).__name__}: {exc}")`),
@@ -4623,9 +4734,19 @@ def main() -> int:
         return SESSION_EXIT_EXIT
 
 
-def _protocol_loop(emit: Callable[[Mapping[str, object]], None]) -> int:
+def _protocol_loop(
+    emit: Callable[[Mapping[str, object]], None],
+    emit_buffered: Callable[[Mapping[str, object]], None],
+    flush: Callable[[], object],
+) -> int:
     """The request/response loop.  Split out of :func:`main` so the session-exit handler
-    there wraps every op — collection included — rather than only the execute arm."""
+    there wraps every op — collection included — rather than only the execute arm.
+
+    The three writers are separate arguments rather than one object because they are used at
+    different granularities and confusing them is silent: ``emit`` flushes (every op outside
+    a batch), ``emit_buffered`` does not (results inside a batch), and ``flush`` closes a
+    batch.  A batch that used ``emit`` would work and buy nothing; one that never called
+    ``flush`` would hang."""
     while True:
         line = sys.stdin.readline()
         if not line:
@@ -4650,8 +4771,15 @@ def _protocol_loop(emit: Callable[[Mapping[str, object]], None]) -> int:
                     file=sys.stderr,
                 )
                 return 2
+            assert_key = request.get("assert_key")
+            if assert_key is not None and not isinstance(assert_key, str):
+                print(
+                    f"rustest v2 worker: collect_file with a non-string assert_key: {line!r}",
+                    file=sys.stderr,
+                )
+                return 2
             try:
-                response = collect_file(path)
+                response = collect_file(path, assert_key)
             except NotInitializedError as exc:
                 print(f"rustest v2 worker: {exc}", file=sys.stderr)
                 return 2
@@ -4669,6 +4797,37 @@ def _protocol_loop(emit: Callable[[Mapping[str, object]], None]) -> int:
             except UnknownTestError as exc:
                 print(f"rustest v2 worker: {exc}", file=sys.stderr)
                 return 2
+        elif op == "execute_batch":
+            ids = request.get("ids")
+            stop_on_failure = request.get("stop_on_failure")
+            if not isinstance(ids, list) or not all(
+                isinstance(item, str) for item in cast("list[object]", ids)
+            ):
+                print(
+                    f"rustest v2 worker: execute_batch without a list of ids: {line!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            if not isinstance(stop_on_failure, bool):
+                # Deliberately not defaulted to False: a missing flag would silently turn
+                # `-x` off inside every batch, and "kept going after a failure" is exactly
+                # the behaviour `-x` exists to prevent.
+                print(
+                    f"rustest v2 worker: execute_batch without stop_on_failure: {line!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                done = execute_batch(cast("list[str]", ids), stop_on_failure, emit_buffered)
+            except UnknownTestError as exc:
+                # Whatever the batch already wrote is flushed before the worker dies, so the
+                # orchestrator keeps the results it earned and reports the drift against the
+                # right test instead of losing the whole file.
+                _ = flush()
+                print(f"rustest v2 worker: {exc}", file=sys.stderr)
+                return 2
+            emit_buffered(done)
+            _ = flush()
         elif op == "shutdown":
             # Drain first, answer second: `bye` must not claim the worker is finished while
             # a session fixture is still open.  The exit code carries the drain's verdict.

@@ -1336,13 +1336,13 @@ def test_ready_declares_the_version_the_worker_speaks(tmp_path: Path) -> None:
     assert response == {"op": "ready", "protocol_version": PROTOCOL_VERSION}
     # Pinned as a literal, not read from the constant: this and `PROTOCOL_VERSION` in
     # `src/v2/protocol.rs` must move together, so bumping one alone has to fail here.
-    assert PROTOCOL_VERSION == 2
+    assert PROTOCOL_VERSION == 3
 
 
 def test_ready_line_matches_the_rust_golden() -> None:
     assert (
         encode_response({"op": "ready", "protocol_version": PROTOCOL_VERSION})
-        == '{"op":"ready","protocol_version":2}'
+        == '{"op":"ready","protocol_version":3}'
     )
 
 
@@ -1586,6 +1586,219 @@ def test_worker_subprocess_speaks_the_protocol(tmp_path: Path) -> None:
     ]
     # A module printing at import time must not corrupt the protocol stream.
     assert "noise on stdout" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# v3: the batch execute op and the assertion-rewrite key
+# ---------------------------------------------------------------------------
+
+
+def _init(rootdir: Path) -> dict[str, Any]:
+    return {
+        "op": "init",
+        "protocol_version": PROTOCOL_VERSION,
+        "rootdir": rootdir.as_posix(),
+        "invocation_dir": rootdir.as_posix(),
+        "python_files": ["test_*.py", "*_test.py"],
+        "python_classes": ["Test"],
+        "python_functions": ["test"],
+    }
+
+
+BATCH_MODULE = """
+    def test_one():
+        assert 1 == 1
+
+
+    def test_two():
+        assert 1 == 2
+
+
+    def test_three():
+        assert 1 == 1
+    """
+
+
+def test_execute_batch_answers_every_test_then_batch_done(tmp_path: Path) -> None:
+    """The op's whole contract in one exchange: N results in order, then the terminator.
+
+    The terminator's ``executed`` is the orchestrator's only defence against a lost result
+    (``src/v2/protocol.rs``), so it is asserted here against the number of results that
+    actually arrived rather than against the number requested — the two differ precisely when
+    the bug this field exists for has happened.
+    """
+    write(tmp_path / "test_batch.py", BATCH_MODULE)
+    path = (tmp_path / "test_batch.py").as_posix()
+    ids = [f"test_batch.py::test_{name}" for name in ("one", "two", "three")]
+
+    proc = _run_worker(
+        [
+            _init(tmp_path),
+            {"op": "collect_file", "path": path},
+            {"op": "execute_batch", "ids": ids, "stop_on_failure": False},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    results = [r for r in responses if r["op"] == "test_result"]
+    assert [r["id"] for r in results] == ids, "results must arrive in the order sent"
+    assert [r["status"] for r in results] == ["passed", "failed", "passed"]
+
+    done = [r for r in responses if r["op"] == "batch_done"]
+    assert done == [{"op": "batch_done", "executed": len(results), "stopped": False}]
+    assert responses[-1] == {"op": "bye"}
+
+
+def test_execute_batch_stops_at_the_first_failure_when_asked(tmp_path: Path) -> None:
+    """``-x`` reaching inside a batch.
+
+    The failing test is still **reported** — pytest reports it and then stops — and only what
+    follows is cancelled. Without ``stopped`` on the terminator the orchestrator could not
+    tell this from a worker that dropped the tail.
+    """
+    write(tmp_path / "test_batch.py", BATCH_MODULE)
+    path = (tmp_path / "test_batch.py").as_posix()
+    ids = [f"test_batch.py::test_{name}" for name in ("one", "two", "three")]
+
+    proc = _run_worker(
+        [
+            _init(tmp_path),
+            {"op": "collect_file", "path": path},
+            {"op": "execute_batch", "ids": ids, "stop_on_failure": True},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    results = [r for r in responses if r["op"] == "test_result"]
+    assert [r["id"] for r in results] == ids[:2], "the failing test is reported, the next is not"
+    assert [r for r in responses if r["op"] == "batch_done"] == [
+        {"op": "batch_done", "executed": 2, "stopped": True}
+    ]
+
+
+def test_execute_batch_without_a_stop_flag_is_protocol_drift(tmp_path: Path) -> None:
+    """The flag is required, not defaulted.
+
+    A default of ``False`` would turn a truncated or older line into a run that silently
+    ignores ``-x`` — the one behaviour that flag exists to guarantee.
+    """
+    write(tmp_path / "test_batch.py", BATCH_MODULE)
+    proc = _run_worker(
+        [
+            _init(tmp_path),
+            {"op": "collect_file", "path": (tmp_path / "test_batch.py").as_posix()},
+            {"op": "execute_batch", "ids": ["test_batch.py::test_one"]},
+        ]
+    )
+    assert proc.returncode == 2
+    assert "stop_on_failure" in proc.stderr
+
+
+def test_execute_batch_with_an_unknown_id_is_protocol_drift(tmp_path: Path) -> None:
+    """An id this worker never collected is a routing bug, and the results already produced
+    are flushed before the worker dies so the orchestrator keeps what it earned."""
+    write(tmp_path / "test_batch.py", BATCH_MODULE)
+    proc = _run_worker(
+        [
+            _init(tmp_path),
+            {"op": "collect_file", "path": (tmp_path / "test_batch.py").as_posix()},
+            {
+                "op": "execute_batch",
+                "ids": ["test_batch.py::test_one", "test_batch.py::test_nowhere"],
+                "stop_on_failure": False,
+            },
+        ]
+    )
+    assert proc.returncode == 2
+    assert "test_batch.py::test_nowhere" in proc.stderr
+    responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    assert [r["id"] for r in responses if r["op"] == "test_result"] == [
+        "test_batch.py::test_one"
+    ], "the result produced before the drift must still reach the wire"
+
+
+def test_an_assert_key_on_collect_file_rewrites_the_module(tmp_path: Path) -> None:
+    """The Tier S half of the split, through the real protocol loop.
+
+    The key doubles as the bytecode cache file name, so the artefact's presence under
+    ``.rustest_cache/v2-assert`` is asserted too — that directory is the payoff Task 2's
+    manifest cache key was kept for.
+    """
+    write(tmp_path / "test_r.py", "\n        def test_one():\n            assert 1 == 2\n        ")
+    key = "a" * 64
+    proc = _run_worker(
+        [
+            _init(tmp_path),
+            {
+                "op": "collect_file",
+                "path": (tmp_path / "test_r.py").as_posix(),
+                "assert_key": key,
+            },
+            {"op": "execute_batch", "ids": ["test_r.py::test_one"], "stop_on_failure": False},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    result = next(r for r in responses if r["op"] == "test_result")
+    assert result["status"] == "failed"
+    # The discriminator is the exception's **message**, not the traceback text: the traceback
+    # echoes the source line either way, so `"assert 1 == 2" in message` would pass for an
+    # unrewritten module too. A rewritten one gives `AssertionError` an argument.
+    assert result["message"].rstrip().endswith("AssertionError: assert 1 == 2"), result["message"]
+    assert (tmp_path / ".rustest_cache" / "v2-assert" / f"{key}.pyc").is_file()
+
+
+def test_no_assert_key_leaves_the_module_with_plain_asserts(tmp_path: Path) -> None:
+    """The Tier D half: same file, no key, and the message is a bare ``AssertionError``.
+
+    Paired with the test above on purpose — either one alone would pass for a rewriter that
+    was always on, or always off.
+    """
+    write(tmp_path / "test_r.py", "\n        def test_one():\n            assert 1 == 2\n        ")
+    proc = _run_worker(
+        [
+            _init(tmp_path),
+            {"op": "collect_file", "path": (tmp_path / "test_r.py").as_posix()},
+            {"op": "execute_batch", "ids": ["test_r.py::test_one"], "stop_on_failure": False},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    result = next(r for r in responses if r["op"] == "test_result")
+    assert result["status"] == "failed"
+    # A bare `AssertionError` — no argument, so nothing after the class name. See the
+    # comment in the paired test above for why the traceback text cannot be the signal.
+    assert result["message"].rstrip().endswith("AssertionError"), result["message"]
+    assert not (tmp_path / ".rustest_cache" / "v2-assert").exists()
+
+
+def test_a_non_string_assert_key_is_protocol_drift(tmp_path: Path) -> None:
+    """A key that is not a string is drift, not "no rewriting".
+
+    Silently treating it as absent would turn a producer bug into a quality regression
+    nobody can see: the run stays green and the messages quietly get worse.
+    """
+    write(tmp_path / "test_r.py", "\n        def test_one():\n            assert 1 == 2\n        ")
+    proc = _run_worker(
+        [
+            _init(tmp_path),
+            {
+                "op": "collect_file",
+                "path": (tmp_path / "test_r.py").as_posix(),
+                "assert_key": 17,
+            },
+        ]
+    )
+    assert proc.returncode == 2
+    assert "assert_key" in proc.stderr
 
 
 def test_worker_subprocess_rejects_an_unknown_op() -> None:

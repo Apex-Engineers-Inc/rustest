@@ -348,6 +348,10 @@ pub fn empty_chain_digest() -> Digest {
 /// The naive `push_str(&format!("{byte:02x}"))` allocates once per *nibble pair* -- 32
 /// allocations for one key, and a 500-file warm collection computes one key per file.  It was
 /// measurable (see the task report's breakdown), which is why this is spelled out.
+pub fn hex_digest(digest: &Digest) -> String {
+    hex(digest)
+}
+
 fn hex(digest: &Digest) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(digest.len() * 2);
@@ -529,11 +533,27 @@ impl ManifestCache {
 
     /// The key for one file in `dir_cache`.
     pub fn key(&self, dir_cache: &DirCache, rel_path: &str, content: &[u8]) -> Digest {
+        self.key_for_chain(dir_cache.chain, rel_path, content)
+    }
+
+    /// [`Self::key`] with the conftest-chain digest passed directly instead of read off a
+    /// loaded shard.
+    ///
+    /// The seam exists for [`crate::v2::static_collect::rewrite_plan`], which needs a key for
+    /// every target but must not touch the store: it runs on the **run** path, where the
+    /// manifest cache is off by construction, and loading a shard there would both cost a
+    /// file open per directory and blur the "the run path reads and writes nothing" rule the
+    /// Task 2 tests assert.
+    ///
+    /// Both entry points compose the key through the same [`cache_key`] call with the same
+    /// run-global components, so the bytecode cache and the manifest cache cannot drift: a
+    /// component added to [`KeyComponent`] moves both, or neither.
+    pub fn key_for_chain(&self, chain: Digest, rel_path: &str, content: &[u8]) -> Digest {
         cache_key(&KeyInputs {
             version: &self.version,
             config: self.config,
             shadows: self.shadows,
-            chain: dir_cache.chain,
+            chain,
             rel_path,
             content,
         })

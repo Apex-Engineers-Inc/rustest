@@ -343,6 +343,98 @@ pub fn static_pass_cached(
     StaticPass { outcomes, cache }
 }
 
+/// Which targets may have their assertions rewritten, and under which cache key.
+///
+/// Indexed by target, in walk order.  `Some(key)` is a 64-hex Tier S manifest cache key and
+/// means "this file is statically analysable — rewrite it and cache the bytecode under this
+/// key"; `None` means "leave it alone".  The key travels to the worker on `collect_file`
+/// (`src/v2/protocol.rs`), which is the only consumer.
+///
+/// # Why this exists separately from [`static_pass_cached`]
+///
+/// A **run** collects through Tier D exclusively — `execute.rs` passes `TierMode::DynamicOnly`
+/// so every file is imported by the worker that will execute it, which is what keeps the test
+/// objects the ones enumeration saw.  Tier S therefore never *answers* on the run path, and
+/// "the files Tier S answered" is an empty set there.
+///
+/// But "a file Tier S could answer" is a property of the **file**, not of which tier happened
+/// to run, and it is the property the rewrite wants: it means the module's top level is
+/// statically predictable — no star imports, no module-level `exec`, no `__getattr__`, a
+/// conftest chain with no parametrized fixtures.  Reading the plan's "Tier S files" as "files
+/// the detector certifies" is the only reading under which assertion rewriting does anything
+/// at all during a run, and it is the conservative one: the detector's refusals are the same
+/// refusals that protect collection.
+///
+/// # Cost
+///
+/// One read and one ruff parse per file — measured at Task 2 as ~9 ms of reading and ~1 ms of
+/// parsing for the 500-file benchmark suite, against a ~2.3 s run.  The read is unavoidable
+/// anyway: the cache key hashes the file's bytes.
+pub fn rewrite_plan(
+    targets: &[PathBuf],
+    rootdir: &Path,
+    config: &ResolvedConfig,
+) -> Vec<Option<String>> {
+    let shadows = shadowing_names(targets, rootdir);
+    let mut stems: HashMap<String, usize> = HashMap::new();
+    for path in targets {
+        let stem = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        *stems.entry(stem).or_insert(0) += 1;
+    }
+
+    // The cache handle is opened for its **key composition only** — `load_dir` below is
+    // never called, so no shard is read and none is written.  Reusing it rather than calling
+    // `cache_key` directly is deliberate: the run-global half of the key (build version,
+    // config digest, shadow digest) is composed in exactly one place, so the bytecode cache
+    // cannot drift from the manifest cache it is keyed against.
+    let cache = ManifestCache::open(rootdir, config, &shadowable_names(&shadows));
+
+    let mut chains: HashMap<PathBuf, (Result<(), Dynamic>, crate::v2::manifest_cache::Digest)> =
+        HashMap::new();
+    for path in targets {
+        let Some(dir) = path.parent() else { continue };
+        if chains.contains_key(dir) {
+            continue;
+        }
+        let chain = read_conftest_chain(dir, rootdir);
+        let verdict = chain_is_static(&chain, &shadows);
+        let digest = digest_of_chain(
+            chain
+                .iter()
+                .map(|source| (source.rel.as_str(), source.bytes.as_deref())),
+        );
+        let _ = chains.insert(dir.to_path_buf(), (verdict, digest));
+    }
+
+    targets
+        .par_iter()
+        .map(|path| {
+            let stem = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if stems.get(&stem).copied().unwrap_or(0) > 1 {
+                return None;
+            }
+            let (verdict, chain) = path.parent().and_then(|dir| chains.get(dir))?;
+            verdict.as_ref().ok()?;
+            let source = read_source(path).ok()?;
+            let rel_path = relative_posix(path, rootdir);
+            // The scan is the gate, not the answer: its *tests* are discarded here, because
+            // the run's manifest comes from the worker.  Only "did it refuse?" is used.
+            scan_module(&source, &rel_path, config, &shadows).ok()?;
+            Some(crate::v2::manifest_cache::hex_digest(&cache.key_for_chain(
+                *chain,
+                &rel_path,
+                source.as_bytes(),
+            )))
+        })
+        .collect()
+}
+
 /// What one directory contributes to every file in it.
 struct DirState {
     verdict: Result<(), Dynamic>,
@@ -3829,6 +3921,130 @@ mod tests {
         assert_eq!(
             refusal("import pytest\n\n\n@pytest.mark.limit(values=[1, -9223372036854775809])\ndef test_x():\n    pass\n"),
             Reason::NonLiteralMark
+        );
+    }
+
+    // -- the assertion-rewrite plan ---------------------------------------
+
+    /// The plan's shape in one test: a statically analysable file gets a key, a file the
+    /// detector refuses gets `None`, and the vector stays indexed by target.
+    ///
+    /// The refusal used is a module-level star import, which is the detector's most
+    /// clear-cut `Reason::StarImport`: it makes the module's namespace unknowable without
+    /// executing it, which is exactly the property the rewrite decision rides on.
+    #[test]
+    fn the_rewrite_plan_keys_static_files_and_skips_dynamic_ones() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let static_path = tmp.path().join("test_static.py");
+        let dynamic_path = tmp.path().join("test_dynamic.py");
+        std::fs::write(&static_path, "def test_one():\n    assert 1 == 1\n").unwrap();
+        std::fs::write(
+            &dynamic_path,
+            "from os.path import *\n\n\ndef test_two():\n    assert 1 == 1\n",
+        )
+        .unwrap();
+        let targets = vec![static_path, dynamic_path];
+
+        let plan = rewrite_plan(&targets, tmp.path(), &config());
+        assert_eq!(plan.len(), targets.len(), "the plan is indexed by target");
+        let key = plan[0].as_deref().expect("a static file is rewritable");
+        assert_eq!(key.len(), 64, "the key is a 64-hex digest: {key}");
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(
+            plan[1].is_none(),
+            "a star-importing file must not be rewritten"
+        );
+    }
+
+    /// The key is **the manifest cache key**, not a second digest that happens to be
+    /// unique — which is the whole justification for keeping Task 2's cache alive.
+    ///
+    /// Asserted by recomputing it through the manifest cache's own composer, so a component
+    /// added to `KeyComponent` moves both keys or neither. A test that merely checked "the
+    /// key changes when the file changes" would pass for two unrelated digests.
+    #[test]
+    fn the_rewrite_key_is_the_manifest_cache_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_a.py");
+        let source = "def test_one():\n    assert 1 == 1\n";
+        std::fs::write(&path, source).unwrap();
+        let targets = vec![path];
+
+        let plan = rewrite_plan(&targets, tmp.path(), &config());
+        let planned = plan[0].as_deref().expect("a static file is rewritable");
+
+        let cache = ManifestCache::open(tmp.path(), &config(), &Default::default());
+        let expected = crate::v2::manifest_cache::hex_digest(&cache.key_for_chain(
+            crate::v2::manifest_cache::empty_chain_digest(),
+            "test_a.py",
+            source.as_bytes(),
+        ));
+        assert_eq!(planned, expected);
+    }
+
+    /// Editing a file moves its key, so the cached bytecode for the previous source can
+    /// never be executed for the new one — the invalidation the whole key composition
+    /// exists for, checked through the surface the rewrite actually uses.
+    #[test]
+    fn editing_a_file_moves_its_rewrite_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(&path, "def test_one():\n    assert 1 == 1\n").unwrap();
+        let targets = vec![path.clone()];
+
+        let before = rewrite_plan(&targets, tmp.path(), &config())[0].clone();
+        std::fs::write(&path, "def test_one():\n    assert 1 == 2\n").unwrap();
+        let after = rewrite_plan(&targets, tmp.path(), &config())[0].clone();
+
+        assert!(before.is_some() && after.is_some());
+        assert_ne!(before, after, "an edited file kept its rewrite key");
+    }
+
+    /// Two files with the same **stem** are refused, matching `static_pass`'s own rule.
+    ///
+    /// Not a copy of that rule for its own sake: same-stem files import under one module
+    /// name, so the second one is pytest's `import file mismatch` collection error, and a
+    /// rewrite keyed by path would have registered a hook for a file that is never imported
+    /// while the file that *is* imported goes unrewritten.
+    #[test]
+    fn same_stem_files_get_no_rewrite_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("one")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("two")).unwrap();
+        let first = tmp.path().join("one").join("test_dup.py");
+        let second = tmp.path().join("two").join("test_dup.py");
+        for path in [&first, &second] {
+            std::fs::write(path, "def test_one():\n    assert 1 == 1\n").unwrap();
+        }
+
+        let plan = rewrite_plan(&[first, second], tmp.path(), &config());
+        assert_eq!(plan, vec![None, None]);
+    }
+
+    /// A directory whose conftest chain is not statically safe contributes no keys — the
+    /// same veto `static_pass_cached` applies, reached the same way.
+    #[test]
+    fn an_unsafe_conftest_chain_withholds_the_rewrite_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("conftest.py"),
+            "import rustest\n\n\n@rustest.fixture(params=[1, 2])\ndef anything(request):\n    return request.param\n",
+        )
+        .unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(&path, "def test_one():\n    assert 1 == 1\n").unwrap();
+
+        assert_eq!(rewrite_plan(&[path], tmp.path(), &config()), vec![None]);
+    }
+
+    /// A `--v2-collect-only` run must not pay for a plan it cannot use. Asserted at the
+    /// option that gates it, because the cost is a read and a parse **per file** and the
+    /// collect-only path is the one whose whole point is latency.
+    #[test]
+    fn collect_only_does_not_compute_a_rewrite_plan() {
+        assert!(
+            !crate::v2::collect::CollectOptions::new().assert_rewrite,
+            "the default must be off; `collect::plan` turns it on for runs"
         );
     }
 }

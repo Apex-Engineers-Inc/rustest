@@ -46,10 +46,20 @@ use serde::{Deserialize, Serialize};
 /// *reached*, because the handshake compares versions before any work is dispatched — which
 /// is the whole point of declaring one.
 ///
+/// **v3** (Phase 2 Task 3) adds two things, both additive on the wire and neither optional
+/// in effect:
+///
+/// * `assert_key` on [`WorkerRequest::CollectFile`] — the Tier S manifest cache key for a
+///   file the static tier certified, which tells the worker to import that module through
+///   the assertion-rewriting hook and where to cache the compiled result.  Absent means
+///   "import it normally", so a Tier D file keeps plain asserts;
+/// * [`WorkerRequest::ExecuteBatch`] / [`WorkerResponse::BatchDone`] — a whole file's tests
+///   in one request, results streamed back and terminated by `batch_done`.
+///
 /// `python/rustest/_v2_worker.py` mirrors this constant and **must be bumped in the same
 /// commit**; a worker still declaring the old number turns every run into a handshake
 /// error.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// A message from the orchestrator to a worker, one per stdin line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,8 +91,38 @@ pub enum WorkerRequest {
         python_functions: Vec<String>,
     },
     /// Collect one file. path: absolute posix.
-    CollectFile { path: String },
+    CollectFile {
+        path: String,
+        /// The Tier S manifest cache key (64 lowercase hex) for this file, when the static
+        /// tier certified it as statically analysable — and **omitted entirely** otherwise.
+        ///
+        /// Presence is the whole signal: it means "rewrite this module's assertions, and
+        /// cache the compiled result under this key" (`python/rustest/_assertion_rewrite.py`).
+        /// Absence means "import it the ordinary way", which is the plan's "Tier D files keep
+        /// plain asserts" — enforced by the orchestrator not sending a key rather than by a
+        /// second policy check in the worker.
+        ///
+        /// It is a *key*, not a boolean, because the worker cannot compute one: the key
+        /// composes the resolved config, the conftest chain and the stdlib shadow set
+        /// (`src/v2/manifest_cache.rs`), all of which are whole-run facts the orchestrator
+        /// holds and a single worker does not. Sending a boolean and re-deriving the key
+        /// worker-side would be a second implementation of the key rules, free to diverge —
+        /// the same argument `execute_test` makes for sending an id instead of a path.
+        ///
+        /// `skip_serializing_if` keeps every Tier D `collect_file` line byte-identical to
+        /// v2's, which is what lets the golden below assert the omission rather than describe
+        /// it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assert_key: Option<String>,
+    },
     /// Execute one collected test by manifest id.
+    ///
+    /// **No orchestrator sends this any more** — [`Self::ExecuteBatch`] replaced it on the
+    /// run path at Phase 2 Task 3, including for `-x` (which travels as `stop_on_failure`).
+    /// It stays in the contract, and the worker keeps implementing it, because it is the
+    /// unit a batch is *defined in terms of*: `_v2_worker.py::execute_batch` is a loop over
+    /// `execute_test`, and the worker's own test suite drives the single op directly, which
+    /// is how one test's execution can be exercised without a batch's framing in the way.
     ///
     /// The worker must have collected the test's file already in this session, so imports
     /// are warm and the test object is the one enumeration saw.  Executing an unknown id is
@@ -93,6 +133,33 @@ pub enum WorkerRequest {
     /// qualname.  The orchestrator already holds ids from collection; re-deriving one
     /// worker-side would be a second implementation of the nodeid rules, free to diverge.
     ExecuteTest { id: String },
+    /// Execute a **whole file's** collected tests in one request.
+    ///
+    /// The worker answers one [`WorkerResponse::TestResult`] per executed id, in the order
+    /// they were sent, and terminates the stream with [`WorkerResponse::BatchDone`]. The
+    /// terminator is what makes the batch self-delimiting: without it the orchestrator would
+    /// have to count results, and a worker that stopped early (below) would look exactly like
+    /// a worker that hung.
+    ///
+    /// **Why this op exists.** Measured on the 5 000-test benchmark suite, the per-test
+    /// `execute_test` round trip cost ~160 µs of orchestrator time against ~20 µs of actual
+    /// in-worker execution: two pipe writes and a blocking line read per test, on a platform
+    /// where each of those is a syscall through whatever filter driver is installed. Batching
+    /// a file's tests collapses that to one write and one drain per *file*.
+    ///
+    /// **The batch is one file, never more.** `_v2_worker.py` detects module and class
+    /// boundaries by comparing consecutive tests' files, so a batch spanning two files would
+    /// tear down and rebuild module-scoped fixtures inside a single request — the ordering
+    /// contract `src/v2/execute.rs` documents under "Dispatch order: grouped by file".
+    ///
+    /// `stop_on_failure` carries `-x` **into** the batch. Without it, `-x` would degrade from
+    /// "nothing runs after the first failure" to "nothing runs after the failing file", which
+    /// is a silent behaviour change on a flag whose entire purpose is stopping early; the
+    /// orchestrator's own between-batch check cannot see inside a request in flight.
+    ExecuteBatch {
+        ids: Vec<String>,
+        stop_on_failure: bool,
+    },
     /// Graceful shutdown; worker replies Bye then exits 0.
     Shutdown,
 }
@@ -176,6 +243,21 @@ pub enum WorkerResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stderr: Option<String>,
     },
+    /// Terminates the result stream of one [`WorkerRequest::ExecuteBatch`].
+    ///
+    /// `executed` is how many [`WorkerResponse::TestResult`] lines preceded it in this batch,
+    /// and the orchestrator checks it against what it counted. That check is the entire
+    /// reason the field is not simply `{"op":"batch_done"}`: a batch is the one place where a
+    /// *lost* result looks like nothing at all — the stream still terminates, the ids still
+    /// match one-to-one with the results that did arrive, and the missing test would simply
+    /// be absent from the report. A counter the producer computes independently turns that
+    /// into a loud protocol error.
+    ///
+    /// `stopped` says the worker cut the batch short because `stop_on_failure` was set and a
+    /// test failed. It is distinct from `executed < ids.len()` being *inferred*, because the
+    /// orchestrator must tell "`-x` fired here" apart from "this worker dropped results":
+    /// the first truncates the report legitimately, the second is a bug.
+    BatchDone { executed: usize, stopped: bool },
     /// Acknowledges [`WorkerRequest::Shutdown`]; the last line a worker writes before
     /// exiting 0.
     Bye,
@@ -201,9 +283,11 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":2,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":3,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"]}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
+    const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
+    const EXECUTE_BATCH_LINE: &str = r#"{"op":"execute_batch","ids":["tests/test_math.py::test_add","tests/test_math.py::test_sub"],"stop_on_failure":false}"#;
     const SHUTDOWN_LINE: &str = r#"{"op":"shutdown"}"#;
 
     #[test]
@@ -217,20 +301,64 @@ mod tests {
         assert_eq!(decoded, sample_init());
     }
 
+    /// The Tier D shape: **no `assert_key` key at all** (not `null`), so every line a
+    /// pre-v3 orchestrator would have written is still byte-for-byte what v3 writes.
     #[test]
     fn collect_file_request_matches_golden_contract() {
         let request = WorkerRequest::CollectFile {
             path: "/repo/tests/test_math.py".to_string(),
+            assert_key: None,
         };
 
         assert_eq!(
             serde_json::to_string(&request).expect("collect_file serializes"),
             COLLECT_FILE_LINE
         );
+        assert!(!COLLECT_FILE_LINE.contains(r#""assert_key":"#));
 
+        // Decoding the golden line — which carries no `assert_key` — exercises the `default`,
+        // so dropping it is a test failure rather than a silent change.
         let decoded: WorkerRequest =
             serde_json::from_str(COLLECT_FILE_LINE).expect("collect_file deserializes");
         assert_eq!(decoded, request);
+    }
+
+    /// The Tier S shape: the key present, and the *omission rule inverted* — a worker that
+    /// ignored this field would import the module unrewritten and silently give the user
+    /// pytest's old bare `AssertionError`, which is a quality regression no test of the
+    /// manifest would ever notice.
+    #[test]
+    fn collect_file_request_carries_the_assert_key_when_the_file_is_rewritable() {
+        let request = WorkerRequest::CollectFile {
+            path: "/repo/tests/test_math.py".to_string(),
+            assert_key: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            ),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&request).expect("collect_file serializes"),
+            COLLECT_FILE_REWRITE_LINE
+        );
+
+        let decoded: WorkerRequest = serde_json::from_str(COLLECT_FILE_REWRITE_LINE)
+            .expect("collect_file with a key deserializes");
+        assert_eq!(decoded, request);
+
+        // An explicit `null` decodes as the absent key — the same documented tolerance the
+        // `collected` and `test_result` omissions carry, stated so it is not discovered by
+        // accident later.
+        let explicit_null: WorkerRequest = serde_json::from_str(
+            r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":null}"#,
+        )
+        .expect("an explicit null assert_key deserializes");
+        assert_eq!(
+            explicit_null,
+            WorkerRequest::CollectFile {
+                path: "/repo/tests/test_math.py".to_string(),
+                assert_key: None,
+            }
+        );
     }
 
     #[test]
@@ -255,6 +383,70 @@ mod tests {
         assert!(!EXECUTE_TEST_LINE.contains(r#""qualname":"#));
     }
 
+    /// `ids` is an **array**, `stop_on_failure` a **bool**, and both are always present —
+    /// there is no "empty means all" and no defaulted flag, because either would let a
+    /// truncated line decode as a well-formed request that runs the wrong set of tests.
+    #[test]
+    fn execute_batch_request_matches_golden_contract() {
+        let request = WorkerRequest::ExecuteBatch {
+            ids: vec![
+                "tests/test_math.py::test_add".to_string(),
+                "tests/test_math.py::test_sub".to_string(),
+            ],
+            stop_on_failure: false,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&request).expect("execute_batch serializes"),
+            EXECUTE_BATCH_LINE
+        );
+
+        let decoded: WorkerRequest =
+            serde_json::from_str(EXECUTE_BATCH_LINE).expect("execute_batch deserializes");
+        assert_eq!(decoded, request);
+
+        // Same addressing rule as `execute_test`: manifest ids, never paths or qualnames.
+        assert!(!EXECUTE_BATCH_LINE.contains(r#""path":"#));
+        assert!(!EXECUTE_BATCH_LINE.contains(r#""qualname":"#));
+
+        // `stop_on_failure` is serialised even when false. A `skip_serializing_if` here
+        // would make "the flag is off" and "the peer forgot the flag" the same bytes, on the
+        // one field whose absence silently disables `-x` inside a batch.
+        assert!(EXECUTE_BATCH_LINE.contains(r#""stop_on_failure":false"#));
+    }
+
+    #[test]
+    fn batch_done_response_matches_golden_contract() {
+        let response = WorkerResponse::BatchDone {
+            executed: 2,
+            stopped: false,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&response).expect("batch_done serializes"),
+            BATCH_DONE_LINE
+        );
+
+        let decoded: WorkerResponse =
+            serde_json::from_str(BATCH_DONE_LINE).expect("batch_done deserializes");
+        assert_eq!(decoded, response);
+
+        // Both fields always on the wire, for the reason the variant's docs give: `executed`
+        // is the independent count that turns a lost result into an error, and `stopped`
+        // separates "`-x` fired" from "results went missing".
+        assert!(BATCH_DONE_LINE.contains(r#""executed":2"#));
+        assert!(BATCH_DONE_LINE.contains(r#""stopped":false"#));
+
+        let stopped = WorkerResponse::BatchDone {
+            executed: 1,
+            stopped: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&stopped).expect("batch_done serializes"),
+            r#"{"op":"batch_done","executed":1,"stopped":true}"#
+        );
+    }
+
     #[test]
     fn shutdown_request_matches_golden_contract() {
         assert_eq!(
@@ -269,11 +461,12 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":2}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":3}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
     const TEST_RESULT_FAILED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"failed","duration_s":1.5,"message":"assert 1 == 2","stdout":"computing\n","stderr":"deprecated\n"}"#;
+    const BATCH_DONE_LINE: &str = r#"{"op":"batch_done","executed":2,"stopped":false}"#;
     const BYE_LINE: &str = r#"{"op":"bye"}"#;
 
     /// The closed set the `status` field documents.  Mirrors pytest's *reporting
@@ -607,6 +800,11 @@ mod tests {
             ),
             ("path", r#"{"op":"collect_file"}"#),
             ("id", r#"{"op":"execute_test"}"#),
+            ("ids", r#"{"op":"execute_batch","stop_on_failure":false}"#),
+            (
+                "stop_on_failure",
+                r#"{"op":"execute_batch","ids":["t.py::test_a"]}"#,
+            ),
         ];
         for (field, line) in requests {
             let err = serde_json::from_str::<WorkerRequest>(line)
@@ -632,6 +830,8 @@ mod tests {
                 "duration_s",
                 r#"{"op":"test_result","id":"t.py::test_a","status":"passed"}"#,
             ),
+            ("executed", r#"{"op":"batch_done","stopped":false}"#),
+            ("stopped", r#"{"op":"batch_done","executed":0}"#),
         ];
         for (field, line) in responses {
             let err = serde_json::from_str::<WorkerResponse>(line)
@@ -711,6 +911,65 @@ mod tests {
         );
     }
 
+    /// The same rule on the **v3** ops.  The plausible drift here is real rather than
+    /// hypothetical: `assert_key` and `stop_on_failure` were both added by one commit, and a
+    /// half-applied upgrade — new orchestrator, old worker, or the reverse — is exactly how a
+    /// field arrives at a build that predates it.
+    #[test]
+    fn unknown_field_on_the_v3_ops_is_a_hard_error() {
+        let err = serde_json::from_str::<WorkerRequest>(
+            r#"{"op":"collect_file","path":"/a/t.py","assert_keys":"deadbeef"}"#,
+        )
+        .expect_err("unknown collect_file field must not decode");
+        assert!(
+            err.to_string().contains("assert_keys"),
+            "error should name the unknown field, got: {err}"
+        );
+
+        let err = serde_json::from_str::<WorkerRequest>(
+            r#"{"op":"execute_batch","ids":["t.py::test_a"],"stop_on_failure":false,"chunk":4}"#,
+        )
+        .expect_err("unknown execute_batch field must not decode");
+        assert!(
+            err.to_string().contains("chunk"),
+            "error should name the unknown field, got: {err}"
+        );
+
+        let err = serde_json::from_str::<WorkerResponse>(
+            r#"{"op":"batch_done","executed":1,"stopped":false,"elapsed_s":0.5}"#,
+        )
+        .expect_err("unknown batch_done field must not decode");
+        assert!(
+            err.to_string().contains("elapsed_s"),
+            "error should name the unknown field, got: {err}"
+        );
+    }
+
+    /// A **v2 worker** answering a v3 orchestrator would never send `batch_done`, and a v2
+    /// orchestrator would never send `execute_batch`.  Neither line may decode on the other
+    /// side of the version boundary — asserted here so the handshake is not the only thing
+    /// standing between the two, since a handshake only runs once and a bug can reintroduce
+    /// an old peer at any point in the stream.
+    #[test]
+    fn the_v2_ops_and_the_v3_ops_are_not_interchangeable() {
+        // A v2 orchestrator's `collect_file` still decodes — the field is additive, and that
+        // is the point of `default` — but it decodes as "no rewriting", never as a key.
+        let v2_collect: WorkerRequest =
+            serde_json::from_str(r#"{"op":"collect_file","path":"/a/t.py"}"#)
+                .expect("a v2 collect_file line still decodes");
+        assert_eq!(
+            v2_collect,
+            WorkerRequest::CollectFile {
+                path: "/a/t.py".to_string(),
+                assert_key: None,
+            }
+        );
+
+        // ...whereas the ops themselves are not forward-compatible in the other direction.
+        assert!(serde_json::from_str::<WorkerResponse>(r#"{"op":"batch_finished"}"#).is_err());
+        assert!(serde_json::from_str::<WorkerRequest>(r#"{"op":"execute_tests"}"#).is_err());
+    }
+
     /// **Documented tolerance, not coverage.**  `Collected` is a product type, so a line
     /// carrying both `tests` and `error` — the one malformed shape serde cannot reject
     /// without a hand-written `Deserialize` — decodes cleanly with both fields populated.
@@ -748,9 +1007,17 @@ mod tests {
             sample_init(),
             WorkerRequest::CollectFile {
                 path: "/repo/tests/test_math.py".to_string(),
+                assert_key: None,
             },
             WorkerRequest::ExecuteTest {
                 id: "tests/test_math.py::test_add".to_string(),
+            },
+            WorkerRequest::ExecuteBatch {
+                ids: vec![
+                    "tests/test_math.py::test_add".to_string(),
+                    "tests/test_math.py::test_sub".to_string(),
+                ],
+                stop_on_failure: true,
             },
             WorkerRequest::Shutdown,
         ];
@@ -789,6 +1056,10 @@ mod tests {
             traceback.clone(),
             sample_test_result_passed(),
             multi_line_result.clone(),
+            WorkerResponse::BatchDone {
+                executed: 2,
+                stopped: false,
+            },
             WorkerResponse::Bye,
         ];
         for response in &responses {

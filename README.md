@@ -67,12 +67,12 @@ numbers).
 
 | files | tests | pytest run | rustest v1 run | rustest v2 run | rustest v2 collect |
 | ----: | ----: | ---------: | --------------: | --------------: | -------------------: |
-|    10 |   100 |      0.87s |            0.51s |            5.29s |                5.82s |
-|   100 |  1000 |      1.77s |            0.99s |            8.81s |                8.52s |
-|   500 |  5000 |      6.33s |            3.27s |           11.29s |                8.51s |
+|    10 |   100 |      1.24s |            0.71s |            3.38s |                0.24s |
+|   100 |  1000 |      2.32s |            1.23s |            6.23s |                0.28s |
+|   500 |  5000 |      8.49s |            4.33s |            6.32s |                0.32s |
 
-Marginal per-test overhead, derived from the two largest sizes: pytest **1140.7
-us/test**, rustest v1 **569.1 us/test**, rustest v2 **618.1 us/test**.
+Marginal per-test overhead, derived from the two largest sizes: pytest **1544.5
+us/test**, rustest v1 **774.5 us/test**, rustest v2 **21.3 us/test**.
 
 Full methodology (suite generation, command order, the ordering-bias caveat) and the
 raw data live in the "Baselines" section of

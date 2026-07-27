@@ -100,19 +100,30 @@ pub struct RunOptions {
     /// Collect python fences out of `.md` files (rustest's own extension; `--no-codeblocks`
     /// turns it off).
     pub codeblocks: bool,
+    /// Rewrite the assertions of statically analysable files
+    /// (`crate::v2::static_collect::rewrite_plan`, `python/rustest/_assertion_rewrite.py`).
+    ///
+    /// **On in production**; the `false` leg is the escape hatch
+    /// (`RUSTEST_V2_ASSERT_REWRITE=off`) and the control leg of the differential. Rewriting
+    /// changes the *bytecode a user's tests run as*, which is a larger claim than the
+    /// manifest cache's, so "recompute the answer without it" has to be askable from a
+    /// subprocess without editing anything.
+    pub assert_rewrite: bool,
 }
 
 impl RunOptions {
-    /// The defaults a plain `rustest <paths>` uses: capture on, codeblocks on, no `-x`, no
-    /// `--lf`.  `Default::default()` cannot be it, because `codeblocks` defaults to *true*
-    /// and `bool::default()` is false — a silent feature removal for anyone who built a
-    /// `RunOptions` with `..Default::default()`.
+    /// The defaults a plain `rustest <paths>` uses: capture on, codeblocks on, assertion
+    /// rewriting on, no `-x`, no `--lf`.  `Default::default()` cannot be it, because
+    /// `codeblocks` and `assert_rewrite` both default to *true* and `bool::default()` is
+    /// false — a silent feature removal for anyone who built a `RunOptions` with
+    /// `..Default::default()`.
     pub fn defaults() -> Self {
         Self {
             fail_fast: false,
             last_failed: LastFailedMode::None,
             no_capture: false,
             codeblocks: true,
+            assert_rewrite: true,
         }
     }
 }
@@ -474,6 +485,12 @@ struct WorkerRun {
     session_exit: Option<String>,
 }
 
+/// What the main thread hands one worker across the barrier: its tests, grouped by file.
+///
+/// The outer `Vec` is one entry per **file**, and that is the unit of an `execute_batch`
+/// request; the inner is `(report slot, test id)` in manifest order.
+type Assignment = Vec<Vec<(usize, String)>>;
+
 /// One worker's whole collection phase: its files' outcomes, or the failure that stopped it.
 type CollectedFiles = Result<Vec<(usize, FileOutcome)>, CollectError>;
 /// What a worker thread reports across the barrier: which worker, and what it collected.
@@ -512,7 +529,13 @@ fn run_with_launcher(
     options: RunOptions,
 ) -> Result<RunReport, RunError> {
     let started = Instant::now();
-    let dispatch = plan(invocation_dir, args, workers, options.codeblocks)?;
+    let dispatch = plan(
+        invocation_dir,
+        args,
+        workers,
+        options.codeblocks,
+        options.assert_rewrite,
+    )?;
     let previously_failed = read_last_failed(&dispatch.rootdir_path);
 
     if dispatch.targets.is_empty() {
@@ -535,8 +558,8 @@ fn run_with_launcher(
     let pool_size = pool.len();
 
     let (collect_tx, collect_rx) = channel::<CollectMessage>();
-    let mut exec_txs: Vec<Sender<Vec<(usize, String)>>> = Vec::with_capacity(pool_size);
-    let mut exec_rxs: Vec<Receiver<Vec<(usize, String)>>> = Vec::with_capacity(pool_size);
+    let mut exec_txs: Vec<Sender<Assignment>> = Vec::with_capacity(pool_size);
+    let mut exec_rxs: Vec<Receiver<Assignment>> = Vec::with_capacity(pool_size);
     for _ in 0..pool_size {
         let (tx, rx) = channel();
         exec_txs.push(tx);
@@ -569,7 +592,10 @@ fn run_with_launcher(
             .enumerate()
             .map(|(index, ((worker, files), exec_rx))| {
                 let collect_tx = collect_tx.clone();
-                scope.spawn(move || worker_life(index, worker, files, collect_tx, exec_rx, signals))
+                let keys = &dispatch.assert_keys;
+                scope.spawn(move || {
+                    worker_life(index, worker, files, keys, collect_tx, exec_rx, signals)
+                })
             })
             .collect();
         // The clones live in the threads; this one would otherwise keep the channel open
@@ -714,8 +740,14 @@ struct Staged {
     selected: Vec<CollectedTest>,
     errors: Vec<CollectionErrorEntry>,
     deselected: usize,
-    /// Indexed by worker: `(report slot, test id)`, grouped by file.
-    per_worker: Vec<Vec<(usize, String)>>,
+    /// Indexed by worker, then by **file**: `(report slot, test id)`.
+    ///
+    /// The file grouping used to be flattened away here and reconstructed nowhere, because
+    /// dispatch was per test and only the *order* mattered. `WorkerRequest::ExecuteBatch`
+    /// makes the grouping load-bearing: one batch is one file, because the worker detects
+    /// module and class boundaries by comparing consecutive tests' files, so a batch
+    /// spanning two files would rebuild module-scoped fixtures inside a single request.
+    per_worker: Vec<Vec<Vec<(usize, String)>>>,
 }
 
 /// Assemble, select, and work out who runs what — the whole of the main thread's job at the
@@ -824,16 +856,11 @@ fn stage(
         selected.push(test);
     }
 
-    let per_worker = grouped
-        .into_iter()
-        .map(|files| files.into_iter().flatten().collect())
-        .collect();
-
     Ok(Staged {
         selected,
         errors: assembled.errors,
         deselected,
-        per_worker,
+        per_worker: grouped,
     })
 }
 
@@ -900,13 +927,17 @@ fn worker_life(
     index: usize,
     mut worker: Worker,
     files: Vec<(usize, PathBuf)>,
+    assert_keys: &[Option<String>],
     collect_tx: Sender<CollectMessage>,
-    exec_rx: Receiver<Vec<(usize, String)>>,
+    exec_rx: Receiver<Assignment>,
     signals: StopSignals<'_>,
 ) -> Result<WorkerRun, CollectError> {
     let mut outcomes = Vec::with_capacity(files.len());
     for (target, path) in &files {
-        match worker.collect_one(path) {
+        // Indexed by target, not by this worker's position in its own file list — see
+        // `collect::run_worker`.
+        let key = assert_keys.get(*target).and_then(Option::as_deref);
+        match worker.collect_one(path, key) {
             Ok(outcome) => outcomes.push((*target, outcome)),
             Err(err) => {
                 // The error travels to the main thread, which owns the "first failure in
@@ -927,8 +958,11 @@ fn worker_life(
         return Ok(WorkerRun::default());
     };
 
-    let mut results = Vec::with_capacity(assignment.len());
-    for (slot, id) in assignment {
+    let mut results: Vec<(usize, TestOutcome)> = Vec::new();
+    // One request per file, not per test.  Measured at Phase 2 Task 3: the per-test round
+    // trip cost ~160 µs of orchestrator time against ~20 µs of in-worker execution, because
+    // each test meant a pipe write and a blocking line read.  A file's tests share both.
+    for group in assignment {
         // Checked *before* dispatch, not after: the point of `-x` is that nothing starts
         // after a failure is known.  `shutdown_run` below still happens, so the fixtures this
         // worker opened are unwound exactly as they would be on a complete run — an aborted
@@ -939,12 +973,31 @@ fn worker_life(
         if signals.should_stop() {
             break;
         }
-        let outcome = match worker.execute_one(&id) {
-            Ok(outcome) => outcome,
+        if group.is_empty() {
+            continue;
+        }
+        let ids: Vec<String> = group.iter().map(|(_, id)| id.clone()).collect();
+        // Filled as the results stream in, so a batch cut short by `pytest.exit()` still
+        // yields everything the worker answered before it went — pytest keeps those too.
+        let mut outcomes: Vec<TestOutcome> = Vec::with_capacity(ids.len());
+        // `-x` travels *into* the batch as well as being checked between batches. Without
+        // it, `-x` would silently weaken from "nothing runs after the failing test" to
+        // "nothing runs after the failing file" — see `WorkerRequest::ExecuteBatch`.
+        let batch = worker.execute_batch(&ids, signals.fail_fast, &mut outcomes);
+        // The results are folded in **before** the batch's own outcome is inspected, so the
+        // `SessionExit` arm below returns with them already recorded.
+        for ((slot, _), outcome) in group.iter().zip(outcomes) {
+            if signals.fail_fast && outcome.status.is_failure() {
+                signals.stop.store(true, Ordering::SeqCst);
+            }
+            results.push((*slot, outcome));
+        }
+        let stopped_in_batch = match batch {
+            Ok(stopped) => stopped,
             // `pytest.exit()`.  The worker is gone and the test that called it gets no
             // result — pytest does not report it either — but everything this worker already
-            // answered is kept, and `shutdown_run` is skipped because there is no process
-            // left to shut down.
+            // answered is kept (above, before this match), and `shutdown_run` is skipped
+            // because there is no process left to shut down.
             Err(CollectError::SessionExit { stderr, .. }) => {
                 signals.stop.store(true, Ordering::SeqCst);
                 signals.session_over.store(true, Ordering::SeqCst);
@@ -957,10 +1010,13 @@ fn worker_life(
             }
             Err(err) => return Err(err),
         };
-        if signals.fail_fast && outcome.status.is_failure() {
+        if stopped_in_batch {
+            // The worker already stopped; the shared flag is what stops every *other*
+            // worker, and what tells the main thread the missing slots are expected rather
+            // than lost.
             signals.stop.store(true, Ordering::SeqCst);
+            break;
         }
-        results.push((slot, outcome));
     }
 
     let teardown = worker.shutdown_run()?;
@@ -1973,7 +2029,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":2}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":3}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -2007,12 +2063,15 @@ def test_bails():
              \x20       ]\n\
              \x20       sys.stdout.write(json.dumps(\n\
              \x20           {{'op': 'collected', 'path': path, 'tests': tests}}) + chr(10))\n\
-             \x20   elif op == 'execute_test':\n\
-             \x20       log.write(message['id'] + chr(10))\n\
-             \x20       log.flush()\n\
-             \x20       sys.stdout.write(json.dumps(\n\
-             \x20           {{'op': 'test_result', 'id': message['id'],\n\
-             \x20            'status': 'passed', 'duration_s': 0.0}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       for test_id in message['ids']:\n\
+             \x20           log.write(test_id + chr(10))\n\
+             \x20           log.flush()\n\
+             \x20           sys.stdout.write(json.dumps(\n\
+             \x20               {{'op': 'test_result', 'id': test_id,\n\
+             \x20                'status': 'passed', 'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
+             \x20           'executed': len(message['ids']), 'stopped': False}}) + chr(10))\n\
              \x20   elif op == 'shutdown':\n\
              \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
              \x20       sys.stdout.flush()\n\
@@ -2147,9 +2206,10 @@ def test_bails():
              \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
              \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
              \x20                      'qualname': 'test_one'}}]}}) + chr(10))\n\
-             \x20   elif op == 'execute_test':\n\
+             \x20   elif op == 'execute_batch':\n\
              \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
-             \x20           'id': message['id'], 'status': 'xpass', 'duration_s': 0.0}}) + chr(10))\n\
+             \x20           'id': message['ids'][0], 'status': 'xpass',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
              \x20   else:\n\
              \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
              \x20       sys.stdout.flush()\n\
@@ -2184,7 +2244,7 @@ def test_bails():
              \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
              \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
              \x20                      'qualname': 'test_one'}}]}}) + chr(10))\n\
-             \x20   elif op == 'execute_test':\n\
+             \x20   elif op == 'execute_batch':\n\
              \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
              \x20           'id': 'test_a.py::somebody_else', 'status': 'passed',\n\
              \x20           'duration_s': 0.0}}) + chr(10))\n\
@@ -2197,7 +2257,10 @@ def test_bails():
 
         let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
             .expect_err("a mis-addressed result is fatal");
-        assert!(err.to_string().contains("not the requested test"), "{err}");
+        assert!(
+            err.to_string().contains("not the test at this position"),
+            "{err}"
+        );
     }
 
     /// A worker that dies mid-execute names the **test** in flight, not the file: the run is
@@ -2220,7 +2283,7 @@ def test_bails():
              \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
              \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
              \x20                      'qualname': 'test_one'}}]}}) + chr(10))\n\
-             \x20   elif op == 'execute_test':\n\
+             \x20   elif op == 'execute_batch':\n\
              \x20       sys.stderr.write('the test took the worker with it' + chr(10))\n\
              \x20       sys.exit(7)\n\
              \x20   sys.stdout.flush()\n"
@@ -2231,6 +2294,253 @@ def test_bails():
         let message = err.to_string();
         assert!(message.contains("test_a.py::test_one"), "{message}");
         assert!(message.contains("took the worker with it"), "{message}");
+    }
+
+    /// The batch terminator's `executed` count is checked against the results that arrived.
+    ///
+    /// This is the **only** place a lost result is detectable: the stream still terminates,
+    /// the ids that did arrive still match one-to-one, and the missing test would simply be
+    /// absent from the report. A count the worker computes independently turns silence into
+    /// a named error.
+    #[test]
+    fn a_batch_that_miscounts_its_results_is_protocol_fatal() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
+             \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_one'}},\n\
+             \x20                     {{'id': 'test_a.py::test_two', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_two'}}]}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][0], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][1], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
+             \x20           'executed': 99, 'stopped': False}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n"
+        );
+
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
+            .expect_err("a miscounted batch is fatal");
+        let message = err.to_string();
+        assert!(message.contains("says it executed 99"), "{message}");
+        assert!(message.contains("2 results arrived"), "{message}");
+    }
+
+    /// A batch that ends early **without** claiming to have stopped is a worker that dropped
+    /// work. `-x` firing is the only legitimate short batch, and it says so in `stopped`;
+    /// without that distinction a lost half-file would read as a successful run of fewer
+    /// tests.
+    #[test]
+    fn a_short_batch_that_did_not_stop_early_is_protocol_fatal() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
+             \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_one'}},\n\
+             \x20                     {{'id': 'test_a.py::test_two', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_two'}}]}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][0], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
+             \x20           'executed': 1, 'stopped': False}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n"
+        );
+
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
+            .expect_err("a silently short batch is fatal");
+        assert!(
+            err.to_string().contains("ended after 1 of 2 tests"),
+            "{err}"
+        );
+    }
+
+    /// More results than ids is drift too, and it is caught on the *result* rather than on
+    /// the terminator — by then the extra outcome would already be in the report, attributed
+    /// to whatever slot happened to be next.
+    #[test]
+    fn a_batch_that_answers_more_tests_than_it_was_given_is_protocol_fatal() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
+             \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_one'}},\n\
+             \x20                     {{'id': 'test_a.py::test_two', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_two'}}]}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][0], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][1], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': 'test_a.py::test_one', 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
+             \x20           'executed': 3, 'stopped': False}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n"
+        );
+
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
+            .expect_err("an over-answered batch is fatal");
+        assert!(
+            err.to_string().contains("3th result for a batch of 2"),
+            "{err}"
+        );
+    }
+
+    /// Results must arrive **in the order the ids were sent**.  The set of ids here is
+    /// correct and complete — only the order is wrong — so nothing but the positional check
+    /// can catch it, and without that check two tests would swap outcomes silently.
+    #[test]
+    fn a_batch_answering_out_of_order_is_protocol_fatal() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
+             \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_one'}},\n\
+             \x20                     {{'id': 'test_a.py::test_two', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_two'}}]}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][1], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][0], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
+             \x20           'executed': 2, 'stopped': False}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n"
+        );
+
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
+            .expect_err("a reordered batch is fatal");
+        assert!(
+            err.to_string().contains("not the test at this position"),
+            "{err}"
+        );
+    }
+
+    /// A batch whose stream **ends** without a terminator is fatal, not silently short.
+    ///
+    /// The worker here answers every test and then exits, closing stdout. Without this check
+    /// the run would report two passing tests and a green exit for a batch nobody ever
+    /// confirmed — the terminator is what turns "the pipe closed" into a named error.
+    ///
+    /// **The neighbouring case is not detectable, and this test does not pretend otherwise.**
+    /// A worker that answers the results and then simply *waits* — alive, idle, holding its
+    /// pipe open — blocks the orchestrator's read, exactly as an unanswered `collect_file`
+    /// always has. Nothing in a self-delimiting stream can tell that from a test that is
+    /// merely slow; only a timeout could, and rustest has none. Recorded here rather than
+    /// left for someone to rediscover by writing the test that hangs — which is what the
+    /// first draft of this one did.
+    #[test]
+    fn a_batch_whose_stream_ends_without_a_terminator_is_fatal() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
+             \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_one'}},\n\
+             \x20                     {{'id': 'test_a.py::test_two', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_two'}}]}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][0], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][1], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       sys.exit(0)\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n"
+        );
+
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
+            .expect_err("a batch whose stream ends without a terminator is fatal");
+        let message = err.to_string();
+        assert!(message.contains("the worker exited mid-batch"), "{message}");
+        assert!(message.contains("test_a.py"), "{message}");
     }
 
     /// Version skew is caught by the handshake, **before** any file is collected — the whole

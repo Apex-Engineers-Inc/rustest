@@ -3,23 +3,39 @@
 from __future__ import annotations
 
 import contextlib
-import datetime
 import io
 import json
 import os
 import sys
-import shutil
 from collections.abc import Iterator, Mapping, Sequence
-from pathlib import Path
-from typing import Any, Final, NotRequired, TypedDict, cast
-
-from rich.console import Console
-from rich.panel import Panel
+from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict, cast
 
 from . import rust
-from .event_router import EventRouter
-from .renderers import RichRenderer
-from .reporting import RunReport
+
+if TYPE_CHECKING:
+    from .reporting import RunReport
+
+# `rich` is **not** imported here, and that is a measured decision rather than a style one.
+#
+# `import rich.console` costs ~230 ms above a bare interpreter on the reference machine, and
+# it used to be paid by *every* rustest process: the v2 collect-only path, the v2 run path,
+# the `--report-json` path, and — worst — each of the N worker subprocesses a run spawns,
+# none of which render anything through rich at all. Only :func:`run`, the frozen v1 engine's
+# entry point, and :func:`_print_pytest_compat_banner` ever touch it, so both import it in
+# their own bodies.
+#
+# The same argument covers `.renderers` (which pulls `rich.live` and `rich.progress` behind
+# it), `.event_router`, and `.reporting`: all three are v1-only, and `.reporting` is needed at
+# type-check time only, hence the `TYPE_CHECKING` import above.
+#
+# Three stdlib modules are deferred for the same measured reason, each into the one function
+# that needs it: `shutil` (~50 ms; only `_terminal_width`, i.e. only the *run* renderer),
+# `datetime` (only `_format_duration`) and `pathlib` (only the `--report-json` write). A
+# `--v2-collect-only` run reaches none of the three, and it is the latency-sensitive path.
+#
+# Measured, Phase 2 Task 3: warm `--v2-collect-only` on the 5 000-test suite went from 508 ms
+# to 269 ms, of which the `rich` import is the largest single term. See
+# `.superpowers/sdd/p2-task-3-report.md`.
 
 # pytest's exit codes (`_pytest.config.ExitCode`), which the v2 engine adopts verbatim --
 # "contracts are pytest's" is the v2 spec's rule. Verified against pytest 8.4.2 by running
@@ -116,6 +132,9 @@ def _print_pytest_compat_banner(use_colors: bool) -> None:
     Args:
         use_colors: Whether to use colored output
     """
+    from rich.console import Console
+    from rich.panel import Panel
+
     console = Console(force_terminal=use_colors, file=sys.stderr)
 
     banner_text = (
@@ -259,6 +278,20 @@ _COLLECT_TIER_ENV = "RUSTEST_V2_COLLECT_TIER"
 #: rather than an invariant of a correct run.
 _MANIFEST_CACHE_ENV = "RUSTEST_V2_MANIFEST_CACHE"
 
+#: Turns assertion rewriting off when set to ``"off"``.
+#:
+#: The third escape hatch, and the one with the largest claim behind it: rewriting changes
+#: the **bytecode a user's tests run as** (``python/rustest/_assertion_rewrite.py``). A user
+#: whose suite behaves differently under rustest than under a plain ``python -c "import
+#: test_mod"`` needs a way to ask "is it the rewriter?" from a subprocess, without editing
+#: anything and without deleting a cache. It is also the control leg of the message
+#: differential: the same file, run twice, with and without.
+#:
+#: Not a CLI flag, for the same reason the other two are not: the correct number of users who
+#: need it is small, and a flag would suggest rewriting is a choice rather than how the engine
+#: reports a failed assertion.
+_ASSERT_REWRITE_ENV = "RUSTEST_V2_ASSERT_REWRITE"
+
 
 def v2_collect_only(
     *,
@@ -343,8 +376,14 @@ def v2_collect_only(
         errors = manifest.get("errors", [])
         deselected = manifest.get("deselected", 0)
 
-        for test in tests:
-            print(test["id"])
+        # One `write` for the whole id list rather than 5 000 `print` calls.  Byte-identical
+        # output (`print` is `write(x)` + `write("\n")` on a line-buffered-or-block-buffered
+        # stream), and measurably cheaper: at 5 000 ids the loop cost ~55 ms of a ~270 ms
+        # command, because each `print` re-enters the `TextIOWrapper` encode/newline path.
+        # `sys.stdout` is used rather than `print(..., end="")` so the empty case writes
+        # nothing at all instead of an empty string.
+        if tests:
+            _ = sys.stdout.write("".join(f"{test['id']}\n" for test in tests))
         for error in errors:
             print(f"ERROR collecting {error['path']}", file=sys.stderr)
             for line in error["message"].splitlines():
@@ -392,6 +431,8 @@ def _terminal_width() -> int:
     ``get_terminal_size`` may be bogus" and rounds anything under 40 back up to 80. Without
     it a console that reports 4 columns turns every separator into a bare ``==``.
     """
+    import shutil
+
     width = shutil.get_terminal_size(fallback=(80, 24)).columns
     return 80 if width < 40 else width
 
@@ -447,6 +488,8 @@ def _format_duration(seconds: float) -> str:
     """
     if seconds < 60:
         return f"{seconds:.2f}s"
+    import datetime
+
     return f"{seconds:.2f}s ({datetime.timedelta(seconds=int(seconds))})"
 
 
@@ -560,6 +603,7 @@ def v2_run(
                 last_failed_mode,
                 not capture,
                 codeblocks,
+                os.environ.get(_ASSERT_REWRITE_ENV, "auto"),
             )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -574,6 +618,8 @@ def v2_run(
         # summary somehow fails -- the conformance harness treats a missing report as a
         # harness fault rather than a case outcome.
         if report_json is not None:
+            from pathlib import Path
+
             Path(report_json).write_text(json.dumps(report, indent=2), encoding="utf-8")
 
         tests = report["tests"]
@@ -659,6 +705,11 @@ def run(
         ascii: Use ASCII characters instead of Unicode symbols for output
         no_color: Disable colored output
     """
+    # v1-only imports, deferred so the v2 paths never pay for them (see the module header).
+    from .event_router import EventRouter
+    from .renderers import RichRenderer
+    from .reporting import RunReport
+
     # Store runtime configuration for fixtures to access
     try:
         import rustest._runtime_config as _runtime_config

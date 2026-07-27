@@ -3,37 +3,37 @@
     {
       "files": 10,
       "tests": 100,
-      "pytest_collect_s": 1.1429971999896225,
-      "pytest_run_s": 0.9213674000056926,
-      "rustest_run_s": 0.7093211000028532,
-      "rustest_v2_run_s": 7.087403700017603,
-      "rustest_collect_s": 0.547575999982655,
-      "rustest_collect_warm_s": 0.5009643000084907
+      "pytest_collect_s": 1.5739238999958616,
+      "pytest_run_s": 1.2382281000027433,
+      "rustest_run_s": 0.7065061000175774,
+      "rustest_v2_run_s": 3.381116700009443,
+      "rustest_collect_s": 0.24210609999136068,
+      "rustest_collect_warm_s": 0.3227855000004638
     },
     {
       "files": 100,
       "tests": 1000,
-      "pytest_collect_s": 2.1207589999830816,
-      "pytest_run_s": 2.2497234999900684,
-      "rustest_run_s": 1.2248865999863483,
-      "rustest_v2_run_s": 12.812508300004993,
-      "rustest_collect_s": 0.6228849000181071,
-      "rustest_collect_warm_s": 0.6686361999891233
+      "pytest_collect_s": 2.6513110999949276,
+      "pytest_run_s": 2.3150688000023365,
+      "rustest_run_s": 1.2318997000111267,
+      "rustest_v2_run_s": 6.2314125999982934,
+      "rustest_collect_s": 0.2776208000141196,
+      "rustest_collect_warm_s": 0.30512659999658354
     },
     {
       "files": 500,
       "tests": 5000,
-      "pytest_collect_s": 11.647820499987574,
-      "pytest_run_s": 8.64877770000021,
-      "rustest_run_s": 5.682000400003744,
-      "rustest_v2_run_s": 9.95274049998261,
-      "rustest_collect_s": 0.4734401000023354,
-      "rustest_collect_warm_s": 0.6098391000123229
+      "pytest_collect_s": 10.169478299998445,
+      "pytest_run_s": 8.493004499992821,
+      "rustest_run_s": 4.330037799983984,
+      "rustest_v2_run_s": 6.316716700006509,
+      "rustest_collect_s": 0.31505549998837523,
+      "rustest_collect_warm_s": 0.4022668999969028
     }
   ],
   "derived": {
-    "pytest_overhead_us_per_test": 1599.7635500025353,
-    "rustest_overhead_us_per_test": 1114.278450004349,
-    "rustest_v2_overhead_us_per_test": -714.9419500055956
+    "pytest_overhead_us_per_test": 1544.4839249976212,
+    "rustest_overhead_us_per_test": 774.5345249932143,
+    "rustest_v2_overhead_us_per_test": 21.32602500205394
   }
 }

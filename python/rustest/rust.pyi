@@ -197,6 +197,7 @@ def v2_run(
     last_failed_mode: str = ...,
     no_capture: bool = ...,
     codeblocks: bool = ...,
+    assert_rewrite: str = ...,
 ) -> str:
     """Run tests with the v2 engine; returns a schema-v2 ``RunReport`` JSON string.
 

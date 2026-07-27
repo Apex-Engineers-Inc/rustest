@@ -56,7 +56,7 @@ use crate::v2::manifest::{
 use crate::v2::manifest_cache::ManifestCache;
 use crate::v2::protocol::{WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
 use crate::v2::selection::{select_mask, SelectionError};
-use crate::v2::static_collect::{static_pass_cached, CacheMode};
+use crate::v2::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
 use crate::v2::to_posix;
 
 // ---------------------------------------------------------------------------
@@ -380,6 +380,13 @@ pub struct CollectOptions {
     pub keyword: Option<String>,
     /// The raw `-m` expression.
     pub mark: Option<String>,
+    /// Compute the assertion-rewrite plan ([`crate::v2::static_collect::rewrite_plan`]).
+    ///
+    /// **Off by default**, and the default is the interesting half: only a *run* imports the
+    /// modules, so only a run can benefit from rewritten assertions. `--v2-collect-only`
+    /// would pay a read and a parse per file for a plan it then throws away, on the one
+    /// surface whose entire point is latency.
+    pub assert_rewrite: bool,
 }
 
 impl CollectOptions {
@@ -483,6 +490,15 @@ pub(crate) struct Dispatch {
     /// needs a path the platform's own APIs accept.
     pub(crate) rootdir_path: PathBuf,
     pub(crate) targets: Vec<PathBuf>,
+    /// Per target, in walk order: the Tier S manifest cache key for a file whose assertions
+    /// may be rewritten, or `None`.
+    ///
+    /// Empty (rather than all-`None`) when the caller did not ask for a plan, which is every
+    /// path except a run — `--v2-collect-only` imports nothing, so there is nothing to
+    /// rewrite and nothing to pay for computing.  [`Dispatch::assert_key`] reads it, and
+    /// treats short and empty the same way, so a caller cannot get a *wrong* key by
+    /// forgetting to fill it — only no key.
+    pub(crate) assert_keys: Vec<Option<String>>,
     /// Per worker, in walk order: `(target index, path)`.  The target index is what puts
     /// the manifest back into walk order however the pool interleaves.
     pub(crate) assignments: Vec<Vec<(usize, PathBuf)>>,
@@ -502,6 +518,7 @@ pub(crate) fn plan(
     args: &[PathBuf],
     workers: usize,
     codeblocks: bool,
+    assert_rewrite: bool,
 ) -> Result<Dispatch, CollectError> {
     plan_with_options(
         invocation_dir,
@@ -515,6 +532,11 @@ pub(crate) fn plan(
             // makes "a Tier D result is never cached" readable at the call site rather than
             // inferable from two files away.
             cache: CacheMode::Off,
+            // The one thing a run needs from the static tier: which files may have their
+            // assertions rewritten, and under which key.  Not a collection answer — the
+            // manifest still comes from the workers — so it does not weaken the
+            // `DynamicOnly` rule above; see `static_collect::rewrite_plan`.
+            assert_rewrite,
             ..CollectOptions::default()
         },
     )
@@ -588,6 +610,15 @@ pub(crate) fn plan_with_options(
         assignments[worker_for(path, pool_size)].push((index, path.clone()));
     }
 
+    // Computed **after** selection, so a `-k` that empties the tree does not pay for a plan
+    // nobody will use, and over `targets` rather than the dynamic subset, so the vector stays
+    // indexed by target like every other per-file vector here.
+    let assert_keys = if options.assert_rewrite {
+        rewrite_plan(&targets, &config.rootdir, &config)
+    } else {
+        Vec::new()
+    };
+
     let init = WorkerRequest::Init {
         protocol_version: PROTOCOL_VERSION,
         rootdir: rootdir.clone(),
@@ -608,6 +639,7 @@ pub(crate) fn plan_with_options(
         cache: _cache,
         rootdir_path: config.rootdir.clone(),
         targets,
+        assert_keys,
         assignments,
         init,
     })
@@ -741,7 +773,10 @@ fn collect_with_launcher(
         let handles: Vec<_> = pool
             .into_iter()
             .zip(dispatch.assignments.iter().cloned())
-            .map(|(worker, files)| scope.spawn(move || run_worker(worker, files)))
+            .map(|(worker, files)| {
+                let keys = &dispatch.assert_keys;
+                scope.spawn(move || run_worker(worker, files, keys))
+            })
             .collect();
         handles
             .into_iter()
@@ -1289,10 +1324,17 @@ impl Worker {
         })
     }
 
+    /// Write one request as a **single** `write_all`.
+    ///
+    /// `ChildStdin` is unbuffered — every `write_all` is a syscall — so the newline used to
+    /// cost a second one on every message. On the execute path that is one extra syscall per
+    /// *test*: at 5 000 tests, 5 000 avoidable trips through whatever filter driver Windows
+    /// has installed. Appending to the serialised string and writing once puts identical
+    /// bytes on the wire. Measured at Phase 2 Task 3.
     fn send(&mut self, request: &WorkerRequest) -> std::io::Result<()> {
-        let line = serde_json::to_string(request).expect("a WorkerRequest always serializes");
+        let mut line = serde_json::to_string(request).expect("a WorkerRequest always serializes");
+        line.push('\n');
         self.stdin.write_all(line.as_bytes())?;
-        self.stdin.write_all(b"\n")?;
         self.stdin.flush()
     }
 
@@ -1383,10 +1425,15 @@ impl Worker {
     }
 
     /// `collect_file` -> `collected`, validated on receipt.
-    pub(crate) fn collect_one(&mut self, path: &Path) -> Result<FileOutcome, CollectError> {
+    pub(crate) fn collect_one(
+        &mut self,
+        path: &Path,
+        assert_key: Option<&str>,
+    ) -> Result<FileOutcome, CollectError> {
         let posix = to_posix(path);
         let request = WorkerRequest::CollectFile {
             path: posix.clone(),
+            assert_key: assert_key.map(str::to_string),
         };
         if let Err(err) = self.send(&request) {
             return Err(self.died(path, format!("could not send collect_file: {err}")));
@@ -1452,83 +1499,156 @@ impl Worker {
         }
     }
 
-    /// `execute_test` -> `test_result`, validated on receipt.
+    /// `execute_batch` -> N x `test_result` + `batch_done`, validated on receipt.
     ///
-    /// Three checks, and each exists because the alternative is a *silently wrong report*
+    /// Results are **appended to `out` as they arrive**, and the return value is only the
+    /// worker's `stopped` flag. The out-parameter is not a style choice: a worker can die
+    /// mid-batch on `pytest.exit()`, and pytest keeps every result it had already reported
+    /// before the bail-out. Returning `Result<Vec<_>, _>` would drop exactly those results on
+    /// the one path that must preserve them — pinned by
+    /// `a_pytest_exit_stops_the_session_and_keeps_the_results_so_far`.
+    ///
+    /// Three per-result checks, each because the alternative is a *silently wrong report*
     /// rather than a loud failure:
     ///
-    /// * the echoed `id` must be the requested one — a worker answering out of order would
-    ///   otherwise attribute one test's outcome to another;
-    /// * the `status` must be one of the documented six.  `src/v2/protocol.rs` leaves the
+    /// * the echoed `id` must be the one at this position — a worker answering out of order
+    ///   would otherwise attribute one test's outcome to another. Name and position are both
+    ///   checked, because they fail differently: a wrong name is a worker answering the wrong
+    ///   test, while matching names in the wrong *order* would be a reordering the report
+    ///   absorbs without trace;
+    /// * the `status` must be one of the documented six. `src/v2/protocol.rs` leaves the
     ///   field an unvalidated `String` **on purpose** and says so: an enum would reject the
     ///   line inside serde with no test id in hand, so the check belongs here, where the
-    ///   request that caused it and the worker's stderr are both available.  An unknown
-    ///   value is protocol drift, and the error names the value;
-    /// * anything that is not a `test_result` at all is drift by op.
-    pub(crate) fn execute_one(&mut self, id: &str) -> Result<TestOutcome, CollectError> {
-        let request = WorkerRequest::ExecuteTest { id: id.to_string() };
+    ///   request that caused it and the worker's stderr are both available;
+    /// * anything that is neither a `test_result` nor the terminator is drift by op.
+    ///
+    /// Two terminator checks close the batch:
+    ///
+    /// * `executed` must equal the number of results seen. This is the only place a *lost*
+    ///   result is detectable at all — the stream still ends, the ids still line up, and the
+    ///   missing test would simply be absent from the report;
+    /// * a batch that ended without `stopped` must have executed every id. Anything else is a
+    ///   worker that dropped work without saying so.
+    pub(crate) fn execute_batch(
+        &mut self,
+        ids: &[String],
+        stop_on_failure: bool,
+        out: &mut Vec<TestOutcome>,
+    ) -> Result<bool, CollectError> {
+        let first = ids.first().map(String::as_str).unwrap_or("<empty batch>");
+        let base = out.len();
+        let request = WorkerRequest::ExecuteBatch {
+            ids: ids.to_vec(),
+            stop_on_failure,
+        };
         if let Err(err) = self.send(&request) {
-            return Err(self.execute_died(id, format!("could not send execute_test: {err}")));
+            return Err(self.execute_died(first, format!("could not send execute_batch: {err}")));
         }
 
-        let line = match self.receive() {
-            Ok(Some(line)) => line,
-            Ok(None) => {
-                return Err(self.execute_died(id, "the worker exited without answering".into()))
-            }
-            Err(err) => {
-                return Err(CollectError::Io {
-                    worker: self.index,
-                    context: format!("reading the result for {id}"),
-                    message: err.to_string(),
-                })
-            }
-        };
+        out.reserve(ids.len());
+        loop {
+            // The id this line is *about*, for diagnostics: the one we are still waiting for,
+            // or the last one if the batch is complete and this is the terminator.
+            let seen = out.len() - base;
+            let expected = ids.get(seen).map(String::as_str).unwrap_or(first);
 
-        let response: WorkerResponse = match serde_json::from_str(&line) {
-            Ok(response) => response,
-            Err(err) => {
-                return Err(self.execute_protocol(id, format!("undecodable response: {err}"), line))
-            }
-        };
-
-        match response {
-            WorkerResponse::TestResult {
-                id: echoed,
-                status,
-                duration_s,
-                message,
-                stdout,
-                stderr,
-            } => {
-                if echoed != id {
-                    return Err(self.execute_protocol(
-                        id,
-                        format!("the response names `{echoed}`, not the requested test"),
-                        line,
-                    ));
+            let line = match self.receive() {
+                Ok(Some(line)) => line,
+                Ok(None) => {
+                    return Err(self.execute_died(expected, "the worker exited mid-batch".into()))
                 }
-                let Some(status) = TestStatus::parse(&status) else {
+                Err(err) => {
+                    return Err(CollectError::Io {
+                        worker: self.index,
+                        context: format!("reading a batch result for {expected}"),
+                        message: err.to_string(),
+                    })
+                }
+            };
+
+            let response: WorkerResponse = match serde_json::from_str(&line) {
+                Ok(response) => response,
+                Err(err) => {
                     return Err(self.execute_protocol(
-                        id,
-                        format!("unknown status `{status}`"),
+                        expected,
+                        format!("undecodable response: {err}"),
                         line,
-                    ));
-                };
-                Ok(TestOutcome {
+                    ))
+                }
+            };
+
+            match response {
+                WorkerResponse::TestResult {
                     id: echoed,
                     status,
                     duration_s,
                     message,
                     stdout,
                     stderr,
-                })
+                } => {
+                    let Some(wanted) = ids.get(seen) else {
+                        return Err(self.execute_protocol(
+                            expected,
+                            format!("a {}th result for a batch of {}", seen + 1, ids.len()),
+                            line,
+                        ));
+                    };
+                    if &echoed != wanted {
+                        return Err(self.execute_protocol(
+                            wanted,
+                            format!("the response names `{echoed}`, not the test at this position"),
+                            line,
+                        ));
+                    }
+                    let Some(status) = TestStatus::parse(&status) else {
+                        return Err(self.execute_protocol(
+                            wanted,
+                            format!("unknown status `{status}`"),
+                            line,
+                        ));
+                    };
+                    out.push(TestOutcome {
+                        id: echoed,
+                        status,
+                        duration_s,
+                        message,
+                        stdout,
+                        stderr,
+                    });
+                }
+                WorkerResponse::BatchDone { executed, stopped } => {
+                    if executed != seen {
+                        return Err(self.execute_protocol(
+                            expected,
+                            format!(
+                                "the worker says it executed {executed} tests, {seen} results arrived"
+                            ),
+                            line,
+                        ));
+                    }
+                    if !stopped && seen != ids.len() {
+                        return Err(self.execute_protocol(
+                            expected,
+                            format!(
+                                "the batch ended after {seen} of {} tests without stopping early",
+                                ids.len()
+                            ),
+                            line,
+                        ));
+                    }
+                    return Ok(stopped);
+                }
+                other => {
+                    return Err(self.execute_protocol(
+                        expected,
+                        format!(
+                            "expected `test_result` or `batch_done`, got `{}`",
+                            response_op(&other)
+                        ),
+                        line,
+                    ))
+                }
             }
-            other => Err(self.execute_protocol(
-                id,
-                format!("expected `test_result`, got `{}`", response_op(&other)),
-                line,
-            )),
         }
     }
 
@@ -1719,18 +1839,26 @@ fn response_op(response: &WorkerResponse) -> &'static str {
         // Never sent during collection — a worker answering `collect_file` with one is
         // exactly the drift this function names in the error.
         WorkerResponse::TestResult { .. } => "test_result",
+        WorkerResponse::BatchDone { .. } => "batch_done",
         WorkerResponse::Bye => "bye",
     }
 }
 
 /// One worker's whole life: collect its files in order, then shut it down.
+///
+/// `assert_keys` is indexed by **target**, so the lookup is by the target index that travels
+/// with each file rather than by position in `files` — a worker holds an arbitrary subset of
+/// the walk, and indexing it by its own position would hand every worker the first N keys of
+/// the tree.
 fn run_worker(
     mut worker: Worker,
     files: Vec<(usize, PathBuf)>,
+    assert_keys: &[Option<String>],
 ) -> Result<Vec<(usize, FileOutcome)>, CollectError> {
     let mut outcomes = Vec::with_capacity(files.len());
     for (index, path) in &files {
-        outcomes.push((*index, worker.collect_one(path)?));
+        let key = assert_keys.get(*index).and_then(Option::as_deref);
+        outcomes.push((*index, worker.collect_one(path, key)?));
     }
     worker.shutdown()?;
     Ok(outcomes)
@@ -1805,7 +1933,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":2}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":3}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

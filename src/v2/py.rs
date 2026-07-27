@@ -259,6 +259,10 @@ pub fn v2_collect(
         cache: CacheMode::from_wire(cache_mode),
         keyword,
         mark: mark_expr,
+        // `--v2-collect-only` imports nothing, so there is nothing to rewrite; computing the
+        // plan would cost a read and a parse per file on the one surface whose whole point
+        // is latency.  The run path turns it on (`collect::plan`).
+        assert_rewrite: false,
     };
     let manifest = py
         .detach(|| collect(&dir, &args, python_executable, workers, &options))
@@ -310,6 +314,7 @@ fn parse_last_failed(mode: &str) -> PyResult<LastFailedMode> {
     last_failed_mode="none",
     no_capture=false,
     codeblocks=true,
+    assert_rewrite="auto",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn v2_run(
@@ -324,6 +329,7 @@ pub fn v2_run(
     last_failed_mode: &str,
     no_capture: bool,
     codeblocks: bool,
+    assert_rewrite: &str,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
@@ -332,6 +338,10 @@ pub fn v2_run(
         last_failed: parse_last_failed(last_failed_mode)?,
         no_capture,
         codeblocks,
+        // An unrecognised value means the default, for the same reason `TierMode::from_wire`
+        // and `CacheMode::from_wire` do: a typo in a debug knob must not turn a user's run
+        // into a usage error.
+        assert_rewrite: !matches!(assert_rewrite, "off" | "no" | "0"),
     };
     let report = py
         .detach(|| {
