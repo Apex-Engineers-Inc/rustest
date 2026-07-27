@@ -92,9 +92,15 @@ TOOL_NAME: Final = "rustest --cov"
 #: The search is coverage.py's own, bounds included (`coverage/sysmon.py::SysMonitor.start`,
 #: l. 245-253 — ``self.myid = sys_monitoring.COVERAGE_ID`` then ``while self.myid <= 5``, under
 #: the comment "There's no guarantee that 'our' tool id will still be available, so we have to
-#: search for a usable one in start() anyway"). It matters here for a concrete reason:
-#: ``coverage run -m rustest --cov=...`` puts coverage.py's own tracer in this process holding
-#: id 1, and the worker must step to 2 rather than fail the run.
+#: search for a usable one in start() anyway").
+#:
+#: The case it covers is an **in-process squatter**: any tool already holding the id in the
+#: interpreter this monitor starts in — a debugger, a profiler, another coverage tool, or an
+#: embedded/driver use of :class:`LineMonitor` in a process that already had one. It is *not*
+#: ``coverage run -m rustest --cov=...``: that measures the CLI process, and workers are
+#: spawned subprocesses which inherit no tracer, so nothing collides there.
+#: ``test_a_taken_tool_id_is_stepped_over`` builds the honest case — it takes the id in the
+#: test process and asserts the monitor steps past it.
 #:
 #: Derived from the constant rather than written as a literal, because ``COVERAGE_ID`` is **1**
 #: — not 3, which is the number the "reserved ids" table invites you to assume.
@@ -135,13 +141,21 @@ def require_coverage() -> None:
         ) from exc
 
 
-def branch_refusal() -> str:
-    """The message ``--cov-branch`` gets, as a usage error.
+def branch_refusal(asked_by: str = "--cov-branch") -> str:
+    """The message a request for branch coverage gets, as a usage error.
 
     Branch coverage is **deferred, not forgotten**, and the refusal is loud rather than a
     silent downgrade to line coverage: a run that quietly measured lines when the user asked
     for branches would report a *higher* number than the truth, against a threshold the user
-    set for branches. That is the one failure mode a coverage tool must not have.
+    set for branches. That is the one failure mode a coverage tool must not have -- and it is
+    not hypothetical: on a fixture where a real branch run reports **78 %**, the silently
+    degraded line report reads **86 %**.
+
+    *asked_by* names where the request came from, because there are two doors into it and the
+    fix differs: the ``--cov-branch`` flag, and ``branch = True`` in the coverage configuration
+    (`.coveragerc`, `setup.cfg`, `tox.ini`, or ``[tool.coverage.run]`` in `pyproject.toml`).
+    The second is the dangerous one -- it is invisible on the command line, and a user who set
+    it once a year ago would otherwise get a line number under a branch heading.
 
     What it would take, so the deferral is a scope decision and not a mystery: PEP 669's
     ``BRANCH_LEFT``/``BRANCH_RIGHT`` events (3.14+ only -- on 3.12/3.13 coverage.py refuses
@@ -151,13 +165,33 @@ def branch_refusal() -> str:
     through the data API. None of it is hard; all of it is a second measurement mode with its
     own differential, and rustest's floor is 3.12.
     """
+    remedy = f"Drop {asked_by}" if asked_by.startswith("-") else "Remove it"
     return (
-        "--cov-branch is not implemented yet: rustest measures line coverage only."
-        + " Branch coverage needs PEP 669 BRANCH_LEFT/BRANCH_RIGHT events, which exist"
-        + " on 3.14+ only, plus arc resolution -- it is deferred rather than approximated,"
-        + " because reporting line coverage against a branch threshold would overstate it."
-        + " Drop --cov-branch, or use `coverage run -m rustest` for branch data."
+        f"{asked_by} asks for branch coverage, which rustest does not implement:"
+        + " it measures line coverage only. Branch coverage needs PEP 669"
+        + " BRANCH_LEFT/BRANCH_RIGHT events, which exist on 3.14+ only, plus arc resolution --"
+        + " it is deferred rather than approximated, because reporting line coverage against a"
+        + " branch threshold would overstate it."
+        + f" {remedy}, or use `coverage run --branch -m rustest` for branch data."
     )
+
+
+def config_requests_branch() -> bool:
+    """Whether the resolved coverage configuration turns branch measurement on.
+
+    Read from the **same** files and in the same order the report will read them, by asking
+    coverage.py rather than parsing anything here: ``Coverage.__init__`` resolves
+    `.coveragerc` / `setup.cfg` / `tox.ini` / `pyproject.toml` (and ``COVERAGE_RCFILE``) into
+    ``self.config``, so this is the value that would otherwise reach the reporter.
+
+    Constructed **without** a ``branch=`` argument on purpose: a constructor argument overrides
+    the file, so passing ``branch=False`` here -- which is exactly what
+    :func:`combine_and_report` must do -- would answer `False` for every project and detect
+    nothing. The two calls are therefore deliberately different, and this one is the probe.
+    """
+    import coverage
+
+    return bool(coverage.Coverage(data_file=None).config.branch)
 
 
 class LineMonitor:
@@ -337,14 +371,39 @@ class LineMonitor:
         coverage.py's ``should_trace`` + ``check_include_omit_etc`` (`inorout.py` l. 343-500)
         reduced to the ``source``-is-set branch, which is the only branch rustest can be in:
 
-        * ``<string>``/``<frozen ...>`` and friends are never real files (l. 365-369, "Lots of
+        * an **empty** ``co_filename`` "isn't a file name" (l. 386-388);
+        * ``memory:`` "isn't traceable" (l. 390-391);
+        * ``<string>``/``<frozen ...>`` and friends are never real files (l. 393-397, "Lots of
           non-file execution is represented with artificial file names");
         * a file outside every source tree is "falls outside the --source spec" (l. 471);
         * a file *inside* a source tree that is also a third-party install location is
           "inside --source, but is third-party" (l. 472-473) -- which is what keeps a bare
           ``--cov`` at a repo root from measuring the ``.venv/`` inside it.
+
+        **Not ported:** coverage.py's ``should_trace`` prefers the running frame's ``__file__``
+        to ``co_filename`` and maps ``.pyc`` to ``.py`` through ``source_for_file``
+        (`inorout.py` l. 368-384; its own sysmon tracer reaches the frame with
+        ``inspect.currentframe().f_back``, `sysmon.py` l. 339-345). rustest decides on
+        ``co_filename`` alone. The two differ only for a ``.pyc`` whose *compile-time* path is
+        not where it now lives -- an installed or relocated bytecode file, or a sourceless one
+        -- where rustest would judge the stale name and, typically, decide it falls outside the
+        source tree: an **under**-report, never an over-report. Recorded in the Task 3 report's
+        accepted-difference table rather than fixed, because the frame walk is a per-code-object
+        cost paid to serve a case that source-present imports never reach.
+
+        **The empty-string guard is not defensive tidying**, and it is why the whole ladder is
+        ported rather than just its first rung. ``exec(compile(src, "", "exec"))`` -- the shape
+        ``pytest.importorskip`` uses (`_pytest/outcomes.py` l. 256), and rustest's own compat
+        shim with it (`rustest/compat/pytest.py` l. 979) -- produces code objects whose
+        ``co_filename`` is ``""``. ``canonical_filename("")`` is ``abspath("")``, i.e. **the
+        current directory**, so under a bare ``--cov`` the *directory* matches the source tree
+        and is recorded as a measured file. The consequence is not a stray row: the report dies
+        with ``No source for code: '<dir>': [Errno 13] Permission denied`` and the written
+        ``.coverage`` stays poisoned for every later ``coverage report``/``html``. Reproduced
+        before the fix and pinned by
+        ``test_code_compiled_with_an_empty_filename_is_not_measured``.
         """
-        if filename.startswith("<"):
+        if not filename or filename.startswith(("<", "memory:")):
             return None
         from coverage.files import canonical_filename
 
@@ -435,10 +494,18 @@ def combine_and_report(
     ``<invocation dir>/.coverage`` by default: the same name and place coverage.py itself
     uses, so ``coverage html`` or ``coverage report`` **after** a ``rustest --cov`` run works
     with no arguments. That is the whole ecosystem-compatibility claim, made concrete.
+
+    ``branch=False`` is passed **explicitly**, and it is not a restatement of the default. The
+    default is whatever the project's coverage configuration says, and a project with
+    ``branch = True`` in it would otherwise get a reporter configured for branches over data
+    that has none -- a line percentage printed under a branch setting, higher than the truth.
+    :func:`config_requests_branch` refuses that run outright before any worker is spawned; this
+    argument is the structural half of the same guarantee, so no path can reach the reporter
+    with branches on.
     """
     import coverage
 
-    cov = coverage.Coverage(data_file=data_file, source=list(sources))
+    cov = coverage.Coverage(data_file=data_file, source=list(sources), branch=False)
     # `strict=False`: a pool whose every worker measured nothing still wrote a file, but an
     # aborted run may have written none at all, and "no data" must report 0 % rather than
     # raise on top of whatever already went wrong.

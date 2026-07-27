@@ -623,9 +623,22 @@ class _CoverageRun:
         if cov is None:
             return cls.disabled()
 
-        from ._v2_coverage import parse_report_spec, require_coverage, resolve_sources
+        from ._v2_coverage import (
+            branch_refusal,
+            config_requests_branch,
+            parse_report_spec,
+            require_coverage,
+            resolve_sources,
+        )
 
         require_coverage()
+        # `branch = True` in `.coveragerc` / `[tool.coverage.run]` is the *second* door into a
+        # request rustest cannot honour, and the dangerous one: `--cov-branch` is visible on the
+        # command line, a config file set a year ago is not. Refused here, before a worker is
+        # spawned, so it costs a usage error rather than a full run whose number overstates
+        # coverage. `combine_and_report` passes `branch=False` explicitly as the structural half.
+        if config_requests_branch():
+            raise ValueError(branch_refusal("branch = True in the coverage configuration"))
         reports = [parse_report_spec(spec) for spec in (cov_report or ["term"])]
         rootdir: str = json.loads(rust.v2_resolve_config(os.getcwd(), paths))["rootdir"]
         sources = resolve_sources(cov, rootdir)

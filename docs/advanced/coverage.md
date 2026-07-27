@@ -36,9 +36,12 @@ rustest --cov=src tests/
 coverage html          # or: coverage report, coverage json, coverage lcov, coverage annotate
 ```
 
-`[tool.coverage.report]` settings in your `pyproject.toml` or `.coveragerc` — `exclude_lines`,
-`omit`, `precision`, `fail_under` — apply to the terminal and XML reports, because those
-reports *are* coverage.py's.
+Your project's `[report]` settings — `[tool.coverage.report]` in `pyproject.toml`, or the
+`[report]` section of `.coveragerc` — apply to the terminal and XML output, because those
+reports *are* coverage.py's: `exclude_lines`, `exclude_also`, `omit`, `include`, `precision`,
+`skip_covered`, `sort`. `fail_under` is **read but not acted on**: rustest's exit code belongs
+to the tests, so a coverage shortfall does not change it. Run `coverage report` after the run
+if you want `fail_under` enforced.
 
 ## What is supported
 
@@ -49,6 +52,7 @@ reports *are* coverage.py's.
 | `--cov-report=xml[:PATH]` | ✅ Cobertura, default `coverage.xml` |
 | `--cov-report=html`, `json`, `lcov`, `annotate`, `term-missing` | ❌ run the `coverage` CLI on the `.coverage` file rustest wrote |
 | `--cov-branch` | ❌ **refused loudly** — see below |
+| `branch = True` in `.coveragerc` / `[tool.coverage.run]` | ❌ refused the same way, before the run — see below |
 | `--cov-append`, `--cov-config`, `--cov-context`, `--cov-fail-under`, `--no-cov` | ❌ not implemented |
 
 ## Branch coverage is deferred, not approximated
@@ -56,6 +60,16 @@ reports *are* coverage.py's.
 `--cov-branch` exits 4 rather than measuring lines and calling it branches. Reporting line
 coverage against a threshold a user set for *branches* overstates it, and a coverage tool that
 reports a number higher than the truth is worse than one that refuses.
+
+**`branch = True` in your coverage configuration is refused the same way**, and that is the
+case worth knowing about: it is invisible on the command line. On a suite whose honest branch
+coverage is 75 %, the silently degraded line report reads 81 % — with no Branch or BrPart
+columns to hint that the setting was ignored. rustest exits 4 before running anything instead:
+
+```
+ERROR: branch = True in the coverage configuration asks for branch coverage, which rustest
+does not implement: it measures line coverage only. ...
+```
 
 If you need branch data today:
 

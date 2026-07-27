@@ -20,6 +20,8 @@ not about collection.
 
 from __future__ import annotations
 
+import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -335,6 +337,32 @@ def test_the_branch_refusal_names_what_it_would_take() -> None:
     # The refusal must say *why* it is not a silent downgrade to line coverage, because that
     # is the failure mode being avoided.
     assert "overstate" in message
+    # ...and it must name whichever door the request came through, because the remedy differs:
+    # a flag is dropped from a command line, a config setting is removed from a file.
+    config = _v2_coverage.branch_refusal("branch = True in the coverage configuration")
+    assert "branch = True in the coverage configuration" in config
+    assert "--cov-branch" not in config
+    assert "Remove it" in config
+
+
+def test_the_branch_config_probe_reads_the_project_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`config_requests_branch` must read the *file*, which means no `branch=` argument.
+
+    A constructor argument overrides the configuration file, so the obvious-looking
+    `Coverage(branch=False).config.branch` answers `False` for every project on earth and
+    detects nothing. This is the test that fails if that argument is ever added to the probe.
+    """
+    monkeypatch.chdir(tmp_path)
+    assert _v2_coverage.config_requests_branch() is False
+
+    _write(tmp_path / ".coveragerc", "[run]\nbranch = True\n")
+    assert _v2_coverage.config_requests_branch() is True
+
+    (tmp_path / ".coveragerc").unlink()
+    _write(tmp_path / "pyproject.toml", "[tool.coverage.run]\nbranch = true\n")
+    assert _v2_coverage.config_requests_branch() is True
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +400,14 @@ def test_a_run_without_cov_registers_no_monitoring_tool(tmp_path: Path) -> None:
         "def test_no_monitoring_tool_is_registered():\n"
         "    assert [sys.monitoring.get_tool(i) for i in range(6)] == [None] * 6\n",
     )
-    result = _rustest(tmp_path, ["tests/", "-q"])
+    result = _rustest(tmp_path, ["tests/", "-v"])
+
     assert result.returncode == 0, result.stderr
+    # `-v` and the node id, because exit 0 alone is not evidence: a probe that stopped being
+    # collected -- a renamed file, a `python_files` change, a collection error swallowed
+    # somewhere -- would leave this run green while asserting nothing at all.
+    expected = "tests/test_probe.py::test_no_monitoring_tool_is_registered PASSED"
+    assert expected in result.stdout, result.stdout
 
 
 def test_a_cov_run_registers_exactly_one_tool_named_rustest(tmp_path: Path) -> None:
@@ -388,8 +422,122 @@ def test_a_cov_run_registers_exactly_one_tool_named_rustest(tmp_path: Path) -> N
         "    tools = [sys.monitoring.get_tool(i) for i in range(6)]\n"
         "    assert [t for t in tools if t is not None] == ['rustest --cov'], tools\n",
     )
-    result = _rustest(tmp_path, ["tests/", "-q", "--cov=src"])
+    result = _rustest(tmp_path, ["tests/", "-v", "--cov=src"])
+
     assert result.returncode == 0, result.stdout + result.stderr
+    expected = "tests/test_probe.py::test_one_monitoring_tool_is_registered PASSED"
+    assert expected in result.stdout, result.stdout
+
+
+def test_code_compiled_with_an_empty_filename_is_not_measured(tmp_path: Path) -> None:
+    """The empty `co_filename` guard, as the failure it prevents rather than as a branch.
+
+    `exec(compile(src, "", "exec"))` -- `pytest.importorskip`'s shape (`_pytest/outcomes.py`
+    l. 256), and rustest's own compat shim's (`rustest/compat/pytest.py` l. 979) -- makes code
+    objects whose `co_filename` is `""`. `canonical_filename("")` is `abspath("")`, i.e. the
+    **current directory**, so under a bare `--cov` the directory matched the source tree and was
+    recorded as a measured file. Measured before the fix: the terminal report died with
+
+        ERROR: could not produce the coverage report: No source for code: '<dir>':
+        [Errno 13] Permission denied
+
+    and -- worse, because it outlives the run -- the written `.coverage` stayed poisoned, so a
+    later `coverage report` or `coverage html` failed the same way. Both halves are asserted.
+    """
+    _write(tmp_path / "pytest.ini", "[pytest]\n")
+    _write(
+        tmp_path / "gen.py",
+        "def build(name):\n"
+        '    src = f"def {name}():\\n    return {name!r}\\n"\n'
+        "    namespace = {}\n"
+        '    exec(compile(src, "", "exec"), namespace)\n'
+        "    return namespace[name]\n",
+    )
+    _write(
+        tmp_path / "test_gen.py",
+        "import gen\n\n\ndef test_generated():\n    assert gen.build('greet')() == 'greet'\n",
+    )
+
+    result = _rustest(tmp_path, [".", "-q", "--cov"])
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "No source for code" not in result.stdout + result.stderr, result.stdout + result.stderr
+    assert "TOTAL" in result.stdout, result.stdout
+
+    # The directory itself must not be in the data at all -- the report merely happening to
+    # succeed would not rule out a stray entry that a different reporter chokes on.
+    assert os.path.basename(tmp_path) not in _lines(tmp_path / ".coverage")
+    assert sorted(_lines(tmp_path / ".coverage")) == ["gen.py", "test_gen.py"]
+
+    # ...and the file rustest wrote is still usable by coverage.py afterwards, which is the
+    # half that survives the run.
+    follow_up = _run([sys.executable, "-m", "coverage", "report"], tmp_path)
+    assert follow_up.returncode == 0, follow_up.stdout + follow_up.stderr
+
+
+def test_a_branch_configuration_is_refused_before_the_run(tmp_path: Path) -> None:
+    """`branch = True` in the config is the same request as `--cov-branch`, arriving quietly.
+
+    Without the refusal the run completes and prints a **line** percentage under a
+    configuration that asked for branches, with no Branch/BrPart columns to signal it: measured
+    on this fixture at 81 % against the 75 % a real branch run reports. That is the
+    overstatement `branch_refusal` exists to prevent, and a config file is the one door where
+    nothing on the command line hints at it.
+    """
+    _tiny_tree(tmp_path)
+    _write(tmp_path / ".coveragerc", "[run]\nbranch = True\n")
+
+    result = _rustest(tmp_path, ["tests/", "-q", "--cov=src"])
+
+    assert result.returncode == 4, (result.returncode, result.stdout, result.stderr)
+    assert "branch = True in the coverage configuration" in result.stderr, result.stderr
+    # Refused *before* anything ran: no data file, and no test output.
+    assert not (tmp_path / ".coverage").exists()
+    assert "passed" not in result.stderr, result.stderr
+
+
+def test_the_reporter_is_built_with_branches_off(tmp_path: Path) -> None:
+    """The structural half of the same guarantee: no path reaches the reporter with branches on.
+
+    `prepare` refuses a configured branch request, but `combine_and_report` must not depend on
+    that having happened -- an embedded caller, or a future config source, could reach it
+    directly. Asserted by handing it a tree whose `.coveragerc` asks for branches and checking
+    the `Coverage` it builds.
+    """
+    import coverage
+
+    _write(tmp_path / ".coveragerc", "[run]\nbranch = True\n")
+    _write(tmp_path / "lib.py", "def f(n):\n    return n\n")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    built: list[object] = []
+    original = coverage.Coverage
+
+    class Recording(original):  # pyright: ignore[reportUntypedBaseClass]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+            built.append(self)
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        coverage.Coverage = Recording  # pyright: ignore[reportAttributeAccessIssue]
+        _ = _v2_coverage.combine_and_report(
+            data_dir=str(data_dir),
+            sources=[str(tmp_path)],
+            data_file=str(tmp_path / ".coverage"),
+            reports=[("term", None)],
+            stream=io.StringIO(),
+        )
+    finally:
+        coverage.Coverage = original  # pyright: ignore[reportAttributeAccessIssue]
+        os.chdir(cwd)
+
+    assert built, "combine_and_report must build a Coverage object"
+    assert all(not getattr(c, "config").branch for c in built), [
+        getattr(c, "config").branch for c in built
+    ]
 
 
 def test_cov_writes_a_combined_coverage_file_and_a_term_report(tmp_path: Path) -> None:
@@ -424,13 +572,36 @@ def test_an_unimported_source_file_reports_zero_rather_than_vanishing(tmp_path: 
 
 
 def test_the_per_worker_data_directory_is_removed(tmp_path: Path) -> None:
-    """The scratch directory is intermediate state, and a leftover would seed the next run."""
+    """The scratch directory is intermediate state, and a leftover would seed the next run.
+
+    Asserted on **the directory this run created**, obtained from the `_CoverageRun` itself.
+    Globbing the machine's `%TEMP%` for `rustest-cov-*` before and after -- the first version of
+    this test -- is a race against every other rustest process on the box, including the rest of
+    this suite running in parallel: it can fail because someone else's run is mid-flight, and it
+    can pass while leaking, if another run happens to clean up in the same window.
+    """
+    from rustest.core import _CoverageRun  # pyright: ignore[reportPrivateUsage]
+
+    _write(tmp_path / "pytest.ini", "[pytest]\n")
+    (tmp_path / "src").mkdir()
+
+    prepared = _CoverageRun.prepare([str(tmp_path / "src")], None, [str(tmp_path)])
+    data_dir = Path(json.loads(prepared.wire or "{}")["data_dir"])
+    assert data_dir.is_dir(), data_dir
+
+    with prepared:
+        pass
+    assert not data_dir.exists(), data_dir
+
+    # ...and `cleanup` is idempotent, because `__exit__` and an explicit call can both reach it.
+    prepared.cleanup()
+
+    # The end-to-end half: a real run leaves nothing behind under the directory it made. The
+    # run's own `.coverage` is the only artefact, and it is not in the scratch tree.
     _tiny_tree(tmp_path)
-    before = set(Path(os.environ.get("TEMP", "/tmp")).glob("rustest-cov-*"))
     result = _rustest(tmp_path, ["tests/", "-q", "--cov=src"])
     assert result.returncode == 0, result.stderr
-    after = set(Path(os.environ.get("TEMP", "/tmp")).glob("rustest-cov-*"))
-    assert after <= before, sorted(p.name for p in after - before)
+    assert (tmp_path / ".coverage").exists()
 
 
 def test_xml_report_is_written_where_asked(tmp_path: Path) -> None:
@@ -452,7 +623,7 @@ def test_cov_branch_is_refused_loudly(tmp_path: Path) -> None:
     _tiny_tree(tmp_path)
     result = _rustest(tmp_path, ["tests/", "-q", "--cov=src", "--cov-branch"])
     assert result.returncode == 4
-    assert "--cov-branch is not implemented" in result.stderr
+    assert "--cov-branch asks for branch coverage" in result.stderr
 
     alone = _rustest(tmp_path, ["tests/", "-q", "--cov-branch"])
     assert alone.returncode == 4, alone.stderr
@@ -486,8 +657,6 @@ def test_the_wire_object_is_omitted_without_cov_and_shaped_like_the_contract(
     The keys and their spelling are `src/v2/protocol.rs::CoverageWire`'s golden line; the
     `None` is what makes a plain run's `init` byte-identical to the pre-v5 form.
     """
-    import json
-
     from rustest.core import _CoverageRun  # pyright: ignore[reportPrivateUsage]
 
     assert _CoverageRun.disabled().wire is None
