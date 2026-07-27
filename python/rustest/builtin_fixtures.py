@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-import importlib
+import inspect
 import itertools
 import os
 import shutil
@@ -56,6 +56,68 @@ class _NotSet:
 _NOT_SET = _NotSet()
 
 
+def _annotated_getattr(obj: object, name: str, ann: str) -> object:
+    """Port of `_pytest/monkeypatch.py::annotated_getattr` (pytest 8.4.2, l. 88-95)."""
+    try:
+        obj = getattr(obj, name)
+    except AttributeError as exc:
+        raise AttributeError(
+            f"{type(obj).__name__!r} object at {ann} has no attribute {name!r}"
+        ) from exc
+    return obj
+
+
+def _resolve(name: str) -> object:
+    """Port of `_pytest/monkeypatch.py::resolve` (pytest 8.4.2, l. 60-85).
+
+    The point of the walk — and the reason a single ``rsplit(".", 1)`` +
+    ``import_module`` is wrong — is that *the longest importable prefix* is imported and
+    everything after it is reached with ``getattr``.  ``click.shell_completion.BashComplete``
+    is a class inside a module, so the naive split asks for a module
+    ``click.shell_completion.BashComplete`` that does not exist and dies with
+    ``ModuleNotFoundError``; this walks ``click`` -> ``shell_completion`` -> ``BashComplete``
+    instead.
+
+    ``getattr`` is tried *first* at each step, which is what makes ``os.path.join``
+    resolve without importing ``os.path.join`` as a module, and the ``expected == used``
+    test is what keeps a genuinely missing top-level module reporting its own
+    ``ModuleNotFoundError`` while a missing intermediate segment is re-raised wrapped.
+    """
+    parts = name.split(".")
+
+    used = parts.pop(0)
+    found: object = __import__(used)
+    for part in parts:
+        used += "." + part
+        try:
+            found = getattr(found, part)
+        except AttributeError:
+            pass
+        else:
+            continue
+        # Un-nested exactly as pytest un-nests it, to avoid a chained exception.
+        try:
+            __import__(used)
+        except ImportError as exc:
+            expected = str(exc).split()[-1]
+            if expected == used:
+                raise
+            raise ImportError(f"import error in {used}: {exc}") from exc
+        found = _annotated_getattr(found, part, used)
+    return found
+
+
+def _derive_importpath(import_path: object, raising: bool) -> tuple[str, object]:
+    """Port of `_pytest/monkeypatch.py::derive_importpath` (pytest 8.4.2, l. 98-105)."""
+    if not isinstance(import_path, str) or "." not in import_path:
+        raise TypeError(f"must be absolute import path string, not {import_path!r}")
+    module, attr = import_path.rsplit(".", 1)
+    target = _resolve(module)
+    if raising:
+        _ = _annotated_getattr(target, attr, ann=module)
+    return attr, target
+
+
 class MonkeyPatch:
     """Lightweight re-implementation of :class:`pytest.MonkeyPatch`."""
 
@@ -81,65 +143,65 @@ class MonkeyPatch:
         target: object | str,
         name: object | str = _NOT_SET,
         value: object = _NOT_SET,
-        *,
         raising: bool = True,
     ) -> None:
+        """Port of `_pytest/monkeypatch.py::MonkeyPatch.setattr` (pytest 8.4.2, l. 181-251).
+
+        ``raising`` is positional-or-keyword because pytest's is: ``setattr(obj, "x", 1,
+        False)`` is a shape real suites use, and a keyword-only parameter turned it into
+        ``TypeError: takes from 2 to 4 positional arguments but 5 were given``.
+        """
         if value is _NOT_SET:
             if not isinstance(target, str):
-                raise TypeError("use setattr(target, name, value) or setattr('module.attr', value)")
-            if "." not in target:
                 raise TypeError(
-                    f"setattr() with dotted path requires at least one dot: {target!r}. "
-                    + "Use setattr(target_object, 'name', value) or setattr('module.attr', value)"
+                    "use setattr(target, name, value) or "
+                    + "setattr(target, value) with target being a dotted import string"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
-            attr_value = name
-            if attr_value is _NOT_SET:
-                raise TypeError("value must be provided when using dotted path syntax")
-            attr_name = attr_name
-        else:
-            if not isinstance(name, str):
-                raise TypeError("attribute name must be a string")
-            obj = target
-            attr_name = name
-            attr_value = value
+            value = name
+            name, target = _derive_importpath(target, raising)
+        elif not isinstance(name, str):
+            raise TypeError(
+                "use setattr(target, name, value) with name being a string or "
+                + "setattr(target, value) with target being a dotted import string"
+            )
 
-        original = getattr(obj, attr_name, _NOT_SET)
-        if original is _NOT_SET and raising:
-            raise AttributeError(f"{attr_name!r} not found for patching")
+        original = getattr(target, name, _NOT_SET)
+        if raising and original is _NOT_SET:
+            raise AttributeError(f"{target!r} has no attribute {name!r}")
 
-        setattr(obj, attr_name, attr_value)
-        self._setattrs.append((obj, attr_name, original))
+        # Avoid class descriptors like staticmethod/classmethod: `getattr` on a class
+        # returns the *bound* object, and restoring that would silently turn a
+        # `staticmethod` into a plain function (pytest l. 247-249).
+        if inspect.isclass(target):
+            original = target.__dict__.get(name, _NOT_SET)
+        self._setattrs.append((target, name, original))
+        setattr(target, name, value)
 
     def delattr(
-        self, target: object | str, name: str | _NotSet = _NOT_SET, *, raising: bool = True
+        self,
+        target: object | str,
+        name: str | _NotSet = _NOT_SET,
+        raising: bool = True,
     ) -> None:
-        if isinstance(target, str) and name is _NOT_SET:
-            if "." not in target:
+        """Port of `_pytest/monkeypatch.py::MonkeyPatch.delattr` (pytest 8.4.2, l. 253-289)."""
+        if isinstance(name, _NotSet):
+            if not isinstance(target, str):
                 raise TypeError(
-                    f"delattr() with dotted path requires at least one dot: {target!r}. "
-                    + "Use delattr(target_object, 'name') or delattr('module.attr')"
+                    "use delattr(target, name) or "
+                    + "delattr(target) with target being a dotted import string"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
-            attr_name = attr_name
-        else:
-            if not isinstance(name, str):
-                raise TypeError("attribute name must be a string")
-            obj = target
-            attr_name = name
+            name, target = _derive_importpath(target, raising)
 
-        original = getattr(obj, attr_name, _NOT_SET)
-        if original is _NOT_SET:
+        if not hasattr(target, name):
             if raising:
-                raise AttributeError(f"{attr_name!r} not found for deletion")
+                raise AttributeError(name)
             return
 
-        delattr(obj, attr_name)
-        self._setattrs.append((obj, attr_name, original))
+        original = getattr(target, name, _NOT_SET)
+        if inspect.isclass(target):
+            original = target.__dict__.get(name, _NOT_SET)
+        self._setattrs.append((target, name, original))
+        delattr(target, name)
 
     def setitem(self, mapping: MutableMapping[Any, Any], key: Any, value: Any) -> None:
         original = mapping.get(key, _NOT_SET)

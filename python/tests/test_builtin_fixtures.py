@@ -217,13 +217,13 @@ GLOBAL_DICT = {"key": "value"}
 
 def test_monkeypatch_setattr_dotted_path_requires_dot(monkeypatch):
     '''Test that setattr with dotted path requires at least one dot.'''
-    with pytest.raises(TypeError, match="at least one dot"):
+    with pytest.raises(TypeError, match="must be absolute import path string"):
         monkeypatch.setattr("nodots", "value")
 
 
 def test_monkeypatch_delattr_dotted_path_requires_dot(monkeypatch):
     '''Test that delattr with dotted path requires at least one dot.'''
-    with pytest.raises(TypeError, match="at least one dot"):
+    with pytest.raises(TypeError, match="must be absolute import path string"):
         monkeypatch.delattr("nodots")
 
 
