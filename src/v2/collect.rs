@@ -53,6 +53,7 @@ use crate::v2::manifest::{
     CollectedTest, CollectionErrorEntry, CollectionManifest, MANIFEST_SCHEMA_VERSION,
 };
 use crate::v2::protocol::{WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
+use crate::v2::static_collect::static_pass;
 use crate::v2::to_posix;
 
 // ---------------------------------------------------------------------------
@@ -363,6 +364,7 @@ pub fn collect(
     python_executable: &str,
     workers: usize,
     codeblocks: bool,
+    tier: TierMode,
 ) -> Result<CollectionManifest, CollectError> {
     collect_with_launcher(
         invocation_dir,
@@ -370,7 +372,36 @@ pub fn collect(
         &WorkerLauncher::module(python_executable),
         workers,
         codeblocks,
+        tier,
     )
+}
+
+/// Which collection tiers a run is allowed to use.
+///
+/// [`TierMode::DynamicOnly`] is not a fallback, it is the **control leg of the differential**:
+/// Tier D is the oracle, so "collect this tree twice, once with Tier S enabled and once
+/// without, and diff the manifests" is the only test that can catch a static answer that is
+/// subtly wrong.  It is also what the *run* path always uses -- see [`plan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TierMode {
+    /// Tier S answers what it can; everything else goes to a worker.
+    #[default]
+    Auto,
+    /// Every file goes to a worker.
+    DynamicOnly,
+}
+
+impl TierMode {
+    /// Parse the wire spelling used by the `v2_collect` boundary and the
+    /// `RUSTEST_V2_COLLECT_TIER` escape hatch.  An unknown value is **not** an error: this is
+    /// a debug knob, and a typo must not turn a user's run into a usage error.  Anything but
+    /// the dynamic spellings means the default.
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "d" | "dynamic" => TierMode::DynamicOnly,
+            _ => TierMode::Auto,
+        }
+    }
 }
 
 /// One file's worth of worker output.
@@ -389,6 +420,9 @@ pub(crate) struct FileOutcome {
 /// sound while both halves compute it identically.
 pub(crate) struct Dispatch {
     pub(crate) rootdir: String,
+    /// Per target, in walk order: `Some(tests)` when Tier S answered, `None` when the file is
+    /// a worker's job.  Also the tier-attribution surface the differential asserts on.
+    pub(crate) static_tests: Vec<Option<Vec<CollectedTest>>>,
     /// The same rootdir as a native path.  Carried rather than rebuilt from the posix
     /// string, because anything that writes *next to* the rootdir — the last-failed cache —
     /// needs a path the platform's own APIs accept.
@@ -400,28 +434,80 @@ pub(crate) struct Dispatch {
     init: WorkerRequest,
 }
 
-/// Resolve config, walk, and route — the whole pre-spawn half of a run.
+/// Resolve config, walk, and route — the whole pre-spawn half of a run, Tier D only.
+///
+/// **The run path is Tier D only, and that is not a stopgap.**  A worker answers
+/// `ExecuteTest` out of the `ExecutionPlan` table `collect_file` filled *while importing the
+/// module*; a file Tier S answered was never imported anywhere, so no worker holds a plan for
+/// its tests and every one of them would come back `unknown test`.  Tier S therefore belongs
+/// to [`collect`] — the `--v2-collect-only` surface, and from Task 2 the manifest cache — and
+/// [`crate::v2::execute`] keeps calling this.
 pub(crate) fn plan(
     invocation_dir: &Path,
     args: &[PathBuf],
     workers: usize,
     codeblocks: bool,
 ) -> Result<Dispatch, CollectError> {
+    plan_with_tier(
+        invocation_dir,
+        args,
+        workers,
+        codeblocks,
+        TierMode::DynamicOnly,
+    )
+}
+
+/// [`plan`], with the tier choice made by the caller.
+pub(crate) fn plan_with_tier(
+    invocation_dir: &Path,
+    args: &[PathBuf],
+    workers: usize,
+    codeblocks: bool,
+    tier: TierMode,
+) -> Result<Dispatch, CollectError> {
     let (config, targets) = discover(invocation_dir, args, codeblocks)?;
     let rootdir = to_posix(&config.rootdir);
 
+    // The Tier S pass, before a single process is spawned.  It is pure computation over files
+    // already on disk, so it parallelises and shares nothing.
+    let scanned = match tier {
+        TierMode::DynamicOnly => targets.iter().map(|_| None).collect::<Vec<_>>(),
+        TierMode::Auto => static_pass(&targets, &config.rootdir, &config)
+            .into_iter()
+            .map(Some)
+            .collect(),
+    };
+    // `Err` carries the refusal *reason*, which nothing downstream consumes: the manifest is
+    // identical either way, and a file that fell back to a worker is not a diagnostic a user
+    // asked for.  It is asserted on directly in the tests, which call `static_pass` themselves
+    // — carrying it through `Dispatch` unread would be a field the compiler cannot check.
+    let static_tests: Vec<Option<Vec<CollectedTest>>> = scanned
+        .into_iter()
+        .map(|outcome| outcome.and_then(Result::ok))
+        .collect();
+
+    // Only the files Tier S could **not** answer reach a worker.  Routing stays the stem hash
+    // over that subset: same-stem files are always dynamic together (Tier S refuses a shared
+    // stem outright), so the property the hash exists for — one interpreter per stem, which is
+    // what reproduces pytest's `import file mismatch` — survives the filtering.
+    let dynamic: Vec<usize> = (0..targets.len())
+        .filter(|index| static_tests[*index].is_none())
+        .collect();
+
     // More workers than files would spawn interpreters with nothing to do; fewer than one
-    // could not collect at all.  An empty tree gets an empty pool and spawns nothing.
-    let pool_size = if targets.is_empty() {
+    // could not collect at all.  A fully-static tree gets an empty pool and spawns nothing —
+    // which is the whole point of the tier.
+    let pool_size = if dynamic.is_empty() {
         0
     } else {
-        workers.clamp(1, targets.len())
+        workers.clamp(1, dynamic.len())
     };
 
-    // Routing is by stem hash (see the module docs), and the dispatch index recorded here
-    // is what puts the manifest back into walk order afterwards.
+    // The dispatch index recorded here is what puts the manifest back into walk order
+    // afterwards, whichever tier produced each file's tests.
     let mut assignments: Vec<Vec<(usize, PathBuf)>> = vec![Vec::new(); pool_size];
-    for (index, path) in targets.iter().enumerate() {
+    for index in dynamic {
+        let path = &targets[index];
         assignments[worker_for(path, pool_size)].push((index, path.clone()));
     }
 
@@ -439,6 +525,7 @@ pub(crate) fn plan(
 
     Ok(Dispatch {
         rootdir,
+        static_tests,
         rootdir_path: config.rootdir.clone(),
         targets,
         assignments,
@@ -474,11 +561,26 @@ pub(crate) struct Assembled {
 }
 
 pub(crate) fn assemble(
-    targets: &[PathBuf],
+    dispatch: &Dispatch,
     outcomes: Vec<(usize, FileOutcome)>,
 ) -> Result<Assembled, CollectError> {
-    // Reassemble by dispatch index — NOT in completion order.
-    let mut slots: Vec<Option<FileOutcome>> = targets.iter().map(|_| None).collect();
+    let targets = &dispatch.targets;
+    // Reassemble by dispatch index — NOT in completion order.  Tier S's answers seed the
+    // slots and the workers' fill the holes; a target can never have both, because `plan`
+    // only assigns the ones Tier S left `None`.
+    let mut slots: Vec<Option<FileOutcome>> = dispatch
+        .static_tests
+        .iter()
+        .map(|tests| {
+            tests.as_ref().map(|tests| FileOutcome {
+                tests: tests.clone(),
+                // Tier S never produces a collection error: a file it cannot parse, or one
+                // whose import could fail, is refused as dynamic and the worker reports the
+                // error with pytest's own wording.
+                error: None,
+            })
+        })
+        .collect();
     for (index, outcome) in outcomes {
         slots[index] = Some(outcome);
     }
@@ -527,15 +629,19 @@ fn collect_with_launcher(
     launcher: &WorkerLauncher,
     workers: usize,
     codeblocks: bool,
+    tier: TierMode,
 ) -> Result<CollectionManifest, CollectError> {
-    let dispatch = plan(invocation_dir, args, workers, codeblocks)?;
+    let dispatch = plan_with_tier(invocation_dir, args, workers, codeblocks, tier)?;
 
-    if dispatch.targets.is_empty() {
+    // No worker has anything to do — an empty tree, or one Tier S answered in full.  Both
+    // reach the manifest without a single process being spawned.
+    if dispatch.assignments.is_empty() {
+        let assembled = assemble(&dispatch, Vec::new())?;
         return Ok(CollectionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
             rootdir: dispatch.rootdir,
-            tests: Vec::new(),
-            errors: Vec::new(),
+            tests: assembled.tests,
+            errors: assembled.errors,
             deselected: 0,
         });
     }
@@ -559,7 +665,7 @@ fn collect_with_launcher(
             .collect::<Vec<_>>()
     });
 
-    let assembled = assemble(&dispatch.targets, join_pool(results)?)?;
+    let assembled = assemble(&dispatch, join_pool(results)?)?;
 
     Ok(CollectionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -1529,7 +1635,14 @@ mod tests {
         launcher: &WorkerLauncher,
         workers: usize,
     ) -> Result<CollectionManifest, CollectError> {
-        collect_with_launcher(invocation_dir, args, launcher, workers, true)
+        collect_with_launcher(
+            invocation_dir,
+            args,
+            launcher,
+            workers,
+            true,
+            TierMode::DynamicOnly,
+        )
     }
 
     /// A stand-in worker: a `python -c` script speaking (or mis-speaking) the protocol.
@@ -2486,5 +2599,367 @@ mod tests {
             message.contains(&exit_status_phrase(9)),
             "unexpected message: {message}"
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // The two-tier differential (Rust half)
+    // ----------------------------------------------------------------------
+    //
+    // Tier D is the oracle, so the question these tests ask is always the same: **does
+    // enabling Tier S change the manifest?**  Every one of them collects the identical tree
+    // twice — once at `TierMode::Auto`, once at `TierMode::DynamicOnly` — and diffs the two.
+    // The third leg (pytest itself) is the conformance harness's `--v2-collect` gate and
+    // `python/tests/test_v2_static_tier.py`, which cannot run from here because it needs
+    // pytest in a subprocess.
+    //
+    // Tier attribution is asserted alongside, because a differential on its own is satisfied
+    // by a Tier S that refuses everything: the two manifests would agree and prove nothing.
+
+    /// Collect `tmp` twice and assert the two manifests are identical **apart from `tier`**,
+    /// returning the hybrid one so callers can assert attribution on it.
+    fn differential(tmp: &tempfile::TempDir, workers: usize) -> CollectionManifest {
+        let hybrid = collect(
+            tmp.path(),
+            &[],
+            &crate::v2::test_python(),
+            workers,
+            true,
+            TierMode::Auto,
+        )
+        .expect("hybrid collection succeeds");
+        let oracle = collect(
+            tmp.path(),
+            &[],
+            &crate::v2::test_python(),
+            workers,
+            true,
+            TierMode::DynamicOnly,
+        )
+        .expect("Tier D collection succeeds");
+
+        let stripped = CollectionManifest {
+            tests: hybrid
+                .tests
+                .iter()
+                .cloned()
+                .map(|mut test| {
+                    test.tier = crate::v2::manifest::Tier::Dynamic;
+                    test
+                })
+                .collect(),
+            ..hybrid.clone()
+        };
+        assert_eq!(
+            stripped, oracle,
+            "Tier S changed the manifest; the hybrid was {hybrid:?}"
+        );
+        hybrid
+    }
+
+    /// Which tier answered each id.
+    fn tiers(manifest: &CollectionManifest) -> Vec<(String, crate::v2::manifest::Tier)> {
+        manifest
+            .tests
+            .iter()
+            .map(|test| (test.id.clone(), test.tier))
+            .collect()
+    }
+
+    /// The headline case: a mixed tree where every dynamism rule fires on a different file.
+    ///
+    /// The static half is not a formality — if it were empty the differential would pass
+    /// vacuously — so the attribution assertion below names the tier of *every* id.
+    #[test]
+    fn the_hybrid_manifest_equals_the_tier_d_manifest_on_a_mixed_tree() {
+        let tmp = tree(&[
+            // static
+            ("test_plain.py", "def test_one():\n    pass\n"),
+            (
+                "test_params.py",
+                "import pytest\n\n\n@pytest.mark.parametrize(\"v\", [1, 2])\ndef test_p(v):\n    pass\n",
+            ),
+            (
+                "test_klass.py",
+                "class TestBox:\n    def test_m(self):\n        pass\n",
+            ),
+            // dynamic: a foreign import
+            (
+                "test_imports.py",
+                "import itertools\n\ncounter = itertools.count()\n\n\ndef test_i():\n    pass\n",
+            ),
+            // dynamic: a parametrized fixture
+            (
+                "test_fixture_params.py",
+                "import pytest\n\n\n@pytest.fixture(params=[1, 2])\ndef n(request):\n    return request.param\n\n\ndef test_f(n):\n    pass\n",
+            ),
+            // dynamic: unittest
+            (
+                "test_unit.py",
+                "import unittest\n\n\nclass TestLegacy(unittest.TestCase):\n    def test_u(self):\n        pass\n",
+            ),
+            // dynamic: a non-literal mark argument
+            (
+                "test_skipif.py",
+                "import pytest\n\n\n@pytest.mark.skipif(1 + 1 == 2, reason=\"x\")\ndef test_s():\n    pass\n",
+            ),
+        ]);
+
+        let manifest = differential(&tmp, 2);
+
+        use crate::v2::manifest::Tier::{Dynamic, Static};
+        assert_eq!(
+            tiers(&manifest),
+            vec![
+                ("test_fixture_params.py::test_f[1]".to_string(), Dynamic),
+                ("test_fixture_params.py::test_f[2]".to_string(), Dynamic),
+                ("test_imports.py::test_i".to_string(), Dynamic),
+                ("test_klass.py::TestBox::test_m".to_string(), Static),
+                ("test_params.py::test_p[1]".to_string(), Static),
+                ("test_params.py::test_p[2]".to_string(), Static),
+                ("test_plain.py::test_one".to_string(), Static),
+                ("test_skipif.py::test_s".to_string(), Dynamic),
+                ("test_unit.py::TestLegacy::test_u".to_string(), Dynamic),
+            ]
+        );
+    }
+
+    /// A tree Tier S answers **entirely** spawns no interpreter at all, and still produces the
+    /// manifest Tier D would.
+    #[test]
+    fn a_fully_static_tree_is_collected_without_a_worker() {
+        let tmp = tree(&[
+            ("test_a.py", "def test_one():\n    pass\n"),
+            ("sub/test_b.py", "def test_two():\n    pass\n"),
+        ]);
+
+        // A launcher that cannot possibly start: if any worker were spawned this would be a
+        // `Spawn` error rather than a manifest.
+        let manifest = collect_with_launcher(
+            tmp.path(),
+            &[],
+            &WorkerLauncher::scripted("definitely-not-an-interpreter", Vec::new()),
+            2,
+            true,
+            TierMode::Auto,
+        )
+        .expect("a fully-static tree needs no worker");
+
+        assert_eq!(
+            manifest
+                .tests
+                .iter()
+                .map(|test| test.id.as_str())
+                .collect::<Vec<_>>(),
+            ["sub/test_b.py::test_two", "test_a.py::test_one"]
+        );
+        differential(&tmp, 2);
+    }
+
+    /// Walk order is the manifest's order **whatever tier answered**, which is the property
+    /// the mixed tree can hide: alphabetically interleaving static and dynamic files means a
+    /// tier-grouped assembly would reorder them and the ids would still all be present.
+    #[test]
+    fn ids_stay_in_walk_order_across_the_tier_boundary() {
+        let tmp = tree(&[
+            ("test_a_static.py", "def test_a():\n    pass\n"),
+            (
+                "test_b_dynamic.py",
+                "import itertools\n\nSEEN = []\nSEEN.append(1)\n\n\ndef test_b():\n    pass\n",
+            ),
+            ("test_c_static.py", "def test_c():\n    pass\n"),
+            (
+                "test_d_dynamic.py",
+                "import itertools\n\nSEEN = []\nSEEN.append(1)\n\n\ndef test_d():\n    pass\n",
+            ),
+        ]);
+
+        let manifest = differential(&tmp, 3);
+
+        assert_eq!(
+            manifest
+                .tests
+                .iter()
+                .map(|test| test.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "test_a_static.py::test_a",
+                "test_b_dynamic.py::test_b",
+                "test_c_static.py::test_c",
+                "test_d_dynamic.py::test_d"
+            ]
+        );
+    }
+
+    /// Each refused file is refused for the **rule it was written to trip**.
+    ///
+    /// Tier attribution alone cannot see this: a detector with one rule that fired on
+    /// everything would produce an identical `Static`/`Dynamic` split and an identical
+    /// manifest. Reading `Dispatch::dynamism` is what turns "it flagged" into "it flagged
+    /// because", and it is the assertion that fails when a rule is relaxed by accident.
+    #[test]
+    fn each_refusal_names_the_rule_that_fired() {
+        use crate::v2::static_collect::Reason;
+
+        let tmp = tree(&[
+            ("test_static.py", "def test_s():\n    pass\n"),
+            ("test_foreign.py", "import numpy\n\n\ndef test_f():\n    pass\n"),
+            ("test_star.py", "from pytest import *\n\n\ndef test_s2():\n    pass\n"),
+            (
+                "test_getattr.py",
+                "def __getattr__(name):\n    raise AttributeError(name)\n",
+            ),
+            (
+                "test_cond.py",
+                "if True:\n\n    def test_c():\n        pass\n",
+            ),
+            (
+                "test_bases.py",
+                "class TestX(Base):\n    def test_b(self):\n        pass\n",
+            ),
+            (
+                "test_unit.py",
+                "class TestY(unittest.TestCase):\n    def test_u(self):\n        pass\n",
+            ),
+            (
+                "test_param.py",
+                "import pytest\n\nC = [1]\n\n\n@pytest.mark.parametrize(\"v\", C)\ndef test_p(v):\n    pass\n",
+            ),
+            (
+                "test_fixparam.py",
+                "import pytest\n\n\n@pytest.fixture(params=[1])\ndef n(request):\n    return request.param\n",
+            ),
+            ("test_syntax.py", "def test_x(:\n    pass\n"),
+        ]);
+
+        let (config, targets) = discover_default(tmp.path(), &[]).unwrap();
+        let reasons: Vec<(String, Option<Reason>)> = targets
+            .iter()
+            .zip(crate::v2::static_collect::static_pass(
+                &targets,
+                &config.rootdir,
+                &config,
+            ))
+            .map(|(path, outcome)| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    outcome.err().map(|reason| reason.reason),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            reasons,
+            vec![
+                ("test_bases.py".to_string(), Some(Reason::ClassBases)),
+                ("test_cond.py".to_string(), Some(Reason::ConditionalDef)),
+                (
+                    "test_fixparam.py".to_string(),
+                    Some(Reason::ParametrizedFixture)
+                ),
+                ("test_foreign.py".to_string(), Some(Reason::ForeignImport)),
+                ("test_getattr.py".to_string(), Some(Reason::ModuleGetattr)),
+                (
+                    "test_param.py".to_string(),
+                    Some(Reason::NonLiteralParametrize)
+                ),
+                ("test_star.py".to_string(), Some(Reason::StarImport)),
+                ("test_static.py".to_string(), None),
+                ("test_syntax.py".to_string(), Some(Reason::ParseError)),
+                ("test_unit.py".to_string(), Some(Reason::UnittestCase)),
+            ]
+        );
+    }
+
+    /// A file Tier S cannot parse is a **collection error**, and only Tier D knows pytest's
+    /// wording for it — so the file must route to D rather than vanish.
+    #[test]
+    fn an_unparsable_file_still_reaches_the_worker() {
+        let tmp = tree(&[
+            ("test_bad.py", "def test_x(:\n    pass\n"),
+            ("test_ok.py", "def test_ok():\n    pass\n"),
+        ]);
+
+        let manifest = differential(&tmp, 2);
+
+        assert_eq!(manifest.errors.len(), 1, "{:?}", manifest.errors);
+        assert_eq!(manifest.errors[0].path, "test_bad.py");
+        assert_eq!(
+            manifest.tests[0].tier,
+            crate::v2::manifest::Tier::Static,
+            "the good file is still static"
+        );
+    }
+
+    /// Two same-stem files in different non-package directories are pytest's `import file
+    /// mismatch`: the second is a collection error, and reproducing it needs both of them in
+    /// one interpreter.  Tier S refuses the pair outright, and the differential is what proves
+    /// the refusal is not merely cautious but necessary.
+    #[test]
+    fn a_same_stem_pair_keeps_pytests_import_mismatch_error() {
+        let tmp = tree(&[
+            ("a/test_dup.py", "def test_one():\n    pass\n"),
+            ("b/test_dup.py", "def test_two():\n    pass\n"),
+        ]);
+
+        let manifest = differential(&tmp, 2);
+
+        assert_eq!(manifest.errors.len(), 1, "{:?}", manifest.errors);
+        assert!(
+            manifest.errors[0].message.contains("import file mismatch"),
+            "unexpected message: {}",
+            manifest.errors[0].message
+        );
+    }
+
+    /// A conftest fixture with `params=` multiplies the ids of every test in the directory —
+    /// including a test file that mentions no fixture at all.  Nothing in that file's own AST
+    /// says so, which is why the rule is about the *chain* and not about the file.
+    #[test]
+    fn a_parametrized_conftest_fixture_routes_the_whole_directory_to_d() {
+        let tmp = tree(&[
+            (
+                "conftest.py",
+                "import pytest\n\n\n@pytest.fixture(params=[1, 2], autouse=True)\ndef flavour(request):\n    return request.param\n",
+            ),
+            ("test_quiet.py", "def test_q():\n    pass\n"),
+        ]);
+
+        let manifest = differential(&tmp, 1);
+
+        assert_eq!(
+            manifest
+                .tests
+                .iter()
+                .map(|test| test.id.as_str())
+                .collect::<Vec<_>>(),
+            ["test_quiet.py::test_q[1]", "test_quiet.py::test_q[2]"],
+            "the autouse fixture's parameters reached a file that never mentions it"
+        );
+        assert!(manifest
+            .tests
+            .iter()
+            .all(|test| test.tier == crate::v2::manifest::Tier::Dynamic));
+    }
+
+    /// The whole point restated as a test: with `collect_tier = "d"` nothing is static, so a
+    /// caller can always get the oracle leg.
+    #[test]
+    fn dynamic_only_mode_produces_no_static_entries() {
+        let tmp = tree(&[("test_a.py", "def test_one():\n    pass\n")]);
+
+        let manifest = collect(
+            tmp.path(),
+            &[],
+            &crate::v2::test_python(),
+            1,
+            true,
+            TierMode::DynamicOnly,
+        )
+        .unwrap();
+
+        assert!(manifest
+            .tests
+            .iter()
+            .all(|test| test.tier == crate::v2::manifest::Tier::Dynamic));
     }
 }

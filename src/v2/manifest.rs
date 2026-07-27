@@ -14,6 +14,39 @@ use serde::{Deserialize, Serialize};
 /// Version of the manifest wire format.  Bump on any incompatible change.
 pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
+/// Which collection tier produced an entry.
+///
+/// `"s"` is the Rust static collector ([`crate::v2::static_collect`]), which parsed the file
+/// and never imported it; `"d"` is a Python worker, which imported it.  The field exists
+/// because the two tiers are *supposed* to be indistinguishable — the three-way differential
+/// asserts `manifest(S+D) == manifest(D-only) == pytest` — and a claim that strong needs an
+/// instrument that can tell which tier actually answered.  Without it a Tier S bug that
+/// routed everything to D would look exactly like a pass.
+///
+/// [`Tier::Dynamic`] is the **default and the omitted form**: the Python worker
+/// (`_v2_worker.py::_build_entry`) does not know tiers exist and never sends the key, so
+/// every producer that predates this field keeps emitting bytes this type still decodes.
+/// That is the same additive-compatibility argument
+/// [`CollectionManifest::deselected`] makes, and it is why
+/// [`MANIFEST_SCHEMA_VERSION`] does not move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Tier {
+    /// Parsed, never imported.
+    #[serde(rename = "s")]
+    Static,
+    /// Imported by a worker — the oracle tier.
+    #[serde(rename = "d")]
+    #[default]
+    Dynamic,
+}
+
+impl Tier {
+    /// The omission rule: `"d"` is the default, so it never reaches the wire.
+    fn is_dynamic(&self) -> bool {
+        matches!(self, Tier::Dynamic)
+    }
+}
+
 /// A mark applied to a collected test, captured as data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarkSpec {
@@ -44,6 +77,12 @@ pub struct CollectedTest {
     /// Direct fixture parameter names in signature order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixtures: Vec<String>,
+    /// Which tier produced this entry.  Omitted when [`Tier::Dynamic`]; see [`Tier`].
+    ///
+    /// Last field on purpose: every byte before it is unchanged from the schema-v2 form the
+    /// golden froze, so a `"d"` entry is byte-identical to what a pre-tier producer emitted.
+    #[serde(default, skip_serializing_if = "Tier::is_dynamic")]
+    pub tier: Tier,
 }
 
 /// A file that could not be collected, and why.
@@ -88,11 +127,15 @@ mod tests {
 
     /// Builds the fixed manifest used by both the round-trip and the golden-contract
     /// test: one plain test, one class + parametrized test carrying a mark with args and
-    /// kwargs plus a bare mark with neither, and one collection error.
+    /// kwargs plus a bare mark with neither, one **Tier S** test, and one collection error.
     ///
     /// The bare `slow` mark is what exercises the omit-when-empty rules on `MarkSpec`:
     /// without it, `args`/`kwargs` are never empty in any test and the
     /// `skip_serializing_if`/`default` attributes on both fields would be unpinned.
+    ///
+    /// The Tier S entry does the same job for [`CollectedTest::tier`]: the other two are
+    /// `Dynamic`, so without it the `"tier":"s"` spelling and its position after `fixtures`
+    /// would be pinned nowhere.
     fn sample_manifest() -> CollectionManifest {
         let mut kwargs = Map::new();
         kwargs.insert("reason".to_string(), json!("needs windows"));
@@ -110,6 +153,7 @@ mod tests {
                     param_id: None,
                     marks: Vec::new(),
                     fixtures: Vec::new(),
+                    tier: Tier::Dynamic,
                 },
                 CollectedTest {
                     id: "tests/test_math.py::TestBox::test_method[x-1]".to_string(),
@@ -130,6 +174,17 @@ mod tests {
                         },
                     ],
                     fixtures: vec!["tmp_path".to_string(), "capsys".to_string()],
+                    tier: Tier::Dynamic,
+                },
+                CollectedTest {
+                    id: "tests/test_static.py::test_parsed".to_string(),
+                    path: "tests/test_static.py".to_string(),
+                    qualname: "test_parsed".to_string(),
+                    class_name: None,
+                    param_id: None,
+                    marks: Vec::new(),
+                    fixtures: Vec::new(),
+                    tier: Tier::Static,
                 },
             ],
             errors: vec![CollectionErrorEntry {
@@ -160,7 +215,59 @@ mod tests {
 
         assert_eq!(
             encoded,
-            r#"{"schema_version":2,"rootdir":"/repo","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"},{"id":"tests/test_math.py::TestBox::test_method[x-1]","path":"tests/test_math.py","qualname":"TestBox.test_method","class_name":"TestBox","param_id":"x-1","marks":[{"name":"skipif","args":[true],"kwargs":{"reason":"needs windows","strict":true}},{"name":"slow"}],"fixtures":["tmp_path","capsys"]}],"errors":[{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}]}"#
+            r#"{"schema_version":2,"rootdir":"/repo","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"},{"id":"tests/test_math.py::TestBox::test_method[x-1]","path":"tests/test_math.py","qualname":"TestBox.test_method","class_name":"TestBox","param_id":"x-1","marks":[{"name":"skipif","args":[true],"kwargs":{"reason":"needs windows","strict":true}},{"name":"slow"}],"fixtures":["tmp_path","capsys"]},{"id":"tests/test_static.py::test_parsed","path":"tests/test_static.py","qualname":"test_parsed","tier":"s"}],"errors":[{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}]}"#
+        );
+    }
+
+    /// A `CollectedTest` with no explicit `tier` decodes as [`Tier::Dynamic`] — the rule the
+    /// Python worker depends on, since `_v2_worker.py::_build_entry` never writes the key.
+    ///
+    /// Mutation row for the omission: flipping the default to `Static` fails here, and
+    /// flipping the `skip_serializing_if` off fails the golden above.
+    #[test]
+    fn a_tierless_entry_decodes_as_dynamic() {
+        let decoded: CollectedTest = serde_json::from_str(
+            r#"{"id":"tests/test_a.py::test_one","path":"tests/test_a.py","qualname":"test_one"}"#,
+        )
+        .expect("a worker entry deserializes");
+
+        assert_eq!(decoded.tier, Tier::Dynamic);
+    }
+
+    /// The other half: `Tier::Static` **is** on the wire, spelled `"s"`, and round-trips.
+    #[test]
+    fn tier_static_is_on_the_wire_and_round_trips() {
+        let test = CollectedTest {
+            id: "tests/test_a.py::test_one".to_string(),
+            path: "tests/test_a.py".to_string(),
+            qualname: "test_one".to_string(),
+            class_name: None,
+            param_id: None,
+            marks: Vec::new(),
+            fixtures: Vec::new(),
+            tier: Tier::Static,
+        };
+
+        let encoded = serde_json::to_string(&test).expect("test serializes");
+        assert_eq!(
+            encoded,
+            r#"{"id":"tests/test_a.py::test_one","path":"tests/test_a.py","qualname":"test_one","tier":"s"}"#
+        );
+        let decoded: CollectedTest = serde_json::from_str(&encoded).expect("test deserializes");
+        assert_eq!(decoded, test);
+    }
+
+    /// `"d"` is a legal *explicit* spelling even though nothing emits it, so a manifest
+    /// round-tripped through a producer that writes tiers verbatim still decodes.
+    #[test]
+    fn an_explicit_dynamic_tier_decodes_but_is_not_re_emitted() {
+        let decoded: CollectedTest =
+            serde_json::from_str(r#"{"id":"a.py::t","path":"a.py","qualname":"t","tier":"d"}"#)
+                .expect("explicit dynamic decodes");
+        assert_eq!(decoded.tier, Tier::Dynamic);
+        assert_eq!(
+            serde_json::to_string(&decoded).unwrap(),
+            r#"{"id":"a.py::t","path":"a.py","qualname":"t"}"#
         );
     }
 

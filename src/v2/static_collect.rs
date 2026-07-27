@@ -1,0 +1,2969 @@
+//! **Tier S** — collection without an interpreter.
+//!
+//! This module answers the same question `_v2_worker.py` answers — "what tests are in this
+//! file?" — by *parsing* the file with ruff's Python parser instead of importing it.  When it
+//! can answer, the orchestrator skips the worker round trip entirely; when it cannot, the file
+//! goes to Tier D exactly as before.  Tier D is definitionally correct (it runs the same
+//! Python pytest would), so it stays the oracle: everything here is an optimisation that must
+//! be *invisible* in the output.
+//!
+//! # The asymmetry that decides every rule below
+//!
+//! A **false positive** (calling a static file dynamic) costs a worker round trip.  A **false
+//! negative** (answering statically for a file whose real answer differs) is a silently wrong
+//! manifest — tests that do not exist, or missing tests, with exit 0.  The two are not
+//! comparable, so every rule is written to fail towards D.  Concretely, the detector is a
+//! *whitelist*: a file is static only when every module-level statement, every decorator and
+//! every parametrize argument is a shape this module recognises exactly.  Anything
+//! unrecognised — including shapes that would obviously be fine — routes to D.
+//!
+//! # What "importing cannot change the answer" has to mean
+//!
+//! Three classes of hazard motivate rules that are otherwise surprising.
+//!
+//! **Importing can fail.**  `import numpy` in a test file is a *collection error* in the
+//! manifest when numpy is missing (`_v2_worker.py::collect_file` turns any import-time
+//! exception into an `errors` entry, and `_pytest/python.py::importtestmodule` does the
+//! same).  A static answer would list tests for a file pytest reports as broken.  So the
+//! import allowlist is exactly two names — `pytest` and `rustest` — because
+//! `_v2_worker.py::install_pytest_shim` puts `pytest` (and `pytest_asyncio`) into
+//! `sys.modules` before any test module is imported, and the worker *is* `rustest._v2_worker`,
+//! so both are already-imported modules that cannot raise.  Every other import flags.
+//!
+//! **Importing runs code.**  Any module-level statement that is not a definition, an
+//! allowlisted import or a literal binding can raise, mutate, or define tests conditionally.
+//! `counter = itertools.count()` is a call; `if sys.version_info >= (3, 13): def test_x()` is
+//! a conditional definition.  Both flag.
+//!
+//! **Fixtures can multiply ids.**  `_v2_worker.py::fixture_param_dimensions` expands one test
+//! into one id per parametrized fixture in its closure — and the closure includes autouse
+//! fixtures and every conftest in the chain, none of which the test file mentions.  So a file
+//! whose conftest chain contains a parametrized fixture *cannot* be answered from the file
+//! alone.  Rather than model conftest fixtures, this module requires the whole chain to be
+//! statically safe **and** free of any textual `params=` (the plan's rule, kept because it is
+//! strictly more conservative than the structural analysis and independent of it).
+//!
+//! # Byte-exactness is against v1's ids, not pytest's
+//!
+//! Param ids are **not** recomputed from pytest's `IdMaker`.  The worker consumes ids that
+//! `python/rustest/decorators.py` computed at decoration time (`_build_cases` ->
+//! `_resolve_case_id` -> `_generate_param_id`), and `_v2_worker.py::_parametrization` copies
+//! them verbatim, with `_unique_parameterset_ids` applied on top.  Tier S therefore ports
+//! *those* functions, divergences included — porting pytest's instead would produce ids that
+//! match neither tier and break every `-k` a user has written.  [`generate_param_id`] and
+//! [`unique_parameterset_ids`] name their sources line by line.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use rayon::prelude::*;
+use ruff_python_ast::{Expr, Stmt};
+use ruff_python_parser::parse_module;
+
+use crate::v2::config::{matches_name_pattern, ResolvedConfig};
+use crate::v2::manifest::{CollectedTest, MarkSpec, Tier};
+use crate::v2::nodeid::build_nodeid;
+
+// ---------------------------------------------------------------------------
+// Dynamism
+// ---------------------------------------------------------------------------
+
+/// Why a file could not be answered statically.
+///
+/// Carried as a typed reason plus a human detail so the tier-attribution tests can assert
+/// *which* rule fired rather than only that one did — a detector that flags everything for the
+/// wrong reason passes a "did it flag?" test and fails the moment a rule is relaxed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dynamic {
+    pub reason: Reason,
+    pub detail: String,
+}
+
+impl Dynamic {
+    fn new(reason: Reason, detail: impl Into<String>) -> Self {
+        Self {
+            reason,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for Dynamic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.reason, self.detail)
+    }
+}
+
+/// The closed set of dynamism triggers.
+///
+/// Exhaustive by construction: [`scan_module`] returns one of these or a test list, so a new
+/// hazard has to be given a name here before it can be detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// The file is not Python source this module parses (markdown, unreadable bytes).
+    NotPythonSource,
+    /// ruff's parser rejected the file.  Tier D reproduces pytest's `SyntaxError` entry;
+    /// inventing one here would have to match its text byte for byte.
+    ParseError,
+    /// `from x import *` — the module namespace is whatever `x` happens to export.
+    StarImport,
+    /// An import of anything but `pytest` / `rustest`; it can raise, and a raising import is a
+    /// collection error, not an empty file.
+    ForeignImport,
+    /// An imported name that would itself be collected under the configured patterns.
+    ImportedTestName,
+    /// `def __getattr__` at module level (PEP 562): attribute access is user code.
+    ModuleGetattr,
+    /// `exec` / `eval` / `compile` / `globals` / `setattr` reachable at import time.
+    ExecOrEval,
+    /// A module-level statement that runs code: a call, `if`/`for`/`while`/`try`/`with`,
+    /// `raise`, `assert`, an augmented or attribute assignment.
+    ModuleSideEffect,
+    /// A `def`/`class` nested in a conditional, loop or `try` at module level.
+    ConditionalDef,
+    /// A class with any base other than `object` — inherited methods are not statically
+    /// resolvable, and a base can be anything at all.
+    ClassBases,
+    /// A `unittest.TestCase` subclass: `TestLoader` semantics (name sorting, `runTest`
+    /// fallback, `setUpClass` fixtures) stay in Tier D.
+    UnittestCase,
+    /// A decorator that is not one of the recognised mark/fixture/parametrize forms.
+    UnknownDecorator,
+    /// A `parametrize` whose argnames, values or ids are not literals.
+    NonLiteralParametrize,
+    /// A mark whose arguments are not literals, or a mark form with a factory this module
+    /// does not model.
+    NonLiteralMark,
+    /// A `pytestmark` that is not a literal mark or list of them.
+    NonLiteralPytestmark,
+    /// A parametrized fixture in scope: it multiplies ids for tests that never mention it.
+    ParametrizedFixture,
+    /// A conftest in the chain that is unreadable, unparsable, or not statically safe.
+    ConftestChain,
+    /// `pytest_plugins` — plugins can register parametrized and autouse fixtures.
+    PytestPlugins,
+    /// A top-level name bound twice: `vars(module)` keeps the first *position* and the last
+    /// *value*, which is not a shape worth modelling.
+    DuplicateName,
+    /// A dunder-shaped definition; `_pytest/python.py::IGNORED_ATTRIBUTES` decides these by
+    /// exact name and a permissive `python_functions` can collect the ones not in it.
+    DunderDefinition,
+    /// `__test__` at module or class level — the collection veto pytest reads off the object.
+    TestAttribute,
+    /// A `yield` in a test body: pytest fails the whole module for a sync generator test, and
+    /// an async generator test acquires a synthesised `xfail` mark.
+    GeneratorTest,
+    /// Two collection targets share a file stem, so the second import may be pytest's
+    /// `import file mismatch` collection error.
+    StemCollision,
+}
+
+// ---------------------------------------------------------------------------
+// Entry points
+// ---------------------------------------------------------------------------
+
+/// Scan every walk target, in parallel, and say which ones Tier S can answer.
+///
+/// The returned vector is indexed by *target index*, so the orchestrator can keep walk order
+/// without a second sort.  `Err` means "send this one to a worker".
+///
+/// Two whole-run rules live here rather than in [`scan_module`], because a single file cannot
+/// see them:
+///
+/// * **stem collisions.**  Two `test_dup.py` files in different non-package directories import
+///   under the same module name, and the second one is pytest's `import file mismatch`
+///   collection error (`_v2_worker.py::_import_mismatch_message`).  The orchestrator routes
+///   same-stem files to one worker precisely so that error reproduces; a static answer would
+///   silently collect both.  Every file whose stem is shared goes to D.
+/// * **the conftest chain**, which is per directory and shared by every file in it, so it is
+///   analysed once and cached.
+pub fn static_pass(
+    targets: &[PathBuf],
+    rootdir: &Path,
+    config: &ResolvedConfig,
+) -> Vec<Result<Vec<CollectedTest>, Dynamic>> {
+    let shadows = shadowing_names(targets, rootdir);
+    let mut stems: HashMap<String, usize> = HashMap::new();
+    for path in targets {
+        let stem = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        *stems.entry(stem).or_insert(0) += 1;
+    }
+
+    // One entry per *directory*, because the chain is identical for every file in it and
+    // analysing it is the expensive half (it reads and parses every conftest above the file).
+    let mut chains: HashMap<PathBuf, Result<(), Dynamic>> = HashMap::new();
+    for path in targets {
+        if let Some(dir) = path.parent() {
+            chains
+                .entry(dir.to_path_buf())
+                .or_insert_with(|| conftest_chain_is_static(dir, rootdir, &shadows));
+        }
+    }
+
+    // Parallel because it is embarrassingly so — one file, one parse, no shared mutable state
+    // — and because a fully-static tree spawns no processes at all, so this pass is the entire
+    // cost of collection.  `map` on an indexed parallel iterator preserves order, so the
+    // result stays indexed by target and walk order survives.
+    targets
+        .par_iter()
+        .map(|path| {
+            let stem = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if stems.get(&stem).copied().unwrap_or(0) > 1 {
+                return Err(Dynamic::new(
+                    Reason::StemCollision,
+                    format!("another collection target shares the stem {stem:?}"),
+                ));
+            }
+            if let Some(dir) = path.parent() {
+                if let Some(Err(err)) = chains.get(dir) {
+                    return Err(err.clone());
+                }
+            }
+            scan_path(path, rootdir, config, &shadows)
+        })
+        .collect()
+}
+
+/// Every module name a file in this run could shadow, so a stdlib import can be trusted.
+///
+/// `import json` in a test file is safe *because* it resolves to the standard library — and
+/// that is not guaranteed: `_v2_worker.py::sys_path_root_for` puts a directory on `sys.path`
+/// for every module it imports, so a `json.py` sitting beside a test file becomes `json` for
+/// the whole worker, and importing it runs user code that can raise.
+///
+/// The set is complete for a run rather than heuristic.  The only directories that ever reach
+/// `sys.path` are a target's own directory or its package root's parent
+/// (`_v2_worker.py::sys_path_root_for`, called from `import_test_module` for test modules and
+/// from `import_conftest` for conftests) — and every one of those is a target's parent or an
+/// ancestor of one.  Enumerating exactly that set of directories therefore enumerates every
+/// name that can win over the standard library.
+///
+/// Subdirectories count whether or not they hold an `__init__.py`: a namespace package shadows
+/// just as effectively (PEP 420).
+fn shadowing_names(targets: &[PathBuf], rootdir: &Path) -> HashSet<String> {
+    let mut directories: HashSet<PathBuf> = HashSet::new();
+    for path in targets {
+        let mut current = path.parent();
+        while let Some(dir) = current {
+            // An ancestor already recorded means its own ancestors are too.
+            if !directories.insert(dir.to_path_buf()) {
+                break;
+            }
+            if dir == rootdir {
+                break;
+            }
+            current = dir.parent();
+        }
+    }
+
+    let mut names = HashSet::new();
+    for dir in directories {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                names.insert(entry.file_name().to_string_lossy().into_owned());
+            } else if path.extension().is_some_and(|ext| ext == "py") {
+                if let Some(stem) = path.file_stem() {
+                    names.insert(stem.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Read and scan one file.
+pub fn scan_path(
+    path: &Path,
+    rootdir: &Path,
+    config: &ResolvedConfig,
+    shadows: &HashSet<String>,
+) -> Result<Vec<CollectedTest>, Dynamic> {
+    // The markdown tier is `_v2_worker.py::collect_markdown`: it evaluates fenced blocks and
+    // has no static analogue.
+    if !path.extension().is_some_and(|ext| ext == "py") {
+        return Err(Dynamic::new(
+            Reason::NotPythonSource,
+            format!("{} is not a .py file", path.display()),
+        ));
+    }
+    let source = std::fs::read_to_string(path).map_err(|err| {
+        Dynamic::new(
+            Reason::NotPythonSource,
+            format!("{} could not be read as UTF-8 text: {err}", path.display()),
+        )
+    })?;
+    scan_module(&source, &relative_posix(path, rootdir), config, shadows)
+}
+
+/// `_v2_worker.py::_relative_posix` — the manifest's `path` contract.
+fn relative_posix(path: &Path, rootdir: &Path) -> String {
+    match path.strip_prefix(rootdir) {
+        Ok(relative) => crate::v2::to_posix(relative),
+        Err(_) => crate::v2::to_posix(path),
+    }
+}
+
+/// Is every `conftest.py` that applies to `dir` safe to treat as "adds nothing an id depends
+/// on"?
+///
+/// The chain is `_v2_worker.py::conftest_chain`'s: every `conftest.py` from `dir` up to and
+/// including `rootdir`.  Each one must (a) contain no textual `params=`, and (b) pass the same
+/// import-safety analysis a test file passes.
+///
+/// (a) is the rule the plan names, and it is kept even though (b) subsumes it in every case
+/// this module can decide: a parametrized fixture in *any* conftest in the chain changes the
+/// nodeids of tests that never mention it (`fixture_param_dimensions` walks the whole closure,
+/// and `build_closure` seeds the closure with `registry.autouse_names` before the test's own
+/// arguments — so an autouse parametrized fixture contributes the **leftmost** id component to
+/// every test in the directory).  A textual scan cannot be fooled by a spelling the structural
+/// analysis has not met.
+///
+/// (b) is needed because a conftest that raises at import time is a *collection error* for
+/// every test file below it: `_v2_worker.py::build_registry` imports the chain before the
+/// module, inside `collect_file`'s `try`.
+pub fn conftest_chain_is_static(
+    dir: &Path,
+    rootdir: &Path,
+    shadows: &HashSet<String>,
+) -> Result<(), Dynamic> {
+    for conftest in conftest_chain(dir, rootdir) {
+        let Ok(source) = std::fs::read_to_string(&conftest) else {
+            return Err(Dynamic::new(
+                Reason::ConftestChain,
+                format!("{} could not be read", conftest.display()),
+            ));
+        };
+        if source.contains("params=") {
+            return Err(Dynamic::new(
+                Reason::ParametrizedFixture,
+                format!("{} mentions `params=`", conftest.display()),
+            ));
+        }
+        let parsed = parse_module(&source).map_err(|err| {
+            Dynamic::new(
+                Reason::ConftestChain,
+                format!("{} does not parse: {err}", conftest.display()),
+            )
+        })?;
+        // A conftest defines fixtures, not tests, so only the import-safety half applies —
+        // but it applies in full, decorators included.
+        let config = conftest_scan_config();
+        let mut scan = Scan::new(&config, shadows);
+        scan.module_is_import_safe(&parsed.syntax().body)
+            .map_err(|err| {
+                Dynamic::new(
+                    Reason::ConftestChain,
+                    format!("{}: {}", conftest.display(), err.detail),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// `_v2_worker.py::conftest_chain`, outermost first (order is irrelevant here — every entry
+/// must pass — but kept identical so the two are readably the same walk).
+fn conftest_chain(dir: &Path, rootdir: &Path) -> Vec<PathBuf> {
+    let mut chain = Vec::new();
+    let mut current = Some(dir);
+    while let Some(parent) = current {
+        let conftest = parent.join("conftest.py");
+        if conftest.is_file() {
+            chain.push(conftest);
+        }
+        if parent == rootdir {
+            break;
+        }
+        current = parent.parent();
+    }
+    chain.reverse();
+    chain
+}
+
+/// Scan one module's source and return its tests, or the reason it is dynamic.
+pub fn scan_module(
+    source: &str,
+    rel_path: &str,
+    config: &ResolvedConfig,
+    shadows: &HashSet<String>,
+) -> Result<Vec<CollectedTest>, Dynamic> {
+    let parsed = parse_module(source)
+        .map_err(|err| Dynamic::new(Reason::ParseError, format!("{rel_path}: {err}")))?;
+    let mut scan = Scan::new(config, shadows);
+    scan.module(parsed.syntax().body.as_slice(), rel_path)
+}
+
+// ---------------------------------------------------------------------------
+// Literals
+// ---------------------------------------------------------------------------
+
+/// A const-evaluated Python literal.
+///
+/// Deliberately narrow.  Floats are **absent**: `_generate_param_id` renders them with
+/// Python's `str()`, whose shortest-round-trip spelling Rust's `{}` does not always match
+/// (`str(1e16)` is `1e+16`), and an id that differs by one byte is a wrong nodeid.  Bytes,
+/// complex, sets, enums and objects are absent for the same class of reason — v1 renders them
+/// through `repr()` or the `param{index}` fallback, both of which need real Python.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Lit {
+    None,
+    Bool(bool),
+    /// Sign and magnitude, so `str()` of a negated literal is exact without an i128 detour.
+    Int {
+        negative: bool,
+        magnitude: u64,
+    },
+    Str(String),
+    /// A list or a tuple; `_generate_param_id` and `_build_cases` treat them identically.
+    Seq(Vec<Lit>),
+    Dict(Vec<(String, Lit)>),
+}
+
+impl Lit {
+    /// The JSON `_v2_worker.py::_json_safe` would produce for this value.
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            Lit::None => serde_json::Value::Null,
+            Lit::Bool(value) => serde_json::Value::Bool(*value),
+            Lit::Int {
+                negative,
+                magnitude,
+            } => {
+                if *negative {
+                    serde_json::Value::from(-(*magnitude as i128 as i64))
+                } else {
+                    serde_json::Value::from(*magnitude)
+                }
+            }
+            Lit::Str(value) => serde_json::Value::String(value.clone()),
+            Lit::Seq(items) => serde_json::Value::Array(items.iter().map(Lit::to_json).collect()),
+            Lit::Dict(items) => serde_json::Value::Object(
+                items
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.to_json()))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// `str(value)` for the subset this enum admits.
+    fn python_str(&self) -> Option<String> {
+        match self {
+            Lit::None => Some("None".to_string()),
+            Lit::Bool(true) => Some("True".to_string()),
+            Lit::Bool(false) => Some("False".to_string()),
+            Lit::Int {
+                negative,
+                magnitude,
+            } => Some(if *negative && *magnitude != 0 {
+                // `str(-0)` is `"0"`: the literal is `0` with a unary minus applied, and
+                // Python has no negative zero integer.
+                format!("-{magnitude}")
+            } else {
+                magnitude.to_string()
+            }),
+            Lit::Str(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Port of `python/rustest/decorators.py::_generate_param_id`.
+///
+/// This is **v1's** id generator, not `_pytest/python.py::IdMaker`.  `_v2_worker.py::
+/// _parametrization` consumes the ids v1 computed at decoration time verbatim, so Tier S has
+/// to reproduce v1 — including where v1 differs from pytest (long strings truncate here and
+/// hash there; containers get a joined id here and `<argname><index>` there).  Those
+/// divergences are already documented in `_parametrization`'s docstring and waived by the
+/// corpus; reproducing pytest instead would make Tier S disagree with Tier D, which is the one
+/// thing it may never do.
+///
+/// `index` is the case's position, used only by the fallback branch — which this port cannot
+/// reach, because every value that would fall through to it is refused as a non-literal.
+fn generate_param_id(value: &Lit, _index: usize) -> Option<String> {
+    match value {
+        Lit::None | Lit::Bool(_) | Lit::Int { .. } => value.python_str(),
+        Lit::Str(text) => {
+            // `if len(value) <= 20: return value` / `return f"{value[:17]}..."`.  Python
+            // slices by code point, so this counts characters, not bytes.
+            let chars: Vec<char> = text.chars().collect();
+            Some(if chars.len() <= 20 {
+                text.clone()
+            } else {
+                format!("{}...", chars[..17].iter().collect::<String>())
+            })
+        }
+        Lit::Seq(items) => {
+            if items.is_empty() {
+                return Some("empty".to_string());
+            }
+            let mut parts = Vec::new();
+            for item in items.iter().take(3) {
+                parts.push(generate_param_id(item, 0)?);
+            }
+            let mut result = parts.join("-");
+            if items.len() > 3 {
+                result.push_str(&format!("-...({})", items.len()));
+            }
+            Some(result)
+        }
+        Lit::Dict(items) => Some(if items.is_empty() {
+            "empty_dict".to_string()
+        } else {
+            format!("dict({})", items.len())
+        }),
+    }
+}
+
+/// Port of `_v2_worker.py::_unique_parameterset_ids`, itself a port of
+/// `_pytest/python.py::IdMaker.make_unique_parameterset_ids`.
+///
+/// Duplicate ids get a numeric suffix (`1` -> `1_0`, `1_1`; `a` -> `a0`, `a1`), the underscore
+/// appearing only when the id already ends in a digit.  The `while new_id in set(resolved)`
+/// probe is ported with it: without it a suffixed id can collide with an id already present.
+fn unique_parameterset_ids(ids: Vec<String>) -> Vec<String> {
+    let distinct: HashSet<&String> = ids.iter().collect();
+    if distinct.len() == ids.len() {
+        return ids;
+    }
+
+    let mut counts: HashMap<&String, usize> = HashMap::new();
+    for id in &ids {
+        *counts.entry(id).or_insert(0) += 1;
+    }
+    let mut suffixes: HashMap<String, usize> = HashMap::new();
+    let mut resolved = ids.clone();
+    for (index, value) in ids.iter().enumerate() {
+        if counts.get(value).copied().unwrap_or(0) <= 1 {
+            continue;
+        }
+        let separator = if value.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+            "_"
+        } else {
+            ""
+        };
+        let counter = suffixes.entry(value.clone()).or_insert(0);
+        let mut candidate = format!("{value}{separator}{counter}");
+        while resolved.iter().any(|existing| existing == &candidate) {
+            *counter += 1;
+            candidate = format!("{value}{separator}{counter}");
+        }
+        resolved[index] = candidate;
+        *suffixes.get_mut(value).unwrap() += 1;
+    }
+    resolved
+}
+
+/// One parametrization case: the id component and the argnames it binds.
+type Case = (String, Vec<String>);
+
+/// `python/rustest/decorators.py::_cross_product_cases` — ids join with `-` **outer first**,
+/// and the outer dimension varies slowest.
+fn cross_product_cases(outer: &[Case], inner: &[Case]) -> Vec<Case> {
+    let mut combined = Vec::with_capacity(outer.len() * inner.len());
+    for (outer_id, outer_names) in outer {
+        for (inner_id, inner_names) in inner {
+            let mut names = outer_names.clone();
+            for name in inner_names {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+            combined.push((format!("{outer_id}-{inner_id}"), names));
+        }
+    }
+    combined
+}
+
+// ---------------------------------------------------------------------------
+// Decorator vocabulary
+// ---------------------------------------------------------------------------
+
+/// The decorator forms Tier S recognises.  Anything else is [`Reason::UnknownDecorator`].
+#[derive(Debug, Clone, PartialEq)]
+enum Decor {
+    /// `@fixture` / `@pytest.fixture(...)` — makes the name *not* a test.
+    Fixture,
+    /// `@staticmethod`, which changes whether the first parameter is a fixture request.
+    StaticMethod,
+    /// `@classmethod`.
+    ClassMethod,
+    /// A mark, already reduced to its wire form.
+    Mark(MarkSpec),
+    /// A `parametrize`, already expanded into cases.
+    Parametrize(Vec<Case>),
+}
+
+/// Marks whose decorator surface is a *factory* with its own signature
+/// (`decorators.py::MarkGenerator`), rather than the generic
+/// `BareOrFactoryMark(name, MarkDecorator(name, args, kwargs))`.
+///
+/// `asyncio` is the one this module refuses outright: it rewrites class members
+/// (`MarkGenerator.asyncio` walks `inspect.getmembers` and re-decorates every coroutine
+/// method), which is not a transformation an AST can predict.
+const FACTORY_MARKS: [&str; 4] = ["skipif", "xfail", "usefixtures", "asyncio"];
+
+// ---------------------------------------------------------------------------
+// The scanner
+// ---------------------------------------------------------------------------
+
+/// Names bound by allowlisted imports, so a decorator's base can be resolved.
+#[derive(Default, Debug)]
+struct Bindings {
+    /// Local names bound to the `pytest` or `rustest` *module* object.
+    modules: HashSet<String>,
+    /// Local name -> the rustest/pytest symbol it refers to (`fixture`, `parametrize`, `mark`).
+    symbols: HashMap<String, String>,
+}
+
+struct Scan<'a> {
+    config: &'a ResolvedConfig,
+    /// Module names this run's own files would shadow — see [`shadowing_names`].
+    shadows: &'a HashSet<String>,
+    bindings: Bindings,
+    /// Top-level names already bound, for the duplicate-binding rule.
+    bound: HashSet<String>,
+}
+
+impl<'a> Scan<'a> {
+    fn new(config: &'a ResolvedConfig, shadows: &'a HashSet<String>) -> Self {
+        Self {
+            config,
+            shadows,
+            bindings: Bindings::default(),
+            bound: HashSet::new(),
+        }
+    }
+
+    // -- module ----------------------------------------------------------
+
+    /// The whole of a test module: import-safety plus test extraction, in one pass so the
+    /// bindings a decorator needs are already recorded when the decorator is read.
+    fn module(&mut self, body: &[Stmt], rel_path: &str) -> Result<Vec<CollectedTest>, Dynamic> {
+        let mut module_marks: Vec<MarkSpec> = Vec::new();
+        let mut tests = Vec::new();
+
+        // Two passes: `pytestmark` applies to every test in the file whatever line it is on
+        // (pytest reads it off the module object *after* the module has fully executed —
+        // `_pytest/python.py` l. 284), so it has to be known before the first test is built.
+        for statement in body {
+            self.statement_is_safe(statement)?;
+            if let Stmt::Assign(assign) = statement {
+                if let Some(name) = single_name_target(assign) {
+                    if name == "pytestmark" {
+                        module_marks = self.pytestmark_specs(&assign.value)?;
+                    }
+                }
+            }
+        }
+
+        for statement in body {
+            match statement {
+                Stmt::FunctionDef(func) => {
+                    if let Some(test) =
+                        self.function_test(func, rel_path, &[], None, &module_marks, &[])?
+                    {
+                        tests.extend(test);
+                    }
+                }
+                Stmt::ClassDef(class) => {
+                    tests.extend(self.class_tests(class, rel_path, &[], &module_marks)?);
+                }
+                _ => {}
+            }
+        }
+        Ok(tests)
+    }
+
+    /// The import-safety half on its own, for conftests (which define no tests).
+    fn module_is_import_safe(&mut self, body: &[Stmt]) -> Result<(), Dynamic> {
+        for statement in body {
+            self.statement_is_safe(statement)?;
+        }
+        Ok(())
+    }
+
+    // -- statements ------------------------------------------------------
+
+    /// Is this module-level statement one that cannot change what a later import sees?
+    ///
+    /// The allowlist is the whole detector for "importing runs code".  Every arm that is
+    /// *not* here — `If`, `For`, `While`, `Try`, `With`, `Match`, `Raise`, `Assert`, `Delete`,
+    /// `Global`, `AugAssign`, `AnnAssign`, a bare call — flags, which is what makes
+    /// [`Reason::ConditionalDef`] and [`Reason::ModuleSideEffect`] complete rather than a list
+    /// of shapes somebody thought of.
+    fn statement_is_safe(&mut self, statement: &Stmt) -> Result<(), Dynamic> {
+        match statement {
+            Stmt::Pass(_) => Ok(()),
+            // A bare string is a docstring or a stray literal; either way it binds nothing
+            // and runs nothing.  Every other bare expression is a call.
+            Stmt::Expr(expr) => match expr.value.as_ref() {
+                Expr::StringLiteral(_) | Expr::EllipsisLiteral(_) => Ok(()),
+                other => Err(Dynamic::new(
+                    Reason::ModuleSideEffect,
+                    format!("module-level expression statement: {}", describe(other)),
+                )),
+            },
+            Stmt::Import(import) => {
+                for alias in &import.names {
+                    let module = alias.name.as_str();
+                    let root = module.split('.').next().unwrap_or(module);
+                    if !self.import_is_safe(root) {
+                        return Err(Dynamic::new(
+                            Reason::ForeignImport,
+                            format!("import {module}"),
+                        ));
+                    }
+                    let bound = alias
+                        .asname
+                        .as_ref()
+                        .map(|name| name.as_str().to_string())
+                        .unwrap_or_else(|| root.to_string());
+                    self.bind_import(&bound)?;
+                    // Only a *plain* `import pytest` binds a usable module name; `import
+                    // rustest.decorators` binds `rustest`, which is still the module.
+                    self.bindings.modules.insert(bound);
+                }
+                Ok(())
+            }
+            Stmt::ImportFrom(import) => {
+                if import.level > 0 {
+                    return Err(Dynamic::new(
+                        Reason::ForeignImport,
+                        "relative import".to_string(),
+                    ));
+                }
+                let module = import
+                    .module
+                    .as_ref()
+                    .map(|name| name.as_str())
+                    .unwrap_or_default();
+                let root = module.split('.').next().unwrap_or(module);
+                if !self.import_is_safe(root) {
+                    return Err(Dynamic::new(
+                        Reason::ForeignImport,
+                        format!("from {module} import ..."),
+                    ));
+                }
+                for alias in &import.names {
+                    let name = alias.name.as_str();
+                    if name == "*" {
+                        return Err(Dynamic::new(
+                            Reason::StarImport,
+                            format!("from {module} import *"),
+                        ));
+                    }
+                    let bound = alias
+                        .asname
+                        .as_ref()
+                        .map(|alias| alias.as_str().to_string())
+                        .unwrap_or_else(|| name.to_string());
+                    self.bind_import(&bound)?;
+                    match name {
+                        "fixture" | "parametrize" | "mark" => {
+                            self.bindings.symbols.insert(bound, name.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+            Stmt::Assign(assign) => self.assignment_is_safe(assign),
+            Stmt::FunctionDef(func) => {
+                let name = func.name.as_str();
+                self.bind(name)?;
+                if name == "__getattr__" {
+                    return Err(Dynamic::new(
+                        Reason::ModuleGetattr,
+                        "module-level __getattr__ (PEP 562)".to_string(),
+                    ));
+                }
+                self.reject_dunder(name)?;
+                // Decorators are *evaluated* at import time, so an unrecognised one can do
+                // anything; recognising it here is what makes it safe.
+                let _ = self.decorators(&func.decorator_list)?;
+                Ok(())
+            }
+            Stmt::ClassDef(class) => {
+                self.bind(class.name.as_str())?;
+                self.reject_dunder(class.name.as_str())?;
+                let _ = self.decorators(&class.decorator_list)?;
+                self.class_body_is_safe(class)
+            }
+            other => Err(Dynamic::new(
+                statement_reason(other),
+                format!("module-level {}", describe_stmt(other)),
+            )),
+        }
+    }
+
+    /// A module- or class-level assignment: single plain-name target, literal value, and a
+    /// name that neither the collector nor the fixture machinery reads.
+    fn assignment_is_safe(&mut self, assign: &ruff_python_ast::StmtAssign) -> Result<(), Dynamic> {
+        let Some(name) = single_name_target(assign) else {
+            return Err(Dynamic::new(
+                Reason::ModuleSideEffect,
+                "assignment to something other than a single plain name".to_string(),
+            ));
+        };
+        self.bind(&name)?;
+        match name.as_str() {
+            // `pytestmark` is read as marks, not as a value; validated by the caller.
+            "pytestmark" => {
+                let _ = self.pytestmark_specs(&assign.value)?;
+                return Ok(());
+            }
+            "__test__" => {
+                return Err(Dynamic::new(
+                    Reason::TestAttribute,
+                    "__test__ vetoes collection".to_string(),
+                ))
+            }
+            "pytest_plugins" => {
+                return Err(Dynamic::new(
+                    Reason::PytestPlugins,
+                    "pytest_plugins registers arbitrary fixtures".to_string(),
+                ))
+            }
+            _ => {}
+        }
+        if matches_name_pattern(&name, &self.config.python_functions)
+            || matches_name_pattern(&name, &self.config.python_classes)
+        {
+            // The name is in the collector's sights, so *what* it is bound to decides whether
+            // a test exists.  A literal is not callable and not a class, so pytest skips it —
+            // but proving that for every literal shape is not worth the risk here.
+            return Err(Dynamic::new(
+                Reason::ModuleSideEffect,
+                format!("{name} is bound to a value but matches a collection pattern"),
+            ));
+        }
+        match literal(&assign.value) {
+            Some(_) => Ok(()),
+            None => Err(Dynamic::new(
+                Reason::ModuleSideEffect,
+                format!("{name} = {}", describe(&assign.value)),
+            )),
+        }
+    }
+
+    /// A class body executes at import time, so it gets the same treatment as a module body —
+    /// minus imports, which are legal but vanishingly rare in a class body and not worth a
+    /// second binding scope.
+    fn class_body_is_safe(&mut self, class: &ruff_python_ast::StmtClassDef) -> Result<(), Dynamic> {
+        for statement in &class.body {
+            match statement {
+                Stmt::Pass(_) => {}
+                Stmt::Expr(expr) => match expr.value.as_ref() {
+                    Expr::StringLiteral(_) | Expr::EllipsisLiteral(_) => {}
+                    other => {
+                        return Err(Dynamic::new(
+                            Reason::ModuleSideEffect,
+                            format!("class-body expression statement: {}", describe(other)),
+                        ))
+                    }
+                },
+                Stmt::Assign(assign) => {
+                    let Some(name) = single_name_target(assign) else {
+                        return Err(Dynamic::new(
+                            Reason::ModuleSideEffect,
+                            "class-body assignment to something other than a plain name"
+                                .to_string(),
+                        ));
+                    };
+                    if name == "__test__" {
+                        return Err(Dynamic::new(
+                            Reason::TestAttribute,
+                            "class-level __test__ vetoes collection".to_string(),
+                        ));
+                    }
+                    if name != "pytestmark" && literal(&assign.value).is_none() {
+                        return Err(Dynamic::new(
+                            Reason::ModuleSideEffect,
+                            format!("class-body {name} = {}", describe(&assign.value)),
+                        ));
+                    }
+                    if name == "pytestmark" {
+                        let _ = self.pytestmark_specs(&assign.value)?;
+                    }
+                }
+                Stmt::FunctionDef(func) => {
+                    let _ = self.decorators(&func.decorator_list)?;
+                }
+                Stmt::ClassDef(nested) => {
+                    let _ = self.decorators(&nested.decorator_list)?;
+                    self.class_body_is_safe(nested)?;
+                }
+                other => {
+                    return Err(Dynamic::new(
+                        statement_reason(other),
+                        format!("class-body {}", describe_stmt(other)),
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn bind(&mut self, name: &str) -> Result<(), Dynamic> {
+        if !self.bound.insert(name.to_string()) {
+            return Err(Dynamic::new(
+                Reason::DuplicateName,
+                format!("{name} is bound more than once at module level"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// An imported name that the configured patterns would collect is a test under Tier D —
+    /// `_v2_worker.py::collect_module` iterates `vars(module)`, and `collect_imported_tests`
+    /// defaults to `True` — while Tier S, which only sees `def`s, would miss it entirely.
+    fn bind_import(&mut self, name: &str) -> Result<(), Dynamic> {
+        self.bind(name)?;
+        if matches_name_pattern(name, &self.config.python_functions)
+            || matches_name_pattern(name, &self.config.python_classes)
+        {
+            return Err(Dynamic::new(
+                Reason::ImportedTestName,
+                format!("imported name {name} matches a collection pattern"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// May this module root be imported without the answer changing?
+    ///
+    /// Two tiers, and the difference between them is the shadowing check.  A pre-imported root
+    /// ([`PREIMPORTED_ROOTS`]) never touches the filesystem, so nothing can shadow it.  A
+    /// standard-library root ([`STDLIB_ALLOWLIST`]) does go through the import system, and
+    /// `sys.path` carries this run's own directories — so a `queue.py` beside a test file makes
+    /// `import queue` user code, and the name is refused.
+    fn import_is_safe(&self, root: &str) -> bool {
+        if PREIMPORTED_ROOTS.contains(&root) {
+            return true;
+        }
+        STDLIB_ALLOWLIST.contains(&root) && !self.shadows.contains(root)
+    }
+
+    fn reject_dunder(&self, name: &str) -> Result<(), Dynamic> {
+        if name.starts_with("__") && name.ends_with("__") {
+            return Err(Dynamic::new(
+                Reason::DunderDefinition,
+                format!("{name} is decided by IGNORED_ATTRIBUTES, by exact name"),
+            ));
+        }
+        Ok(())
+    }
+
+    // -- decorators ------------------------------------------------------
+
+    /// Every decorator on a definition, in **source order**.
+    ///
+    /// Callers that care about order reverse it: Python applies the bottom decorator first, so
+    /// `decorators.py::MarkDecorator.__call__` appends to `__rustest_marks__` bottom-up and
+    /// `parametrize` crosses `existing x new` in the same direction.
+    fn decorators(&self, decorators: &[ruff_python_ast::Decorator]) -> Result<Vec<Decor>, Dynamic> {
+        decorators
+            .iter()
+            .map(|decorator| self.decorator(&decorator.expression))
+            .collect()
+    }
+
+    fn decorator(&self, expr: &Expr) -> Result<Decor, Dynamic> {
+        match expr {
+            Expr::Name(name) => match name.id.as_str() {
+                "staticmethod" if !self.bound.contains("staticmethod") => Ok(Decor::StaticMethod),
+                "classmethod" if !self.bound.contains("classmethod") => Ok(Decor::ClassMethod),
+                other => match self.bindings.symbols.get(other).map(String::as_str) {
+                    Some("fixture") => Ok(Decor::Fixture),
+                    _ => Err(Dynamic::new(Reason::UnknownDecorator, format!("@{other}"))),
+                },
+            },
+            Expr::Attribute(_) => match self.dotted(expr) {
+                Some(path) => self.named_decorator(&path, None),
+                None => Err(Dynamic::new(
+                    Reason::UnknownDecorator,
+                    format!("@{}", describe(expr)),
+                )),
+            },
+            Expr::Call(call) => {
+                let path = match call.func.as_ref() {
+                    Expr::Name(name) => vec![name.id.to_string()],
+                    Expr::Attribute(_) => self.dotted(call.func.as_ref()).ok_or_else(|| {
+                        Dynamic::new(Reason::UnknownDecorator, format!("@{}", describe(expr)))
+                    })?,
+                    other => {
+                        return Err(Dynamic::new(
+                            Reason::UnknownDecorator,
+                            format!("@{}", describe(other)),
+                        ))
+                    }
+                };
+                self.named_decorator(&path, Some(&call.arguments))
+            }
+            other => Err(Dynamic::new(
+                Reason::UnknownDecorator,
+                format!("@{}", describe(other)),
+            )),
+        }
+    }
+
+    /// Resolve a dotted decorator name against the recorded import bindings.
+    ///
+    /// The bindings matter: `@fixture` is rustest's fixture only if `fixture` was imported
+    /// from `rustest`/`pytest`, and a module that defines its own `fixture` would otherwise
+    /// have it silently misread.  A locally-defined name never reaches here as a recognised
+    /// form, because [`Scan::bind`] and [`Scan::bind_import`] share one namespace and a
+    /// duplicate binding flags the file.
+    fn named_decorator(
+        &self,
+        path: &[String],
+        arguments: Option<&ruff_python_ast::Arguments>,
+    ) -> Result<Decor, Dynamic> {
+        let rendered = path.join(".");
+        let unknown = || Dynamic::new(Reason::UnknownDecorator, format!("@{rendered}"));
+
+        // `pytest.mark.X` / `rustest.mark.X`
+        let tail: Vec<&str> = path.iter().map(String::as_str).collect();
+        let resolved: Vec<&str> = match tail.as_slice() {
+            [head, rest @ ..] if self.bindings.modules.contains(*head) => rest.to_vec(),
+            [head, rest @ ..] => match self.bindings.symbols.get(*head).map(String::as_str) {
+                Some(symbol) => {
+                    let mut out = vec![symbol];
+                    out.extend_from_slice(rest);
+                    out
+                }
+                None => return Err(unknown()),
+            },
+            [] => return Err(unknown()),
+        };
+
+        match resolved.as_slice() {
+            ["fixture"] => {
+                if let Some(arguments) = arguments {
+                    for keyword in &arguments.keywords {
+                        let key = keyword.arg.as_ref().map(|arg| arg.as_str()).unwrap_or("**");
+                        if key == "params" || key == "ids" {
+                            return Err(Dynamic::new(
+                                Reason::ParametrizedFixture,
+                                format!("@{rendered}({key}=...)"),
+                            ));
+                        }
+                    }
+                }
+                Ok(Decor::Fixture)
+            }
+            ["mark", "parametrize"] | ["parametrize"] => match arguments {
+                Some(arguments) => Ok(Decor::Parametrize(self.parametrize_cases(arguments)?)),
+                // `@pytest.mark.parametrize` uncalled raises TypeError at import
+                // (`decorators.py::_create_parametrize_mark`), i.e. a collection error.
+                None => Err(Dynamic::new(
+                    Reason::NonLiteralParametrize,
+                    "@parametrize used without arguments".to_string(),
+                )),
+            },
+            ["mark", name] => Ok(Decor::Mark(self.mark_spec(name, arguments)?)),
+            _ => Err(unknown()),
+        }
+    }
+
+    /// The `MarkSpec` `decorators.py` would store for `@mark.<name>(...)`.
+    ///
+    /// The generic case is `MarkDecorator(name, args, kwargs)` verbatim.  The four names in
+    /// [`FACTORY_MARKS`] go through their own factory, which rewrites the arguments:
+    ///
+    /// * `skipif(condition, reason=None)` -> `MarkDecorator("skipif", (condition,), {"reason":
+    ///   reason})`, and `MarkDecorator._normalize_args` then **evaluates a string condition**
+    ///   against the test's module globals — genuinely dynamic, so only a `True`/`False`
+    ///   literal is admitted;
+    /// * `xfail(condition=None, *, reason, raises, run, strict)` ->
+    ///   `MarkDecorator("xfail", (condition,) or (), {reason, raises, run, strict})`, i.e. the
+    ///   four keywords are **always present** with their defaults, which is why a naive
+    ///   "copy the kwargs the user wrote" would produce the wrong wire form;
+    /// * `usefixtures(*names)` -> `MarkDecorator("usefixtures", names, {})`;
+    /// * `asyncio` re-decorates class members and is refused.
+    ///
+    /// The **bare** form of all of them is `BareOrFactoryMark._bare`, i.e.
+    /// `MarkDecorator(name, (), {})` — empty args *and* empty kwargs, which is what makes a
+    /// bare `skipif` an unconditional skip.
+    fn mark_spec(
+        &self,
+        name: &str,
+        arguments: Option<&ruff_python_ast::Arguments>,
+    ) -> Result<MarkSpec, Dynamic> {
+        // `asyncio` is refused in **both** forms, and the bare one is why this check is here
+        // rather than beside the other factories below.  `MarkGenerator.asyncio` is a plain
+        // method, not a `BareOrFactoryMark`, so `@mark.asyncio` calls it with the decorated
+        // object — and when that object is a *class* it walks `inspect.getmembers` and
+        // re-decorates every coroutine method, which is not a transformation an AST predicts.
+        // The bare-on-a-function case happens to produce `MarkDecorator("asyncio", (), {})`
+        // like every other bare mark; admitting it would mean the rule held for one of the two
+        // shapes and nothing would say which.
+        if name == "asyncio" {
+            return Err(Dynamic::new(
+                Reason::NonLiteralMark,
+                "@mark.asyncio rewrites the object it decorates".to_string(),
+            ));
+        }
+
+        let Some(arguments) = arguments else {
+            // Bare: `BareOrFactoryMark._bare` is `MarkDecorator(name, (), {})` for every mark,
+            // factory or not — empty args *and* empty kwargs.
+            return Ok(MarkSpec {
+                name: name.to_string(),
+                args: Vec::new(),
+                kwargs: serde_json::Map::new(),
+            });
+        };
+
+        let mut args = Vec::new();
+        for arg in &arguments.args {
+            let Some(value) = literal(arg) else {
+                return Err(Dynamic::new(
+                    Reason::NonLiteralMark,
+                    format!("@mark.{name}({})", describe(arg)),
+                ));
+            };
+            args.push(value);
+        }
+        let mut kwargs: Vec<(String, Lit)> = Vec::new();
+        for keyword in &arguments.keywords {
+            let Some(key) = keyword.arg.as_ref() else {
+                return Err(Dynamic::new(
+                    Reason::NonLiteralMark,
+                    format!("@mark.{name}(**kwargs)"),
+                ));
+            };
+            let Some(value) = literal(&keyword.value) else {
+                return Err(Dynamic::new(
+                    Reason::NonLiteralMark,
+                    format!("@mark.{name}({}=...)", key.as_str()),
+                ));
+            };
+            kwargs.push((key.as_str().to_string(), value));
+        }
+
+        if !FACTORY_MARKS.contains(&name) {
+            return Ok(spec(name, args, kwargs));
+        }
+
+        match name {
+            "skipif" => {
+                let condition = match args.as_slice() {
+                    [Lit::Bool(value)] => Lit::Bool(*value),
+                    _ => {
+                        return Err(Dynamic::new(
+                            Reason::NonLiteralMark,
+                            "@mark.skipif needs a bool literal condition (a string one is \
+                             eval'd against the module's globals at decoration time)"
+                                .to_string(),
+                        ))
+                    }
+                };
+                // `_skipif(condition, reason=None, *, _kw_reason=None)`: positional `reason`
+                // is legal too, but only the keyword form is modelled here.
+                let mut reason = Lit::None;
+                for (key, value) in &kwargs {
+                    if key != "reason" {
+                        return Err(Dynamic::new(
+                            Reason::NonLiteralMark,
+                            format!("@mark.skipif({key}=...)"),
+                        ));
+                    }
+                    reason = value.clone();
+                }
+                Ok(spec(
+                    "skipif",
+                    vec![condition],
+                    vec![("reason".to_string(), reason)],
+                ))
+            }
+            "xfail" => {
+                let condition = match args.as_slice() {
+                    [] => None,
+                    [Lit::Bool(value)] => Some(Lit::Bool(*value)),
+                    _ => {
+                        return Err(Dynamic::new(
+                            Reason::NonLiteralMark,
+                            "@mark.xfail needs a bool literal condition".to_string(),
+                        ))
+                    }
+                };
+                let mut reason = Lit::None;
+                let mut run = Lit::Bool(true);
+                let mut strict = Lit::Bool(false);
+                for (key, value) in &kwargs {
+                    match key.as_str() {
+                        "reason" => reason = value.clone(),
+                        "run" => run = value.clone(),
+                        "strict" => strict = value.clone(),
+                        // `raises=ValueError` is a *class*, never a literal; it must reach the
+                        // execute half as an object, so a static answer cannot produce it.
+                        other => {
+                            return Err(Dynamic::new(
+                                Reason::NonLiteralMark,
+                                format!("@mark.xfail({other}=...)"),
+                            ))
+                        }
+                    }
+                }
+                Ok(spec(
+                    "xfail",
+                    condition.into_iter().collect(),
+                    vec![
+                        ("reason".to_string(), reason),
+                        ("raises".to_string(), Lit::None),
+                        ("run".to_string(), run),
+                        ("strict".to_string(), strict),
+                    ],
+                ))
+            }
+            "usefixtures" => {
+                if !kwargs.is_empty() || !args.iter().all(|arg| matches!(arg, Lit::Str(_))) {
+                    return Err(Dynamic::new(
+                        Reason::NonLiteralMark,
+                        "@mark.usefixtures takes positional string names only".to_string(),
+                    ));
+                }
+                Ok(spec("usefixtures", args, Vec::new()))
+            }
+            _ => Err(Dynamic::new(
+                Reason::NonLiteralMark,
+                format!("@mark.{name} has a factory Tier S does not model"),
+            )),
+        }
+    }
+
+    /// `pytestmark = <mark>` or `pytestmark = [<mark>, ...]`.
+    ///
+    /// `_v2_worker.py::_spec_from_pytestmark` reads `.name`/`.args`/`.kwargs` off whatever the
+    /// expression evaluated to, which for an uncalled `pytest.mark.slow` is a
+    /// `BareOrFactoryMark` with empty args and kwargs and for a called one is the
+    /// `MarkDecorator` the factory returned — i.e. exactly the same two shapes
+    /// [`Scan::mark_spec`] models.  `_normalize_args` is **not** applied on this path (it runs
+    /// inside `MarkDecorator.__call__`, and nothing calls the decorator here), which changes
+    /// nothing for the subset admitted: it only rewrites *string* skipif conditions, and those
+    /// are refused.
+    fn pytestmark_specs(&self, value: &Expr) -> Result<Vec<MarkSpec>, Dynamic> {
+        let entries: Vec<&Expr> = match value {
+            Expr::List(list) => list.elts.iter().collect(),
+            Expr::Tuple(tuple) => tuple.elts.iter().collect(),
+            single => vec![single],
+        };
+        entries
+            .into_iter()
+            .map(|entry| match self.decorator(entry) {
+                Ok(Decor::Mark(spec)) => Ok(spec),
+                Ok(_) | Err(_) => Err(Dynamic::new(
+                    Reason::NonLiteralPytestmark,
+                    format!("pytestmark entry {}", describe(entry)),
+                )),
+            })
+            .collect()
+    }
+
+    /// Expand one `@parametrize(...)` into cases.
+    ///
+    /// Port of `decorators.py::parametrize` -> `_normalize_arg_names` + `_build_cases`.  The
+    /// **values** are the only place const-eval happens, and it is total: every element must
+    /// be a [`Lit`], because `_generate_param_id` on anything else needs a live object.
+    fn parametrize_cases(
+        &self,
+        arguments: &ruff_python_ast::Arguments,
+    ) -> Result<Vec<Case>, Dynamic> {
+        let flag = |detail: &str| Dynamic::new(Reason::NonLiteralParametrize, detail.to_string());
+
+        let mut positional = arguments.args.iter();
+        let Some(argnames_expr) = positional.next() else {
+            return Err(flag("@parametrize with no argument names"));
+        };
+        let names = match literal(argnames_expr) {
+            Some(Lit::Str(raw)) => {
+                let parts: Vec<String> = raw
+                    .split(',')
+                    .map(|part| part.trim().to_string())
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                if parts.is_empty() {
+                    return Err(flag("@parametrize with an empty argument-name string"));
+                }
+                parts
+            }
+            Some(Lit::Seq(items)) => {
+                let mut parts = Vec::new();
+                for item in items {
+                    match item {
+                        Lit::Str(name) => parts.push(name),
+                        _ => return Err(flag("@parametrize argument names must be strings")),
+                    }
+                }
+                parts
+            }
+            _ => return Err(flag("@parametrize argument names are not a literal")),
+        };
+
+        let mut values_expr = positional.next();
+        let mut ids_expr: Option<&Expr> = None;
+        for keyword in &arguments.keywords {
+            let Some(key) = keyword.arg.as_ref() else {
+                return Err(flag("@parametrize(**kwargs)"));
+            };
+            match key.as_str() {
+                "values" | "argvalues" => values_expr = Some(&keyword.value),
+                "ids" => ids_expr = Some(&keyword.value),
+                // `indirect` turns a parametrized name into a fixture reference, which
+                // changes what `_fixture_names` reports and what the closure resolves.
+                other => return Err(flag(&format!("@parametrize({other}=...)"))),
+            }
+        }
+        if positional.next().is_some() {
+            return Err(flag("@parametrize with unexpected positional arguments"));
+        }
+        let Some(values_expr) = values_expr else {
+            return Err(flag("@parametrize with no values"));
+        };
+
+        let Some(Lit::Seq(values)) = literal(values_expr) else {
+            return Err(flag("@parametrize values are not a literal sequence"));
+        };
+        // `_build_cases` on an empty sequence stores `()`, which `_parametrization` reads back
+        // as "not parametrized" — and which the *next* stacked decorator then overwrites
+        // instead of crossing, because `if existing_cases:` is falsy.  Not modelled.
+        if values.is_empty() {
+            return Err(flag("@parametrize with an empty value list"));
+        }
+
+        let ids = match ids_expr {
+            None => None,
+            Some(expr) => match literal(expr) {
+                Some(Lit::Seq(items)) => {
+                    let mut out = Vec::new();
+                    for item in items {
+                        match item {
+                            Lit::Str(id) => out.push(id),
+                            _ => return Err(flag("@parametrize(ids=[...]) must be strings")),
+                        }
+                    }
+                    if out.len() != values.len() {
+                        // `_build_cases` raises ValueError at decoration time -> import error.
+                        return Err(flag("@parametrize(ids=...) length mismatch"));
+                    }
+                    Some(out)
+                }
+                // A callable `ids=` runs user code per value.
+                _ => return Err(flag("@parametrize(ids=...) is not a literal list")),
+            },
+        };
+
+        let mut cases = Vec::with_capacity(values.len());
+        for (index, value) in values.iter().enumerate() {
+            // `_build_cases`: a tuple/list whose length matches the names is unpacked; a
+            // single name takes the whole value; anything else is a ValueError at decoration.
+            let bound: Vec<String> = match value {
+                Lit::Seq(items) if items.len() == names.len() => names.clone(),
+                _ if names.len() == 1 => names.clone(),
+                _ => return Err(flag("@parametrize value does not match argument names")),
+            };
+            // Dicts as value sets (`{"a": 1, "b": 2}` with several names) are a v1 shape whose
+            // id generation reads the dict, not the unpacked values; not modelled.
+            if matches!(value, Lit::Dict(_)) && names.len() > 1 {
+                return Err(flag("@parametrize mapping value sets are not modelled"));
+            }
+            let id = match &ids {
+                Some(ids) => ids[index].clone(),
+                None => generate_param_id(value, index)
+                    .ok_or_else(|| flag("@parametrize value has no static id"))?,
+            };
+            cases.push((id, bound));
+        }
+        Ok(cases)
+    }
+
+    // -- tests -----------------------------------------------------------
+
+    /// One `def`, if it is a test.  Returns `None` when the name is not collected at all.
+    ///
+    /// `outer_cases` is the enclosing class's parametrization, handed down exactly as
+    /// `_v2_worker.py::_collect_class` hands it down (a class-level `@parametrize` writes onto
+    /// the *class* object, where a method cannot see it).
+    #[allow(clippy::too_many_arguments)]
+    fn function_test(
+        &self,
+        func: &ruff_python_ast::StmtFunctionDef,
+        rel_path: &str,
+        parts: &[String],
+        owner: Option<&ruff_python_ast::StmtClassDef>,
+        outer_marks: &[MarkSpec],
+        outer_cases: &[Case],
+    ) -> Result<Option<Vec<CollectedTest>>, Dynamic> {
+        let name = func.name.as_str();
+        if !matches_name_pattern(name, &self.config.python_functions) {
+            return Ok(None);
+        }
+        let decorators = self.decorators(&func.decorator_list)?;
+        // `_is_test_function` refuses a fixture even when the name matches
+        // (`PyCollector.istestfunction`'s `getfixturemarker(obj) is None`).
+        if decorators.contains(&Decor::Fixture) {
+            return Ok(None);
+        }
+        if body_yields(&func.body) {
+            return Err(Dynamic::new(
+                Reason::GeneratorTest,
+                format!("{name} is a generator function"),
+            ));
+        }
+
+        // Bottom decorator first: Python applies them inside-out, and both
+        // `MarkDecorator.__call__` (append) and `parametrize` (cross `existing x new`) record
+        // that order.
+        let mut own_marks = Vec::new();
+        let mut own_cases: Option<Vec<Case>> = None;
+        for decor in decorators.iter().rev() {
+            match decor {
+                Decor::Mark(spec) => own_marks.push(spec.clone()),
+                Decor::Parametrize(cases) => {
+                    own_cases = Some(match own_cases {
+                        None => cases.clone(),
+                        Some(existing) => cross_product_cases(&existing, cases),
+                    });
+                }
+                Decor::Fixture | Decor::StaticMethod | Decor::ClassMethod => {}
+            }
+        }
+
+        let mut marks = own_marks;
+        marks.extend_from_slice(outer_marks);
+
+        // `_collect_function`: the class's cases are the outer dimension; the method's own are
+        // crossed inside them.
+        let cases: Option<Vec<Case>> = match (outer_cases.is_empty(), own_cases) {
+            (true, own) => own,
+            (false, None) => Some(outer_cases.to_vec()),
+            (false, Some(own)) => Some(cross_product_cases(outer_cases, &own)),
+        };
+
+        let is_static_method = decorators.contains(&Decor::StaticMethod);
+        let requested = requested_argnames(func, owner.is_some(), is_static_method);
+
+        let mut full_parts: Vec<String> = parts.to_vec();
+        full_parts.push(name.to_string());
+        let part_refs: Vec<&str> = full_parts.iter().map(String::as_str).collect();
+
+        let entry = |param_id: Option<&str>, bound: &[String]| CollectedTest {
+            id: build_nodeid(rel_path, &part_refs, param_id),
+            path: rel_path.to_string(),
+            qualname: full_parts.join("."),
+            class_name: if full_parts.len() > 1 {
+                Some(full_parts[..full_parts.len() - 1].join("."))
+            } else {
+                None
+            },
+            param_id: param_id.map(str::to_string),
+            marks: marks.clone(),
+            // `_fixture_names` is the requested names minus the ones parametrize supplies.
+            fixtures: requested
+                .iter()
+                .filter(|name| !bound.contains(name))
+                .cloned()
+                .collect(),
+            tier: Tier::Static,
+        };
+
+        Ok(Some(match cases {
+            None => vec![entry(None, &[])],
+            Some(cases) => {
+                let ids = unique_parameterset_ids(
+                    cases.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+                );
+                cases
+                    .iter()
+                    .zip(ids)
+                    .map(|((_, bound), id)| entry(Some(&id), bound))
+                    .collect()
+            }
+        }))
+    }
+
+    /// One `class`, if it is a test class.  Port of `_v2_worker.py::_collect_class`.
+    fn class_tests(
+        &mut self,
+        class: &ruff_python_ast::StmtClassDef,
+        rel_path: &str,
+        parts: &[String],
+        outer_marks: &[MarkSpec],
+    ) -> Result<Vec<CollectedTest>, Dynamic> {
+        let name = class.name.as_str();
+        // The base check comes **before** the name filter, because a `unittest.TestCase`
+        // subclass is collected whatever its name is (`_pytest/unittest.py::
+        // pytest_pycollect_makeitem` runs before `python.py`'s trylast hook), so a
+        // `class Legacy(unittest.TestCase)` that fails `python_classes` is still a test class
+        // in Tier D and must not be silently dropped here.
+        self.class_bases_are_object(class)?;
+        if !matches_name_pattern(name, &self.config.python_classes) {
+            return Ok(Vec::new());
+        }
+
+        let decorators = self.decorators(&class.decorator_list)?;
+        // `_hasinit`/`_hasnew`: pytest warns and collects **nothing** from such a class, and
+        // returns without failing the run.  With no bases, the body is the whole story.
+        let has_constructor = class.body.iter().any(|statement| match statement {
+            Stmt::FunctionDef(func) => matches!(func.name.as_str(), "__init__" | "__new__"),
+            _ => false,
+        });
+        if has_constructor {
+            return Ok(Vec::new());
+        }
+
+        let mut own_marks = Vec::new();
+        let mut own_cases: Option<Vec<Case>> = None;
+        for decor in decorators.iter().rev() {
+            match decor {
+                Decor::Mark(spec) => own_marks.push(spec.clone()),
+                Decor::Parametrize(cases) => {
+                    own_cases = Some(match own_cases {
+                        None => cases.clone(),
+                        Some(existing) => cross_product_cases(&existing, cases),
+                    });
+                }
+                Decor::Fixture | Decor::StaticMethod | Decor::ClassMethod => {}
+            }
+        }
+        // `_mark_specs(cls, consider_mro=True)` walks `reversed(cls.__mro__)`; with `object`
+        // as the only base there is exactly one `__dict__` carrying marks — this class's — so
+        // a class-body `pytestmark` precedes the decorator marks, as `_mark_specs` orders its
+        // two sources.
+        let mut class_marks = Vec::new();
+        for statement in &class.body {
+            if let Stmt::Assign(assign) = statement {
+                if single_name_target(assign).as_deref() == Some("pytestmark") {
+                    class_marks.extend(self.pytestmark_specs(&assign.value)?);
+                }
+            }
+        }
+        class_marks.extend(own_marks);
+        class_marks.extend_from_slice(outer_marks);
+
+        let mut child_parts = parts.to_vec();
+        child_parts.push(name.to_string());
+        let cases = own_cases.unwrap_or_default();
+
+        let mut tests = Vec::new();
+        for statement in &class.body {
+            match statement {
+                Stmt::FunctionDef(func) => {
+                    if let Some(found) = self.function_test(
+                        func,
+                        rel_path,
+                        &child_parts,
+                        Some(class),
+                        &class_marks,
+                        &cases,
+                    )? {
+                        tests.extend(found);
+                    }
+                }
+                Stmt::ClassDef(nested) => {
+                    // A nested class inherits the enclosing class's cases through
+                    // `_make_items`' `outer_cases`, which this port does not thread further —
+                    // so a parametrized class holding a nested class flags rather than
+                    // silently dropping a dimension.
+                    if !cases.is_empty() {
+                        return Err(Dynamic::new(
+                            Reason::NonLiteralParametrize,
+                            "a parametrized class containing a nested class is not modelled"
+                                .to_string(),
+                        ));
+                    }
+                    tests.extend(self.class_tests(nested, rel_path, &child_parts, &class_marks)?);
+                }
+                _ => {}
+            }
+        }
+        Ok(tests)
+    }
+
+    /// A test class may inherit from nothing at all, or from `object`.
+    ///
+    /// Any other base flags, and the reason is not caution for its own sake: pytest collects
+    /// **inherited** methods (`_pytest/python.py::PyCollector.collect` walks the whole MRO, and
+    /// `_v2_worker.py::_mro_ordered_members` reproduces the base-first ordering), so a base
+    /// class defined in another file — or produced by a metaclass, or a `unittest.TestCase` —
+    /// contributes tests, marks and fixtures that are not in this file's AST at all.
+    fn class_bases_are_object(&self, class: &ruff_python_ast::StmtClassDef) -> Result<(), Dynamic> {
+        let Some(arguments) = class.arguments.as_ref() else {
+            return Ok(());
+        };
+        if !arguments.keywords.is_empty() {
+            // `metaclass=` / `**kwargs` — `__init_subclass__` and metaclass `__new__` both run
+            // arbitrary code at class creation.
+            return Err(Dynamic::new(
+                Reason::ClassBases,
+                format!("class {} has class keywords", class.name.as_str()),
+            ));
+        }
+        for base in &arguments.args {
+            let is_object = matches!(base, Expr::Name(name) if name.id.as_str() == "object")
+                && !self.bound.contains("object");
+            if !is_object {
+                let unittest_case = self
+                    .dotted(base)
+                    .is_some_and(|path| path.last().is_some_and(|tail| tail == "TestCase"));
+                return Err(Dynamic::new(
+                    if unittest_case {
+                        Reason::UnittestCase
+                    } else {
+                        Reason::ClassBases
+                    },
+                    format!("class {}({})", class.name.as_str(), describe(base)),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// `a.b.c` as `["a", "b", "c"]`, or `None` if the chain is not all plain names.
+    fn dotted(&self, expr: &Expr) -> Option<Vec<String>> {
+        match expr {
+            Expr::Name(name) => Some(vec![name.id.to_string()]),
+            Expr::Attribute(attribute) => {
+                let mut path = self.dotted(attribute.value.as_ref())?;
+                path.push(attribute.attr.as_str().to_string());
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Build a [`MarkSpec`] from const-evaluated arguments, applying the wire's omission rules
+/// (`_v2_worker.py::MarkSpec.to_wire`: empty `args`/`kwargs` are dropped).
+fn spec(name: &str, args: Vec<Lit>, kwargs: Vec<(String, Lit)>) -> MarkSpec {
+    MarkSpec {
+        name: name.to_string(),
+        args: args.iter().map(Lit::to_json).collect(),
+        kwargs: kwargs
+            .into_iter()
+            .map(|(key, value)| (key, value.to_json()))
+            .collect(),
+    }
+}
+
+/// Port of `_v2_worker.py::_requested_argnames` for the subset Tier S admits.
+///
+/// Only `POSITIONAL_OR_KEYWORD` and `KEYWORD_ONLY` parameters without a default count
+/// (`_pytest/compat.py::getfuncargnames`), and the bound-method first argument is dropped
+/// unless the attribute is a `staticmethod` — a rule pytest states with `inspect.getattr_static`
+/// and **not** by looking for a parameter named `self`.  The `POSITIONAL_ONLY` guard is ported
+/// with it: a signature with any positional-only parameter keeps its first name.
+///
+/// `mock.patch`'s `__wrapped__` stripping has no analogue here, because a `@patch` decorator is
+/// not in the recognised set and flags the file first.
+fn requested_argnames(
+    func: &ruff_python_ast::StmtFunctionDef,
+    is_method: bool,
+    is_static_method: bool,
+) -> Vec<String> {
+    let parameters = func.parameters.as_ref();
+    let mut names: Vec<String> = parameters
+        .args
+        .iter()
+        .chain(parameters.kwonlyargs.iter())
+        .filter(|parameter| parameter.default.is_none())
+        .map(|parameter| parameter.parameter.name.as_str().to_string())
+        .collect();
+    let has_positional_only = !parameters.posonlyargs.is_empty();
+    if !names.is_empty() && !has_positional_only && is_method && !is_static_method {
+        names.remove(0);
+    }
+    names
+}
+
+/// Does this body contain a `yield` that belongs to *this* function?
+///
+/// Nested `def`s and lambdas own their own yields, so the walk stops at them — the same rule
+/// `inspect.isgeneratorfunction` follows by reading the compiled code object's flags.
+fn body_yields(body: &[Stmt]) -> bool {
+    body.iter().any(statement_yields)
+}
+
+fn statement_yields(statement: &Stmt) -> bool {
+    match statement {
+        Stmt::FunctionDef(_) | Stmt::ClassDef(_) => false,
+        Stmt::Expr(expr) => expr_yields(&expr.value),
+        Stmt::Return(ret) => ret.value.as_ref().is_some_and(|value| expr_yields(value)),
+        Stmt::Assign(assign) => expr_yields(&assign.value),
+        Stmt::AugAssign(assign) => expr_yields(&assign.value),
+        Stmt::AnnAssign(assign) => assign
+            .value
+            .as_ref()
+            .is_some_and(|value| expr_yields(value)),
+        Stmt::For(node) => {
+            expr_yields(&node.iter) || body_yields(&node.body) || body_yields(&node.orelse)
+        }
+        Stmt::While(node) => {
+            expr_yields(&node.test) || body_yields(&node.body) || body_yields(&node.orelse)
+        }
+        Stmt::If(node) => {
+            expr_yields(&node.test)
+                || body_yields(&node.body)
+                || node
+                    .elif_else_clauses
+                    .iter()
+                    .any(|clause| body_yields(&clause.body))
+        }
+        Stmt::With(node) => {
+            body_yields(&node.body)
+                || node
+                    .items
+                    .iter()
+                    .any(|item| expr_yields(&item.context_expr))
+        }
+        Stmt::Try(node) => {
+            body_yields(&node.body)
+                || body_yields(&node.orelse)
+                || body_yields(&node.finalbody)
+                || node.handlers.iter().any(|handler| match handler {
+                    ruff_python_ast::ExceptHandler::ExceptHandler(handler) => {
+                        body_yields(&handler.body)
+                    }
+                })
+        }
+        _ => false,
+    }
+}
+
+fn expr_yields(expr: &Expr) -> bool {
+    match expr {
+        Expr::Yield(_) | Expr::YieldFrom(_) => true,
+        Expr::Lambda(_) => false,
+        Expr::Await(node) => expr_yields(&node.value),
+        Expr::BoolOp(node) => node.values.iter().any(expr_yields),
+        Expr::BinOp(node) => expr_yields(&node.left) || expr_yields(&node.right),
+        Expr::UnaryOp(node) => expr_yields(&node.operand),
+        Expr::Named(node) => expr_yields(&node.value),
+        Expr::If(node) => {
+            expr_yields(&node.test) || expr_yields(&node.body) || expr_yields(&node.orelse)
+        }
+        Expr::Call(node) => {
+            expr_yields(&node.func)
+                || node.arguments.args.iter().any(expr_yields)
+                || node
+                    .arguments
+                    .keywords
+                    .iter()
+                    .any(|keyword| expr_yields(&keyword.value))
+        }
+        Expr::Tuple(node) => node.elts.iter().any(expr_yields),
+        Expr::List(node) => node.elts.iter().any(expr_yields),
+        Expr::Set(node) => node.elts.iter().any(expr_yields),
+        Expr::Starred(node) => expr_yields(&node.value),
+        Expr::Attribute(node) => expr_yields(&node.value),
+        Expr::Subscript(node) => expr_yields(&node.value) || expr_yields(&node.slice),
+        Expr::Compare(node) => expr_yields(&node.left) || node.comparators.iter().any(expr_yields),
+        _ => false,
+    }
+}
+
+/// The single plain-name target of an assignment, if that is what it has.
+fn single_name_target(assign: &ruff_python_ast::StmtAssign) -> Option<String> {
+    match assign.targets.as_slice() {
+        [Expr::Name(name)] => Some(name.id.to_string()),
+        _ => None,
+    }
+}
+
+/// Const-eval one expression, or `None` if it is not a literal this module admits.
+///
+/// This is the "const-eval: literals, tuples, lists; anything else flags" rule.  Note what is
+/// *not* folded: `1 + 1 == 2` is a `Compare` over a `BinOp` and returns `None`, so
+/// `@pytest.mark.skipif(1 + 1 == 2, ...)` routes its file to D.  Folding it would mean
+/// reimplementing Python's numeric tower to be sure the fold is the value Python computes.
+fn literal(expr: &Expr) -> Option<Lit> {
+    match expr {
+        Expr::NoneLiteral(_) => Some(Lit::None),
+        Expr::BooleanLiteral(value) => Some(Lit::Bool(value.value)),
+        Expr::NumberLiteral(number) => match &number.value {
+            ruff_python_ast::Number::Int(value) => Some(Lit::Int {
+                negative: false,
+                // `Int::as_u64` is `None` for a value that did not fit a `u64` — ruff keeps the
+                // raw token for those, not the decimal value, so `str()` is not recoverable.
+                magnitude: value.as_u64()?,
+            }),
+            // Floats and complex: see `Lit`.
+            _ => None,
+        },
+        Expr::StringLiteral(string) => {
+            // An implicitly concatenated string is still one value, and `to_str` joins it.
+            Some(Lit::Str(string.value.to_str().to_string()))
+        }
+        Expr::UnaryOp(unary) => {
+            let inner = literal(&unary.operand)?;
+            match (unary.op, inner) {
+                (
+                    ruff_python_ast::UnaryOp::USub,
+                    Lit::Int {
+                        negative: false,
+                        magnitude,
+                    },
+                ) => Some(Lit::Int {
+                    negative: true,
+                    magnitude,
+                }),
+                (
+                    ruff_python_ast::UnaryOp::UAdd,
+                    Lit::Int {
+                        negative,
+                        magnitude,
+                    },
+                ) => Some(Lit::Int {
+                    negative,
+                    magnitude,
+                }),
+                _ => None,
+            }
+        }
+        Expr::Tuple(tuple) => tuple
+            .elts
+            .iter()
+            .map(literal)
+            .collect::<Option<_>>()
+            .map(Lit::Seq),
+        Expr::List(list) => list
+            .elts
+            .iter()
+            .map(literal)
+            .collect::<Option<_>>()
+            .map(Lit::Seq),
+        Expr::Dict(dict) => {
+            let mut items = Vec::with_capacity(dict.items.len());
+            for item in &dict.items {
+                let key = match item.key.as_ref() {
+                    Some(Expr::StringLiteral(key)) => key.value.to_str().to_string(),
+                    // A non-string key would need `str(key)` on the wire and `**{...}`
+                    // unpacking has no key at all.
+                    _ => return None,
+                };
+                items.push((key, literal(&item.value)?));
+            }
+            Some(Lit::Dict(items))
+        }
+        _ => None,
+    }
+}
+
+/// Roots that are in `sys.modules` **before** any test module is imported, and therefore
+/// cannot reach the filesystem at all.
+///
+/// `_v2_worker.py::install_pytest_shim` assigns `sys.modules["pytest"]` and
+/// `sys.modules["pytest_asyncio"]` in `main()`, before the protocol loop starts; `rustest` is
+/// the package the worker itself lives in. An `import` of any of them is a dictionary lookup,
+/// so no shadowing check applies — a local `pytest.py` is never consulted.
+const PREIMPORTED_ROOTS: [&str; 3] = ["pytest", "rustest", "pytest_asyncio"];
+
+/// Standard-library roots Tier S accepts as import-safe.
+///
+/// **Why an allowlist at all, and why this one.** The module docs give the rule: an import
+/// that can raise is a *collection error*, and Tier S must never answer for a file pytest
+/// reports as broken. `import numpy` can raise `ModuleNotFoundError`; `import json` cannot,
+/// because the standard library is part of the interpreter that is already running.
+///
+/// **Why it is hand-written rather than derived.** `ruff_python_stdlib::sys::
+/// is_known_standard_library` is the obvious source and is the wrong one: at the pinned
+/// revision its table is a *historical union* — it answers `true` for `distutils`, `telnetlib`
+/// and `imp`, all removed from the versions this project supports — so trusting it would
+/// allowlist imports that really do raise. A union is safe for ruff's purposes (classifying
+/// imports for lint ordering) and unsafe for this one.
+///
+/// **What is deliberately absent.** Every module whose import depends on an optional C
+/// extension the interpreter may have been built without — `ssl`, `sqlite3`, `lzma`, `bz2`,
+/// `zlib`, `gzip`, `ctypes`, `curses`, `tkinter`, `readline`, `dbm`, `zoneinfo`,
+/// `multiprocessing`. Those raise `ImportError` on a stripped or minimal build, which is
+/// precisely the failure this list exists to exclude.
+///
+/// The list is checked, not asserted: `python/tests/test_v2_static_tier.py::
+/// test_the_stdlib_allowlist_is_importable_and_actually_stdlib` reads it back through
+/// [`crate::v2::py::v2_static_stdlib_allowlist`] and, on every interpreter CI runs, imports
+/// each entry and confirms its file sits inside `sysconfig`'s stdlib directory. A name that
+/// stops being stdlib fails there rather than becoming a silent false negative.
+const STDLIB_ALLOWLIST: [&str; 92] = [
+    // A future statement is a compiler directive; the module behind it ships with the
+    // interpreter and binds only a `_Feature` object, which no naming pattern collects.
+    "__future__",
+    "abc",
+    "argparse",
+    "array",
+    "ast",
+    "asyncio",
+    "base64",
+    "binascii",
+    "bisect",
+    "calendar",
+    "cmath",
+    "codecs",
+    "collections",
+    "configparser",
+    "contextlib",
+    "contextvars",
+    "copy",
+    "csv",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "difflib",
+    "dis",
+    "email",
+    "enum",
+    "errno",
+    "filecmp",
+    "fileinput",
+    "fnmatch",
+    "fractions",
+    "functools",
+    "gc",
+    "getpass",
+    "glob",
+    "hashlib",
+    "heapq",
+    "hmac",
+    "html",
+    "http",
+    "importlib",
+    "inspect",
+    "io",
+    "ipaddress",
+    "itertools",
+    "json",
+    "keyword",
+    "linecache",
+    "locale",
+    "logging",
+    "math",
+    "mimetypes",
+    "numbers",
+    "operator",
+    "os",
+    "pathlib",
+    "pickle",
+    "pkgutil",
+    "platform",
+    "posixpath",
+    "pprint",
+    "queue",
+    "random",
+    "re",
+    "reprlib",
+    "secrets",
+    "shlex",
+    "shutil",
+    "signal",
+    "stat",
+    "statistics",
+    "string",
+    "struct",
+    "subprocess",
+    "sys",
+    "sysconfig",
+    "tempfile",
+    "textwrap",
+    "threading",
+    "time",
+    "timeit",
+    "token",
+    "tokenize",
+    "tomllib",
+    "traceback",
+    "types",
+    "typing",
+    "unittest",
+    "urllib",
+    "uuid",
+    "warnings",
+    "weakref",
+    "xml",
+];
+
+/// The allowlist, for the Python oracle test that keeps it honest.
+pub fn stdlib_allowlist() -> &'static [&'static str] {
+    &STDLIB_ALLOWLIST
+}
+
+/// Which reason a refused statement kind reports.  Definitions nested in control flow are
+/// [`Reason::ConditionalDef`]; everything else is a side effect.
+fn statement_reason(statement: &Stmt) -> Reason {
+    match statement {
+        Stmt::If(node) => {
+            if body_defines(&node.body)
+                || node
+                    .elif_else_clauses
+                    .iter()
+                    .any(|clause| body_defines(&clause.body))
+            {
+                Reason::ConditionalDef
+            } else {
+                Reason::ModuleSideEffect
+            }
+        }
+        Stmt::Try(node) => {
+            if body_defines(&node.body) || body_defines(&node.orelse) {
+                Reason::ConditionalDef
+            } else {
+                Reason::ModuleSideEffect
+            }
+        }
+        Stmt::For(node) => {
+            if body_defines(&node.body) {
+                Reason::ConditionalDef
+            } else {
+                Reason::ModuleSideEffect
+            }
+        }
+        Stmt::While(node) => {
+            if body_defines(&node.body) {
+                Reason::ConditionalDef
+            } else {
+                Reason::ModuleSideEffect
+            }
+        }
+        _ => Reason::ModuleSideEffect,
+    }
+}
+
+fn body_defines(body: &[Stmt]) -> bool {
+    body.iter()
+        .any(|statement| matches!(statement, Stmt::FunctionDef(_) | Stmt::ClassDef(_)))
+}
+
+/// A short, stable description of an expression for the `detail` string.
+///
+/// Names `exec`/`eval` explicitly, because [`Reason::ExecOrEval`] has to be *reachable* for
+/// the detector's rule list to be honest: the statement allowlist already refuses every
+/// module-level call, so without this the reason would be documented and dead.
+fn describe(expr: &Expr) -> String {
+    match expr {
+        Expr::Name(name) => name.id.to_string(),
+        Expr::Attribute(attribute) => format!("{}.{}", describe(&attribute.value), attribute.attr),
+        Expr::Call(call) => format!("{}(...)", describe(&call.func)),
+        Expr::StringLiteral(_) => "<str>".to_string(),
+        Expr::NumberLiteral(_) => "<number>".to_string(),
+        Expr::List(_) => "[...]".to_string(),
+        Expr::Tuple(_) => "(...)".to_string(),
+        Expr::Dict(_) => "{...}".to_string(),
+        Expr::Lambda(_) => "<lambda>".to_string(),
+        Expr::Compare(_) => "<comparison>".to_string(),
+        Expr::BinOp(_) => "<binop>".to_string(),
+        _ => "<expression>".to_string(),
+    }
+}
+
+fn describe_stmt(statement: &Stmt) -> &'static str {
+    match statement {
+        Stmt::If(_) => "if",
+        Stmt::For(_) => "for",
+        Stmt::While(_) => "while",
+        Stmt::With(_) => "with",
+        Stmt::Try(_) => "try",
+        Stmt::Match(_) => "match",
+        Stmt::Raise(_) => "raise",
+        Stmt::Assert(_) => "assert",
+        Stmt::Delete(_) => "del",
+        Stmt::Global(_) => "global",
+        Stmt::Nonlocal(_) => "nonlocal",
+        Stmt::AugAssign(_) => "augmented assignment",
+        Stmt::AnnAssign(_) => "annotated assignment",
+        Stmt::Return(_) => "return",
+        Stmt::TypeAlias(_) => "type alias",
+        _ => "statement",
+    }
+}
+
+/// The naming patterns a conftest is analysed under.
+///
+/// A conftest defines fixtures, not tests, so the patterns are never consulted for collection
+/// — but [`Scan::assignment_is_safe`] and [`Scan::bind_import`] read them, and pytest's
+/// defaults are the right choice there: they are what decides whether a *test file's* names
+/// are collectible, and a conftest is not a test file whatever the project configured.
+fn conftest_scan_config() -> ResolvedConfig {
+    ResolvedConfig {
+        rootdir: PathBuf::new(),
+        config_file: None,
+        testpaths: Vec::new(),
+        python_files: owned(crate::v2::config::DEFAULT_PYTHON_FILES),
+        python_classes: owned(crate::v2::config::DEFAULT_PYTHON_CLASSES),
+        python_functions: owned(crate::v2::config::DEFAULT_PYTHON_FUNCTIONS),
+        norecursedirs: Vec::new(),
+        addopts: Vec::new(),
+        markers: Vec::new(),
+    }
+}
+
+fn owned(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| (*item).to_string()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> ResolvedConfig {
+        conftest_scan_config()
+    }
+
+    /// No file in this run shadows a standard-library name.  The shadowing rule has its own
+    /// tests below; every other test here is about the module body, not about sys.path.
+    fn no_shadows() -> HashSet<String> {
+        HashSet::new()
+    }
+
+    /// Ids only — what pytest prints and what `-k` selects on.
+    fn ids(source: &str) -> Vec<String> {
+        scan_module(source, "test_a.py", &config(), &no_shadows())
+            .expect("expected a static answer")
+            .into_iter()
+            .map(|test| test.id)
+            .collect()
+    }
+
+    fn refusal(source: &str) -> Reason {
+        scan_module(source, "test_a.py", &config(), &no_shadows())
+            .expect_err("expected a dynamism flag")
+            .reason
+    }
+
+    // -- extraction ------------------------------------------------------
+
+    #[test]
+    fn collects_module_level_test_functions_in_source_order() {
+        assert_eq!(
+            ids("def test_b():\n    pass\n\n\ndef test_a():\n    pass\n"),
+            ["test_a.py::test_b", "test_a.py::test_a"]
+        );
+    }
+
+    /// `_v2_worker.py::_is_test_function` is a **prefix** test first, so `testfoo` collects
+    /// under the default `python_functions = ["test"]` (corpus `collection/naming-testfoo`).
+    #[test]
+    fn the_naming_rule_is_prefix_first() {
+        assert_eq!(
+            ids("def testfoo():\n    pass\n\n\ndef _test_hidden():\n    pass\n"),
+            ["test_a.py::testfoo"]
+        );
+    }
+
+    #[test]
+    fn async_defs_are_tests() {
+        assert_eq!(
+            ids("async def test_async():\n    pass\n"),
+            ["test_a.py::test_async"]
+        );
+    }
+
+    /// A nested `def` is invisible to `vars(module)` (corpus `collection/nested-function`).
+    #[test]
+    fn a_nested_function_is_not_collected() {
+        assert_eq!(
+            ids("def test_outer():\n    def test_inner():\n        pass\n"),
+            ["test_a.py::test_outer"]
+        );
+    }
+
+    #[test]
+    fn collects_test_classes_and_their_methods() {
+        assert_eq!(
+            ids("class TestBox:\n    def test_method(self):\n        pass\n"),
+            ["test_a.py::TestBox::test_method"]
+        );
+    }
+
+    /// `class Helper` fails `python_classes`; pytest never looks inside it.
+    #[test]
+    fn a_non_matching_class_is_skipped_whole() {
+        assert_eq!(
+            ids("class Helper:\n    def test_ignored(self):\n        pass\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    /// `_hasinit` — pytest warns and collects nothing, **without** failing the run.
+    #[test]
+    fn a_class_with_a_constructor_collects_nothing() {
+        assert_eq!(
+            ids("class TestWithInit:\n    def __init__(self):\n        pass\n\n    def test_x(self):\n        pass\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ids("class TestWithNew:\n    def __new__(cls):\n        pass\n\n    def test_x(self):\n        pass\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn an_explicit_object_base_is_still_static() {
+        assert_eq!(
+            ids("class TestBox(object):\n    def test_method(self):\n        pass\n"),
+            ["test_a.py::TestBox::test_method"]
+        );
+    }
+
+    #[test]
+    fn nested_test_classes_nest_the_nodeid() {
+        assert_eq!(
+            ids("class TestOuter:\n    class TestInner:\n        def test_deep(self):\n            pass\n"),
+            ["test_a.py::TestOuter::TestInner::test_deep"]
+        );
+    }
+
+    /// `_fixture_names`: the bound-method first argument is dropped, and a parameter with a
+    /// default is not a fixture request.
+    #[test]
+    fn fixtures_are_the_signature_minus_self_and_defaults() {
+        let tests = scan_module(
+            "def test_top(tmp_path, flag=1, *, capsys):\n    pass\n\n\nclass TestBox:\n    def test_m(self, monkeypatch):\n        pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        assert_eq!(tests[0].fixtures, ["tmp_path", "capsys"]);
+        assert_eq!(tests[1].fixtures, ["monkeypatch"]);
+    }
+
+    /// pytest decides "drop the first argument" with `inspect.getattr_static(cls, name)`, not
+    /// by looking for a parameter named `self` — so a `@staticmethod` keeps its first
+    /// parameter and a method written `def test_m(this)` loses `this`.
+    #[test]
+    fn a_staticmethod_keeps_its_first_parameter() {
+        let tests = scan_module(
+            "class TestBox:\n    @staticmethod\n    def test_s(tmp_path):\n        pass\n\n    def test_m(this, tmp_path):\n        pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        assert_eq!(tests[0].fixtures, ["tmp_path"]);
+        assert_eq!(tests[1].fixtures, ["tmp_path"]);
+    }
+
+    #[test]
+    fn qualname_and_class_name_follow_the_class_chain() {
+        let tests = scan_module(
+            "class TestOuter:\n    class TestInner:\n        def test_deep(self):\n            pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        assert_eq!(tests[0].qualname, "TestOuter.TestInner.test_deep");
+        assert_eq!(tests[0].class_name.as_deref(), Some("TestOuter.TestInner"));
+    }
+
+    #[test]
+    fn a_fixture_named_like_a_test_is_not_a_test() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.fixture\ndef test_looking_fixture():\n    return 1\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    // -- parametrize -----------------------------------------------------
+
+    #[test]
+    fn literal_parametrize_expands_with_v1_ids() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"value\", [1, 2, 3])\ndef test_value(value):\n    pass\n"),
+            [
+                "test_a.py::test_value[1]",
+                "test_a.py::test_value[2]",
+                "test_a.py::test_value[3]"
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_ids_win() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [1, 2], ids=[\"one\", \"two\"])\ndef test_named(v):\n    pass\n"),
+            ["test_a.py::test_named[one]", "test_a.py::test_named[two]"]
+        );
+    }
+
+    /// Corpus `parametrize/stacking`: the **bottom** decorator is applied first, so it is the
+    /// outer dimension and its id component comes first.
+    #[test]
+    fn stacked_parametrize_crosses_bottom_decorator_first() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"a\", [1, 2])\n@pytest.mark.parametrize(\"b\", [\"x\", \"y\"])\ndef test_grid(a, b):\n    pass\n"),
+            [
+                "test_a.py::test_grid[x-1]",
+                "test_a.py::test_grid[x-2]",
+                "test_a.py::test_grid[y-1]",
+                "test_a.py::test_grid[y-2]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tuple_value_set_binds_every_name_and_joins_the_id() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"a,b\", [(1, \"x\"), (2, \"y\")])\ndef test_pair(a, b):\n    pass\n"),
+            ["test_a.py::test_pair[1-x]", "test_a.py::test_pair[2-y]"]
+        );
+    }
+
+    /// The parametrized names are **not** reported as fixtures — they come from the
+    /// decorator, not from a fixture.
+    #[test]
+    fn parametrized_names_are_not_fixtures() {
+        let tests = scan_module(
+            "import pytest\n\n\n@pytest.mark.parametrize(\"v\", [1])\ndef test_x(v, tmp_path):\n    pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        assert_eq!(tests[0].fixtures, ["tmp_path"]);
+    }
+
+    /// `_unique_parameterset_ids`: the underscore appears only when the id ends in a digit.
+    #[test]
+    fn duplicate_ids_get_pytests_suffixes() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [1, 1])\ndef test_x(v):\n    pass\n"),
+            ["test_a.py::test_x[1_0]", "test_a.py::test_x[1_1]"]
+        );
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [\"a\", \"a\"])\ndef test_x(v):\n    pass\n"),
+            ["test_a.py::test_x[a0]", "test_a.py::test_x[a1]"]
+        );
+    }
+
+    /// The pathological id shapes `src/v2/nodeid.rs` pins: an empty id keeps its brackets, and
+    /// an id may contain `]`, `[` or `::`.
+    #[test]
+    fn pathological_ids_survive_verbatim() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"s\", [\"\", \"a\"])\ndef test_x(s):\n    pass\n"),
+            ["test_a.py::test_x[]", "test_a.py::test_x[a]"]
+        );
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"s\", [1], ids=[\"p]q\"])\ndef test_x(s):\n    pass\n"),
+            ["test_a.py::test_x[p]q]"]
+        );
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"s\", [1], ids=[\"trail[\"])\ndef test_y(s):\n    pass\n"),
+            ["test_a.py::test_y[trail[]"]
+        );
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"s\", [1], ids=[\"a::b\"])\ndef test_z(s):\n    pass\n"),
+            ["test_a.py::test_z[a::b]"]
+        );
+    }
+
+    /// `decorators.py::_generate_param_id`'s own branches, which are **v1's** and not
+    /// `IdMaker`'s: `None`/bools spell out, a long string truncates at 17 + `...`, an empty
+    /// container is `empty`, and a container over three items gains `-...(n)`.
+    #[test]
+    fn v1_id_generation_branches() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [None, True, False, -3])\ndef test_x(v):\n    pass\n"),
+            [
+                "test_a.py::test_x[None]",
+                "test_a.py::test_x[True]",
+                "test_a.py::test_x[False]",
+                "test_a.py::test_x[-3]"
+            ]
+        );
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [\"abcdefghijklmnopqrstuvwxyz\"])\ndef test_x(v):\n    pass\n"),
+            ["test_a.py::test_x[abcdefghijklmnopq...]"]
+        );
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [[], [1, 2, 3, 4]])\ndef test_x(v):\n    pass\n"),
+            ["test_a.py::test_x[empty]", "test_a.py::test_x[1-2-3-...(4)]"]
+        );
+    }
+
+    #[test]
+    fn a_class_level_parametrize_is_the_outer_dimension() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.mark.parametrize(\"x\", [1, 2])\nclass TestBox:\n    @pytest.mark.parametrize(\"y\", [10])\n    def test_m(self, x, y):\n        pass\n"),
+            [
+                "test_a.py::TestBox::test_m[1-10]",
+                "test_a.py::TestBox::test_m[2-10]"
+            ]
+        );
+    }
+
+    // -- marks -----------------------------------------------------------
+
+    #[test]
+    fn a_bare_custom_mark_is_name_only() {
+        let tests = scan_module(
+            "import pytest\n\n\n@pytest.mark.smoke\ndef test_x():\n    pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        assert_eq!(tests[0].marks.len(), 1);
+        assert_eq!(tests[0].marks[0].name, "smoke");
+        assert!(tests[0].marks[0].args.is_empty());
+        assert!(tests[0].marks[0].kwargs.is_empty());
+    }
+
+    /// Decorators are applied bottom-up, so `__rustest_marks__` records the bottom one first.
+    #[test]
+    fn mark_order_is_bottom_decorator_first_then_class_then_module() {
+        let tests = scan_module(
+            "import pytest\n\npytestmark = pytest.mark.mod\n\n\n@pytest.mark.outer\n@pytest.mark.inner\nclass TestBox:\n    @pytest.mark.top\n    @pytest.mark.bottom\n    def test_m(self):\n        pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        let names: Vec<&str> = tests[0]
+            .marks
+            .iter()
+            .map(|mark| mark.name.as_str())
+            .collect();
+        assert_eq!(names, ["bottom", "top", "inner", "outer", "mod"]);
+    }
+
+    /// `_xfail` always fills all four keywords, whatever the user wrote — the wire form is the
+    /// factory's output, not the call's arguments.
+    #[test]
+    fn xfail_carries_the_factorys_default_keywords() {
+        let tests = scan_module(
+            "import pytest\n\n\n@pytest.mark.xfail(reason=\"known broken\")\ndef test_x():\n    pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        let mark = &tests[0].marks[0];
+        assert_eq!(mark.name, "xfail");
+        assert!(mark.args.is_empty());
+        assert_eq!(mark.kwargs["reason"], serde_json::json!("known broken"));
+        assert_eq!(mark.kwargs["raises"], serde_json::Value::Null);
+        assert_eq!(mark.kwargs["run"], serde_json::json!(true));
+        assert_eq!(mark.kwargs["strict"], serde_json::json!(false));
+    }
+
+    /// The bare form is `MarkDecorator(name, (), {})` for **every** mark, factory or not —
+    /// empty args is what makes a bare `skipif` an unconditional skip.
+    #[test]
+    fn a_bare_factory_mark_has_no_args_and_no_kwargs() {
+        for source in [
+            "import pytest\n\n\n@pytest.mark.xfail\ndef test_x():\n    pass\n",
+            "import pytest\n\n\n@pytest.mark.skipif\ndef test_x():\n    pass\n",
+        ] {
+            let tests = scan_module(source, "test_a.py", &config(), &no_shadows()).unwrap();
+            assert!(tests[0].marks[0].args.is_empty(), "{source}");
+            assert!(tests[0].marks[0].kwargs.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn module_pytestmark_applies_to_every_test() {
+        let tests = scan_module(
+            "import pytest\n\npytestmark = [pytest.mark.slow, pytest.mark.smoke]\n\n\ndef test_x():\n    pass\n",
+            "test_a.py",
+            &config(),
+            &no_shadows(),
+        )
+        .unwrap();
+        let names: Vec<&str> = tests[0]
+            .marks
+            .iter()
+            .map(|mark| mark.name.as_str())
+            .collect();
+        assert_eq!(names, ["slow", "smoke"]);
+    }
+
+    // -- dynamism --------------------------------------------------------
+
+    #[test]
+    fn star_imports_flag() {
+        assert_eq!(refusal("from pytest import *\n"), Reason::StarImport);
+    }
+
+    /// The one rule that keeps a *missing dependency* from becoming a silently-shorter
+    /// manifest: an import that can raise is a collection error, and only Tier D writes those.
+    #[test]
+    fn a_foreign_import_flags() {
+        assert_eq!(refusal("import numpy\n"), Reason::ForeignImport);
+        assert_eq!(
+            refusal("from helpers import thing\n"),
+            Reason::ForeignImport
+        );
+        assert_eq!(refusal("from . import sibling\n"), Reason::ForeignImport);
+        // Optional-C-extension stdlib modules are deliberately off the allowlist: they raise
+        // `ImportError` on a build without the extension.
+        assert_eq!(refusal("import sqlite3\n"), Reason::ForeignImport);
+        assert_eq!(refusal("import ssl\n"), Reason::ForeignImport);
+        // ...and so are the names ruff's historical-union table would have admitted.
+        assert_eq!(refusal("import distutils\n"), Reason::ForeignImport);
+        assert_eq!(refusal("import telnetlib\n"), Reason::ForeignImport);
+    }
+
+    /// A standard-library import is a *fact about the interpreter already running*, so it
+    /// cannot raise and cannot change what the file collects.  This is the rule that decides
+    /// whether Tier S ever fires on real code: without it every test file that says
+    /// `import os` goes to a worker.
+    #[test]
+    fn an_allowlisted_stdlib_import_is_static() {
+        assert_eq!(
+            ids("import os\nimport sys\nfrom pathlib import Path\nimport xml.etree.ElementTree\n\n\ndef test_x():\n    pass\n"),
+            ["test_a.py::test_x"]
+        );
+    }
+
+    /// ...unless this run's own tree could *be* that module.  `_v2_worker.py::
+    /// sys_path_root_for` puts a test file's directory on `sys.path`, so a `queue.py` beside
+    /// it makes `import queue` user code — which can raise, and which no AST here has seen.
+    #[test]
+    fn a_shadowed_stdlib_import_flags() {
+        let shadows: HashSet<String> = ["queue".to_string()].into_iter().collect();
+        let source = "import queue\n\n\ndef test_x():\n    pass\n";
+
+        assert!(scan_module(source, "test_a.py", &config(), &no_shadows()).is_ok());
+        assert_eq!(
+            scan_module(source, "test_a.py", &config(), &shadows)
+                .unwrap_err()
+                .reason,
+            Reason::ForeignImport
+        );
+    }
+
+    /// `pytest` and `rustest` are exempt from the shadowing rule, and the exemption is a fact
+    /// about the worker rather than optimism: `install_pytest_shim` assigns
+    /// `sys.modules["pytest"]` before the protocol loop starts, so the import never reaches
+    /// the filesystem for a local `pytest.py` to win.
+    #[test]
+    fn a_preimported_root_is_not_subject_to_shadowing() {
+        let shadows: HashSet<String> = ["pytest".to_string(), "rustest".to_string()]
+            .into_iter()
+            .collect();
+
+        assert!(scan_module(
+            "import pytest\n\n\ndef test_x():\n    pass\n",
+            "test_a.py",
+            &config(),
+            &shadows
+        )
+        .is_ok());
+    }
+
+    /// The shadow set is derived from the directories that can reach `sys.path`, which is
+    /// every target's parent and its ancestors up to rootdir — so a `types.py` two directories
+    /// above a test file still counts.
+    #[test]
+    fn shadowing_names_covers_every_sys_path_reachable_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let deep = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(tmp.path().join("types.py"), "").unwrap();
+        std::fs::write(deep.join("queue.py"), "").unwrap();
+        std::fs::write(deep.join("test_x.py"), "def test_x():\n    pass\n").unwrap();
+
+        let names = shadowing_names(&[deep.join("test_x.py")], tmp.path());
+
+        assert!(names.contains("types"), "{names:?}");
+        assert!(names.contains("queue"), "{names:?}");
+        // Directories shadow too — a namespace package needs no `__init__.py` (PEP 420).
+        assert!(names.contains("a"), "{names:?}");
+    }
+
+    #[test]
+    fn module_getattr_flags() {
+        assert_eq!(
+            refusal("def __getattr__(name):\n    return None\n"),
+            Reason::ModuleGetattr
+        );
+    }
+
+    #[test]
+    fn a_module_level_call_flags() {
+        assert_eq!(
+            refusal("exec(\"def test_x(): pass\")\n"),
+            Reason::ModuleSideEffect
+        );
+        assert_eq!(refusal("print(1)\n"), Reason::ModuleSideEffect);
+        assert_eq!(
+            refusal("import pytest\n\ncounter = pytest.something()\n"),
+            Reason::ModuleSideEffect
+        );
+    }
+
+    #[test]
+    fn a_conditional_definition_flags() {
+        assert_eq!(
+            refusal("if True:\n    def test_x():\n        pass\n"),
+            Reason::ConditionalDef
+        );
+        assert_eq!(
+            refusal("for _ in range(2):\n    def test_x():\n        pass\n"),
+            Reason::ConditionalDef
+        );
+        assert_eq!(
+            refusal("try:\n    def test_x():\n        pass\nexcept Exception:\n    pass\n"),
+            Reason::ConditionalDef
+        );
+    }
+
+    /// Inherited methods are not resolvable from one file's AST, so any base but `object`
+    /// flags — and a `unittest.TestCase` base says so by name, because `TestLoader` semantics
+    /// are a tier of their own.
+    #[test]
+    fn a_class_base_other_than_object_flags() {
+        assert_eq!(
+            refusal("class TestBox(Base):\n    def test_m(self):\n        pass\n"),
+            Reason::ClassBases
+        );
+        assert_eq!(
+            refusal("import unittest\n\n\nclass TestLegacy(unittest.TestCase):\n    def test_m(self):\n        pass\n"),
+            Reason::UnittestCase
+        );
+        assert_eq!(
+            refusal("class TestMeta(metaclass=type):\n    def test_m(self):\n        pass\n"),
+            Reason::ClassBases
+        );
+    }
+
+    /// A `TestCase` subclass is collected **whatever its name is**, so the base check has to
+    /// run before the `python_classes` filter or `class Legacy(TestCase)` would be dropped in
+    /// silence rather than routed to D.
+    #[test]
+    fn a_non_matching_unittest_class_still_flags() {
+        assert_eq!(
+            refusal("class Legacy(TestCase):\n    def test_m(self):\n        pass\n"),
+            Reason::UnittestCase
+        );
+    }
+
+    #[test]
+    fn an_unknown_decorator_flags() {
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.something\ndef test_x():\n    pass\n"),
+            Reason::UnknownDecorator
+        );
+        assert_eq!(
+            refusal("@functools.wraps\ndef test_x():\n    pass\n"),
+            Reason::UnknownDecorator
+        );
+    }
+
+    /// Corpus `marks/skip-and-skipif` writes `skipif(1 + 1 == 2, ...)`, which is exactly the
+    /// const-eval boundary: a `Compare` over a `BinOp` is not a literal.
+    #[test]
+    fn a_non_literal_mark_argument_flags() {
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.skipif(1 + 1 == 2, reason=\"x\")\ndef test_x():\n    pass\n"),
+            Reason::NonLiteralMark
+        );
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.xfail(raises=ValueError)\ndef test_x():\n    pass\n"),
+            Reason::NonLiteralMark
+        );
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.asyncio\nasync def test_x():\n    pass\n"),
+            Reason::NonLiteralMark
+        );
+    }
+
+    #[test]
+    fn a_non_literal_parametrize_flags() {
+        assert_eq!(
+            refusal("import pytest\n\nCASES = [1, 2]\n\n\n@pytest.mark.parametrize(\"v\", CASES)\ndef test_x(v):\n    pass\n"),
+            Reason::NonLiteralParametrize
+        );
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [1], ids=str)\ndef test_x(v):\n    pass\n"),
+            Reason::NonLiteralParametrize
+        );
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [pytest.param(1, id=\"a\")])\ndef test_x(v):\n    pass\n"),
+            Reason::NonLiteralParametrize
+        );
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [\"x\"], indirect=True)\ndef test_x(v):\n    pass\n"),
+            Reason::NonLiteralParametrize
+        );
+        // Floats: `str(1e16)` is `1e+16` in Python, and an id that differs by one byte is a
+        // wrong nodeid.
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [1.5])\ndef test_x(v):\n    pass\n"),
+            Reason::NonLiteralParametrize
+        );
+    }
+
+    /// A parametrized fixture multiplies the ids of every test in its closure, including tests
+    /// that never mention it.
+    #[test]
+    fn a_parametrized_fixture_in_the_file_flags() {
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.fixture(params=[1, 2])\ndef number(request):\n    return request.param\n\n\ndef test_n(number):\n    pass\n"),
+            Reason::ParametrizedFixture
+        );
+    }
+
+    #[test]
+    fn a_plain_fixture_in_the_file_is_fine() {
+        assert_eq!(
+            ids("import pytest\n\n\n@pytest.fixture\ndef value():\n    return 1\n\n\n@pytest.fixture(scope=\"module\")\ndef shared():\n    return 2\n\n\ndef test_x(value, shared):\n    pass\n"),
+            ["test_a.py::test_x"]
+        );
+    }
+
+    #[test]
+    fn a_generator_test_flags() {
+        assert_eq!(
+            refusal("def test_x():\n    yield 1\n"),
+            Reason::GeneratorTest
+        );
+        assert_eq!(
+            refusal("async def test_x():\n    yield 1\n"),
+            Reason::GeneratorTest
+        );
+    }
+
+    #[test]
+    fn a_yield_inside_a_nested_def_belongs_to_that_def() {
+        assert_eq!(
+            ids("def test_x():\n    def inner():\n        yield 1\n\n    return None\n"),
+            ["test_a.py::test_x"]
+        );
+    }
+
+    #[test]
+    fn a_test_attribute_veto_flags() {
+        assert_eq!(refusal("__test__ = False\n"), Reason::TestAttribute);
+        assert_eq!(
+            refusal(
+                "class TestBox:\n    __test__ = False\n\n    def test_m(self):\n        pass\n"
+            ),
+            Reason::TestAttribute
+        );
+    }
+
+    #[test]
+    fn pytest_plugins_flags() {
+        assert_eq!(
+            refusal("pytest_plugins = [\"myplugin\"]\n"),
+            Reason::PytestPlugins
+        );
+    }
+
+    /// `vars(module)` keeps the *first* insertion position and the *last* value, which is not
+    /// a shape worth modelling for the sake of a pathological file.
+    #[test]
+    fn a_duplicate_top_level_name_flags() {
+        assert_eq!(
+            refusal("def test_x():\n    pass\n\n\ndef test_x():\n    pass\n"),
+            Reason::DuplicateName
+        );
+    }
+
+    /// `IGNORED_ATTRIBUTES` is an exact-name set, so a dunder that is *not* in it is
+    /// collectible under a permissive `python_functions`.
+    #[test]
+    fn a_dunder_definition_flags() {
+        assert_eq!(
+            refusal("def __test_helper__():\n    pass\n"),
+            Reason::DunderDefinition
+        );
+    }
+
+    /// `collect_imported_tests` defaults to `True`, so an imported name that matches the
+    /// patterns is a test in Tier D — and invisible to an AST that only sees `def`s.
+    #[test]
+    fn an_imported_name_matching_the_patterns_flags() {
+        assert_eq!(
+            refusal("from rustest import test_helper\n"),
+            Reason::ImportedTestName
+        );
+    }
+
+    #[test]
+    fn a_syntax_error_flags_rather_than_inventing_pytests_message() {
+        assert_eq!(refusal("def test_x(:\n    pass\n"), Reason::ParseError);
+    }
+
+    /// Renaming an import does not launder it.
+    #[test]
+    fn an_aliased_foreign_import_still_flags() {
+        assert_eq!(refusal("import numpy as np\n"), Reason::ForeignImport);
+    }
+
+    #[test]
+    fn the_allowlisted_imports_are_accepted_in_every_spelling() {
+        for source in [
+            "import pytest\n",
+            "import rustest\n",
+            "import pytest_asyncio\n",
+            "from pytest import fixture\n",
+            "from rustest import fixture, mark, parametrize\n",
+            "import rustest.decorators\n",
+            "import os\n",
+            "from typing import Any\n",
+            "import os.path as osp\n",
+        ] {
+            assert!(
+                scan_module(source, "test_a.py", &config(), &no_shadows()).is_ok(),
+                "{source} should be static"
+            );
+        }
+    }
+
+    /// A locally-shadowed `fixture` is not rustest's, and the duplicate-binding rule is what
+    /// catches it before the decorator resolver can be fooled.
+    #[test]
+    fn a_locally_shadowed_decorator_name_flags() {
+        assert_eq!(
+            refusal("from rustest import fixture\n\n\ndef fixture():\n    pass\n"),
+            Reason::DuplicateName
+        );
+    }
+
+    // -- unit ports ------------------------------------------------------
+
+    #[test]
+    fn unique_parameterset_ids_matches_the_python_port() {
+        let unique = |raw: &[&str]| {
+            unique_parameterset_ids(raw.iter().map(|id| (*id).to_string()).collect::<Vec<_>>())
+        };
+        assert_eq!(unique(&["a", "b"]), ["a", "b"]);
+        assert_eq!(unique(&["1", "1"]), ["1_0", "1_1"]);
+        assert_eq!(unique(&["a", "a", "a"]), ["a0", "a1", "a2"]);
+        // The `while new_id in set(resolved)` probe: `a0` already exists, so the first
+        // suffixed `a` has to skip past it.
+        assert_eq!(unique(&["a", "a", "a0"]), ["a1", "a2", "a0"]);
+    }
+
+    #[test]
+    fn generate_param_id_matches_the_v1_port() {
+        let id = |lit: Lit| generate_param_id(&lit, 7).unwrap();
+        assert_eq!(id(Lit::None), "None");
+        assert_eq!(id(Lit::Bool(true)), "True");
+        assert_eq!(
+            id(Lit::Int {
+                negative: true,
+                magnitude: 0
+            }),
+            "0"
+        );
+        assert_eq!(id(Lit::Str("short".to_string())), "short");
+        assert_eq!(id(Lit::Str("x".repeat(20))), "x".repeat(20));
+        assert_eq!(
+            id(Lit::Str("x".repeat(21))),
+            format!("{}...", "x".repeat(17))
+        );
+        assert_eq!(id(Lit::Seq(Vec::new())), "empty");
+        assert_eq!(id(Lit::Dict(Vec::new())), "empty_dict");
+        assert_eq!(id(Lit::Dict(vec![("a".to_string(), Lit::None)])), "dict(1)");
+    }
+
+    // -- conftest chain --------------------------------------------------
+
+    #[test]
+    fn a_parametrized_conftest_fixture_flags_the_whole_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("conftest.py"),
+            "import pytest\n\n\n@pytest.fixture(params=[1, 2])\ndef number(request):\n    return request.param\n",
+        )
+        .unwrap();
+
+        let err = conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).unwrap_err();
+        assert_eq!(err.reason, Reason::ParametrizedFixture);
+    }
+
+    /// A conftest that raises at import time is a *collection error for every file below it*,
+    /// so import safety is checked, not just `params=`.
+    #[test]
+    fn an_unsafe_conftest_flags_the_whole_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("conftest.py"), "import django\n").unwrap();
+
+        let err = conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).unwrap_err();
+        assert_eq!(err.reason, Reason::ConftestChain);
+    }
+
+    #[test]
+    fn a_plain_conftest_is_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("conftest.py"),
+            "import pytest\n\n\n@pytest.fixture\ndef shared_value():\n    return 42\n",
+        )
+        .unwrap();
+
+        assert!(conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).is_ok());
+    }
+
+    /// The chain stops at rootdir (`_v2_worker.py::conftest_chain`'s confcutdir rule), so a
+    /// conftest *above* rootdir neither helps nor flags.
+    #[test]
+    fn the_chain_stops_at_rootdir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(tmp.path().join("conftest.py"), "import django\n").unwrap();
+
+        assert!(conftest_chain_is_static(&sub, &root, &no_shadows()).is_ok());
+    }
+
+    // -- the whole-run rules ---------------------------------------------
+
+    #[test]
+    fn a_shared_stem_routes_every_copy_to_tier_d() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("test_dup.py"), "def test_one():\n    pass\n").unwrap();
+        std::fs::write(b.join("test_dup.py"), "def test_two():\n    pass\n").unwrap();
+        std::fs::write(
+            tmp.path().join("test_solo.py"),
+            "def test_three():\n    pass\n",
+        )
+        .unwrap();
+
+        let targets = vec![
+            a.join("test_dup.py"),
+            b.join("test_dup.py"),
+            tmp.path().join("test_solo.py"),
+        ];
+        let outcomes = static_pass(&targets, tmp.path(), &config());
+
+        assert_eq!(
+            outcomes[0].as_ref().unwrap_err().reason,
+            Reason::StemCollision
+        );
+        assert_eq!(
+            outcomes[1].as_ref().unwrap_err().reason,
+            Reason::StemCollision
+        );
+        assert!(outcomes[2].is_ok());
+    }
+
+    #[test]
+    fn markdown_targets_are_never_static() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("README.md");
+        std::fs::write(&path, "```python\nassert True\n```\n").unwrap();
+
+        let err = scan_path(&path, tmp.path(), &config(), &no_shadows()).unwrap_err();
+        assert_eq!(err.reason, Reason::NotPythonSource);
+    }
+}

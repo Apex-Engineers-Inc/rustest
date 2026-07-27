@@ -796,6 +796,7 @@ mod tests {
             param_id: None,
             marks: Vec::new(),
             fixtures: Vec::new(),
+            tier: crate::v2::manifest::Tier::Dynamic,
         }
     }
 

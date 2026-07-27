@@ -95,6 +95,9 @@ fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(v2::py::v2_resolve_config, m)?)?;
     m.add_function(wrap_pyfunction!(v2::py::v2_collect, m)?)?;
     m.add_function(wrap_pyfunction!(v2::py::v2_run, m)?)?;
+    // Internal too: the Tier S import allowlist, exported so a Python test can prove every
+    // name on it really is importable standard library on the interpreter in use.
+    m.add_function(wrap_pyfunction!(v2::py::v2_static_stdlib_allowlist, m)?)?;
 
     // Event types for event stream consumers
     m.add_class::<FileStartedEvent>()?;

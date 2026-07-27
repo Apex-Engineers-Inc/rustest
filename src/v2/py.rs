@@ -31,7 +31,7 @@ use pyo3::prelude::*;
 use serde::Serialize;
 
 use super::cache::LastFailedMode;
-use super::collect::{collect, CollectError};
+use super::collect::{collect, CollectError, TierMode};
 use super::config::{normpath, resolve_config, ResolvedConfig};
 use super::execute::{run, RunError, RunOptions};
 use super::selection::deselect;
@@ -127,6 +127,24 @@ pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<St
     Ok(resolved_to_json(&config))
 }
 
+/// The standard-library roots Tier S treats as import-safe
+/// ([`super::static_collect::stdlib_allowlist`]).
+///
+/// A **debug surface**, exactly like [`v2_resolve_config`]: it exists so the list can be
+/// checked against a real interpreter instead of trusted. Tier S's whole import rule rests on
+/// "these names cannot raise", and the only way to know that on 3.12, 3.13 and 3.14 is to
+/// import them there — which is what
+/// `python/tests/test_v2_static_tier.py::test_the_stdlib_allowlist_is_importable_and_actually_stdlib`
+/// does with this list on every interpreter CI runs. Duplicating the names on the Python side
+/// would let the two copies drift, and a drifted copy would certify the wrong list.
+#[pyfunction]
+pub fn v2_static_stdlib_allowlist() -> Vec<String> {
+    super::static_collect::stdlib_allowlist()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
 /// Turn a [`CollectError`] into the Python exception whose *kind* carries the exit code.
 ///
 /// The split is pytest's, not ours: a `UsageError` — a path argument that does not exist,
@@ -197,8 +215,14 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// Raises `ValueError` for a bad `invocation_dir`, a missing path argument or an unusable
 /// config file (pytest's `UsageError` shape), and `RuntimeError` for an orchestration
 /// failure. An unimportable *test file* raises nothing: it is data in `errors`.
+///
+/// `collect_tier` is the **differential's control**, not a user feature: `"d"` forbids the
+/// static tier and sends every file to a worker, so a caller can collect the same tree twice
+/// and diff the two manifests against each other and against pytest. Anything else means the
+/// default (static where possible). The CLI reads it from `RUSTEST_V2_COLLECT_TIER` and does
+/// not advertise it; see [`super::collect::TierMode`].
 #[pyfunction]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=true))]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=true, collect_tier="auto"))]
 #[allow(clippy::too_many_arguments)]
 pub fn v2_collect(
     py: Python<'_>,
@@ -209,11 +233,13 @@ pub fn v2_collect(
     keyword: Option<String>,
     mark_expr: Option<String>,
     codeblocks: bool,
+    collect_tier: &str,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
+    let tier = TierMode::from_wire(collect_tier);
     let mut manifest = py
-        .detach(|| collect(&dir, &args, python_executable, workers, codeblocks))
+        .detach(|| collect(&dir, &args, python_executable, workers, codeblocks, tier))
         .map_err(collect_error_to_py)?;
 
     // Selection runs **after** collection and before anything is reported, which is where
@@ -555,6 +581,7 @@ mod tests {
                 None,
                 None,
                 true,
+                "auto",
             )
         })
         .unwrap();
@@ -643,6 +670,7 @@ mod tests {
                 None,
                 None,
                 true,
+                "auto",
             )
         })
         .unwrap_err();
@@ -660,6 +688,11 @@ mod tests {
 
     /// An interpreter that cannot be started is an orchestration failure, not a usage
     /// error: `RuntimeError`, which the CLI maps to pytest's internal-error exit 3.
+    ///
+    /// Pinned at `collect_tier = "d"` **because the question needs a worker to exist**.  Under
+    /// the default tier this tree is answered statically and no interpreter is ever spawned —
+    /// which is the feature, and which would turn this into a test that passes by never
+    /// reaching the code it is about.
     #[test]
     fn an_unspawnable_interpreter_is_a_runtime_error() {
         let tmp = tree(&[("test_a.py", "def test_one():\n    pass\n")]);
@@ -674,6 +707,7 @@ mod tests {
                 None,
                 None,
                 true,
+                "d",
             )
         })
         .unwrap_err();
@@ -704,6 +738,7 @@ mod tests {
                 None,
                 None,
                 true,
+                "auto",
             )
         })
         .unwrap_err();
@@ -733,6 +768,7 @@ mod tests {
                 None,
                 None,
                 true,
+                "auto",
             )
         })
         .unwrap();

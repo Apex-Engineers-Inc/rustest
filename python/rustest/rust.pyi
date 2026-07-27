@@ -148,6 +148,7 @@ def v2_collect(
     keyword: str | None = ...,
     mark_expr: str | None = ...,
     codeblocks: bool = ...,
+    collect_tier: str = ...,
 ) -> str:
     """Collect tests with the v2 engine; returns a ``CollectionManifest`` JSON string.
 
@@ -159,9 +160,14 @@ def v2_collect(
     ``mark_expr`` are the raw ``-k`` / ``-m`` option values, applied after collection
     exactly as pytest's ``pytest_collection_modifyitems`` applies them.
 
+    ``collect_tier`` is the differential's control knob, not a user feature: ``"d"`` forbids
+    the Rust static tier and sends every file to a worker, so a caller can collect the same
+    tree twice and diff the two manifests. Anything else means the default. The CLI reads it
+    from ``RUSTEST_V2_COLLECT_TIER`` and does not advertise it.
+
     The JSON object is the manifest frozen in ``src/v2/manifest.rs``: ``schema_version``,
     ``rootdir`` (absolute posix), ``tests`` (each with ``id``, ``path``, ``qualname`` and
-    optional ``class_name``/``param_id``/``marks``/``fixtures``), ``errors`` (omitted when
+    optional ``class_name``/``param_id``/``marks``/``fixtures``/``tier``), ``errors`` (omitted when
     empty; each with ``path`` and ``message``) and ``deselected`` (omitted when zero).
 
     Raises ``ValueError`` for a usage error (a bad ``invocation_dir``, a path argument that

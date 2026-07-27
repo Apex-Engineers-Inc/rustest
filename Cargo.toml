@@ -24,6 +24,15 @@ toml = "0.8"
 regex = "1.10"
 console = "0.15"
 indicatif = "0.17"
+# Tier S (`src/v2/static_collect.rs`) parses test files with ruff's own Python parser
+# instead of importing them.  ruff publishes no semver crates for these — karva (MIT, the
+# reference wiring) tracks `branch = "main"` — so they are **pinned by rev**: a moving
+# branch would let an upstream AST change alter which files Tier S considers static, and
+# that is a correctness input, not a dependency detail.  Bumping the rev is a deliberate
+# act that must re-run the three-way differential.
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
 
 [dev-dependencies]
 pyo3 = { version = "0.27", features = ["auto-initialize"] }

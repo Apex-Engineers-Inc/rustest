@@ -742,7 +742,7 @@ fn stage(
         return Err(RunError::Collect(err));
     }
 
-    let assembled = assemble(&dispatch.targets, outcomes)?;
+    let assembled = assemble(dispatch, outcomes)?;
     // Selection is compiled and applied first even when nothing will run, because pytest
     // does: `pytest_collection_modifyitems` is called from inside `perform_collect`, i.e.
     // *before* `pytest_runtestloop` can interrupt, so a malformed `-k` is a usage error (4)

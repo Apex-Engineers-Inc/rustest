@@ -20,6 +20,7 @@ pub mod nodeid;
 pub mod protocol;
 pub mod py;
 pub mod selection;
+pub mod static_collect;
 
 use std::path::Path;
 

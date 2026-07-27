@@ -234,6 +234,19 @@ def _pool_size(workers: int | None) -> int:
     return workers if workers is not None and workers > 0 else (os.cpu_count() or 1)
 
 
+#: Forces every file through a Python worker when set to ``"d"``, disabling the Rust static
+#: collection tier (``src/v2/static_collect.rs``).
+#:
+#: Not a documented option and deliberately not a CLI flag: it exists so the **three-way
+#: differential** can collect one tree twice -- once hybrid, once Tier D only -- and diff the
+#: manifests against each other and against pytest. Tier D is the oracle, so a knob that turns
+#: Tier S off is the only way to ask "did the static tier change the answer?", and that
+#: question has to be askable from a subprocess, which is what makes it an environment
+#: variable rather than a keyword argument. An unrecognised value means the default; see
+#: ``src/v2/collect.rs::TierMode::from_wire`` for why a typo is not a usage error.
+_COLLECT_TIER_ENV = "RUSTEST_V2_COLLECT_TIER"
+
+
 def v2_collect_only(
     *,
     paths: Sequence[str],
@@ -293,6 +306,7 @@ def v2_collect_only(
                 keyword,
                 mark_expr,
                 codeblocks,
+                os.environ.get(_COLLECT_TIER_ENV, "auto"),
             )
         except ValueError as exc:
             # pytest's UsageError shape, including its `ERROR: file or directory not
