@@ -80,7 +80,11 @@ docs = "uv run zensical serve"
 
 [tool.ruff]
 line-length = 100
-extend-exclude = ["conformance/corpus"]
+# `conformance/real/_work` holds shallow clones of the OSS validation targets. They are
+# other projects' source at pinned revisions -- linting or reformatting them would be both
+# meaningless and a modification of the thing under test. (They are gitignored, but each
+# clone is its own git repo, so ruff's gitignore discovery does not reach them.)
+extend-exclude = ["conformance/corpus", "conformance/real/_work"]
 
 [tool.basedpyright]
 pythonVersion = "3.12"
@@ -110,6 +114,8 @@ exclude = [
     "**/tests",
     "python/rustest/_pytest_stub",
     "conformance/corpus",
+    # Shallow clones of the `--real` validation targets: other projects' source, pinned.
+    "conformance/real/_work",
 ]
 
 [tool.uv]

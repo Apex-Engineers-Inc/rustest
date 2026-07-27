@@ -1,0 +1,129 @@
+# jinja2 -- a suite with heavy fixture use, parametrized fixtures whose params are
+# *functions* (`params=[_asyncio_run, trio.run]`), async tests driven without
+# pytest-asyncio, and `filterwarnings = ["error"]`.
+
+[repo]
+kind = "oss"
+url = "https://github.com/pallets/jinja.git"
+tag = "3.1.6"
+# Annotated tag; this is the commit it points at.
+rev = "15206881c006c79667fe5154fe80c01c65410679"
+test_paths = ["tests"]
+
+[env]
+# `requirements/tests.in` is exactly `pytest` and `trio`; MarkupSafe comes in with the
+# editable install of the project itself.
+setup = [
+  # 3.13, not the 3.14 the other two OSS targets use, and the reason is this machine, not
+  # jinja2: the uv-managed `cpython-3.14.2-windows-x86_64-none` install here is missing
+  # `libcrypto-3-x64.dll`, so `import ssl` raises
+  # `ImportError: DLL load failed while importing _ssl`. jinja2's `tests/test_async.py` and
+  # `tests/test_async_filters.py` import `trio`, which imports `ssl`, so BOTH runners fail
+  # to collect them -- an environment fault that agrees with itself. (It is caught as a
+  # vacuous run by `grade_real` now, but the fix is a working interpreter.) click and
+  # more-itertools never import ssl, which is why only this target trips over it.
+  ["uv", "venv", "--python", "3.13", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (this repo's dev
+  # dependency, 8.4.2). Unpinned, uv installs the newest release and the comparison starts
+  # measuring pytest-version skew instead of rustest: on pytest 9.1.1 click 8.4.2's
+  # `tests/test_basic.py` raises `PytestRemovedIn10Warning: Passing a non-Collection
+  # iterable to parametrize is deprecated`, which the repo's `filterwarnings = ["error"]`
+  # turns into a collection error, so pytest exits 2 having run nothing at all.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "trio"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp313-cp313-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# jinja2 declares no addopts.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# jinja2 parametrizes over *functions* (`params=[_asyncio_run, trio.run]`, and bare lambdas
+# for the sync/async variants), which is one of the value kinds rustest names differently
+# from pytest -- 95 of 909 ids differ by spelling alone. Same treatment as click: the id
+# divergence becomes its own graded problem below, outcomes are still compared per function.
+id_policy = "strip_params"
+
+[divergence.ids]
+# 46 functions, ONE mechanism in two halves, both in `pytest.raises`. jinja2 leans on the
+# legacy callable form (`pytest.raises(TemplateSyntaxError, env.from_string, tmpl)`) all
+# through its suite, and three debug tests reach for `excinfo.tb`. Neither is exotic --
+# they are simply parts of pytest's `raises` API that rustest's shim does not implement.
+"tests/test_api.py::TestUndefined::test_chainable_undefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_api.py::TestUndefined::test_debug_undefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_api.py::TestUndefined::test_default_undefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_api.py::TestUndefined::test_indexing_gives_undefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_api.py::TestUndefined::test_logging_undefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_api.py::TestUndefined::test_stopiteration_is_undefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_api.py::TestUndefined::test_strict_undefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_async.py::TestAsyncForLoop::test_noniter" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_async.py::TestAsyncIncludes::test_choice_includes" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_async.py::TestAsyncIncludes::test_include_ignoring_missing" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_bytecode_cache.py::TestByteCodeCache::test_simple" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_core_tags.py::TestForLoop::test_loop_errors" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_core_tags.py::TestForLoop::test_loop_unassignable" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_core_tags.py::TestForLoop::test_noniter" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_core_tags.py::TestMacros::test_arguments_defaults_nonsense" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_core_tags.py::TestMacros::test_caller_defaults_nonsense" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_core_tags.py::TestSet::test_namespace_redefined" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_core_tags.py::TestSet::test_set_invalid" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_debug.py::TestDebug::test_regular_syntax_error" = "ExceptionInfo surface: rustest's RaisesContext (python/rustest/decorators.py:1106-1120) exposes only `.value` and `.type`; pytest's ExceptionInfo also carries `.tb`/`.traceback` and a `.match(regex)` method, which these tests use. PHASE-4"
+"tests/test_debug.py::TestDebug::test_runtime_error" = "ExceptionInfo surface: rustest's RaisesContext (python/rustest/decorators.py:1106-1120) exposes only `.value` and `.type`; pytest's ExceptionInfo also carries `.tb`/`.traceback` and a `.match(regex)` method, which these tests use. PHASE-4"
+"tests/test_debug.py::TestDebug::test_syntax_error" = "ExceptionInfo surface: rustest's RaisesContext (python/rustest/decorators.py:1106-1120) exposes only `.value` and `.type`; pytest's ExceptionInfo also carries `.tb`/`.traceback` and a `.match(regex)` method, which these tests use. PHASE-4"
+"tests/test_ext.py::TestInternationalization::test_complex_plural" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_ext.py::TestNewstyleInternationalization::test_complex_plural" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_imports.py::TestIncludes::test_choice_includes" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_imports.py::TestIncludes::test_include_ignoring_missing" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_lexnparse.py::TestLexer::test_name" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_lexnparse.py::TestSyntax::test_block_end_name" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_lexnparse.py::TestSyntax::test_const_assign" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_lexnparse.py::TestSyntax::test_short_conditional_expression" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_lexnparse.py::TestSyntax::test_test_chaining" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestFileSystemLoader::test_searchpath_as_list_including_pathlib" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestFileSystemLoader::test_searchpath_as_pathlib" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestFileSystemLoader::test_searchpath_as_str" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestLoaders::test_choice_loader" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestLoaders::test_dict_loader" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestLoaders::test_function_loader" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestLoaders::test_package_loader" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestLoaders::test_prefix_loader" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_loader.py::TestLoaders::test_split_template_path" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_regression.py::TestBug::test_double_caller_no_default" = "ExceptionInfo surface: rustest's RaisesContext (python/rustest/decorators.py:1106-1120) exposes only `.value` and `.type`; pytest's ExceptionInfo also carries `.tb`/`.traceback` and a `.match(regex)` method, which these tests use. PHASE-4"
+"tests/test_regression.py::TestBug::test_empty_if_condition_fails" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_regression.py::TestBug::test_weird_inline_comment" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_security.py::TestSandbox::test_attr_filter" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_security.py::TestSandbox::test_immutable_environment" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_security.py::TestSandbox::test_restricted" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+"tests/test_security.py::TestSandbox::test_unsafe" = "raises legacy callable form: `pytest.raises(Exc, func, *args, **kwargs)` calls func at once and returns an ExceptionInfo; rustest's `raises(exc_type, *, match=None)` (python/rustest/decorators.py:1123) takes the type and a keyword-only `match` and nothing else, so the call is a TypeError. PHASE-4"
+
+[divergence.global]
+ids = """\
+PARAMETRIZE ID GENERATION, the same mechanism click's ledger records in full. Here the \
+values are functions: pytest names a lambda `<lambda>0`/`<lambda>1` and a named function \
+by its `__name__` (`auto_aiter`, `iter`, `reversed`), while rustest emits \
+`param<index>`; and `test_groupby_case`'s multi-line string values are truncated at 17 \
+characters. 95 of 909 ids differ, none of them by more than spelling. PHASE-4 / \
+KNOWN-LIMITATION."""
+exit_code = """\
+CONSEQUENCE of the `pytest.raises` entries above: 50 tests across 46 functions fail under \
+rustest, so it exits 1 where pytest exits 0."""
+tally = """\
+CONSEQUENCE of the same `pytest.raises` entries: pytest 909 passed / 0 failed, rustest 859 \
+passed / 50 failed. Every other bucket (skipped, xfailed, xpassed, error, deselected, \
+collection errors) is 0 on both sides, and the 50 are exactly the ledgered functions."""

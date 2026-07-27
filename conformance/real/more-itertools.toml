@@ -1,0 +1,54 @@
+# more-itertools -- a pure-stdlib, unittest-heavy suite with NO pytest configuration of
+# its own (its tox.ini runs `python -m unittest`). That is exactly why it is here: it
+# exercises rustest's unittest.TestCase support and its rootdir fallback at a scale the
+# corpus cannot, with nothing in the repo tuned for pytest, let alone for rustest.
+
+[repo]
+kind = "oss"
+url = "https://github.com/more-itertools/more-itertools.git"
+tag = "v11.1.0"
+# `git rev-parse HEAD` of the shallow clone at that tag. Verified on every run; a drifted
+# work tree fails the gate rather than quietly re-baselining the ledger.
+rev = "64be96ceb2a6e836f76f069f4a96d2394d59fd0c"
+test_paths = ["tests"]
+
+[env]
+# Isolated venv under conformance/real/_work/_venvs/, never the rustest development venv
+# and never the target's own environment.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (this repo's dev
+  # dependency, 8.4.2). Unpinned, uv installs the newest release and the comparison starts
+  # measuring pytest-version skew instead of rustest: on pytest 9.1.1 click 8.4.2's
+  # `tests/test_basic.py` raises `PytestRemovedIn10Warning: Passing a non-Collection
+  # iterable to parametrize is deprecated`, which the repo's `filterwarnings = ["error"]`
+  # turns into a collection error, so pytest exits 2 having run nothing at all.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# The repo declares no pytest config at all, so there is nothing to replay or drop.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+
+[divergence.ids]
+
+[divergence.global]

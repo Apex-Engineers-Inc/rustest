@@ -26,6 +26,10 @@ The fitness function for the rustest v2 rewrite
   for v1 and matches under both v2 gates; `marks/xfail-strict` likewise).
   **Both v2 ledgers are empty**, which is the Phase 1b.2 result: every collection
   and execution divergence the corpus found in v1 is fixed in v2.
+- `python -m conformance --real <name>` — the **Phase 3 Task 4 gate**: run a real-world
+  suite under pytest, then under flagless `rustest`, and diff. `<name>` is a config in
+  `conformance/real/` (`member-designer`, `more-itertools`, `click`, `jinja2`) or `all`.
+  See "The `--real` protocol" below.
 - `python -m conformance.bench.bench [--quick]` — pytest collect / pytest run /
   rustest v1 run / rustest v2 run / rustest v2 collect-only. As of Phase 1c
   Task 3 all five columns are live; Phase 2 will split the collect column into
@@ -135,6 +139,64 @@ Two mappings the harness applies so the two sides answer the same question:
   import as `1 error`. The JSON report keeps `collection_errors` separate from
   `summary.error` on purpose; the harness folds them exactly as v2's own terminal
   summary line does (`python/rustest/core.py::_run_summary`).
+
+## The `--real` protocol
+
+The corpus asks whether rustest reproduces pytest on cases written to probe one rule each.
+`--real` asks the question the rewrite exists for: **does it reproduce pytest on suites
+nobody wrote for it.** One TOML per target in `conformance/real/`:
+
+| Table               | What it declares                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------ |
+| `[repo]`            | `kind` (`oss` = shallow clone, `local` = used in place), `url`/`tag`/`rev` or `path`, and `test_paths`.  |
+| `[env]`             | `setup` — the commands that build an **isolated venv** under `_work/_venvs/<name>` — and `pythonpath`.  |
+| `[addopts]`         | The target's configured `addopts`, split into what is `replay`ed to both runners and what is `dropped`. |
+| `[run]`             | Extra per-runner args, a timeout, and `id_policy` (`exact`, the default, or `strip_params`).            |
+| `[notes]`           | Divergences the harness **compensates for**, so nothing observable is left for a ledger to describe.    |
+| `[divergence.ids]`  | node id (or glob) → mechanism, for every test whose status differs.                                     |
+| `[divergence.global]` | `exit_code` / `tally` / `deselected` / `collection_errors` → mechanism.                                |
+
+Rules the gate follows:
+
+- **Per-test-id statuses are compared, not just counts.** Two tests that trade `passed`
+  and `skipped` leave every count and the exit code identical; a counts-only gate calls
+  that a perfect match. pytest's statuses come from a reporting plugin loaded with `-p`
+  from a throwaway directory on `PYTHONPATH` (`harness/_real_report_plugin.py`) —
+  `-q` is counts-only, `-v` prints one line per *report* (up to three per test), and
+  `--junit-xml` cannot round-trip a node id. rustest's come from `--report-json`.
+- **Both sides reduce to one status per test**, with `error > failed > xpassed > xfailed >
+  skipped > passed`. pytest's own summary line does not: a passing body with a raising
+  teardown is `1 passed, 1 error` there. Comparing that line against rustest's per-test
+  report would grade a schema difference as a behavioural one.
+- **`addopts` is neutralized on the pytest side and replayed to both runners.** rustest
+  parses the key but never applies it, so letting pytest alone honour it asks the two
+  runners different questions — click's `-m 'not stress'` would mean pytest ran a strictly
+  smaller suite. Anything not replayed is listed in `dropped`, per flag.
+- **Ledger entries may be globs, and an entry that matches nothing is `STALE-LEDGER`** —
+  the same rule the corpus ledgers follow, for the same reason.
+- **`id_policy = "strip_params"` is the one relaxation, and it pays for itself.** It exists
+  for a target whose *parametrize ids* diverge systematically (click and jinja2: rustest
+  names dicts, tuples, lambdas, enums and long strings differently from pytest's
+  `IdMaker`). The raw id difference is then raised as its own graded `ids` problem — so it
+  needs a mechanism like anything else and goes stale the moment it is fixed — and outcomes
+  are compared per `file::function` as a status multiset. That still catches a test rustest
+  fails and pytest passes, a lost or extra parameter case, and every count change; it
+  cannot say *which* parameter case moved, and it is blind to two cases of one function
+  trading statuses.
+- **A run where neither runner executed anything is `HARNESS-ERROR`, not `MATCH`.** Two
+  collapsed runners agree about nothing. Measured: jinja2's async tests import `trio`,
+  `trio` imports `ssl`, and against a uv CPython install missing `libcrypto-3-x64.dll` both
+  sides exited 2 with two collection errors — and the gate printed green until this rule
+  existed.
+- **Targets never change.** OSS clones are pinned by commit and re-verified every run.
+  The local target is read-only in the strict sense: its environment is rebuilt *outside*
+  its tree from `uv export --frozen`, pytest runs with `-p no:cacheprovider`, and any
+  `.rustest_cache` the run creates is removed again unless the repo already had one.
+- **The two runners never run concurrently**, because wall-clock is part of the record.
+
+`--real-setup-only` clones and provisions without running; `--real-rebuild-env` discards
+and rebuilds the venv. Everything staged lives in the gitignored `conformance/real/_work/`
+and is reproducible from the configs.
 
 ## Baselines (Phase 1c, v1 + v2, Windows)
 

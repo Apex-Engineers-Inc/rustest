@@ -1,0 +1,112 @@
+# click -- a mainstream pytest suite with real configuration: `testpaths`, a custom
+# marker, `filterwarnings = ["error"]`, and a selection-changing `addopts`.
+
+[repo]
+kind = "oss"
+url = "https://github.com/pallets/click.git"
+tag = "8.4.2"
+# The tag is annotated, so this is the commit it points at, not the tag object's own SHA.
+rev = "b2e30a175449cfda909ee4fbf4a29a6a071cad53"
+test_paths = ["tests"]
+
+[env]
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (this repo's dev
+  # dependency, 8.4.2). Unpinned, uv installs the newest release and the comparison starts
+  # measuring pytest-version skew instead of rustest: on pytest 9.1.1 click 8.4.2's
+  # `tests/test_basic.py` raises `PytestRemovedIn10Warning: Passing a non-Collection
+  # iterable to parametrize is deprecated`, which the repo's `filterwarnings = ["error"]`
+  # turns into a collection error, so pytest exits 2 having run nothing at all.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# pyproject.toml: addopts = "-m 'not stress'". rustest parses `addopts`
+# (src/v2/config.rs) but nothing applies it, so pytest honouring the value while rustest
+# ignores it would ask the two runners different questions -- pytest would run 0 stress
+# tests and rustest all of them, a "divergence" that is entirely the harness's fault.
+# So the value is neutralized on the pytest side (`-o addopts=`) and replayed to BOTH
+# runners on the command line, which keeps the suite running the way its authors intended
+# and keeps the comparison honest. That rustest ignores `addopts` at all is a real
+# divergence and is ledgered under [divergence.global] rather than hidden here.
+configured = ["-m", "not stress"]
+replay = ["-m", "not stress"]
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# click parametrizes over dicts, tuples, enums and long strings, all four of which rustest
+# names differently from pytest -- see [divergence.global] ids. With `exact` the gate can
+# say nothing else about the suite, because ~1800 ids differ by spelling alone. Under
+# `strip_params` the id divergence is raised as its own graded problem (below) and outcomes
+# are still compared per `file::function` as a status multiset.
+id_policy = "strip_params"
+
+[notes]
+addopts_ini = """\
+DIVERGENCE, COMPENSATED. rustest parses the `addopts` ini key (`src/v2/config.rs`, and it \
+is part of the manifest-cache fingerprint) but never applies it to its own argv, where \
+pytest prepends it to the command line (`_pytest/config/__init__.py::Config._preparse`). \
+click's value is `-m 'not stress'`, so uncompensated the two runners would not even be \
+running the same set of tests. The harness neutralizes it on the pytest side and replays \
+it to both runners on the command line. PHASE-4 / KNOWN-LIMITATION."""
+
+[divergence.ids]
+# One mechanism, four call sites. `tests/test_shell_completion.py`'s `_patch_for_completion`
+# helper calls the *string-target* form of monkeypatch:
+#
+#     monkeypatch.setattr("click.shell_completion.BashComplete._check_version", lambda self: True)
+#
+# rustest's `MonkeyPatch.setattr` (python/rustest/builtin_fixtures.py:95) resolves that with
+# a single `target.rsplit(".", 1)` and then `importlib.import_module(module_path)`, i.e. it
+# assumes everything before the last dot is a MODULE. Here it is not -- `BashComplete` is a
+# class inside `click.shell_completion` -- so the import raises
+# `ModuleNotFoundError: No module named 'click.shell_completion.BashComplete';
+# 'click.shell_completion' is not a package` during setup, and the test is an ERROR.
+# pytest imports the longest importable prefix and then walks the remainder with getattr
+# (`_pytest/monkeypatch.py::derive_importpath` -> `resolve`/`annotated_getattr`), which is
+# why the same line works there. Small and general, but it is product code in
+# python/rustest/ and this task's surface is the harness: PHASE-4 / KNOWN-LIMITATION.
+"tests/test_shell_completion.py::test_full_source" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
+"tests/test_shell_completion.py::test_full_complete" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
+"tests/test_shell_completion.py::test_zsh_full_complete_with_colons" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
+"tests/test_shell_completion.py::test_context_settings" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
+
+[divergence.global]
+ids = """\
+PARAMETRIZE ID GENERATION. rustest does not reproduce pytest's `IdMaker` \
+(`_pytest/python.py`) for four kinds of value, probed directly on a 13-case file:
+  * containers -- pytest falls back to `<argname><index>` (`x0`, `v0`), rustest invents a \
+value-derived name (`dict(1)`, `empty_dict`, `1-2` for `[1, 2]`, `3-4` for `(3, 4)`);
+  * any other non-scalar -- pytest still uses `<argname><index>` (`v2`), rustest uses \
+`param<index>`;
+  * enum members and bytes -- pytest has explicit rules (`E.UNSET`, `bytes`), rustest \
+falls back to `param<index>`;
+  * long strings -- pytest keeps the whole ascii-escaped value, rustest truncates at 17 \
+characters and appends `...`.
+Scalars (short str, int, float, bool, None) already agree, which is why the corpus's \
+`parametrize/*` cases pass: they use nothing else. That is a corpus gap this sweep found. \
+PHASE-4 / KNOWN-LIMITATION."""
+exit_code = """\
+CONSEQUENCE of the `tests/test_shell_completion.py` monkeypatch entry above, not an \
+independent divergence: 14 tests error under rustest, so it exits 1 where pytest exits 0. \
+Nothing else in the suite fails on either side."""
+tally = """\
+CONSEQUENCE of the same monkeypatch entry: pytest 1590 passed / 0 error, rustest 1576 \
+passed / 14 error. The 14 are exactly the ids ledgered above; `skipped` (95), `xfailed` \
+(1), `xpassed` (0), `failed` (0) and `deselected` (31000) are identical on both sides."""

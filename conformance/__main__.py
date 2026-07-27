@@ -1,4 +1,4 @@
-"""Conformance CLI: python -m conformance [--only PREFIX] [--v2-collect | --v2-run]"""
+"""Conformance CLI: python -m conformance [--only PREFIX] [--v2-collect | --v2-run | --real NAME]"""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from .harness.grade import (
     load_case_args,
     load_waivers,
 )
+from .harness.real import available_targets, main_real
 from .harness.runners import (
     CollectResult,
     FullRunResult,
@@ -239,7 +240,34 @@ def main() -> int:
             "exit code against `rustest --v2 --report-json` -- using waivers-v2-run.toml"
         ),
     )
+    mode.add_argument(
+        "--real",
+        default="",
+        metavar="NAME",
+        help=(
+            "Run a real-world suite (conformance/real/NAME.toml, or 'all') under pytest and "
+            + "then under flagless rustest, and diff per-test statuses, the tally and the "
+            + f"exit code against that repo's ledger. Targets: {', '.join(available_targets())}"
+        ),
+    )
+    parser.add_argument(
+        "--real-setup-only",
+        action="store_true",
+        help="With --real: clone and provision the isolated environment, then stop.",
+    )
+    parser.add_argument(
+        "--real-rebuild-env",
+        action="store_true",
+        help="With --real: delete and rebuild the target's isolated venv before running.",
+    )
     args = parser.parse_args()
+
+    if args.real:
+        return main_real(
+            args.real,
+            setup_only=args.real_setup_only,
+            rebuild_env=args.real_rebuild_env,
+        )
 
     if args.v2_run:
         ledger: Path = V2_RUN_WAIVERS
