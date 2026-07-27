@@ -129,6 +129,14 @@ pub struct ResolvedConfig {
     pub python_functions: Vec<String>,
     pub norecursedirs: Vec<String>,
     pub addopts: Vec<String>,
+    /// `type="paths"` — already **absolute**, resolved against the config file's own
+    /// directory (or the invocation dir when there is no config file), because that is what
+    /// `Config._getini` does for that type: `dp / x` with
+    /// `dp = self.inipath.parent if self.inipath is not None else self.invocation_params.dir`
+    /// (`_pytest/config/__init__.py` l. 1659-1666). Note it is **not** rootdir-relative,
+    /// which matters whenever `-c`/a `pyproject.toml` above the tests moves one and not the
+    /// other.
+    pub pythonpath: Vec<PathBuf>,
     pub markers: Vec<String>,
     /// `auto` or `strict` — validated at resolve time. See [`DEFAULT_ASYNCIO_MODE`] for the
     /// one place rustest's default departs from pytest-asyncio's.
@@ -222,6 +230,16 @@ pub fn resolve_config(
         )?,
         norecursedirs: getini_args(&inicfg, "norecursedirs", DEFAULT_NORECURSEDIRS, &err_path)?,
         addopts: getini_args(&inicfg, "addopts", &[], &err_path)?,
+        // `Config._initini` L1258-1260 — addini("pythonpath", type="paths", default=[]).
+        pythonpath: getini_paths(
+            &inicfg,
+            "pythonpath",
+            inipath
+                .as_deref()
+                .and_then(Path::parent)
+                .unwrap_or(invocation_dir),
+            &err_path,
+        )?,
         // `_pytest/mark/__init__.py::pytest_addoption` — addini("markers", ..., "linelist").
         markers: getini_linelist(&inicfg, "markers"),
         // The three asyncio inis are `type=None`/`type="string"`, so they are taken raw
@@ -840,6 +858,27 @@ fn getini_args(
         Some(IniValue::Str(s)) => shlex_split(s, path),
         Some(IniValue::List(items)) => Ok(items.clone()),
     }
+}
+
+/// `type == "paths"`: `[dp / x for x in (shlex.split(value) if isinstance(value, str) else value)]`.
+///
+/// Port of `_pytest/config/__init__.py::Config._getini` l. 1659-1666. `dp` is the **config
+/// file's directory**, not rootdir — the caller passes it. `Path::join` reproduces
+/// `pathlib`'s `/`: an absolute entry replaces `dp` wholesale, a relative one is appended.
+/// The result is *not* normalised any further, matching pytest, which hands `sys.path` the
+/// `str()` of exactly this.
+fn getini_paths(
+    cfg: &ConfigDict,
+    name: &str,
+    base: &Path,
+    path: &Path,
+) -> Result<Vec<PathBuf>, ConfigError> {
+    let entries = match lookup(cfg, name) {
+        None => return Ok(Vec::new()),
+        Some(IniValue::Str(s)) => shlex_split(s, path)?,
+        Some(IniValue::List(items)) => items.clone(),
+    };
+    Ok(entries.into_iter().map(|entry| base.join(entry)).collect())
 }
 
 /// `type == "linelist"`: `[t for t in map(str.strip, value.split("\n")) if t]`.

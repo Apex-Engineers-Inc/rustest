@@ -2787,6 +2787,7 @@ fn conftest_scan_config() -> ResolvedConfig {
         python_functions: owned(crate::v2::config::DEFAULT_PYTHON_FUNCTIONS),
         norecursedirs: Vec::new(),
         addopts: Vec::new(),
+        pythonpath: Vec::new(),
         markers: Vec::new(),
         asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
         asyncio_default_fixture_loop_scope: None,

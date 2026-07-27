@@ -251,7 +251,14 @@ __all__ = [
 #: **Absent** for a run without ``--cov``, and the absence is load-bearing: it is what makes
 #: the worker register no ``sys.monitoring`` tool at all.  Measurement has to start at ``init``
 #: rather than at execution, because a module's import-time lines are lines coverage.py counts.
-PROTOCOL_VERSION: Final = 5
+#:
+#: v6 adds ``init.pythonpath`` — the ``pythonpath`` ini as absolute posix directories,
+#: prepended to ``sys.path`` in :func:`handle_init` before anything is imported, which is
+#: where pytest does it (``Config._configure_python_path``, called from
+#: ``pytest_load_initial_conftests``).  **Absent** when the ini is unset, which is almost
+#: every project; the absence is why a plain run's ``init`` line is byte-identical to v5's
+#: apart from the number.
+PROTOCOL_VERSION: Final = 6
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -5398,6 +5405,38 @@ def _pattern_tuple(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
     return default
 
 
+def _apply_pythonpath(raw: object) -> list[str]:
+    """Prepend the ``pythonpath`` ini to ``sys.path``, in pytest's order.
+
+    Port of ``Config._configure_python_path`` (`_pytest/config/__init__.py` l. 1316-1319)::
+
+        for path in reversed(self.getini("pythonpath")):
+            sys.path.insert(0, str(path))
+
+    Reversed-then-insert-at-0 is what makes ``pythonpath = a b`` produce
+    ``sys.path == [a, b, ...]`` rather than ``[b, a, ...]``, so the *first* entry wins a
+    name collision.  The entries arrive absolute — ``type="paths"`` resolved them against
+    the config file's directory in ``config::resolve_config`` — so nothing is joined here.
+
+    Unlike pytest there is no ``_unconfigure_python_path`` counterpart: a worker process
+    exists for one run and then exits, so there is no later run to keep clean.  Returned for
+    the tests rather than for any caller.
+
+    This is a **regression closed**, not a new feature: v1 applied the same ini through
+    ``src/python_support.rs::read_pythonpath_from_pyproject``, and it applied more besides —
+    it also injected the project root and an auto-detected ``src/``.  Those two are *not*
+    reproduced: `_pytest/config/__init__.py` does neither, and adding directories pytest
+    would not add makes an import succeed under rustest that fails under pytest, which is a
+    worse failure than the one being fixed.
+    """
+    if not raw:
+        return []
+    entries = [str(entry) for entry in cast("Sequence[object]", raw)]
+    for entry in reversed(entries):
+        sys.path.insert(0, entry)
+    return entries
+
+
 def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     """Handle ``init``; reply ``ready``.
 
@@ -5410,11 +5449,17 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     through ``Config.invocation_params.dir``, which is the value pytest itself resolves a
     test's relative paths against.  Nothing in the collection half uses it (paths arrive
     absolute, nodeids are rootdir-relative).
+
+    ``pythonpath`` is applied **first**, before the rewrite hook and before any import, which
+    is where pytest applies it: ``Config._configure_python_path`` runs from
+    ``pytest_load_initial_conftests``, i.e. ahead of conftest collection.
     """
     global _state
     rootdir = Path(str(message["rootdir"]))
     raw_invocation_dir = message.get("invocation_dir")
     invocation_dir = rootdir if raw_invocation_dir is None else Path(str(raw_invocation_dir))
+
+    pythonpath = _apply_pythonpath(message.get("pythonpath"))
 
     # The assertion-rewriting hook goes on `sys.meta_path` here rather than in `main`,
     # because its bytecode cache lives under the *rootdir* and `init` is the first moment
@@ -5449,14 +5494,16 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
         asyncio=asyncio_config,
         invocation_dir=invocation_dir,
     )
-    _builtins.configure(rootdir, invocation_dir, _ini_values(naming, asyncio_config))
+    _builtins.configure(rootdir, invocation_dir, _ini_values(naming, asyncio_config, pythonpath))
     return {"op": "ready", "protocol_version": PROTOCOL_VERSION}
 
 
-def _ini_values(naming: Naming, asyncio_config: AsyncioConfig) -> dict[str, object]:
+def _ini_values(
+    naming: Naming, asyncio_config: AsyncioConfig, pythonpath: Sequence[str] = ()
+) -> dict[str, object]:
     """The ini values ``request.config.getini`` can answer — exactly what ``init`` carries.
 
-    Six names, and the list is deliberately not padded.  ``markers``, ``xfail_strict``,
+    Seven names, and the list is deliberately not padded.  ``markers``, ``xfail_strict``,
     ``filterwarnings`` and the rest are real pytest inis whose values this worker does not
     have; :class:`rustest._v2_builtins.Config` refuses them by name rather than returning a
     plausible default, because a suite branching on a fabricated ``getini`` result reports a
@@ -5474,6 +5521,11 @@ def _ini_values(naming: Naming, asyncio_config: AsyncioConfig) -> dict[str, obje
         "asyncio_mode": asyncio_config.mode,
         "asyncio_default_fixture_loop_scope": asyncio_config.default_fixture_loop_scope,
         "asyncio_default_test_loop_scope": asyncio_config.default_test_loop_scope,
+        # `type="paths"`, so pytest's own `getini` answers a list of `Path`s, not strings
+        # (`Config._getini` l. 1659-1666 returns `[dp / x for x in ...]`). A suite that does
+        # `str(p)` on the result is fine either way; one that does `p.name` is not, so the
+        # type is reproduced rather than approximated.
+        "pythonpath": [Path(entry) for entry in pythonpath],
     }
 
 

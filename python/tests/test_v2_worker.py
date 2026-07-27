@@ -1336,13 +1336,13 @@ def test_ready_declares_the_version_the_worker_speaks(tmp_path: Path) -> None:
     assert response == {"op": "ready", "protocol_version": PROTOCOL_VERSION}
     # Pinned as a literal, not read from the constant: this and `PROTOCOL_VERSION` in
     # `src/v2/protocol.rs` must move together, so bumping one alone has to fail here.
-    assert PROTOCOL_VERSION == 5
+    assert PROTOCOL_VERSION == 6
 
 
 def test_ready_line_matches_the_rust_golden() -> None:
     assert (
         encode_response({"op": "ready", "protocol_version": PROTOCOL_VERSION})
-        == '{"op":"ready","protocol_version":5}'
+        == '{"op":"ready","protocol_version":6}'
     )
 
 
@@ -2001,3 +2001,66 @@ def test_worker_subprocess_collects_a_module_using_pytest_internal_api(
     assert [test["id"] for test in collected["tests"]] == [
         "test_internal_import.py::test_uses_internal_api"
     ]
+
+
+def test_pythonpath_on_init_reaches_sys_path_before_any_import(tmp_path: Path) -> None:
+    """`init.pythonpath` (protocol v6) is applied the way pytest applies the ini.
+
+    `Config._configure_python_path` (`_pytest/config/__init__.py` l. 1316-1319) runs from
+    `pytest_load_initial_conftests`, i.e. before a single test module is imported, and
+    inserts in *reverse* so entry 0 ends up first on `sys.path`. This collects a module that
+    imports a package only reachable through the ini, which is the observable form of "it
+    happened before the import".
+    """
+    write(tmp_path / "src" / "mylib" / "__init__.py", "VALUE = 7\n")
+    write(
+        tmp_path / "tests" / "test_needs_src.py",
+        """
+        from mylib import VALUE
+
+        def test_value():
+            assert VALUE == 7
+        """,
+    )
+    proc = _run_worker(
+        [
+            {
+                "op": "init",
+                "protocol_version": PROTOCOL_VERSION,
+                "rootdir": tmp_path.as_posix(),
+                "python_files": ["test_*.py"],
+                "python_classes": ["Test"],
+                "python_functions": ["test"],
+                "pythonpath": [(tmp_path / "src").as_posix()],
+            },
+            {"op": "collect_file", "path": (tmp_path / "tests" / "test_needs_src.py").as_posix()},
+            {"op": "shutdown"},
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    collected: dict[str, Any] = json.loads(proc.stdout.splitlines()[1])
+    assert "error" not in collected, collected
+    assert [test["id"] for test in collected["tests"]] == ["tests/test_needs_src.py::test_value"]
+
+
+def test_apply_pythonpath_prepends_in_ini_order() -> None:
+    """`for path in reversed(entries): sys.path.insert(0, ...)` -> `[a, b, *original]`."""
+    from rustest._v2_worker import _apply_pythonpath
+
+    original = list(sys.path)
+    try:
+        applied = _apply_pythonpath(["/first", "/second"])
+        assert applied == ["/first", "/second"]
+        assert sys.path[:2] == ["/first", "/second"]
+        assert sys.path[2:] == original
+    finally:
+        sys.path[:] = original
+
+
+def test_apply_pythonpath_does_nothing_when_the_key_is_absent() -> None:
+    from rustest._v2_worker import _apply_pythonpath
+
+    original = list(sys.path)
+    assert _apply_pythonpath(None) == []
+    assert sys.path == original

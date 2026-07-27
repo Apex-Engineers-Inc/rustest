@@ -53,6 +53,9 @@ struct ResolvedConfigJson<'a> {
     python_functions: &'a [String],
     norecursedirs: &'a [String],
     addopts: &'a [String],
+    /// Absolute posix strings, like `rootdir` — `type="paths"` has already resolved them
+    /// against the config file's directory in [`ResolvedConfig`].
+    pythonpath: Vec<String>,
     markers: &'a [String],
 }
 
@@ -67,6 +70,11 @@ impl<'a> From<&'a ResolvedConfig> for ResolvedConfigJson<'a> {
             python_functions: &config.python_functions,
             norecursedirs: &config.norecursedirs,
             addopts: &config.addopts,
+            pythonpath: config
+                .pythonpath
+                .iter()
+                .map(|path| to_posix(path))
+                .collect(),
             markers: &config.markers,
         }
     }
@@ -428,6 +436,7 @@ mod tests {
             python_functions: owned(DEFAULT_PYTHON_FUNCTIONS),
             norecursedirs: owned(DEFAULT_NORECURSEDIRS),
             addopts: owned(&["-ra"]),
+            pythonpath: vec![PathBuf::from(ROOT).join("src")],
             markers: owned(&["slow: marks tests as slow"]),
             asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
             asyncio_default_fixture_loop_scope: None,
@@ -448,6 +457,7 @@ mod tests {
                 r#""python_functions":["test"],"#,
                 r#""norecursedirs":["*.egg",".*","_darcs","build","CVS","dist","node_modules","venv","{{arch}}"],"#,
                 r#""addopts":["-ra"],"#,
+                r#""pythonpath":["{root}/src"],"#,
                 r#""markers":["slow: marks tests as slow"]}}"#
             ),
             root = ROOT_POSIX

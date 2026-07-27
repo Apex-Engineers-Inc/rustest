@@ -137,18 +137,14 @@ def test_process():
 
 
 def test_src_layout_matches_pytest_on_the_default_engine(src_layout_project):
-    """A ``src/`` layout is a **collection error** by default, exactly as under pytest.
+    """A bare ``src/`` layout is a **collection error** by default, exactly as under pytest.
 
     This is an adjudicated behaviour change at the v2 flip, not a regression left unnoticed.
     v1 silently inserted the project's ``src/`` directory into ``sys.path``, so
-    ``from mypackage import ...`` resolved with no install and no ``PYTHONPATH``. **pytest
-    does not do that** -- probed on this exact layout, ``pytest tests`` reports
+    ``from mypackage import ...`` resolved with no install, no ``PYTHONPATH`` and no ini.
+    **pytest does not do that** -- probed on this exact layout, ``pytest tests`` reports
     ``ERROR collecting tests/test_basic.py: ModuleNotFoundError: No module named
     'mypackage'`` and exits 2 -- and the default engine's contract is pytest's behaviour.
-
-    A src-layout project makes its package importable the way pytest projects always have:
-    an editable install, or ``PYTHONPATH``. (pytest's ``pythonpath`` ini, from its bundled
-    ``_pytest/python_path.py`` plugin, is not read by v2 yet -- Phase 3.)
 
     ``--v1`` keeps the old convenience, and the second half of this test pins that, so the
     escape hatch is verified to actually be one.
@@ -160,6 +156,28 @@ def test_src_layout_matches_pytest_on_the_default_engine(src_layout_project):
     legacy = run_rustest(src_layout_project, "--v1")
     assert legacy.returncode == 0, f"--v1 must keep the legacy src/ convenience: {legacy.stderr}"
     assert "3 passed" in legacy.stderr, legacy.stderr
+
+
+def test_src_layout_works_once_the_pythonpath_ini_is_set(src_layout_project):
+    """...and the *supported* way to make it importable is pytest's ``pythonpath`` ini.
+
+    Implemented in Phase 4 Task 1 (`_pytest/config/__init__.py::Config._configure_python_path`,
+    l. 1316-1319; the option is declared at l. 1258-1260 with ``type="paths"``). The entry is
+    resolved against the **config file's** directory, prepended to the worker's ``sys.path``
+    before any import, and answered by ``request.config.getini("pythonpath")`` as a list of
+    ``Path`` objects the way pytest answers it.
+
+    This restores what v1 did through ``src/python_support.rs::read_pythonpath_from_pyproject``
+    -- but only what pytest itself does: the project root and the auto-detected ``src/`` that
+    v1 also injected are deliberately *not* added back, because an import that succeeds under
+    rustest and fails under pytest is the worse of the two bugs.
+    """
+    (src_layout_project / "pytest.ini").write_text("[pytest]\npythonpath = src\n")
+
+    result = run_rustest(src_layout_project)
+
+    assert result.returncode == 0, f"pythonpath ini not honoured: {result.stdout}{result.stderr}"
+    assert "3 passed" in result.stderr, result.stderr
 
 
 def test_flat_layout(flat_layout_project):

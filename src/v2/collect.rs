@@ -649,6 +649,13 @@ pub(crate) fn plan_with_options(
         asyncio_mode: config.asyncio_mode.clone(),
         asyncio_default_fixture_loop_scope: config.asyncio_default_fixture_loop_scope.clone(),
         asyncio_default_test_loop_scope: config.asyncio_default_test_loop_scope.clone(),
+        // Already absolute (`type="paths"`); rendered posix like every other path on the
+        // wire. Empty for the overwhelming majority of projects, and then omitted entirely.
+        pythonpath: config
+            .pythonpath
+            .iter()
+            .map(|path| to_posix(path))
+            .collect(),
         // Cloned rather than moved because `options` is borrowed; `None` here is what makes a
         // run without `--cov` register no monitoring tool in any worker.
         coverage: options.coverage.clone(),
@@ -1981,7 +1988,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":5}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":6}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

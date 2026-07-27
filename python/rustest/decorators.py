@@ -1116,9 +1116,12 @@ class ExceptionInfo:
     @property
     def typename(self) -> str:
         """The type name of the exception."""
-        assert (
-            self._excinfo is not None
-        ), ".typename can only be used after the context manager exits"
+        # Message built first so the repo's ruff (0.14) and the pre-commit-pinned ruff
+        # (0.8) format this identically -- they wrap `assert cond, msg` differently and
+        # would otherwise fight over the line (see `test_v2_config_oracle.py` for the same
+        # note). Fixed properly by #134 in Phase 4 Task 2.
+        unfilled = ".typename can only be used after the context manager exits"
+        assert self._excinfo is not None, unfilled
         return self.type.__name__
 
     @property

@@ -82,7 +82,15 @@ use serde::{Deserialize, Serialize};
 /// `python/rustest/_v2_worker.py` mirrors this constant and **must be bumped in the same
 /// commit**; a worker still declaring the old number turns every run into a handshake
 /// error.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// **v6** adds `pythonpath`: the `pythonpath` ini, resolved to absolute posix directories,
+/// which the worker prepends to `sys.path` in `handle_init` — pytest does the same in
+/// `Config._configure_python_path` (`_pytest/config/__init__.py` l. 1316-1319), from
+/// `pytest_load_initial_conftests`, i.e. before anything is imported. Like `coverage` the
+/// field is omitted when empty, so an ordinary project's `init` line is byte-identical to
+/// v5's apart from the number; the bump is still real, because a v5 worker handed the field
+/// rejects it (`deny_unknown_fields`) and a v5 worker that *tolerated* it would fail to
+/// import every module under a `src/` layout while claiming to honour the ini.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The `--cov` instruction carried on [`WorkerRequest::Init`].
 ///
@@ -108,6 +116,13 @@ pub struct CoverageWire {
 }
 
 /// A message from the orchestrator to a worker, one per stdin line.
+///
+/// `Init` is much larger than the other variants and is deliberately left unboxed:
+/// **exactly one is built per worker**, immediately serialized to a line of JSON and
+/// dropped, so the enum is never held in a collection and the "wasted" stack bytes are paid
+/// once per process. Boxing would put an allocation and a level of indirection between the
+/// golden-string tests and the struct they pin, for no measurable gain.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkerRequest {
@@ -154,6 +169,15 @@ pub enum WorkerRequest {
         /// The `asyncio_default_test_loop_scope` ini — always present, since the oracle gives
         /// it a real default (`"function"`, plugin.py l. 123-128).
         asyncio_default_test_loop_scope: String,
+        /// The `pythonpath` ini as absolute posix directories, **omitted when empty**.
+        ///
+        /// Absolute already: `type="paths"` resolves each entry against the config file's
+        /// directory inside `config::resolve_config`, so the worker neither knows nor needs
+        /// to know where the ini lived. Order is the ini's own; the worker inserts in
+        /// reverse so entry 0 ends up first on `sys.path`, which is what
+        /// `for path in reversed(...): sys.path.insert(0, ...)` produces in pytest.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pythonpath: Vec<String>,
         /// `--cov`: what to measure and where to write it, or **absent** for a run with no
         /// coverage at all.  See [`CoverageWire`] and [`PROTOCOL_VERSION`]'s v5 note.
         ///
@@ -367,12 +391,16 @@ mod tests {
             // sends and the one that has to stay byte-identical to v4's line.  The present
             // form is pinned separately by `init_request_carries_the_coverage_instruction`.
             coverage: None,
+            // Likewise empty: `pythonpath` is unset in almost every project, and the empty
+            // form is what has to stay byte-identical to v5's line bar the version number.
+            // `init_request_carries_the_pythonpath_ini` pins the present form.
+            pythonpath: Vec::new(),
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":5,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":5,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":5,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -455,6 +483,35 @@ mod tests {
         assert!(
             !INIT_LINE.contains(r#""coverage":"#),
             "a run without --cov must not carry the key at all"
+        );
+    }
+
+    /// `pythonpath` travels only when the ini is set, and it travels **in ini order**.
+    ///
+    /// Order is the whole content of the field: the worker inserts in reverse so that entry
+    /// 0 ends up first on `sys.path`, which is what
+    /// `for path in reversed(getini("pythonpath")): sys.path.insert(0, ...)` produces
+    /// (`_pytest/config/__init__.py` l. 1316-1319). A serializer that sorted or deduplicated
+    /// would change which of two same-named packages a suite imports.
+    #[test]
+    fn init_request_carries_the_pythonpath_ini() {
+        let with_paths = init_with(|init| {
+            if let WorkerRequest::Init { pythonpath, .. } = init {
+                *pythonpath = vec!["/repo/src".to_string(), "/repo/vendor".to_string()];
+            }
+        });
+
+        let line = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        assert_eq!(
+            serde_json::to_string(&with_paths).expect("init serializes"),
+            line
+        );
+        let decoded: WorkerRequest = serde_json::from_str(line).expect("init deserializes");
+        assert_eq!(decoded, with_paths);
+
+        assert!(
+            !INIT_LINE.contains(r#""pythonpath":"#),
+            "a project without the ini must not carry the key at all"
         );
     }
 
@@ -655,7 +712,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":5}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":6}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;

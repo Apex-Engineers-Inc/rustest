@@ -54,16 +54,24 @@ INI_KEYS = [
     "testpaths",
 ]
 
+# `type="paths"` ini keys: pytest's `getini` answers a list of `Path` objects
+# (`Config._getini` l. 1659-1666 returns `[dp / x for x in ...]`) and v2 answers absolute
+# posix strings, so they are dumped as `str` and compared through `_norm`.
+PATH_INI_KEYS = ["pythonpath"]
+
 CONFTEST = f'''\
 """Reports pytest's own resolved ini values so the Rust port can be diffed against them."""
 
 import json
 
 INI_KEYS = {INI_KEYS + ["markers"]!r}
+PATH_INI_KEYS = {PATH_INI_KEYS!r}
 
 
 def pytest_report_header(config):
-    return "inidump: " + json.dumps({{key: list(config.getini(key)) for key in INI_KEYS}})
+    dump = {{key: list(config.getini(key)) for key in INI_KEYS}}
+    dump.update({{key: [str(v) for v in config.getini(key)] for key in PATH_INI_KEYS}})
+    return "inidump: " + json.dumps(dump)
 '''
 
 TEST_MODULE = "def test_x():\n    assert True\n"
@@ -184,6 +192,11 @@ def _assert_agrees_with_pytest(cwd: Path, args: list[str]) -> dict[str, Any]:
     for key in INI_KEYS:
         detail = f"rust={resolved[key]!r} pytest={oracle.ini[key]!r}"
         assert resolved[key] == oracle.ini[key], f"ini {key!r} {where}: {detail}"
+    for key in PATH_INI_KEYS:
+        rust_paths = [_norm(value) for value in resolved[key]]
+        pytest_paths = [_norm(value) for value in oracle.ini[key]]
+        detail = f"rust={rust_paths!r} pytest={pytest_paths!r}"
+        assert rust_paths == pytest_paths, f"ini {key!r} {where}: {detail}"
     # Plugins append to `markers` via `addinivalue_line`, so pytest's list is a superset of
     # what the ini file declares; v2 reports only the ini's own lines.
     extra = [m for m in resolved["markers"] if m not in oracle.ini["markers"]]
@@ -302,3 +315,69 @@ def test_tox_ini_rootdir_matches_pytest(tmp_path: Path) -> None:
     assert _norm(resolved["rootdir"]) == _norm(str(root))
     # `type="args"` ini values go through shlex.split.
     assert resolved["addopts"] == ["-ra", "--tb=short"]
+
+
+# --------------------------------------------------------------------------------------
+# Layout (e): `pythonpath`, the one `type="paths"` ini v2 models.
+# --------------------------------------------------------------------------------------
+
+
+def _layout_pythonpath(tmp_path: Path, value: str) -> Path:
+    root = tmp_path / "pythonpath_project"
+    _write(root / "pytest.ini", f"[pytest]\npythonpath = {value}\n")
+    _write(root / "src" / "mylib" / "__init__.py", "VALUE = 1\n")
+    _write(root / "vendor" / "other" / "__init__.py", "VALUE = 2\n")
+    _write(root / "tests" / "test_pp.py", TEST_MODULE)
+    _write(root / "conftest.py", CONFTEST)
+    return root
+
+
+def test_pythonpath_entries_match_pytests_own_resolution(tmp_path: Path) -> None:
+    """`type="paths"` resolves each entry against the **config file's** directory.
+
+    Not against rootdir, and not against the invocation directory when a config file
+    exists: `Config._getini` (l. 1659-1666) uses
+    `dp = self.inipath.parent if self.inipath is not None else self.invocation_params.dir`.
+    The differential is what proves it -- the layout is invoked from a *subdirectory*, so a
+    port that used the invocation dir would produce `<root>/tests/src` and be caught.
+    """
+    root = _layout_pythonpath(tmp_path, "src vendor")
+    resolved = _assert_agrees_with_pytest(root / "tests", ["."])
+    assert [_norm(p) for p in resolved["pythonpath"]] == [
+        _norm(str(root / "src")),
+        _norm(str(root / "vendor")),
+    ]
+
+
+def test_pythonpath_absent_is_an_empty_list_on_both_sides(tmp_path: Path) -> None:
+    root = _layout_tox_ini(tmp_path)
+    resolved = _assert_agrees_with_pytest(root, [str(Path("pkg") / "tests")])
+    assert resolved["pythonpath"] == []
+
+
+def test_pythonpath_as_a_toml_list_bypasses_shlex(tmp_path: Path) -> None:
+    root = tmp_path / "toml_pythonpath"
+    _write(
+        root / "pyproject.toml",
+        '[tool.pytest.ini_options]\npythonpath = ["src dir", "vendor"]\n',
+    )
+    _write(root / "tests" / "test_pp.py", TEST_MODULE)
+    _write(root / "conftest.py", CONFTEST)
+    resolved = _assert_agrees_with_pytest(root, ["tests"])
+    # A list value is used verbatim, so the space in "src dir" is part of one entry.
+    assert [_norm(p) for p in resolved["pythonpath"]] == [
+        _norm(str(root / "src dir")),
+        _norm(str(root / "vendor")),
+    ]
+
+
+def test_an_absolute_pythonpath_entry_replaces_the_base(tmp_path: Path) -> None:
+    """`dp / x` is `pathlib` division: an absolute `x` discards `dp` entirely."""
+    absolute = tmp_path / "elsewhere"
+    _write(absolute / "pkg" / "__init__.py", "VALUE = 3\n")
+    root = tmp_path / "abs_pythonpath"
+    _write(root / "pytest.ini", f"[pytest]\npythonpath = {absolute.as_posix()}\n")
+    _write(root / "tests" / "test_pp.py", TEST_MODULE)
+    _write(root / "conftest.py", CONFTEST)
+    resolved = _assert_agrees_with_pytest(root, ["tests"])
+    assert [_norm(p) for p in resolved["pythonpath"]] == [_norm(str(absolute))]

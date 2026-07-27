@@ -251,6 +251,7 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
         python_functions,
         norecursedirs,
         addopts,
+        pythonpath,
         markers,
         asyncio_mode,
         asyncio_default_fixture_loop_scope,
@@ -281,6 +282,13 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
     field("python_functions", python_functions);
     field("norecursedirs", norecursedirs);
     field("addopts", addopts);
+    field(
+        "pythonpath",
+        &pythonpath
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<String>>(),
+    );
     field("markers", markers);
     // `asyncio_mode` is a **collection** input, not only an execution one: in `auto` mode an
     // `async def` + `yield` test acquires a synthesised `xfail(run=False)` mark
@@ -768,6 +776,7 @@ mod tests {
             python_functions: owned(DEFAULT_PYTHON_FUNCTIONS),
             norecursedirs: Vec::new(),
             addopts: Vec::new(),
+            pythonpath: Vec::new(),
             markers: Vec::new(),
             asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
             asyncio_default_fixture_loop_scope: None,
@@ -1003,6 +1012,13 @@ mod tests {
                 "addopts",
                 ResolvedConfig {
                     addopts: owned(&["-q"]),
+                    ..base.clone()
+                },
+            ),
+            (
+                "pythonpath",
+                ResolvedConfig {
+                    pythonpath: vec![tmp.path().join("src")],
                     ..base.clone()
                 },
             ),
