@@ -9,6 +9,15 @@ on:
     - cron: "0 6 * * 1" # weekly benchmark run
 
 jobs:
+  # A single job, not a matrix: the three conformance gates below run as three steps in
+  # one job, which GitHub Actions always executes in file order on the same runner. That
+  # sequencing is load-bearing, not incidental -- see the "never run conformance gates
+  # concurrently" directive in docs/superpowers/plans/2026-07-26-phase1c-compat-default.md
+  # header. Splitting these into parallel jobs (even matrix legs of the same job) would
+  # let two gates race for CPU on the runner at once, which is exactly the kind of
+  # concurrent load that produced the subprocess-timeout misread recorded in the P1b.2
+  # Task 5 report Sec 10.7 (a `1 diverged` reading that was actually a HARNESS-ERROR).
+  # Keep these as sequential steps of one job; do not "parallelize" this workflow.
   conformance:
     name: Conformance corpus + benchmarks
     runs-on: ubuntu-latest
@@ -31,20 +40,30 @@ jobs:
       - name: Build Rust extension (release)
         run: uv run maturin develop --release
 
+      # Fail fast on a broken default path before paying for the full corpus below: since
+      # the Phase 1c flip, `rustest <paths>` with no flag is the v2 engine end to end
+      # (collect + execute + report). This is not a gate (no waivers, no grading) --
+      # just "does the shipped CLI's default invocation still exit 0 on a known-good
+      # corpus case at all".
+      - name: Smoke test (v2 default path)
+        run: uv run rustest conformance/corpus/collection/multi-file-ordering
+
       - name: Run conformance harness unit tests
         run: uv run pytest conformance/tests -v
 
+      # Gate 1 of 3 (sequential -- see the job-level comment above): a real pytest run vs
+      # the shipping v1 `rustest` runner, end to end. Graded against waivers.toml.
       - name: Run conformance corpus
         run: uv run python -m conformance
 
-      # Phase 1b.1 gate: pytest's collected node ids and collection exit code vs
+      # Gate 2 of 3: Phase 1b.1 -- pytest's collected node ids and collection exit code vs
       # `rustest --v2-collect-only`. Graded against waivers-v2-collect.toml (EMPTY).
       - name: Run conformance corpus (v2 collection)
         run: uv run python -m conformance --v2-collect
 
-      # Phase 1b.2 gate: a real pytest run vs `rustest --v2 --report-json` -- ordered
-      # node ids, the six-value outcome tally (passed/failed/skipped/xfailed/xpassed/
-      # error) and the exit code. Graded against waivers-v2-run.toml (EMPTY).
+      # Gate 3 of 3: Phase 1b.2 -- a real pytest run vs `rustest --v2 --report-json` --
+      # ordered node ids, the six-value outcome tally (passed/failed/skipped/xfailed/
+      # xpassed/error) and the exit code. Graded against waivers-v2-run.toml (EMPTY).
       - name: Run conformance corpus (v2 full run)
         run: uv run python -m conformance --v2-run
 

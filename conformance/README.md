@@ -26,9 +26,10 @@ The fitness function for the rustest v2 rewrite
   for v1 and matches under both v2 gates; `marks/xfail-strict` likewise).
   **Both v2 ledgers are empty**, which is the Phase 1b.2 result: every collection
   and execution divergence the corpus found in v1 is fixed in v2.
-- `python -m conformance.bench.bench [--quick]` — the three canonical numbers
-  (pytest collect / pytest run / rustest run; rustest collect arrives in
-  Phase 2).
+- `python -m conformance.bench.bench [--quick]` — pytest collect / pytest run /
+  rustest v1 run / rustest v2 run / rustest v2 collect-only. As of Phase 1c
+  Task 3 all five columns are live; Phase 2 will split the collect column into
+  cold/warm rows once the manifest cache lands.
 
 pytest is a dev-dependency only. It never ships with rustest.
 
@@ -135,23 +136,31 @@ Two mappings the harness applies so the two sides answer the same question:
   `summary.error` on purpose; the harness folds them exactly as v2's own terminal
   summary line does (`python/rustest/core.py::_run_summary`).
 
-## Baselines (Phase 0, v1 runner, Windows)
+## Baselines (Phase 1c, v1 + v2, Windows)
 
 Recorded with `python -m conformance.bench.bench --out conformance/baselines.json`
-on Windows 11 / Python 3.14 against the generated all-passing suites. The raw
+on Windows 11 / Python 3.14 against the generated all-passing suites, all three
+sizes run sequentially with no other conformance suite concurrent. The raw
 numbers live in the tracked `conformance/baselines.json`; `conformance/bench_results.json`
 stays gitignored scratch for ad-hoc runs.
 
-| files | tests | pytest collect | pytest run | rustest run |
-| ----- | ----- | -------------- | ---------- | ----------- |
-| 10    | 100   | 1.15s          | 1.14s      | 0.58s       |
-| 100   | 1000  | 2.65s          | 1.74s      | 1.06s       |
-| 500   | 5000  | 7.52s          | 7.49s      | 4.04s       |
+Phase 0 recorded pytest vs the v1 runner only, back when a bare `rustest` command
+*was* the v1 runner. Phase 1c Task 3 regenerated the table below after the flip: the
+v1 column now runs with an explicit `--v1`, and two columns are new —
+`rustest v2 run` (the bare, flag-less command: the default path since the flip) and
+`rustest v2 collect` (`--v2-collect-only`, reserved since Phase 0 and filled in now).
+
+| files | tests | pytest collect | pytest run | rustest v1 run | rustest v2 run | rustest v2 collect |
+| ----- | ----- | --------------- | ---------- | --------------- | --------------- | ------------------- |
+| 10    | 100   | 0.99s           | 0.87s      | 0.51s           | 5.29s           | 5.82s               |
+| 100   | 1000  | 2.52s           | 1.77s      | 0.99s           | 8.81s           | 8.52s               |
+| 500   | 5000  | 7.86s           | 6.33s      | 3.27s           | 11.29s          | 8.51s               |
 
 Derived marginal cost per test (`derived` in the JSON):
 
-- pytest: **1436.3 us/test**
-- rustest: **746.8 us/test**
+- pytest: **1140.7 us/test**
+- rustest v1: **569.1 us/test**
+- rustest v2: **618.1 us/test**
 
 The derivation subtracts the second-largest size from the largest, cancelling the
 fixed startup cost (interpreter boot, plugin loading, extension import) both runs
@@ -161,15 +170,31 @@ pay identically:
 overhead_us = (run_s_big - run_s_small) / (tests_big - tests_small) * 1e6
 ```
 
+**Read the v2 columns as two separate numbers, not one.** The *marginal* per-test
+cost (618.1 us/test) is already in v1's neighborhood. The *wall-clock* numbers in
+the table are nonetheless far worse than v1's across every size, because v2 pays a
+large **fixed** cost on every single invocation: it spawns a fresh worker pool (up to
+one process per CPU core — 16 on the recording machine, clamped to the file count for
+the 10-file suite) with no static collection tier and no manifest cache to skip any of
+that work on a warm re-run. v1 has none of that fixed cost (no worker pool to spawn at
+all for these suite sizes). This is not a bug to chase down inside
+Phase 1c — it is exactly the gap Phase 2
+(`docs/superpowers/plans/2026-07-26-phase2-speed.md`) exists to close: a static Rust
+collector, a manifest cache, and dispatch tuning, gated on warm collection
+**≤ 50ms** at 5k tests and per-test overhead **< 200µs**, measured against this exact
+table.
+
 **Caveat — these are indicative, not rigorous.** Each cell is a *single sample*
-taken in a *fixed command order* (pytest collect, then pytest run, then rustest
-run) inside one freshly generated suite, so the later commands read a warm
-filesystem cache and warm `.pyc` files that the first command paid to populate.
-Review measured that ordering bias at roughly **27-39%** — larger than several of
-the gaps in the table above, so no per-row pytest-vs-rustest ratio here should be
-quoted as a speedup. Proper warmup iterations, repetition with a
-median/min-of-N statistic, and order randomization are a **Phase 2 work item**;
-until then these numbers exist to catch order-of-magnitude regressions only.
+taken in a *fixed command order* (pytest collect, pytest run, rustest v1 run,
+rustest v2 run, rustest v2 collect) inside one freshly generated suite, so later
+commands read a warm filesystem cache and warm `.pyc` files that the first command
+paid to populate. Phase 0 review measured that ordering bias at roughly **27-39%**
+on the original three-column table — larger than several of the gaps above, so no
+per-row ratio here should be quoted as a speedup (and the v1/v2 gap is large enough
+that the bias doesn't change its direction, only its exact size). Proper warmup
+iterations, repetition with a median/min-of-N statistic, and order randomization
+are still a **Phase 2 work item**; until then these numbers exist to catch
+order-of-magnitude regressions and to anchor the Phase 2 targets above.
 
 ## Requirements
 

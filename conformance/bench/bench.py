@@ -1,4 +1,7 @@
-"""Benchmark pytest vs rustest: collection, full run. Usage: python -m conformance.bench.bench"""
+"""Benchmark pytest vs rustest v1 vs rustest v2: collection, full run.
+
+Usage: python -m conformance.bench.bench
+"""
 
 from __future__ import annotations
 
@@ -21,13 +24,23 @@ class BenchRow(TypedDict):
     tests: int
     pytest_collect_s: float
     pytest_run_s: float
+    #: ``rustest --v1 <suite>`` -- the legacy engine, explicitly flagged. Before the Phase 1c
+    #: flip a bare ``rustest <suite>`` command *was* the v1 timing; since the flip a bare
+    #: command runs v2, so this field keeps its historical meaning only because the flag is
+    #: now spelled out. See ``rustest_v2_run_s`` for what the bare command measures today.
     rustest_run_s: float
-    rustest_collect_s: float | None
+    #: ``rustest <suite>`` with no mode flag -- the v2 default path, since the Phase 1c flip.
+    rustest_v2_run_s: float
+    #: ``rustest --v2-collect-only <suite>``. Reserved (always ``None``) through Phase 1c
+    #: Task 2; Task 3 filled it in. Phase 2 will split this into cold/warm rows once the
+    #: manifest cache lands.
+    rustest_collect_s: float
 
 
 class Derived(TypedDict):
     pytest_overhead_us_per_test: float | None
     rustest_overhead_us_per_test: float | None
+    rustest_v2_overhead_us_per_test: float | None
 
 
 class BenchReport(TypedDict):
@@ -38,10 +51,11 @@ class BenchReport(TypedDict):
 def _time_cmd(cmd: list[str], cwd: Path) -> float:
     """Time *cmd*, raising if it failed.
 
-    Every generated benchmark suite is all-passing by construction, so all three
-    timed commands must exit 0. A nonzero exit means the runner errored out and
-    the "time" measured is the time to fail -- silently averaging that into a
-    baseline would publish a meaningless number.
+    Every generated benchmark suite is all-passing by construction, so every
+    timed command (pytest collect, pytest run, rustest v1 run, rustest v2 run,
+    rustest v2 collect-only) must exit 0. A nonzero exit means the runner errored
+    out and the "time" measured is the time to fail -- silently averaging that
+    into a baseline would publish a meaningless number.
     """
     start = time.perf_counter()
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
@@ -62,20 +76,28 @@ def derive_overhead(results: list[BenchRow]) -> Derived:
 
         overhead_us = (run_s_big - run_s_small) / (tests_big - tests_small) * 1e6
 
-    Needs at least two distinct sizes; otherwise both values are None.
+    Needs at least two distinct sizes; otherwise all three values are None.
     """
+    _empty: Derived = {
+        "pytest_overhead_us_per_test": None,
+        "rustest_overhead_us_per_test": None,
+        "rustest_v2_overhead_us_per_test": None,
+    }
     if len(results) < 2:
-        return {"pytest_overhead_us_per_test": None, "rustest_overhead_us_per_test": None}
+        return _empty
     ordered = sorted(results, key=lambda r: r["tests"])
     small, big = ordered[-2], ordered[-1]
     delta_tests = big["tests"] - small["tests"]
     if delta_tests <= 0:
-        return {"pytest_overhead_us_per_test": None, "rustest_overhead_us_per_test": None}
+        return _empty
     return {
         "pytest_overhead_us_per_test": (big["pytest_run_s"] - small["pytest_run_s"])
         / delta_tests
         * 1e6,
         "rustest_overhead_us_per_test": (big["rustest_run_s"] - small["rustest_run_s"])
+        / delta_tests
+        * 1e6,
+        "rustest_v2_overhead_us_per_test": (big["rustest_v2_run_s"] - small["rustest_v2_run_s"])
         / delta_tests
         * 1e6,
     }
@@ -88,15 +110,18 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
             suite = Path(tmp) / "suite"
             generate_suite(suite, files, tests_per_file)
             pytest_base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q"]
+            rustest_base = [sys.executable, "-m", "rustest"]
             row: BenchRow = {
                 "files": files,
                 "tests": files * tests_per_file,
                 "pytest_collect_s": _time_cmd([*pytest_base, "--collect-only"], suite),
                 "pytest_run_s": _time_cmd([*pytest_base, "--tb=no"], suite),
-                "rustest_run_s": _time_cmd(
-                    [sys.executable, "-m", "rustest", ".", "--color", "never"], suite
-                ),
-                "rustest_collect_s": None,  # v1 has no collect-only; Phase 2 fills this
+                # Explicit --v1: since the Phase 1c flip a bare command runs v2, so this is
+                # the only way left to measure the legacy engine's timing.
+                "rustest_run_s": _time_cmd([*rustest_base, "--v1", ".", "--color", "never"], suite),
+                # No mode flag: the v2 default path.
+                "rustest_v2_run_s": _time_cmd([*rustest_base, "."], suite),
+                "rustest_collect_s": _time_cmd([*rustest_base, "--v2-collect-only", "."], suite),
             }
             results.append(row)
         if quick:
@@ -117,16 +142,24 @@ def main() -> int:
     # Trailing newline: baselines.json is a tracked file and the end-of-file-fixer
     # pre-commit hook would otherwise rewrite it after every run.
     Path(args.out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print("| files | tests | pytest collect | pytest run | rustest run |")
-    print("|---|---|---|---|---|")
+    print(
+        "| files | tests | pytest collect | pytest run | rustest v1 run "
+        + "| rustest v2 run | rustest v2 collect |"
+    )
+    print("|---|---|---|---|---|---|---|")
     for row in report["results"]:
         print(
             f"| {row['files']} | {row['tests']} | {row['pytest_collect_s']:.2f}s "
-            + f"| {row['pytest_run_s']:.2f}s | {row['rustest_run_s']:.2f}s |"
+            + f"| {row['pytest_run_s']:.2f}s | {row['rustest_run_s']:.2f}s "
+            + f"| {row['rustest_v2_run_s']:.2f}s | {row['rustest_collect_s']:.2f}s |"
         )
     derived = report["derived"]
     print(f"pytest marginal overhead: {_fmt_overhead(derived['pytest_overhead_us_per_test'])}")
-    print(f"rustest marginal overhead: {_fmt_overhead(derived['rustest_overhead_us_per_test'])}")
+    print(f"rustest v1 marginal overhead: {_fmt_overhead(derived['rustest_overhead_us_per_test'])}")
+    print(
+        "rustest v2 marginal overhead: "
+        + f"{_fmt_overhead(derived['rustest_v2_overhead_us_per_test'])}"
+    )
     return 0
 
 

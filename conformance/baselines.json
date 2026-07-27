@@ -3,30 +3,34 @@
     {
       "files": 10,
       "tests": 100,
-      "pytest_collect_s": 1.1465148999996018,
-      "pytest_run_s": 1.1364985999971395,
-      "rustest_run_s": 0.5785533000016585,
-      "rustest_collect_s": null
+      "pytest_collect_s": 0.9920056999835651,
+      "pytest_run_s": 0.8680755000095814,
+      "rustest_run_s": 0.506884300004458,
+      "rustest_v2_run_s": 5.292416599986609,
+      "rustest_collect_s": 5.817578299989691
     },
     {
       "files": 100,
       "tests": 1000,
-      "pytest_collect_s": 2.6494079000112833,
-      "pytest_run_s": 1.7400595000071917,
-      "rustest_run_s": 1.0571723000030033,
-      "rustest_collect_s": null
+      "pytest_collect_s": 2.5157467999961227,
+      "pytest_run_s": 1.7670750999823213,
+      "rustest_run_s": 0.9894349999958649,
+      "rustest_v2_run_s": 8.813816000008956,
+      "rustest_collect_s": 8.521952200011583
     },
     {
       "files": 500,
       "tests": 5000,
-      "pytest_collect_s": 7.521785200005979,
-      "pytest_run_s": 7.48517840000568,
-      "rustest_run_s": 4.044220299998415,
-      "rustest_collect_s": null
+      "pytest_collect_s": 7.860718599986285,
+      "pytest_run_s": 6.329794799996307,
+      "rustest_run_s": 3.265892499999609,
+      "rustest_v2_run_s": 11.286234600003809,
+      "rustest_collect_s": 8.511888000008184
     }
   ],
   "derived": {
-    "pytest_overhead_us_per_test": 1436.279724999622,
-    "rustest_overhead_us_per_test": 746.7619999988528
+    "pytest_overhead_us_per_test": 1140.6799250034965,
+    "rustest_overhead_us_per_test": 569.114375000936,
+    "rustest_v2_overhead_us_per_test": 618.1046499987133
   }
 }

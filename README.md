@@ -48,6 +48,43 @@ Rustest delivers consistent speedups across test suites of all sizes:
 
 **[📊 Full Performance Analysis →](https://apex-engineers-inc.github.io/rustest/advanced/performance/)**
 
+The table above is the **v1** engine (`--v1`). Read on for what the new default (v2)
+measures today.
+
+## v2 Baselines (the Phase 2 gate)
+
+`rustest <paths>` with no flag has run the **v2** engine since the Phase 1c flip. The
+table below is the first real measurement of it, alongside pytest and the v1 numbers
+above, on the same generated all-passing suites used throughout `conformance/bench/`.
+
+**Expectation management: v2 is not yet fast.** Every run today spawns a fresh worker
+pool from scratch, there is no static (import-free) collection tier, and there is no
+manifest cache — v1 already has the benefit of years of tuning around its own
+architecture, and v2 has none of that yet. The gap below is dominated by that
+**fixed** per-run cost (worker-pool spawn); the **marginal** per-test cost — what's left
+once the fixed cost is subtracted out — is already close to v1's (see the derived
+numbers).
+
+| files | tests | pytest run | rustest v1 run | rustest v2 run | rustest v2 collect |
+| ----: | ----: | ---------: | --------------: | --------------: | -------------------: |
+|    10 |   100 |      0.87s |            0.51s |            5.29s |                5.82s |
+|   100 |  1000 |      1.77s |            0.99s |            8.81s |                8.52s |
+|   500 |  5000 |      6.33s |            3.27s |           11.29s |                8.51s |
+
+Marginal per-test overhead, derived from the two largest sizes: pytest **1140.7
+us/test**, rustest v1 **569.1 us/test**, rustest v2 **618.1 us/test**.
+
+Full methodology (suite generation, command order, the ordering-bias caveat) and the
+raw data live in the "Baselines" section of
+[`conformance/README.md`](conformance/README.md) and the tracked
+[`conformance/baselines.json`](conformance/baselines.json).
+
+**These numbers ARE the Phase 2 baseline.** Phase 2
+([`docs/superpowers/plans/2026-07-26-phase2-speed.md`](docs/superpowers/plans/2026-07-26-phase2-speed.md))
+targets warm collection **≤ 50ms** on the 5k-test suite above and per-test framework
+overhead **< 200µs**, measured against exactly this table — a static Rust collector, a
+manifest cache and parallel-dispatch tuning are what close the gap from here.
+
 ## Installation
 
 <!--pytest.mark.skip-->
