@@ -1868,9 +1868,14 @@ impl<'a> Scan<'a> {
     /// nothing for the subset admitted: it only rewrites *string* skipif conditions, and those
     /// are refused.
     fn pytestmark_specs(&self, value: &Expr) -> Result<Vec<MarkSpec>, Dynamic> {
+        // A **list** is unpacked and nothing else is: `get_unpacked_marks` tests
+        // `isinstance(item, list)` (`_pytest/mark/structures.py` l. 427/433), so a *tuple*
+        // is appended whole and then dies in `normalize_mark_list` with
+        // `TypeError: got (...) instead of Mark`.  Measured: `pytestmark = (m1, m2)` is a
+        // collection error under pytest 8.4.2 and under the v2 worker; unpacking it here
+        // made Tier S the only surface that accepted it.
         let entries: Vec<&Expr> = match value {
             Expr::List(list) => list.elts.iter().collect(),
-            Expr::Tuple(tuple) => tuple.elts.iter().collect(),
             single => vec![single],
         };
         entries
@@ -3170,6 +3175,18 @@ mod tests {
             .map(|mark| mark.name.as_str())
             .collect();
         assert_eq!(names, ["slow", "smoke"]);
+    }
+
+    /// pytest unpacks a `list` and *only* a list: a tuple is appended whole and then fails
+    /// `normalize_mark_list` (`_pytest/mark/structures.py` l. 427/450-453) with
+    /// `TypeError: got (...) instead of Mark`.  Tier S used to unpack tuples, which made it
+    /// the one surface that accepted a shape pytest and the v2 worker both refuse.
+    #[test]
+    fn a_tuple_pytestmark_is_refused_the_way_pytest_refuses_it() {
+        assert_eq!(
+            refusal("import pytest\n\npytestmark = (pytest.mark.slow, pytest.mark.smoke)\n\n\ndef test_x():\n    pass\n"),
+            Reason::NonLiteralPytestmark
+        );
     }
 
     // -- dynamism --------------------------------------------------------

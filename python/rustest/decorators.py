@@ -516,6 +516,27 @@ class MarkDecorator:
         return f"Mark({self.name!r}, {self.args!r}, {self.kwargs!r})"
 
 
+class AsyncioMarkDecorator(MarkDecorator):
+    """``mark.asyncio``'s decorator, which also reaches a decorated class's async methods.
+
+    Identical to :class:`MarkDecorator` except for the class branch: v1 propagated the mark
+    onto every coroutine method so a method read *without* its owner still carries
+    ``loop_scope``, and several shipped tests pin that.  It is a :class:`MarkDecorator`
+    subclass rather than a closure precisely so that the object ``mark.asyncio(...)``
+    returns is **also a mark value** — ``pytestmark = pytest.mark.asyncio(loop_scope="x")``
+    reads ``.name``/``.args``/``.kwargs`` off it, and a closure answers none of them.
+    """
+
+    def __call__(self, func: TFunc) -> TFunc:
+        marked = super().__call__(func)
+        if not inspect.isclass(marked):
+            return marked
+        for name, method in inspect.getmembers(marked, predicate=inspect.iscoroutinefunction):
+            marked_method = MarkDecorator(self.name, self.args, self.kwargs)(method)
+            setattr(marked, name, marked_method)
+        return cast(TFunc, marked)
+
+
 def _mark_decoration_target(
     args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> tuple[Any, Any] | None:
@@ -665,6 +686,19 @@ if TYPE_CHECKING:
         def __call__(self, *names: str) -> MarkDecorator: ...
         def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
+    class _AsyncioMark(BareOrFactoryMark):
+        @overload
+        def __call__(self, arg: TFunc, /) -> TFunc: ...
+        @overload
+        def __call__(
+            self,
+            *,
+            loop_scope: str | None = ...,
+            scope: str | None = ...,
+            timeout: float | None = ...,
+        ) -> MarkDecorator: ...
+        def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
 
 class MarkGenerator:
     """Namespace for dynamically creating marks like pytest.mark.
@@ -681,11 +715,18 @@ class MarkGenerator:
         @mark.asyncio(loop_scope="function")
 
     Every one of these may also be used **bare** — ``@mark.xfail`` with no parentheses is
-    ordinary pytest and means "apply this mark with its defaults". ``skipif``, ``xfail`` and
-    ``usefixtures`` are therefore :class:`BareOrFactoryMark` instances rather than methods,
-    because a method cannot tell a decoration from a factory call and silently ate the test
-    function when used bare (defects #136 and #137). ``asyncio`` keeps its own signature and
-    its own long-standing ``func is not None`` bare branch.
+    ordinary pytest and means "apply this mark with its defaults". All four are therefore
+    :class:`BareOrFactoryMark` instances rather than methods, because a method cannot tell a
+    decoration from a factory call and silently ate the test function when used bare
+    (defects #136 and #137).
+
+    ``asyncio`` joined them in Phase 4 for the *other* half of the same defect: a method is
+    not a mark **value**, so ``pytestmark = pytest.mark.asyncio`` — four modules of Apex
+    Member Designer — refused the whole file with ``malformed pytestmark entry ... <bound
+    method MarkGenerator.asyncio ...> is not a mark``, and because pytest's
+    ``pytest_runtestloop`` (and `src/v2/execute.rs::stage`) raise ``Interrupted`` before the
+    first item, four such files meant *nothing* in that 6 132-test suite ran. Its factory
+    now returns an :class:`AsyncioMarkDecorator`, which is a mark value too.
     """
 
     if TYPE_CHECKING:
@@ -695,6 +736,7 @@ class MarkGenerator:
         skipif: _SkipifMark
         xfail: _XfailMark
         usefixtures: _UsefixturesMark
+        asyncio: _AsyncioMark
 
     def __init__(self) -> None:
         super().__init__()
@@ -702,26 +744,35 @@ class MarkGenerator:
         # Instance attributes win over `__getattr__`, so `mark.xfail` finds these first.
         self.skipif = cast("_SkipifMark", BareOrFactoryMark("skipif", self._skipif))
         self.xfail = cast("_XfailMark", BareOrFactoryMark("xfail", self._xfail))
+        # `bare=` is the class-aware decorator, so `@mark.asyncio` on a class still reaches
+        # its coroutine methods the way `@mark.asyncio(loop_scope=...)` always has.
+        self.asyncio = cast(
+            "_AsyncioMark",
+            BareOrFactoryMark(
+                "asyncio", self._asyncio, bare=AsyncioMarkDecorator("asyncio", (), {})
+            ),
+        )
         self.usefixtures = cast(
             "_UsefixturesMark", BareOrFactoryMark("usefixtures", self._usefixtures)
         )
 
-    def asyncio(
+    def _asyncio(
         self,
-        func: Callable[..., Any] | None = None,
         *,
         loop_scope: str | None = None,
         scope: str | None = None,
         timeout: float | None = None,
-    ) -> Callable[..., Any]:
-        """Mark an async test function to be executed with asyncio.
+    ) -> MarkDecorator:
+        """The factory half of ``mark.asyncio`` — see :class:`BareOrFactoryMark`.
+
+        Returns an :class:`AsyncioMarkDecorator`, which is both the decorator this used to
+        return and a legal ``pytestmark`` **value**.
 
         This decorator allows you to write async test functions that will be
         automatically executed in an asyncio event loop. The loop_scope parameter
         controls the scope of the event loop used for execution.
 
         Args:
-            func: The function to decorate (when used without parentheses)
             loop_scope: The scope of the event loop. One of:
                 - None: fall back to the ``asyncio_default_test_loop_scope`` ini
                   (pytest-asyncio's default for that is ``"function"``)
@@ -762,8 +813,6 @@ class MarkGenerator:
             use a session-scoped async fixture, tests will automatically share the
             session loop. This is the recommended default for most use cases.
         """
-        import inspect
-
         # WHAT IS CHECKED HERE, AND WHAT DELIBERATELY IS NOT.
         #
         # Checked: that each scope NAME is one of the five. "package" joins the four v1
@@ -806,41 +855,16 @@ class MarkGenerator:
                 msg = f"timeout must be positive, got {timeout}"
                 raise ValueError(msg)
 
-        def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
-            # Only include loop_scope in kwargs if explicitly specified
-            # This allows Rust's smart detection to work when loop_scope is None
-            mark_kwargs: dict[str, Any] = {}
-            if loop_scope is not None:
-                mark_kwargs["loop_scope"] = loop_scope
-            if scope is not None:
-                mark_kwargs["scope"] = scope
-            if timeout is not None:
-                mark_kwargs["timeout"] = timeout
-
-            # Handle class decoration - apply mark to all async methods
-            if inspect.isclass(f):
-                # Apply the mark to the class itself
-                mark_decorator = MarkDecorator("asyncio", (), mark_kwargs)
-                marked_class = mark_decorator(f)
-
-                # Apply the mark to all async methods in the class as well
-                for name, method in inspect.getmembers(
-                    marked_class, predicate=inspect.iscoroutinefunction
-                ):
-                    # Apply the mark to the method so it carries loop_scope metadata
-                    marked_method = MarkDecorator("asyncio", (), mark_kwargs)(method)
-                    setattr(marked_class, name, marked_method)
-                return marked_class
-
-            # For both async and sync functions, just apply the mark
-            # The Rust layer will handle event loop management based on loop_scope
-            mark_decorator = MarkDecorator("asyncio", (), mark_kwargs)
-            return mark_decorator(f)
-
-        # Support both @mark.asyncio and @mark.asyncio(loop_scope="...")
-        if func is not None:
-            return decorator(func)
-        return decorator
+        # Only include loop_scope in kwargs if explicitly specified — that is what lets the
+        # Rust side's smart detection run when the user did not pin a scope.
+        mark_kwargs: dict[str, Any] = {}
+        if loop_scope is not None:
+            mark_kwargs["loop_scope"] = loop_scope
+        if scope is not None:
+            mark_kwargs["scope"] = scope
+        if timeout is not None:
+            mark_kwargs["timeout"] = timeout
+        return AsyncioMarkDecorator("asyncio", (), mark_kwargs)
 
     def _skipif(
         self,
