@@ -78,6 +78,11 @@ def isolated_worker_state() -> Iterator[None]:
     index and the process-wide :class:`FixtureRunner`.  Leaking either would let one test's
     module-scoped fixture survive into the next and make a later assertion pass for the wrong
     reason.
+
+    The worker's per-test **capture** is reset for the same class of reason and one extra:
+    it is built once per worker and caches the ``sys.stderr`` it must restore, which is right
+    in a worker and wrong under a runner that swaps that stream per test.  See
+    ``_v2_worker.reset_capture``.
     """
     saved_path = list(sys.path)
     saved_modules = dict(sys.modules)
@@ -85,6 +90,7 @@ def isolated_worker_state() -> Iterator[None]:
     saved_plans = dict(worker._execution_plans)  # pyright: ignore[reportPrivateUsage]
     saved_runner = worker._runner  # pyright: ignore[reportPrivateUsage]
     worker._runner = None  # pyright: ignore[reportPrivateUsage]
+    worker.reset_capture()
     try:
         worker.install_pytest_shim()
         yield
@@ -98,6 +104,7 @@ def isolated_worker_state() -> Iterator[None]:
         sys.modules.update(saved_modules)
         worker._conftest_modules.clear()  # pyright: ignore[reportPrivateUsage]
         worker._conftest_modules.update(saved_conftests)  # pyright: ignore[reportPrivateUsage]
+        worker.reset_capture()
 
 
 def write(path: Path, source: str) -> Path:

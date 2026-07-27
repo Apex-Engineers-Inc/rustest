@@ -661,10 +661,16 @@ def test_unknown_fixture_errors_at_setup_with_pytests_wording(tmp_path: Path) ->
 
 
 def test_unsupported_builtin_says_so_instead_of_not_found(tmp_path: Path) -> None:
-    """``caplog`` is a gap in this worker, not a fixture the user forgot to write."""
+    """``recwarn`` is a gap in this worker, not a fixture the user forgot to write.
+
+    The subject used to be ``caplog``; Phase 3 Task 2 implemented it, so the case moved to a
+    name that is still genuinely missing rather than being deleted — the *wording* rule is
+    what it tests, and the rule outlives any particular gap. ``recwarn`` needs a warnings
+    channel the v2 wire does not have, which is why it is the one that will still be here.
+    """
     target = write(
-        tmp_path / "test_caplog.py",
-        "def test_logs(caplog):\n    pass\n",
+        tmp_path / "test_recwarn.py",
+        "def test_warns(recwarn):\n    pass\n",
     )
     with isolated_import_state():
         _ids, plans = collect(target, tmp_path)
@@ -672,6 +678,17 @@ def test_unsupported_builtin_says_so_instead_of_not_found(tmp_path: Path) -> Non
             _ = FixtureRunner().setup(plans[0])
     assert "not supported by the rustest v2 worker yet" in str(excinfo.value)
     assert "not found" not in str(excinfo.value)
+
+
+def test_the_supported_and_unsupported_builtin_sets_are_disjoint() -> None:
+    """A name in both lists would print itself as its own alternative.
+
+    ``_fixture_not_found_message`` consults ``UNSUPPORTED_BUILTIN_FIXTURES`` first and then
+    lists ``BUILTIN_FIXTURES`` as what *is* available, so an overlap produces "capfd is not
+    supported (supported builtins: ..., capfd, ...)". Phase 3 Task 2 moved seven names from
+    one list to the other, which is exactly the edit that leaves a straggler behind.
+    """
+    assert not set(worker.BUILTIN_FIXTURES) & worker.UNSUPPORTED_BUILTIN_FIXTURES
 
 
 def test_a_wider_fixture_may_not_request_a_narrower_one(tmp_path: Path) -> None:

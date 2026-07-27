@@ -11,17 +11,27 @@
 //! different parametrized-id spelling.  v2's ids are rootdir-relative posix
 //! (`src/v2/nodeid.rs`).  Sharing one file would silently mean "no test matched" on every
 //! Windows machine and, worse, would let a v1 run overwrite entries a v2 run needs.  So the
-//! file is **versioned by directory** — `.rustest_cache/v2/lastfailed` — and the two engines
+//! file is **versioned by directory** — under `.rustest_cache/v2/` — and the two engines
 //! keep independent caches, which is also what makes `--v1` a true escape hatch rather than
 //! a cache-corrupting one.
 //!
-//! The *content* shape is pytest's, not v1's: a JSON object mapping node id to `true`
-//! (`_pytest/cacheprovider.py` stores `self.lastfailed: dict[str, bool]` under
+//! # The layout inside that directory is pytest's, and that is now load-bearing
+//!
+//! The *content* shape always was: a JSON object mapping node id to `true`
+//! (`_pytest/cacheprovider.py` stores `self.lastfailed: dict[str, bool]` under the cache key
 //! `cache/lastfailed`).  Probed against pytest 8.4.2, whose
 //! `.pytest_cache/v/cache/lastfailed` after two failing tests is exactly
-//! `{"test_x.py::test_b": true, "test_x.py::test_c": true}`.  Keeping pytest's shape means a
-//! reader (an editor plugin, a human) that already understands pytest's cache understands
-//! this one.
+//! `{"test_x.py::test_b": true, "test_x.py::test_c": true}`.
+//!
+//! Phase 3 Task 2 made the *path* pytest's too — `.rustest_cache/v2/v/cache/lastfailed`,
+//! where `v/` is `Cache::_CACHE_PREFIX_VALUES` and `cache/lastfailed` is the key.  The reason
+//! is the `cache` **fixture**, which landed in the same task: pytest's last-failed set is not
+//! private, it is an ordinary cache value that any plugin can read through `config.cache`, and
+//! `python/rustest/_v2_builtins.py::Cache` is that API here.  Keeping `--lf`'s file outside
+//! the value store would have meant `cache.get("cache/lastfailed", {})` answering `{}` on a
+//! run that had just written twelve failures — a fixture that looks like pytest's and lies.
+//! The move orphans caches written by earlier builds; they are caches, and the next run
+//! rebuilds them.
 //!
 //! # What is deliberately *not* here
 //!
@@ -41,7 +51,16 @@ const CACHE_DIR: &str = ".rustest_cache";
 /// than in the file: a v1 build must not be able to read, or write, this file at all.
 const CACHE_VERSION_DIR: &str = "v2";
 
-const LAST_FAILED_FILE: &str = "lastfailed";
+/// pytest's own sub-directory for cached **values** (`_pytest/cacheprovider.py::Cache::
+/// _CACHE_PREFIX_VALUES`), and `cache/lastfailed` is the key it stores the last-failed set
+/// under.  Reproduced exactly, because the `cache` fixture is the public API over this store:
+/// `python/rustest/_v2_builtins.py::Cache` resolves `cache.get("cache/lastfailed", {})` to
+/// this very file, so a suite (or a plugin author, or a person) that knows pytest's cache
+/// knows rustest's.  Splitting the two — a private `--lf` file beside a public value store —
+/// would have made that fixture a plausible-looking dead end.
+const CACHE_VALUES_DIR: &str = "v";
+
+const LAST_FAILED_FILE: &str = "cache/lastfailed";
 
 /// How `--lf` / `--ff` reorder the selected tests.
 ///
@@ -63,6 +82,7 @@ pub fn last_failed_path(rootdir: &Path) -> PathBuf {
     rootdir
         .join(CACHE_DIR)
         .join(CACHE_VERSION_DIR)
+        .join(CACHE_VALUES_DIR)
         .join(LAST_FAILED_FILE)
 }
 
@@ -214,11 +234,13 @@ mod tests {
         items.iter().map(|id| (*id).to_string()).collect()
     }
 
-    /// The file path is versioned by *directory*, so a v1 build cannot see it.  Pinned
-    /// literally: the whole point is that this string differs from v1's
-    /// `.rustest_cache/lastfailed` (`src/cache.rs`).
+    /// The file path is versioned by *directory*, so a v1 build cannot see it, and inside
+    /// that directory it is **pytest's cache layout**.  Pinned literally on both counts: it
+    /// must differ from v1's `.rustest_cache/lastfailed` (`src/cache.rs`), and it must be the
+    /// path `python/rustest/_v2_builtins.py::Cache._getvaluepath("cache/lastfailed")` composes
+    /// — which is what makes `cache.get("cache/lastfailed", {})` answer with the real set.
     #[test]
-    fn the_cache_file_is_under_a_v2_directory() {
+    fn the_cache_file_is_under_a_v2_directory_in_pytests_value_layout() {
         let path = last_failed_path(Path::new("/repo"));
         assert!(path.ends_with("lastfailed"), "{path:?}");
         assert_eq!(
@@ -226,6 +248,8 @@ mod tests {
             Path::new("/repo")
                 .join(".rustest_cache")
                 .join("v2")
+                .join("v")
+                .join("cache")
                 .join("lastfailed")
         );
     }

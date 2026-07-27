@@ -1109,30 +1109,39 @@ The `readouterr()` method returns a tuple of `(out, err)` strings and resets the
 
 ### capfd - File Descriptor Level Capture
 
-The `capfd` fixture provides similar functionality to `capsys` but captures at the file descriptor level:
+The `capfd` fixture has the same interface as `capsys` but redirects the **operating-system file descriptors** 1 and 2, so it also catches output that never passes through `sys.stdout`:
 
 ```python
+import os
+
+
 def test_fd_capture(capfd) -> None:
     """Capture output at file descriptor level."""
-    print("captured by capfd")
+    print("through sys.stdout")
+    os.write(1, b"straight to the descriptor\n")
 
     captured = capfd.readouterr()
-    assert "captured by capfd" in captured.out
+    assert captured.out.splitlines() == ["through sys.stdout", "straight to the descriptor"]
 ```
 
 !!! note "When to Use capfd vs capsys"
-    Use `capsys` for most Python output testing (print, sys.stdout.write).
-    Use `capfd` when you need to capture output written directly to file descriptors (e.g., from C extensions or subprocess output). Note: rustest's `capfd` is currently implemented as an alias for `capsys`.
+    Use `capsys` for most Python output testing (`print`, `sys.stdout.write`).
+    Use `capfd` when the output is written straight to a file descriptor — a subprocess that inherits it, a C extension, or a bare `os.write(1, ...)`.
+
+!!! warning "One capture fixture per test"
+    `capsys` and `capfd` cannot both be requested by the same test; doing so is a setup error reading `cannot use capfd and capsys at the same time`. They would each redirect the other's redirect, and whichever started second would silently swallow the first one's output. This matches pytest.
 
 ### caplog - Capturing Logging Output
 
-The `caplog` fixture captures messages logged via Python's `logging` module during test execution:
+The `caplog` fixture captures messages logged via Python's `logging` module during test execution. Its handler goes on the **root logger** and, exactly as under pytest, it changes no level: the root logger keeps its default of `WARNING`, so an `INFO` record is never created until you ask for one with `caplog.set_level`.
 
 ```python
 import logging
 
 def test_logging_output(caplog) -> None:
     """Capture and verify logging messages."""
+    caplog.set_level(logging.INFO)
+
     logging.info("This is an info message")
     logging.warning("This is a warning")
     logging.error("This is an error")
@@ -1143,14 +1152,17 @@ def test_logging_output(caplog) -> None:
     assert caplog.records[1].levelname == "WARNING"
     assert caplog.records[2].levelname == "ERROR"
 
-def test_log_messages(caplog) -> None:
-    """Access captured log messages as strings."""
-    logging.info("User logged in")
+def test_only_warnings_by_default(caplog) -> None:
+    """Without set_level, the root logger's WARNING threshold applies."""
+    logging.info("dropped before it reaches any handler")
     logging.warning("Low disk space")
 
-    assert caplog.messages == ["User logged in", "Low disk space"]
+    assert caplog.messages == ["Low disk space"]
     assert "Low disk space" in caplog.text
 ```
+
+!!! warning "Loggers that do not propagate"
+    A logger with `propagate = False` never reaches a handler on the root logger, so its records are **not** captured — under pytest either. A suite that needs them adds `caplog.handler` to that logger itself.
 
 #### Filtering by Log Level
 
@@ -1172,7 +1184,8 @@ def test_log_levels(caplog) -> None:
     assert caplog.messages == ["Warning", "Error"]
 
 def test_with_at_level_context(caplog) -> None:
-    """Temporarily change log level."""
+    """Temporarily change the log level, and put it back on the way out."""
+    caplog.set_level(logging.INFO)
     logging.info("Before context")
 
     with caplog.at_level(logging.ERROR):
@@ -1181,7 +1194,7 @@ def test_with_at_level_context(caplog) -> None:
 
     logging.info("After context")
 
-    # All INFO+ messages captured except the WARNING
+    # The at_level block raised the bar to ERROR, so the WARNING inside it is dropped
     assert len(caplog.records) == 3
     assert "Captured in context" in caplog.messages
     assert "Not captured in context" not in caplog.messages
@@ -1196,6 +1209,7 @@ import logging
 
 def test_log_record_details(caplog) -> None:
     """Access detailed log record information."""
+    caplog.set_level(logging.INFO)
     logger = logging.getLogger("myapp")
     logger.info("Application started")
     logger.error("Connection failed", exc_info=True)
@@ -1224,6 +1238,7 @@ import logging
 
 def test_log_clearing(caplog) -> None:
     """Clear logs between test phases."""
+    caplog.set_level(logging.INFO)
     logging.info("Phase 1")
     assert len(caplog.records) == 1
 

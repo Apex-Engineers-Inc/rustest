@@ -356,36 +356,54 @@ pub fn static_pass_cached(
 ///
 /// A **run** collects through Tier D exclusively — `execute.rs` passes `TierMode::DynamicOnly`
 /// so every file is imported by the worker that will execute it, which is what keeps the test
-/// objects the ones enumeration saw.  Tier S therefore never *answers* on the run path, and
-/// "the files Tier S answered" is an empty set there.
+/// objects the ones enumeration saw.  Tier S therefore never *answers* on the run path.
 ///
-/// But "a file Tier S could answer" is a property of the **file**, not of which tier happened
-/// to run, and it is the property the rewrite wants: it means the module's top level is
-/// statically predictable — no star imports, no module-level `exec`, no `__getattr__`, a
-/// conftest chain with no parametrized fixtures.  Reading the plan's "Tier S files" as "files
-/// the detector certifies" is the only reading under which assertion rewriting does anything
-/// at all during a run, and it is the conservative one: the detector's refusals are the same
-/// refusals that protect collection.
+/// It used to *also* be the gate: a file was rewritten only if [`scan_module`] accepted it.
+/// **That coupling is gone** (Phase 3 Task 2), because it was answering a question rewriting
+/// never asks.  Every rule in `scan_module` exists to decide whether a file's **node ids** are
+/// predictable without importing it — a module-level call can add tests, a conditional `def`
+/// can remove one, an unrecognised decorator can be a `parametrize` this module does not
+/// model.  None of them changes what `assert a == b` inside a test body *means*, which is the
+/// only thing the transform touches.  Measured on this repository: the coupling silenced the
+/// failure messages of 27 of 55 files, 15 of them for `ModuleSideEffect` alone — a
+/// `logging.basicConfig()` at module level costing that file pytest-grade assertion output.
+///
+/// # What is required, and why each one is
+///
+/// * **the file is readable as UTF-8 text** — [`read_source`].  The bytes are hashed into the
+///   cache key and handed to nothing else; a file this module cannot decode is one whose key
+///   it cannot compose.
+/// * **every `conftest.py` in the chain is readable** — [`ChainRule::Rewrite`], for the same
+///   reason one rung up: the key hashes the chain's bytes, so an unreadable conftest is a key
+///   a later edit to that conftest could not invalidate.
+/// * **the file parses** — ruff's parser, [`rewrite_is_parsable`].  A source the transform
+///   cannot build an AST for is one it cannot rewrite, and a parse here is also the cheapest
+///   possible check that the bytes are Python at all.
+///
+/// Two further refusals live in the worker, because they are properties of the *tree* rather
+/// than of the file: a `PYTEST_DONT_REWRITE` module docstring and a `:=` inside an `assert`
+/// (`python/rustest/_assertion_rewrite.py::_should_rewrite`).  Together the three-plus-two are
+/// the whole eligibility model — parse-success, no walrus, no `PYTEST_DONT_REWRITE`.
+///
+/// The **stem-collision** veto is gone with the rest.  It is a real rule for collection (two
+/// `test_dup.py` files import under one module name, and the second is pytest's `import file
+/// mismatch` collection error) and it is inert here: registration is keyed by absolute path,
+/// the bytecode artefact is named from a digest of that path, and the file that does get
+/// imported is rewritten.  Registering a key for a file that is never imported costs nothing;
+/// withholding one from the file that *is* costs its messages.
 ///
 /// # Cost
 ///
 /// One read and one ruff parse per file — measured at Task 2 as ~9 ms of reading and ~1 ms of
 /// parsing for the 500-file benchmark suite, against a ~2.3 s run.  The read is unavoidable
-/// anyway: the cache key hashes the file's bytes.
+/// anyway: the cache key hashes the file's bytes.  Dropping `scan_module` makes this *cheaper*
+/// than it was: the parse is still one parse, and the structural walk over it is gone.
 pub fn rewrite_plan(
     targets: &[PathBuf],
     rootdir: &Path,
     config: &ResolvedConfig,
 ) -> Vec<Option<String>> {
     let shadows = shadowing_names(targets, rootdir);
-    let mut stems: HashMap<String, usize> = HashMap::new();
-    for path in targets {
-        let stem = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        *stems.entry(stem).or_insert(0) += 1;
-    }
 
     // The cache handle is opened for its **key composition only** — `load_dir` below is
     // never called, so no shard is read and none is written.  Reusing it rather than calling
@@ -414,20 +432,11 @@ pub fn rewrite_plan(
     targets
         .par_iter()
         .map(|path| {
-            let stem = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if stems.get(&stem).copied().unwrap_or(0) > 1 {
-                return None;
-            }
             let (verdict, chain) = path.parent().and_then(|dir| chains.get(dir))?;
             verdict.as_ref().ok()?;
             let source = read_source(path).ok()?;
             let rel_path = relative_posix(path, rootdir);
-            // The scan is the gate, not the answer: its *tests* are discarded here, because
-            // the run's manifest comes from the worker.  Only "did it refuse?" is used.
-            scan_module(&source, &rel_path, config, &shadows).ok()?;
+            rewrite_is_parsable(&source, &rel_path).ok()?;
             Some(crate::v2::manifest_cache::hex_digest(&cache.key_for_chain(
                 *chain,
                 &rel_path,
@@ -435,6 +444,19 @@ pub fn rewrite_plan(
             )))
         })
         .collect()
+}
+
+/// The file's own half of the rewrite gate: **does it parse?**
+///
+/// Deliberately not [`scan_module`] — see [`rewrite_plan`] for the whole argument.  The parse
+/// result is discarded because the transform re-parses with CPython's own `ast` anyway (from
+/// the raw bytes, so a PEP 263 cookie is honoured by the interpreter that will run the code);
+/// this is the cheap "is it Python this build understands" gate, and a refusal costs message
+/// quality and never correctness.
+fn rewrite_is_parsable(source: &str, rel_path: &str) -> Result<(), Dynamic> {
+    parse_module(source)
+        .map(|_| ())
+        .map_err(|err| Dynamic::new(Reason::ParseError, format!("{rel_path}: {err}")))
 }
 
 /// What one directory contributes to every file in it.
@@ -851,8 +873,9 @@ pub enum ChainRule {
     /// be read is a key that cannot be composed — and therefore a cached artefact that a
     /// later conftest edit would not invalidate.
     ///
-    /// The *file's* own gate is unchanged: `rewrite_plan` still requires `scan_module` to
-    /// accept it, so a file the detector refuses is still left alone.
+    /// The *file's* own gate followed at Phase 3 Task 2: `rewrite_plan` now requires only that
+    /// the file parse, for the same reason spelled out there — the collection rules decide
+    /// whether ids are predictable, and rewriting does not ask.
     Rewrite,
 }
 
@@ -4115,16 +4138,42 @@ mod tests {
             }
             let rel = relative_posix(path, rootdir);
             let reason = read_source(path)
-                .and_then(|source| scan_module(&source, &rel, &config, &shadows))
+                .and_then(|source| rewrite_is_parsable(&source, &rel))
                 .err()
                 .map(|dynamic| format!("{:?}", dynamic.reason))
-                .unwrap_or_else(|| "chain or stem collision".to_string());
+                .unwrap_or_else(|| "unreadable conftest chain".to_string());
             *reasons.entry(reason).or_default() += 1;
+        }
+
+        // The Tier S tally the reach used to be pinned to, printed alongside so the two
+        // numbers can be read against each other: they are now expected to *disagree*, and
+        // that disagreement is the whole content of the decoupling.
+        let mut collection_reasons: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        let mut collectible = 0usize;
+        for path in &targets {
+            let rel = relative_posix(path, rootdir);
+            match read_source(path).and_then(|source| scan_module(&source, &rel, &config, &shadows))
+            {
+                Ok(_) => collectible += 1,
+                Err(dynamic) => {
+                    *collection_reasons
+                        .entry(format!("{:?}", dynamic.reason))
+                        .or_default() += 1
+                }
+            }
         }
 
         let eligible = plan.iter().filter(|key| key.is_some()).count();
         println!("rewrite reach: {eligible}/{} files", targets.len());
         for (reason, count) in reasons {
+            println!("  refused {count:3} x {reason}");
+        }
+        println!(
+            "tier-S scan (no longer the rewrite gate): {collectible}/{} files",
+            targets.len()
+        );
+        for (reason, count) in collection_reasons {
             println!("  refused {count:3} x {reason}");
         }
     }
@@ -4147,34 +4196,79 @@ mod tests {
         }
     }
 
-    /// The plan's shape in one test: a statically analysable file gets a key, a file the
-    /// detector refuses gets `None`, and the vector stays indexed by target.
+    /// The plan's shape in one test: a parsable file gets a key, an unparsable one gets
+    /// `None`, and the vector stays indexed by target.
     ///
-    /// The refusal used is a module-level star import, which is the detector's most
-    /// clear-cut `Reason::StarImport`: it makes the module's namespace unknowable without
-    /// executing it, which is exactly the property the rewrite decision rides on.
+    /// The refusal used is a **syntax error**, because after the Phase 3 Task 2 decoupling
+    /// that is the only file-level refusal left. The companion test below pins the other half
+    /// — that a Tier D file is now rewritten — which is the change itself.
     #[test]
-    fn the_rewrite_plan_keys_static_files_and_skips_dynamic_ones() {
+    fn the_rewrite_plan_keys_parsable_files_and_skips_unparsable_ones() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let static_path = tmp.path().join("test_static.py");
-        let dynamic_path = tmp.path().join("test_dynamic.py");
-        std::fs::write(&static_path, "def test_one():\n    assert 1 == 1\n").unwrap();
-        std::fs::write(
-            &dynamic_path,
-            "from os.path import *\n\n\ndef test_two():\n    assert 1 == 1\n",
-        )
-        .unwrap();
-        let targets = vec![static_path, dynamic_path];
+        let good_path = tmp.path().join("test_good.py");
+        let broken_path = tmp.path().join("test_broken.py");
+        std::fs::write(&good_path, "def test_one():\n    assert 1 == 1\n").unwrap();
+        std::fs::write(&broken_path, "def test_two(:\n    assert 1 ==\n").unwrap();
+        let targets = vec![good_path, broken_path];
 
         let plan = rewrite_plan(&targets, tmp.path(), &config());
         assert_eq!(plan.len(), targets.len(), "the plan is indexed by target");
-        let key = plan[0].as_deref().expect("a static file is rewritable");
+        let key = plan[0].as_deref().expect("a parsable file is rewritable");
         assert_eq!(key.len(), 64, "the key is a 64-hex digest: {key}");
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
         assert!(
             plan[1].is_none(),
-            "a star-importing file must not be rewritten"
+            "a file the parser rejects must not be rewritten"
         );
+    }
+
+    /// **The decoupling, asserted as a disagreement.** Every shape below takes the file out of
+    /// Tier S — and none of them changes what an `assert` in a test body means, so every one
+    /// of them is now rewritten.
+    ///
+    /// Written as a table rather than as one case per reason because the *set* is the claim:
+    /// these are the four refusals that accounted for 27 of this repository's 55 test files
+    /// before the change (`rewrite_reach_over_this_repository`), and a future rule that
+    /// re-coupled them would have to delete a row here to pass.
+    #[test]
+    fn files_tier_s_refuses_are_still_rewritten() {
+        let cases: [(&str, &str); 5] = [
+            ("test_star.py", "from os.path import *\n\n\ndef test_a():\n    assert 1 == 1\n"),
+            (
+                "test_side_effect.py",
+                "import logging\n\nlogging.basicConfig()\n\n\ndef test_a():\n    assert 1 == 1\n",
+            ),
+            (
+                "test_conditional.py",
+                "import sys\n\nif sys.version_info >= (3, 12):\n\n    def test_a():\n        assert 1 == 1\n",
+            ),
+            (
+                "test_decorator.py",
+                "import functools\n\n\n@functools.cache\ndef helper():\n    return 1\n\n\ndef test_a():\n    assert 1 == 1\n",
+            ),
+            (
+                "test_unittest.py",
+                "import unittest\n\n\nclass TestThing(unittest.TestCase):\n    def test_a(self):\n        assert 1 == 1\n",
+            ),
+        ];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut targets = Vec::new();
+        for (name, source) in cases {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, source).unwrap();
+            targets.push(path);
+        }
+
+        let plan = rewrite_plan(&targets, tmp.path(), &config());
+        for (path, key) in targets.iter().zip(&plan) {
+            let rel = relative_posix(path, tmp.path());
+            let source = read_source(path).unwrap();
+            assert!(
+                scan_module(&source, &rel, &config(), &no_shadows()).is_err(),
+                "{rel} is supposed to be a Tier S refusal; the case has stopped testing anything"
+            );
+            assert!(key.is_some(), "{rel} must still be rewritten");
+        }
     }
 
     /// The key is **the manifest cache key**, not a second digest that happens to be
@@ -4223,12 +4317,18 @@ mod tests {
 
     /// Two files with the same **stem** are refused, matching `static_pass`'s own rule.
     ///
-    /// Not a copy of that rule for its own sake: same-stem files import under one module
-    /// name, so the second one is pytest's `import file mismatch` collection error, and a
-    /// rewrite keyed by path would have registered a hook for a file that is never imported
-    /// while the file that *is* imported goes unrewritten.
+    /// Same-stem files **do** get rewrite keys, and the keys differ.
+    ///
+    /// This inverts what the test asserted before Phase 3 Task 2, and the inversion is the
+    /// record of the argument: the stem-collision rule is a *collection* rule (two `test_dup.py`
+    /// files import under one module name, so the second is pytest's `import file mismatch`
+    /// collection error), and rewriting is keyed by absolute path all the way down —
+    /// `_assertion_rewrite.register` normcases the absolute path, and the artefact is named
+    /// from a digest of it. The file that does get imported is the one whose registration is
+    /// consulted; the other one's key is simply never looked up. Withholding both keys cost
+    /// the imported file its messages to protect nothing.
     #[test]
-    fn same_stem_files_get_no_rewrite_key() {
+    fn same_stem_files_each_get_their_own_rewrite_key() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("one")).unwrap();
         std::fs::create_dir_all(tmp.path().join("two")).unwrap();
@@ -4239,7 +4339,12 @@ mod tests {
         }
 
         let plan = rewrite_plan(&[first, second], tmp.path(), &config());
-        assert_eq!(plan, vec![None, None]);
+        assert!(plan[0].is_some() && plan[1].is_some());
+        assert_ne!(
+            plan[0], plan[1],
+            "the key carries the rootdir-relative path, so identical sources in two \
+             directories must not share a cached artefact"
+        );
     }
 
     /// A directory whose conftest chain is not statically safe contributes no keys — the

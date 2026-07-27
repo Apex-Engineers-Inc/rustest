@@ -140,7 +140,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
 import contextlib
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 import fnmatch
 import functools
@@ -160,6 +160,8 @@ import types
 from typing import TYPE_CHECKING, Any, Final, NoReturn, NotRequired, TextIO, TypedDict, cast
 import unittest
 import warnings
+
+from . import _v2_builtins as _builtins
 
 if TYPE_CHECKING:
     # Type-check-only, so the ~240 ms runtime import stays deferred (see the note above
@@ -1572,32 +1574,38 @@ def _asyncio_timeout(mark: MarkSpec | None) -> float | None:
     return float(raw)
 
 
-#: Builtin fixtures this worker provides, taken from v1 (``builtin_fixtures.py``).
-#: ``tmp_path_factory`` is here because ``tmp_path`` requests it.
-BUILTIN_FIXTURES: Final = ("tmp_path_factory", "tmp_path", "monkeypatch", "capsys")
+#: Builtin fixtures this worker provides — :mod:`rustest._v2_builtins`, which owns both the
+#: implementations and the order they are registered in.  Mirrored here because it is part of
+#: this module's public surface (the "supported builtins" list a lookup failure prints).
+BUILTIN_FIXTURES: Final = tuple(_builtins.V2_BUILTIN_FIXTURES)
 
 #: Fixtures real pytest provides that this worker does not yet.  Requesting one is an
 #: error with its own wording rather than pytest's ``not found``: "not found" would send
 #: an operator hunting for a missing ``@fixture`` that was never theirs to write.
+#:
+#: Phase 3 Task 2 emptied most of it — ``cache``, ``capfd``, ``caplog``, ``mocker``,
+#: ``pytestconfig``, ``tmpdir`` and ``tmpdir_factory`` all moved into
+#: :data:`BUILTIN_FIXTURES`.  What is left is genuinely unimplemented, and each entry is a
+#: distinct piece of machinery rather than a variation on one that exists:
+#:
+#: * the ``*binary`` capture pair and ``capteesys`` need a bytes-flavoured capture class and,
+#:   for ``capteesys``, a *tee* — output both captured and passed through;
+#: * ``recwarn`` needs a warnings channel, which the v2 wire does not have;
+#: * ``pytester``/``testdir`` are pytest's own in-process test harness;
+#: * ``record_property`` and friends write JUnit XML attributes, and there is no XML report;
+#: * ``doctest_namespace`` belongs to a doctest collector this engine does not have.
 UNSUPPORTED_BUILTIN_FIXTURES: Final = frozenset(
     {
-        "cache",
-        "capfd",
         "capfdbinary",
-        "caplog",
         "capsysbinary",
         "capteesys",
         "doctest_namespace",
-        "mocker",
-        "pytestconfig",
         "pytester",
         "record_property",
         "record_testsuite_property",
         "record_xml_attribute",
         "recwarn",
         "testdir",
-        "tmpdir",
-        "tmpdir_factory",
     }
 )
 
@@ -2011,10 +2019,31 @@ class _ItemNode:
         """A read-only stand-in for pytest's ``Node.keywords`` chain-map.
 
         Real ``keywords`` is a `NodeKeywords` that also carries the node's name and every
-        parent's; this carries the mark names and the node name, which is what a
-        ``"slow" in item.keywords`` check needs.
+        parent's; this carries the mark names, the node name and — as of Phase 3 Task 2 —
+        the names of the enclosing class and module, which is what completes the answer for
+        the check people actually write, ``"slow" in item.keywords``, when the mark is on the
+        class.  Marks already arrive with the class and module chain folded in
+        (:func:`_mark_specs`), so this only adds the *node names* pytest's chain-map carries.
+
+        Probed against pytest 8.4.2 for a ``@pytest.mark.slow class TestGroup`` in
+        ``test_kw.py``: pytest answers ``['', 'kw', 'TestGroup', 'slow', 'test_inside',
+        'test_kw.py']``.  The two this does not carry are the **session**'s name (``""``) and
+        the **directory** node's (``'kw'``), because both are tree nodes and there is no tree
+        — and neither is a name anything keys on: `-k` matches against these, and matching a
+        rootdir's own basename would select every test in the run.
         """
-        return {mark.name: True for mark in self.own_markers} | {self.name: True}
+        names: dict[str, object] = {mark.name: True for mark in self.own_markers}
+        names[self.name] = True
+        if self._plan.class_name is not None:
+            for part in self._plan.class_name.split("."):
+                names[part] = True
+        names[self.path.name] = True
+        return names
+
+    @property
+    def config(self) -> _builtins.Config:
+        """`Node.config` — the same object ``request.config`` and ``pytestconfig`` answer."""
+        return _builtins.current_config()
 
     def add_marker(self, marker: object, append: bool = True) -> None:
         """Port of `_pytest/nodes.py::Node.add_marker` (l. 265-287).
@@ -2054,10 +2083,17 @@ class _SubRequest:
 
     Deliberately smaller than pytest's ``SubRequest``: ``param``, ``scope``,
     ``fixturename``, ``addfinalizer``, ``getfixturevalue``, ``node``, ``applymarker``,
-    ``instance``, ``cls``, ``function``, ``module`` and ``path`` are what fixtures actually
-    use; ``config`` and ``session`` need objects the worker does not build.  ``param`` is
-    *absent* (not ``None``) on an unparametrized fixture, so ``request.param`` raises
-    ``AttributeError`` exactly as under pytest.
+    ``instance``, ``cls``, ``function``, ``module``, ``path``, ``keywords`` and ``config``
+    are what fixtures actually use; ``session`` needs a collection tree the worker does not
+    build.  ``param`` is *absent* (not ``None``) on an unparametrized fixture, so
+    ``request.param`` raises ``AttributeError`` exactly as under pytest.
+
+    ``config`` is a **subset** and loud past its edge — see
+    :class:`rustest._v2_builtins.Config`.  It answers ``rootpath``, ``inipath``,
+    ``invocation_params.dir``, ``cache`` and ``getini`` for the six ini values ``init``
+    carries; ``getoption`` without a default raises pytest's own ``no option named`` error,
+    because the v2 wire carries no command-line options and a fabricated answer would let a
+    suite report on a mode it never ran in.
     """
 
     def __init__(
@@ -2153,6 +2189,20 @@ class _SubRequest:
     @property
     def path(self) -> Path:
         return self.node.path
+
+    @property
+    def keywords(self) -> Mapping[str, object]:
+        """`FixtureRequest.keywords` (l. 208-211): ``self.node.keywords``."""
+        return self.node.keywords
+
+    @property
+    def config(self) -> _builtins.Config:
+        """`FixtureRequest.config` — see :class:`rustest._v2_builtins.Config` for the subset.
+
+        Unlike :attr:`node` this does **not** need a live test: it is whole-run state, so a
+        session fixture built before any test can read it.
+        """
+        return _builtins.current_config()
 
     def applymarker(self, marker: object) -> None:
         """Port of `FixtureRequest.applymarker` (l. 449-458): ``self.node.add_marker(marker)``.
@@ -3133,29 +3183,25 @@ def _conftest_baseid(conftest: Path, rootdir: Path) -> str:
 
 
 def _register_builtin_fixtures(registry: FixtureRegistry) -> None:
-    """Register the v1 builtins this worker supports, at total visibility.
+    """Register this worker's builtins, at total visibility.
 
-    Reused verbatim from ``python/rustest/builtin_fixtures.py`` — wrapped, never forked:
-    ``tmp_path_factory``/``tmp_path`` (l. 283-296, the ``TmpPathFactory`` yield pair),
-    ``monkeypatch`` (l. 312-318, ``MonkeyPatch`` with ``undo()`` in a ``finally``) and
-    ``capsys`` (l. 421-441, ``CaptureFixture`` swapping ``sys.stdout``/``sys.stderr``).
-    Each already carries ``__rustest_fixture__`` metadata, so the ordinary
-    :meth:`FixtureRegistry.parse_factories` path reads them; the module is imported lazily
-    so a unit test importing this worker does not pay for it.
+    The implementations live in :mod:`rustest._v2_builtins` and are ports of pytest's own
+    plugins — ``capsys``/``capfd`` of `_pytest/capture.py`, ``caplog`` of
+    `_pytest/logging.py`, ``cache`` of `_pytest/cacheprovider.py`, ``tmp_path``/``tmpdir`` of
+    `_pytest/tmpdir.py` + `_pytest/legacypath.py`, ``mocker`` of pytest-mock's plugin.  Each
+    carries ``__rustest_fixture__`` metadata, so the ordinary
+    :meth:`FixtureRegistry.parse_factories` path could read them; they are registered by name
+    instead so that :data:`BUILTIN_FIXTURES` is the single list, and a fixture added to the
+    module without being listed is simply not registered rather than silently shadowing a
+    user's.
 
     ``baseid=""`` is pytest's "always matches" marker for a plugin-provided fixture
     (`FixtureDef.__init__`: "For other plugins, the baseid is the empty string").
     Registered first, so any user fixture of the same name shadows it — which is what
     pytest's furthest-to-nearest ordering does for plugin fixtures too.
-
-    Note ``capsys`` here is v1's stream-swapping implementation, not pytest's fd-level
-    capture; the worker has already rebound ``sys.stdout`` to stderr, and the swap is
-    save/restore, so the two compose.  True fd capture is Phase 1c.
     """
-    from rustest import builtin_fixtures
-
     for name in BUILTIN_FIXTURES:
-        func = getattr(builtin_fixtures, name)
+        func = getattr(_builtins, name)
         registry.register(
             FixtureDef(
                 name=name,
@@ -4556,31 +4602,110 @@ def _unittest_class_fixture(cls: type) -> Callable[..., Iterator[None]] | None:
 # -- capture ----------------------------------------------------------------
 
 
-@dataclass
 class _Capture:
-    """Per-test ``stdout``/``stderr``, captured by rebinding the streams.
+    """Per-test ``stdout``/``stderr``, captured at the **file-descriptor** level.
 
-    Stream-level, not fd-level: a test that writes to ``sys.stdout`` or ``sys.stderr`` — or
-    calls ``print()`` — is captured, and one that writes to the *file descriptors* behind
-    them (a subprocess, a C extension) is not.  That is v1's ``capsys``, and matching it is
-    deliberate: the two compose (``capsys`` saves and restores whatever it finds, which here
-    is this buffer), and true fd-level capture is Phase 1c.
+    Phase 3 Task 2 replaced the stream-level redirect this used to be.  The old version was
+    v1's ``capsys`` semantics — a ``print()`` was captured and an ``os.write(1, ...)`` was
+    not — and the gap was not merely a missing feature: fd 1 *was the protocol channel*, so a
+    test writing to it emitted JSON-adjacent bytes into the orchestrator's parser.  That
+    hazard is closed twice over now.  :func:`_detach_protocol_stream` moves the protocol off
+    fd 1 before any test module is imported, and this class redirects fd 1 into a temporary
+    file for the duration of every test, so the write becomes **captured output attributed to
+    the test that made it**.
 
-    It also keeps the protocol safe.  ``main`` rebinds ``sys.stdout`` to stderr before any
-    test module is imported so that a stray ``print`` cannot corrupt the JSON-lines stream;
-    this redirects the same name again, one layer in, and the protocol stream is held in a
-    local that neither touches.
+    Structure is pytest's default capture mode, `--capture=fd`
+    (`_pytest/capture.py::CaptureManager.start_global_capturing` -> ``MultiCapture`` of
+    ``FDCapture``), reduced to out and err: fd 0 is the worker's request channel and nothing
+    here may touch it.  ``rustest._v2_builtins.FdCapture`` also redirects ``sys.stdout`` /
+    ``sys.stderr`` onto the same temporary file, which is what keeps a ``print()`` and a raw
+    fd write in the order they happened.
+
+    **One capture per worker, suspended between tests.**  The temporary files and the saved
+    fds are made once and reused (``snap()`` truncates), because creating two temporary files
+    per test would put a filesystem round trip on the per-test overhead this engine exists to
+    minimise.  Between tests the capture is *suspended* — the fds go back to the worker's own
+    stderr — which is what keeps boundary teardown output out of the next test's capture
+    (:func:`drain_boundaries`).
     """
 
-    stdout: io.StringIO = field(default_factory=io.StringIO)
-    stderr: io.StringIO = field(default_factory=io.StringIO)
+    def __init__(self) -> None:
+        super().__init__()
+        self._out: _builtins.FdCapture | None = None
+        self._err: _builtins.FdCapture | None = None
+
+    def _ensure(self) -> tuple[_builtins.FdCapture, _builtins.FdCapture]:
+        """Build the two fd captures on first use, started and immediately suspended.
+
+        Lazy rather than built at ``init`` so a worker that only ever collects — and every
+        unit test that imports this module — pays nothing and, more importantly, does not
+        have two live ``dup``s of its stdio for its whole life.
+        """
+        if self._out is None or self._err is None:
+            self._out = _builtins.FdCapture(1)
+            self._err = _builtins.FdCapture(2)
+            self._out.start()
+            self._err.start()
+            self._out.suspend()
+            self._err.suspend()
+        return self._out, self._err
+
+    @contextlib.contextmanager
+    def window(self) -> Iterator[None]:
+        """Capture everything written to fd 1 / fd 2 inside the block.
+
+        Under ``-s`` / ``--no-capture`` this is a no-op, so a test's ``print`` lands on
+        whatever ``sys.stdout`` is, which :func:`main` has already rebound to the worker's
+        **stderr**.  The orchestrator forwards that stderr verbatim through
+        ``RunReport::worker_stderr``.
+
+        So `-s` under v2 means "not captured, not attributed to a test, forwarded live-ordered
+        per worker" rather than pytest's "written straight to the terminal".  Documented
+        divergence; the alternative — an extra inherited fd per worker — is plumbing for a
+        flag whose whole purpose is `pdb`-style debugging, where `-n 1` is the sane setting
+        anyway.
+        """
+        if not capture_enabled():
+            yield
+            return
+        out, err = self._ensure()
+        out.resume()
+        err.resume()
+        try:
+            yield
+        finally:
+            out.suspend()
+            err.suspend()
+
+    @contextlib.contextmanager
+    def disabled(self) -> Iterator[None]:
+        """Suspend the capture for a block — ``capsys.disabled()``'s global half.
+
+        Guarded on :attr:`_builtins.FdCapture.started` rather than assuming the capture is
+        live, because ``suspend`` is idempotent and ``resume`` is not *conditional*: called
+        while the capture was already suspended — between tests, or under ``-s`` — the
+        ``finally`` would **start** it, leaving the next boundary drain captured and
+        attributed to whichever test ran next.  pytest's ``global_and_fixture_disabled``
+        makes the same check (l. 840-843, ``do_global = ... and is_started()``).
+        """
+        out, err = self._out, self._err
+        if out is None or err is None or not (out.started and err.started):
+            yield
+            return
+        out.suspend()
+        err.suspend()
+        try:
+            yield
+        finally:
+            out.resume()
+            err.resume()
 
     @property
     def broken(self) -> bool:
         """True once a test has closed one of the streams out from under the capture.
 
-        ``sys.stdout.close()`` in a test body closes **this buffer** — the redirect makes
-        them the same object — and every later ``getvalue()`` raises ``ValueError: I/O
+        ``sys.stdout.close()`` in a test body closes **the capture's temporary file** — the
+        redirect makes them the same object — and every later read raises ``ValueError: I/O
         operation on closed file``.  Left unguarded that exception escapes
         :func:`execute_test`, kills the worker with exit 1 mid-stream, and leaves every
         queued test unanswered; worse, exit 1 is indistinguishable from an uncaught
@@ -4593,18 +4718,41 @@ class _Capture:
         teardown.  :func:`_run_phases` reproduces that pair by consulting this flag after
         each phase.
         """
-        return self.stdout.closed or self.stderr.closed
+        return any(capture is not None and capture.broken for capture in (self._out, self._err))
 
-    def drain(self, stream: io.StringIO) -> str:
-        """One stream's contents, or a marker if the test closed it.
+    def drain(self) -> tuple[str, str]:
+        """This test's ``(stdout, stderr)``, or markers if the test closed one of them.
 
         Never raises: this runs after the phases are over, so an exception here would
-        destroy a result that has already been computed.
+        destroy a result that has already been computed.  A capture the test broke is torn
+        down and forgotten, so the **next** test gets a working one — strictly kinder than
+        pytest, whose global capture stays broken, and invisible to the test that broke it.
         """
+        if self._out is None or self._err is None:
+            return "", ""
         try:
-            return stream.getvalue()
+            out = self._out.snap()
         except ValueError:
-            return CAPTURE_CLOSED_MESSAGE
+            out = CAPTURE_CLOSED_MESSAGE
+        try:
+            err = self._err.snap()
+        except ValueError:
+            err = CAPTURE_CLOSED_MESSAGE
+        if self.broken:
+            self.close()
+        return out, err
+
+    def close(self) -> None:
+        """Restore the real fds and drop the temporary files. Never raises."""
+        for capture in (self._out, self._err):
+            if capture is None:
+                continue
+            try:
+                capture.done()
+            except (OSError, ValueError):  # pragma: no cover - best effort at teardown
+                pass
+        self._out = None
+        self._err = None
 
 
 #: What a test that closed its own stream gets instead of captured output — and, when the
@@ -4630,27 +4778,41 @@ def capture_enabled() -> bool:
     return os.environ.get(CAPTURE_ENV, "").lower() not in ("no", "0", "false")
 
 
-@contextlib.contextmanager
-def _capture_window(capture: _Capture) -> Iterator[None]:
-    """Redirect the test's streams into *capture* — unless ``-s`` turned capture off.
+#: The worker's one capture, created on first use by :func:`_worker_capture`.
+#:
+#: Worker-lived rather than per test for the reason :class:`_Capture` gives: two temporary
+#: files and four ``dup``s per test would be a filesystem round trip on the per-test overhead
+#: budget.  Reset to ``None`` only when a test breaks it.
+_capture: _Capture | None = None
 
-    Under ``-s`` this is a no-op, so a test's ``print`` lands on whatever ``sys.stdout`` is,
-    which :func:`main` has already rebound to the worker's **stderr**: the worker's real
-    stdout is the protocol channel and a stray `print` there would corrupt the JSON-lines
-    framing.  The orchestrator forwards that stderr verbatim through
-    ``RunReport::worker_stderr``.
 
-    So `-s` under v2 means "not captured, not attributed to a test, forwarded live-ordered
-    per worker" rather than pytest's "written straight to the terminal".  Documented
-    divergence; the alternative — an extra inherited fd per worker — is Phase 2 plumbing for
-    a flag whose whole purpose is `pdb`-style debugging, where `-n 1` is the sane setting
-    anyway.
+def _worker_capture() -> _Capture:
+    global _capture
+    if _capture is None:
+        _capture = _Capture()
+        _builtins.set_global_capture_control(_capture.disabled)
+    return _capture
+
+
+def reset_capture() -> None:
+    """Tear the worker's capture down, so the next test rebuilds it. **For in-process drivers.**
+
+    A real worker never calls this: ``sys.stdout``/``sys.stderr`` are rebound once in
+    :func:`main` and stay put, so one capture is correct for the process's whole life and
+    :class:`_Capture` caches the streams it must restore accordingly.
+
+    Anything that drives :func:`execute_test` *inside another test runner* breaks that
+    assumption, because that runner swaps ``sys.stderr`` per test — a ``capsys`` fixture in
+    this repo's own suite does exactly that.  A capture built during test A would then
+    restore test A's stream at the end of test B, and B's output would surface under A's
+    capture: measured, as a shutdown-drain message landing in pytest's global capture instead
+    of in the ``capsys`` that was asserting on it.
     """
-    if not capture_enabled():
-        yield
-        return
-    with redirect_stdout(capture.stdout), redirect_stderr(capture.stderr):
-        yield
+    global _capture
+    capture, _capture = _capture, None
+    if capture is not None:
+        capture.close()
+    _builtins.set_global_capture_control(None)
 
 
 # -- the execute op ---------------------------------------------------------
@@ -4772,6 +4934,29 @@ def drain_boundaries(plan: ExecutionPlan, runner: FixtureRunner) -> BaseExceptio
     return None
 
 
+def _log_capture_for(plan: ExecutionPlan) -> _builtins.LogCapture | None:
+    """The logging capture this test needs, or ``None``.
+
+    pytest installs its capture handler for **every** item (`_pytest/logging.py::
+    LoggingPlugin.pytest_runtest_setup`), because the same handler also feeds the
+    ``add_report_section(when, "log", ...)`` block the terminal prints under a failure.  The
+    v2 wire has no report sections, so the only reader is the ``caplog`` fixture and the
+    handler is installed only when a test's **closure** contains it.
+
+    The closure rather than the signature: an autouse fixture, a ``usefixtures`` mark or a
+    fixture-of-a-fixture can pull ``caplog`` in without the test naming it, and all three are
+    tests whose records pytest would capture.
+
+    Installing it here — before the setup phase — rather than from the fixture body is the
+    point of the whole function: a *fixture* that logs during setup is in
+    ``caplog.get_records("setup")`` under pytest, and a handler added when the fixture body
+    ran would have missed every record logged before it.
+    """
+    if "caplog" not in plan.closure.names:
+        return None
+    return _builtins.LogCapture()
+
+
 def _run_phases(
     plan: ExecutionPlan,
     runner: FixtureRunner,
@@ -4802,6 +4987,41 @@ def _run_phases(
     (:attr:`_Capture.broken`).  A phase that otherwise passed becomes a failure, which is
     what reproduces pytest's probed ``FAILED`` (call) + ``ERROR`` (teardown) pair for
     ``sys.stdout.close()`` — see :attr:`_Capture.broken`.
+
+    Each phase also runs inside its **own** logging window when the test asks for ``caplog``
+    (:func:`_log_capture_for`), which is pytest's ``_runtest_for(item, when)``: the handler is
+    reset per phase, so ``caplog.records`` inside the body holds the call phase's records only
+    and a teardown fixture does not see the body's.
+    """
+    log_capture = _log_capture_for(plan)
+    _builtins.set_log_capture(log_capture)
+
+    @contextlib.contextmanager
+    def phase(when: str) -> Iterator[None]:
+        if log_capture is None:
+            yield
+            return
+        with log_capture.phase(when):
+            yield
+
+    try:
+        return _phases(plan, runner, capture, boundary_exc, phase)
+    finally:
+        _builtins.set_log_capture(None)
+
+
+def _phases(
+    plan: ExecutionPlan,
+    runner: FixtureRunner,
+    capture: _Capture,
+    boundary_exc: BaseException | None,
+    phase: Callable[[str], AbstractContextManager[None]],
+) -> list[PhaseReport]:
+    """:func:`_run_phases`' body, with the logging window as an argument.
+
+    Split out so the ``caplog`` plumbing is set up and torn down in exactly one place: a
+    ``return`` from inside the ``try`` above would otherwise have to remember to clear the
+    module-level slot on every path.
     """
     namespace = _condition_namespace(plan)
     xfailed: Xfail | None = None
@@ -4809,13 +5029,14 @@ def _run_phases(
     kwargs: Mapping[str, object] = {}
     if setup_exc is None:
         try:
-            skipped = evaluate_skip_marks(plan.marks, namespace)
-            if skipped is not None:
-                raise _Skipped(skipped.reason)
-            xfailed = evaluate_xfail_marks(plan.marks, namespace)
-            if xfailed is not None and not xfailed.run:
-                raise _XFailed("[NOTRUN] " + xfailed.reason)
-            kwargs = runner.setup(plan)
+            with phase("setup"):
+                skipped = evaluate_skip_marks(plan.marks, namespace)
+                if skipped is not None:
+                    raise _Skipped(skipped.reason)
+                xfailed = evaluate_xfail_marks(plan.marks, namespace)
+                if xfailed is not None and not xfailed.run:
+                    raise _XFailed("[NOTRUN] " + xfailed.reason)
+                kwargs = runner.setup(plan)
         except ABORT_EXCEPTIONS:
             raise
         except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
@@ -4826,7 +5047,8 @@ def _run_phases(
     if reports[0].outcome == "passed":
         call_exc: BaseException | None = None
         try:
-            _run_call(plan, runner, kwargs)
+            with phase("call"):
+                _run_call(plan, runner, kwargs)
         except ABORT_EXCEPTIONS:
             raise
         except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
@@ -4835,7 +5057,8 @@ def _run_phases(
 
     teardown_exc: BaseException | None = None
     try:
-        runner.teardown("function")
+        with phase("teardown"):
+            runner.teardown("function")
     except ABORT_EXCEPTIONS:
         raise
     except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
@@ -4873,7 +5096,7 @@ def execute_test(test_id: str) -> ResultResponse:
 
     Nothing in here may raise on behalf of a *test*: a result that has been computed must
     reach the wire, or the worker dies mid-stream and every queued test goes unanswered.
-    That is why the two capture reads go through :meth:`_Capture.drain`.
+    That is why the capture read goes through :meth:`_Capture.drain`.
     """
     try:
         plan = execution_plan(test_id)
@@ -4883,9 +5106,9 @@ def execute_test(test_id: str) -> ResultResponse:
     runner = _execution_runner()
     boundary_exc = drain_boundaries(plan, runner)
 
-    capture = _Capture()
+    capture = _worker_capture()
     started = time.perf_counter()
-    with _capture_window(capture):
+    with capture.window():
         reports = _run_phases(plan, runner, capture, boundary_exc)
     duration = time.perf_counter() - started
 
@@ -4898,10 +5121,9 @@ def execute_test(test_id: str) -> ResultResponse:
     }
     if report.message:
         result["message"] = report.message
-    captured_out = capture.drain(capture.stdout)
+    captured_out, captured_err = capture.drain()
     if captured_out:
         result["stdout"] = captured_out
-    captured_err = capture.drain(capture.stderr)
     if captured_err:
         result["stderr"] = captured_err
     return result
@@ -4922,6 +5144,11 @@ class WorkerState:
     #: repo that builds a state by hand keeps working and states, by omission, that it is
     #: not exercising the mode.
     asyncio: AsyncioConfig = _DEFAULT_ASYNCIO
+    #: ``Config.invocation_params.dir`` — the directory the run was started from, which is
+    #: **not** rootdir whenever a run is started below its config file.  Read by
+    #: ``request.config.invocation_params.dir``; defaulted to rootdir for the hand-built
+    #: states in this repo's own tests, which never exercise the distinction.
+    invocation_dir: Path | None = None
 
 
 _state: WorkerState | None = None
@@ -5001,13 +5228,15 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     handshake agree with any orchestrator and detect no skew at all.  Deciding what
     to do about a mismatch is the orchestrator's job (``src/v2/protocol.rs``).
 
-    v2's ``invocation_dir`` is accepted and **not yet stored**: nothing in the collection
-    half is invocation-relative (paths arrive absolute, nodeids are rootdir-relative), and
-    :class:`WorkerState` should gain the field in the task that first needs it rather than
-    carry an unread value that could silently go stale.
+    ``invocation_dir`` **is** stored as of Phase 3 Task 2: ``request.config`` answers with it
+    through ``Config.invocation_params.dir``, which is the value pytest itself resolves a
+    test's relative paths against.  Nothing in the collection half uses it (paths arrive
+    absolute, nodeids are rootdir-relative).
     """
     global _state
     rootdir = Path(str(message["rootdir"]))
+    raw_invocation_dir = message.get("invocation_dir")
+    invocation_dir = rootdir if raw_invocation_dir is None else Path(str(raw_invocation_dir))
 
     # The assertion-rewriting hook goes on `sys.meta_path` here rather than in `main`,
     # because its bytecode cache lives under the *rootdir* and `init` is the first moment
@@ -5018,18 +5247,44 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
 
     _ = _assertion_rewrite.install_hook(str(rootdir / ".rustest_cache" / "v2-assert"))
 
+    naming = Naming(
+        python_files=_pattern_tuple(message.get("python_files"), DEFAULT_PYTHON_FILES),
+        python_classes=_pattern_tuple(message.get("python_classes"), DEFAULT_PYTHON_CLASSES),
+        python_functions=_pattern_tuple(message.get("python_functions"), DEFAULT_PYTHON_FUNCTIONS),
+    )
+    asyncio_config = _asyncio_config_from_init(message)
     _state = WorkerState(
         rootdir=rootdir,
-        naming=Naming(
-            python_files=_pattern_tuple(message.get("python_files"), DEFAULT_PYTHON_FILES),
-            python_classes=_pattern_tuple(message.get("python_classes"), DEFAULT_PYTHON_CLASSES),
-            python_functions=_pattern_tuple(
-                message.get("python_functions"), DEFAULT_PYTHON_FUNCTIONS
-            ),
-        ),
-        asyncio=_asyncio_config_from_init(message),
+        naming=naming,
+        asyncio=asyncio_config,
+        invocation_dir=invocation_dir,
     )
+    _builtins.configure(rootdir, invocation_dir, _ini_values(naming, asyncio_config))
     return {"op": "ready", "protocol_version": PROTOCOL_VERSION}
+
+
+def _ini_values(naming: Naming, asyncio_config: AsyncioConfig) -> dict[str, object]:
+    """The ini values ``request.config.getini`` can answer — exactly what ``init`` carries.
+
+    Six names, and the list is deliberately not padded.  ``markers``, ``xfail_strict``,
+    ``filterwarnings`` and the rest are real pytest inis whose values this worker does not
+    have; :class:`rustest._v2_builtins.Config` refuses them by name rather than returning a
+    plausible default, because a suite branching on a fabricated ``getini`` result reports a
+    green run about a mode it never ran in.
+
+    ``asyncio_default_fixture_loop_scope`` is included **even when it is ``None``**, since
+    ``None`` is the option's real third state (see :meth:`FixtureRunner.fixture_loop_scope`)
+    and pytest-asyncio's own ``getini`` answers ``""`` for it — a caller has to be able to
+    tell "unset" from "not carried".
+    """
+    return {
+        "python_files": list(naming.python_files),
+        "python_classes": list(naming.python_classes),
+        "python_functions": list(naming.python_functions),
+        "asyncio_mode": asyncio_config.mode,
+        "asyncio_default_fixture_loop_scope": asyncio_config.default_fixture_loop_scope,
+        "asyncio_default_test_loop_scope": asyncio_config.default_test_loop_scope,
+    }
 
 
 def drain_at_shutdown() -> BaseException | None:
@@ -5230,14 +5485,48 @@ def _reconfigure(stream: object) -> None:
         stream.reconfigure(encoding="utf-8", newline="\n")
 
 
+def _detach_protocol_stream(stream: TextIO) -> TextIO:
+    """Move the protocol channel off **fd 1**, and point fd 1 at the worker's stderr.
+
+    This is the structural half of closing the raw-fd-write hazard, and it has to happen
+    before anything else can write.  Until Phase 3 Task 2 the protocol was ``sys.stdout``
+    itself: rebinding the *name* stopped a stray ``print``, and stopped nothing else.  A test
+    doing ``os.write(1, b"...")`` — or a C extension, or a subprocess inheriting the fd —
+    wrote straight into the JSON-lines stream the orchestrator was parsing.
+
+    Both halves are needed:
+
+    * ``os.dup`` gives the protocol a **private** descriptor, so :class:`_Capture`'s
+      ``dup2`` onto fd 1 cannot redirect the protocol into a test's capture file;
+    * ``os.dup2(stderr, 1)`` makes fd 1 harmless *outside* a capture window too — during
+      collection, between tests, and under ``-s``.  Without it the window would be the only
+      protection and an import-time ``os.write(1, ...)`` would still corrupt the stream.
+
+    Returns the original *stream* unchanged when it has no file descriptor at all — a
+    ``StringIO`` under a unit test, a pipe replacement under an embedded run.  Detaching is an
+    optimisation for those callers and a correctness property only for a real worker, so a
+    failure to do it is not worth refusing to start over.
+    """
+    try:
+        fd = stream.fileno()
+        err_fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):  # pragma: no cover - not a real worker
+        return stream
+    stream.flush()
+    private = os.dup(fd)
+    _ = os.dup2(err_fd, fd)
+    detached = cast(TextIO, os.fdopen(private, "w", encoding="utf-8", newline="\n"))
+    return detached
+
+
 def main() -> int:
     """Run the protocol loop: read a request per line, write a response per line.
 
-    stdout is reserved for protocol traffic, so ``sys.stdout`` is rebound to stderr
-    **before any test module is imported** — a module that prints at import time then
-    writes to stderr instead of corrupting the stream.  (A module writing straight to
-    ``sys.__stdout__`` still would; nothing short of an fd-level dup can stop that,
-    and that is Task 3's option if it ever matters.)
+    stdout is reserved for protocol traffic, and as of Phase 3 Task 2 it is reserved at the
+    **descriptor** level: :func:`_detach_protocol_stream` dups the real stdout onto a private
+    fd and repoints fd 1 at stderr, so neither a stray ``print`` nor a raw ``os.write(1, …)``
+    can reach the JSON-lines stream.  ``sys.stdout`` is rebound to stderr on top of that,
+    before any test module is imported, so import-time output is forwarded rather than lost.
 
     **Exit codes**, and they are three distinct diagnoses:
 
@@ -5264,9 +5553,9 @@ def main() -> int:
     """
     install_pytest_shim()
 
-    protocol_out = sys.stdout
-    _reconfigure(protocol_out)
+    _reconfigure(sys.stdout)
     _reconfigure(sys.stdin)
+    protocol_out = _detach_protocol_stream(sys.stdout)
     sys.stdout = sys.stderr
 
     def emit(response: Mapping[str, object]) -> None:
@@ -5289,15 +5578,29 @@ def main() -> int:
         _ = protocol_out.write(encode_response(response) + "\n")
 
     try:
-        return _protocol_loop(emit, emit_buffered, protocol_out.flush)
-    except _Exit as exc:
-        # `pytest.exit()`.  The banner is pytest's own wording
-        # (`_pytest/main.py::wrap_session`: `sys.stderr.write(f"{type(exc).__name__}: {exc}")`),
-        # and the orchestrator forwards this worker's stderr, so the user sees the reason they
-        # wrote.  No `test_result` is emitted for the test that called it — the run did not
-        # finish, and a fabricated outcome is exactly the false green this replaces.
-        print(f"Exit: {exc}", file=sys.stderr)
-        return SESSION_EXIT_EXIT
+        try:
+            return _protocol_loop(emit, emit_buffered, protocol_out.flush)
+        except _Exit as exc:
+            # `pytest.exit()`.  The banner is pytest's own wording
+            # (`_pytest/main.py::wrap_session`:
+            # `sys.stderr.write(f"{type(exc).__name__}: {exc}")`), and the orchestrator forwards
+            # this worker's stderr, so the user sees the reason they wrote.  No `test_result` is
+            # emitted for the test that called it — the run did not finish, and a fabricated
+            # outcome is exactly the false green this replaces.
+            print(f"Exit: {exc}", file=sys.stderr)
+            return SESSION_EXIT_EXIT
+    finally:
+        # **Every** exit path flushes, including the two that leave through an exception:
+        # `pytest.exit()` above and a `KeyboardInterrupt` that propagates out of `main`.  A
+        # batch writes its results with `emit_buffered`, so an abort mid-batch can be holding
+        # results the orchestrator has *earned* — tests that ran and reported — in an 8 KB
+        # buffer.  Until Phase 3 Task 2 this was covered by accident: `protocol_out` was
+        # `sys.stdout`, which CPython flushes during interpreter shutdown.  Moving the protocol
+        # to a private descriptor (:func:`_detach_protocol_stream`) took that accident away and
+        # the loss was immediate and silent — probed: a file whose first test fails and whose
+        # second calls `pytest.exit()` reported `no tests ran` instead of `1 failed`.
+        with contextlib.suppress(ValueError, OSError):
+            protocol_out.flush()
 
 
 def _protocol_loop(

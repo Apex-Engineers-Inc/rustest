@@ -246,7 +246,10 @@ def test_last_failed_reruns_only_the_failures_and_deselects_the_rest(tmp_path: P
 
     first = _rustest(tree, [])
     assert first.returncode == 1, first.stderr
-    assert (tree / ".rustest_cache" / "v2" / "lastfailed").is_file(), "no cache was written"
+    # Hoisted out of the assert so that both the repo's ruff and pre-commit's pinned one
+    # format this identically -- they disagree about multi-line assert messages.
+    lastfailed = tree / ".rustest_cache" / "v2" / "v" / "cache" / "lastfailed"
+    assert lastfailed.is_file(), "no cache was written"
 
     second = _rustest(tree, ["--lf"])
 
@@ -277,19 +280,47 @@ def test_the_v2_cache_is_not_v1s(tmp_path: Path) -> None:
     """Separate files, because the two engines' node ids are different strings.
 
     v1 writes ``.rustest_cache/lastfailed`` keyed on native-separator display names; v2
-    writes ``.rustest_cache/v2/lastfailed`` keyed on rootdir-relative posix ids.  One shared
+    writes ``.rustest_cache/v2/v/cache/lastfailed`` keyed on rootdir-relative posix ids --
+    pytest's own ``<cachedir>/v/<key>`` value layout, so the ``cache`` fixture reaches the
+    same file through ``cache.get("cache/lastfailed", {})``.  One shared
     file would mean every ``--lf`` after an engine switch matched nothing — silently, and
     worst on Windows.
     """
     tree = _tree(tmp_path, "cachesplit", {"test_x.py": FOUR_WITH_FAILURES})
 
     _ = _rustest(tree, [])
-    v2_cache = tree / ".rustest_cache" / "v2" / "lastfailed"
+    v2_cache = tree / ".rustest_cache" / "v2" / "v" / "cache" / "lastfailed"
     assert v2_cache.is_file()
     assert not (tree / ".rustest_cache" / "lastfailed").exists()
 
     entries: dict[str, bool] = json.loads(v2_cache.read_text(encoding="utf-8"))
     assert entries == {"test_x.py::test_b": True, "test_x.py::test_c": True}
+
+
+def test_the_cache_fixture_reads_the_last_failed_set(tmp_path: Path) -> None:
+    """``cache.get("cache/lastfailed", {})`` answers with what ``--lf`` just wrote.
+
+    This is the whole reason the last-failed file moved into pytest's ``v/<key>`` value
+    layout at Phase 3 Task 2 (``src/v2/cache.rs``): under pytest the last-failed set is not a
+    private file, it is an ordinary cache value, and ``config.cache`` is the documented way to
+    read it. Asserted **through the fixture**, in a second run, so it exercises the path
+    composition on both sides rather than a constant copied into two places — a rename on
+    either side breaks this and nothing else would.
+    """
+    tree = _tree(tmp_path, "cachefixture", {"test_x.py": FOUR_WITH_FAILURES})
+    first = _rustest(tree, [])
+    assert first.returncode == 1, first.stderr
+
+    reader = tree / "test_reader.py"
+    _ = reader.write_text(
+        "def test_reads_the_lf_set(cache):\n"
+        '    entries = cache.get("cache/lastfailed", None)\n'
+        '    assert entries == {"test_x.py::test_b": True, "test_x.py::test_c": True}, entries\n',
+        encoding="utf-8",
+    )
+
+    second = _rustest(tree, ["-n", "1", str(reader)])
+    assert second.returncode == 0, second.stderr + second.stdout
 
 
 def test_last_failed_with_an_empty_cache_runs_everything(tmp_path: Path) -> None:

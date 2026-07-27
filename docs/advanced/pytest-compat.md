@@ -56,28 +56,55 @@ territory: what works, what does not yet, and what the gap costs you.
 
 ### Built-in fixtures
 
-The default engine provides **`tmp_path`, `tmp_path_factory`, `monkeypatch`, `capsys`** and
+The default engine provides **`tmp_path`, `tmp_path_factory`, `tmpdir`, `tmpdir_factory`,
+`monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `mocker`, `pytestconfig`** and
 `request`.
 
-Every other pytest built-in is **not implemented yet**, and requesting one is a loud error
-that names it rather than pytest's generic `fixture 'x' not found` — because "not found"
-would send you hunting for a missing `@fixture` that was never yours to write:
+`capfd` captures at the **file-descriptor** level, as pytest's does — a `subprocess`, a C
+extension or a bare `os.write(1, ...)` is captured, not just a `print()`. As under pytest,
+`capsys` and `capfd` cannot both be requested by one test (`cannot use capfd and capsys at
+the same time`).
+
+`caplog` installs its handler on the root logger and, like pytest's, **changes no level**:
+the root logger keeps its default `WARNING`, so `logging.info(...)` is not captured until
+you call `caplog.set_level(logging.INFO)`. A logger with `propagate = False` is not captured
+— under pytest either.
+
+`cache` is pytest's `config.cache` API over `.rustest_cache/v2`, sharing the store `--lf`
+writes: `cache.get("cache/lastfailed", {})` answers with the last run's failures.
+
+The remaining pytest built-ins are **not implemented yet**, and requesting one is a loud
+error that names it rather than pytest's generic `fixture 'x' not found` — because "not
+found" would send you hunting for a missing `@fixture` that was never yours to write:
 
 ```text
-FixtureLookupError: fixture 'tmpdir' is not supported by the rustest v2 worker yet
-(supported builtins: tmp_path_factory, tmp_path, monkeypatch, capsys)
+FixtureLookupError: fixture 'recwarn' is not supported by the rustest v2 worker yet
+(supported builtins: tmp_path_factory, tmp_path, tmpdir_factory, tmpdir, monkeypatch,
+capsys, capfd, caplog, cache, mocker, pytestconfig)
 ```
 
-The full not-yet list: `cache`, `capfd`, `capfdbinary`, `caplog`, `capsysbinary`,
-`capteesys`, `doctest_namespace`, `mocker`, `pytestconfig`, `pytester`, `record_property`,
-`record_testsuite_property`, `record_xml_attribute`, `recwarn`, `testdir`, `tmpdir`,
-`tmpdir_factory`. Each is a self-contained port and none is blocked on anything.
+The full not-yet list: `capfdbinary`, `capsysbinary`, `capteesys`, `doctest_namespace`,
+`pytester`, `record_property`, `record_testsuite_property`, `record_xml_attribute`,
+`recwarn`, `testdir`. The `*binary` capture pair and `capteesys` need a bytes-flavoured
+capture class; `recwarn` needs a warnings channel; `record_*` need an XML report;
+`pytester`/`testdir` are pytest's own in-process harness.
 
 ### The `request` object
 
 `request.param`, `request.scope`, `request.fixturename`, `request.node`,
 `request.addfinalizer()`, `request.getfixturevalue()`, `request.applymarker()`,
-`request.instance`, `request.cls`, `request.function`, `request.module`, `request.path`.
+`request.instance`, `request.cls`, `request.function`, `request.module`, `request.path`,
+`request.keywords`, `request.config`.
+
+`request.config` is a **subset** and loud past its edge: `rootpath`, `inipath` (always
+`None`), `invocation_params.dir`, `cache`, and `getini` for the six values the run carries
+(`python_files`, `python_classes`, `python_functions`, `asyncio_mode`,
+`asyncio_default_fixture_loop_scope`, `asyncio_default_test_loop_scope`). Any other ini name
+raises, and the two refusals are worded apart — a real pytest ini this engine does not carry
+says so, an unrecognised name gets pytest's `unknown configuration value`. `getoption(name,
+default)` returns the default; without one it raises `no option named 'x'`, because no
+command-line option travels to the worker and a fabricated answer would let a suite report
+on a mode it never ran in.
 
 ```python
 import pytest
@@ -219,14 +246,15 @@ not a faster runner.
 ### `fixture 'X' is not supported by the rustest v2 worker yet`
 
 Exactly what it says — `X` is a pytest built-in that has not been ported. Check the
-[not-yet list](#built-in-fixtures). `tmpdir` → use `tmp_path`; `caplog` → assert on your
-own handler for now; `mocker` → use `unittest.mock` directly.
+[not-yet list](#built-in-fixtures). `capsysbinary`/`capfdbinary` → read `capsys`/`capfd` and
+encode; `recwarn` → use `pytest.warns()`.
 
-### `AttributeError: '_SubRequest' object has no attribute 'config'`
+### `ValueError: the ini value 'markers' is not available to a rustest v2 worker`
 
-`request.config` is not implemented. Read configuration from the environment or a module
-constant. See [the `request` object](#the-request-object) for why this raises rather than
-returning a stub.
+`request.config.getini` answers only for the values the run carries to the worker; see
+[the `request` object](#the-request-object). The wording is deliberately different from
+pytest's `unknown configuration value`, which you get for a name that is not an ini at all —
+this one is a real pytest option that this engine does not send, not a typo.
 
 ### `ModuleNotFoundError: No module named 'mypackage'` in a `src/` layout
 

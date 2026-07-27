@@ -15,6 +15,8 @@
 # Scoreboard at 1b.2: 23 cases -- 23 match, 0 waived, 0 stale-waivers, 0 diverged.
 # Scoreboard at 1c.2: 27 cases -- 26 match, 1 waived, 0 stale-waivers, 0 diverged.
 # Scoreboard at P3.1: 32 cases -- 31 match, 1 waived, 0 stale-waivers, 0 diverged.
+# Scoreboard at P3.2: 34 cases -- 33 match, 1 waived, 0 stale-waivers, 0 diverged.
+#   The two Phase 3 Task 2 additions (conformance/corpus/builtins/*) both MATCH.
 #   All five Phase 3 Task 1 async additions MATCH here. asyncio_mode reaches collection
 #   (it decides whether an async generator test acquires a synthesised xfail mark), but
 #   no async shape changes which node ids exist -- which is why the mode divergence shows

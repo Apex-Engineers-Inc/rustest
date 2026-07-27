@@ -308,7 +308,7 @@ def test_corpus_case_count_is_pinned() -> None:
     weaken the gate while every summary still read green. Pinning the count makes that
     a test failure. Bump this number in the same commit that adds or removes a case.
     """
-    assert len(discover_cases()) == 32
+    assert len(discover_cases()) == 34
 
 
 def test_every_ledger_key_names_a_real_case() -> None:
