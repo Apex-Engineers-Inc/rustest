@@ -96,7 +96,10 @@ flag and the compat banner are removed.
   real pytest project with `[tool.pytest.ini_options]` addopts, asyncio_mode=auto,
   session-scoped loops, conftest + fixture trees — prime asyncio-absorption target).
   Gate: corpus extended to those areas, green; validation suites run under v2.
-- **Cleanup.** Delete v1 runner; docs flip; release.
+- **Cleanup.** Delete v1 runner; README/messaging rewrite (deferred here by user directive
+  2026-07-26 — no intermediate releases, no version bumps, publish.yml untouched until v2
+  is entirely finished); docs migration zensical → great-docs
+  (https://posit-dev.github.io/great-docs/, user directive 2026-07-26); release.
 
 ## Non-goals (unchanged from v1, now explicit)
 
