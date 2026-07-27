@@ -57,9 +57,11 @@ Compiling is the expensive half — for the 5 000-test benchmark suite, parsing 
 500 rewritten modules costs an order of magnitude more than reading 500 ``.pyc``s — so the
 compiled code object is cached at::
 
-    <rootdir>/.rustest_cache/v2-assert/<key>.pyc
+    <rootdir>/.rustest_cache/v2-assert/<path-tag>-<key>.pyc
 
-where ``<key>`` is **the Task 2 manifest cache key for that file**, handed down by the
+where ``<path-tag>`` is a short digest of the source path — it makes the store bounded by
+the tree's *contents* rather than by its history, see :func:`_cache_path` — and ``<key>`` is
+**the Task 2 manifest cache key for that file**, handed down by the
 orchestrator on the ``collect_file`` request (``src/v2/protocol.rs``). Reusing that key is
 the point: it already covers the file's bytes, the resolved config, the conftest chain, the
 stdlib shadow set and the rustest build, so every invalidation the manifest cache gets, the
@@ -80,7 +82,7 @@ errors. A cache that can fail a run is worse than no cache.
 from __future__ import annotations
 
 import ast
-import errno
+import hashlib
 import importlib.machinery
 import importlib.util
 import itertools
@@ -257,10 +259,10 @@ class RewriteHook(MetaPathFinder, Loader):
         key = registered_key(fn)
         assert key is not None, "find_spec only claims registered paths"
 
-        code = _read_cached(key)
+        code = _read_cached(fn, key)
         if code is None:
             code = _compile_rewritten(fn)
-            _write_cached(key, code)
+            _ = _write_cached(fn, key, code)
         exec(code, module.__dict__)
 
     def get_data(self, pathname: str | bytes) -> bytes:
@@ -294,10 +296,31 @@ def install_hook(cache_dir: str | None) -> RewriteHook:
 # ---------------------------------------------------------------------------
 
 
-def _cache_path(key: str) -> str | None:
+def _path_tag(fn: str) -> str:
+    """A short, stable digest of *fn*, used to group one file's artefacts together.
+
+    Not a security property and not a cache key — the key is the filename's second half. This
+    exists only so :func:`_write_cached` can find and remove the artefacts a file's *previous*
+    contents left behind.
+    """
+    normalised = os.path.normcase(os.path.abspath(fn)).encode("utf-8", "surrogateescape")
+    return hashlib.blake2b(normalised, digest_size=8).hexdigest()
+
+
+def _cache_path(fn: str, key: str) -> str | None:
+    """``<tag>-<key>.pyc``: the file it came from, then the state that file was in.
+
+    The two-part name is what makes pruning possible. Keyed by content alone, an edited test
+    file would leave its previous artefact behind **forever** — one dead ``.pyc`` per edit,
+    per file, growing without bound in a directory nobody looks at. The manifest cache does
+    not have that problem because it stores one entry *per path*, overwritten in place
+    (`src/v2/manifest_cache.rs`, "keyed by file name within the shard, so the store is bounded
+    by the directory's contents rather than by its history"). This reproduces that property
+    with a filename instead of a shard.
+    """
     if _cache_dir is None:
         return None
-    return os.path.join(_cache_dir, f"{key}.pyc")
+    return os.path.join(_cache_dir, f"{_path_tag(fn)}-{key}.pyc")
 
 
 def _header() -> bytes:
@@ -305,14 +328,14 @@ def _header() -> bytes:
     return importlib.util.MAGIC_NUMBER + _CACHE_MAGIC + struct.pack("<I", REWRITE_EPOCH)
 
 
-def _read_cached(key: str) -> types.CodeType | None:
-    """The cached code object for *key*, or ``None`` for any reason at all.
+def _read_cached(fn: str, key: str) -> types.CodeType | None:
+    """The cached code object for *fn* at *key*, or ``None`` for any reason at all.
 
     Every failure is a miss: a wrong header, a short file, a corrupt body, a permission
     error. The cost of a miss is one compile; the cost of raising here is a run that fails
     because of its cache.
     """
-    path = _cache_path(key)
+    path = _cache_path(fn, key)
     if path is None:
         return None
     try:
@@ -330,16 +353,29 @@ def _read_cached(key: str) -> types.CodeType | None:
     return code if isinstance(code, types.CodeType) else None
 
 
-def _write_cached(key: str, code: types.CodeType) -> bool:
-    """Write *code* under *key*; ``False`` if it could not be written.
+def _write_cached(fn: str, key: str, code: types.CodeType) -> bool:
+    """Write *code* for *fn* under *key*, and drop that file's superseded artefacts.
 
     Written to a per-process temporary and renamed, for the reason
     ``src/v2/manifest_cache.rs`` documents at length: two workers of the same pool compile
     the same file only in the stem-collision case, but a half-written ``.pyc`` read by the
     other one would be a corrupt import rather than a miss. ``os.replace`` is atomic for
     readers on both POSIX and Windows.
+
+    **Pruning is lazy, in the manifest cache's exact sense.** This runs only on a miss — that
+    is, only when the file's content, config or conftest chain actually changed — and it
+    removes only the artefacts of *that* file's earlier states. A run that hits every entry
+    neither lists the directory nor unlinks anything, which is the trade
+    `src/v2/manifest_cache.rs` makes ("paying a `stat` per cached file on every warm run to
+    tidy it sooner is precisely the trade this cache exists to avoid").
+
+    The residual is the manifest cache's too, and bounded the same way: the artefacts of a
+    test file that has been **deleted** survive, because nothing recompiles a file that is
+    gone. They are inert — a `.pyc` is only ever opened by the exact name a live path and key
+    produce — and a user who wants them gone deletes `.rustest_cache`, which is already the
+    documented reset for everything else in it.
     """
-    path = _cache_path(key)
+    path = _cache_path(fn, key)
     if path is None:
         return False
     tmp = f"{path}.tmp-{os.getpid()}"
@@ -349,17 +385,37 @@ def _write_cached(key: str, code: types.CodeType) -> bool:
             _ = handle.write(_header())
             _ = handle.write(marshal.dumps(code))
         os.replace(tmp, path)
-        return True
-    except OSError as exc:
-        # A read-only tree, a full disk, or — on Windows — a scanner holding the
-        # destination open. None of them is the user's problem on this path.
-        if exc.errno not in (errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EROFS, errno.EEXIST):
-            pass
+    except OSError:
+        # A read-only tree, a full disk, or — on Windows — a scanner holding the destination
+        # open. None of them is the user's problem on this path: the run has the code object
+        # in hand and simply does not get to keep it.
         try:
             os.unlink(tmp)
         except OSError:
             pass
         return False
+    _prune_superseded(fn, keep=os.path.basename(path))
+    return True
+
+
+def _prune_superseded(fn: str, keep: str) -> None:
+    """Remove *fn*'s artefacts other than *keep*. Best-effort and never raises."""
+    if _cache_dir is None:
+        return
+    prefix = f"{_path_tag(fn)}-"
+    try:
+        names = os.listdir(_cache_dir)
+    except OSError:
+        return
+    for name in names:
+        if name == keep or not name.startswith(prefix):
+            continue
+        try:
+            os.unlink(os.path.join(_cache_dir, name))
+        except OSError:
+            # Another worker in this pool may be reading it, or removing it concurrently.
+            # Either way the entry is superseded and the next miss will try again.
+            pass
 
 
 # ---------------------------------------------------------------------------

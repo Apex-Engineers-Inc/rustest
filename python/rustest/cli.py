@@ -22,8 +22,108 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from .core import run, v2_collect_only, v2_run
+from .core import run, terminal_columns, v2_collect_only, v2_run
+
+if TYPE_CHECKING:
+    # Annotation-only; see the note in `core.py` about keeping `typing` off the run-time
+    # import path.
+    from typing import Any
+
+
+class _LazyHelpFormatter(argparse.HelpFormatter):
+    """``argparse.HelpFormatter`` with its two eager imports taken off the hot path.
+
+    **The problem, traced rather than guessed.** ``ArgumentParser.add_argument`` builds a
+    formatter *twice per argument* — once in ``_ActionsContainer.add_argument`` to validate
+    the metavar against nargs, once in ``_check_help`` to expand the help string
+    (`Lib/argparse.py`, CPython 3.14). Each construction runs
+    ``HelpFormatter.__init__``, which does ``import shutil; shutil.get_terminal_size()`` when
+    no explicit ``width`` is given, and ``_set_color``, which does
+    ``from _colorize import can_colorize, decolor, get_theme``. ``_get_formatter`` then calls
+    ``_set_color`` a third time.
+
+    So building this CLI's parser — 15 arguments — imported ``shutil`` (and behind it
+    ``bz2``, ``lzma``, ``zlib``, ``zstd``) and ``_colorize`` on **every** rustest invocation,
+    including ``--v2-collect-only`` and every worker subprocess, none of which ever print
+    help. Measured on the reference machine: constructing a parser with one argument cost
+    ~170 ms more than constructing an empty one.
+
+    **The fix.** Both values are needed only when help is actually *formatted*, so both are
+    deferred:
+
+    * ``width`` is supplied up front from :func:`rustest.core.terminal_columns`, a port of
+      ``shutil.get_terminal_size`` over ``os`` alone — so ``__init__`` never takes its
+      ``import shutil`` branch, and the width is still the real terminal's;
+    * ``_set_color`` records the flag and nothing else; ``_theme`` and ``_decolor`` are
+      properties that resolve on first *use*, which happens only inside the formatting
+      methods.
+
+    Nothing about the rendered help changes: the same width, the same theme, the same
+    colour decision — just computed when they are needed rather than fifteen times while the
+    parser is being described. ``test_help_output_is_unchanged_by_the_lazy_formatter``
+    compares the full ``--help`` text against stock argparse's.
+    """
+
+    def __init__(
+        self,
+        prog: str,
+        indent_increment: int = 2,
+        max_help_position: int = 24,
+        width: int | None = None,
+        color: bool = True,
+    ) -> None:
+        #: ``(theme, decolor)`` once `_colorization` has resolved them; `None` until then.
+        #: Assigned before `super().__init__`, which calls `_set_color` on the way through.
+        self._resolved: tuple[Any, Any] | None = None
+        self._color: bool = color
+        if width is None:
+            # argparse's own arithmetic: `get_terminal_size().columns - 2`.
+            width = terminal_columns() - 2
+        # `color` reaches this class through `_set_color` rather than through
+        # `super().__init__`: the parameter exists on CPython 3.13+ but not in every typeshed
+        # stub, and the base constructor's only use of it is the `_set_color` call this class
+        # overrides anyway.
+        super().__init__(prog, indent_increment, max_help_position, width)
+
+    def _set_color(self, color: bool) -> None:
+        """Record the flag and resolve nothing.
+
+        The base class does the ``_colorize`` import here; deferring it is half the point of
+        this subclass. ``_get_formatter`` calls this a second time after construction, so a
+        formatter that *is* about to render help still gets the parser's real setting.
+        """
+        self._color = color
+        self._resolved = None
+
+    def _colorization(self) -> tuple[Any, Any]:
+        """The theme and decolor function, importing ``_colorize`` on first use only."""
+        if self._resolved is None:
+            from _colorize import can_colorize, decolor, get_theme
+
+            if self._color and can_colorize():
+                self._resolved = (get_theme(force_color=True).argparse, decolor)
+            else:
+                self._resolved = (get_theme(force_no_color=True).argparse, _identity)
+        return self._resolved
+
+    # Properties rather than lazily-assigned attributes: argparse reads `self._theme` and
+    # `self._decolor` from inside its formatting methods, and a property is the one form
+    # that keeps them resolvable without ever existing until something asks.
+    @property
+    def _theme(self) -> Any:
+        return self._colorization()[0]
+
+    @property
+    def _decolor(self) -> Any:
+        return self._colorization()[1]
+
+
+def _identity(text: str) -> str:
+    """``decolor``'s no-op counterpart, named so the stored value stays an ordinary function."""
+    return text
+
 
 #: ``--pytest-compat`` was deleted at the flip: the shim it enabled is now always installed,
 #: so the flag could only ever be a no-op or a lie.  It is rejected **loudly** rather than
@@ -82,6 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rustest",
         description="Run Python tests at blazing speed with a Rust powered core.",
+        # See :class:`_LazyHelpFormatter`: without it, describing the arguments below
+        # imports `shutil` and `_colorize` on every rustest invocation.
+        formatter_class=_LazyHelpFormatter,
     )
     _ = parser.add_argument(
         "paths",

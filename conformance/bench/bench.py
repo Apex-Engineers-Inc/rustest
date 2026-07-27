@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,27 @@ from typing import TypedDict
 from .gen import generate_suite
 
 DEFAULT_SIZES = [(10, 10), (100, 10), (500, 10)]
+
+#: The two suites the per-test overhead is derived from: **the same file count**, different
+#: tests per file.
+#:
+#: The old derivation subtracted the 1 000-test row from the 5 000-test row of
+#: :data:`DEFAULT_SIZES`, and those two differ in *files* (100 vs 500) as well as in tests. The
+#: difference therefore contained the cost of importing 400 extra modules — ~2.5 ms each,
+#: measured — so what it reported as "marginal cost per test" was mostly marginal cost per
+#: *file*. Holding files constant at 100 makes the delta the cost of 4 000 extra tests and
+#: nothing else.
+#:
+#: It is a **separate pair** rather than a reuse of the 500-file row on purpose: that row is
+#: what the collect gate measures, and a metric that shares a cell with a gate cannot be
+#: changed without moving the gate.
+OVERHEAD_SIZES = [(100, 10), (100, 50)]
+
+#: Repetitions per overhead cell. One sample of a ~1 s command on Windows carries ±0.4 s,
+#: which over 4 000 tests is ±100 us/test — larger than the 200 us gate the number is compared
+#: against. The published baseline for this metric was once **-714.9 us/test**, which is not a
+#: measurement but a warning label. Medians of 5 put the noise well below the gate.
+OVERHEAD_REPETITIONS = 5
 
 
 class BenchRow(TypedDict):
@@ -50,9 +72,24 @@ class Derived(TypedDict):
     rustest_v2_overhead_us_per_test: float | None
 
 
+class OverheadRow(TypedDict):
+    """One cell of the fixed-file-count overhead measurement. See :func:`measure_overhead`."""
+
+    files: int
+    tests: int
+    #: How many timed samples the medians below are drawn from.
+    repetitions: int
+    pytest_run_s: float
+    rustest_run_s: float
+    #: ``rustest . -n 1 -q`` -- sequential on purpose; see :func:`measure_overhead`.
+    rustest_v2_run_s: float
+
+
 class BenchReport(TypedDict):
     results: list[BenchRow]
     derived: Derived
+    #: The cells :data:`derived` was computed from, so a published number is traceable.
+    overhead: list[OverheadRow]
 
 
 def _time_cmd(cmd: list[str], cwd: Path) -> float:
@@ -87,38 +124,94 @@ def _time_cold_collect(rustest_base: list[str], suite: Path) -> float:
     return _time_cmd([*rustest_base, "--v2-collect-only", "."], suite)
 
 
-def derive_overhead(results: list[BenchRow]) -> Derived:
-    """Per-test marginal cost, in microseconds, from the two largest sizes.
+def measure_overhead(quick: bool = False) -> tuple[Derived, list[OverheadRow]]:
+    """Per-test marginal cost, in microseconds, at a **fixed file count**.
 
-    Subtracting the smaller size's total run time from the larger's cancels the
-    fixed startup cost (interpreter boot, plugin loading, extension import) that
-    both runs pay identically, leaving the incremental cost of the extra tests:
+    Two suites of 100 files, one with 10 tests each and one with 50
+    (:data:`OVERHEAD_SIZES`). Subtracting the smaller's median run time from the larger's
+    cancels everything both pay identically -- interpreter boot, worker-pool spawn, importing
+    the same 100 modules -- and leaves the incremental cost of 4 000 extra tests::
 
-        overhead_us = (run_s_big - run_s_small) / (tests_big - tests_small) * 1e6
+        overhead_us = (median(run_s_big) - median(run_s_small)) / (tests_big - tests_small) * 1e6
 
-    Needs at least two distinct sizes; otherwise all three values are None.
+    Four deliberate differences from the derivation this replaces, each fixing a way the old
+    number lied:
+
+    * **files are held constant.** The old pair differed in files as well as tests, so its
+      "per test" figure was dominated by ~2.5 ms of module import per extra *file*;
+    * **medians of** :data:`OVERHEAD_REPETITIONS`, not one sample. The single-sample version
+      published -714.9 us/test once -- a negative marginal cost;
+    * **`-n 1`.** With one worker per CPU the pool spawn dominates and varies with machine
+      load, and it is a fixed cost the subtraction is supposed to cancel, not measure;
+    * **both cells warm.** Each suite is run once and discarded before timing, so neither
+      cell pays a cold manifest cache or a cold bytecode cache that the other does not. A
+      cache warmed in one cell and not the other lands entirely in the delta.
+
+    Returns the derived values and the per-cell rows behind them, so a published number can
+    be traced to the timings it came from rather than taken on faith.
     """
-    _empty: Derived = {
+    rows: list[OverheadRow] = []
+    sizes = OVERHEAD_SIZES[:1] if quick else OVERHEAD_SIZES
+    for files, tests_per_file in sizes:
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "suite"
+            generate_suite(suite, files, tests_per_file)
+            pytest_base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q"]
+            rustest_base = [sys.executable, "-m", "rustest"]
+            commands = {
+                "pytest_run_s": [*pytest_base, "--tb=no", "-p", "no:randomly"],
+                "rustest_run_s": [*rustest_base, "--v1", ".", "--color", "never"],
+                "rustest_v2_run_s": [*rustest_base, ".", "-n", "1", "-q"],
+            }
+            row: OverheadRow = {
+                "files": files,
+                "tests": files * tests_per_file,
+                "repetitions": OVERHEAD_REPETITIONS,
+                "pytest_run_s": 0.0,
+                "rustest_run_s": 0.0,
+                "rustest_v2_run_s": 0.0,
+            }
+            for key, cmd in commands.items():
+                # One discarded run per command, so the timed samples all see the same warm
+                # state: `__pycache__`, the manifest cache and the rewritten-bytecode cache.
+                _ = _time_cmd(cmd, suite)
+                samples = [_time_cmd(cmd, suite) for _ in range(OVERHEAD_REPETITIONS)]
+                row[key] = statistics.median(samples)
+            rows.append(row)
+
+    return derive_overhead(rows), rows
+
+
+def derive_overhead(rows: list[OverheadRow]) -> Derived:
+    """The slope, in microseconds per test, between two same-file-count cells.
+
+    Split from :func:`measure_overhead` so the arithmetic is testable without running a
+    benchmark: the timing half takes minutes and cannot assert a number, while this half is
+    the part that can be wrong in a way nobody notices.
+
+    Fewer than two cells, or two cells with the same test count, yield ``None`` -- one point
+    has no slope, and dividing by a zero delta would produce an infinity that looks like a
+    measurement.
+    """
+    empty: Derived = {
         "pytest_overhead_us_per_test": None,
         "rustest_overhead_us_per_test": None,
         "rustest_v2_overhead_us_per_test": None,
     }
-    if len(results) < 2:
-        return _empty
-    ordered = sorted(results, key=lambda r: r["tests"])
+    if len(rows) < 2:
+        return empty
+    ordered = sorted(rows, key=lambda row: row["tests"])
     small, big = ordered[-2], ordered[-1]
-    delta_tests = big["tests"] - small["tests"]
-    if delta_tests <= 0:
-        return _empty
+    delta = big["tests"] - small["tests"]
+    if delta <= 0:
+        return empty
     return {
-        "pytest_overhead_us_per_test": (big["pytest_run_s"] - small["pytest_run_s"])
-        / delta_tests
-        * 1e6,
+        "pytest_overhead_us_per_test": (big["pytest_run_s"] - small["pytest_run_s"]) / delta * 1e6,
         "rustest_overhead_us_per_test": (big["rustest_run_s"] - small["rustest_run_s"])
-        / delta_tests
+        / delta
         * 1e6,
         "rustest_v2_overhead_us_per_test": (big["rustest_v2_run_s"] - small["rustest_v2_run_s"])
-        / delta_tests
+        / delta
         * 1e6,
     }
 
@@ -152,7 +245,8 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
             results.append(row)
         if quick:
             break
-    return {"results": results, "derived": derive_overhead(results)}
+    derived, overhead = measure_overhead(quick)
+    return {"results": results, "derived": derived, "overhead": overhead}
 
 
 def _fmt_overhead(value: float | None) -> str:
@@ -179,6 +273,17 @@ def main() -> int:
             + f"| {row['pytest_run_s']:.2f}s | {row['rustest_run_s']:.2f}s "
             + f"| {row['rustest_v2_run_s']:.2f}s | {row['rustest_collect_s']:.2f}s "
             + f"| {row['rustest_collect_warm_s']:.3f}s |"
+        )
+    print()
+    print(
+        f"Marginal per-test overhead, {OVERHEAD_SIZES[0][0]} files held constant, "
+        + f"medians of {OVERHEAD_REPETITIONS}, sequential:"
+    )
+    for cell in report["overhead"]:
+        print(
+            f"| {cell['files']} files | {cell['tests']} tests "
+            + f"| pytest {cell['pytest_run_s']:.2f}s | v1 {cell['rustest_run_s']:.2f}s "
+            + f"| v2 {cell['rustest_v2_run_s']:.2f}s |"
         )
     derived = report["derived"]
     print(f"pytest marginal overhead: {_fmt_overhead(derived['pytest_overhead_us_per_test'])}")

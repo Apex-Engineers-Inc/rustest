@@ -1751,7 +1751,10 @@ def test_an_assert_key_on_collect_file_rewrites_the_module(tmp_path: Path) -> No
     # echoes the source line either way, so `"assert 1 == 2" in message` would pass for an
     # unrewritten module too. A rewritten one gives `AssertionError` an argument.
     assert result["message"].rstrip().endswith("AssertionError: assert 1 == 2"), result["message"]
-    assert (tmp_path / ".rustest_cache" / "v2-assert" / f"{key}.pyc").is_file()
+    # One artefact, named `<path tag>-<key>.pyc` (see `_assertion_rewrite._cache_path`); the
+    # key half is asserted rather than the whole name, because the tag is a path digest.
+    artefacts = list((tmp_path / ".rustest_cache" / "v2-assert").glob(f"*-{key}.pyc"))
+    assert len(artefacts) == 1, artefacts
 
 
 def test_no_assert_key_leaves_the_module_with_plain_asserts(tmp_path: Path) -> None:

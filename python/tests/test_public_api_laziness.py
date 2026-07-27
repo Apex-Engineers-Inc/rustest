@@ -163,3 +163,77 @@ def test_importing_the_package_does_not_pull_in_the_cli_or_the_engine() -> None:
         " if m in sys.modules))"
     )
     assert out == "[]"
+
+
+# ---------------------------------------------------------------------------
+# the argparse import wall
+# ---------------------------------------------------------------------------
+
+
+def test_building_the_parser_imports_neither_shutil_nor_colorize() -> None:
+    """The wall this exists to remove.
+
+    ``ArgumentParser.add_argument`` builds a ``HelpFormatter`` twice per argument, and stock
+    ``HelpFormatter.__init__`` imports ``shutil`` (for the terminal size) while ``_set_color``
+    imports ``_colorize``. With 15 arguments that is 30 constructions on **every** rustest
+    invocation — a collect-only run, a worker subprocess — none of which ever prints help.
+    ``shutil`` drags ``bz2``/``lzma``/``zlib``/``zstd`` behind it for archive support that has
+    nothing to do with terminal width.
+    """
+    out = _in_fresh_interpreter(
+        "from rustest.cli import build_parser\n"
+        "_ = build_parser()\n"
+        "import sys\n"
+        "print(sorted(m for m in ('shutil', '_colorize', 'bz2', 'lzma') if m in sys.modules))"
+    )
+    assert out == "[]"
+
+
+def test_help_output_is_unchanged_by_the_lazy_formatter() -> None:
+    """The deferral must be invisible: same text, same width, same wrapping.
+
+    Compared against a parser built with **stock** ``argparse.HelpFormatter`` rather than
+    against a transcript, so a future argparse that changes its layout moves both sides
+    together and this keeps testing the only thing it is about — that our subclass is
+    equivalent.
+
+    ``COLUMNS`` is pinned so the two parsers cannot disagree merely because the terminal was
+    measured at two different moments.
+    """
+    script = (
+        "import argparse, os\n"
+        "os.environ['COLUMNS'] = '100'\n"
+        "from rustest.cli import build_parser\n"
+        "lazy = build_parser()\n"
+        "stock = build_parser()\n"
+        "stock.formatter_class = argparse.HelpFormatter\n"
+        "for group in stock._action_groups:\n"
+        "    group.formatter_class = argparse.HelpFormatter\n"
+        "print(lazy.format_help() == stock.format_help())\n"
+        "print(lazy.format_usage() == stock.format_usage())\n"
+    )
+    assert _in_fresh_interpreter(script) == "True\nTrue"
+
+
+def test_terminal_columns_matches_shutil() -> None:
+    """``core.terminal_columns`` is a port of ``shutil.get_terminal_size().columns``.
+
+    Asserted against the real ``shutil`` — importing it here is free, this is a test — across
+    the three cases whose semantics differ: ``COLUMNS`` set, ``COLUMNS`` unset, and
+    ``COLUMNS`` present but not a number (shutil falls through to the terminal query rather
+    than raising).
+    """
+    script = (
+        "import os, shutil\n"
+        "from rustest.core import terminal_columns\n"
+        "results = []\n"
+        "for value in ('100', None, 'not-a-number', '0'):\n"
+        "    if value is None:\n"
+        "        os.environ.pop('COLUMNS', None)\n"
+        "    else:\n"
+        "        os.environ['COLUMNS'] = value\n"
+        "    results.append(terminal_columns() == shutil.get_terminal_size().columns)\n"
+        "print(all(results), results)\n"
+    )
+    out = _in_fresh_interpreter(script)
+    assert out.startswith("True"), out

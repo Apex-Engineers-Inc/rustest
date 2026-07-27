@@ -8,12 +8,70 @@ import json
 import os
 import sys
 from collections.abc import Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING
 
 from . import rust
 
 if TYPE_CHECKING:
+    from typing import Any, Final, NotRequired, TypedDict
+
     from .reporting import RunReport
+
+    class _ManifestTest(TypedDict):
+        """The one manifest field the collect-only surface reads. See `src/v2/manifest.rs`."""
+
+        id: str
+
+    class _ManifestError(TypedDict):
+        path: str
+        message: str
+
+    class _Manifest(TypedDict):
+        """`errors` is omitted entirely when empty -- an omit-when-empty wire rule, not a bug."""
+
+        tests: list[_ManifestTest]
+        errors: NotRequired[list[_ManifestError]]
+        deselected: NotRequired[int]
+
+    class _ReportSummary(TypedDict):
+        """The schema-v2 summary. Six status buckets, not v1's three. See `src/v2/execute.rs`."""
+
+        total: int
+        passed: int
+        failed: int
+        skipped: int
+        xfailed: int
+        xpassed: int
+        error: int
+        deselected: int
+        duration: float
+
+    class _ReportTest(TypedDict):
+        id: str
+        status: str
+        duration: float
+        message: NotRequired[str]
+        stdout: NotRequired[str]
+        stderr: NotRequired[str]
+
+    class _RunReport(TypedDict):
+        version: int
+        rootdir: str
+        exit_code: int
+        summary: _ReportSummary
+        tests: list[_ReportTest]
+        collection_errors: list[_ManifestError]
+        teardown_errors: NotRequired[list[str]]
+        worker_stderr: NotRequired[list[str]]
+        stopped_early: NotRequired[bool]
+        session_exit: NotRequired[str]
+
+# The `TypedDict`s above live under `TYPE_CHECKING`, and that is a latency decision like the
+# ones below rather than a style one: on CPython 3.14 `typing` pulls `annotationlib` and
+# `ast` behind it, ~15 ms that a `--v2-collect-only` run has no use for. `from __future__
+# import annotations` makes every annotation a string, so the declarations are never
+# evaluated at run time; the two `cast()` calls they used to serve became annotated
+# assignments, which a type checker reads identically.
 
 # `rich` is **not** imported here, and that is a measured decision rather than a style one.
 #
@@ -28,14 +86,19 @@ if TYPE_CHECKING:
 # it), `.event_router`, and `.reporting`: all three are v1-only, and `.reporting` is needed at
 # type-check time only, hence the `TYPE_CHECKING` import above.
 #
-# Three stdlib modules are deferred for the same measured reason, each into the one function
-# that needs it: `shutil` (~50 ms; only `_terminal_width`, i.e. only the *run* renderer),
-# `datetime` (only `_format_duration`) and `pathlib` (only the `--report-json` write). A
-# `--v2-collect-only` run reaches none of the three, and it is the latency-sensitive path.
+# Two stdlib modules are deferred for the same measured reason, each into the one function
+# that needs it: `datetime` (only :func:`_format_duration`) and `pathlib` (only the
+# `--report-json` write). A `--v2-collect-only` run reaches neither, and it is the
+# latency-sensitive path.
+#
+# **`shutil` is not deferred, it is removed** — see :func:`_terminal_size`. Deferring it was
+# the first attempt and it did not work, because `argparse` imports it too (below), so every
+# rustest invocation paid it whether or not anything rendered.
 #
 # Measured, Phase 2 Task 3: warm `--v2-collect-only` on the 5 000-test suite went from 508 ms
-# to 269 ms, of which the `rich` import is the largest single term. See
-# `.superpowers/sdd/p2-task-3-report.md`.
+# to ~285 ms with `rich` and the package's own graph made lazy, and to the figure in
+# `.superpowers/sdd/p2-task-3-report.md` §4 once `shutil` and `_colorize` were taken off the
+# argparse path as well.
 
 # pytest's exit codes (`_pytest.config.ExitCode`), which the v2 engine adopts verbatim --
 # "contracts are pytest's" is the v2 spec's rule. Verified against pytest 8.4.2 by running
@@ -49,61 +112,6 @@ _EXIT_INTERRUPTED = 2
 _EXIT_INTERNAL_ERROR = 3
 _EXIT_USAGE_ERROR = 4
 _EXIT_NO_TESTS_COLLECTED = 5
-
-
-class _ManifestTest(TypedDict):
-    """The one manifest field the collect-only surface reads. See `src/v2/manifest.rs`."""
-
-    id: str
-
-
-class _ManifestError(TypedDict):
-    path: str
-    message: str
-
-
-class _Manifest(TypedDict):
-    """`errors` is omitted entirely when empty -- an omit-when-empty wire rule, not a bug."""
-
-    tests: list[_ManifestTest]
-    errors: NotRequired[list[_ManifestError]]
-    deselected: NotRequired[int]
-
-
-class _ReportSummary(TypedDict):
-    """The schema-v2 summary. Six status buckets, not v1's three. See `src/v2/execute.rs`."""
-
-    total: int
-    passed: int
-    failed: int
-    skipped: int
-    xfailed: int
-    xpassed: int
-    error: int
-    deselected: int
-    duration: float
-
-
-class _ReportTest(TypedDict):
-    id: str
-    status: str
-    duration: float
-    message: NotRequired[str]
-    stdout: NotRequired[str]
-    stderr: NotRequired[str]
-
-
-class _RunReport(TypedDict):
-    version: int
-    rootdir: str
-    exit_code: int
-    summary: _ReportSummary
-    tests: list[_ReportTest]
-    collection_errors: list[_ManifestError]
-    teardown_errors: NotRequired[list[str]]
-    worker_stderr: NotRequired[list[str]]
-    stopped_early: NotRequired[bool]
-    session_exit: NotRequired[str]
 
 
 #: The word `-v` prints for each status, taken from pytest's own verbose column.  Probed
@@ -371,7 +379,7 @@ def v2_collect_only(
             print(f"INTERNALERROR: {exc}", file=sys.stderr)
             return _EXIT_INTERNAL_ERROR
 
-        manifest = cast(_Manifest, json.loads(payload))
+        manifest: _Manifest = json.loads(payload)
         tests = manifest["tests"]
         errors = manifest.get("errors", [])
         deselected = manifest.get("deselected", 0)
@@ -424,6 +432,41 @@ def _progress_line(test: _ReportTest, index: int, total: int) -> str:
     return f"{line}{' ' * pad}[{percent:3d}%]"
 
 
+def terminal_columns(fallback: int = 80) -> int:
+    """``shutil.get_terminal_size().columns``, **without importing shutil**.
+
+    A line-for-line port of ``shutil.get_terminal_size`` (CPython 3.14 ``Lib/shutil.py``),
+    narrowed to the columns half: read ``COLUMNS`` from the environment, and only if it is
+    absent or non-positive ask ``os.get_terminal_size(sys.__stdout__.fileno())``, falling back
+    when stdout is ``None``, closed, detached, not a terminal, or the platform does not
+    support the query.
+
+    **Why a port and not the import.** ``shutil`` is ~50-70 ms on the reference machine — it
+    pulls ``bz2``, ``lzma``, ``zlib`` and ``zstd`` at module scope for its archive support,
+    none of which has anything to do with terminal size — and the function it is wanted for is
+    three lines over ``os``, which is already imported and whose ``get_terminal_size`` is a
+    builtin. The measured cost mattered because ``argparse`` reaches the same function on
+    *every* rustest invocation (see :class:`_LazyHelpFormatter`), so deferring the import was
+    not enough; it had to stop happening.
+
+    The semantics are shutil's, deliberately, so behaviour under ``COLUMNS=…``, under a pipe,
+    and under a detached stdout is unchanged from what every previous release did.
+    """
+    try:
+        columns = int(os.environ["COLUMNS"])
+    except (KeyError, ValueError):
+        columns = 0
+    if columns > 0:
+        return columns
+    try:
+        # `sys.__stdout__` rather than `sys.stdout`: the worker rebinds `sys.stdout` to
+        # stderr, and a captured stream has no fileno at all. shutil asks the same object.
+        columns = os.get_terminal_size(sys.__stdout__.fileno()).columns  # pyright: ignore[reportOptionalMemberAccess]
+    except (AttributeError, ValueError, OSError):
+        return fallback
+    return columns or fallback
+
+
 def _terminal_width() -> int:
     """The console width, by pytest's own rule (`_pytest/_io/terminalwriter.py`).
 
@@ -431,9 +474,7 @@ def _terminal_width() -> int:
     ``get_terminal_size`` may be bogus" and rounds anything under 40 back up to 80. Without
     it a console that reports 4 columns turns every separator into a bare ``==``.
     """
-    import shutil
-
-    width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    width = terminal_columns()
     return 80 if width < 40 else width
 
 
@@ -612,7 +653,7 @@ def v2_run(
             print(f"INTERNALERROR: {exc}", file=sys.stderr)
             return _EXIT_INTERNAL_ERROR
 
-        report = cast(_RunReport, json.loads(payload))
+        report: _RunReport = json.loads(payload)
 
         # Written before anything is printed, so a report exists even if rendering the
         # summary somehow fails -- the conformance harness treats a missing report as a

@@ -2487,19 +2487,83 @@ def test_bails():
         );
     }
 
+    /// A batch may not claim it stopped early when `-x` was never asked for.
+    ///
+    /// The mirror of `a_short_batch_that_did_not_stop_early_is_protocol_fatal`, and the more
+    /// dangerous half: `stopped` is the one field a worker can set that legitimately shrinks
+    /// the report, and the orchestrator **acts** on it — it sets the pool-wide stop flag, so
+    /// every other worker stops dispatching too and the main thread then treats every missing
+    /// slot as expected rather than as a lost result. An unsolicited `stopped` therefore
+    /// truncates a whole green run into a shorter green run: the exit code stays 0, the
+    /// summary just counts fewer tests, and nothing anywhere says why.
+    ///
+    /// This run passes no `-x`, so the request carries `stop_on_failure: false` and the flag
+    /// is a lie whatever the worker's reason for setting it.
+    #[test]
+    fn a_batch_that_stops_early_without_being_asked_is_protocol_fatal() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
+             \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_one'}},\n\
+             \x20                     {{'id': 'test_a.py::test_two', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_two'}}]}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][0], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
+             \x20           'executed': 1, 'stopped': True}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n"
+        );
+
+        let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
+            .expect_err("an unsolicited `stopped` is fatal");
+        let message = err.to_string();
+        assert!(message.contains("`-x` was not in effect"), "{message}");
+        assert!(message.contains("test_a.py::test_two"), "{message}");
+    }
+
     /// A batch whose stream **ends** without a terminator is fatal, not silently short.
     ///
     /// The worker here answers every test and then exits, closing stdout. Without this check
     /// the run would report two passing tests and a green exit for a batch nobody ever
     /// confirmed — the terminator is what turns "the pipe closed" into a named error.
     ///
-    /// **The neighbouring case is not detectable, and this test does not pretend otherwise.**
+    /// **The neighbouring case blocks, and the reason is worth stating precisely** — the
+    /// first draft of this test asserted it did not, and hung.
+    ///
     /// A worker that answers the results and then simply *waits* — alive, idle, holding its
     /// pipe open — blocks the orchestrator's read, exactly as an unanswered `collect_file`
-    /// always has. Nothing in a self-delimiting stream can tell that from a test that is
-    /// merely slow; only a timeout could, and rustest has none. Recorded here rather than
-    /// left for someone to rediscover by writing the test that hangs — which is what the
-    /// first draft of this one did.
+    /// always has. The two halves of that are not equally hopeless:
+    ///
+    /// * **mid-batch**, a silent worker is genuinely indistinguishable from a slow test.
+    ///   Only a timeout could separate them, and any timeout value is wrong for somebody —
+    ///   an integration test that takes four minutes is not a hung worker;
+    /// * **after the last result**, it is not. The orchestrator knows exactly one line is
+    ///   outstanding (`batch_done`) and that no test is running, so a short bounded wait
+    ///   there would be sound and would cost nothing on a healthy run.
+    ///
+    /// The bounded wait is **not implemented**: it needs a second timeout mechanism on the
+    /// read path, and the failure it catches (a worker that answers every test and then
+    /// declines to say so) has never been observed and is not reachable through
+    /// `_v2_worker.py`, whose batch arm writes the terminator unconditionally. It is recorded
+    /// as the tractable half rather than described as impossible.
     #[test]
     fn a_batch_whose_stream_ends_without_a_terminator_is_fatal() {
         let tmp = tree(&[("test_a.py", "")]);

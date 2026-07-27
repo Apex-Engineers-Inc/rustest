@@ -1522,13 +1522,23 @@ impl Worker {
     ///   request that caused it and the worker's stderr are both available;
     /// * anything that is neither a `test_result` nor the terminator is drift by op.
     ///
-    /// Two terminator checks close the batch:
+    /// Three terminator checks close the batch:
     ///
     /// * `executed` must equal the number of results seen. This is the only place a *lost*
     ///   result is detectable at all — the stream still ends, the ids still line up, and the
     ///   missing test would simply be absent from the report;
     /// * a batch that ended without `stopped` must have executed every id. Anything else is a
-    ///   worker that dropped work without saying so.
+    ///   worker that dropped work without saying so;
+    /// * a batch may only report `stopped` when this request asked for it. `stopped` is the
+    ///   one field a worker can set that legitimately *shrinks* the report, and the
+    ///   orchestrator acts on it by setting the pool-wide stop flag — so an unsolicited
+    ///   `stopped` would truncate a run that never asked to stop, and every test after it
+    ///   would be missing rather than reported.
+    ///
+    /// Errors name the batch's **first unanswered test** rather than the whole file: the
+    /// results already received are attributed and correct, so the id a reader needs is the
+    /// one the stream stalled on. When the batch is complete and the terminator itself is
+    /// the problem, it falls back to the first id, which is the only one still in scope.
     pub(crate) fn execute_batch(
         &mut self,
         ids: &[String],
@@ -1623,6 +1633,21 @@ impl Worker {
                             format!(
                                 "the worker says it executed {executed} tests, {seen} results arrived"
                             ),
+                            line,
+                        ));
+                    }
+                    // `stopped` is only *believable* when this batch asked for it.  A worker
+                    // that raises the flag on a run with no `-x` truncates the whole pool's
+                    // report — `worker_life` sets the shared stop flag on it, and the main
+                    // thread then treats every missing slot as expected rather than as the
+                    // lost result it is.  So the one claim a batch can make that silently
+                    // shrinks a green run is exactly the one that must be checked against
+                    // what was asked, not taken on the worker's word.
+                    if stopped && !stop_on_failure {
+                        return Err(self.execute_protocol(
+                            expected,
+                            "the batch reports stopping early, but `-x` was not in effect"
+                                .to_string(),
                             line,
                         ));
                     }

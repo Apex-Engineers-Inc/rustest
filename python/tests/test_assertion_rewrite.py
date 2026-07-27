@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import marshal
+import os
 import re
 import struct
 import subprocess
@@ -345,6 +346,7 @@ def test_every_helper_the_rewriter_emits_exists() -> None:
 # ---------------------------------------------------------------------------
 
 _KEY = "0" * 64
+_FILE = "/repo/tests/test_cached.py"
 
 
 @pytest.fixture
@@ -358,13 +360,18 @@ def cache_dir(tmp_path: Path) -> Path:
         _assertion_rewrite._cache_dir = previous
 
 
+def _cache_name(fn: str, key: str) -> str:
+    """The file name `_cache_path` builds, so the tests name it once."""
+    return f"{_assertion_rewrite._path_tag(fn)}-{key}.pyc"
+
+
 def _some_code() -> Any:
     return compile("x = 1", "<cache>", "exec", dont_inherit=True)
 
 
 def test_a_written_entry_reads_back(cache_dir: Path) -> None:
-    assert _assertion_rewrite._write_cached(_KEY, _some_code())
-    code = _assertion_rewrite._read_cached(_KEY)
+    assert _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())
+    code = _assertion_rewrite._read_cached(_FILE, _KEY)
     assert code is not None
     namespace: dict[str, Any] = {}
     exec(code, namespace)  # noqa: S102
@@ -372,7 +379,7 @@ def test_a_written_entry_reads_back(cache_dir: Path) -> None:
 
 
 def test_a_missing_entry_is_a_miss(cache_dir: Path) -> None:
-    assert _assertion_rewrite._read_cached("1" * 64) is None
+    assert _assertion_rewrite._read_cached(_FILE, "1" * 64) is None
 
 
 def test_bytecode_from_another_interpreter_is_a_miss(cache_dir: Path) -> None:
@@ -381,12 +388,12 @@ def test_bytecode_from_another_interpreter_is_a_miss(cache_dir: Path) -> None:
     This is the failure the manifest cache key *cannot* catch — the tree, the config and the
     rustest build are all identical, and the artefact is still garbage.
     """
-    assert _assertion_rewrite._write_cached(_KEY, _some_code())
-    path = cache_dir / f"{_KEY}.pyc"
+    assert _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())
+    path = cache_dir / _cache_name(_FILE, _KEY)
     blob = path.read_bytes()
     forged = b"\x00\x00\x00\x00" + blob[len(MAGIC_NUMBER) :]
     _ = path.write_bytes(forged)
-    assert _assertion_rewrite._read_cached(_KEY) is None
+    assert _assertion_rewrite._read_cached(_FILE, _KEY) is None
 
 
 def test_bytecode_from_another_rewriter_epoch_is_a_miss(cache_dir: Path) -> None:
@@ -397,15 +404,15 @@ def test_bytecode_from_another_rewriter_epoch_is_a_miss(cache_dir: Path) -> None
     Without the epoch, the *previous* transform's bytecode would be executed by the *current*
     runtime helpers — the one way this cache produces a wrong message rather than a slow run.
     """
-    assert _assertion_rewrite._write_cached(_KEY, _some_code())
-    path = cache_dir / f"{_KEY}.pyc"
+    assert _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())
+    path = cache_dir / _cache_name(_FILE, _KEY)
     blob = path.read_bytes()
     prefix = MAGIC_NUMBER + _assertion_rewrite._CACHE_MAGIC
     forged = (
         prefix + struct.pack("<I", _assertion_rewrite.REWRITE_EPOCH + 1) + blob[len(prefix) + 4 :]
     )
     _ = path.write_bytes(forged)
-    assert _assertion_rewrite._read_cached(_KEY) is None
+    assert _assertion_rewrite._read_cached(_FILE, _KEY) is None
 
 
 @pytest.mark.parametrize(
@@ -425,12 +432,61 @@ def test_a_damaged_entry_is_a_miss_not_an_error(cache_dir: Path, label: str, blo
     code object, so a reader that trusted ``marshal`` would hand a list to ``exec``.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    _ = (cache_dir / f"{_KEY}.pyc").write_bytes(blob)
-    assert _assertion_rewrite._read_cached(_KEY) is None, label
+    _ = (cache_dir / _cache_name(_FILE, _KEY)).write_bytes(blob)
+    assert _assertion_rewrite._read_cached(_FILE, _KEY) is None, label
 
     # ...and one bad write is not permanent: the next write replaces it.
-    assert _assertion_rewrite._write_cached(_KEY, _some_code())
-    assert _assertion_rewrite._read_cached(_KEY) is not None
+    assert _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())
+    assert _assertion_rewrite._read_cached(_FILE, _KEY) is not None
+
+
+def test_writing_a_new_key_prunes_that_files_superseded_artefacts(cache_dir: Path) -> None:
+    """One artefact per file, not one per edit.
+
+    Keyed by content alone, every edit to a test file would leave its previous ``.pyc``
+    behind forever — an unbounded directory nobody looks at. The path tag in the file name is
+    what makes the store bounded by the tree's *contents* rather than by its history, exactly
+    as the manifest cache is bounded by a directory's contents (`src/v2/manifest_cache.rs`).
+    """
+    for key in ("a" * 64, "b" * 64, "c" * 64):
+        assert _assertion_rewrite._write_cached(_FILE, key, _some_code())
+
+    names = sorted(p.name for p in cache_dir.iterdir())
+    assert names == [_cache_name(_FILE, "c" * 64)], names
+    # ...and the surviving entry is the one just written, not an arbitrary survivor.
+    assert _assertion_rewrite._read_cached(_FILE, "c" * 64) is not None
+    assert _assertion_rewrite._read_cached(_FILE, "a" * 64) is None
+
+
+def test_pruning_never_touches_another_files_artefacts(cache_dir: Path) -> None:
+    """The prune is scoped by path tag; a shared directory holds every file's entry."""
+    other = "/repo/tests/test_other.py"
+    assert _assertion_rewrite._write_cached(other, "a" * 64, _some_code())
+    assert _assertion_rewrite._write_cached(_FILE, "b" * 64, _some_code())
+    assert _assertion_rewrite._write_cached(_FILE, "c" * 64, _some_code())
+
+    names = sorted(p.name for p in cache_dir.iterdir())
+    assert names == sorted([_cache_name(other, "a" * 64), _cache_name(_FILE, "c" * 64)]), names
+
+
+def test_a_warm_write_free_run_does_not_list_the_cache_directory(cache_dir: Path) -> None:
+    """Pruning is **lazy**: it happens on a miss, never on a hit.
+
+    A fully warm run must not pay a directory listing per file — the same trade
+    `src/v2/manifest_cache.rs` makes when it declines to `stat` every cached file to tidy
+    sooner. Asserted by making the listing itself fail: a hit must not reach it.
+    """
+    assert _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())
+
+    def explode(_path: str) -> list[str]:
+        raise AssertionError("a cache hit must not list the cache directory")
+
+    original = os.listdir
+    os.listdir = explode  # pyright: ignore[reportAttributeAccessIssue]
+    try:
+        assert _assertion_rewrite._read_cached(_FILE, _KEY) is not None
+    finally:
+        os.listdir = original  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_the_cache_can_be_switched_off(tmp_path: Path) -> None:
@@ -438,16 +494,16 @@ def test_the_cache_can_be_switched_off(tmp_path: Path) -> None:
     previous = _assertion_rewrite._cache_dir
     _assertion_rewrite._cache_dir = None
     try:
-        assert not _assertion_rewrite._write_cached(_KEY, _some_code())
-        assert _assertion_rewrite._read_cached(_KEY) is None
+        assert not _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())
+        assert _assertion_rewrite._read_cached(_FILE, _KEY) is None
     finally:
         _assertion_rewrite._cache_dir = previous
 
 
 def test_no_temporary_file_survives_a_write(cache_dir: Path) -> None:
     """The write is rename-based; a leftover ``.tmp-<pid>`` would accumulate per run."""
-    assert _assertion_rewrite._write_cached(_KEY, _some_code())
-    assert [p.name for p in cache_dir.iterdir()] == [f"{_KEY}.pyc"]
+    assert _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())
+    assert [p.name for p in cache_dir.iterdir()] == [_cache_name(_FILE, _KEY)]
 
 
 # ---------------------------------------------------------------------------

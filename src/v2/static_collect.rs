@@ -40,8 +40,8 @@
 //! fixtures and every conftest in the chain, none of which the test file mentions.  So a file
 //! whose conftest chain contains a parametrized fixture *cannot* be answered from the file
 //! alone.  Rather than model conftest fixtures, this module requires the whole chain to be
-//! statically safe **and** free of any textual `params=` (the plan's rule, kept because it is
-//! strictly more conservative than the structural analysis and independent of it).
+//! statically safe **and** free of any parametrized-fixture call (`parametrized_fixture_call`,
+//! the plan's rule expressed against the AST rather than against the file's text).
 //!
 //! # Byte-exactness is against v1's ids, not pytest's
 //!
@@ -278,7 +278,7 @@ pub fn static_pass_cached(
             continue;
         }
         let chain = read_conftest_chain(dir, rootdir);
-        let verdict = chain_is_static(&chain, &shadows);
+        let verdict = chain_is_static(&chain, &shadows, ChainRule::Collection);
         let shard = cache.as_ref().map(|cache| {
             cache.load_dir(
                 &relative_posix(dir, rootdir),
@@ -400,7 +400,7 @@ pub fn rewrite_plan(
             continue;
         }
         let chain = read_conftest_chain(dir, rootdir);
-        let verdict = chain_is_static(&chain, &shadows);
+        let verdict = chain_is_static(&chain, &shadows, ChainRule::Rewrite);
         let digest = digest_of_chain(
             chain
                 .iter()
@@ -665,26 +665,131 @@ fn relative_posix(path: &Path, rootdir: &Path) -> String {
 /// on"?
 ///
 /// The chain is `_v2_worker.py::conftest_chain`'s: every `conftest.py` from `dir` up to and
-/// including `rootdir`.  Each one must (a) contain no textual `params=`, and (b) pass the same
-/// import-safety analysis a test file passes.
+/// including `rootdir`.  Each one must (a) define no parametrized fixture, and (b) pass the
+/// same import-safety analysis a test file passes.
 ///
-/// (a) is the rule the plan names, and it is kept even though (b) subsumes it in every case
-/// this module can decide: a parametrized fixture in *any* conftest in the chain changes the
-/// nodeids of tests that never mention it (`fixture_param_dimensions` walks the whole closure,
-/// and `build_closure` seeds the closure with `registry.autouse_names` before the test's own
-/// arguments — so an autouse parametrized fixture contributes the **leftmost** id component to
-/// every test in the directory).  A textual scan cannot be fooled by a spelling the structural
-/// analysis has not met.
+/// (a) is the rule the plan names: a parametrized fixture in *any* conftest in the chain
+/// changes the nodeids of tests that never mention it (`fixture_param_dimensions` walks the
+/// whole closure, and `build_closure` seeds the closure with `registry.autouse_names` before
+/// the test's own arguments — so an autouse parametrized fixture contributes the **leftmost**
+/// id component to every test in the directory).
+///
+/// It was originally `source.contains("params=")`, which is unfoolable and also unusably
+/// coarse: on rustest's own tree it matched a *parameter default* in a compat shim
+/// (`def _fixture(..., params=None, ...)` in `tests/conftest.py`) and took the whole 53-file
+/// suite out of the static tier — and, later, out of assertion rewriting. It is now
+/// [`parametrized_fixture_call`]; see that function for what it does and does not catch.
 ///
 /// (b) is needed because a conftest that raises at import time is a *collection error* for
 /// every test file below it: `_v2_worker.py::build_registry` imports the chain before the
 /// module, inside `collect_file`'s `try`.
+/// The first call in `body` that may create a **parametrized fixture**, described, or `None`.
+///
+/// Walks every statement and expression looking for a *call* whose callee's last name segment
+/// is `fixture` — `fixture(...)`, `pytest.fixture(...)`, `rustest.fixture(...)`, or any other
+/// attribute path ending in `.fixture` — and reports it when it carries `params=`, `ids=`, or
+/// `**kwargs`.
+///
+/// # What it catches that matters
+///
+/// Every syntactic form that reaches `_v2_worker.py`'s registry with
+/// `__rustest_fixture_params__` set: the decorator form `@fixture(params=[...])`, the
+/// decorator-factory form assigned at module level, and `**kwargs` — where the keys are a
+/// runtime value and `params` may be among them (the splat hole fixed in Task 1).
+///
+/// # What it deliberately no longer catches
+///
+/// `params=` as a **parameter default** (`def _fixture(*, params=None)`) or as a **keyword
+/// forward to a non-fixture callee**. Neither can produce a parametrized fixture, and the
+/// previous textual scan flagged both — which is how one compat shim in `tests/conftest.py`
+/// removed 53 files from the static tier.
+///
+/// # The residual, stated rather than hidden
+///
+/// A conftest that builds a parametrized fixture **indirectly** — a helper that calls
+/// `fixture(params=...)` and whose *return value* is bound at module level under a name this
+/// walk cannot follow — is not caught by the callee check alone. It is caught anyway, because
+/// the walk is over the whole module rather than only its top level: the `fixture(params=...)`
+/// call still appears somewhere in the file, wherever it is nested. The cost of that choice is
+/// the reverse false positive — a conftest that defines such a helper and *never uses it* is
+/// flagged — and that is the direction this rule must err in, because a missed parametrized
+/// fixture is a wrong manifest (the Critical class) while a spurious one costs only speed.
+fn parametrized_fixture_call(body: &[ruff_python_ast::Stmt]) -> Option<String> {
+    struct Finder {
+        found: Option<String>,
+    }
+
+    impl ruff_python_ast::visitor::Visitor<'_> for Finder {
+        fn visit_expr(&mut self, expr: &ruff_python_ast::Expr) {
+            if self.found.is_some() {
+                return;
+            }
+            if let ruff_python_ast::Expr::Call(call) = expr {
+                if let Some(detail) = fixture_call_detail(call) {
+                    self.found = Some(detail);
+                    return;
+                }
+            }
+            ruff_python_ast::visitor::walk_expr(self, expr);
+        }
+    }
+
+    let mut finder = Finder { found: None };
+    for stmt in body {
+        ruff_python_ast::visitor::Visitor::visit_stmt(&mut finder, stmt);
+        if finder.found.is_some() {
+            break;
+        }
+    }
+    finder.found
+}
+
+/// `Some(description)` when `call` is a `…fixture(...)` carrying `params=`, `ids=` or a splat.
+fn fixture_call_detail(call: &ruff_python_ast::ExprCall) -> Option<String> {
+    let name = callee_tail(&call.func)?;
+    if name != "fixture" {
+        return None;
+    }
+    for keyword in &call.arguments.keywords {
+        match keyword.arg.as_ref().map(|arg| arg.as_str()) {
+            // `fixture(**kwargs)`: the keys are a runtime value, so `params` may be among
+            // them. Same hole `Scan::named_decorator` closes for the decorator form.
+            None => {
+                return Some("a fixture call carries `**kwargs`, which may be `params=`".into())
+            }
+            Some(key @ ("params" | "ids")) => {
+                return Some(format!("a fixture call carries `{key}=`"))
+            }
+            Some(_) => {}
+        }
+    }
+    None
+}
+
+/// The last name segment of a callee: `fixture` for `fixture`, `pytest.fixture`, `a.b.fixture`.
+///
+/// Deliberately **not** resolved against the file's import bindings, unlike
+/// [`Scan::named_decorator`]. A conftest that shadows `fixture` with something of its own
+/// would be a false positive here; resolving would risk the opposite, and this rule is the one
+/// that must never miss.
+fn callee_tail(func: &ruff_python_ast::Expr) -> Option<&str> {
+    match func {
+        ruff_python_ast::Expr::Name(name) => Some(name.id.as_str()),
+        ruff_python_ast::Expr::Attribute(attribute) => Some(attribute.attr.as_str()),
+        _ => None,
+    }
+}
+
 pub fn conftest_chain_is_static(
     dir: &Path,
     rootdir: &Path,
     shadows: &HashSet<String>,
 ) -> Result<(), Dynamic> {
-    chain_is_static(&read_conftest_chain(dir, rootdir), shadows)
+    chain_is_static(
+        &read_conftest_chain(dir, rootdir),
+        shadows,
+        ChainRule::Collection,
+    )
 }
 
 /// One `conftest.py` in a chain, read once.
@@ -714,7 +819,46 @@ pub fn read_conftest_chain(dir: &Path, rootdir: &Path) -> Vec<ConftestSource> {
         .collect()
 }
 
-fn chain_is_static(chain: &[ConftestSource], shadows: &HashSet<String>) -> Result<(), Dynamic> {
+/// What a caller needs from a conftest chain.
+///
+/// The two callers ask different questions of the same files, and conflating them is what
+/// kept assertion rewriting off 52 of rustest's own 53 test files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainRule {
+    /// Tier S **collection**: every rule applies, the parametrized-fixture veto included.
+    /// A parametrized fixture anywhere in the chain multiplies the ids of tests that never
+    /// mention it, so a static answer for such a file would be a *wrong manifest*.
+    Collection,
+    /// Assertion **rewriting**: the chain must only be *readable*.
+    ///
+    /// Every other rule in this function exists to decide whether a file's **node ids** are
+    /// predictable without importing anything, and rewriting does not depend on ids. It
+    /// transforms a module's own `assert` statements; a conftest can make the id set
+    /// unknowable — a parametrized fixture multiplies it, an unpredictable import can add to
+    /// it — without changing what a single `assert a == b` in a test body means.
+    ///
+    /// Inheriting the collection rules here was over-conservative in the most expensive way,
+    /// because every one of them is **transitive down the whole tree**: on rustest's own
+    /// suite a single compat shim in the root `tests/conftest.py` — which forwards a
+    /// `params=` keyword, and reaches `importlib` to rebuild a package path — silenced the
+    /// failure messages of all 53 files beneath it. Neither property has anything to do with
+    /// rewriting.
+    ///
+    /// **Readability is required**, and it is the one thing that is: the bytecode cache key
+    /// hashes the chain's bytes (`ManifestCache::key_for_chain`), so a conftest that cannot
+    /// be read is a key that cannot be composed — and therefore a cached artefact that a
+    /// later conftest edit would not invalidate.
+    ///
+    /// The *file's* own gate is unchanged: `rewrite_plan` still requires `scan_module` to
+    /// accept it, so a file the detector refuses is still left alone.
+    Rewrite,
+}
+
+fn chain_is_static(
+    chain: &[ConftestSource],
+    shadows: &HashSet<String>,
+    rule: ChainRule,
+) -> Result<(), Dynamic> {
     for entry in chain {
         let conftest = &entry.path;
         let Some(source) = entry
@@ -727,19 +871,18 @@ fn chain_is_static(chain: &[ConftestSource], shadows: &HashSet<String>) -> Resul
                 format!("{} could not be read", conftest.display()),
             ));
         };
+        if rule == ChainRule::Rewrite {
+            // Readable is the whole requirement; see `ChainRule::Rewrite`.  Everything below
+            // decides whether *ids* are predictable, which rewriting does not ask.
+            continue;
+        }
         if let Some(encoding) = declares_non_utf8_encoding(source) {
-            // Applied to conftests as well as to test files: the textual `params=` scan below
-            // and the structural analysis both run over text this module decoded, and a file
-            // it is decoding wrongly is not one it can make claims about.
+            // Applied to conftests as well as to test files: the parse below and the
+            // structural analysis both run over text this module decoded, and a file it is
+            // decoding wrongly is not one it can make claims about.
             return Err(Dynamic::new(
                 Reason::EncodingCookie,
                 format!("{} declares `coding: {encoding}`", conftest.display()),
-            ));
-        }
-        if source.contains("params=") {
-            return Err(Dynamic::new(
-                Reason::ParametrizedFixture,
-                format!("{} mentions `params=`", conftest.display()),
             ));
         }
         let parsed = parse_module(source).map_err(|err| {
@@ -748,6 +891,12 @@ fn chain_is_static(chain: &[ConftestSource], shadows: &HashSet<String>) -> Resul
                 format!("{} does not parse: {err}", conftest.display()),
             )
         })?;
+        if let Some(detail) = parametrized_fixture_call(&parsed.syntax().body) {
+            return Err(Dynamic::new(
+                Reason::ParametrizedFixture,
+                format!("{}: {detail}", conftest.display()),
+            ));
+        }
         // A conftest defines fixtures, not tests, so only the import-safety half applies —
         // but it applies in full, decorators included.
         let config = conftest_scan_config();
@@ -3774,12 +3923,14 @@ mod tests {
         )
         .unwrap();
 
-        // The chain reports `ConftestChain` for anything its *structural* pass refuses, so the
-        // file's reason says "a conftest above me" rather than "I import something odd" — two
-        // different fixes for the reader. The detail is what pins that the splat rule fired,
-        // rather than some other conftest failure standing in for it.
+        // `parametrized_fixture_call` runs ahead of the structural pass and names the hazard
+        // directly, so the reason is `ParametrizedFixture` where the structural pass used to
+        // produce the generic `ConftestChain` for the same file. Both refuse; this one tells
+        // a reader *which* rule fired, which is the point of having a named reason at all.
+        // The detail pins the splat rule specifically, rather than letting some other
+        // conftest failure stand in for it.
         let err = conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).unwrap_err();
-        assert_eq!(err.reason, Reason::ConftestChain);
+        assert_eq!(err.reason, Reason::ParametrizedFixture);
         assert!(err.detail.contains("**kwargs"), "{}", err.detail);
     }
 
@@ -3926,6 +4077,71 @@ mod tests {
 
     // -- the assertion-rewrite plan ---------------------------------------
 
+    /// Diagnostic: how much of *this repository's own* suite is rewrite-eligible, and why the
+    /// rest is not.
+    ///
+    /// `#[ignore]`d because it reads the working tree rather than a fixture, so it is a
+    /// measurement rather than an assertion — but it lives here, in the suite, because the
+    /// number it produces is the one the reach question is actually about and it should be
+    /// re-runnable rather than re-derived by hand.
+    ///
+    /// `cargo test --lib rewrite_reach -- --ignored --nocapture`
+    #[test]
+    #[ignore = "diagnostic: prints rewrite reach over this repository's own suite"]
+    fn rewrite_reach_over_this_repository() {
+        let rootdir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut targets: Vec<PathBuf> = Vec::new();
+        for dir in ["tests", "examples/tests"] {
+            gather_test_files(&rootdir.join(dir), &mut targets);
+        }
+        targets.sort();
+        let config = ResolvedConfig {
+            rootdir: rootdir.to_path_buf(),
+            ..conftest_scan_config()
+        };
+        let plan = rewrite_plan(&targets, rootdir, &config);
+        let shadows = shadowing_names(&targets, rootdir);
+
+        let mut reasons: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for (path, key) in targets.iter().zip(&plan) {
+            if key.is_some() {
+                continue;
+            }
+            let rel = relative_posix(path, rootdir);
+            let reason = read_source(path)
+                .and_then(|source| scan_module(&source, &rel, &config, &shadows))
+                .err()
+                .map(|dynamic| format!("{:?}", dynamic.reason))
+                .unwrap_or_else(|| "chain or stem collision".to_string());
+            *reasons.entry(reason).or_default() += 1;
+        }
+
+        let eligible = plan.iter().filter(|key| key.is_some()).count();
+        println!("rewrite reach: {eligible}/{} files", targets.len());
+        for (reason, count) in reasons {
+            println!("  refused {count:3} x {reason}");
+        }
+    }
+
+    fn gather_test_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                gather_test_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "py")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("test_"))
+            {
+                out.push(path);
+            }
+        }
+    }
+
     /// The plan's shape in one test: a statically analysable file gets a key, a file the
     /// detector refuses gets `None`, and the vector stays indexed by target.
     ///
@@ -4024,13 +4240,38 @@ mod tests {
     /// A directory whose conftest chain is not statically safe contributes no keys — the
     /// same veto `static_pass_cached` applies, reached the same way.
     #[test]
-    fn an_unsafe_conftest_chain_withholds_the_rewrite_key() {
+    fn a_parametrized_conftest_fixture_does_not_withhold_the_rewrite_key() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("conftest.py"),
             "import rustest\n\n\n@rustest.fixture(params=[1, 2])\ndef anything(request):\n    return request.param\n",
         )
         .unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(&path, "def test_one():\n    assert 1 == 1\n").unwrap();
+
+        // The **collection** tier refuses this directory, and must: a parametrized fixture
+        // multiplies the ids of every test in scope.
+        assert!(conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).is_err());
+
+        // Rewriting does not care. It transforms this file's own `assert` statements, and how
+        // many times the file's tests are instantiated changes none of them. Asserting that
+        // the two tiers *disagree* here is the whole point of `ChainRule`: the first version
+        // of this test asserted they agreed, which is what kept assertion rewriting off 52 of
+        // rustest's own 53 test files.
+        assert!(rewrite_plan(&[path], tmp.path(), &config())[0].is_some());
+    }
+
+    /// The one chain property rewriting *does* require: every conftest must be readable.
+    ///
+    /// The bytecode cache key hashes the chain's bytes, so a conftest that cannot be read is
+    /// a key that cannot be composed — and therefore a cached artefact that a later edit to
+    /// that conftest would not invalidate. Undecodable bytes reach the same arm as an
+    /// unreadable file, and are the portable way to produce one.
+    #[test]
+    fn an_unreadable_conftest_withholds_the_rewrite_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("conftest.py"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
         let path = tmp.path().join("test_a.py");
         std::fs::write(&path, "def test_one():\n    assert 1 == 1\n").unwrap();
 
