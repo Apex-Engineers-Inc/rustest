@@ -2235,3 +2235,205 @@ def test_a_print_at_execution_never_reaches_the_protocol_stream(tmp_path: Path) 
     result = json.loads(proc.stdout.splitlines()[2])
     assert result["stdout"] == "during the test\n"
     assert "at import time" in proc.stderr
+
+
+# --------------------------------------------------------------------------------------
+# asyncio — the false-green family, pinned at the worker level
+# --------------------------------------------------------------------------------------
+#
+# `test_v2_flip_cli.py` covers these end to end through the CLI. These pin the *worker*
+# path, which is where the bug was and where a regression would land first: the CLI tests
+# would still pass if the orchestrator learned to fail such a run for some other reason.
+
+
+def test_a_failing_async_body_is_reported_failed(tmp_path: Path) -> None:
+    """The defect the flip found: an `async def` test called like a sync one returns a
+    coroutine and raises nothing, so the worker reported PASSED for a body that never ran.
+
+    Measured before the fix: `1 passed` under v2 where pytest and rustest v1 both said
+    `1 failed`.
+    """
+    target = write(
+        tmp_path / "test_async_fail.py",
+        """
+        import pytest
+
+
+        @pytest.mark.asyncio
+        async def test_async_fails():
+            assert 1 == 2
+
+
+        @pytest.mark.asyncio
+        async def test_async_passes():
+            assert True
+        """,
+    )
+
+    with isolated_worker_state():
+        results = run_module(target, tmp_path)
+
+    assert statuses(results) == {
+        "test_async_fail.py::test_async_fails": "failed",
+        "test_async_fail.py::test_async_passes": "passed",
+    }
+
+
+def test_an_async_fixture_is_awaited_to_its_value(tmp_path: Path) -> None:
+    """An un-awaited `async def` fixture reaches the test as a coroutine object, which is
+    truthy and fails only wherever the test first uses it."""
+    target = write(
+        tmp_path / "test_async_fixture.py",
+        """
+        import pytest
+
+
+        @pytest.fixture
+        async def value():
+            return {"v": 7}
+
+
+        def test_sync_sees_the_value(value):
+            assert value["v"] == 7
+        """,
+    )
+
+    with isolated_worker_state():
+        assert statuses(run_module(target, tmp_path)) == {
+            "test_async_fixture.py::test_sync_sees_the_value": "passed"
+        }
+
+
+def test_an_async_yield_fixture_runs_its_teardown(tmp_path: Path) -> None:
+    """The `_teardown_async_yield` path: an `async def` + `yield` fixture must be resumed
+    past its yield, on the same loop, when its scope ends.
+
+    Asserted through an observable side effect rather than by inspecting the runner, because
+    "the finalizer was registered" and "the finalizer ran" are different claims and only the
+    second one matters. A module-scoped fixture puts the teardown at *shutdown*, which is the
+    half most likely to be skipped.
+    """
+    target = write(
+        tmp_path / "test_async_teardown.py",
+        """
+        import pytest
+
+        EVENTS = []
+
+
+        @pytest.fixture(scope="module")
+        async def resource():
+            EVENTS.append("setup")
+            yield "live"
+            EVENTS.append("teardown")
+
+
+        def test_uses_it(resource):
+            assert resource == "live"
+            assert EVENTS == ["setup"]
+        """,
+    )
+
+    with isolated_worker_state():
+        module, registry = build_registry(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        register(plans)
+        results = [execute_test(plan.id) for plan in plans]
+        assert statuses(results) == {"test_async_teardown.py::test_uses_it": "passed"}
+
+        # Still open: a module-scoped fixture is not torn down by the test that used it.
+        assert module.EVENTS == ["setup"]
+        assert shutdown() is None
+        assert module.EVENTS == ["setup", "teardown"], "the async teardown never resumed"
+
+
+def test_an_async_generator_test_is_xfailed_not_run(tmp_path: Path) -> None:
+    """`async def` + `yield` as a *test* is pytest-asyncio's `xfail(run=False)`.
+
+    Probed on pytest 8.4.2 + pytest-asyncio 1.2.0 in `asyncio_mode = auto`: the run reports
+    `1 passed, 1 xfailed` with a `PytestCollectionWarning`, and the body never executes.
+    Before this, the worker called it, got an async generator object back, raised nothing and
+    reported **passed** — with an assertion in the body that would have failed.
+    """
+    target = write(
+        tmp_path / "test_async_gen.py",
+        """
+        def test_ok():
+            assert True
+
+
+        async def test_asyncgen():
+            assert 1 == 2
+            yield
+        """,
+    )
+
+    with isolated_worker_state():
+        results = run_module(target, tmp_path)
+
+    assert statuses(results) == {
+        "test_async_gen.py::test_ok": "passed",
+        "test_async_gen.py::test_asyncgen": "xfailed",
+    }
+    reason = next(r for r in results if r["id"].endswith("test_asyncgen")).get("message", "")
+    assert "[NOTRUN]" in reason, reason
+    assert "asynchronous generators are not supported" in reason, reason
+
+
+def test_a_non_coroutine_awaitable_body_is_awaited(tmp_path: Path) -> None:
+    """pytest's guard is `hasattr(result, "__await__")`, not `iscoroutine`.
+
+    A custom awaitable — an object with `__await__`, an `asyncio.Future`, a task wrapper —
+    is not a coroutine, so the narrow check dropped it unrun and the test passed vacuously.
+    """
+    target = write(
+        tmp_path / "test_awaitable.py",
+        """
+        class Awaitable:
+            def __init__(self, ok):
+                self.ok = ok
+
+            def __await__(self):
+                return self._run().__await__()
+
+            async def _run(self):
+                assert self.ok
+
+
+        def test_awaitable_fails():
+            return Awaitable(False)
+
+
+        def test_awaitable_passes():
+            return Awaitable(True)
+        """,
+    )
+
+    with isolated_worker_state():
+        assert statuses(run_module(target, tmp_path)) == {
+            "test_awaitable.py::test_awaitable_fails": "failed",
+            "test_awaitable.py::test_awaitable_passes": "passed",
+        }
+
+
+def test_a_returned_async_generator_fails_with_pytests_message(tmp_path: Path) -> None:
+    """`__aiter__` without `__await__`: nothing can run it, and pytest fails it
+    (`_pytest/python.py::async_fail`). The collection-time guard only sees `async def`
+    functions, so a *plain* function returning one lands on the value-based branch."""
+    target = write(
+        tmp_path / "test_returns_agen.py",
+        """
+        async def _agen():
+            yield 1
+
+
+        def test_returns_async_generator():
+            return _agen()
+        """,
+    )
+
+    with isolated_worker_state():
+        results = run_module(target, tmp_path)
+
+    assert statuses(results) == {"test_returns_agen.py::test_returns_async_generator": "failed"}
+    assert "async def functions are not natively supported" in results[0].get("message", "")

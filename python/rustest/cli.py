@@ -247,6 +247,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(raw)
 
     if args.v1:
+        if args.v2_collect_only:
+            # `--v2-collect-only` is a v2 surface; there is no v1 collect-only mode. Before
+            # this guard the flag was simply ignored on the v1 branch and the suite **ran** —
+            # the single worst way to answer "list the tests, do not run anything", because
+            # it does the opposite silently and a user pointing it at a suite with side
+            # effects finds out afterwards.
+            print(
+                "ERROR: --v2-collect-only is a v2-engine surface and cannot be combined with"
+                + " --v1 (the legacy engine has no collect-only mode). Drop --v1.",
+                file=sys.stderr,
+            )
+            return 4
+        if args.v2:
+            print(
+                "ERROR: --v1 and --v2 select different engines and cannot be combined.",
+                file=sys.stderr,
+            )
+            return 4
         return _run_v1(args)
 
     # argparse hands back the *default object itself* when no positional was supplied, so
@@ -299,7 +317,9 @@ def _run_v1(args: argparse.Namespace) -> int:
     """
     print(
         "NOTE: --v1 selects the legacy engine, removed in a future release."
-        + " Run without --v1 for the default (v2) engine.",
+        + " Run without --v1 for the default (v2) engine."
+        + " (If a message below suggests --pytest-compat, that flag no longer exists:"
+        + " run without --v1 instead, where compatibility is always on.)",
         file=sys.stderr,
     )
 

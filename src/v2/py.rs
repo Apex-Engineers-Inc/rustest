@@ -144,7 +144,14 @@ fn collect_error_to_py(err: CollectError) -> PyErr {
         CollectError::Config(_) | CollectError::ArgNotFound(_) | CollectError::NoCollectors(_) => {
             PyValueError::new_err(message)
         }
-        CollectError::Spawn { .. }
+        // Reachable only from the **collection** phase.  A `pytest.exit()` in a *test body*
+        // is intercepted by `execute::worker_life`, which keeps the results already produced
+        // and exits 2; one at *import* time gets here instead, where there are no results to
+        // keep and the interim fix has no channel to say "the user ended the session" —
+        // so it is loud at exit 3 where pytest exits 2.  Residual divergence, recorded in the
+        // `marks/pytest-exit` waiver; closing it needs the session-stop signal on the wire.
+        CollectError::SessionExit { .. }
+        | CollectError::Spawn { .. }
         | CollectError::Io { .. }
         | CollectError::Handshake { .. }
         | CollectError::Protocol { .. }

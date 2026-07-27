@@ -67,6 +67,20 @@ use crate::v2::selection::{select_mask, SelectionError};
 /// [`crate::v2::collect::Worker::shutdown_run`].
 pub const SHUTDOWN_TEARDOWN_EXIT: i32 = 3;
 
+/// `_v2_worker.py::SESSION_EXIT_EXIT`.
+///
+/// A test called `pytest.exit()`. The worker wrote pytest's `Exit: <reason>` banner to its
+/// stderr and stopped without answering the request in flight. Distinct from
+/// [`SHUTDOWN_TEARDOWN_EXIT`] and from 2 (protocol drift) because the orchestrator's response
+/// is different in kind: the results already reported are **kept** and the run exits 2
+/// (pytest's `INTERRUPTED`), where a broken worker is an orchestration failure at exit 3.
+///
+/// The code is the entire channel — it carries the *fact* and no payload — which is why
+/// `pytest.exit(returncode=N)`'s N is not honoured. A payload would need a wire op, and the
+/// point of routing this through the exit status is that [`crate::v2::protocol`] does not
+/// change.
+pub const SESSION_EXIT_EXIT: i32 = 4;
+
 /// Version of the run-report wire format (`--report-json`).
 pub const REPORT_SCHEMA_VERSION: u32 = 2;
 
@@ -213,10 +227,19 @@ pub struct RunSummary {
 }
 
 impl RunSummary {
-    fn tally(outcomes: &[TestOutcome], deselected: usize, duration: f64) -> Self {
+    /// `selected` is how many tests the run *intended* to execute, which is `outcomes.len()`
+    /// for every run that finished and larger for one `-x` or `pytest.exit()` truncated.
+    ///
+    /// That is what `total` means, and the distinction only became visible when truncation
+    /// did: "how many rows follow" is trivially `tests.len()` and worth nothing, while "how
+    /// many tests this run selected" is the denominator `-v`'s percent column needs (pytest's
+    /// is `session.testscollected`, i.e. after deselection and before any truncation — probed:
+    /// `pytest -x -v` on 3 tests stopping at the second prints `[ 33%]`, `[ 66%]`, and
+    /// `pytest -v -k` selecting 2 of 4 prints `[ 50%]`, `[100%]`).
+    fn tally(outcomes: &[TestOutcome], selection: Selection, duration: f64) -> Self {
         let mut summary = RunSummary {
-            total: outcomes.len(),
-            deselected,
+            total: selection.kept,
+            deselected: selection.deselected,
             duration,
             ..RunSummary::default()
         };
@@ -265,6 +288,11 @@ pub struct RunReport {
     /// that did not stop early — which is every run the conformance harness makes.
     #[serde(default, skip_serializing_if = "is_false")]
     pub stopped_early: bool,
+    /// A test called `pytest.exit()`; the string is the worker's diagnostics, carrying
+    /// pytest's `Exit: <reason>` banner. Omitted when absent, so every ordinary run's
+    /// document is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_exit: Option<String>,
 }
 
 /// `skip_serializing_if` needs a predicate over a reference; `bool::not` is not one.
@@ -312,7 +340,21 @@ fn is_false(value: &bool) -> bool {
 /// Both are raised as exceptions and classified by kind at the Python boundary
 /// (`src/v2/py.rs`), exactly as `wrap_session` classifies `UsageError` versus any other
 /// `BaseException`.
-pub fn exit_code(collected: usize, collection_errors: usize, failures: usize) -> i32 {
+pub fn exit_code(
+    collected: usize,
+    collection_errors: usize,
+    failures: usize,
+    session_exit: bool,
+) -> i32 {
+    // `pytest.exit()` outranks everything, including failures already reported.
+    // `_pytest/main.py::wrap_session` catches `Exit` in the same arm as `KeyboardInterrupt`
+    // and sets `exitstatus = ExitCode.INTERRUPTED` regardless of `session.testsfailed`,
+    // because the `except Failed` arm never runs — the exception that escaped is the `Exit`.
+    // Probed on pytest 8.4.2: a file whose first test fails and whose second calls
+    // `pytest.exit()` reports `1 failed` and exits **2**, not 1.
+    if session_exit {
+        return 2;
+    }
     if collection_errors > 0 {
         return 2;
     }
@@ -398,6 +440,27 @@ pub fn run(
     )
 }
 
+/// When a worker should stop dispatching, and how it says so.
+///
+/// The two flags mean different things and only one of them is opt-in, which is why they are
+/// a named pair rather than two adjacent `&AtomicBool` arguments: `stop` is "a test failed"
+/// and is acted on only under `-x`; `session_over` is "a test called `pytest.exit()`" and is
+/// acted on always. Swapping them would silently make `-x` mandatory, or `pytest.exit()`
+/// optional.
+#[derive(Clone, Copy)]
+struct StopSignals<'a> {
+    fail_fast: bool,
+    stop: &'a AtomicBool,
+    session_over: &'a AtomicBool,
+}
+
+impl StopSignals<'_> {
+    fn should_stop(&self) -> bool {
+        self.session_over.load(Ordering::SeqCst)
+            || (self.fail_fast && self.stop.load(Ordering::SeqCst))
+    }
+}
+
 /// One worker's whole life in a run.
 #[derive(Default)]
 struct WorkerRun {
@@ -406,6 +469,9 @@ struct WorkerRun {
     results: Vec<(usize, TestOutcome)>,
     teardown: Option<String>,
     stderr: String,
+    /// Set when this worker's test called `pytest.exit()`; the string is the worker's
+    /// diagnostics, carrying pytest's `Exit: <reason>` banner.
+    session_exit: Option<String>,
 }
 
 /// One worker's whole collection phase: its files' outcomes, or the failure that stopped it.
@@ -458,7 +524,7 @@ fn run_with_launcher(
             dispatch.rootdir,
             Vec::new(),
             Vec::new(),
-            0,
+            Selection::default(),
             WorkerResidue::default(),
             false,
             started,
@@ -483,6 +549,17 @@ fn run_with_launcher(
     // about again.
     let stop = AtomicBool::new(false);
     let stop = &stop;
+    // A second flag, because `stop` alone is ambiguous: under `-x` it means "a test failed",
+    // and only a `fail_fast` run acts on it.  A `pytest.exit()` must stop dispatch whether or
+    // not `-x` was given, and must be told apart from `-x` when the report is assembled —
+    // one is exit 1, the other exit 2.
+    let session_over = AtomicBool::new(false);
+    let session_over = &session_over;
+    let signals = StopSignals {
+        fail_fast: options.fail_fast,
+        stop,
+        session_over,
+    };
 
     std::thread::scope(|scope| {
         let handles: Vec<_> = pool
@@ -492,17 +569,7 @@ fn run_with_launcher(
             .enumerate()
             .map(|(index, ((worker, files), exec_rx))| {
                 let collect_tx = collect_tx.clone();
-                scope.spawn(move || {
-                    worker_life(
-                        index,
-                        worker,
-                        files,
-                        collect_tx,
-                        exec_rx,
-                        options.fail_fast,
-                        stop,
-                    )
-                })
+                scope.spawn(move || worker_life(index, worker, files, collect_tx, exec_rx, signals))
             })
             .collect();
         // The clones live in the threads; this one would otherwise keep the channel open
@@ -564,6 +631,8 @@ fn run_with_launcher(
                     if !run.stderr.is_empty() {
                         residue.stderr.push(run.stderr);
                     }
+                    // Worker order is deterministic, so "the first one" is too.
+                    residue.session_exit = residue.session_exit.or(run.session_exit);
                 }
                 // Worker order is deterministic, so the reported failure is too.
                 Err(err) => failure = failure.or(Some(err)),
@@ -580,11 +649,12 @@ fn run_with_launcher(
         // only thing that tells the two apart, which is why the check is on it and not on
         // `options.fail_fast` (a `-x` run that never failed must still catch a lost result).
         let stopped_early = stop.load(Ordering::SeqCst);
+        let session_ended = session_over.load(Ordering::SeqCst);
         let mut outcomes = Vec::with_capacity(slots.len());
         for (test, slot) in staged.selected.iter().zip(slots) {
             match slot {
                 Some(outcome) => outcomes.push(outcome),
-                None if stopped_early => {}
+                None if stopped_early || session_ended => {}
                 None => {
                     return Err(RunError::Collect(CollectError::MissingResult {
                         id: test.id.clone(),
@@ -597,7 +667,10 @@ fn run_with_launcher(
             dispatch.rootdir.clone(),
             outcomes,
             staged.errors,
-            staged.deselected,
+            Selection {
+                kept: staged.selected.len(),
+                deselected: staged.deselected,
+            },
             residue,
             stopped_early,
             started,
@@ -775,23 +848,39 @@ struct WorkerResidue {
     teardown_errors: Vec<String>,
     /// Whatever the workers wrote to stderr. Carried, never graded.
     stderr: Vec<String>,
+    /// The first `pytest.exit()` banner, if a test ended the session.
+    session_exit: Option<String>,
+}
+
+/// What the selection pass decided: how many tests the run will execute, and how many it
+/// dropped.  One concept, so one argument — and `kept` is the number a truncated run's report
+/// can no longer derive from its own `tests` list.
+#[derive(Debug, Clone, Copy, Default)]
+struct Selection {
+    kept: usize,
+    deselected: usize,
 }
 
 fn finish(
     rootdir: String,
     tests: Vec<TestOutcome>,
     collection_errors: Vec<CollectionErrorEntry>,
-    deselected: usize,
+    selection: Selection,
     residue: WorkerResidue,
     stopped_early: bool,
     started: Instant,
 ) -> RunReport {
-    let summary = RunSummary::tally(&tests, deselected, started.elapsed().as_secs_f64());
+    let summary = RunSummary::tally(&tests, selection, started.elapsed().as_secs_f64());
     // A teardown failure that belongs to no test is still a failure: pytest reports the
     // same shape (`1 passed, 1 error`) and exits 1.
     let failures = tests.iter().filter(|test| test.status.is_failure()).count()
         + residue.teardown_errors.len();
-    let exit = exit_code(tests.len(), collection_errors.len(), failures);
+    let exit = exit_code(
+        tests.len(),
+        collection_errors.len(),
+        failures,
+        residue.session_exit.is_some(),
+    );
     RunReport {
         version: REPORT_SCHEMA_VERSION,
         rootdir,
@@ -802,6 +891,7 @@ fn finish(
         teardown_errors: residue.teardown_errors,
         worker_stderr: residue.stderr,
         stopped_early,
+        session_exit: residue.session_exit,
     }
 }
 
@@ -812,8 +902,7 @@ fn worker_life(
     files: Vec<(usize, PathBuf)>,
     collect_tx: Sender<CollectMessage>,
     exec_rx: Receiver<Vec<(usize, String)>>,
-    fail_fast: bool,
-    stop: &AtomicBool,
+    signals: StopSignals<'_>,
 ) -> Result<WorkerRun, CollectError> {
     let mut outcomes = Vec::with_capacity(files.len());
     for (target, path) in &files {
@@ -844,12 +933,32 @@ fn worker_life(
         // after a failure is known.  `shutdown_run` below still happens, so the fixtures this
         // worker opened are unwound exactly as they would be on a complete run — an aborted
         // run must not leak a container or a temp tree.
-        if fail_fast && stop.load(Ordering::SeqCst) {
+        //
+        // `session_over` is read whether or not `-x` was given: a `pytest.exit()` ends the
+        // session for the whole pool, and that is not an opt-in.
+        if signals.should_stop() {
             break;
         }
-        let outcome = worker.execute_one(&id)?;
-        if fail_fast && outcome.status.is_failure() {
-            stop.store(true, Ordering::SeqCst);
+        let outcome = match worker.execute_one(&id) {
+            Ok(outcome) => outcome,
+            // `pytest.exit()`.  The worker is gone and the test that called it gets no
+            // result — pytest does not report it either — but everything this worker already
+            // answered is kept, and `shutdown_run` is skipped because there is no process
+            // left to shut down.
+            Err(CollectError::SessionExit { stderr, .. }) => {
+                signals.stop.store(true, Ordering::SeqCst);
+                signals.session_over.store(true, Ordering::SeqCst);
+                return Ok(WorkerRun {
+                    results,
+                    teardown: None,
+                    stderr: String::new(),
+                    session_exit: Some(stderr),
+                });
+            }
+            Err(err) => return Err(err),
+        };
+        if signals.fail_fast && outcome.status.is_failure() {
+            signals.stop.store(true, Ordering::SeqCst);
         }
         results.push((slot, outcome));
     }
@@ -860,6 +969,7 @@ fn worker_life(
         results,
         teardown,
         stderr,
+        session_exit: None,
     })
 }
 
@@ -888,14 +998,19 @@ mod tests {
         teardown: Vec<String>,
         stderr: Vec<String>,
     ) -> RunReport {
+        let selection = Selection {
+            kept: tests.len(),
+            deselected: 0,
+        };
         finish(
             "/repo".to_string(),
             tests,
             errors,
-            0,
+            selection,
             WorkerResidue {
                 teardown_errors: teardown,
                 stderr,
+                session_exit: None,
             },
             false,
             Instant::now(),
@@ -906,28 +1021,28 @@ mod tests {
 
     #[test]
     fn a_clean_run_exits_zero() {
-        assert_eq!(exit_code(3, 0, 0), 0);
+        assert_eq!(exit_code(3, 0, 0, false), 0);
     }
 
     #[test]
     fn any_failure_exits_one() {
-        assert_eq!(exit_code(3, 0, 1), 1);
-        assert_eq!(exit_code(3, 0, 3), 1);
+        assert_eq!(exit_code(3, 0, 1, false), 1);
+        assert_eq!(exit_code(3, 0, 3, false), 1);
     }
 
     /// Probed twice, because the interesting half is the second: a collection error wins
     /// even when tests also *failed*, since pytest never runs them at all.
     #[test]
     fn a_collection_error_exits_two_and_outranks_failures() {
-        assert_eq!(exit_code(1, 1, 0), 2);
-        assert_eq!(exit_code(1, 1, 5), 2);
+        assert_eq!(exit_code(1, 1, 0, false), 2);
+        assert_eq!(exit_code(1, 1, 5, false), 2);
     }
 
     /// Zero collected is 5 whether the tree was empty or selection emptied it — probed as
     /// `no tests ran` (exit 5) and `1 deselected` (exit 5).
     #[test]
     fn zero_collected_exits_five() {
-        assert_eq!(exit_code(0, 0, 0), 5);
+        assert_eq!(exit_code(0, 0, 0, false), 5);
     }
 
     /// The precedence a naive "check `collected == 0` first" would get wrong: nothing
@@ -935,7 +1050,7 @@ mod tests {
     /// fails to import collects nothing and exits 2.
     #[test]
     fn a_collection_error_outranks_zero_collected() {
-        assert_eq!(exit_code(0, 1, 0), 2);
+        assert_eq!(exit_code(0, 1, 0, false), 2);
     }
 
     /// ...and the mirror image: failures outrank zero-collected. Unreachable in practice
@@ -943,7 +1058,7 @@ mod tests {
     /// that happens to agree only on reachable inputs.
     #[test]
     fn failures_outrank_zero_collected() {
-        assert_eq!(exit_code(0, 0, 1), 1);
+        assert_eq!(exit_code(0, 0, 1, false), 1);
     }
 
     // --- what counts as a failure ----------------------------------------
@@ -1066,7 +1181,14 @@ mod tests {
             outcome("t::e", TestStatus::XPassed),
             outcome("t::f", TestStatus::Error),
         ];
-        let summary = RunSummary::tally(&tests, 4, 1.5);
+        let summary = RunSummary::tally(
+            &tests,
+            Selection {
+                kept: tests.len(),
+                deselected: 4,
+            },
+            1.5,
+        );
         assert_eq!(summary.total, 6);
         assert_eq!(summary.passed, 1);
         assert_eq!(summary.failed, 1);
@@ -1086,7 +1208,14 @@ mod tests {
             outcome("t::a", TestStatus::XFailed),
             outcome("t::b", TestStatus::XPassed),
         ];
-        let summary = RunSummary::tally(&tests, 0, 0.0);
+        let summary = RunSummary::tally(
+            &tests,
+            Selection {
+                kept: tests.len(),
+                deselected: 0,
+            },
+            0.0,
+        );
         assert_eq!(summary.skipped, 0);
         assert_eq!(summary.passed, 0);
         assert_eq!((summary.xfailed, summary.xpassed), (1, 1));
@@ -1153,6 +1282,7 @@ mod tests {
             teardown_errors: Vec::new(),
             worker_stderr: Vec::new(),
             stopped_early: false,
+            session_exit: None,
         };
 
         assert_eq!(
@@ -1539,7 +1669,15 @@ def test_d():
             ]
         );
         assert_eq!((report.summary.passed, report.summary.failed), (1, 1));
-        assert_eq!(report.summary.total, 2, "the tail must not be counted");
+        assert_eq!(
+            report.tests.len(),
+            2,
+            "the tail must not be reported as an outcome"
+        );
+        // `total` is what the run **selected**, not what it managed to run, so a truncated
+        // run says 4 here and lists 2. That is the distinction `-v`'s percent column needs
+        // (pytest never reaches 100% under `-x`), and it is the only place the two differ.
+        assert_eq!(report.summary.total, 4);
         assert_eq!(report.exit_code, 1, "-x is TESTS_FAILED, not INTERRUPTED");
         assert!(report.stopped_early);
     }
@@ -1598,6 +1736,95 @@ def test_d():
             vec![("test_e.py::test_a".to_string(), "error")]
         );
         assert_eq!(report.exit_code, 1);
+    }
+
+    // =====================================================================
+    // pytest.exit()
+    // =====================================================================
+
+    /// `pytest.exit()` mid-run: the session stops, the results already produced are kept,
+    /// and the exit code is pytest's `INTERRUPTED`.
+    ///
+    /// All three are separate ways to get this wrong — report nothing (a dead worker),
+    /// report the exiting test (a fabricated outcome), or exit 3 (an orchestration failure
+    /// where the user asked to stop). Probed against pytest 8.4.2 on this exact shape:
+    /// `1 passed`, exit 2, `test_never` never executed.
+    #[test]
+    fn a_pytest_exit_stops_the_session_and_keeps_the_results_so_far() {
+        let tmp = tree(&[(
+            "test_bail.py",
+            "import pytest
+
+
+def test_first():
+    assert True
+
+
+def test_bails():
+    pytest.exit('stopping here')
+
+
+def test_never():
+    raise AssertionError('must not run')
+",
+        )]);
+
+        let report = run_tree(&tmp, 1);
+
+        assert_eq!(
+            statuses(&report),
+            vec![("test_bail.py::test_first".to_string(), "passed")]
+        );
+        assert_eq!(report.exit_code, 2, "pytest exits 2 for `Exit`");
+        assert!(report.session_exit.is_some(), "{report:?}");
+        assert!(
+            report
+                .session_exit
+                .as_deref()
+                .unwrap_or_default()
+                .contains("stopping here"),
+            "the user's reason must survive: {:?}",
+            report.session_exit
+        );
+    }
+
+    /// ...and it outranks a failure already reported. `wrap_session` catches `Exit` in the
+    /// same arm as `KeyboardInterrupt` and sets `INTERRUPTED` regardless of
+    /// `session.testsfailed` — the `except Failed` arm never runs. Probed: `1 failed`, exit 2.
+    #[test]
+    fn a_pytest_exit_outranks_an_earlier_failure() {
+        let tmp = tree(&[(
+            "test_bail.py",
+            "import pytest
+
+
+def test_fails():
+    assert 0
+
+
+def test_bails():
+    pytest.exit('stopping here')
+",
+        )]);
+
+        let report = run_tree(&tmp, 1);
+
+        assert_eq!(report.summary.failed, 1);
+        assert_eq!(report.exit_code, 2, "not 1: the Exit is what escaped");
+    }
+
+    /// The exit-code mapper's own precedence, pinned independently of the pool so a future
+    /// reordering of the branches is a unit-test failure rather than an end-to-end one.
+    #[test]
+    fn a_session_exit_outranks_every_other_exit_code() {
+        assert_eq!(exit_code(3, 0, 0, true), 2);
+        assert_eq!(exit_code(3, 0, 9, true), 2, "failures do not win");
+        assert_eq!(exit_code(0, 0, 0, true), 2, "nor does zero-collected");
+        assert_eq!(
+            exit_code(1, 1, 0, true),
+            2,
+            "and a collection error agrees anyway"
+        );
     }
 
     // =====================================================================

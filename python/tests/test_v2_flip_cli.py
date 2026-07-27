@@ -552,3 +552,196 @@ def test_last_failed_wins_over_failed_first() -> None:
     assert cli._last_failed_mode(parser.parse_args(["--lf", "--ff"])) == "only"  # pyright: ignore[reportPrivateUsage]
     assert cli._last_failed_mode(parser.parse_args(["--ff"])) == "first"  # pyright: ignore[reportPrivateUsage]
     assert cli._last_failed_mode(parser.parse_args([])) == "none"  # pyright: ignore[reportPrivateUsage]
+
+
+# --------------------------------------------------------------------------------------
+# pytest.exit()
+# --------------------------------------------------------------------------------------
+
+
+BAILING = """\
+import pytest
+
+
+def test_first():
+    assert True
+
+
+def test_bails():
+    pytest.exit("stopping here")
+
+
+def test_never():
+    raise AssertionError("must not run: pytest.exit() stopped the session above")
+"""
+
+
+def test_pytest_exit_stops_the_session_exactly_as_pytest_does(tmp_path: Path) -> None:
+    """Differential. Before this, ``pytest.exit()`` was a *silent no-op*: the compat shim's
+    catch-all ``__getattr__`` manufactured a do-nothing stub, the call returned, the test
+    passed and the session carried on — so the run's verdict was whatever the tests that
+    should never have run happened to do.
+    """
+    tree = _tree(tmp_path, "bail", {"test_bail.py": BAILING})
+
+    oracle = _pytest(tree, [])
+    ours = _rustest(tree, ["-n", "1"])
+
+    assert oracle.returncode == 2, oracle.stdout
+    assert ours.returncode == 2, ours.stdout + ours.stderr
+
+    # The tests before the call keep their reports; the exiting test gets none, and the
+    # tests after it never run — all three claims are pytest's, and all three are checked.
+    assert "1 passed" in oracle.stdout, oracle.stdout
+    assert ours.stderr.strip().splitlines()[-1].startswith("1 passed"), ours.stderr
+    assert "test_never" not in ours.stdout + ours.stderr
+    assert "test_bails" not in ours.stdout
+
+
+def test_pytest_exit_shows_the_reason(tmp_path: Path) -> None:
+    """pytest writes ``Exit: <reason>``; a bail-out with no visible reason is a run that
+    stopped for no stated cause."""
+    tree = _tree(tmp_path, "bailmsg", {"test_bail.py": BAILING})
+
+    result = _rustest(tree, ["-n", "1"])
+
+    assert "Exit: stopping here" in result.stderr, result.stderr
+
+
+def test_pytest_exit_outranks_an_earlier_failure(tmp_path: Path) -> None:
+    """Exit code **2**, not 1, even with a failure already reported.
+
+    ``wrap_session`` catches ``Exit`` in the same arm as ``KeyboardInterrupt`` and sets
+    ``INTERRUPTED`` regardless of ``session.testsfailed`` — the ``except Failed`` arm never
+    runs, because the exception that escaped is the ``Exit``. Probed on pytest 8.4.2:
+    ``1 failed`` and exit 2.
+    """
+    tree = _tree(
+        tmp_path,
+        "bailfail",
+        {
+            "test_bail.py": (
+                "import pytest\n\n\n"
+                "def test_fails():\n    assert 0\n\n\n"
+                "def test_bails():\n    pytest.exit('stopping here')\n"
+            )
+        },
+    )
+
+    oracle = _pytest(tree, [])
+    ours = _rustest(tree, ["-n", "1"])
+
+    assert oracle.returncode == 2 and "1 failed" in oracle.stdout, oracle.stdout
+    assert ours.returncode == 2, ours.stdout + ours.stderr
+    assert ours.stderr.strip().splitlines()[-1].startswith("1 failed"), ours.stderr
+
+
+# --------------------------------------------------------------------------------------
+# --v1 traps
+# --------------------------------------------------------------------------------------
+
+
+def test_v1_with_collect_only_is_rejected_rather_than_running_the_suite(tmp_path: Path) -> None:
+    """``--v1 --v2-collect-only`` used to **run** the suite.
+
+    That is the worst possible answer to "list the tests, do not run anything": it does the
+    opposite, silently, and a user pointing it at a suite with side effects finds out
+    afterwards. The v1 engine has no collect-only mode, so the combination is a usage error.
+    """
+    marker = tmp_path / "ran.txt"
+    tree = _tree(
+        tmp_path,
+        "collectonly",
+        {
+            "test_side_effect.py": (
+                "from pathlib import Path\n\n\n"
+                "def test_writes():\n"
+                f"    Path({str(marker)!r}).write_text('ran')\n"
+                "    assert True\n"
+            )
+        },
+    )
+
+    result = _rustest(tree, ["--v1", "--v2-collect-only"])
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "--v2-collect-only" in result.stderr and "--v1" in result.stderr, result.stderr
+    assert not marker.exists(), "the suite ran despite --v2-collect-only"
+
+
+def test_v1_and_v2_together_are_rejected(tmp_path: Path) -> None:
+    tree = _tree(tmp_path, "bothengines", {"test_ok.py": "def test_one():\n    assert True\n"})
+
+    result = _rustest(tree, ["--v1", "--v2"])
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "cannot be combined" in result.stderr, result.stderr
+
+
+def test_the_v1_banner_redirects_its_own_stale_pytest_compat_advice(tmp_path: Path) -> None:
+    """The v1 engine still prints "Run with --pytest-compat" in some diagnostics, and that
+    flag no longer exists. v1 is frozen, so the banner carries the correction instead."""
+    tree = _tree(tmp_path, "v1banner", {"test_ok.py": "def test_one():\n    assert True\n"})
+
+    result = _rustest(tree, ["--v1", "--color", "never"])
+
+    assert "--pytest-compat" in result.stderr, result.stderr
+    assert "run without --v1 instead" in result.stderr, result.stderr
+
+
+# --------------------------------------------------------------------------------------
+# -v percent column
+# --------------------------------------------------------------------------------------
+
+
+def test_the_verbose_percent_denominator_is_selected_not_run(tmp_path: Path) -> None:
+    """pytest's percent column is over ``session.testscollected`` — what the run *selected* —
+    so a truncated run never reaches 100%.
+
+    Probed on pytest 8.4.2: ``pytest -x -v`` over three tests, stopping at the second, prints
+    ``[ 33%]`` then ``[ 66%]``. Using "how many ran" as the denominator would print
+    ``[ 50%]``, ``[100%]`` and claim the run finished.
+    """
+    tree = _tree(
+        tmp_path,
+        "denominator",
+        {
+            "test_d.py": (
+                "def test_a():\n    assert True\n\n\n"
+                "def test_b():\n    assert 0\n\n\n"
+                "def test_c():\n    assert True\n"
+            )
+        },
+    )
+
+    # Not `_pytest`, which passes `-q`: pytest's verbosity is an int and `-q` cancels the
+    # `-v` this test is entirely about.
+    oracle = _run(
+        [sys.executable, "-m", "pytest", "-v", "-x", "--no-header", "-p", "no:cacheprovider"],
+        tree,
+    )
+    ours = _rustest(tree, ["-v", "-x", "-n", "1"])
+
+    percents = re.findall(r"\[\s*(\d+)%\]", ours.stdout)
+    assert percents == ["33", "66"], ours.stdout
+    assert re.findall(r"\[\s*(\d+)%\]", oracle.stdout) == percents, oracle.stdout
+
+
+def test_the_verbose_percent_denominator_follows_deselection(tmp_path: Path) -> None:
+    """...and it is *post*-deselection, so ``-k`` selecting 2 of 4 reaches 100% at the
+    second test rather than at the fourth."""
+    tree = _tree(
+        tmp_path,
+        "denominator_k",
+        {
+            "test_d.py": (
+                "def test_a():\n    assert True\n\n\n"
+                "def test_b():\n    assert True\n\n\n"
+                "def test_c():\n    assert True\n"
+            )
+        },
+    )
+
+    ours = _rustest(tree, ["-v", "-k", "test_a or test_b", "-n", "1"])
+
+    assert re.findall(r"\[\s*(\d+)%\]", ours.stdout) == ["50", "100"], ours.stdout

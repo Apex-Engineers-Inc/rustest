@@ -87,6 +87,7 @@ class _RunReport(TypedDict):
     teardown_errors: NotRequired[list[str]]
     worker_stderr: NotRequired[list[str]]
     stopped_early: NotRequired[bool]
+    session_exit: NotRequired[str]
 
 
 #: The word `-v` prints for each status, taken from pytest's own verbose column.  Probed
@@ -546,8 +547,15 @@ def v2_run(
 
         tests = report["tests"]
         if verbosity > 0:
+            # The denominator is what the run **selected**, not what it managed to run:
+            # pytest's percent column is over `session.testscollected`, so a `-x` run that
+            # stops at the second of three prints `[ 33%]`, `[ 66%]` and never reaches 100%.
+            # Probed against pytest 8.4.2 both ways -- and `-k` selecting 2 of 4 does move the
+            # denominator to 2, which is why it is `summary.total` (post-deselection) rather
+            # than a collected count.
+            total = max(report["summary"]["total"], len(tests))
             for index, test in enumerate(tests):
-                print(_progress_line(test, index, len(tests)))
+                print(_progress_line(test, index, total))
 
         if verbosity >= 0:
             _print_failure_sections(tests)
@@ -564,7 +572,13 @@ def v2_run(
         for failure in report.get("teardown_errors", []):
             print(f"ERROR {failure}", file=sys.stderr)
 
-        if report.get("stopped_early"):
+        session_exit = report.get("session_exit")
+        if session_exit:
+            # The worker already wrote pytest's `Exit: <reason>` banner into its stderr; this
+            # forwards it verbatim rather than re-wording the user's own reason.
+            print(session_exit, file=sys.stderr)
+
+        if report.get("stopped_early") and not session_exit:
             # pytest's own wording, from the ``!!!! stopping after 1 failures !!!!`` banner
             # ``_pytest/main.py`` puts on the terminal when ``maxfail`` trips.  Without it a
             # ``-x`` run looks like a suite that simply has fewer tests than it does.

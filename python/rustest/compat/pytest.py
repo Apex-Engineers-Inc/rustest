@@ -46,7 +46,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar, TypedDict, cast
+from typing import Any, Callable, NoReturn, TypeVar, TypedDict, cast
 
 try:
     from rustest import rust as _rust_bridge
@@ -95,6 +95,8 @@ __all__ = [
     "xfail",
     "raises",
     "fail",
+    "exit",
+    "Exit",
     "Failed",
     "Skipped",
     "XFailed",
@@ -653,6 +655,53 @@ Failed = _rustest_Failed
 Skipped = _rustest_Skipped
 XFailed = _rustest_XFailed
 xfail = _rustest_xfail
+
+
+class Exit(Exception):
+    """Port of `_pytest/outcomes.py::Exit` (pytest 8.4.2, l. 69-77).
+
+    ``Exception``, not ``BaseException``, because that is what pytest uses — and the
+    difference is observable: a test body wrapping its work in ``except Exception`` swallows
+    a ``pytest.exit()`` under pytest too. Reproducing the base class reproduces that.
+
+    The rustest v2 worker therefore lists this in ``_v2_worker.ABORT_EXCEPTIONS`` and
+    re-raises it ahead of its own ``except Exception`` handlers, which is exactly how pytest
+    gets the same result with a plain ``Exception``: nothing between the test body and
+    ``wrap_session`` catches it.
+    """
+
+    def __init__(self, msg: str = "unknown reason", returncode: int | None = None) -> None:
+        self.msg = msg
+        self.returncode = returncode
+        super().__init__(msg)
+
+
+def exit(reason: str = "", returncode: int | None = None) -> NoReturn:  # noqa: A001 - pytest's name
+    """Port of `_pytest/outcomes.py::exit` (l. 105-122): ``raise Exit(reason, returncode)``.
+
+    **Defined explicitly so it never reaches this module's catch-all ``__getattr__``.**  That
+    fallback manufactures a do-nothing stub class for any unknown public attribute, which is
+    right for a plugin merely *importing* a pytest internal and catastrophic for a *called*
+    control-flow function: ``pytest.exit("stopping")`` used to construct a stub instance,
+    return it, and let the test — and the whole session — carry on green. That is the
+    silent-false-green class, and it is what the ``marks/pytest-exit`` conformance case pins.
+
+    Fixing it here rather than by making the stub raise is deliberate: the stub table serves
+    every other unknown attribute, and turning it into a trap would change behaviour for
+    imports that are legitimately harmless.
+
+    ``returncode`` is accepted and carried on the exception. Under the v2 engine it is not
+    yet honoured — the session-stop signal reaches the orchestrator as a worker exit code,
+    which cannot carry a payload — so the run exits **2** (pytest's ``INTERRUPTED``, and
+    pytest's own answer when ``returncode`` is omitted). Recorded in the
+    ``marks/pytest-exit`` waiver.
+    """
+    raise Exit(reason, returncode)
+
+
+# pytest exposes the exception class as an attribute of the function it is raised by
+# (`_pytest/outcomes.py::_with_exception`), so `except pytest.exit.Exception` works.
+exit.Exception = Exit  # pyright: ignore[reportFunctionMemberAccess]
 
 
 class _PytestMarkCompat:

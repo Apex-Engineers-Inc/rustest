@@ -70,6 +70,22 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - `@mark.usefixtures` is honoured by the default engine's fixture closure.
 - `indirect=` parametrization works on the default engine (rustest's semantics — the value
   names a fixture).
+- **`pytest.exit()` stops the session.** It was a silent no-op: the compat shim's catch-all
+  attribute table manufactured a do-nothing stub, so the call returned, the test passed, and
+  every test after it ran anyway. It now raises a real `Exit`; the default engine keeps the
+  results already produced and exits **2**, which is pytest's answer. `pytest.exit(returncode=N)`'s
+  N is not honoured yet, and a `pytest.exit()` at import time exits 3 rather than 2.
+- **An `async def` + `yield` test body is no longer a silent pass.** It reported PASSED
+  without running; it is now `xfailed` with pytest-asyncio's own reason
+  ("Tests based on asynchronous generators are not supported"), matching that plugin exactly.
+- **Non-coroutine awaitables are awaited.** The guard is now pytest's duck-typed
+  `hasattr(result, "__await__")` rather than `inspect.iscoroutine`, so a test — or a fixture —
+  handing back a `Future`, a task wrapper or any custom awaitable is run instead of silently
+  dropped. A returned *async generator* is a failure, with pytest's own message.
+- `--v1 --v2-collect-only` used to **run** the suite. The combination is now a usage error
+  (exit 4); `--v2-collect-only` is a v2 surface and the legacy engine has no collect-only mode.
+- `-v`'s percent column is over the tests the run *selected*, so a `-x` run stops short of
+  100% instead of claiming it finished — pytest's `session.testscollected` denominator.
 
 ### Known gaps on the default engine (use `--v1`, or wait for Phase 3)
 
@@ -91,6 +107,10 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - No `pytest_generate_tests` hook, no `xfail_strict` ini, no `--runxfail`, no warnings
   channel.
 - Capture is stream-level, not fd-level.
+- `rustest.run()` — the Python API in `docs/guide/python-api.md` — still drives the **v1**
+  engine, and prints v1's diagnostics (including advice about the removed `--pytest-compat`).
+  A v2 Python API is Phase 3; until then the CLI is the v2 surface. `--v1`'s banner now says
+  so, because v1's own error text routes users to a flag that no longer exists.
 
 ## [0.16.2] - 2026-03-30
 

@@ -147,6 +147,7 @@ __all__ = [
     "CAPTURE_CLOSED_MESSAGE",
     "PHASES",
     "PROTOCOL_VERSION",
+    "SESSION_EXIT_EXIT",
     "SHUTDOWN_TEARDOWN_EXIT",
     "SCOPE_NAMES",
     "STATUSES",
@@ -1055,6 +1056,57 @@ def _unique_parameterset_ids(ids: list[str]) -> list[str]:
         resolved[index] = new_id
         suffixes[value] += 1
     return resolved
+
+
+#: pytest's message for a test it cannot run asynchronously
+#: (`_pytest/python.py::async_fail`, l. 137-147), reproduced verbatim so an operator greps
+#: for the same string they would under pytest.
+ASYNC_NOT_SUPPORTED_MESSAGE: Final = (
+    "async def functions are not natively supported.\n"
+    "You need to install a suitable plugin for your async framework, for example:\n"
+    "  - anyio\n"
+    "  - pytest-asyncio\n"
+    "  - pytest-tornasync\n"
+    "  - pytest-trio\n"
+    "  - pytest-twisted"
+)
+
+
+def _async_generator_xfail(func: object, name: str) -> MarkSpec | None:
+    """An `xfail(run=False)` mark for an ``async def`` + ``yield`` test, or ``None``.
+
+    **Port of `pytest_asyncio/plugin.py::AsyncGenerator._from_function` (l. 512-531)**, which
+    is the oracle here rather than bare pytest: rustest natively runs `async def` tests, so it
+    occupies pytest-asyncio's role, and pytest-asyncio's answer to an async *generator* test
+    is::
+
+        unsupported_item_type_message = (
+            f"Tests based on asynchronous generators are not supported. "
+            f"{function.name} will be ignored."
+        )
+        async_gen_item.warn(PytestCollectionWarning(unsupported_item_type_message))
+        async_gen_item.add_marker(
+            pytest.mark.xfail(run=False, reason=unsupported_item_type_message)
+        )
+
+    Probed on this repo's pytest 8.4.2 + pytest-asyncio 1.2.0 in ``asyncio_mode = auto``:
+    ``async def test_x(): assert 1 == 2; yield`` reports **xfailed** with that warning, and
+    the body never runs. Reproduced here byte-for-byte in reason text and outcome; the
+    ``PytestCollectionWarning`` is the already-documented no-warnings-channel gap.
+
+    What this replaces is a **silent green**: the body was called, returned an async
+    generator object, raised nothing, and the test reported PASSED — measured. Bare pytest
+    (no async plugin) hard-fails the same shape via ``async_fail``; either answer is red,
+    and the plugin's is the one rustest is impersonating.
+
+    The mark is prepended so it is the *closest* `xfail`, which is what
+    :func:`evaluate_xfail_marks` takes; a test that also carries its own ``@xfail`` still gets
+    `run=False`, because a body that cannot run cannot run either way.
+    """
+    if not inspect.isasyncgenfunction(func):
+        return None
+    reason = f"Tests based on asynchronous generators are not supported. {name} will be ignored."
+    return MarkSpec(name="xfail", kwargs={"run": False, "reason": reason})
 
 
 def _requested_argnames(
@@ -2207,10 +2259,20 @@ class FixtureRunner:
                 teardown = functools.partial(_teardown_yield, fixturedef, generator)
             else:
                 value = func(**kwargs)
-                # Detected on the **value**, not on the function: rustest's `@fixture`
-                # decorator wraps the body, so `iscoroutinefunction` on the registered
-                # callable can be false for a fixture that is async underneath.
-                if inspect.iscoroutine(value):
+                # Detected on the **value**, and duck-typed, exactly as the test-body guard
+                # in `_consume_test_result` is — pytest's own
+                # `hasattr(result, "__await__")` (`_pytest/python.py` l. 158).
+                #
+                # NOT because the decorator hides anything: `decorators.fixture` returns the
+                # function unchanged (it only attaches `__rustest_fixture__*` attributes), so
+                # `inspect.iscoroutinefunction` on the registered callable is perfectly
+                # reliable — verified. The reason is the *other* half of pytest's check: a
+                # fixture may legitimately hand back an awaitable that is not a coroutine —
+                # an `asyncio.Future`, a task wrapper, any object with `__await__` — and
+                # `iscoroutine` says False for every one of them, so the narrow check handed
+                # the test an un-awaited object. Same false green as the test-body one, one
+                # layer along.
+                if hasattr(value, "__await__"):
                     value = self.run_coroutine(value)
                 teardown = None
         finally:
@@ -2727,6 +2789,9 @@ def _collect_function(
         )
 
     marks = _mark_specs(func) + outer_marks
+    async_generator_mark = _async_generator_xfail(func, name)
+    if async_generator_mark is not None:
+        marks = [async_generator_mark, *marks]
     full_parts = (*parts, name)
     own_cases = _parametrization(func)
     if outer_cases:
@@ -3266,6 +3331,7 @@ STATUSES: Final = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
 #: properly ran".  `_pytest/runner.py` l. 214-223 and `_pytest/terminal.py` l. 333-335.
 _ERROR_PHASES: Final = tuple(phase for phase in PHASES if phase != "call")
 
+
 #: Exceptions that **abort the run** instead of being classified as a test outcome.
 #:
 #: Port of `_pytest/runner.py::call_runtest_hook` l. 242-244, which is the authority and is
@@ -3283,10 +3349,46 @@ _ERROR_PHASES: Final = tuple(phase for phase in PHASES if phase != "call")
 #: deep in a library silently truncate a run.
 #:
 #: ``Exit`` is pytest's own ``pytest.exit()`` signal; rustest has no equivalent, so
-#: ``KeyboardInterrupt`` is the whole set.  Re-raised out of every phase so it propagates to
-#: :func:`main` and ends the process, which is what Ctrl-C must do — classifying it would turn
-#: an interrupt into a "failed" test and then calmly run the next one.
-ABORT_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (KeyboardInterrupt,)
+def _import_exit_class() -> type[BaseException]:
+    """``pytest.exit()``'s exception — ``rustest.compat.pytest.Exit``.
+
+    Its own function for the same reason as :func:`_import_outcome_classes`: the class is
+    defined in the compat shim, and naming the import site makes it obvious that *this* is
+    the one exception in :data:`ABORT_EXCEPTIONS` a user's test can raise on purpose.
+    """
+    from rustest.compat.pytest import Exit
+
+    return Exit
+
+
+#: Exceptions that end the **session** rather than the test: they are re-raised out of every
+#: phase, propagate to :func:`main`, and stop the worker — classifying one would turn it into
+#: a "failed" test and then calmly run the next one.
+#:
+#: * ``KeyboardInterrupt`` — Ctrl-C.
+#: * ``Exit`` — ``pytest.exit()``.  `_pytest/main.py::wrap_session` catches it *outside* the
+#:   run loop, so nothing between the test body and the session boundary may swallow it;
+#:   listing it here is how a plain ``Exception`` subclass (which is what pytest's ``Exit``
+#:   is) gets that treatment through this worker's own ``except Exception`` handlers.
+#:
+#: ``SystemExit`` is deliberately **absent**: pytest continues past one (1b.2 Task 3's
+#: oracle-corrected finding), so it is classified as an ordinary failure.
+_Exit: Final[type[BaseException]] = _import_exit_class()
+
+ABORT_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (KeyboardInterrupt, _Exit)
+
+#: The worker's exit code when a test called ``pytest.exit()``.
+#:
+#: Distinct from 0 (clean), 2 (protocol drift) and :data:`SHUTDOWN_TEARDOWN_EXIT` (3, a
+#: broken teardown), because the orchestrator has to tell "the user ended the session" from
+#: "the worker broke" — the first keeps the results already produced and exits 2, the second
+#: is an orchestration failure and exits 3.  ``src/v2/execute.rs::SESSION_EXIT_EXIT``
+#: mirrors this constant and **must be changed in the same commit**.
+#:
+#: The exit code is the whole channel: it carries the *fact* of a session exit and nothing
+#: else, which is why ``pytest.exit(returncode=N)``'s N is not honoured (see
+#: ``compat/pytest.py::exit``).  A payload would need a wire op.
+SESSION_EXIT_EXIT: Final = 4
 
 
 def _import_outcome_classes() -> tuple[type[BaseException], ...]:
@@ -4027,16 +4129,48 @@ def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, o
         result = func(runner.instance, **kwargs)
     else:
         result = func(**kwargs)
-    # **The false-green guard.**  An `async def` test called like a sync one returns a
-    # coroutine and raises nothing, so the run reports PASSED for a body that never executed
-    # — measured before this line existed: `async def test(): assert 1 == 2` reported
-    # `1 passed` under v2 while both pytest and rustest v1 reported `1 failed`.  Awaiting it
-    # is what makes an async suite mean anything.  pytest reaches the same place through
-    # pytest-asyncio's `pytest_pyfunc_call` hook, which runs the coroutine on its loop; the
-    # detection is on the returned value rather than on the function because rustest's
-    # `@mark.asyncio` wraps the body.
-    if inspect.iscoroutine(result):
+    _consume_test_result(plan, runner, result)
+
+
+def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: object) -> None:
+    """Finish a test body whose call has returned — the **false-green guard**.
+
+    An `async def` test called like a sync one returns a coroutine and raises nothing, so the
+    run reports PASSED for a body that never executed. Measured before this existed:
+    ``async def test(): assert 1 == 2`` printed ``1 passed`` under v2 while both pytest and
+    rustest v1 printed ``1 failed``.
+
+    The shape of the check is **pytest's**, `_pytest/python.py::pytest_pyfunc_call`
+    (pytest 8.4.2, l. 150-168)::
+
+        result = testfunction(**testargs)
+        if hasattr(result, "__await__") or hasattr(result, "__aiter__"):
+            async_fail(pyfuncitem.nodeid)
+        elif result is not None:
+            warnings.warn(PytestReturnNotNoneWarning(...))
+
+    ...with one deliberate substitution: where pytest calls ``async_fail`` for an awaitable
+    ("async def functions are not natively supported. You need to install a suitable
+    plugin"), rustest **is** that plugin, so an awaitable is awaited. The duck-typed
+    ``__await__`` test rather than ``inspect.iscoroutine`` is the point of porting it: a
+    custom awaitable — an object with ``__await__``, a ``Future``, an ``anyio`` task wrapper —
+    is not a coroutine, and the narrower check dropped it silently, which is the same
+    false-green one layer along.
+
+    ``__aiter__`` without ``__await__`` is an **async generator object**, which nothing can
+    run as a test: pytest fails it and pytest-asyncio refuses it at collection
+    (:func:`_async_generator_xfail`). A plain function that *returns* one lands here, and
+    gets pytest's own failure with pytest's own message.
+
+    The third branch — a test that ``return``s a non-``None`` value — is pytest's
+    ``PytestReturnNotNoneWarning``. v2 has no warnings channel, so it is silently ignored,
+    exactly as before; the outcome is identical either way.
+    """
+    del plan
+    if hasattr(result, "__await__"):
         _ = runner.run_coroutine(result)
+    elif hasattr(result, "__aiter__"):
+        _fail(ASYNC_NOT_SUPPORTED_MESSAGE)
 
 
 def drain_boundaries(plan: ExecutionPlan, runner: FixtureRunner) -> BaseException | None:
@@ -4365,6 +4499,13 @@ def collect_file(path: str) -> CollectedResponse:
             "message": str(exc),
         }
         return response
+    except ABORT_EXCEPTIONS:
+        # A `pytest.exit()` at import time ends the **session**, not this file's collection.
+        # `Exit` is an ordinary `Exception` (pytest's own base class), so without this arm the
+        # handler below would file it as "this module failed to import" and the run would
+        # calmly continue — the silent no-op this fix exists to remove, moved one phase
+        # earlier. Ctrl-C reaches the same arm for the same reason.
+        raise
     except Exception as exc:
         response["error"] = {
             "path": _relative_posix(file_path, state.rootdir),
@@ -4449,11 +4590,15 @@ def main() -> int:
     * **3** (:data:`SHUTDOWN_TEARDOWN_EXIT`) — every response was written, ``bye`` included,
       but a fixture teardown failed in :func:`drain_at_shutdown`.  Not drift, and not green:
       see the constant.
+    * **4** (:data:`SESSION_EXIT_EXIT`) — a test called ``pytest.exit()``.  The session is
+      over *by request*; the orchestrator keeps every result already reported and exits 2,
+      which is pytest's answer (probed: ``1 passed``, exit 2, the exiting test unreported and
+      the tests after it never run).
 
-    A ``KeyboardInterrupt`` or ``SystemExit`` from a test body is none of the above — it
-    propagates out of this loop and ends the process, which is pytest aborting the session
-    (:data:`ABORT_EXCEPTIONS`).  The test that raised it gets no ``test_result``, on purpose:
-    the run did not finish, and reporting it as a failure would imply the rest ran.
+    A ``KeyboardInterrupt`` from a test body still propagates out of this loop uncaught and
+    ends the process, which is pytest aborting the session.  In every abort case the test
+    that raised gets no ``test_result``, on purpose: the run did not finish, and reporting it
+    as a failure would imply the rest ran.
     """
     install_pytest_shim()
 
@@ -4466,6 +4611,21 @@ def main() -> int:
         _ = protocol_out.write(encode_response(response) + "\n")
         protocol_out.flush()
 
+    try:
+        return _protocol_loop(emit)
+    except _Exit as exc:
+        # `pytest.exit()`.  The banner is pytest's own wording
+        # (`_pytest/main.py::wrap_session`: `sys.stderr.write(f"{type(exc).__name__}: {exc}")`),
+        # and the orchestrator forwards this worker's stderr, so the user sees the reason they
+        # wrote.  No `test_result` is emitted for the test that called it — the run did not
+        # finish, and a fabricated outcome is exactly the false green this replaces.
+        print(f"Exit: {exc}", file=sys.stderr)
+        return SESSION_EXIT_EXIT
+
+
+def _protocol_loop(emit: Callable[[Mapping[str, object]], None]) -> int:
+    """The request/response loop.  Split out of :func:`main` so the session-exit handler
+    there wraps every op — collection included — rather than only the execute arm."""
     while True:
         line = sys.stdin.readline()
         if not line:

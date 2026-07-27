@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex};
 use crate::v2::config::{
     matches_file_pattern, normpath, resolve_config, ConfigError, ResolvedConfig,
 };
-use crate::v2::execute::{TestOutcome, TestStatus, SHUTDOWN_TEARDOWN_EXIT};
+use crate::v2::execute::{TestOutcome, TestStatus, SESSION_EXIT_EXIT, SHUTDOWN_TEARDOWN_EXIT};
 use crate::v2::manifest::{
     CollectedTest, CollectionErrorEntry, CollectionManifest, MANIFEST_SCHEMA_VERSION,
 };
@@ -125,6 +125,17 @@ pub enum CollectError {
     Shutdown {
         worker: usize,
         detail: String,
+        stderr: String,
+    },
+    /// A test called `pytest.exit()`: the **session** is over by request, not broken.
+    ///
+    /// Carried as a `CollectError` variant so it travels the same channel every other
+    /// mid-execute outcome does, and intercepted by [`crate::v2::execute::worker_life`]
+    /// before it can be reported as a failure — the results already produced are kept, which
+    /// is what pytest does (probed: `1 passed`, exit 2, the exiting test unreported).
+    SessionExit {
+        worker: usize,
+        id: String,
         stderr: String,
     },
     /// A dispatch thread panicked — a bug in this module, never a worker's doing.
@@ -213,6 +224,11 @@ impl std::fmt::Display for CollectError {
             } => write!(
                 f,
                 "worker {worker} did not shut down cleanly: {detail}{}",
+                stderr_block(stderr)
+            ),
+            CollectError::SessionExit { worker, id, stderr } => write!(
+                f,
+                "worker {worker} ended the session from {id} (pytest.exit){}",
                 stderr_block(stderr)
             ),
             CollectError::WorkerPanicked { worker } => {
@@ -1282,14 +1298,26 @@ impl Worker {
     }
 
     fn execute_died(&mut self, id: &str, detail: String) -> CollectError {
-        let status = match self.child.wait() {
+        let (code, status) = match self.child.wait() {
             Ok(status) => {
                 self.reaped = true;
-                status.to_string()
+                (status.code(), status.to_string())
             }
-            Err(err) => format!("could not wait for the process: {err}"),
+            Err(err) => (None, format!("could not wait for the process: {err}")),
         };
         let stderr = self.diagnostics();
+        // `pytest.exit()` is the one way a worker legitimately stops mid-execute, and the
+        // exit code is the whole signal — the same channel `SHUTDOWN_TEARDOWN_EXIT` uses, and
+        // the reason this fix needs no new protocol op. Reporting it as `ExecuteWorkerDied`
+        // would call a user's deliberate bail-out an orchestration failure (exit 3) and throw
+        // away every result the worker had already produced.
+        if code == Some(SESSION_EXIT_EXIT) {
+            return CollectError::SessionExit {
+                worker: self.index,
+                id: id.to_string(),
+                stderr,
+            };
+        }
         CollectError::ExecuteWorkerDied {
             worker: self.index,
             id: id.to_string(),
