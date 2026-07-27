@@ -149,6 +149,7 @@ def v2_collect(
     mark_expr: str | None = ...,
     codeblocks: bool = ...,
     collect_tier: str = ...,
+    cache_mode: str = ...,
 ) -> str:
     """Collect tests with the v2 engine; returns a ``CollectionManifest`` JSON string.
 
@@ -157,13 +158,21 @@ def v2_collect(
     ``testpaths`` decide the roots. ``python_executable`` is the interpreter the collection
     workers run under (``sys.executable``) -- the Rust side never guesses one.
     ``workers`` is the pool size, clamped to ``[1, number of files]``. ``keyword`` and
-    ``mark_expr`` are the raw ``-k`` / ``-m`` option values, applied after collection
-    exactly as pytest's ``pytest_collection_modifyitems`` applies them.
+    ``mark_expr`` are the raw ``-k`` / ``-m`` option values, applied *inside* collection
+    exactly as pytest's ``pytest_collection_modifyitems`` applies them -- and, for files the
+    static tier answered, before any worker is spawned, so a fully static tree whose every
+    test is deselected starts no interpreter at all.
 
     ``collect_tier`` is the differential's control knob, not a user feature: ``"d"`` forbids
     the Rust static tier and sends every file to a worker, so a caller can collect the same
     tree twice and diff the two manifests. Anything else means the default. The CLI reads it
     from ``RUSTEST_V2_COLLECT_TIER`` and does not advertise it.
+
+    ``cache_mode`` is its twin for the Tier S manifest cache
+    (``.rustest_cache/v2-manifest``): ``"off"`` parses every file and writes nothing, which is
+    how a caller asks "is this answer stale?". Read from ``RUSTEST_V2_MANIFEST_CACHE``, also
+    unadvertised. Only *static* results are ever cached -- a Tier D result depends on what
+    importing the module did, which no key can capture.
 
     The JSON object is the manifest frozen in ``src/v2/manifest.rs``: ``schema_version``,
     ``rootdir`` (absolute posix), ``tests`` (each with ``id``, ``path``, ``qualname`` and

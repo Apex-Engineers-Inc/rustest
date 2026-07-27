@@ -52,8 +52,11 @@ use crate::v2::execute::{TestOutcome, TestStatus, SESSION_EXIT_EXIT, SHUTDOWN_TE
 use crate::v2::manifest::{
     CollectedTest, CollectionErrorEntry, CollectionManifest, MANIFEST_SCHEMA_VERSION,
 };
+#[cfg(test)]
+use crate::v2::manifest_cache::ManifestCache;
 use crate::v2::protocol::{WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
-use crate::v2::static_collect::static_pass;
+use crate::v2::selection::{select_mask, SelectionError};
+use crate::v2::static_collect::{static_pass_cached, CacheMode};
 use crate::v2::to_posix;
 
 // ---------------------------------------------------------------------------
@@ -148,6 +151,14 @@ pub enum CollectError {
     /// construction too, and loud for the same reason — a silently missing test is a
     /// shorter report that still exits 0.
     MissingResult { id: String },
+    /// A malformed `-k`/`-m` expression.
+    ///
+    /// Collection owns this now because selection *runs* here: `-k` is applied to the static
+    /// (and cached) half of the manifest **before** a worker is spawned, so the expression has
+    /// to be compiled before there is a manifest to hand back to the caller.  pytest agrees
+    /// on the classification — `_pytest/mark/__init__.py::_parse_expression` raises
+    /// `UsageError` — and [`crate::v2::py::collect_error_to_py`] maps it to exit 4.
+    Selection(SelectionError),
 }
 
 impl std::fmt::Display for CollectError {
@@ -241,6 +252,7 @@ impl std::fmt::Display for CollectError {
             CollectError::MissingResult { id } => {
                 write!(f, "no worker returned a result for the test {id}")
             }
+            CollectError::Selection(err) => write!(f, "{err}"),
         }
     }
 }
@@ -352,6 +364,34 @@ impl WorkerLauncher {
     }
 }
 
+/// Everything that varies between one collection and another, apart from the paths.
+///
+/// A struct rather than eight positional arguments because the last four are all "which
+/// engine behaviour do you want" knobs and a call site reading
+/// `collect(dir, args, exe, 8, true, Auto, Auto, None, None)` says nothing about which `true`
+/// is which.
+#[derive(Debug, Clone, Default)]
+pub struct CollectOptions {
+    /// Collect python fences in `.md` files — `--no-codeblocks` turns it off.
+    pub codeblocks: bool,
+    pub tier: TierMode,
+    pub cache: CacheMode,
+    /// The raw `-k` expression.
+    pub keyword: Option<String>,
+    /// The raw `-m` expression.
+    pub mark: Option<String>,
+}
+
+impl CollectOptions {
+    /// The production default: codeblocks on, both tiers, cache on, no selection.
+    pub fn new() -> Self {
+        Self {
+            codeblocks: true,
+            ..Self::default()
+        }
+    }
+}
+
 /// Collect `args` (or `testpaths`, or `invocation_dir`) into a [`CollectionManifest`].
 ///
 /// `python_executable` is the interpreter the workers run under — `sys.executable` in
@@ -363,16 +403,14 @@ pub fn collect(
     args: &[PathBuf],
     python_executable: &str,
     workers: usize,
-    codeblocks: bool,
-    tier: TierMode,
+    options: &CollectOptions,
 ) -> Result<CollectionManifest, CollectError> {
     collect_with_launcher(
         invocation_dir,
         args,
         &WorkerLauncher::module(python_executable),
         workers,
-        codeblocks,
-        tier,
+        options,
     )
 }
 
@@ -423,6 +461,23 @@ pub(crate) struct Dispatch {
     /// Per target, in walk order: `Some(tests)` when Tier S answered, `None` when the file is
     /// a worker's job.  Also the tier-attribution surface the differential asserts on.
     pub(crate) static_tests: Vec<Option<Vec<CollectedTest>>>,
+    /// How many of Tier S's tests `-k`/`-m` removed **before any process was started**.
+    ///
+    /// Selection is applied to the static half here rather than to the whole manifest
+    /// afterwards, which is what lets a fully static tree answer a `-k` that matches nothing
+    /// without spawning an interpreter.  The dynamic half's share is added by
+    /// [`collect_with_launcher`] once the workers have reported, because a file nobody has
+    /// imported has no tests to deselect yet.  The sum is pytest's `N deselected` either way:
+    /// the predicate is per test, so partitioning the tests changes nothing.
+    pub(crate) deselected: usize,
+    /// The manifest cache this run used, when one was enabled.
+    ///
+    /// `#[cfg(test)]`: production has no use for it — the pass has already read and written
+    /// everything by the time it returns — but its [`crate::v2::manifest_cache::CacheStats`]
+    /// are the instrument for the claim that a warm collection *parses nothing*, and that
+    /// claim has to be checkable through the same `collect` entry point a user calls.
+    #[cfg(test)]
+    pub(crate) cache: Option<ManifestCache>,
     /// The same rootdir as a native path.  Carried rather than rebuilt from the posix
     /// string, because anything that writes *next to* the rootdir — the last-failed cache —
     /// needs a path the platform's own APIs accept.
@@ -448,43 +503,65 @@ pub(crate) fn plan(
     workers: usize,
     codeblocks: bool,
 ) -> Result<Dispatch, CollectError> {
-    plan_with_tier(
+    plan_with_options(
         invocation_dir,
         args,
         workers,
-        codeblocks,
-        TierMode::DynamicOnly,
+        &CollectOptions {
+            codeblocks,
+            tier: TierMode::DynamicOnly,
+            // Belt and braces: `TierMode::DynamicOnly` never reaches the static pass, so the
+            // cache is unreachable from the run path anyway.  Saying so explicitly is what
+            // makes "a Tier D result is never cached" readable at the call site rather than
+            // inferable from two files away.
+            cache: CacheMode::Off,
+            ..CollectOptions::default()
+        },
     )
 }
 
-/// [`plan`], with the tier choice made by the caller.
-pub(crate) fn plan_with_tier(
+/// [`plan`], with the tier, cache and selection choices made by the caller.
+pub(crate) fn plan_with_options(
     invocation_dir: &Path,
     args: &[PathBuf],
     workers: usize,
-    codeblocks: bool,
-    tier: TierMode,
+    options: &CollectOptions,
 ) -> Result<Dispatch, CollectError> {
-    let (config, targets) = discover(invocation_dir, args, codeblocks)?;
+    let (config, targets) = discover(invocation_dir, args, options.codeblocks)?;
     let rootdir = to_posix(&config.rootdir);
 
     // The Tier S pass, before a single process is spawned.  It is pure computation over files
-    // already on disk, so it parallelises and shares nothing.
-    let scanned = match tier {
-        TierMode::DynamicOnly => targets.iter().map(|_| None).collect::<Vec<_>>(),
-        TierMode::Auto => static_pass(&targets, &config.rootdir, &config)
-            .into_iter()
-            .map(Some)
-            .collect(),
+    // already on disk (plus the manifest cache), so it parallelises and shares nothing.
+    let (scanned, _cache) = match options.tier {
+        TierMode::DynamicOnly => (targets.iter().map(|_| None).collect::<Vec<_>>(), None),
+        TierMode::Auto => {
+            let pass = static_pass_cached(&targets, &config.rootdir, &config, options.cache);
+            (pass.outcomes.into_iter().map(Some).collect(), pass.cache)
+        }
     };
     // `Err` carries the refusal *reason*, which nothing downstream consumes: the manifest is
     // identical either way, and a file that fell back to a worker is not a diagnostic a user
     // asked for.  It is asserted on directly in the tests, which call `static_pass` themselves
     // — carrying it through `Dispatch` unread would be a field the compiler cannot check.
-    let static_tests: Vec<Option<Vec<CollectedTest>>> = scanned
+    let mut static_tests: Vec<Option<Vec<CollectedTest>>> = scanned
         .into_iter()
         .map(|outcome| outcome.and_then(Result::ok))
         .collect();
+
+    // Selection, applied to the static half **before** the pool is sized.  A file Tier S
+    // answered is a file whose tests are known without running anything, so `-k`/`-m` can be
+    // decided on it here; a file Tier D owns cannot be, and must not be — its tests are
+    // unknown until it is imported, and its *import error* has to be reported however
+    // aggressively the expression deselects (`-k` never hides a broken file).  So there is no
+    // "skip the worker because nothing in it matches" case, and there cannot be one.
+    let mut deselected = 0;
+    for slot in static_tests.iter_mut().flatten() {
+        let mask = select_mask(slot, options.keyword.as_deref(), options.mark.as_deref())
+            .map_err(CollectError::Selection)?;
+        deselected += mask.iter().filter(|keep| !**keep).count();
+        let mut keep = mask.into_iter();
+        slot.retain(|_| keep.next().unwrap_or(true));
+    }
 
     // Only the files Tier S could **not** answer reach a worker.  Routing stays the stem hash
     // over that subset: same-stem files are always dynamic together (Tier S refuses a shared
@@ -526,6 +603,9 @@ pub(crate) fn plan_with_tier(
     Ok(Dispatch {
         rootdir,
         static_tests,
+        deselected,
+        #[cfg(test)]
+        cache: _cache,
         rootdir_path: config.rootdir.clone(),
         targets,
         assignments,
@@ -628,13 +708,22 @@ fn collect_with_launcher(
     args: &[PathBuf],
     launcher: &WorkerLauncher,
     workers: usize,
-    codeblocks: bool,
-    tier: TierMode,
+    options: &CollectOptions,
 ) -> Result<CollectionManifest, CollectError> {
-    let dispatch = plan_with_tier(invocation_dir, args, workers, codeblocks, tier)?;
+    // Compile the expressions before anything else, so a malformed `-k` is exit 4 on an empty
+    // tree exactly as it is on a full one.  `plan_with_options` only compiles them when there
+    // is a static file to apply them to, and pytest's `UsageError` does not wait for a test
+    // to exist (`_pytest/mark/__init__.py::_parse_expression` runs from
+    // `pytest_collection_modifyitems`, which is called for every session).
+    let _ = select_mask(&[], options.keyword.as_deref(), options.mark.as_deref())
+        .map_err(CollectError::Selection)?;
 
-    // No worker has anything to do — an empty tree, or one Tier S answered in full.  Both
-    // reach the manifest without a single process being spawned.
+    let dispatch = plan_with_options(invocation_dir, args, workers, options)?;
+    let mut deselected = dispatch.deselected;
+
+    // No worker has anything to do — an empty tree, or one Tier S answered in full (including
+    // one where `-k` deselected every one of its tests).  All of them reach the manifest
+    // without a single process being spawned.
     if dispatch.assignments.is_empty() {
         let assembled = assemble(&dispatch, Vec::new())?;
         return Ok(CollectionManifest {
@@ -642,7 +731,7 @@ fn collect_with_launcher(
             rootdir: dispatch.rootdir,
             tests: assembled.tests,
             errors: assembled.errors,
-            deselected: 0,
+            deselected,
         });
     }
 
@@ -665,14 +754,30 @@ fn collect_with_launcher(
             .collect::<Vec<_>>()
     });
 
-    let assembled = assemble(&dispatch, join_pool(results)?)?;
+    // The dynamic half's selection, which could not happen before its files were imported.
+    // Applied per outcome so the count is the sum of the two halves; the predicate is per
+    // test, so that is the same number pytest reports for the whole list at once.
+    let mut outcomes = join_pool(results)?;
+    for (_, outcome) in &mut outcomes {
+        let mask = select_mask(
+            &outcome.tests,
+            options.keyword.as_deref(),
+            options.mark.as_deref(),
+        )
+        .map_err(CollectError::Selection)?;
+        deselected += mask.iter().filter(|keep| !**keep).count();
+        let mut keep = mask.into_iter();
+        outcome.tests.retain(|_| keep.next().unwrap_or(true));
+    }
+
+    let assembled = assemble(&dispatch, outcomes)?;
 
     Ok(CollectionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         rootdir: dispatch.rootdir,
         tests: assembled.tests,
         errors: assembled.errors,
-        deselected: 0,
+        deselected,
     })
 }
 
@@ -829,30 +934,63 @@ fn walk(
     let Ok(reader) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut entries: Vec<(bool, String, PathBuf)> = reader
+    let mut entries: Vec<(bool, String, PathBuf, Option<std::fs::FileType>)> = reader
         .flatten()
         .map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            (name != "__init__.py", name, entry.path())
+            // The directory enumeration already carries each entry's type on both platforms
+            // this runs on, so `file_type()` is free where `is_dir()`/`is_file()` are a
+            // `stat` apiece.  On a 500-file tree that is 1 000 syscalls, and on Windows —
+            // where every one is intercepted by whatever scanner is installed — it was the
+            // single largest term in a warm collection (see the Phase 2 Task 2 report).
+            (
+                name != "__init__.py",
+                name,
+                entry.path(),
+                entry.file_type().ok(),
+            )
         })
         .collect();
     // Python compares `str` by code point, which for UTF-8 is byte order — Rust's `Ord`
-    // for `String` agrees.
-    entries.sort();
+    // for `String` agrees.  The file type is not part of the key and never reached, because
+    // no two entries in one directory share a name.
+    entries.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
 
-    for (_, name, path) in entries {
-        // `is_dir`/`is_file` follow symlinks, matching `os.DirEntry.is_dir()`'s default.
-        if path.is_dir() {
+    for (_, name, path, file_type) in entries {
+        // `is_dir`/`is_file` follow symlinks, matching `os.DirEntry.is_dir()`'s default;
+        // `DirEntry::file_type` does **not**, so a symlink falls back to the following call.
+        if is_dir(&path, file_type) {
             if should_prune(&name, &path, config) {
                 continue;
             }
             walk(&path, config, codeblocks, out, seen);
-        } else if path.is_file()
+        } else if is_file(&path, file_type)
             && ((is_python_source(&path) && matches_python_files(&path, config))
                 || (codeblocks && is_markdown(&path)))
         {
             seen.push_walked(&path, out);
         }
+    }
+}
+
+/// `path.is_dir()` — answered from the directory entry when that is the same answer.
+///
+/// `DirEntry::file_type` is the type of the entry *itself*, so it disagrees with `Path::is_dir`
+/// for exactly one case: a symlink, which `Path::is_dir` follows.  That case falls through to
+/// the real call, so this is `is_dir` with the syscall removed rather than a different
+/// predicate.  An entry whose type could not be read falls through too.
+pub(crate) fn is_dir(path: &Path, file_type: Option<std::fs::FileType>) -> bool {
+    match file_type {
+        Some(file_type) if !file_type.is_symlink() => file_type.is_dir(),
+        _ => path.is_dir(),
+    }
+}
+
+/// The twin of [`is_dir`] for `path.is_file()`.
+pub(crate) fn is_file(path: &Path, file_type: Option<std::fs::FileType>) -> bool {
+    match file_type {
+        Some(file_type) if !file_type.is_symlink() => file_type.is_file(),
+        _ => path.is_file(),
     }
 }
 
@@ -1640,8 +1778,12 @@ mod tests {
             args,
             launcher,
             workers,
-            true,
-            TierMode::DynamicOnly,
+            &CollectOptions {
+                codeblocks: true,
+                tier: TierMode::DynamicOnly,
+                cache: CacheMode::Off,
+                ..CollectOptions::default()
+            },
         )
     }
 
@@ -2623,8 +2765,7 @@ mod tests {
             &[],
             &crate::v2::test_python(),
             workers,
-            true,
-            TierMode::Auto,
+            &CollectOptions::new(),
         )
         .expect("hybrid collection succeeds");
         let oracle = collect(
@@ -2632,8 +2773,10 @@ mod tests {
             &[],
             &crate::v2::test_python(),
             workers,
-            true,
-            TierMode::DynamicOnly,
+            &CollectOptions {
+                tier: TierMode::DynamicOnly,
+                ..CollectOptions::new()
+            },
         )
         .expect("Tier D collection succeeds");
 
@@ -2739,8 +2882,7 @@ mod tests {
             &[],
             &WorkerLauncher::scripted("definitely-not-an-interpreter", Vec::new()),
             2,
-            true,
-            TierMode::Auto,
+            &CollectOptions::new(),
         )
         .expect("a fully-static tree needs no worker");
 
@@ -2752,6 +2894,280 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["sub/test_b.py::test_two", "test_a.py::test_one"]
         );
+        differential(&tmp, 2);
+    }
+
+    // --- the manifest cache and pre-spawn selection ------------------------
+
+    fn unspawnable() -> WorkerLauncher {
+        WorkerLauncher::scripted("definitely-not-an-interpreter", Vec::new())
+    }
+
+    /// The warm `--collect-only` claim, both halves at once: the second collection of a fully
+    /// static tree **starts no process** (the launcher cannot start one) and **parses nothing**
+    /// (`misses == 0`, counted where a file reaches the parser).
+    #[test]
+    fn a_warm_collect_of_a_static_tree_spawns_nothing_and_parses_nothing() {
+        let tmp = tree(&[
+            ("test_a.py", "def test_one():\n    pass\n"),
+            ("sub/test_b.py", "def test_two():\n    pass\n"),
+        ]);
+        let options = CollectOptions::new();
+
+        let cold = collect_with_launcher(tmp.path(), &[], &unspawnable(), 2, &options)
+            .expect("a fully-static tree needs no worker");
+        let warm = collect_with_launcher(tmp.path(), &[], &unspawnable(), 2, &options)
+            .expect("...and neither does the warm one");
+        assert_eq!(cold, warm);
+        assert_eq!(
+            ids(&warm),
+            ["sub/test_b.py::test_two", "test_a.py::test_one"]
+        );
+
+        // The parse count, through the same entry point a user calls.
+        let dispatch = plan_with_options(tmp.path(), &[], 2, &options).unwrap();
+        let stats = dispatch.cache.as_ref().expect("the cache is on").stats();
+        assert_eq!(stats.misses(), 0, "the warm collection parsed a file");
+        assert_eq!(stats.hits(), 2);
+    }
+
+    /// The store is written where the gitignore already covers, under the rootdir the run
+    /// resolved -- not under the invocation directory, which may be a subdirectory of it.
+    #[test]
+    fn the_store_lands_under_the_rootdirs_cache_directory() {
+        let tmp = tree(&[("sub/test_a.py", "def test_one():\n    pass\n")]);
+        let sub = tmp.path().join("sub");
+        let _ =
+            collect_with_launcher(&sub, &[], &unspawnable(), 1, &CollectOptions::new()).unwrap();
+
+        assert!(tmp.path().join(".rustest_cache/v2-manifest").is_dir());
+        assert!(!sub.join(".rustest_cache").exists());
+    }
+
+    /// A Tier D result is **never** cached: it is what a worker reported after importing the
+    /// module, and an import depends on the interpreter, the installed packages and whatever
+    /// the conftests did when they ran -- none of which is in the key.  Enforced structurally
+    /// (only `static_pass_cached` writes), asserted here.
+    #[test]
+    fn a_dynamic_only_run_writes_nothing() {
+        let tmp = tree(&[("test_a.py", "def test_one():\n    pass\n")]);
+
+        let manifest = collect(
+            tmp.path(),
+            &[],
+            &worker_python(),
+            1,
+            &CollectOptions {
+                tier: TierMode::DynamicOnly,
+                ..CollectOptions::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(ids(&manifest), ["test_a.py::test_one"]);
+        assert!(
+            !tmp.path().join(".rustest_cache/v2-manifest").exists(),
+            "the run path wrote a manifest cache entry"
+        );
+    }
+
+    /// ...and a *mixed* tree caches only its static half, so a worker's answer can never end
+    /// up in the store by way of a directory that also holds a static file.
+    #[test]
+    fn a_mixed_tree_caches_only_its_static_half() {
+        let tmp = tree(&[
+            ("test_static.py", "def test_one():\n    pass\n"),
+            // Dynamic but perfectly importable: a module-level *call* is Tier S's rule 5.
+            // A missing import here would make the file a collection error rather than a
+            // Tier D answer, which is a different thing to be asserting about.
+            (
+                "test_dynamic.py",
+                "_marker = list()\n\n\ndef test_two():\n    pass\n",
+            ),
+        ]);
+        let options = CollectOptions::new();
+
+        let cold = collect(tmp.path(), &[], &worker_python(), 2, &options).unwrap();
+        let warm = collect(tmp.path(), &[], &worker_python(), 2, &options).unwrap();
+        assert_eq!(cold, warm);
+
+        let dispatch = plan_with_options(tmp.path(), &[], 2, &options).unwrap();
+        let stats = dispatch.cache.as_ref().unwrap().stats();
+        assert_eq!(stats.hits(), 1, "the static file was not served");
+        assert_eq!(stats.misses(), 1, "the dynamic file was cached");
+
+        let raw = std::fs::read_dir(tmp.path().join(".rustest_cache/v2-manifest"))
+            .unwrap()
+            .flatten()
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect::<String>();
+        assert!(raw.contains("test_static.py"), "{raw}");
+        assert!(!raw.contains("test_dynamic.py"), "{raw}");
+    }
+
+    /// `-k` is evaluated against the (cached) static manifest **before the pool is sized**, so
+    /// a fully static tree whose every test is deselected starts no interpreter -- proven by
+    /// handing it a launcher that could not start one.
+    #[test]
+    fn a_fully_deselected_static_tree_spawns_nothing_and_counts_correctly() {
+        let tmp = tree(&[
+            ("test_a.py", "def test_one():\n    pass\n"),
+            (
+                "test_b.py",
+                "def test_two():\n    pass\n\n\ndef test_three():\n    pass\n",
+            ),
+        ]);
+
+        let manifest = collect_with_launcher(
+            tmp.path(),
+            &[],
+            &unspawnable(),
+            2,
+            &CollectOptions {
+                keyword: Some("matches_nothing_at_all".to_string()),
+                ..CollectOptions::new()
+            },
+        )
+        .expect("a deselected static tree needs no worker");
+
+        assert!(manifest.tests.is_empty());
+        // The seventh graded value: "0 collected" and "3 collected, 3 deselected" are
+        // different sentences and the corpus grades both.
+        assert_eq!(manifest.deselected, 3);
+    }
+
+    /// A partial `-k` keeps what matches and counts what it removed, on the static side.
+    #[test]
+    fn a_partial_selection_keeps_the_matching_static_tests() {
+        let tmp = tree(&[(
+            "test_a.py",
+            "def test_keep():\n    pass\n\n\ndef test_drop():\n    pass\n",
+        )]);
+
+        let manifest = collect_with_launcher(
+            tmp.path(),
+            &[],
+            &unspawnable(),
+            1,
+            &CollectOptions {
+                keyword: Some("keep".to_string()),
+                ..CollectOptions::new()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ids(&manifest), ["test_a.py::test_keep"]);
+        assert_eq!(manifest.deselected, 1);
+    }
+
+    /// The count is the **sum of both tiers**, and it has to be: the predicate is per test, so
+    /// partitioning the tests between a pre-spawn pass and a post-worker one changes nothing
+    /// about the answer -- but only if both halves are actually counted.
+    #[test]
+    fn deselected_counts_both_tiers() {
+        let tmp = tree(&[
+            (
+                "test_static.py",
+                "def test_keep_s():\n    pass\n\n\ndef test_drop_s():\n    pass\n",
+            ),
+            (
+                "test_dynamic.py",
+                "_marker = list()\n\n\ndef test_keep_d():\n    pass\n\n\ndef test_drop_d():\n    pass\n",
+            ),
+        ]);
+        let selected = CollectOptions {
+            keyword: Some("keep".to_string()),
+            ..CollectOptions::new()
+        };
+
+        let hybrid = collect(tmp.path(), &[], &worker_python(), 2, &selected).unwrap();
+        // The oracle: the same selection with the static tier forbidden, so every test took
+        // the post-worker path.  Identical ids and an identical count is what says the
+        // pre-spawn pass changed nothing but the moment of the decision.
+        let oracle = collect(
+            tmp.path(),
+            &[],
+            &worker_python(),
+            2,
+            &CollectOptions {
+                tier: TierMode::DynamicOnly,
+                ..selected.clone()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(ids(&hybrid), ids(&oracle));
+        assert_eq!(hybrid.deselected, oracle.deselected);
+        assert_eq!(hybrid.deselected, 2);
+        assert_eq!(
+            ids(&hybrid),
+            [
+                "test_dynamic.py::test_keep_d",
+                "test_static.py::test_keep_s"
+            ]
+        );
+    }
+
+    /// A file that fails to import is still collected and still reported, however aggressively
+    /// the expression deselects.  This is why a Tier D file can never be pruned before its
+    /// worker runs, and it is the rule that keeps `-k` from hiding a broken file.
+    #[test]
+    fn selection_never_hides_a_collection_error() {
+        let tmp = tree(&[(
+            "test_broken.py",
+            "import definitely_not_installed_anywhere\n\n\ndef test_one():\n    pass\n",
+        )]);
+
+        let manifest = collect(
+            tmp.path(),
+            &[],
+            &worker_python(),
+            1,
+            &CollectOptions {
+                keyword: Some("matches_nothing_at_all".to_string()),
+                ..CollectOptions::new()
+            },
+        )
+        .unwrap();
+
+        assert!(manifest.tests.is_empty());
+        assert_eq!(manifest.errors.len(), 1);
+        assert_eq!(manifest.errors[0].path, "test_broken.py");
+    }
+
+    /// A malformed expression is a usage error even when there is nothing to apply it to --
+    /// pytest compiles it from `pytest_collection_modifyitems`, which runs for every session.
+    #[test]
+    fn a_malformed_selection_expression_is_an_error_on_an_empty_tree() {
+        let tmp = tree(&[]);
+
+        let err = collect_with_launcher(
+            tmp.path(),
+            &[],
+            &unspawnable(),
+            1,
+            &CollectOptions {
+                keyword: Some("and".to_string()),
+                ..CollectOptions::new()
+            },
+        )
+        .expect_err("a malformed -k is a usage error");
+        assert!(matches!(err, CollectError::Selection(_)), "{err:?}");
+        assert!(err.to_string().contains("-k"), "{err}");
+    }
+
+    /// The cache never changes the answer -- the three-way differential's own property,
+    /// applied to the cache: a warm hybrid manifest equals the Tier D oracle, `tier` aside.
+    #[test]
+    fn a_warm_manifest_still_equals_the_tier_d_oracle() {
+        let tmp = tree(&[
+            ("test_a.py", "def test_one():\n    pass\n"),
+            (
+                "test_p.py",
+                "import pytest\n\n\n@pytest.mark.parametrize(\"x\", [1, \"a\"])\ndef test_p(x):\n    pass\n",
+            ),
+        ]);
+        // Warm the cache first, then run the whole differential against the warm state.
+        let _ = collect(tmp.path(), &[], &worker_python(), 2, &CollectOptions::new()).unwrap();
         differential(&tmp, 2);
     }
 
@@ -2952,8 +3368,10 @@ mod tests {
             &[],
             &crate::v2::test_python(),
             1,
-            true,
-            TierMode::DynamicOnly,
+            &CollectOptions {
+                tier: TierMode::DynamicOnly,
+                ..CollectOptions::new()
+            },
         )
         .unwrap();
 

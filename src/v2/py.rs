@@ -31,10 +31,10 @@ use pyo3::prelude::*;
 use serde::Serialize;
 
 use super::cache::LastFailedMode;
-use super::collect::{collect, CollectError, TierMode};
+use super::collect::{collect, CollectError, CollectOptions, TierMode};
 use super::config::{normpath, resolve_config, ResolvedConfig};
 use super::execute::{run, RunError, RunOptions};
-use super::selection::deselect;
+use super::static_collect::CacheMode;
 use super::to_posix;
 
 /// Wire form of [`ResolvedConfig`].
@@ -159,9 +159,12 @@ pub fn v2_static_stdlib_allowlist() -> Vec<String> {
 fn collect_error_to_py(err: CollectError) -> PyErr {
     let message = err.to_string();
     match err {
-        CollectError::Config(_) | CollectError::ArgNotFound(_) | CollectError::NoCollectors(_) => {
-            PyValueError::new_err(message)
-        }
+        // A malformed `-k`/`-m` expression joins the usage errors: pytest's
+        // `_parse_expression` raises `UsageError` and `wrap_session` maps that to exit 4.
+        CollectError::Config(_)
+        | CollectError::ArgNotFound(_)
+        | CollectError::NoCollectors(_)
+        | CollectError::Selection(_) => PyValueError::new_err(message),
         // Reachable only from the **collection** phase.  A `pytest.exit()` in a *test body*
         // is intercepted by `execute::worker_life`, which keeps the results already produced
         // and exits 2; one at *import* time gets here instead, where there are no results to
@@ -216,13 +219,25 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// config file (pytest's `UsageError` shape), and `RuntimeError` for an orchestration
 /// failure. An unimportable *test file* raises nothing: it is data in `errors`.
 ///
+/// Selection (`keyword`/`mark_expr`) is applied **inside** [`collect`], not here. pytest
+/// applies it in `pytest_collection_modifyitems`, i.e. inside collection, and v2 needs it
+/// there for a second reason: `-k` is evaluated against Tier S's (and the cache's) answers
+/// *before* the worker pool is sized, so a fully static tree whose every test is deselected
+/// starts no interpreter at all. What has not changed is the rule that keeps `errors`
+/// complete — a Tier D file is collected and reported however aggressively the expression
+/// deselects, because `-k` must never hide a file that failed to import.
+///
 /// `collect_tier` is the **differential's control**, not a user feature: `"d"` forbids the
 /// static tier and sends every file to a worker, so a caller can collect the same tree twice
 /// and diff the two manifests against each other and against pytest. Anything else means the
 /// default (static where possible). The CLI reads it from `RUSTEST_V2_COLLECT_TIER` and does
 /// not advertise it; see [`super::collect::TierMode`].
+///
+/// `cache_mode` is its twin for the manifest cache: `"off"` parses every file and writes
+/// nothing, which is how a user (or a test) asks "is this answer stale?". Read from
+/// `RUSTEST_V2_MANIFEST_CACHE`; see [`CacheMode`].
 #[pyfunction]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=true, collect_tier="auto"))]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=true, collect_tier="auto", cache_mode="auto"))]
 #[allow(clippy::too_many_arguments)]
 pub fn v2_collect(
     py: Python<'_>,
@@ -234,22 +249,20 @@ pub fn v2_collect(
     mark_expr: Option<String>,
     codeblocks: bool,
     collect_tier: &str,
+    cache_mode: &str,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
-    let tier = TierMode::from_wire(collect_tier);
-    let mut manifest = py
-        .detach(|| collect(&dir, &args, python_executable, workers, codeblocks, tier))
+    let options = CollectOptions {
+        codeblocks,
+        tier: TierMode::from_wire(collect_tier),
+        cache: CacheMode::from_wire(cache_mode),
+        keyword,
+        mark: mark_expr,
+    };
+    let manifest = py
+        .detach(|| collect(&dir, &args, python_executable, workers, &options))
         .map_err(collect_error_to_py)?;
-
-    // Selection runs **after** collection and before anything is reported, which is where
-    // pytest runs it (`pytest_collection_modifyitems`).  Applying it here rather than in
-    // the walk is what keeps `errors` complete: `-k` cannot hide a file that failed to
-    // import, so a deselecting run still exits 2 when one did.
-    let selection = deselect(manifest.tests, keyword.as_deref(), mark_expr.as_deref())
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-    manifest.tests = selection.kept;
-    manifest.deselected = selection.deselected;
 
     Ok(serde_json::to_string(&manifest)
         .expect("CollectionManifest is plain data and always serializes"))
@@ -582,6 +595,7 @@ mod tests {
                 None,
                 true,
                 "auto",
+                "off",
             )
         })
         .unwrap();
@@ -671,6 +685,7 @@ mod tests {
                 None,
                 true,
                 "auto",
+                "off",
             )
         })
         .unwrap_err();
@@ -708,6 +723,7 @@ mod tests {
                 None,
                 true,
                 "d",
+                "off",
             )
         })
         .unwrap_err();
@@ -739,6 +755,7 @@ mod tests {
                 None,
                 true,
                 "auto",
+                "off",
             )
         })
         .unwrap_err();
@@ -769,6 +786,7 @@ mod tests {
                 None,
                 true,
                 "auto",
+                "off",
             )
         })
         .unwrap();

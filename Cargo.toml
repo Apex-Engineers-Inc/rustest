@@ -13,6 +13,11 @@ name = "_rust"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# Content addressing for the Tier S manifest cache (`src/v2/manifest_cache.rs`).  blake3
+# rather than a general-purpose hasher because the cache key is the *only* thing standing
+# between a user and a silently stale manifest: it is collision resistant, and it is fast
+# enough that hashing every collected file's bytes costs less than the parse it replaces.
+blake3 = "1"
 indexmap = "2.1"
 pyo3 = { version = "0.27", features = ["extension-module", "anyhow"] }
 rayon = "1.8"

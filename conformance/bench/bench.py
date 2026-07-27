@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,10 +32,16 @@ class BenchRow(TypedDict):
     rustest_run_s: float
     #: ``rustest <suite>`` with no mode flag -- the v2 default path, since the Phase 1c flip.
     rustest_v2_run_s: float
-    #: ``rustest --v2-collect-only <suite>``. Reserved (always ``None``) through Phase 1c
-    #: Task 2; Task 3 filled it in. Phase 2 will split this into cold/warm rows once the
-    #: manifest cache lands.
+    #: ``rustest --v2-collect-only <suite>`` with the Tier S manifest cache **cold** --
+    #: ``.rustest_cache/v2-manifest`` is deleted immediately before the measurement, so
+    #: every file is read and parsed. Reserved through Phase 1c Task 2; filled in by Task 3.
     rustest_collect_s: float
+    #: The same command run again, with the cache the cold run just wrote. This is the number
+    #: the Phase 2 gate is about (target: <= 50 ms at 5 000 tests) and the one a user
+    #: experiences on every run after the first, so it is measured as **wall time of the whole
+    #: process** -- interpreter start-up included, because that is latency the user waits for
+    #: whether or not the engine is responsible for it.
+    rustest_collect_warm_s: float
 
 
 class Derived(TypedDict):
@@ -65,6 +72,19 @@ def _time_cmd(cmd: list[str], cwd: Path) -> float:
             f"benchmark command failed (exit {proc.returncode}): {cmd} :: {proc.stderr[-300:]}"
         )
     return elapsed
+
+
+def _time_cold_collect(rustest_base: list[str], suite: Path) -> float:
+    """Time a ``--v2-collect-only`` with the manifest cache guaranteed cold.
+
+    The cache is removed rather than assumed absent. Earlier rows in the same suite
+    directory (the v1 and v2 *run* timings) do not write it -- the run path is Tier D only
+    and never touches the manifest cache -- but "does not today" is not a property a
+    published cold number should rest on, and one added call site would silently turn this
+    column into a second warm one.
+    """
+    shutil.rmtree(suite / ".rustest_cache" / "v2-manifest", ignore_errors=True)
+    return _time_cmd([*rustest_base, "--v2-collect-only", "."], suite)
 
 
 def derive_overhead(results: list[BenchRow]) -> Derived:
@@ -121,7 +141,13 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
                 "rustest_run_s": _time_cmd([*rustest_base, "--v1", ".", "--color", "never"], suite),
                 # No mode flag: the v2 default path.
                 "rustest_v2_run_s": _time_cmd([*rustest_base, "."], suite),
-                "rustest_collect_s": _time_cmd([*rustest_base, "--v2-collect-only", "."], suite),
+                # Cold: the cache directory is removed first, so this is a full parse of
+                # every file however many benchmark commands ran before it.
+                "rustest_collect_s": _time_cold_collect(rustest_base, suite),
+                # Warm: the very next run, reading what the cold one just wrote.
+                "rustest_collect_warm_s": _time_cmd(
+                    [*rustest_base, "--v2-collect-only", "."], suite
+                ),
             }
             results.append(row)
         if quick:
@@ -144,14 +170,15 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(
         "| files | tests | pytest collect | pytest run | rustest v1 run "
-        + "| rustest v2 run | rustest v2 collect |"
+        + "| rustest v2 run | rustest v2 collect (cold) | rustest v2 collect (warm) |"
     )
-    print("|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|")
     for row in report["results"]:
         print(
             f"| {row['files']} | {row['tests']} | {row['pytest_collect_s']:.2f}s "
             + f"| {row['pytest_run_s']:.2f}s | {row['rustest_run_s']:.2f}s "
-            + f"| {row['rustest_v2_run_s']:.2f}s | {row['rustest_collect_s']:.2f}s |"
+            + f"| {row['rustest_v2_run_s']:.2f}s | {row['rustest_collect_s']:.2f}s "
+            + f"| {row['rustest_collect_warm_s']:.3f}s |"
         )
     derived = report["derived"]
     print(f"pytest marginal overhead: {_fmt_overhead(derived['pytest_overhead_us_per_test'])}")

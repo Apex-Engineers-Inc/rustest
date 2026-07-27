@@ -348,8 +348,10 @@ def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> No
         mark_expr: str | None,
         codeblocks: bool,
         collect_tier: str,
+        cache_mode: str,
     ) -> str:
-        del invocation_dir, args, python, workers, keyword, mark_expr, codeblocks, collect_tier
+        del invocation_dir, args, python, workers, keyword, mark_expr
+        del codeblocks, collect_tier, cache_mode
         raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
 
     with stub_rust_module(v2_collect=boom):
@@ -437,8 +439,10 @@ def test_absent_path_arguments_are_passed_through_as_none_given() -> None:
         mark_expr: str | None,
         codeblocks: bool,
         collect_tier: str,
+        cache_mode: str,
     ) -> str:
-        del invocation_dir, python, workers, keyword, mark_expr, codeblocks, collect_tier
+        del invocation_dir, python, workers, keyword, mark_expr
+        del codeblocks, collect_tier, cache_mode
         seen.append(list(args))
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'
 
@@ -462,8 +466,9 @@ def test_core_passes_sys_executable_to_the_worker_pool() -> None:
         mark_expr: str | None,
         codeblocks: bool,
         collect_tier: str,
+        cache_mode: str,
     ) -> str:
-        del invocation_dir, args, keyword, mark_expr, codeblocks, collect_tier
+        del invocation_dir, args, keyword, mark_expr, codeblocks, collect_tier, cache_mode
         seen.append(python)
         assert workers >= 1
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'

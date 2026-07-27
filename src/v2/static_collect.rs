@@ -62,6 +62,7 @@ use ruff_python_parser::parse_module;
 
 use crate::v2::config::{matches_name_pattern, ResolvedConfig};
 use crate::v2::manifest::{CollectedTest, MarkSpec, Tier};
+use crate::v2::manifest_cache::{digest_of_chain, DirCache, FreshByDir, ManifestCache};
 use crate::v2::nodeid::build_nodeid;
 
 // ---------------------------------------------------------------------------
@@ -184,6 +185,71 @@ pub fn static_pass(
     rootdir: &Path,
     config: &ResolvedConfig,
 ) -> Vec<Result<Vec<CollectedTest>, Dynamic>> {
+    static_pass_cached(targets, rootdir, config, CacheMode::Off).outcomes
+}
+
+/// Whether a run may read and write the Tier S manifest cache.
+///
+/// [`CacheMode::Off`] is the control leg, in the same sense
+/// [`crate::v2::collect::TierMode::DynamicOnly`] is: every cache test needs a way to produce
+/// the answer the cache is supposed to reproduce, and every *user* needs a way to prove a
+/// surprising result is not a stale entry.  It is also what the uncached [`static_pass`]
+/// passes, which is what keeps the several dozen existing Tier S tests writing nothing to
+/// disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CacheMode {
+    /// Read and write `<rootdir>/.rustest_cache/v2-manifest`.
+    #[default]
+    Auto,
+    /// Parse every file, write nothing.
+    Off,
+}
+
+impl CacheMode {
+    /// Parse the wire spelling used by the `v2_collect` boundary and the
+    /// `RUSTEST_V2_MANIFEST_CACHE` escape hatch.  An unknown value means the default, for the
+    /// same reason [`crate::v2::collect::TierMode::from_wire`]'s does: a typo in a debug knob
+    /// must not turn a user's run into a usage error.
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "off" | "no" | "0" => CacheMode::Off,
+            _ => CacheMode::Auto,
+        }
+    }
+}
+
+/// What [`static_pass_cached`] produced, plus the cache it used.
+pub struct StaticPass {
+    /// Indexed by target, in walk order.  `Err` means "send this one to a worker".
+    pub outcomes: Vec<Result<Vec<CollectedTest>, Dynamic>>,
+    /// The cache, when one was enabled.  Its [`CacheStats`] are the instrument for the claim
+    /// that a warm collection **parses nothing**: a miss is counted at exactly the point a
+    /// file is handed to the parser, so `misses == 0` is that claim, checked rather than
+    /// argued.
+    pub cache: Option<ManifestCache>,
+}
+
+/// [`static_pass`], with the manifest cache.
+///
+/// The shape of a run:
+///
+/// 1. whole-run facts — the shadow set and the stem histogram — which no single file can see;
+/// 2. per **directory**, once: the conftest chain (read once, analysed, and digested for the
+///    cache key) and that directory's cache shard;
+/// 3. per file, in parallel: the two whole-run refusals, then a cache lookup, then — only on
+///    a miss — the parse;
+/// 4. per directory, once: the shard write-back, which is skipped entirely when nothing
+///    changed.
+///
+/// Steps 1 and 2 are **not** cached and run on every collection. That is deliberate: they are
+/// the run's own view of the filesystem, and caching a view of the filesystem is how a cache
+/// starts answering questions about a tree that no longer exists.
+pub fn static_pass_cached(
+    targets: &[PathBuf],
+    rootdir: &Path,
+    config: &ResolvedConfig,
+    mode: CacheMode,
+) -> StaticPass {
     let shadows = shadowing_names(targets, rootdir);
     let mut stems: HashMap<String, usize> = HashMap::new();
     for path in targets {
@@ -194,22 +260,43 @@ pub fn static_pass(
         *stems.entry(stem).or_insert(0) += 1;
     }
 
+    let cache = match mode {
+        CacheMode::Off => None,
+        CacheMode::Auto => Some(ManifestCache::open(
+            rootdir,
+            config,
+            &shadowable_names(&shadows),
+        )),
+    };
+
     // One entry per *directory*, because the chain is identical for every file in it and
     // analysing it is the expensive half (it reads and parses every conftest above the file).
-    let mut chains: HashMap<PathBuf, Result<(), Dynamic>> = HashMap::new();
+    let mut dirs: HashMap<PathBuf, DirState> = HashMap::new();
     for path in targets {
-        if let Some(dir) = path.parent() {
-            chains
-                .entry(dir.to_path_buf())
-                .or_insert_with(|| conftest_chain_is_static(dir, rootdir, &shadows));
+        let Some(dir) = path.parent() else { continue };
+        if dirs.contains_key(dir) {
+            continue;
         }
+        let chain = read_conftest_chain(dir, rootdir);
+        let verdict = chain_is_static(&chain, &shadows);
+        let shard = cache.as_ref().map(|cache| {
+            cache.load_dir(
+                &relative_posix(dir, rootdir),
+                digest_of_chain(
+                    chain
+                        .iter()
+                        .map(|source| (source.rel.as_str(), source.bytes.as_deref())),
+                ),
+            )
+        });
+        let _ = dirs.insert(dir.to_path_buf(), DirState { verdict, shard });
     }
 
     // Parallel because it is embarrassingly so — one file, one parse, no shared mutable state
     // — and because a fully-static tree spawns no processes at all, so this pass is the entire
     // cost of collection.  `map` on an indexed parallel iterator preserves order, so the
     // result stays indexed by target and walk order survives.
-    targets
+    let scanned: Vec<Scanned> = targets
         .par_iter()
         .map(|path| {
             let stem = path
@@ -217,18 +304,125 @@ pub fn static_pass(
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if stems.get(&stem).copied().unwrap_or(0) > 1 {
-                return Err(Dynamic::new(
-                    Reason::StemCollision,
-                    format!("another collection target shares the stem {stem:?}"),
-                ));
+                return (
+                    Err(Dynamic::new(
+                        Reason::StemCollision,
+                        format!("another collection target shares the stem {stem:?}"),
+                    )),
+                    None,
+                );
             }
-            if let Some(dir) = path.parent() {
-                if let Some(Err(err)) = chains.get(dir) {
-                    return Err(err.clone());
-                }
+            let state = path.parent().and_then(|dir| dirs.get(dir));
+            if let Some(Err(err)) = state.map(|state| &state.verdict) {
+                return (Err(err.clone()), None);
             }
-            scan_path(path, rootdir, config, &shadows)
+            scan_target(path, rootdir, config, &shadows, cache.as_ref(), state)
         })
+        .collect();
+
+    let mut outcomes = Vec::with_capacity(scanned.len());
+    let mut fresh_by_dir: FreshByDir = HashMap::new();
+    for (outcome, fresh) in scanned {
+        if let (Some(fresh), Ok(tests)) = (fresh, &outcome) {
+            let _ = fresh_by_dir
+                .entry(fresh.dir)
+                .or_default()
+                .insert(fresh.name, (fresh.key, tests.clone()));
+        }
+        outcomes.push(outcome);
+    }
+
+    if let Some(cache) = &cache {
+        for (dir, fresh) in fresh_by_dir {
+            if let Some(shard) = dirs.get(&dir).and_then(|state| state.shard.as_ref()) {
+                let _ = cache.store_dir(shard, &dir, fresh);
+            }
+        }
+    }
+
+    StaticPass { outcomes, cache }
+}
+
+/// What one directory contributes to every file in it.
+struct DirState {
+    verdict: Result<(), Dynamic>,
+    shard: Option<DirCache>,
+}
+
+/// One target's outcome, plus the cache entry it produced when it was a miss that answered.
+type Scanned = (Result<Vec<CollectedTest>, Dynamic>, Option<Fresh>);
+
+/// A cache entry this run computed and should write back.
+struct Fresh {
+    dir: PathBuf,
+    name: String,
+    key: crate::v2::manifest_cache::Digest,
+}
+
+/// One file: read, look up, and parse only on a miss.
+///
+/// The read happens either way — the cache key hashes the file's bytes, so there is no
+/// mtime-and-size shortcut here and none is wanted: a content hash cannot be fooled by a
+/// checkout that restores timestamps, by a clock that moved, or by two edits inside one
+/// filesystem timestamp tick, and those are exactly the situations where a stale manifest is
+/// least likely to be suspected.
+fn scan_target(
+    path: &Path,
+    rootdir: &Path,
+    config: &ResolvedConfig,
+    shadows: &HashSet<String>,
+    cache: Option<&ManifestCache>,
+    state: Option<&DirState>,
+) -> Scanned {
+    let source = match read_source(path) {
+        Ok(source) => source,
+        Err(err) => return (Err(err), None),
+    };
+    let rel_path = relative_posix(path, rootdir);
+
+    let shard = cache.zip(state.and_then(|state| state.shard.as_ref()));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let key = shard.map(|(cache, shard)| cache.key(shard, &rel_path, source.as_bytes()));
+
+    if let (Some((cache, shard)), Some(key)) = (shard, key) {
+        if let Some(tests) = cache.get(shard, &name, &key) {
+            return (Ok(tests), None);
+        }
+    }
+    if let Some(cache) = cache {
+        cache.record_miss();
+    }
+
+    let outcome = scan_module(&source, &rel_path, config, shadows);
+    // Only a Tier S **answer** is written.  A refusal is not cached: it costs one parse to
+    // recompute and it implies a worker round trip that dwarfs it, so an entry for it would
+    // buy nothing and would be one more thing that can go stale.
+    let fresh = match (&outcome, key, path.parent()) {
+        (Ok(_), Some(key), Some(dir)) if shard.is_some() => Some(Fresh {
+            dir: dir.to_path_buf(),
+            name,
+            key,
+        }),
+        _ => None,
+    };
+    (outcome, fresh)
+}
+
+/// The names in `shadows` that can actually change an answer: the ones Tier S's stdlib
+/// allowlist would otherwise have trusted.
+///
+/// `Scan::import_is_safe` consults `shadows` only after `STDLIB_ALLOWLIST.contains(root)`, so
+/// every other name in the set is inert.  Narrowing it is not only an optimisation — the full
+/// set contains every test file's own stem, so hashing it unfiltered would invalidate a whole
+/// tree's cache every time anyone added a test file.
+fn shadowable_names(shadows: &HashSet<String>) -> std::collections::BTreeSet<String> {
+    shadows
+        .iter()
+        .filter(|name| STDLIB_ALLOWLIST.contains(&name.as_str()))
+        .cloned()
         .collect()
 }
 
@@ -271,11 +465,14 @@ fn shadowing_names(targets: &[PathBuf], rootdir: &Path) -> HashSet<String> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                names.insert(entry.file_name().to_string_lossy().into_owned());
+            // `file_type()` comes off the directory enumeration; `is_dir()` is a `stat` per
+            // entry, and this loop visits every file in every directory a run touches.  See
+            // `collect::is_dir` for why the two are the same answer.
+            if crate::v2::collect::is_dir(&path, entry.file_type().ok()) {
+                let _ = names.insert(entry.file_name().to_string_lossy().into_owned());
             } else if path.extension().is_some_and(|ext| ext == "py") {
                 if let Some(stem) = path.file_stem() {
-                    names.insert(stem.to_string_lossy().into_owned());
+                    let _ = names.insert(stem.to_string_lossy().into_owned());
                 }
             }
         }
@@ -290,6 +487,15 @@ pub fn scan_path(
     config: &ResolvedConfig,
     shadows: &HashSet<String>,
 ) -> Result<Vec<CollectedTest>, Dynamic> {
+    let source = read_source(path)?;
+    scan_module(&source, &relative_posix(path, rootdir), config, shadows)
+}
+
+/// The file's text, or the reason it is not this module's to answer.
+///
+/// Split out of [`scan_path`] because the cached pass needs the bytes *before* it decides
+/// whether to parse them — the cache key hashes the source.
+fn read_source(path: &Path) -> Result<String, Dynamic> {
     // The markdown tier is `_v2_worker.py::collect_markdown`: it evaluates fenced blocks and
     // has no static analogue.
     if !path.extension().is_some_and(|ext| ext == "py") {
@@ -298,13 +504,12 @@ pub fn scan_path(
             format!("{} is not a .py file", path.display()),
         ));
     }
-    let source = std::fs::read_to_string(path).map_err(|err| {
+    std::fs::read_to_string(path).map_err(|err| {
         Dynamic::new(
             Reason::NotPythonSource,
             format!("{} could not be read as UTF-8 text: {err}", path.display()),
         )
-    })?;
-    scan_module(&source, &relative_posix(path, rootdir), config, shadows)
+    })
 }
 
 /// Does this source declare a PEP 263 encoding that is **not** UTF-8?
@@ -387,14 +592,50 @@ pub fn conftest_chain_is_static(
     rootdir: &Path,
     shadows: &HashSet<String>,
 ) -> Result<(), Dynamic> {
-    for conftest in conftest_chain(dir, rootdir) {
-        let Ok(source) = std::fs::read_to_string(&conftest) else {
+    chain_is_static(&read_conftest_chain(dir, rootdir), shadows)
+}
+
+/// One `conftest.py` in a chain, read once.
+///
+/// The bytes are shared between the two consumers that need them — [`chain_is_static`], which
+/// decodes and parses, and the manifest cache's chain digest, which hashes.  Reading twice
+/// would be the obvious shape and would double the syscall count of the one part of the warm
+/// path that is not already a single read per collected file.
+pub struct ConftestSource {
+    path: PathBuf,
+    /// Rootdir-relative posix path — what the cache digest hashes, so the digest does not move
+    /// when a checkout moves.
+    rel: String,
+    /// `None` when the file could not be read at all.
+    bytes: Option<Vec<u8>>,
+}
+
+/// Read every conftest that applies to `dir`, outermost first.
+pub fn read_conftest_chain(dir: &Path, rootdir: &Path) -> Vec<ConftestSource> {
+    conftest_chain(dir, rootdir)
+        .into_iter()
+        .map(|path| {
+            let rel = relative_posix(&path, rootdir);
+            let bytes = std::fs::read(&path).ok();
+            ConftestSource { path, rel, bytes }
+        })
+        .collect()
+}
+
+fn chain_is_static(chain: &[ConftestSource], shadows: &HashSet<String>) -> Result<(), Dynamic> {
+    for entry in chain {
+        let conftest = &entry.path;
+        let Some(source) = entry
+            .bytes
+            .as_deref()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        else {
             return Err(Dynamic::new(
                 Reason::ConftestChain,
                 format!("{} could not be read", conftest.display()),
             ));
         };
-        if let Some(encoding) = declares_non_utf8_encoding(&source) {
+        if let Some(encoding) = declares_non_utf8_encoding(source) {
             // Applied to conftests as well as to test files: the textual `params=` scan below
             // and the structural analysis both run over text this module decoded, and a file
             // it is decoding wrongly is not one it can make claims about.
@@ -409,7 +650,7 @@ pub fn conftest_chain_is_static(
                 format!("{} mentions `params=`", conftest.display()),
             ));
         }
-        let parsed = parse_module(&source).map_err(|err| {
+        let parsed = parse_module(source).map_err(|err| {
             Dynamic::new(
                 Reason::ConftestChain,
                 format!("{} does not parse: {err}", conftest.display()),
@@ -3129,6 +3370,266 @@ mod tests {
             Reason::StemCollision
         );
         assert!(outcomes[2].is_ok());
+    }
+
+    // -- the manifest cache ----------------------------------------------
+    //
+    // The cache is the one place in Tier S where a bug is *silent*: a stale entry is a
+    // manifest for a tree that no longer exists, delivered with exit 0.  So each of these
+    // asserts the whole loop -- cold pass, change something, warm pass -- rather than a key.
+    // The key-level mutation table lives in `manifest_cache.rs`.
+
+    /// Run the cached pass over `targets` and return the outcomes plus the cache.
+    fn cached_pass(
+        targets: &[PathBuf],
+        rootdir: &Path,
+        config: &ResolvedConfig,
+    ) -> (Vec<Result<Vec<CollectedTest>, Dynamic>>, ManifestCache) {
+        let pass = static_pass_cached(targets, rootdir, config, CacheMode::Auto);
+        let cache = pass.cache.expect("CacheMode::Auto opens a cache");
+        (pass.outcomes, cache)
+    }
+
+    fn ids_of(outcome: &Result<Vec<CollectedTest>, Dynamic>) -> Vec<String> {
+        outcome
+            .as_ref()
+            .expect("a static answer")
+            .iter()
+            .map(|test| test.id.clone())
+            .collect()
+    }
+
+    /// The property the whole task exists for: a second pass over an unchanged tree answers
+    /// identically and **hands nothing to the parser**.  `misses` is incremented at exactly
+    /// the point a file is passed to `scan_module`, so `misses == 0` is that claim measured
+    /// rather than argued.
+    #[test]
+    fn a_warm_pass_answers_from_the_cache_without_parsing_anything() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut targets = Vec::new();
+        for index in 0..5 {
+            let path = tmp.path().join(format!("test_{index}.py"));
+            std::fs::write(&path, format!("def test_case_{index}():\n    pass\n")).unwrap();
+            targets.push(path);
+        }
+
+        let (cold, cache) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(cache.stats().hits(), 0);
+        assert_eq!(cache.stats().misses(), 5);
+        assert_eq!(cache.stats().writes(), 1, "one shard for one directory");
+
+        let (warm, cache) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(cache.stats().misses(), 0, "the warm pass parsed something");
+        assert_eq!(cache.stats().hits(), 5);
+        assert_eq!(
+            cache.stats().writes(),
+            0,
+            "an unchanged shard was rewritten"
+        );
+
+        let cold_ids: Vec<_> = cold.iter().map(ids_of).collect();
+        let warm_ids: Vec<_> = warm.iter().map(ids_of).collect();
+        assert_eq!(cold_ids, warm_ids);
+        // A served entry is a Tier S entry, which is what the differential's attribution reads.
+        assert!(warm
+            .iter()
+            .flat_map(|outcome| outcome.as_ref().unwrap())
+            .all(|test| test.tier == Tier::Static));
+    }
+
+    /// ...and the cached answer is the answer, not merely the same *count*: a whole-entry
+    /// comparison against the uncached pass, which is the tier's own oracle here.
+    #[test]
+    fn a_cached_answer_equals_the_uncached_one_entry_for_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(
+            &path,
+            "import pytest\n\n\n@pytest.mark.slow\n@pytest.mark.parametrize(\"x\", [1, \"a\"])\nclass TestBox:\n    def test_m(self, x, tmp_path):\n        pass\n",
+        )
+        .unwrap();
+        let targets = vec![path];
+
+        let uncached = static_pass(&targets, tmp.path(), &config());
+        let _ = cached_pass(&targets, tmp.path(), &config());
+        let (warm, cache) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(cache.stats().hits(), 1);
+        assert_eq!(warm[0].as_ref().unwrap(), uncached[0].as_ref().unwrap());
+    }
+
+    /// Editing a file invalidates that file and **only** that file.
+    #[test]
+    fn editing_a_file_invalidates_its_entry_and_no_others() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("test_a.py");
+        let b = tmp.path().join("test_b.py");
+        std::fs::write(&a, "def test_one():\n    pass\n").unwrap();
+        std::fs::write(&b, "def test_two():\n    pass\n").unwrap();
+        let targets = vec![a.clone(), b];
+        let _ = cached_pass(&targets, tmp.path(), &config());
+
+        std::fs::write(
+            &a,
+            "def test_one():\n    pass\n\n\ndef test_extra():\n    pass\n",
+        )
+        .unwrap();
+        let (warm, cache) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(cache.stats().misses(), 1);
+        assert_eq!(cache.stats().hits(), 1);
+        assert_eq!(
+            ids_of(&warm[0]),
+            ["test_a.py::test_one", "test_a.py::test_extra"]
+        );
+    }
+
+    /// A config change invalidates everything, because the config decides what a test *is*.
+    #[test]
+    fn a_config_change_invalidates_every_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(
+            &path,
+            "def test_one():\n    pass\n\n\ndef check_two():\n    pass\n",
+        )
+        .unwrap();
+        let targets = vec![path];
+
+        let (cold, _) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(ids_of(&cold[0]), ["test_a.py::test_one"]);
+
+        let renamed = ResolvedConfig {
+            python_functions: owned(&["check"]),
+            ..config()
+        };
+        let (warm, cache) = cached_pass(&targets, tmp.path(), &renamed);
+        assert_eq!(cache.stats().hits(), 0, "a config change was ignored");
+        assert_eq!(ids_of(&warm[0]), ["test_a.py::check_two"]);
+    }
+
+    /// **The flagship stale-cache scenario, and the one the plan's three named components
+    /// would have missed.**  A file whose `import queue` was safe is cached as static.  A
+    /// `queue.py` then appears beside it: the file's bytes have not changed, the config has
+    /// not changed, no conftest has changed -- and the correct answer has flipped, because
+    /// `sys.path` now resolves `queue` to user code that can raise.  Without the shadow
+    /// component in the key this is a static answer for a file pytest may report as broken.
+    #[test]
+    fn a_new_local_module_shadowing_the_stdlib_invalidates_a_cached_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(&path, "import queue\n\n\ndef test_one():\n    pass\n").unwrap();
+        let targets = vec![path];
+
+        let (cold, _) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(ids_of(&cold[0]), ["test_a.py::test_one"]);
+
+        std::fs::write(tmp.path().join("queue.py"), "raise RuntimeError\n").unwrap();
+        let (warm, cache) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(cache.stats().hits(), 0, "a stale entry was served");
+        assert_eq!(warm[0].as_ref().unwrap_err().reason, Reason::ForeignImport);
+    }
+
+    /// A conftest edit invalidates the whole directory.  Belt **and** braces: the chain
+    /// analysis re-runs on every pass and routes the directory to Tier D on its own, and the
+    /// chain digest independently moves every key in the directory -- so relaxing either rule
+    /// later cannot quietly start serving entries written under the other.
+    #[test]
+    fn a_conftest_change_invalidates_the_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(&path, "def test_one():\n    pass\n").unwrap();
+        std::fs::write(tmp.path().join("conftest.py"), "").unwrap();
+        let targets = vec![path];
+
+        let (cold, _) = cached_pass(&targets, tmp.path(), &config());
+        assert!(cold[0].is_ok());
+
+        // A harmless-looking edit that the chain analysis still admits: the key must move
+        // anyway, which is the half this test is really about.
+        std::fs::write(tmp.path().join("conftest.py"), "# a comment\n").unwrap();
+        let (warm, cache) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(
+            cache.stats().hits(),
+            0,
+            "a conftest edit did not move the key"
+        );
+        assert!(warm[0].is_ok());
+
+        // ...and the edit that changes the answer routes the file to Tier D.
+        std::fs::write(
+            tmp.path().join("conftest.py"),
+            "import pytest\n\n\n@pytest.fixture(params=[1, 2], autouse=True)\ndef p(request):\n    return request.param\n",
+        )
+        .unwrap();
+        let (after, _) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(
+            after[0].as_ref().unwrap_err().reason,
+            Reason::ParametrizedFixture
+        );
+    }
+
+    /// A **refusal** is never written.  Recomputing one costs a parse; the worker round trip
+    /// it implies costs a thousand times that, so an entry would buy nothing and would be one
+    /// more thing that can go stale.
+    #[test]
+    fn a_dynamism_refusal_is_not_cached() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let static_path = tmp.path().join("test_static.py");
+        let dynamic_path = tmp.path().join("test_dynamic.py");
+        std::fs::write(&static_path, "def test_one():\n    pass\n").unwrap();
+        std::fs::write(
+            &dynamic_path,
+            "import numpy\n\n\ndef test_two():\n    pass\n",
+        )
+        .unwrap();
+        let targets = vec![static_path, dynamic_path];
+
+        let (cold, _) = cached_pass(&targets, tmp.path(), &config());
+        assert!(cold[0].is_ok() && cold[1].is_err());
+
+        let (_, cache) = cached_pass(&targets, tmp.path(), &config());
+        assert_eq!(cache.stats().hits(), 1, "only the static file is cached");
+        assert_eq!(cache.stats().misses(), 1, "the refusal is recomputed");
+    }
+
+    /// `CacheMode::Off` reads nothing and writes nothing -- the control leg, and what every
+    /// other Tier S test in this module runs under.
+    #[test]
+    fn the_cache_can_be_turned_off_entirely() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test_a.py");
+        std::fs::write(&path, "def test_one():\n    pass\n").unwrap();
+        let targets = vec![path];
+
+        let pass = static_pass_cached(&targets, tmp.path(), &config(), CacheMode::Off);
+        assert!(pass.cache.is_none());
+        assert!(!tmp.path().join(".rustest_cache").exists());
+        assert_eq!(ids_of(&pass.outcomes[0]), ["test_a.py::test_one"]);
+    }
+
+    #[test]
+    fn the_cache_mode_wire_spelling_defaults_to_on() {
+        assert_eq!(CacheMode::from_wire("off"), CacheMode::Off);
+        assert_eq!(CacheMode::from_wire("auto"), CacheMode::Auto);
+        // A typo in a debug knob is not a usage error.
+        assert_eq!(CacheMode::from_wire("offf"), CacheMode::Auto);
+        assert_eq!(CacheMode::default(), CacheMode::Auto);
+    }
+
+    /// Only the allowlisted names reach the shadow digest, so adding a test file does not
+    /// invalidate the tree.  Without this filter every `test_*.py` stem would be in the set
+    /// and the cache would be cold on every new test.
+    #[test]
+    fn adding_a_test_file_does_not_invalidate_the_other_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("test_a.py");
+        std::fs::write(&a, "def test_one():\n    pass\n").unwrap();
+        let _ = cached_pass(std::slice::from_ref(&a), tmp.path(), &config());
+
+        let b = tmp.path().join("test_b.py");
+        std::fs::write(&b, "def test_two():\n    pass\n").unwrap();
+        let (_, cache) = cached_pass(&[a, b], tmp.path(), &config());
+        assert_eq!(cache.stats().hits(), 1, "the untouched file went cold");
+        assert_eq!(cache.stats().misses(), 1);
     }
 
     #[test]

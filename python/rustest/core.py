@@ -246,6 +246,19 @@ def _pool_size(workers: int | None) -> int:
 #: ``src/v2/collect.rs::TierMode::from_wire`` for why a typo is not a usage error.
 _COLLECT_TIER_ENV = "RUSTEST_V2_COLLECT_TIER"
 
+#: Turns the Tier S manifest cache (``.rustest_cache/v2-manifest``) off when set to ``"off"``.
+#:
+#: The cache's twin of :data:`_COLLECT_TIER_ENV`, and an escape hatch for the same reason: a
+#: cache that can only be trusted is not a cache that can be *debugged*. A user who suspects a
+#: stale manifest -- or a maintainer bisecting one -- needs a way to ask for the answer
+#: recomputed from source, from a subprocess, without deleting anything. Deleting
+#: ``.rustest_cache`` also works and is the documented cure; this is the diagnosis.
+#:
+#: Not a CLI flag, for the same reason ``--no-cache`` is not one in most build tools: the
+#: correct number of users who need it is small, and a flag would imply the cache is a choice
+#: rather than an invariant of a correct run.
+_MANIFEST_CACHE_ENV = "RUSTEST_V2_MANIFEST_CACHE"
+
 
 def v2_collect_only(
     *,
@@ -283,9 +296,12 @@ def v2_collect_only(
             suppresses ``testpaths``.
         workers: Collection pool size. ``None`` (and any non-positive value) means one
             worker per CPU; the Rust side clamps the pool to the number of files found.
-        keyword: The raw ``-k`` expression, or ``None``. Applied after collection, exactly
-            where pytest applies it, so a file that failed to import still reports its
-            error however aggressively the expression deselects.
+        keyword: The raw ``-k`` expression, or ``None``. Applied inside collection, exactly
+            where pytest applies it -- and, for the files the static tier answered, *before*
+            any worker is spawned, so a fully static tree whose every test is deselected
+            starts no interpreter. A file that failed to import still reports its error
+            however aggressively the expression deselects, which is why a file the dynamic
+            tier owns is never pruned before its worker has run.
         mark_expr: The raw ``-m`` expression, or ``None``.
 
     Returns:
@@ -307,6 +323,7 @@ def v2_collect_only(
                 mark_expr,
                 codeblocks,
                 os.environ.get(_COLLECT_TIER_ENV, "auto"),
+                os.environ.get(_MANIFEST_CACHE_ENV, "auto"),
             )
         except ValueError as exc:
             # pytest's UsageError shape, including its `ERROR: file or directory not

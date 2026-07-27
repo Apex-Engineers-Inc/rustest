@@ -20,6 +20,7 @@ def _row(
         "rustest_run_s": rustest_run_s,
         "rustest_v2_run_s": rustest_v2_run_s,
         "rustest_collect_s": 0.05,
+        "rustest_collect_warm_s": 0.01,
     }
 
 
@@ -41,6 +42,12 @@ def test_run_benchmarks_quick() -> None:
     # (previously reserved/always None).
     assert row["rustest_v2_run_s"] > 0
     assert row["rustest_collect_s"] > 0
+    # Phase 2 Task 2's column: the same command with the manifest cache the cold run wrote.
+    # Only asserted to exist and be positive -- a 4-test suite is far too small for the warm
+    # run to be reliably *faster*, since both are dominated by interpreter start-up, and a
+    # `warm < cold` assertion here would be a flaky test masquerading as a performance gate.
+    # The gate number is measured on the 5 000-test suite and recorded in the task report.
+    assert row["rustest_collect_warm_s"] > 0
     # One size cannot yield a slope.
     assert report["derived"] == {
         "pytest_overhead_us_per_test": None,

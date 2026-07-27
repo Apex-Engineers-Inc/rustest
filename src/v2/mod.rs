@@ -16,6 +16,7 @@ pub mod collect;
 pub mod config;
 pub mod execute;
 pub mod manifest;
+pub mod manifest_cache;
 pub mod nodeid;
 pub mod protocol;
 pub mod py;
