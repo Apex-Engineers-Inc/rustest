@@ -46,6 +46,23 @@ def _rustest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     return _run([sys.executable, "-m", "rustest", *args], tree)
 
 
+#: pytest's ``in <n>s`` tail, in both spellings ``format_session_duration`` produces
+#: (``in 0.05s`` and, above a minute, ``in 61.00s (0:01:01)``).
+_DURATION_TAIL = re.compile(r"\s+in \d[\d.]*s(?: \(\d+:\d\d:\d\d\))?$")
+
+
+def _summary_line(stderr: str) -> str:
+    """The last stderr line with its duration tail removed.
+
+    Task 2 gave the summary pytest's ``in <n>s`` tail. Everything *before* the tail is still
+    byte-identical to pytest's own summary line and is what these assertions are about; the
+    duration is a wall clock and cannot be compared to a literal. Stripping it here rather
+    than asserting a prefix keeps the comparison exact — a trailing bucket that should not be
+    there still fails.
+    """
+    return _DURATION_TAIL.sub("", stderr.strip().splitlines()[-1])
+
+
 def _pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     return _run(
         [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider", *args], tree
@@ -105,7 +122,7 @@ def test_a_bare_invocation_runs_the_v2_engine(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "", f"a green v2 run writes nothing to stdout: {result.stdout!r}"
-    assert result.stderr.strip().splitlines()[-1] == "1 passed", result.stderr
+    assert _summary_line(result.stderr) == "1 passed", result.stderr
 
 
 def test_the_v2_flag_is_a_no_op_alias_that_says_so(tmp_path: Path) -> None:
@@ -186,7 +203,7 @@ def test_exitfirst_stops_after_the_first_failure_exactly_as_pytest_does(tmp_path
 
     # pytest's summary for this tree is `1 failed, 1 passed`.
     assert "1 failed, 1 passed" in oracle.stdout, oracle.stdout
-    assert ours.stderr.strip().splitlines()[-1] == "1 failed, 1 passed", ours.stderr
+    assert _summary_line(ours.stderr) == "1 failed, 1 passed", ours.stderr
 
     payload: dict[str, object] = json.loads(report.read_text(encoding="utf-8"))
     tests = payload["tests"]
@@ -215,7 +232,7 @@ def test_exitfirst_on_a_green_tree_changes_nothing(tmp_path: Path) -> None:
     result = _rustest(tree, ["-x", "-n", "1"])
 
     assert result.returncode == 0, result.stderr
-    assert result.stderr.strip().splitlines()[-1] == "2 passed"
+    assert _summary_line(result.stderr) == "2 passed"
     assert "stopping after" not in result.stderr
 
 
@@ -233,7 +250,7 @@ def test_last_failed_reruns_only_the_failures_and_deselects_the_rest(tmp_path: P
 
     second = _rustest(tree, ["--lf"])
 
-    assert second.stderr.strip().splitlines()[-1] == "2 failed, 2 deselected", second.stderr
+    assert _summary_line(second.stderr) == "2 failed, 2 deselected", second.stderr
     assert second.returncode == 1
 
 
@@ -253,7 +270,7 @@ def test_failed_first_keeps_everything_and_reorders(tmp_path: Path) -> None:
         "test_x.py::test_a",
         "test_x.py::test_d",
     ]
-    assert second.stderr.strip().splitlines()[-1] == "2 failed, 2 passed"
+    assert _summary_line(second.stderr) == "2 failed, 2 passed"
 
 
 def test_the_v2_cache_is_not_v1s(tmp_path: Path) -> None:
@@ -281,7 +298,7 @@ def test_last_failed_with_an_empty_cache_runs_everything(tmp_path: Path) -> None
 
     result = _rustest(tree, ["--lf"])
 
-    assert result.stderr.strip().splitlines()[-1] == "2 failed, 2 passed", result.stderr
+    assert _summary_line(result.stderr) == "2 failed, 2 passed", result.stderr
 
 
 # --------------------------------------------------------------------------------------
@@ -341,7 +358,7 @@ def test_quiet_prints_only_the_summary(tmp_path: Path) -> None:
     default = _rustest(tree, ["-n", "1"])
 
     assert quiet.stdout == "", f"-q must not write to stdout: {quiet.stdout!r}"
-    assert quiet.stderr.strip().splitlines()[-1] == "1 failed, 1 passed, 1 skipped, 1 xfailed"
+    assert _summary_line(quiet.stderr) == "1 failed, 1 passed, 1 skipped, 1 xfailed"
     # ...and the default rung really does say more, or the assertion above proves nothing.
     assert "FAILED test_m.py::test_fail" in default.stdout, default.stdout
 
@@ -419,7 +436,7 @@ def test_markdown_code_blocks_are_collected_by_default(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     # Two python fences: one runs, one is skipped by the HTML comment.  The ```text``` fence
     # is not collected at all.
-    assert result.stderr.strip().splitlines()[-1] == "1 passed, 1 skipped", result.stderr
+    assert _summary_line(result.stderr) == "1 passed, 1 skipped", result.stderr
 
 
 def test_markdown_files_are_found_by_walking_a_directory(tmp_path: Path) -> None:
@@ -427,7 +444,7 @@ def test_markdown_files_are_found_by_walking_a_directory(tmp_path: Path) -> None
 
     result = _rustest(tree, ["docs", "-n", "1"])
 
-    assert result.stderr.strip().splitlines()[-1] == "1 passed, 1 skipped", result.stderr
+    assert _summary_line(result.stderr) == "1 passed, 1 skipped", result.stderr
 
 
 def test_no_codeblocks_restores_pytests_answer(tmp_path: Path) -> None:
@@ -479,7 +496,7 @@ def test_a_failing_async_test_fails(tmp_path: Path) -> None:
     result = _rustest(tree, ["-n", "1"])
 
     assert result.returncode == 1, result.stdout + result.stderr
-    assert result.stderr.strip().splitlines()[-1] == "1 failed", result.stderr
+    assert _summary_line(result.stderr) == "1 failed", result.stderr
 
 
 def test_an_async_fixture_reaches_a_test_as_its_value(tmp_path: Path) -> None:

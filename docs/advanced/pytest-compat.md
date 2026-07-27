@@ -1,468 +1,260 @@
-# Pytest Compatibility Mode
+# pytest Compatibility
 
-!!! warning "`--pytest-compat` was removed"
-    Compatibility is **on by default** as of the v2 engine flip: `import pytest`
-    always resolves to rustest's shim, so `rustest tests/` is what every example
-    below means. Passing `--pytest-compat` now exits 4 with a pointer to
-    `CHANGELOG.md`. `--v1` selects the legacy engine.
+**pytest compatibility is not a mode. It is what rustest is.**
 
-rustest provides a `--pytest-compat` mode that allows you to run existing pytest test suites with minimal or no code changes. This mode intercepts `import pytest` statements and provides rustest implementations transparently.
-
-## Quick Start
-
-Try rustest on your existing pytest suite:
+`rustest tests/` runs your existing pytest suite. `import pytest` inside a test module
+resolves to rustest's own implementation, always — there is no flag to turn it on, because
+there is no configuration in which it is off.
 
 ```bash
-# Using uvx (no installation needed)
+# no installation needed
 uvx rustest tests/
 
-# Or install and run
+# or install first
 pip install rustest
 rustest tests/
 ```
 
-That's it! Your existing pytest tests will run with rustest's performance benefits.
+!!! warning "`--pytest-compat` was removed"
+    It used to opt into a *compatibility mode*. The v2 engine flip made that mode the
+    default and the only behaviour, so the flag could only have been a no-op or a lie.
+    Passing it now exits **4** with a pointer to `CHANGELOG.md`. `--v1` selects the frozen
+    legacy engine, which is a different thing entirely — see
+    [The legacy engine](#the-legacy-engine) below.
 
-## Supported Features
+Everything on this page describes the **default engine**. Where the legacy engine behaves
+differently, that is called out; nothing else here applies to it.
 
-### Core Decorators
+## What this page is for
 
-- ✅ `@pytest.fixture` - All scopes (function, class, module, session)
-- ✅ `@pytest.fixture(params=[...])` - Fixture parametrization with `request.param`
-- ✅ `@pytest.mark.parametrize()` - Test parametrization
-- ✅ `@pytest.mark.skip()` - Skip tests
-- ✅ `@pytest.mark.skipif()` - Conditional skipping
-- ✅ `@pytest.mark.xfail()` - Expected failures
-- ✅ `@pytest.mark.asyncio` - Async test support (built-in, no plugin needed)
-- ✅ Custom marks (`@pytest.mark.slow`, `@pytest.mark.integration`, etc.)
+Compatibility is a claim, and a claim needs evidence. rustest's is a
+[conformance corpus](https://github.com/rustest/rustest/tree/main/conformance): every case
+in it is run through **real pytest** and through rustest, and the collected node IDs, the
+per-outcome tallies and the process exit code are diffed. Every known divergence is written
+down in a ledger with its mechanism. This page is the human-readable summary of the same
+territory: what works, what does not yet, and what the gap costs you.
+
+## Supported
+
+### Decorators
+
+- `@pytest.fixture` — `function`, `class`, `module`, `package` and `session` scopes
+- `@pytest.fixture(params=[...])` — fixture parametrization, with `request.param`
+- `@pytest.mark.parametrize()`, including stacked and `pytest.param(..., id=...)`
+- `@pytest.mark.skip()` / `@pytest.mark.skipif()`, called **and bare**
+- `@pytest.mark.xfail()`, including `strict=`, `raises=` and `run=False`
+- `@pytest.mark.usefixtures()`
+- `@pytest.mark.asyncio` — async tests, no plugin needed
+- Custom marks, including module-level `pytestmark` and class-level marks
+- `unittest.TestCase` classes, with `setUp`/`tearDown`/`setUpClass` and `unittest`'s own
+  skip decorators
 
 ### Functions
 
-- ✅ `pytest.raises()` - Exception assertions
-- ✅ `pytest.skip()` - Dynamic test skipping
-- ✅ `pytest.xfail()` - Mark test as expected to fail
-- ✅ `pytest.fail()` - Explicitly fail a test
-- ✅ `pytest.approx()` - Floating-point comparisons
-- ✅ `pytest.warns()` - Warning assertions
-- ✅ `pytest.deprecated_call()` - Deprecation warning capture
-- ✅ `pytest.param()` - Parametrize with custom IDs
-- ✅ `pytest.importorskip()` - Skip if module unavailable
+`pytest.raises()`, `pytest.skip()`, `pytest.xfail()`, `pytest.fail()`, `pytest.approx()`,
+`pytest.warns()`, `pytest.deprecated_call()`, `pytest.param()`, `pytest.importorskip()`.
 
-### Built-in Fixtures
+### Built-in fixtures
 
-All pytest built-in fixtures are available:
+The default engine provides **`tmp_path`, `tmp_path_factory`, `monkeypatch`, `capsys`** and
+`request`.
 
-- ✅ `tmp_path` - Temporary directory (pathlib.Path)
-- ✅ `tmpdir` - Temporary directory (py.path.local)
-- ✅ `tmp_path_factory` - Session-scoped temp path factory
-- ✅ `tmpdir_factory` - Session-scoped tmpdir factory
-- ✅ `monkeypatch` - Patching and mocking
-- ✅ `capsys` - Capture stdout/stderr
-- ✅ `capfd` - Capture file descriptors
-- ✅ `caplog` - Capture logging output
-- ✅ `cache` - Persistent cache between test runs
-- ✅ `request` - **Enhanced with node and config support**
+Every other pytest built-in is **not implemented yet**, and requesting one is a loud error
+that names it rather than pytest's generic `fixture 'x' not found` — because "not found"
+would send you hunting for a missing `@fixture` that was never yours to write:
 
-### Request Object Features
+```text
+FixtureLookupError: fixture 'tmpdir' is not supported by the rustest v2 worker yet
+(supported builtins: tmp_path_factory, tmp_path, monkeypatch, capsys)
+```
 
-The `request` fixture now provides comprehensive test metadata and configuration access:
+The full not-yet list: `cache`, `capfd`, `capfdbinary`, `caplog`, `capsysbinary`,
+`capteesys`, `doctest_namespace`, `mocker`, `pytestconfig`, `pytester`, `record_property`,
+`record_testsuite_property`, `record_xml_attribute`, `recwarn`, `testdir`, `tmpdir`,
+`tmpdir_factory`. Each is a self-contained port and none is blocked on anything.
 
-**request.param** - Current parameter value for parametrized fixtures:
+### The `request` object
+
+`request.param`, `request.scope`, `request.fixturename`, `request.node`,
+`request.addfinalizer()`, `request.getfixturevalue()`, `request.applymarker()`,
+`request.instance`, `request.cls`, `request.function`, `request.module`, `request.path`.
+
 ```python
+import pytest
+
+
 @pytest.fixture(params=[1, 2, 3])
 def number(request):
-    return request.param  # Access parameter value
-```
+    return request.param
 
-**request.node** - Test node with marker access:
-```python
+
 @pytest.fixture
 def conditional_setup(request):
-    # Check for markers
-    marker = request.node.get_closest_marker("slow")
-    if marker:
-        pytest.skip("Skipping slow test")
-
-    # Access test name
-    print(f"Setting up: {request.node.name}")
-
-    # Check keywords
-    if "integration" in request.node.keywords:
-        return setup_integration()
-    return setup_unit()
+    if request.node.get_closest_marker("slow"):
+        pytest.skip("skipping slow test")
+    return request.node.name
 ```
 
-**request.config** - Configuration and options:
-```python
-@pytest.fixture
-def database(request):
-    # Get command-line options
-    db_url = request.config.getoption("--db-url", default="sqlite:///:memory:")
+`request.node` is a **façade** over the execution plan, not a collection-tree node — v2
+replaced the tree with a flat manifest — so it answers `name`, `nodeid`, `own_markers`,
+`iter_markers()`, `get_closest_marker()` and `add_marker()`, and nothing else.
 
-    # Get ini configuration
-    timeout = request.config.getini("timeout")
+**`request.config` and `request.session` do not exist**, and neither does `node.config`,
+`node.session` or `node.parent`. Accessing one raises `AttributeError`. This is a
+deliberate choice over the alternative: a stub that answers plausibly — `getoption()`
+returning your default, `getini()` returning `None` — turns a missing feature into a silent
+wrong answer inside a fixture that decides which database to connect to. An
+`AttributeError` naming the attribute is a worse morning and a better outcome.
 
-    # Access verbosity
-    verbose = request.config.getoption("verbose", default=0)
-    if verbose > 1:
-        print(f"Connecting to {db_url}")
-
-    return connect(db_url, timeout=timeout)
-```
-
-#### Request Object API
-
-**Node attributes:**
-- `node.name` - Test name
-- `node.nodeid` - Full test identifier (e.g., "tests/test_foo.py::test_bar")
-- `node.keywords` - Dictionary of keywords/markers
-- `node.get_closest_marker(name)` - Get marker by name (returns marker object or None)
-- `node.add_marker(marker)` - Add marker dynamically
-- `node.listextrakeywords()` - Get set of marker names
-
-**Config attributes:**
-- `config.getoption(name, default=None)` - Get command-line option
-- `config.getini(name)` - Get ini configuration value
-- `config.option` - Namespace for accessing options as attributes
-- `config.rootpath` - Root directory (pathlib.Path)
-- `config.pluginmanager` - Stub PluginManager (limited functionality)
-
-## Known Limitations
-
-### Not Supported
-
-❌ **Pytest plugins** - rustest does not support pytest plugins (by design)
-- No pytest-django, pytest-flask, pytest-mock plugins
-- See [Plugin Compatibility Guide](pytest-plugins.md) for alternatives
-
-❌ **_pytest internals** - No access to pytest internal modules
-- No `_pytest.assertion.rewrite`
-- No `_pytest.fixtures`, `_pytest.config`, `_pytest.nodes`
-- Projects importing these will need modification
-
-❌ **Advanced hook system**
-- No pytest hook specifications
-- No `pytest_configure`, `pytest_collection_modifyitems`, etc.
-- Custom conftest.py hooks won't work
-
-❌ **Some request object features**
-- `request.node.parent` - Always None
-- `request.node.session` - Always None
-- `request.function`, `request.cls`, `request.module` - Always None
-- `request.addfinalizer()` - Not supported (use fixture yield instead)
-- `request.getfixturevalue()` - Not supported (declare as parameter)
-
-### Partial Support
-
-⚠️ **request.config.pluginmanager** - Stub implementation
-- Basic methods exist but return safe defaults
-- `get_plugin(name)` always returns None
-- `hasplugin(name)` always returns False
-- Plugin registration is a no-op
-
-⚠️ **Async support** - Built-in @mark.asyncio works differently
-- No event_loop fixture
-- No pytest_asyncio.fixture
-- Auto mode (`asyncio_mode = "auto"`) not supported
-- Use rustest's `@mark.asyncio` decorator
-
-## Migration Examples
-
-### Basic Migration
-
-No changes needed for most tests:
+If you have `request.config.getoption("--db-url")` in a conftest, read the environment
+instead for now:
 
 ```python
-# This pytest code works as-is with rustest --pytest-compat
+import os
+
 import pytest
+
 
 @pytest.fixture
 def database():
-    db = setup_database()
-    yield db
-    db.close()
-
-@pytest.mark.parametrize("value", [1, 2, 3])
-def test_processing(database, value):
-    result = database.process(value)
-    assert result > 0
+    return connect(os.environ.get("DB_URL", "sqlite:///:memory:"))
 ```
 
-### Using Request Object
+## Not supported
 
-```python
-import pytest
+**pytest plugins.** By design. See the
+[Plugin Compatibility Guide](pytest-plugins.md) for alternatives to the popular ones.
 
-@pytest.fixture
-def conditional_fixture(request):
-    # Access test metadata
-    test_name = request.node.name
-    print(f"Running: {test_name}")
+**`_pytest` internals.** `_pytest.assertion.rewrite`, `_pytest.fixtures`, `_pytest.config`,
+`_pytest.nodes` and friends are import-shimmed so that a module which *imports* them still
+loads, but they are non-functional stubs. Code that actually calls into them will not work.
 
-    # Check for markers
-    if request.node.get_closest_marker("skip_db"):
-        return None
+**The hook system.** No `pytest_configure`, no `pytest_collection_modifyitems`, no
+`pytest_generate_tests`. A `conftest.py` that defines hooks loads fine and its **fixtures
+are used**; its hooks are ignored.
 
-    # Get configuration
-    db_host = request.config.getoption("--db-host", default="localhost")
+**Warnings.** There is no warnings channel yet, so pytest's diagnostics — the
+`PytestCollectionWarning` for a class with `__init__`, the "usefixtures() without arguments
+has no effect" note — are not printed. The *behaviour* in each case matches pytest; only
+the message is missing.
 
-    return setup(db_host)
+## Known gaps, with their cost
 
-@pytest.mark.skip_db
-def test_without_db(conditional_fixture):
-    assert conditional_fixture is None
+These are the divergences the conformance corpus has found and pinned. Each is a real case
+in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 
-def test_with_db(conditional_fixture):
-    assert conditional_fixture is not None
-```
+| gap | what happens | cost |
+| --- | --- | --- |
+| **`pytest.exit()`** | Silently does nothing; the session does not stop and the tests after the call run. | A deliberate mid-run bail-out is ignored. Corpus case `marks/pytest-exit`. |
+| **Session fixtures across files** | A `session`-scoped fixture declared in `conftest.py` is set up once per **file**, not once per run. Two tests in one file share it correctly. | Repeated setup and teardown; cross-file shared state does not work. Corpus case `fixtures/session-scope`. |
+| **No item reordering** | pytest groups tests that share a higher-scoped parametrized fixture; rustest keeps source order. | A module-scoped `params=["a", "b"]` fixture costs 2 setups under pytest and 4 here. Corpus case `fixtures/module-param-reorder`. |
+| **`package` scope** | Cached for the worker's lifetime; not torn down at the package boundary. | Late teardown. |
+| **`loop_scope`** | Accepted and ignored — one event loop per worker. | Async fixtures work; per-scope loop isolation does not. |
+| **Async concurrency** | Async tests in the same loop scope run sequentially. | No wall-clock overlap between them. |
+| **`pythonpath` ini** | Not read. A `src/` layout needs an editable install or `PYTHONPATH`. | Matches real pytest, which also errors here; it is the *legacy* engine that silently inserted `src/`. |
+| **Capture is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors. | Output from a subprocess or a C extension is not captured. |
+| **`xfail_strict` ini, `--runxfail`** | Not implemented. The `strict=` *keyword* works. | Set `strict=` on the mark. |
 
-### Async Tests
+`indirect=` deserves its own note: in rustest it is a **rustest feature with rustest
+semantics** — the value names a fixture — and the compat shim refuses pytest's spelling
+outright rather than accepting it and meaning something else.
 
-```python
-import pytest
+## Migration
 
-# Works with rustest --pytest-compat
-@pytest.mark.asyncio
-async def test_async_operation():
-    result = await async_function()
-    assert result == expected
-
-# Parametrized async test
-@pytest.mark.asyncio
-@pytest.mark.parametrize("value", [1, 2, 3])
-async def test_async_parametrized(value):
-    result = await process(value)
-    assert result > 0
-```
-
-### Warning Capture
-
-```python
-import pytest
-import warnings
-
-def test_warning_capture():
-    with pytest.warns(UserWarning, match="deprecated"):
-        warnings.warn("This is deprecated", UserWarning)
-
-def test_deprecation():
-    with pytest.deprecated_call():
-        warnings.warn("Old function", DeprecationWarning)
-```
-
-## Compatibility Checklist
-
-Use this checklist to assess your pytest suite's compatibility:
-
-### ✅ Highly Compatible (Should work with no changes)
-
-- [ ] Uses `@pytest.fixture` for test setup
-- [ ] Uses `@pytest.mark.parametrize` for test generation
-- [ ] Uses built-in fixtures (tmp_path, tmpdir, monkeypatch, capsys)
-- [ ] Uses `pytest.raises()`, `pytest.approx()`, `pytest.skip()`
-- [ ] Uses custom marks (slow, integration, etc.)
-- [ ] Uses `@pytest.mark.asyncio` for async tests
-- [ ] No pytest plugins installed
-- [ ] No imports from `_pytest` modules
-
-### ⚠️ May Require Minor Changes
-
-- [ ] Uses `request.param` for parametrized fixtures (supported)
-- [ ] Uses `request.node.get_closest_marker()` (supported)
-- [ ] Uses `request.config.getoption()` (supported)
-- [ ] Uses pytest-mock (migrate to unittest.mock)
-- [ ] Uses pytest-cov (use coverage.py directly)
-- [ ] Imports from `_pytest` modules (remove or conditionally import)
-
-### ❌ Requires Significant Work or Not Compatible
-
-- [ ] Heavy use of pytest plugins (pytest-django, etc.)
-- [ ] Custom pytest hooks (pytest_configure, etc.)
-- [ ] Uses `request.addfinalizer()` or `request.getfixturevalue()`
-- [ ] Relies on pytest internals
-- [ ] Custom collectors or test generation
-
-## Performance Expectations
-
-With `--pytest-compat`, expect:
-
-- **3-4× faster** for small suites (< 100 tests)
-- **5-8× faster** for medium suites (100-500 tests)
-- **11-19× faster** for large suites (1000+ tests)
-
-Performance is similar to native rustest, with a small overhead for pytest compatibility shim.
-
-## Gradual Migration Strategy
-
-You don't have to migrate everything at once:
-
-### Phase 1: Try --pytest-compat
+### Step 1 — just run it
 
 ```bash
-# Test your existing suite
 rustest tests/
 ```
 
-If it works, you're done! Keep using pytest syntax with rustest's speed.
+A failing run tells you exactly what is missing: unsupported fixtures are named, and
+failures are reported in pytest's own `FAILURES` / `short test summary info` sections.
 
-### Phase 2: Migrate Imports (Optional)
+### Step 2 — migrate imports (optional)
 
-For better IDE support and type checking, migrate imports:
+Nothing requires this. It buys better IDE completion and type checking, since `rustest`'s
+exports are typed and `import pytest` inside a rustest run is a shim:
 
 ```python
-# Before
+# before
 import pytest
 
-# After
-from rustest import fixture, mark, parametrize, raises, approx
+# after
+from rustest import approx, fixture, mark, parametrize, raises
 ```
 
-Use a conftest.py shim for compatibility:
+### Step 3 — keep both runners working (optional)
 
-```python
-# conftest.py
-try:
-    from rustest import fixture, mark, parametrize
-except ImportError:
-    from pytest import fixture, mark
-    from pytest import mark as parametrize_mark
-    parametrize = parametrize_mark.parametrize
-```
+If your suite has to run under real pytest as well — during a migration, or in a repo where
+not everyone has switched — nothing on this page stops it. rustest's shim only exists inside
+a rustest run; under pytest, `import pytest` is pytest.
 
-### Phase 3: Optimize (Optional)
+## The legacy engine
 
-Take advantage of rustest-specific features:
+`--v1` runs the pre-flip engine. Two things about it are worth knowing:
 
-- Use rustest's built-in async support
-- Leverage parallel execution
-- Use rustest's optimized fixture injection
+- **It is frozen.** It receives no fixes. It exists so that a suite the current engine
+  cannot yet run has somewhere to go, and it can only serve that purpose if nothing about
+  it changes.
+- **It does not install the compat shim.** `--v1` is byte-identical to the pre-flip
+  default, which means `import pytest` there imports whatever `pytest` your environment has.
+
+It will be removed. Do not build on it.
+
+## Performance
+
+The default engine is **not yet faster than pytest** on every shape, and this page will not
+pretend otherwise. It spawns worker processes and has no static collection tier, both of
+which are the explicit subject of the next phase of work. The numbers that matter are
+recorded, with their methodology and their caveats, in
+[`conformance/README.md`](https://github.com/rustest/rustest/tree/main/conformance) —
+including the measurement bias that makes several of the older published ratios unsafe to
+quote.
+
+Correctness came first on purpose: a fast runner that reports a failing suite as green is
+not a faster runner.
 
 ## Troubleshooting
 
-### "ModuleNotFoundError: No module named '_pytest'"
+### `fixture 'X' is not supported by the rustest v2 worker yet`
 
-Your code imports pytest internals. Solutions:
+Exactly what it says — `X` is a pytest built-in that has not been ported. Check the
+[not-yet list](#built-in-fixtures). `tmpdir` → use `tmp_path`; `caplog` → assert on your
+own handler for now; `mocker` → use `unittest.mock` directly.
 
-```python
-# Option 1: Conditional import
-try:
-    from _pytest.fixtures import FixtureDef
-except ImportError:
-    # rustest compatibility - use alternative
-    FixtureDef = None
+### `AttributeError: '_SubRequest' object has no attribute 'config'`
 
-# Option 2: Remove the import
-# Many _pytest imports are only needed for type hints
-# Replace with Any or remove type annotation
-```
+`request.config` is not implemented. Read configuration from the environment or a module
+constant. See [the `request` object](#the-request-object) for why this raises rather than
+returning a stub.
 
-### "request.getfixturevalue() not supported"
+### `ModuleNotFoundError: No module named 'mypackage'` in a `src/` layout
 
-Replace with fixture parameters:
+The default engine does not read pytest's `pythonpath` ini, and neither does it silently
+insert `src/` the way the legacy engine did. **Real pytest reports the same error on the
+same tree** — the legacy behaviour was the outlier. Install your package (`pip install -e .`)
+or set `PYTHONPATH=src`.
 
-```python
-# Before
-@pytest.fixture
-def my_fixture(request):
-    other = request.getfixturevalue('other_fixture')
-    return setup(other)
+### Tests hang with `@mark.asyncio`
 
-# After
-@pytest.fixture
-def my_fixture(other_fixture):  # Direct parameter
-    return setup(other_fixture)
-```
-
-### "request.addfinalizer() not supported"
-
-Use fixture teardown with yield:
+The decorated function must actually be `async def`:
 
 ```python
-# Before
-@pytest.fixture
-def my_fixture(request):
-    resource = setup()
-    request.addfinalizer(lambda: cleanup(resource))
-    return resource
+from rustest import mark
 
-# After
-@pytest.fixture
-def my_fixture():
-    resource = setup()
-    yield resource
-    cleanup(resource)
-```
 
-### Tests hang with @mark.asyncio
-
-Ensure you're using async functions:
-
-```python
-# Wrong - will hang
 @mark.asyncio
-def test_async():  # Not async!
-    await something()
-
-# Correct
-@mark.asyncio
-async def test_async():  # async keyword
-    await something()
+async def test_async():
+    result = await do_something()
+    assert result
 ```
 
-## Best Practices
+### `error: unrecognized arguments: --pytest-compat` — or exit 4
 
-### 1. Test Compatibility First
+The flag is gone; drop it. `rustest tests/` already does what it used to ask for.
 
-Before migrating, run your suite with `--pytest-compat`:
+## See also
 
-```bash
-rustest tests/ -v
-```
-
-Check for errors and unsupported features.
-
-### 2. Use Request Object Appropriately
-
-```python
-# Good - conditional setup based on markers
-@pytest.fixture
-def database(request):
-    if request.node.get_closest_marker("mock_db"):
-        return MockDatabase()
-    return RealDatabase()
-
-# Good - configuration-driven behavior
-@pytest.fixture
-def api_client(request):
-    base_url = request.config.getoption("--api-url", default="http://localhost")
-    return APIClient(base_url)
-```
-
-### 3. Avoid Pytest Internals
-
-```python
-# Bad - uses pytest internals
-from _pytest.fixtures import FixtureDef
-
-# Good - use public API
-from rustest import fixture
-```
-
-### 4. Prefer Explicit Dependencies
-
-```python
-# Bad - dynamic fixture lookup
-def test_example(request):
-    db = request.getfixturevalue('database')
-
-# Good - explicit dependency
-def test_example(database):
-    db = database
-```
-
-## See Also
-
-- [Plugin Compatibility Guide](pytest-plugins.md) - Alternatives to popular pytest plugins
-- [Migration Guide](../migration-guide.md) - Complete migration guide
-- [Comparison with pytest](comparison.md) - Feature comparison
-- [Request Object Documentation](../REQUEST_OBJECT_ENHANCEMENTS.md) - Detailed request object API
+- [Plugin Compatibility Guide](pytest-plugins.md) — alternatives to popular pytest plugins
+- [Migration Guide](../migration-guide.md)
+- [Comparison with pytest](comparison.md)

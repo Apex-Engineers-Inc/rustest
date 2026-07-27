@@ -385,7 +385,23 @@ def _check_pytest_collect_exit(proc: subprocess.CompletedProcess[str]) -> None:
     the grader must see them. Codes 3 (internal error) and 4 (usage error) mean pytest
     never collected at all; parsing zero ids out of that would fabricate a divergence
     with no explanation, so they route to ``_grade_one_collect``'s harness-error
-    channel. Exit 1 cannot occur here -- no test is ever run.
+    channel.
+
+    **Exit 1 is reachable here and is deliberately passed through.** An earlier version of
+    this docstring claimed it "cannot occur -- no test is ever run", which is false: a
+    failed collect report increments ``Session.testsfailed``, and with
+    ``--continue-on-collection-errors`` no ``Interrupted`` is raised, so ``wrap_session``
+    falls through to ``ExitCode.TESTS_FAILED``. Probed on pytest 8.4.2 with one broken
+    import beside one healthy file::
+
+        pytest --collect-only -q                                    -> exit 2
+        pytest --collect-only -q --continue-on-collection-errors     -> exit 1
+
+    The guard already lets 1 through, so the behaviour was right and only the reasoning was
+    wrong -- which is the more dangerous of the two, because the next person to widen this
+    condition would have widened it on a false premise. No corpus case passes that flag
+    today; one that did would be graded, and would diverge on the exit code, since v2 has
+    no such option.
     """
     if proc.returncode >= 3 and proc.returncode != 5:
         raise RuntimeError(f"pytest collect failed (exit {proc.returncode}): {proc.stderr[-500:]}")
@@ -676,8 +692,14 @@ from rustest.json_report import write_json_report
 report_path = sys.argv[1]
 args = build_parser().parse_args(sys.argv[2:])
 mode = "only" if args.last_failed else ("first" if args.failed_first else "none")
+# `.` is the *default* root, not a fixed prefix. Passing it unconditionally and appending
+# the case args after it -- which is what this script used to receive on its argv -- makes
+# argparse reject any case whose `case.toml` names paths: a `nargs="*"` positional cannot
+# be split across an optional, so `. --color never test_a.py test_a.py` dies with
+# "unrecognized arguments" and the case can never be graded on the v1 side at all.
+paths = list(args.paths) or ["."]
 report = run(
-    paths=list(args.paths),
+    paths=paths,
     pattern=args.pattern,
     mark_expr=args.mark_expr,
     workers=args.workers,
@@ -706,6 +728,13 @@ def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
     outcome, so it raises rather than returning a fabricated all-zeros result
     that would silently grade as a divergence with no explanation.
 
+    ``case.toml`` args go last and **no default path is prepended**: the runner script
+    falls back to ``.`` only when the case named no paths of its own. Prepending it
+    unconditionally, as this did before ``collection/dupe-args`` existed, meant a case with
+    path args was compared against a *different invocation* on the two sides -- pytest saw
+    ``test_a.py test_a.py`` and v1 saw ``. test_a.py test_a.py`` -- which argparse refused
+    outright, so the case could not be graded at all.
+
     See :data:`_V1_RUNNER` for why this drives v1's API rather than its CLI.
     """
     case_dir = case_dir.resolve()
@@ -716,7 +745,6 @@ def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
             "-c",
             _V1_RUNNER,
             str(report_path),
-            ".",
             "--color",
             "never",
             *args,

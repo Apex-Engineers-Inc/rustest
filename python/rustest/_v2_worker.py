@@ -99,8 +99,13 @@ traceback filtering — because those distinguish one outcome from another.
   which a per-file worker does not have.  Ids stay correct, but two tests sharing a
   module-scoped ``params=["a","b"]`` fixture cost **2** setups under pytest (grouped
   ``a a b b``) and **4** here (interleaved ``a b a b``) — both measured — so anything the
-  fixture accumulates is reset twice as often.  See :func:`collect_module`.
-* *``session`` and ``package`` scope are per-worker.*  See :data:`_SCOPE_BUCKET`.
+  fixture accumulates is reset twice as often.  See :func:`collect_module`.  Pinned by
+  ``conformance/corpus/fixtures/module-param-reorder``, which the gate catches on the
+  **ordered** ids alone: the tally, the id set and the exit code all agree.
+* *``session`` and ``package`` scope are per-worker for teardown and per **file** for
+  setup* — the latter measured, and narrower than this list claimed until Phase 1c
+  Task 2.  See :data:`_SCOPE_BUCKET` and
+  ``conformance/corpus/fixtures/session-scope``.
 * *A file is enumerated exactly as handed over.*  pytest never collects ``conftest.py``
   as a test module (it matches no ``python_files`` pattern and is loaded as a plugin),
   so the orchestrator should not send one as a collect target; doing so anyway is
@@ -1199,14 +1204,25 @@ _SCOPE_INDEX: Final[Mapping[str, int]] = {name: index for index, name in enumera
 
 #: Which teardown bucket the worker actually caches each declared scope in.
 #:
-#: ``package`` and ``session`` collapse onto one worker-lifetime bucket.  **Documented
-#: limitation, not an oversight:** a worker is handed an arbitrary subset of the run's
-#: files (``src/v2/collect.rs`` routes by stem hash), so it cannot know when the last
-#: test of a package — or of the session — has run anywhere else.  A session fixture
-#: therefore executes once *per worker* rather than once per run, and a package fixture
-#: is not torn down at the package boundary.  No corpus case exercises either
-#: (`fixtures/*` are all function/module scope); Phase 1c owns the corpus additions and
-#: the cross-worker session protocol.
+#: ``package`` and ``session`` collapse onto one worker-lifetime *teardown* bucket.
+#: **Documented limitation, not an oversight:** a worker is handed an arbitrary subset of
+#: the run's files (``src/v2/collect.rs`` routes by stem hash), so it cannot know when the
+#: last test of a package — or of the session — has run anywhere else.  A package fixture
+#: is therefore not torn down at the package boundary.
+#:
+#: **The setup granularity is narrower than that, and narrower than this comment used to
+#: claim.**  It said a session fixture "executes once per worker"; measured by
+#: ``conformance/corpus/fixtures/session-scope`` at ``-n 1``, a *conftest* session fixture
+#: executes once per **file**.  Two tests in one file share it correctly; two files do not.
+#: The cause is not this table and not :meth:`FixtureRunner.teardown` — which really does
+#: leave the session bucket alone at a module boundary — but :func:`build_registry`, called
+#: once per file: the conftest *module* is cached, yet ``parse_factories`` mints a fresh
+#: :class:`FixtureDef` from it each time, and :attr:`FixtureRunner._cache` is keyed on
+#: ``FixtureDef`` *identity* (``eq=False``, deliberately, so it keys the way pytest's does).
+#: Two files present two keys for one fixture and the cache misses.  A yield teardown is
+#: then queued once per file as well.  Waived in ``conformance/waivers-v2-run.toml`` with
+#: the fix shape: cache ``FixtureDef`` objects per ``(conftest path, fixture name)``, which
+#: closes the single-worker case outright and leaves only the genuine cross-worker problem.
 #:
 #: ``class`` has its own bucket and a real boundary, but the boundary is **caller-driven**:
 #: pytest gets it from the collection tree (`SetupState.teardown_exact` unwinds every node

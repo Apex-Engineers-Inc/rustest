@@ -16,7 +16,7 @@ except ImportError as exc:  # pragma: no cover - guards Python < 3.12
 @dataclass(frozen=True)
 class CaseResult:
     name: str
-    status: str  # "MATCH" | "DIVERGE" | "WAIVED" | "STALE-WAIVER"
+    status: str  # "MATCH" | "DIVERGE" | "WAIVED" | "STALE-WAIVER" | "HARNESS-ERROR"
     detail: str
 
 

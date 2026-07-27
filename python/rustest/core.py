@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -348,9 +349,112 @@ def _progress_line(test: _ReportTest, index: int, total: int) -> str:
     if message and test["status"] in _REASON_STATUSES:
         line += f" ({message.splitlines()[0]})"
     percent = (index + 1) * 100 // total
-    width = shutil.get_terminal_size(fallback=(80, 24)).columns
-    pad = max(1, width - len(line) - 8)
+    pad = max(1, _terminal_width() - len(line) - 8)
     return f"{line}{' ' * pad}[{percent:3d}%]"
+
+
+def _terminal_width() -> int:
+    """The console width, by pytest's own rule (`_pytest/_io/terminalwriter.py`).
+
+    The floor is pytest's, not caution: ``get_terminal_width`` comments that "the Windows
+    ``get_terminal_size`` may be bogus" and rounds anything under 40 back up to 80. Without
+    it a console that reports 4 columns turns every separator into a bare ``==``.
+    """
+    width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    return 80 if width < 40 else width
+
+
+def _sep(sepchar: str, title: str | None = None) -> str:
+    """One separator line, a port of ``_pytest/_io/terminalwriter.py::TerminalWriter.sep``.
+
+    ``=`` rules off a section (``=== FAILURES ===``) and ``_`` heads one failure inside it
+    (``___ test_bad ___``) — probed from ``pytest`` 8.4.2 rather than transcribed, and the
+    arithmetic is ported line for line so the result is the same *width* pytest would emit:
+    the title is centred in ``fullwidth`` columns and a final ``sepchar`` is added when one
+    more fits.
+
+    **The ``win32`` subtraction is pytest's**, with pytest's reason: writing in the last
+    column of a Windows console wraps invisibly, so it keeps one column in hand. Dropping it
+    would put every separator one character past pytest's on the platform this repository is
+    developed on, which is exactly where such a difference goes unnoticed.
+    """
+    fullwidth = _terminal_width()
+    if sys.platform == "win32":
+        fullwidth -= 1
+    if title is not None:
+        fill = sepchar * max((fullwidth - len(title) - 2) // (2 * len(sepchar)), 1)
+        line = f"{fill} {title} {fill}"
+    else:
+        line = sepchar * (fullwidth // len(sepchar))
+    if len(line) + len(sepchar.rstrip()) <= fullwidth:
+        line += sepchar.rstrip()
+    return line
+
+
+def _headline(test: _ReportTest) -> str:
+    """The title of one failure block: pytest's ``TestReport.head_line``.
+
+    pytest heads each block with the report's *domain* — the node id with the file path
+    removed and the remaining ``::`` separators written as ``.``, so
+    ``test_a.py::TestBox::test_method`` becomes ``TestBox.test_method``
+    (``_pytest/reports.py``, ``head_line``; probed: a class method prints
+    ``TestX.test_fail``). The full id is not lost — the ``short test summary info`` section
+    below carries it verbatim, which is also where pytest puts it.
+    """
+    node_id = test["id"]
+    _, separator, domain = node_id.partition("::")
+    return (domain if separator else node_id).replace("::", ".")
+
+
+def _format_duration(seconds: float) -> str:
+    """pytest's ``in <n>s`` tail, from ``_pytest/_io/terminalwriter.py::format_session_duration``.
+
+    Two decimals under a minute; a bracketed ``H:MM:SS`` is appended above it, because
+    ``in 3754.10s`` is not a number anyone reads. The threshold and both spellings are
+    pytest's.
+    """
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    return f"{seconds:.2f}s ({datetime.timedelta(seconds=int(seconds))})"
+
+
+def _print_failure_sections(tests: Sequence[_ReportTest]) -> None:
+    """pytest's failure report: ``ERRORS``, then ``FAILURES``, then the short summary.
+
+    Structural parity, not byte parity. Each block carries the ``message`` the worker sent,
+    which is a formatted traceback produced by the worker's own ``traceback`` call rather
+    than by pytest's ``ExceptionInfo`` machinery — so the *frames* inside a block are worded
+    rustest's way and always will be. What is reproduced is the part a reader navigates by:
+    the two section rules, one underscore-headed block per failing test, and the
+    ``short test summary info`` list of full node ids.
+
+    The order is pytest's, probed on a tree with one of each: ``ERRORS`` first (a test that
+    never ran is a different question from one that ran and failed), then ``FAILURES``, then
+    a short summary that lists **failures before errors** — pytest's default ``-r`` value is
+    ``fE`` and the section is emitted in that character order
+    (``_pytest/terminal.py::short_test_summary``).
+
+    v2's blocks head with a phase-neutral ``ERROR <domain>`` where pytest writes
+    ``ERROR at setup of <domain>``. The wire carries one *reduced* status per test and not
+    the phase that produced it, so naming a phase here would be a guess; ``at setup of`` is
+    right far more often than not, which is precisely what makes guessing it a bad idea.
+    """
+    failed = [test for test in tests if test["status"] == "failed"]
+    errored = [test for test in tests if test["status"] == "error"]
+    if not failed and not errored:
+        return
+    for title, group, prefix in (("ERRORS", errored, "ERROR "), ("FAILURES", failed, "")):
+        if not group:
+            continue
+        print(_sep("=", title))
+        for test in group:
+            print(_sep("_", f"{prefix}{_headline(test)}"))
+            message = test.get("message")
+            if message:
+                print(message.rstrip("\n"))
+    print(_sep("=", "short test summary info"))
+    for test in (*failed, *errored):
+        print(f"{test['status'].upper()} {test['id']}")
 
 
 def v2_run(
@@ -373,15 +477,19 @@ def v2_run(
     execute, ``-k``/``-m`` selection and ``--lf``/``--ff`` reordering in between -- and never
     touches the v1 discovery or execution path.
 
-    Output is a three-rung ladder -- pytest's own verbosity ladder, narrowed to what this
-    surface can currently say (the full pytest-shaped progress renderer is Task 2):
+    Output is a three-rung ladder -- pytest's own verbosity ladder, narrowed to three rungs:
 
     * ``verbosity < 0`` (``-q``) -- the summary line and nothing else.
-    * ``verbosity == 0`` (default) -- plus a ``FAILED``/``ERROR`` block per failing test,
-      carrying its message, which is what makes a red run diagnosable from a terminal
-      without ``--report-json``.
+    * ``verbosity == 0`` (default) -- plus pytest's failure report: an ``ERRORS`` section, a
+      ``FAILURES`` section, and a ``short test summary info`` list of node ids
+      (:func:`_print_failure_sections`), which is what makes a red run diagnosable from a
+      terminal without ``--report-json``.
     * ``verbosity > 0`` (``-v``) -- plus one line per test in pytest's verbose wording
       (``PASSED``/``FAILED``/``SKIPPED (reason)``/``XFAIL``/``XPASS``/``ERROR``).
+
+    The summary line carries pytest's ``in <n>s`` tail. Everything before the tail stays
+    byte-identical to pytest's own summary line, which is what the differential tests
+    compare; the tail is stripped there because a duration is not a claim about outcomes.
 
     The stream split is deliberate and unchanged from the ``--v2`` days: **stdout** carries
     the per-test lines and the failure blocks (the payload), **stderr** carries collection
@@ -442,13 +550,7 @@ def v2_run(
                 print(_progress_line(test, index, len(tests)))
 
         if verbosity >= 0:
-            for test in tests:
-                if test["status"] in ("failed", "error"):
-                    print(f"{test['status'].upper()} {test['id']}")
-                    message = test.get("message")
-                    if message:
-                        for line in message.splitlines():
-                            print(f"  {line}")
+            _print_failure_sections(tests)
 
         for error in report["collection_errors"]:
             print(f"ERROR collecting {error['path']}", file=sys.stderr)
@@ -469,10 +571,14 @@ def v2_run(
             stopped = report["summary"]["failed"] + report["summary"]["error"]
             print(f"stopping after {stopped} failures (-x)", file=sys.stderr)
 
-        print(
-            _run_summary(report["summary"], len(report["collection_errors"])),
-            file=sys.stderr,
-        )
+        # The tail is pytest's, and so is the fact that it is *appended* rather than made
+        # part of `_run_summary`: the counts are a claim about outcomes and the duration is
+        # not, which is why every parity comparison in the suite strips it. `summary.duration`
+        # is the orchestrator's wall clock over the staged run (`src/v2/execute.rs`), so it
+        # excludes interpreter startup where pytest's includes its own session setup.
+        summary_line = _run_summary(report["summary"], len(report["collection_errors"]))
+        tail = _format_duration(report["summary"]["duration"])
+        print(f"{summary_line} in {tail}", file=sys.stderr)
 
     return report["exit_code"]
 

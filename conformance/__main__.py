@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Final
 
 from .harness.grade import (
     CaseResult,
@@ -42,6 +43,18 @@ V2_COLLECT_WAIVERS = ROOT / "waivers-v2-collect.toml"
 V2_RUN_WAIVERS = ROOT / "waivers-v2-run.toml"
 CORPUS = ROOT / "corpus"
 
+#: The two-character flag printed for each case status. ``EE`` is deliberately not a
+#: variation on ``XX``: a harness error and a divergence are different *kinds* of red, and
+#: the pair has to be distinguishable at a glance in a wall of output -- see
+#: :func:`_contained` for what each one means and why a waiver moves neither.
+_FLAGS: Final[Mapping[str, str]] = {
+    "MATCH": "ok",
+    "WAIVED": "~~",
+    "DIVERGE": "XX",
+    "STALE-WAIVER": "!!",
+    "HARNESS-ERROR": "EE",
+}
+
 
 def discover_cases(corpus: Path = CORPUS) -> list[tuple[str, Path]]:
     """Every corpus case as ``(name, directory)``, sorted -- the gate's input set.
@@ -73,20 +86,39 @@ def _load_waivers_or_exit(path: Path) -> dict[str, str]:
 
 
 def _contained(name: str, waivers: dict[str, str], grade: Callable[[], CaseResult]) -> CaseResult:
-    """Run *grade*, containing any harness failure to this one case.
+    """Run *grade*, containing any harness failure to this one case as ``HARNESS-ERROR``.
 
-    A malformed ``case.toml`` or a runner exception (including a subprocess
-    timeout) must not abort the whole conformance run: it is reported as a
-    divergence for this case only -- waivable by name like any other
-    divergence -- and the caller continues on to the next case.
+    A malformed ``case.toml`` or a runner exception (including a subprocess timeout) must
+    not abort the whole conformance run: it is reported for this case only and the caller
+    continues on to the next case. It still fails the run -- an unanswered question is not
+    a green one.
+
+    **It is its own status, not a DIVERGE, and that is the point of the status.** The two
+    say completely different things: DIVERGE means *the runners disagreed*, and
+    HARNESS-ERROR means *the harness could not ask the question*. They used to print the
+    same ``[XX]``, with only the detail text between them, and that ambiguity cost a real
+    verification run -- P1b.2 Task 5 report Sec 10.7 records a `1 diverged` reading that
+    was a subprocess timeout under concurrent load, misread as a conformance defect, with
+    the evidence destroyed by a `tail -2`. That entry recommended exactly this change.
+
+    **A waiver does not apply**, which is the second half of the same argument. A waiver is
+    a recorded judgement about a *known divergence* -- "pytest and rustest disagree here,
+    for this reason". A harness fault produced no comparison for that judgement to be about,
+    so honouring the waiver would convert an instrument failure into a green ``[~~]`` on
+    the strength of a sentence written about something else. The waiver text is still
+    printed, because knowing the case was expected to diverge anyway is useful context for
+    whoever reads the failure -- it is context, not a verdict.
     """
     try:
         return grade()
     except Exception as exc:
         problem = f"harness error: {exc!r}"
         if name in waivers:
-            return CaseResult(name, "WAIVED", f"{waivers[name]} :: {problem}")
-        return CaseResult(name, "DIVERGE", problem)
+            problem += (
+                f" [case is waived ({waivers[name]}) -- the waiver cannot apply: "
+                + "the harness never asked the question]"
+            )
+        return CaseResult(name, "HARNESS-ERROR", problem)
 
 
 def _grade_one(
@@ -160,16 +192,27 @@ def _summarize(results: list[CaseResult]) -> tuple[str, int]:
     A STALE-WAIVER (a waiver whose case now matches) fails the run exactly
     like an unwaived DIVERGE: shrinking waivers.toml is the v2 phase-gate
     metric, so a waiver that has gone silently inert must not go unnoticed.
+
+    A HARNESS-ERROR fails the run too, and gets its **own count** on the line rather than
+    being folded into ``diverged``. The count is the reason the status exists: a reader
+    scanning the last line has to be able to tell "the runners disagree about three cases"
+    from "the instrument fell over on three cases", and a fold makes those two readings
+    identical. The term is emitted unconditionally, unlike a zero bucket in pytest's own
+    summary, because ``0 harness-errors`` is a positive statement that the instrument was
+    healthy -- which is exactly what a reader wants confirmed when the rest of the line is
+    red.
     """
     diverged = [r for r in results if r.status == "DIVERGE"]
     stale = [r for r in results if r.status == "STALE-WAIVER"]
+    harness_errors = [r for r in results if r.status == "HARNESS-ERROR"]
     matched = sum(r.status == "MATCH" for r in results)
     waived = sum(r.status == "WAIVED" for r in results)
     summary = (
         f"{len(results)} cases: {matched} match, {waived} waived, "
-        + f"{len(stale)} stale-waivers, {len(diverged)} diverged"
+        + f"{len(stale)} stale-waivers, {len(diverged)} diverged, "
+        + f"{len(harness_errors)} harness-errors"
     )
-    exit_code = 1 if diverged or stale else 0
+    exit_code = 1 if diverged or stale or harness_errors else 0
     return summary, exit_code
 
 
@@ -206,14 +249,30 @@ def main() -> int:
     else:
         ledger, grade_one = WAIVERS, _grade_one
     waivers = _load_waivers_or_exit(ledger)
+    cases = discover_cases()
     results: list[CaseResult] = []
-    for name, case_dir in discover_cases():
+    for name, case_dir in cases:
         if not name.startswith(args.only):
             continue
         result = grade_one(case_dir, name, waivers)
         results.append(result)
-        flag = {"MATCH": "ok", "WAIVED": "~~", "DIVERGE": "XX", "STALE-WAIVER": "!!"}[result.status]
+        flag = _FLAGS[result.status]
         print(f"[{flag}] {result.name}" + (f"  ({result.detail})" if result.detail else ""))
+
+    if not results:
+        # Grading nothing used to print "0 cases: ..." and exit **0** -- a green run that
+        # proved nothing. `--only` is normally typed while chasing one case, so a typo in
+        # the prefix would answer "all clear" to a question that was never asked; in CI a
+        # renamed case would do the same silently and forever. Both are refusals now.
+        if args.only:
+            print(
+                f"conformance: --only {args.only!r} matched no cases "
+                + f"(the corpus has {len(cases)}: {', '.join(name for name, _ in cases)})",
+                file=sys.stderr,
+            )
+        else:
+            print(f"conformance: no corpus cases found under {CORPUS}", file=sys.stderr)
+        return 1
 
     summary, exit_code = _summarize(results)
     print(f"\n{summary}")

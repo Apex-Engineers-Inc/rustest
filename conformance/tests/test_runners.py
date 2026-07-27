@@ -236,6 +236,29 @@ def test_run_rustest_integration(tmp_path: Path) -> None:
     assert result.outcomes.errors == 0
 
 
+def test_run_rustest_can_express_a_case_that_names_its_own_paths(tmp_path: Path) -> None:
+    """A ``case.toml`` with **path** args reaches v1 as those paths and nothing else.
+
+    The v1 runner used to hand its script a literal ``.`` and append the case args after
+    it, which argparse cannot parse at all -- a ``nargs="*"`` positional split across an
+    optional yields ``unrecognized arguments`` -- so ``collection/dupe-args`` could not be
+    graded on the v1 side and surfaced as a harness error instead of a verdict. The default
+    root is now applied by the script only when the case named no paths, which is also the
+    only spelling under which pytest and v1 are asked the *same* question.
+
+    Asserted on a subdirectory rather than on ``.`` so that a regression to the old
+    unconditional prefix shows up as extra ids rather than as an identical answer.
+    """
+    (tmp_path / "pkg").mkdir()
+    _write_mini_suite(tmp_path / "pkg")
+    (tmp_path / "test_outside.py").write_text("def test_outside():\n    pass\n", encoding="utf-8")
+
+    result = run_rustest(tmp_path, ["pkg"])
+
+    assert all(node_id.startswith("pkg") for node_id in result.ids), result.ids
+    assert not any("test_outside" in node_id for node_id in result.ids), result.ids
+
+
 def test_run_pytest_ignores_surrounding_project_config(tmp_path: Path) -> None:
     """A pytest config above the case dir must not influence the run."""
     (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
@@ -275,6 +298,33 @@ def test_check_pytest_collect_exit_passes_through_collectable_outcomes() -> None
     """
     for returncode in (0, 2, 5):
         _check_pytest_collect_exit(_completed(returncode))  # must not raise
+
+
+def test_check_pytest_collect_exit_passes_through_a_real_exit_1_from_pytest(
+    tmp_path: Path,
+) -> None:
+    """Exit **1** during ``--collect-only`` is reachable, and must be graded, not raised.
+
+    The guard's docstring used to assert that "exit 1 cannot occur here -- no test is ever
+    run". It can: a failed collect report increments ``Session.testsfailed``, and
+    ``--continue-on-collection-errors`` suppresses the ``Interrupted`` that would otherwise
+    make it exit 2, so ``wrap_session`` returns ``TESTS_FAILED``.
+
+    Probed against real pytest rather than asserted from the source, because the claim
+    being corrected was itself an unprobed reading of that source. Both spellings are run
+    so the test fails if the flag stops mattering as much as if the guard starts raising.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "test_broken.py").write_text("import nope_missing_module\n", encoding="utf-8")
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--collect-only", "-q"]
+
+    interrupted = _run(base, tmp_path)
+    continued = _run([*base, "--continue-on-collection-errors"], tmp_path)
+
+    assert interrupted.returncode == 2, interrupted.stdout
+    assert continued.returncode == 1, continued.stdout
+    _check_pytest_collect_exit(continued)  # must not raise: 1 is a gradeable outcome
 
 
 @pytest.mark.parametrize("returncode", [3, 4])

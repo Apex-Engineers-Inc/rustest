@@ -33,6 +33,17 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - `-v` prints one line per test in pytest's verbose wording (`PASSED` / `FAILED` /
   `SKIPPED (reason)` / `XFAIL` / `XPASS` / `ERROR`) with pytest's percent column; `-q` prints
   only the summary. `-v -q` cancel out, as under pytest.
+- **A pytest-shaped failure report.** A red run now prints an `ERRORS` section, a `FAILURES`
+  section and a `short test summary info` list of node ids, with pytest's `=` and `_`
+  separator rules — so a failure is found the same way it is under pytest. The traceback
+  inside each block is still the worker's own; only the structure is pytest's. Two
+  deliberate differences: an error block heads `ERROR <test>` rather than
+  `ERROR at setup of <test>`, because the wire carries one reduced status per test and not
+  the phase that produced it; and the summary line is not wrapped in a rule, keeping
+  pytest's bare `-q` spelling on stderr.
+- **The summary line carries pytest's `in <n>s` tail** (`3 passed in 0.42s`, and
+  `H:MM:SS` in brackets above a minute). Everything before the tail is unchanged and still
+  byte-identical to pytest's own summary line.
 - `-s` / `--no-capture` on the default engine. Uncaptured output reaches you on **stderr**
   (a worker's stdout is the protocol channel), interleaved across a pool.
 - Markdown code-block tests on the default engine, including directory walking, so
@@ -69,7 +80,14 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - `capfd`, `capfdbinary`, `capsysbinary`, `capteesys`, `caplog`, `cache`, `mocker`,
   `pytestconfig`, `recwarn`, `tmpdir`, `tmpdir_factory`, `pytester` and friends are not
   provided; requesting one is a loud error naming the fixture.
-- `session`/`package` scope is per **worker**, not per run.
+- `session`/`package` scope is per **worker** for teardown and per **file** for setup: a
+  session fixture declared in a `conftest.py` is rebuilt for each test file that requests
+  it, even at `-n 1`. Two tests in one file share it correctly.
+- No item reordering. pytest groups tests that share a higher-scoped parametrized fixture,
+  so a module-scoped `params=["a", "b"]` fixture costs 2 setups there and 4 here — and the
+  collected order differs, which is what a node-id comparison sees.
+- **`pytest.exit()` does nothing.** It resolves to a compat stub, so the session does not
+  stop and the tests after the call run.
 - No `pytest_generate_tests` hook, no `xfail_strict` ini, no `--runxfail`, no warnings
   channel.
 - Capture is stream-level, not fd-level.

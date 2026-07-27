@@ -29,6 +29,7 @@ calling their marks so that each test stays about the one thing it names.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -136,6 +137,16 @@ def _pytest_summary_line(stdout: str) -> str:
 
 def _last_line(text: str) -> str:
     return text.strip().splitlines()[-1]
+
+
+def _v2_summary_line(stderr: str) -> str:
+    """v2's summary line with its ``in <n>s`` tail removed -- the same treatment
+    :func:`_pytest_summary_line` gives pytest's, so the two can be compared byte for byte.
+
+    Task 2 gave the line pytest's duration tail. It is stripped rather than matched by
+    prefix so that a bucket which should not be there still fails the comparison.
+    """
+    return re.sub(r"\s+in \d[\d.]*s(?: \(\d+:\d\d:\d\d\))?$", "", _last_line(stderr))
 
 
 def _context(label: str, proc: subprocess.CompletedProcess[str]) -> str:
@@ -1028,7 +1039,218 @@ def test_the_summary_line_matches_pytests_wording_and_bucket_order(tmp_path: Pat
     assert expected == (
         "1 failed, 1 passed, 1 skipped, 1 deselected, 1 xfailed, 1 xpassed, 1 error"
     ), _context("pytest", oracle)
-    assert _last_line(ours.stderr) == expected, _context("v2", ours)
+    assert _v2_summary_line(ours.stderr) == expected, _context("v2", ours)
+
+
+# --------------------------------------------------------------------------------------
+# The failure report (Task 2): pytest's section structure, not pytest's tracebacks
+# --------------------------------------------------------------------------------------
+
+FAILING_TREE = """\
+import pytest
+
+
+def test_pass():
+    assert True
+
+
+def test_bad():
+    x = 1
+    assert x == 2
+
+
+@pytest.fixture
+def boom():
+    raise ValueError("setup boom")
+
+
+def test_err(boom):
+    assert True
+
+
+class TestBox:
+    def test_method(self):
+        assert False
+"""
+
+
+def _rules(text: str, sepchar: str) -> list[str]:
+    """Every ``=== title ===`` (or ``___ title ___``) title in *text*, in order.
+
+    Reads the titles rather than the whole lines so the comparison is about *structure* --
+    which sections exist and what heads each block -- and not about the console width the
+    two processes happened to see.
+    """
+    pattern = re.compile(rf"^{re.escape(sepchar)}+ (.+?) {re.escape(sepchar)}+$")
+    return [match.group(1) for line in text.splitlines() if (match := pattern.match(line))]
+
+
+def test_the_failure_report_has_pytests_section_structure(tmp_path: Path) -> None:
+    """``ERRORS``, then ``FAILURES``, then ``short test summary info`` -- diffed against
+    real pytest's own default-verbosity run rather than against a transcribed literal.
+
+    pytest is invoked *without* ``-q --tb=no`` here, unlike everywhere else in this module:
+    ``--tb=no`` suppresses the very sections under test. Only the section titles and their
+    order are compared. The traceback *inside* a block is produced by the v2 worker's
+    ``traceback`` module rather than by pytest's ``ExceptionInfo``, and pinning its wording
+    would make every upstream reword a red gate for no parity gained.
+    """
+    tree = _tree(tmp_path, "failreport", {"test_f.py": FAILING_TREE})
+
+    oracle = _run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider"], tree)
+    ours = _run_v2(tree, [])
+
+    assert ours.returncode == oracle.returncode == 1, _context("v2", ours)
+    oracle_rules = _rules(oracle.stdout, "=")
+    assert oracle_rules[:4] == [
+        "test session starts",
+        "ERRORS",
+        "FAILURES",
+        "short test summary info",
+    ], _context("pytest", oracle)
+    # pytest's fifth rule is its summary line, wrapped in `=` at default verbosity.
+    assert re.fullmatch(r"2 failed, 1 passed, 1 error in .+", oracle_rules[4]), oracle_rules
+
+    # Two deliberate absences on the v2 side, asserted rather than left to be noticed:
+    # there is no session-start banner (v2 prints no platform/plugin preamble at all, so the
+    # first thing on stdout is the first failure section), and the summary line is **not**
+    # wrapped in a rule -- it stays pytest's bare `-q` spelling on **stderr**, which is what
+    # keeps it byte-comparable and keeps a redirected stdout free of diagnostics.
+    assert _rules(ours.stdout, "=") == [
+        "ERRORS",
+        "FAILURES",
+        "short test summary info",
+    ], _context("v2", ours)
+    assert _rules(ours.stderr, "=") == [], _context("v2", ours)
+
+
+def test_each_failure_block_is_headed_by_pytests_domain(tmp_path: Path) -> None:
+    """The ``___ headline ___`` line: pytest's ``TestReport.head_line``, diffed.
+
+    The headline is the node id **minus its path**, with ``::`` written as ``.`` -- so a
+    class method reads ``TestBox.test_method``. Taking the full id instead would be the
+    obvious shortcut and would not be pytest-shaped; taking the bare function name would
+    lose the class. Both halves are in this tree.
+
+    v2 heads an error block ``ERROR <domain>`` where pytest writes ``ERROR at setup of
+    <domain>``: the wire carries a *reduced* status per test and not the phase that produced
+    it, so the phase would be a guess. That single deviation is asserted here rather than
+    left to be noticed.
+    """
+    tree = _tree(tmp_path, "headlines", {"test_f.py": FAILING_TREE})
+
+    oracle = _run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider"], tree)
+    ours = _run_v2(tree, [])
+
+    assert _rules(oracle.stdout, "_") == [
+        "ERROR at setup of test_err",
+        "test_bad",
+        "TestBox.test_method",
+    ], _context("pytest", oracle)
+    assert _rules(ours.stdout, "_") == [
+        "ERROR test_err",
+        "test_bad",
+        "TestBox.test_method",
+    ], _context("v2", ours)
+
+
+def test_the_short_summary_lists_full_node_ids_failures_before_errors(tmp_path: Path) -> None:
+    """``short test summary info`` is where the *full* node id lives, on both sides.
+
+    Order is pytest's default ``-r`` value, ``fE`` -- failures then errors -- which is why
+    the section is not simply the report in test order (``test_err`` is collected before
+    ``TestBox.test_method`` and listed after it).
+    """
+    tree = _tree(tmp_path, "shortsummary", {"test_f.py": FAILING_TREE})
+
+    oracle = _run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider"], tree)
+    ours = _run_v2(tree, [])
+
+    def entries(text: str) -> list[str]:
+        return [
+            line.split(" - ")[0].strip()
+            for line in text.splitlines()
+            if line.startswith(("FAILED ", "ERROR "))
+        ]
+
+    expected = [
+        "FAILED test_f.py::test_bad",
+        "FAILED test_f.py::TestBox::test_method",
+        "ERROR test_f.py::test_err",
+    ]
+    assert entries(oracle.stdout) == expected, _context("pytest", oracle)
+    assert entries(ours.stdout) == expected, _context("v2", ours)
+
+
+def test_the_failure_body_still_carries_the_workers_message(tmp_path: Path) -> None:
+    """Structure is pytest's; the *content* is still the ``message`` the worker sent.
+
+    Without this the sections above could be perfectly shaped and empty, which is a worse
+    terminal experience than the un-sectioned block they replaced.
+    """
+    tree = _tree(tmp_path, "body", {"test_a.py": "def test_one():\n    assert 1 == 2\n"})
+
+    ours = _run_v2(tree, [])
+
+    assert "assert 1 == 2" in ours.stdout, _context("v2", ours)
+    assert "ValueError" not in ours.stdout
+
+
+@pytest.mark.parametrize("title", ["FAILURES", "ERRORS", "short test summary info", "x", "a" * 200])
+@pytest.mark.parametrize("sepchar", ["=", "_"])
+def test_the_separator_arithmetic_is_pytests_own(sepchar: str, title: str) -> None:
+    """``core._sep`` against ``_pytest._io.terminalwriter.TerminalWriter.sep`` itself.
+
+    This is the one place the port can be diffed against pytest *in process* rather than
+    through a subprocess, so it is: same width source, same title-centring arithmetic, same
+    "add a final sepchar if one more fits" rule, same ``win32`` column reservation. The long
+    and single-character titles are the two ends where the ``max(..., 1)`` clamp and the
+    trailing-fill rule respectively decide the answer.
+    """
+    from _pytest._io.terminalwriter import TerminalWriter
+
+    buffer = io.StringIO()
+    TerminalWriter(buffer).sep(sepchar, title)
+
+    assert core._sep(sepchar, title) == buffer.getvalue().rstrip("\n")  # pyright: ignore[reportPrivateUsage]
+
+
+# --------------------------------------------------------------------------------------
+# The summary line
+# --------------------------------------------------------------------------------------
+
+
+def test_the_summary_line_carries_pytests_duration_tail(tmp_path: Path) -> None:
+    """``N passed in 0.05s`` -- the tail pytest puts on its own ``-q`` summary line.
+
+    Diffed on *shape*, since a wall clock cannot be compared to a literal: both lines must
+    match the same tail pattern, and stripping the tail must leave the same bucket text.
+    ``summary.duration`` is v2's orchestrator wall clock, so the two numbers are not
+    expected to agree -- only the fact that a duration is reported at all.
+    """
+    tree = _tree(tmp_path, "duration", {"test_a.py": "def test_one():\n    assert True\n"})
+
+    oracle = _run_pytest(tree, [])
+    ours = _run_v2(tree, [])
+
+    tail = re.compile(r"^1 passed in \d+\.\d\ds$")
+    assert tail.match(_last_line(oracle.stdout)), _context("pytest", oracle)
+    assert tail.match(_last_line(ours.stderr)), _context("v2", ours)
+    # ...and the part before the tail is still byte-identical, which is what the bucket
+    # comparisons elsewhere in this module rely on.
+    assert _v2_summary_line(ours.stderr) == _pytest_summary_line(oracle.stdout)
+
+
+def test_a_long_run_gets_pytests_bracketed_hms_duration() -> None:
+    """Above a minute pytest appends ``(H:MM:SS)``; ``in 3754.10s`` is not a readable number.
+
+    Unit-tested rather than run for a minute. Both spellings and the 60-second threshold are
+    ``_pytest/_io/terminalwriter.py::format_session_duration``'s.
+    """
+    assert core._format_duration(0.0) == "0.00s"  # pyright: ignore[reportPrivateUsage]
+    assert core._format_duration(59.994) == "59.99s"  # pyright: ignore[reportPrivateUsage]
+    assert core._format_duration(60.0) == "60.00s (0:01:00)"  # pyright: ignore[reportPrivateUsage]
+    assert core._format_duration(3754.1) == "3754.10s (1:02:34)"  # pyright: ignore[reportPrivateUsage]
 
 
 def test_an_empty_run_says_no_tests_ran_exactly_as_pytest_does(tmp_path: Path) -> None:
@@ -1038,7 +1260,7 @@ def test_an_empty_run_says_no_tests_ran_exactly_as_pytest_does(tmp_path: Path) -
     ours = _run_v2(tree, [])
 
     assert _pytest_summary_line(oracle.stdout) == "no tests ran", _context("pytest", oracle)
-    assert _last_line(ours.stderr) == "no tests ran", _context("v2", ours)
+    assert _v2_summary_line(ours.stderr) == "no tests ran", _context("v2", ours)
 
 
 @pytest.mark.parametrize("broken", [1, 2], ids=["one-error", "two-errors"])
@@ -1061,4 +1283,4 @@ def test_a_collection_error_run_says_error_not_no_tests_ran(tmp_path: Path, brok
     assert oracle.returncode == 2 and ours.returncode == 2, _context("v2", ours)
     expected = _pytest_summary_line(oracle.stdout)
     assert expected == ("1 error" if broken == 1 else "2 errors"), _context("pytest", oracle)
-    assert _last_line(ours.stderr) == expected, _context("v2", ours)
+    assert _v2_summary_line(ours.stderr) == expected, _context("v2", ours)

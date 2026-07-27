@@ -13,12 +13,25 @@
 # Gate: `uv run python -m conformance --v2-collect`
 # Scoreboard at 1b.1: 21 cases -- 18 match, 3 waived, 0 stale-waivers, 0 diverged.
 # Scoreboard at 1b.2: 23 cases -- 23 match, 0 waived, 0 stale-waivers, 0 diverged.
+# Scoreboard at 1c.2: 27 cases -- 26 match, 1 waived, 0 stale-waivers, 0 diverged.
 #
-# THIS FILE IS NOW EMPTY. The three 1b.1 deferrals were retired by the commits that
+# THIS FILE WAS EMPTY AT 1b.2 AND IS NO LONGER: the single entry below arrived with the
+# 1c Task 2 corpus additions -- a shape the earlier corpus did not contain, not a
+# regression in anything it did. The other three additions (collection/dupe-args,
+# fixtures/session-scope, marks/pytest-exit) all MATCH here; the latter two diverge only
+# once something is EXECUTED, which is as clear a demonstration as the corpus offers of
+# why this ledger is kept apart from waivers-v2-run.toml.
+#
+# The three 1b.1 deferrals were retired by the commits that
 # closed them, each forced by stale-waiver detection rather than noticed by hand:
 # 4b448fa (fixtures/parametrized-fixture -- closure ids byte-match pytest) and 1a1e1b4
 # (marks/mark-filter and marks/deselect-all -- the -k/-m engine landed in 051b9c5).
 #
 # Node ids are compared as an ORDERED list, so a case can diverge on collection order
-# or on a duplicated id with the id sets identical on both sides. None does today.
+# or on a duplicated id with the id sets identical on both sides.
+# fixtures/module-param-reorder is exactly that case, and it is the standing argument
+# for the ordered comparison: its id SETS are identical, its tally is identical, its
+# exit code is identical, and the set-based v1 gate grades it green.
 [cases]
+
+"fixtures/module-param-reorder" = "PREDICTED and CONFIRMED (added at 1c Task 2): v2 does not implement pytest's reorder_items pass, so a module-scoped PARAMETRIZED fixture requested by two tests is emitted -- and executed -- in source order instead of grouped by parameter. pytest: alpha[one], beta[one], alpha[two], beta[two]. v2: alpha[one], alpha[two], beta[one], beta[two]. MECHANISM: _pytest/fixtures.py::reorder_items runs as part of pytest_collection_modifyitems and needs the WHOLE session's item list to group by the higher-scoped parameter; v2 collects file by file in a worker pool and has no such pass -- the limitation is already written down at python/rustest/_v2_worker.py:97-102, which predicted exactly this outcome: a module-scoped two-value fixture costs 2 setups under pytest (grouped) and 4 here. Both halves PROBED with a printing fixture: pytest 2 setups (SETUP one, SETUP two), v2 4 (SETUP one, SETUP two, SETUP one, SETUP two). WHAT THE GATE ACTUALLY SEES, and why the case earns its place: the TALLY MATCHES -- 4 passed on both sides, exit 0 on both sides -- and the id SETS are identical. The divergence is visible ONLY through the ordered id comparison. A set-based or tally-based grader certifies this green, which is precisely what happens on the v1 gate, where this case MATCHES. That makes it the corpus's demonstration that ordered ids are load-bearing rather than pedantic. It is also a real behavioural cost, not a cosmetic one: double the fixture setups, paid in full by any fixture whose setup is expensive or non-idempotent. DEFERRED to the Phase 2/3 decision on item reordering (1c Task 1 report Sec 8, behavioural gap 9): the pass needs the manifest assembled before dispatch, which is a scheduler change, not a worker change. Pre-waiver detail: id order: first divergence at index 1 (pytest='test_module_param_reorder.py::test_beta[one]', v2='test_module_param_reorder.py::test_alpha[two]')."

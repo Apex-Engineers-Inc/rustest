@@ -34,21 +34,34 @@ pytest is a dev-dependency only. It never ships with rustest.
 
 ## Case statuses
 
-Each corpus case is graded into exactly one of four statuses, printed as
-`[flag] area/case`. The run's exit code is 1 if *any* case is `DIVERGE` or
-`STALE-WAIVER`; matches and waivers alone exit 0.
+Each corpus case is graded into exactly one of five statuses, printed as
+`[flag] area/case`. The run's exit code is 1 if *any* case is `DIVERGE`,
+`STALE-WAIVER` or `HARNESS-ERROR`; matches and waivers alone exit 0.
 
-| Flag | Status         | Meaning                                                                                                                                                     |
-| ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ok` | `MATCH`        | pytest and rustest agree on collected IDs, outcome counts, and exit code.                                                                                    |
-| `~~` | `WAIVED`       | They diverge, but the divergence is recorded in `waivers.toml` with a reason. Exits 0.                                                                       |
-| `XX` | `DIVERGE`      | They diverge and there is no waiver for this case. Fails the run (exit 1).                                                                                    |
-| `!!` | `STALE-WAIVER` | The case now matches, but `waivers.toml` still carries a waiver for it. Fails the run (exit 1) — remove the waiver. Shrinking `waivers.toml` is the phase-gate metric, so a waiver that has quietly gone inert must not go unnoticed. |
+| Flag | Status          | Meaning                                                                                                                                                     |
+| ---- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ok` | `MATCH`         | pytest and rustest agree on collected IDs, outcome counts, and exit code.                                                                                    |
+| `~~` | `WAIVED`        | They diverge, but the divergence is recorded in `waivers.toml` with a reason. Exits 0.                                                                       |
+| `XX` | `DIVERGE`       | They diverge and there is no waiver for this case. Fails the run (exit 1).                                                                                    |
+| `!!` | `STALE-WAIVER`  | The case now matches, but `waivers.toml` still carries a waiver for it. Fails the run (exit 1) — remove the waiver. Shrinking `waivers.toml` is the phase-gate metric, so a waiver that has quietly gone inert must not go unnoticed. |
+| `EE` | `HARNESS-ERROR` | **The harness could not ask the question** — a malformed `case.toml`, a subprocess timeout, a runner that wrote no report. Fails the run (exit 1). **A waiver does not apply**: a waiver is a judgement about a known *divergence*, and no comparison happened for it to be about. |
 
-Under `--v2-collect` the same four statuses apply, graded on collected IDs and
+`DIVERGE` and `HARNESS-ERROR` are counted separately on the summary line for
+the same reason they have different flags: "the runners disagree about three
+cases" and "the instrument fell over on three cases" are different problems
+with different fixes, and they printed as the same `[XX]` until Phase 1c
+Task 2. The cost of that ambiguity is on the record — a `1 diverged` reading
+that turned out to be a subprocess timeout under concurrent load (P1b.2 Task 5
+report §10.7), which is where this status was recommended.
+
+Under `--v2-collect` the same five statuses apply, graded on collected IDs and
 the collection exit code alone, against `waivers-v2-collect.toml`. Under
-`--v2-run` they apply to ordered IDs, the six-value tally and the exit code,
+`--v2-run` they apply to ordered IDs, the seven-value tally and the exit code,
 against `waivers-v2-run.toml`.
+
+`--only PREFIX` that matches no case **exits 1** with a message naming the
+prefix and listing the corpus. It used to print `0 cases: …` and exit 0, which
+answered "all clear" to a question that was never asked.
 
 ## The `--v2-collect` comparison protocol
 
