@@ -31,7 +31,9 @@
 - `-k`/`-m` prune on the cached manifest before any worker spawns; `--collect-only` warm path never spawns Python at all for fully-static cached trees.
 - Wire `rustest_collect_s` benchmark: bench.py fills the reserved column via `--v2-collect-only` (cold + warm rows). **Gate check: warm ≤ 50ms on the 5k suite** — record actual numbers; if missed, profile and report the breakdown (do not tune blindly).
 
-### Task 3: Assertion rewriting + per-test overhead (FULL REVIEW on semantics)
+### Task 3: Assertion rewriting + per-test overhead + collect-path latency (FULL REVIEW on semantics + cache keys)
+
+[AMENDED after Task 2 measurement: warm collect = 547ms, of which engine 31ms (target met at engine level), CPython boot ~100ms, `import rustest.cli` ~355ms (195ms = rich.console imported on a path that renders nothing), printing ~60ms. Task 3 additionally: lazy-import the render stack (collect-only and report-json paths must not import rich), trim the CLI import graph, re-measure. Restated process-level gate: warm collect ≤ 250ms @ 5k with the breakdown table updated; the true ≤50ms end-to-end requires a native binary entry point — an architecture/packaging decision escalated to the user, NOT implemented in this phase. Task 3's review also covers Task 2's cache-key work (deferred single review).]
 
 - AST rewrite at collection time for Tier S files (Tier D files keep plain asserts initially — document): pytest-style `assert a == b` introspection messages. Port the message FORMAT from pytest's assertion/util.py (cite; differential-test message text on the common shapes: ==, in, is, comparisons, f-string operands). Cache rewritten bytecode; invalidate with the manifest cache key.
 - Per-test overhead attack: profile the execute path (worker dispatch round-trip per test is the suspect — batch ExecuteTest dispatch: send a file's tests as one batch request, stream results; protocol addition ⇒ goldens + mutation rows). **Gate check: overhead < 200µs/test** on the 5k suite (derived metric from bench.py); record actuals.
