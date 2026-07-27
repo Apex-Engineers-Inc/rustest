@@ -114,10 +114,12 @@ pub enum Reason {
     ImportedTestName,
     /// `def __getattr__` at module level (PEP 562): attribute access is user code.
     ModuleGetattr,
-    /// `exec` / `eval` / `compile` / `globals` / `setattr` reachable at import time.
-    ExecOrEval,
-    /// A module-level statement that runs code: a call, `if`/`for`/`while`/`try`/`with`,
-    /// `raise`, `assert`, an augmented or attribute assignment.
+    /// A PEP 263 encoding cookie naming anything but UTF-8, so this module and the
+    /// interpreter would decode the same bytes into different text.
+    EncodingCookie,
+    /// A module-level statement that runs code: a call — `exec`/`eval`/`compile` included, since
+    /// this arm is what makes them unreachable rather than special-cased — `if`/`for`/`while`/
+    /// `try`/`with`, `raise`, `assert`, an augmented or attribute assignment.
     ModuleSideEffect,
     /// A `def`/`class` nested in a conditional, loop or `try` at module level.
     ConditionalDef,
@@ -305,6 +307,55 @@ pub fn scan_path(
     scan_module(&source, &relative_posix(path, rootdir), config, shadows)
 }
 
+/// Does this source declare a PEP 263 encoding that is **not** UTF-8?
+///
+/// This module reads every file as UTF-8.  When a file says otherwise, the interpreter decodes
+/// the same bytes into *different text* — and the difference reaches the manifest, because
+/// parametrize ids are copied out of string literals.  Probed: a file declaring
+/// `# -*- coding: latin-1 -*-` whose `é` is the two bytes `C3 A9` is `é` to pytest and `Ã©`
+/// to a UTF-8 reader, so `@parametrize("s", ["é"])` yields `test_x[é]` there and `test_x[Ã©]`
+/// here — a one-byte-wrong nodeid, with nothing anywhere reporting a problem.
+///
+/// The obvious failure mode is not this one: a genuinely latin-1 file usually holds bytes that
+/// are not valid UTF-8 at all, so `read_to_string` fails and the file is already refused.  The
+/// dangerous case is the file whose bytes are valid UTF-8 *and* declare something else, which
+/// decodes cleanly into the wrong string.
+///
+/// Only the first two lines are scanned, which is PEP 263's own rule (`tokenize.detect_encoding`
+/// checks line 1, then line 2 when line 1 is blank or a comment).  The pattern is CPython's
+/// `cookie_re` — `^[ \t\f]*#.*?coding[:=][ \t]*([-_.a-zA-Z0-9]+)`.  Anything that does not
+/// normalise to `utf-8`/`utf8` refuses, `utf-8-sig` included: it strips a BOM that this module
+/// would keep, and "conservative" means the answer has to be *identical*, not merely close.
+fn declares_non_utf8_encoding(source: &str) -> Option<String> {
+    for line in source.lines().take(2) {
+        let trimmed = line.trim_start_matches([' ', '\t', '\u{c}']);
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(marker) = trimmed.find("coding") else {
+            continue;
+        };
+        let rest = &trimmed[marker + "coding".len()..];
+        let Some(rest) = rest.strip_prefix([':', '=']) else {
+            continue;
+        };
+        let name: String = rest
+            .trim_start_matches([' ', '\t'])
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        // `codecs.lookup` normalises case and treats `_` and `-` alike.
+        let normalised = name.to_ascii_lowercase().replace('_', "-");
+        if normalised != "utf-8" && normalised != "utf8" {
+            return Some(name);
+        }
+    }
+    None
+}
+
 /// `_v2_worker.py::_relative_posix` — the manifest's `path` contract.
 fn relative_posix(path: &Path, rootdir: &Path) -> String {
     match path.strip_prefix(rootdir) {
@@ -343,6 +394,15 @@ pub fn conftest_chain_is_static(
                 format!("{} could not be read", conftest.display()),
             ));
         };
+        if let Some(encoding) = declares_non_utf8_encoding(&source) {
+            // Applied to conftests as well as to test files: the textual `params=` scan below
+            // and the structural analysis both run over text this module decoded, and a file
+            // it is decoding wrongly is not one it can make claims about.
+            return Err(Dynamic::new(
+                Reason::EncodingCookie,
+                format!("{} declares `coding: {encoding}`", conftest.display()),
+            ));
+        }
         if source.contains("params=") {
             return Err(Dynamic::new(
                 Reason::ParametrizedFixture,
@@ -396,6 +456,12 @@ pub fn scan_module(
     config: &ResolvedConfig,
     shadows: &HashSet<String>,
 ) -> Result<Vec<CollectedTest>, Dynamic> {
+    if let Some(encoding) = declares_non_utf8_encoding(source) {
+        return Err(Dynamic::new(
+            Reason::EncodingCookie,
+            format!("{rel_path} declares `coding: {encoding}`"),
+        ));
+    }
     let parsed = parse_module(source)
         .map_err(|err| Dynamic::new(Reason::ParseError, format!("{rel_path}: {err}")))?;
     let mut scan = Scan::new(config, shadows);
@@ -429,9 +495,18 @@ pub enum Lit {
 }
 
 impl Lit {
-    /// The JSON `_v2_worker.py::_json_safe` would produce for this value.
-    fn to_json(&self) -> serde_json::Value {
-        match self {
+    /// The JSON `_v2_worker.py::_json_safe` would produce for this value, or `None` when this
+    /// module cannot put the value on the wire **unchanged**.
+    ///
+    /// The `None` case is a negative integer below `i64::MIN`.  `serde_json::Number` holds
+    /// `u64`/`i64`/`f64`, so such a value has no exact representation — and the previous
+    /// `-(magnitude as i128 as i64)` silently *wrapped*, turning a mark argument into a
+    /// positive number of a different magnitude.  Refusing the file is the right answer rather
+    /// than the cautious one: Tier D's own answer here is a lossy `f64` (serde parses an
+    /// out-of-range integer literal as a float), so emitting anything would be a **third**
+    /// spelling of the same value, and the differential would be comparing two wrongs.
+    fn to_json(&self) -> Option<serde_json::Value> {
+        Some(match self {
             Lit::None => serde_json::Value::Null,
             Lit::Bool(value) => serde_json::Value::Bool(*value),
             Lit::Int {
@@ -439,19 +514,41 @@ impl Lit {
                 magnitude,
             } => {
                 if *negative {
-                    serde_json::Value::from(-(*magnitude as i128 as i64))
+                    // `-(2^63)` is representable even though `+(2^63)` is not, so that one
+                    // magnitude is spelled out; every larger one has no `i64` at all.
+                    let signed = if *magnitude == (i64::MAX as u64) + 1 {
+                        i64::MIN
+                    } else {
+                        -i64::try_from(*magnitude).ok()?
+                    };
+                    serde_json::Value::from(signed)
                 } else {
                     serde_json::Value::from(*magnitude)
                 }
             }
             Lit::Str(value) => serde_json::Value::String(value.clone()),
-            Lit::Seq(items) => serde_json::Value::Array(items.iter().map(Lit::to_json).collect()),
+            Lit::Seq(items) => serde_json::Value::Array(
+                items.iter().map(Lit::to_json).collect::<Option<Vec<_>>>()?,
+            ),
             Lit::Dict(items) => serde_json::Value::Object(
                 items
                     .iter()
-                    .map(|(key, value)| (key.clone(), value.to_json()))
-                    .collect(),
+                    .map(|(key, value)| Some((key.clone(), value.to_json()?)))
+                    .collect::<Option<serde_json::Map<_, _>>>()?,
             ),
+        })
+    }
+
+    /// Python's `bool(value)` for the subset this enum admits — `None`, `False`, `0`, `""`
+    /// and every empty container are falsy, everything else is truthy.
+    fn is_truthy(&self) -> bool {
+        match self {
+            Lit::None => false,
+            Lit::Bool(value) => *value,
+            Lit::Int { magnitude, .. } => *magnitude != 0,
+            Lit::Str(value) => !value.is_empty(),
+            Lit::Seq(items) => !items.is_empty(),
+            Lit::Dict(items) => !items.is_empty(),
         }
     }
 
@@ -1051,7 +1148,17 @@ impl<'a> Scan<'a> {
             ["fixture"] => {
                 if let Some(arguments) = arguments {
                     for keyword in &arguments.keywords {
-                        let key = keyword.arg.as_ref().map(|arg| arg.as_str()).unwrap_or("**");
+                        // `**kwargs` on a fixture: the keys are a runtime value, so `params`
+                        // may be among them.  Reading the `arg` as the literal string `"**"`
+                        // and comparing *that* to `params` was the bug — a splat sailed
+                        // through as a plain fixture and `@fixture(**{"params": [1, 2]})`
+                        // doubled every id in the directory with nothing to show for it.
+                        let Some(key) = keyword.arg.as_ref().map(|arg| arg.as_str()) else {
+                            return Err(Dynamic::new(
+                                Reason::ParametrizedFixture,
+                                format!("@{rendered}(**kwargs) may carry params="),
+                            ));
+                        };
                         if key == "params" || key == "ids" {
                             return Err(Dynamic::new(
                                 Reason::ParametrizedFixture,
@@ -1153,7 +1260,7 @@ impl<'a> Scan<'a> {
         }
 
         if !FACTORY_MARKS.contains(&name) {
-            return Ok(spec(name, args, kwargs));
+            return spec(name, args, kwargs);
         }
 
         match name {
@@ -1181,11 +1288,11 @@ impl<'a> Scan<'a> {
                     }
                     reason = value.clone();
                 }
-                Ok(spec(
+                spec(
                     "skipif",
                     vec![condition],
                     vec![("reason".to_string(), reason)],
-                ))
+                )
             }
             "xfail" => {
                 let condition = match args.as_slice() {
@@ -1216,7 +1323,7 @@ impl<'a> Scan<'a> {
                         }
                     }
                 }
-                Ok(spec(
+                spec(
                     "xfail",
                     condition.into_iter().collect(),
                     vec![
@@ -1225,7 +1332,7 @@ impl<'a> Scan<'a> {
                         ("run".to_string(), run),
                         ("strict".to_string(), strict),
                     ],
-                ))
+                )
             }
             "usefixtures" => {
                 if !kwargs.is_empty() || !args.iter().all(|arg| matches!(arg, Lit::Str(_))) {
@@ -1234,7 +1341,7 @@ impl<'a> Scan<'a> {
                         "@mark.usefixtures takes positional string names only".to_string(),
                     ));
                 }
-                Ok(spec("usefixtures", args, Vec::new()))
+                spec("usefixtures", args, Vec::new())
             }
             _ => Err(Dynamic::new(
                 Reason::NonLiteralMark,
@@ -1515,9 +1622,16 @@ impl<'a> Scan<'a> {
         let decorators = self.decorators(&class.decorator_list)?;
         // `_hasinit`/`_hasnew`: pytest warns and collects **nothing** from such a class, and
         // returns without failing the run.  With no bases, the body is the whole story.
-        let has_constructor = class.body.iter().any(|statement| match statement {
-            Stmt::FunctionDef(func) => matches!(func.name.as_str(), "__init__" | "__new__"),
-            _ => false,
+        //
+        // The oracle is `getattr(cls, "__init__") != object.__init__`, which is about the
+        // *name being bound*, not about how.  `__init__ = 5` binds it just as surely as a
+        // `def` does — pytest and Tier D both refuse such a class, and matching only
+        // `FunctionDef` here made Tier S collect it.
+        let has_constructor = class.body.iter().any(|statement| {
+            matches!(
+                class_body_binding(statement),
+                Some(("__init__" | "__new__", true))
+            )
         });
         if has_constructor {
             return Ok(Vec::new());
@@ -1646,15 +1760,31 @@ impl<'a> Scan<'a> {
 
 /// Build a [`MarkSpec`] from const-evaluated arguments, applying the wire's omission rules
 /// (`_v2_worker.py::MarkSpec.to_wire`: empty `args`/`kwargs` are dropped).
-fn spec(name: &str, args: Vec<Lit>, kwargs: Vec<(String, Lit)>) -> MarkSpec {
-    MarkSpec {
+/// Build a [`MarkSpec`] from const-evaluated arguments, or refuse the file.
+///
+/// `Err` means a value this module cannot put on the wire unchanged — see [`Lit::to_json`].
+/// It is a refusal rather than a best effort because a mark argument is *data the execute half
+/// reads*, and a silently different one changes no nodeid at all.
+fn spec(name: &str, args: Vec<Lit>, kwargs: Vec<(String, Lit)>) -> Result<MarkSpec, Dynamic> {
+    let unrepresentable = || {
+        Dynamic::new(
+            Reason::NonLiteralMark,
+            format!("@mark.{name} carries an integer with no exact JSON form"),
+        )
+    };
+    Ok(MarkSpec {
         name: name.to_string(),
-        args: args.iter().map(Lit::to_json).collect(),
+        args: args
+            .iter()
+            .map(Lit::to_json)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(unrepresentable)?,
         kwargs: kwargs
             .into_iter()
-            .map(|(key, value)| (key, value.to_json()))
-            .collect(),
-    }
+            .map(|(key, value)| Some((key, value.to_json()?)))
+            .collect::<Option<serde_json::Map<_, _>>>()
+            .ok_or_else(unrepresentable)?,
+    })
 }
 
 /// Port of `_v2_worker.py::_requested_argnames` for the subset Tier S admits.
@@ -1770,6 +1900,49 @@ fn expr_yields(expr: &Expr) -> bool {
         Expr::Subscript(node) => expr_yields(&node.value) || expr_yields(&node.slice),
         Expr::Compare(node) => expr_yields(&node.left) || node.comparators.iter().any(expr_yields),
         _ => false,
+    }
+}
+
+/// The name a class-body statement binds and whether the bound value is **truthy**, if it
+/// binds exactly one plain name to something this module can evaluate.
+///
+/// Both halves matter, and the second is the one that is easy to get wrong.
+/// `_v2_worker.py::_hasinit` is
+///
+/// ```text
+/// init = getattr(obj, "__init__", None)
+/// return bool(init) and init != object.__init__
+/// ```
+///
+/// — so a *falsy* binding does not refuse the class at all. **Probed** (pytest 8.4.2,
+/// `class TestBox: __init__ = <v>` plus one test method):
+///
+/// | `<v>` | collected |
+/// |---|---|
+/// | `None`, `0`, `""`, `[]` | **1** — falsy, so `hasinit` is False |
+/// | `5`, `"x"`, `[1]`, `lambda self: None` | **0** |
+///
+/// A `def` is always truthy. A bare annotation (`__init__: int`, no value) binds *nothing*
+/// and is correctly absent here — pytest collects that class — and it flags for an unrelated
+/// reason anyway, since `class_body_is_safe` refuses annotated assignments outright.
+fn class_body_binding(statement: &Stmt) -> Option<(&str, bool)> {
+    match statement {
+        Stmt::FunctionDef(func) => Some((func.name.as_str(), true)),
+        Stmt::ClassDef(class) => Some((class.name.as_str(), true)),
+        Stmt::Assign(assign) => match assign.targets.as_slice() {
+            // A non-literal value cannot be reached: `class_body_is_safe` runs over the same
+            // body first and refuses the file.  `None` rather than a guess, so a future
+            // widening of that allowlist cannot silently decide truthiness here.
+            [Expr::Name(name)] => Some((name.id.as_str(), literal(&assign.value)?.is_truthy())),
+            _ => None,
+        },
+        Stmt::AnnAssign(assign) => match (assign.value.as_ref(), assign.target.as_ref()) {
+            (Some(value), Expr::Name(name)) => {
+                Some((name.id.as_str(), literal(value)?.is_truthy()))
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -2044,9 +2217,10 @@ fn body_defines(body: &[Stmt]) -> bool {
 
 /// A short, stable description of an expression for the `detail` string.
 ///
-/// Names `exec`/`eval` explicitly, because [`Reason::ExecOrEval`] has to be *reachable* for
-/// the detector's rule list to be honest: the statement allowlist already refuses every
-/// module-level call, so without this the reason would be documented and dead.
+/// A call is rendered `name(...)`, so an `exec(...)` or `eval(...)` at module level names
+/// itself in the refusal.  There is deliberately no separate reason for those two: the
+/// statement allowlist refuses *every* module-level call, and a rule that singles out two of
+/// them would suggest the others were considered safe.
 fn describe(expr: &Expr) -> String {
     match expr {
         Expr::Name(name) => name.id.to_string(),
@@ -2965,5 +3139,195 @@ mod tests {
 
         let err = scan_path(&path, tmp.path(), &config(), &no_shadows()).unwrap_err();
         assert_eq!(err.reason, Reason::NotPythonSource);
+    }
+
+    // -- review round: the four detector gaps -----------------------------
+
+    /// C1.  `**kwargs` on a fixture may *be* `params=`, and the keys are a runtime value.
+    ///
+    /// The bug this pins was silent by construction: the splat keyword has no `arg`, the code
+    /// read that absence as the literal name `"**"`, compared it to `params`, found no match
+    /// and returned a plain fixture. `@fixture(**{"params": [1, 2]})` then doubled every id in
+    /// the directory while Tier S reported the single unparametrized one.
+    #[test]
+    fn a_splat_on_a_fixture_flags() {
+        // A splat over a name is refused by the decorator rule, not by the binding: a literal
+        // dict is a legal module-level assignment, so nothing else would have caught it.
+        assert_eq!(
+            refusal("import pytest\n\nOPTS = {\"params\": [1, 2]}\n\n\n@pytest.fixture(**OPTS)\ndef n(request):\n    return request.param\n\n\ndef test_n(n):\n    pass\n"),
+            Reason::ParametrizedFixture
+        );
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.fixture(**{\"params\": [1, 2]})\ndef n(request):\n    return request.param\n\n\ndef test_n(n):\n    pass\n"),
+            Reason::ParametrizedFixture
+        );
+        // ...and a splat carrying something harmless is refused just the same, because the
+        // keys are not knowable: over-refusal costs a worker round trip, under-refusal costs
+        // the manifest.
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.fixture(**{\"scope\": \"module\"})\ndef n():\n    return 1\n\n\ndef test_n(n):\n    pass\n"),
+            Reason::ParametrizedFixture
+        );
+    }
+
+    /// C1, the directory-wide half: the same splat in a **conftest** must flag every file
+    /// below it, which is the shape that actually loses ids (the test file mentions nothing).
+    #[test]
+    fn a_splat_on_a_conftest_fixture_flags_the_whole_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("conftest.py"),
+            "import pytest\n\n\n@pytest.fixture(**{\"autouse\": True})\ndef always():\n    return 1\n",
+        )
+        .unwrap();
+
+        // The chain reports `ConftestChain` for anything its *structural* pass refuses, so the
+        // file's reason says "a conftest above me" rather than "I import something odd" — two
+        // different fixes for the reader. The detail is what pins that the splat rule fired,
+        // rather than some other conftest failure standing in for it.
+        let err = conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).unwrap_err();
+        assert_eq!(err.reason, Reason::ConftestChain);
+        assert!(err.detail.contains("**kwargs"), "{}", err.detail);
+    }
+
+    /// C2.  A PEP 263 cookie naming anything but UTF-8 means this module and the interpreter
+    /// read the same bytes as different text — and parametrize ids are copied out of string
+    /// literals, so the difference lands in a nodeid.
+    #[test]
+    fn a_non_utf8_encoding_cookie_flags() {
+        for source in [
+            "# -*- coding: latin-1 -*-\ndef test_x():\n    pass\n",
+            "#!/usr/bin/env python\n# coding: cp1252\ndef test_x():\n    pass\n",
+            "# vim: set fileencoding=iso-8859-15 :\ndef test_x():\n    pass\n",
+            // `utf-8-sig` strips a BOM this module would keep.
+            "# coding=utf-8-sig\ndef test_x():\n    pass\n",
+        ] {
+            assert_eq!(
+                scan_module(source, "test_a.py", &config(), &no_shadows())
+                    .expect_err(source)
+                    .reason,
+                Reason::EncodingCookie,
+                "{source}"
+            );
+        }
+    }
+
+    /// ...and a UTF-8 cookie, in any of its spellings, is not a refusal — otherwise the rule
+    /// would quietly disable the tier for the very many files that carry one.
+    #[test]
+    fn a_utf8_encoding_cookie_is_accepted() {
+        for source in [
+            "# -*- coding: utf-8 -*-\ndef test_x():\n    pass\n",
+            "# coding: UTF8\ndef test_x():\n    pass\n",
+            "#!/usr/bin/env python\n# -*- coding: utf_8 -*-\ndef test_x():\n    pass\n",
+            // Line 3 is too late to be a cookie, so it is not one.
+            "def test_x():\n    pass\n\n\n# coding: latin-1\n",
+            // A `coding:` inside a *string* is not a comment and never was a cookie.
+            "MESSAGE = \"coding: latin-1\"\n\n\ndef test_x():\n    pass\n",
+        ] {
+            assert!(
+                scan_module(source, "test_a.py", &config(), &no_shadows()).is_ok(),
+                "{source}"
+            );
+        }
+    }
+
+    /// I1.  `_hasinit` is `getattr(cls, "__init__") != object.__init__` — a question about the
+    /// *name being bound*, not about how. Matching only `def` let Tier S collect a class both
+    /// pytest and Tier D refuse.
+    #[test]
+    fn a_truthy_class_body_binding_of_dunder_init_collects_nothing() {
+        for source in [
+            "class TestBox:\n    __init__ = 5\n\n    def test_m(self):\n        pass\n",
+            "class TestBox:\n    __new__ = 5\n\n    def test_m(self):\n        pass\n",
+            "class TestBox:\n    __init__ = \"x\"\n\n    def test_m(self):\n        pass\n",
+            "class TestBox:\n    __init__ = [1]\n\n    def test_m(self):\n        pass\n",
+        ] {
+            assert_eq!(
+                scan_module(source, "test_a.py", &config(), &no_shadows()).unwrap(),
+                Vec::new(),
+                "{source}"
+            );
+        }
+    }
+
+    /// The other half of `bool(init) and init != object.__init__`, and the half a naive
+    /// "does the body bind `__init__`?" rule gets wrong: a **falsy** binding leaves the class
+    /// collectable.  Probed against pytest 8.4.2 — `None`, `0`, `""` and `[]` all collect.
+    #[test]
+    fn a_falsy_class_body_binding_of_dunder_init_still_collects() {
+        for source in [
+            "class TestBox:\n    __init__ = None\n\n    def test_m(self):\n        pass\n",
+            "class TestBox:\n    __init__ = 0\n\n    def test_m(self):\n        pass\n",
+            "class TestBox:\n    __init__ = \"\"\n\n    def test_m(self):\n        pass\n",
+            "class TestBox:\n    __init__ = []\n\n    def test_m(self):\n        pass\n",
+        ] {
+            assert_eq!(
+                scan_module(source, "test_a.py", &config(), &no_shadows())
+                    .unwrap()
+                    .into_iter()
+                    .map(|test| test.id)
+                    .collect::<Vec<_>>(),
+                ["test_a.py::TestBox::test_m"],
+                "{source}"
+            );
+        }
+    }
+
+    /// A bare annotation binds nothing, so the class *is* collected — but an annotated
+    /// assignment in a class body flags for its own reason, so neither shape can reach a
+    /// wrong answer.
+    #[test]
+    fn an_annotated_constructor_binding_never_produces_a_wrong_answer() {
+        assert_eq!(
+            refusal(
+                "class TestBox:\n    __init__: int = 5\n\n    def test_m(self):\n        pass\n"
+            ),
+            Reason::ModuleSideEffect
+        );
+    }
+
+    /// I2.  A negative integer below `i64::MIN` has no exact `serde_json` form. The old
+    /// `as i64` cast wrapped it into a *positive* number of a different magnitude — a mark
+    /// argument silently changed, and no nodeid moved to give it away.
+    #[test]
+    fn an_unrepresentable_integer_mark_argument_flags() {
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.limit(-9223372036854775809)\ndef test_x():\n    pass\n"),
+            Reason::NonLiteralMark
+        );
+    }
+
+    /// The boundaries either side of it are exact, including `-(2^63)`, which is
+    /// representable although `+(2^63)` is not.
+    #[test]
+    fn integer_mark_arguments_are_exact_to_the_i64_boundary() {
+        let payload = |source: &str| {
+            scan_module(source, "test_a.py", &config(), &no_shadows()).unwrap()[0].marks[0]
+                .args
+                .clone()
+        };
+        assert_eq!(
+            payload("import pytest\n\n\n@pytest.mark.limit(-9223372036854775808)\ndef test_x():\n    pass\n"),
+            vec![serde_json::json!(i64::MIN)]
+        );
+        assert_eq!(
+            payload("import pytest\n\n\n@pytest.mark.limit(9223372036854775807)\ndef test_x():\n    pass\n"),
+            vec![serde_json::json!(i64::MAX)]
+        );
+        // A positive magnitude above `i64::MAX` is still exact — `u64` covers it.
+        assert_eq!(
+            payload("import pytest\n\n\n@pytest.mark.limit(18446744073709551615)\ndef test_x():\n    pass\n"),
+            vec![serde_json::json!(u64::MAX)]
+        );
+    }
+
+    /// The refusal reaches nested payloads too, not just top-level arguments.
+    #[test]
+    fn an_unrepresentable_integer_inside_a_container_flags() {
+        assert_eq!(
+            refusal("import pytest\n\n\n@pytest.mark.limit(values=[1, -9223372036854775809])\ndef test_x():\n    pass\n"),
+            Reason::NonLiteralMark
+        );
     }
 }

@@ -245,6 +245,25 @@ _DYNAMIC_SHAPES: dict[str, str] = {
     "non_literal_mark": 'import pytest\n\n\n@pytest.mark.skipif(1 + 1 == 2, reason="always")\ndef test_d():\n    pass\n',
     "parametrized_fixture": "import pytest\n\n\n@pytest.fixture(params=[1, 2])\ndef n(request):\n    return request.param\n\n\ndef test_d(n):\n    pass\n",
     "test_attribute": "__test__ = True\n\n\ndef test_d():\n    pass\n",
+    # A `**` splat on a fixture: the keys are a runtime value, so `params=` may be among
+    # them. Read as the literal name `"**"` this sailed through as a plain fixture.
+    "fixture_kwargs_splat": (
+        "import pytest\n\n\n"
+        '@pytest.fixture(**{"params": [1, 2]})\n'
+        "def n(request):\n    return request.param\n\n\n"
+        "def test_d(n):\n    pass\n"
+    ),
+    # A PEP 263 cookie naming a non-UTF-8 encoding. The body is deliberately pure ASCII, so
+    # both readings agree and the *ids* are identical — what is being pinned is that the file
+    # goes to Tier D at all. The reading that actually diverges is pinned separately, in
+    # `test_a_non_utf8_encoding_cookie_routes_the_file_to_d`, where it can be compared
+    # without a console-encoding artifact in the way.
+    "encoding_cookie": "# -*- coding: latin-1 -*-\n\n\ndef test_d():\n    pass\n",
+    # An integer with no exact `serde_json` form; the old `as i64` cast wrapped it into a
+    # positive number of a different magnitude, silently, with no nodeid moving.
+    "unrepresentable_int": (
+        "import pytest\n\n\n@pytest.mark.limit(-9223372036854775809)\ndef test_d():\n    pass\n"
+    ),
 }
 
 #: The shapes Tier S must answer, keyed by the feature they exercise.  The values are chosen
@@ -263,6 +282,24 @@ _STATIC_SHAPES: dict[str, str] = {
     "marks": 'import pytest\n\npytestmark = pytest.mark.module_wide\n\n\n@pytest.mark.slow\n@pytest.mark.smoke("tag", level=3)\ndef test_marked():\n    pass\n\n\n@pytest.mark.xfail(reason="known")\ndef test_x():\n    pass\n\n\n@pytest.mark.skipif(True, reason="never")\ndef test_s():\n    pass\n',
     "fixtures": 'import pytest\n\n\n@pytest.fixture\ndef value():\n    return 1\n\n\n@pytest.fixture(scope="module")\ndef shared():\n    return 2\n\n\ndef test_uses(value, shared, tmp_path):\n    pass\n',
     "stdlib_imports": "import json\nimport os\nfrom pathlib import Path\nfrom typing import Any\n\n\ndef test_stdlib():\n    pass\n",
+    # The positive control for the integer-payload fix: values either side of the `i64`
+    # boundary that ARE exact, so the manifest comparison pins payload fidelity rather than
+    # only the refusal. `_json_safe` passes an int through untouched, so Tier D's bytes here
+    # are the oracle for Tier S's.
+    "mark_payloads": (
+        "import pytest\n\n\n"
+        "@pytest.mark.limit(9223372036854775807, -9223372036854775808)\n"
+        '@pytest.mark.tags("a", "b", nested=[1, -2, None, True], mapping={"k": -9})\n'
+        "def test_payload():\n    pass\n"
+    ),
+    # `_hasinit` is `bool(getattr(cls, "__init__")) and it != object.__init__`, so a TRUTHY
+    # binding refuses the class even without a `def`. The falsy half is a rustest/pytest
+    # divergence in both tiers and lives in its own test — see `_FALSY_CONSTRUCTOR`.
+    "class_constructor_binding": (
+        "class TestTruthyInit:\n    __init__ = 5\n\n"
+        "    def test_never_collected(self):\n        pass\n\n\n"
+        "class TestPlain:\n    def test_collected(self):\n        pass\n"
+    ),
     "no_tests": "def helper():\n    pass\n",
 }
 
@@ -275,6 +312,20 @@ _STATIC_SHAPES: dict[str, str] = {
 #: ``_v2_worker.py::_cross_product_cases`` consumes those ids verbatim, documenting the
 #: divergence in its own docstring. Tier S reproduces **rustest's**, which is the only correct
 #: answer available to it: matching pytest here would make Tier S disagree with Tier D.
+#: A class binding `__init__` to a **falsy** value, kept out of the suite above for the same
+#: reason as `_CLASS_PARAMETRIZE`: it is a rustest/pytest divergence in *both* tiers.
+#:
+#: `_hasinit` is `bool(init) and init != object.__init__`, so a falsy `__init__` does not
+#: refuse the class — pytest goes on to **instantiate** it (`_pytest/python.py::newinstance`,
+#: `return self.obj()`) and gets `TypeError: 'NoneType' object is not callable`, i.e. a
+#: collection error and exit 2. `_v2_worker.py::_collect_class` deliberately never
+#: instantiates ("this parses them off the class ... which avoids instantiating a class during
+#: collection"), so rustest collects the method in both tiers.
+_FALSY_CONSTRUCTOR = (
+    "class TestFalsyInit:\n    __init__ = None\n\n"
+    "    def test_still_collected(self):\n        pass\n"
+)
+
 _CLASS_PARAMETRIZE = (
     'import pytest\n\n\n@pytest.mark.parametrize("x", [1, 2])\n'
     'class TestGrid:\n    @pytest.mark.parametrize("y", [10])\n'
@@ -449,6 +500,103 @@ def test_a_local_module_shadowing_the_stdlib_routes_the_file_to_d(tmp_path: Path
     assert hybrid["tests"][0].get("tier", "d") == "d", hybrid["tests"][0]
     assert _strip_tier(hybrid) == _strip_tier(_manifest(root, [], "d"))
     assert [test["id"] for test in hybrid["tests"]] == _pytest_ids(root, [])
+
+
+def test_a_non_utf8_encoding_cookie_routes_the_file_to_d(tmp_path: Path) -> None:
+    """The defect in full: a cookie'd file whose bytes are *valid UTF-8*.
+
+    A genuinely latin-1 file usually holds bytes that are not valid UTF-8, so `read_to_string`
+    already refuses it. The dangerous file is the one that decodes cleanly **both ways, into
+    different text** — here the two bytes ``C3 A9``, which are ``é`` to a UTF-8 reader and
+    ``Ã©`` to the latin-1 reader the cookie asks for. Probed against pytest 8.4.2: pytest
+    honours the cookie, so the nodeid is ``test_x[Ã©]``; Tier S read it as UTF-8 and produced
+    ``test_x[é]`` — one character wrong, exit 0, nothing reporting a problem.
+
+    Compared between the two tiers only. pytest prints non-ASCII ids through the console
+    encoding (``backslashreplace`` on a redirected Windows stdout — see
+    ``core.py::_escaping_unencodable_output``), so an ids-vs-stdout comparison would be
+    measuring the terminal, not the collector. Tier D *is* the oracle for Tier S, which is the
+    question this test is actually about.
+    """
+    root = tmp_path / "suite"
+    root.mkdir()
+    (root / "pytest.ini").write_bytes(b"[pytest]\n")
+    (root / "test_enc.py").write_bytes(
+        b"# -*- coding: latin-1 -*-\nimport pytest\n\n\n"
+        b'@pytest.mark.parametrize("s", ["\xc3\xa9"])\ndef test_x(s):\n    pass\n'
+    )
+
+    hybrid = _manifest(root, [], "auto")
+    oracle = _manifest(root, [], "d")
+
+    assert _strip_tier(hybrid) == _strip_tier(oracle)
+    assert hybrid["tests"][0].get("tier", "d") == "d", hybrid["tests"][0]
+    # Tier D decodes the cookie the way the interpreter does; the id carries the two
+    # latin-1 characters, not the single UTF-8 one Tier S used to emit.
+    assert hybrid["tests"][0]["id"] == "test_enc.py::test_x[Ã©]"
+
+
+def test_a_falsy_constructor_binding_matches_tier_d_not_pytest(tmp_path: Path) -> None:
+    """The second shape where "match Tier D" and "match pytest" are different instructions.
+
+    Found by this review round's own differential, which is the argument for running it on
+    generated material rather than only on the corpus: nothing in the corpus binds `__init__`
+    to a falsy value. Tier S matches Tier D — its actual contract — and both differ from
+    pytest, which errors while instantiating. Recorded here rather than papered over, and
+    asserted on **both** sides so that closing the gap fails this test instead of silently
+    turning it into a tautology.
+    """
+    root = tmp_path / "suite"
+    root.mkdir()
+    (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (root / "test_falsy.py").write_text(_FALSY_CONSTRUCTOR, encoding="utf-8")
+
+    hybrid = _manifest(root, [], "auto")
+
+    assert _strip_tier(hybrid) == _strip_tier(_manifest(root, [], "d"))
+    assert [test["id"] for test in hybrid["tests"]] == [
+        "test_falsy.py::TestFalsyInit::test_still_collected"
+    ]
+    assert all(test.get("tier", "d") == "s" for test in hybrid["tests"])
+
+    # pytest instead reports a collection error and collects nothing from the class.
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--collect-only", "-q"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 2, proc.stdout
+    assert "'NoneType' object is not callable" in proc.stdout, proc.stdout
+
+
+def test_a_fixture_kwargs_splat_routes_the_directory_to_d(tmp_path: Path) -> None:
+    """The splat defect where it actually costs ids: a **conftest** fixture.
+
+    ``@fixture(**{"params": [1, 2]})`` doubles every id in the directory, and the test file
+    below it says nothing at all — so a Tier S that read the splat as a plain fixture reported
+    one id where the run has two.
+    """
+    root = tmp_path / "suite"
+    root.mkdir()
+    (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (root / "conftest.py").write_text(
+        'import pytest\n\n\n@pytest.fixture(**{"params": [1, 2], "autouse": True})\n'
+        "def flavour(request):\n    return request.param\n",
+        encoding="utf-8",
+    )
+    (root / "test_quiet.py").write_text("def test_q():\n    pass\n", encoding="utf-8")
+
+    hybrid = _manifest(root, [], "auto")
+
+    assert _strip_tier(hybrid) == _strip_tier(_manifest(root, [], "d"))
+    assert [test["id"] for test in hybrid["tests"]] == _pytest_ids(root, [])
+    assert [test["id"] for test in hybrid["tests"]] == [
+        "test_quiet.py::test_q[1]",
+        "test_quiet.py::test_q[2]",
+    ], "the splat's parameters reached a file that never mentions the fixture"
+    assert all(test.get("tier", "d") == "d" for test in hybrid["tests"])
 
 
 def test_class_level_parametrize_matches_tier_d_not_pytest(tmp_path: Path) -> None:
