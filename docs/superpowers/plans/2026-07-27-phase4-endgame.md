@@ -25,6 +25,15 @@ Fix each sweep-ledgered mechanism, cited to its oracle, differential-pinned, the
 
 **Re-sweep gate:** `python -m conformance --real` all four — target: more-itertools + click + jinja2 MATCH; member-designer main tree RUNS to completion with outcomes matching pytest or a minimal ledger where each residual has mechanism + a decision (fix now vs documented limitation). Corpus grows where each mechanism deserves a permanent case (at minimum: indirect=, raises-legacy, pytestmark-bare). Wall-clock table updated in the report.
 
+### Task 1b: Expanded validation — seven approved suites (controller-verified; USER-APPROVED LIST)
+
+User approved (2026-07-27) for cloning: **networkx, Pygments, marshmallow, rich, Werkzeug, sqlparse, python-dateutil** (packaging not selected; alternates cachetools/humanize/tabulate/itsdangerous if any fails the hook audit — swap requires a note in the report, not new approval, per the named-alternate arrangement).
+
+- Pre-clone hook audit per project (WebFetch their conftest.py files at the pinned rev): any `pytest_generate_tests`/custom-collector/hook-heavy conftest → swap to an alternate, documented.
+- Each: shallow clone at pinned rev (documented), isolated venv, `conformance/real/<name>.toml`, pytest-then-rustest sequential, outcome diff + wall-clock, per-repo ledger with mechanisms. hypothesis-marked tests (dateutil) deselected+documented if they trip.
+- Acceptance: all seven MATCH or minimally ledgered with mechanism + decision; **new-mechanism budget: if the seven suites surface more than TWO new fix-worthy mechanisms, pause and report to the user before fixing** (signal that the edge-case tail isn't converging).
+- Wall-clock table for all eleven suites goes to the report (README numbers come from this table in Task 3).
+
 ### Task 2: v1 deletion + repo simplification (spot-review)
 
 - Delete the v1 engine: discovery.rs, execution.rs (v1 halves), v1 model/renderer paths, `--v1` flag and `_run_v1`, the v1 compat-mode plumbing; `rustest.run()` public API repointed at v2 (breaking-change noted for the endgame changelog). The v1 conformance gate retires — its ledger ARCHIVED (docs/superpowers/history/) not deleted; stale-waiver machinery keeps the two v2 gates. #133's dead tests die with v1; add the cargo-test CI step now that it can be green (pin --test-threads=1 per ledger note).
