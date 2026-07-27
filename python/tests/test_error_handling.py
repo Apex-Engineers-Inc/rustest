@@ -308,8 +308,11 @@ class TestRaises:
             raise ValueError("invalid literal")
 
     def test_raises_with_match_failure(self) -> None:
-        """Test that raises with match fails when pattern doesn't match."""
-        with pytest.raises(AssertionError, match="Pattern.*does not match"):
+        """Test that raises with match fails when pattern doesn't match.
+
+        The wording is pytest's since Phase 4 ported `_pytest/raises.py::_check_match`.
+        """
+        with pytest.raises(AssertionError, match="Regex pattern did not match"):
             with raises(ValueError, match="notfound"):
                 raise ValueError("something else")
 
@@ -377,7 +380,7 @@ class TestRaises:
         with raises(ValueError) as exc_info:
             raise ValueError("test")
 
-        repr_str = repr(exc_info.excinfo)
+        repr_str = repr(exc_info)
         assert "ExceptionInfo" in repr_str
         assert "ValueError" in repr_str
 
@@ -387,14 +390,14 @@ class TestRaises:
             raise ValueError("this is an invalid literal for conversion")
 
     def test_raises_format_exc_name_single(self) -> None:
-        """Test formatting of single exception name."""
-        with pytest.raises(AssertionError, match="DID NOT RAISE ValueError"):
+        """pytest reports the *repr* of the type (`_pytest/raises.py` l. 713)."""
+        with pytest.raises(AssertionError, match=r"DID NOT RAISE <class 'ValueError'>"):
             with raises(ValueError):
                 pass
 
     def test_raises_format_exc_name_tuple(self) -> None:
-        """Test formatting of tuple of exception names."""
-        with pytest.raises(AssertionError, match="ValueError or TypeError"):
+        """...and the repr of the whole tuple for more than one (l. 711)."""
+        with pytest.raises(AssertionError, match=r"DID NOT RAISE any of \(<class 'ValueError'>"):
             with raises((ValueError, TypeError)):
                 pass
 
@@ -405,6 +408,6 @@ class TestRaises:
                 raise ValueError("actual message")
 
         error_msg = str(exc_info.value)
-        assert "Pattern 'expected' does not match" in error_msg
-        assert "'actual message'" in error_msg
-        assert "ValueError" in error_msg
+        assert "Regex pattern did not match." in error_msg
+        assert " Regex: 'expected'" in error_msg
+        assert " Input: 'actual message'" in error_msg

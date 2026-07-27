@@ -999,34 +999,178 @@ def _evaluate_skipif_condition(condition: Any, target: Callable[..., Any]) -> An
         raise RuntimeError(message) from exc
 
 
-class ExceptionInfo:
-    """Information about an exception caught by raises().
+_NO_EXC_INFO: tuple[type[BaseException], BaseException, Any] | None = None
 
-    Attributes:
-        type: The exception type
-        value: The exception instance
-        traceback: The exception traceback
+
+def _stringify_exception(exc: BaseException) -> str:
+    """Port of `_pytest/_code/code.py::stringify_exception` (pytest 8.4.2, l. 465-490).
+
+    ``match=`` is compared against **this**, not against ``str(exc)``: PEP-678 ``__notes__``
+    are part of the searched text, which is why a suite that adds a note and matches on it
+    passes under pytest.  (The exception-group branch is not modelled — see
+    :class:`RaisesContext`.)
+    """
+    notes = cast("list[str]", getattr(exc, "__notes__", []))
+    return "\n".join([str(exc), *notes])
+
+
+def _match_pattern(match: Any) -> Any:
+    """Port of `_pytest/raises.py::_match_pattern` (l. 314-316).
+
+    A pattern compiled with no flags is reported by its source text, so the failure message
+    reads the same whether the user passed ``"x"`` or ``re.compile("x")``.
+    """
+    import re
+
+    # `_REGEX_NO_FLAGS = re.compile(r"").flags` — pytest l. 69.
+    if isinstance(match, re.Pattern):
+        pattern = cast("re.Pattern[str]", match)
+        if pattern.flags == re.compile(r"").flags:
+            return pattern.pattern
+    return cast(Any, match)
+
+
+class ExceptionInfo:
+    """Information about an exception caught by :func:`raises`.
+
+    Port of the read surface of `_pytest/_code/code.py::ExceptionInfo` (pytest 8.4.2,
+    l. 604-781): :attr:`type`, :attr:`value`, :attr:`tb`, :attr:`typename`,
+    :attr:`traceback`, :meth:`exconly`, :meth:`errisinstance`, :meth:`match` and pytest's
+    ``__repr__``.  Like pytest's, an instance may be **unfilled** — that is what
+    ``RaisesContext.__enter__`` hands to the ``as`` target before the block has run, and it
+    is why the accessors are properties with pytest's exact assertion messages rather than
+    the plain attributes rustest used to set in ``__init__``.
+
+    **One documented divergence.** pytest's :attr:`traceback` is a ``Traceback`` — a
+    sequence of ``TracebackEntry`` objects with ``.lineno``/``.frame``/``.statement`` — while
+    rustest's is the raw ``types.TracebackType``, the same object as :attr:`tb`.  Modelling
+    ``Traceback`` means modelling ``TracebackEntry``, ``Source`` and ``Frame``; nothing in
+    the four real-world suites reads it (jinja2's ``tests/test_debug.py`` uses ``.tb``), so
+    the alias is kept and recorded instead of half-built.  ``__repr__``'s ``tblen`` is
+    computed by walking ``tb_next``, so it agrees with pytest's number.
     """
 
     def __init__(
-        self, exc_type: type[BaseException], exc_value: BaseException, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        exc_tb: Any = None,
     ) -> None:
         super().__init__()
-        self.type = exc_type
-        self.value = exc_value
-        self.traceback = exc_tb
+        self._excinfo: tuple[type[BaseException], BaseException, Any] | None = (
+            None if exc_type is None or exc_value is None else (exc_type, exc_value, exc_tb)
+        )
+
+    @classmethod
+    def for_later(cls) -> ExceptionInfo:
+        """An unfilled instance — pytest's `ExceptionInfo.for_later` (l. 586-589)."""
+        return cls()
+
+    def fill_unfilled(self, exc_info: tuple[type[BaseException], BaseException, Any]) -> None:
+        """Fill an instance made by :meth:`for_later` (pytest l. 591-594)."""
+        assert self._excinfo is None, "ExceptionInfo was already filled"
+        self._excinfo = exc_info
+
+    @property
+    def type(self) -> type[BaseException]:
+        """The exception class."""
+        assert self._excinfo is not None, ".type can only be used after the context manager exits"
+        return self._excinfo[0]
+
+    @property
+    def value(self) -> BaseException:
+        """The exception value."""
+        assert self._excinfo is not None, ".value can only be used after the context manager exits"
+        return self._excinfo[1]
+
+    @property
+    def tb(self) -> Any:
+        """The exception raw traceback."""
+        assert self._excinfo is not None, ".tb can only be used after the context manager exits"
+        return self._excinfo[2]
+
+    @property
+    def typename(self) -> str:
+        """The type name of the exception."""
+        assert (
+            self._excinfo is not None
+        ), ".typename can only be used after the context manager exits"
+        return self.type.__name__
+
+    @property
+    def traceback(self) -> Any:
+        """The raw traceback — see the class docstring for how this differs from pytest's."""
+        return self.tb
+
+    def exconly(self, tryshort: bool = False) -> str:
+        """The exception rendered as ``traceback.format_exception_only`` renders it.
+
+        pytest strips a leading ``"AssertionError: "`` under ``tryshort`` only when its
+        ``from_exc_info`` classifier armed ``_striptext``, which happens for rewritten
+        asserts.  rustest reports those through `_assertion.py` rather than through
+        ``ExceptionInfo``, so nothing arms it here and ``tryshort`` is accepted and inert.
+        """
+        import traceback as _traceback
+
+        _ = tryshort
+        return "".join(_traceback.format_exception_only(self.type, self.value)).rstrip()
+
+    def errisinstance(self, exc: type[BaseException] | tuple[type[BaseException], ...]) -> bool:
+        """``isinstance(excinfo.value, exc)`` (pytest l. 677-682)."""
+        return isinstance(self.value, exc)
+
+    def match(self, regexp: Any) -> bool:
+        """Search the stringified exception for *regexp*, or raise ``AssertionError``.
+
+        Port of pytest l. 768-781, message for message: matching is done with
+        :func:`re.search` over :func:`_stringify_exception`, and the "did you mean to
+        ``re.escape()``" hint fires on an exact-equality miss.
+        """
+        __tracebackhide__ = True
+        import re
+
+        value = _stringify_exception(self.value)
+        msg = f"Regex pattern did not match.\n Regex: {regexp!r}\n Input: {value!r}"
+        if regexp == value:
+            msg += "\n Did you mean to `re.escape()` the regex?"
+        assert re.search(regexp, value), msg
+        return True
 
     def __repr__(self) -> str:
-        return f"<ExceptionInfo {self.type.__name__}({self.value!r})>"
+        if self._excinfo is None:
+            return "<ExceptionInfo for raises contextmanager>"
+        length = 0
+        entry = self._excinfo[2]
+        while entry is not None:
+            length += 1
+            entry = entry.tb_next
+        try:
+            rendered = repr(self._excinfo[1])
+        except Exception:  # pragma: no cover - saferepr's job in pytest
+            rendered = f"<unrepresentable {type(self._excinfo[1]).__name__}>"
+        return f"<{type(self).__name__} {rendered} tblen={length}>"
 
 
 class RaisesContext:
     """Context manager for asserting that code raises a specific exception.
 
-    This mimics pytest.raises() behavior, supporting:
-    - Single or tuple of exception types
-    - Optional regex matching of exception messages
-    - Access to caught exception information
+    Port of `_pytest/raises.py::RaisesExc` (pytest 8.4.2, l. 543-732), restricted to the
+    surface real suites use.  What it reproduces, each against that file:
+
+    * ``__enter__`` returns an **unfilled** :class:`ExceptionInfo` (l. 694-697), not the
+      context object.  Before Phase 4 rustest returned ``self``, so ``.tb``, ``.typename``
+      and ``.match()`` were simply missing from the ``as`` target.
+    * the type check runs first and a **mismatch propagates the original exception**
+      untouched, whatever ``match``/``check`` say (``_just_propagate``, l. 668-672);
+    * ``match`` is searched over :func:`_stringify_exception` (l. 496-531);
+    * ``check`` is called last, and only if type and match passed (l. 481-493);
+    * the three ``DID NOT RAISE`` wordings (l. 707-713).
+
+    **Not modelled:** ``RaisesGroup``/exception-group matching, the ``re.error`` and
+    empty-``match`` warnings pytest emits at construction, and the ``_diff_text`` rendering
+    pytest uses when ``match`` is a fully escaped ``^...$`` literal.  A failed assertion is
+    an ``AssertionError`` here and a ``_pytest.outcomes.Failed`` (a ``BaseException``) in
+    pytest; both are reported as ``failed`` with identical text.
 
     Usage:
         with raises(ValueError):
@@ -1046,17 +1190,44 @@ class RaisesContext:
 
     def __init__(
         self,
-        exc_type: type[BaseException] | tuple[type[BaseException], ...],
+        exc_type: type[BaseException] | tuple[type[BaseException], ...] | None = None,
         *,
-        match: str | None = None,
+        match: Any = None,
+        check: Callable[[BaseException], bool] | None = None,
     ) -> None:
         super().__init__()
+        if isinstance(exc_type, tuple):
+            expected = exc_type
+        elif exc_type is None:
+            expected = ()
+        else:
+            expected = (exc_type,)
+        if not expected and match is None and check is None:
+            raise ValueError("You must specify at least one parameter to match on.")
+        self.expected_exceptions: tuple[type[BaseException], ...] = expected
         self.exc_type = exc_type
         self.match_pattern = match
+        self.check = check
         self.excinfo: ExceptionInfo | None = None
 
-    def __enter__(self) -> RaisesContext:
-        return self
+    def __repr__(self) -> str:
+        """pytest's `RaisesExc.__repr__` shape (l. 677-689), under rustest's class name."""
+        parameters: list[str] = []
+        if self.expected_exceptions:
+            if len(self.expected_exceptions) == 1:
+                parameters.append(self.expected_exceptions[0].__name__)
+            else:
+                names = ", ".join(exc.__name__ for exc in self.expected_exceptions)
+                parameters.append(f"({names})")
+        if self.match_pattern is not None:
+            parameters.append(f"match={_match_pattern(self.match_pattern)!r}")
+        if self.check is not None:
+            parameters.append(f"check={self.check!r}")
+        return f"{type(self).__name__}({', '.join(parameters)})"
+
+    def __enter__(self) -> ExceptionInfo:
+        self.excinfo = ExceptionInfo.for_later()
+        return self.excinfo
 
     def __exit__(
         self,
@@ -1064,78 +1235,126 @@ class RaisesContext:
         exc_val: BaseException | None,
         exc_tb: Any,
     ) -> bool:
-        # No exception was raised
+        __tracebackhide__ = True
+        # No exception was raised — pytest's three wordings, `raises.py` l. 707-713.
         if exc_type is None:
-            exc_name = self._format_exc_name()
-            msg = f"DID NOT RAISE {exc_name}"
-            raise AssertionError(msg)
+            expected = self.expected_exceptions
+            if not expected:
+                raise AssertionError("DID NOT RAISE any exception")
+            if len(expected) > 1:
+                raise AssertionError(f"DID NOT RAISE any of {expected!r}")
+            raise AssertionError(f"DID NOT RAISE {next(iter(expected))!r}")
 
-        # At this point, we know an exception was raised, so exc_val cannot be None
         assert exc_val is not None, "exc_val must not be None when exc_type is not None"
 
-        # Check if the exception type matches
-        if not issubclass(exc_type, self.exc_type):
-            # Unexpected exception type - let it propagate
+        # Type first, and a mismatch propagates rather than reporting a mismatch: pytest
+        # sets `_just_propagate` in `matches` (l. 668-672) precisely for this.
+        if self.expected_exceptions and not issubclass(exc_type, self.expected_exceptions):
             return False
 
-        # Store the exception information
-        self.excinfo = ExceptionInfo(exc_type, exc_val, exc_tb)
+        import re
 
-        # Check if the message matches the pattern (if provided)
         if self.match_pattern is not None:
-            import re
-
-            exc_message = str(exc_val)
-            if not re.search(self.match_pattern, exc_message):
+            text = _stringify_exception(exc_val)
+            if not re.search(self.match_pattern, text):
                 msg = (
-                    f"Pattern {self.match_pattern!r} does not match "
-                    f"{exc_message!r}. Exception: {exc_type.__name__}: {exc_message}"
+                    "Regex pattern did not match.\n"
+                    + f" Regex: {_match_pattern(self.match_pattern)!r}\n"
+                    + f" Input: {text!r}"
                 )
+                if _match_pattern(self.match_pattern) == text:
+                    msg += "\n Did you mean to `re.escape()` the regex?"
                 raise AssertionError(msg)
 
-        # Suppress the exception (it was expected)
-        return True
+        if self.check is not None and not self.check(exc_val):
+            raise AssertionError(f"check {self.check!r} did not return True")
 
-    def _format_exc_name(self) -> str:
-        """Format the expected exception name(s) for error messages."""
-        if isinstance(self.exc_type, tuple):
-            names = " or ".join(exc.__name__ for exc in self.exc_type)
-            return names
-        return self.exc_type.__name__
+        if self.excinfo is None:  # pragma: no cover - `raises(...).__exit__` without enter
+            self.excinfo = ExceptionInfo.for_later()
+        self.excinfo.fill_unfilled((exc_type, exc_val, exc_tb))
+        return True
 
     @property
     def value(self) -> BaseException:
-        """Access the caught exception value."""
-        if self.excinfo is None:
-            msg = "No exception was caught"
-            raise AttributeError(msg)
-        return self.excinfo.value
+        """Access the caught exception value.
+
+        Kept from before Phase 4 — ``RaisesContext`` is exported API and this is what a
+        caller who held on to the *context object* rather than the ``as`` target reads.
+        pytest has no analogue (its ``__enter__`` result is the only handle), so the
+        pre-existing ``AttributeError`` wording is preserved rather than replaced by
+        :class:`ExceptionInfo`'s assertion.
+        """
+        excinfo = self.excinfo
+        if excinfo is None:
+            raise AttributeError("No exception was caught")
+        try:
+            return excinfo.value
+        except AssertionError:
+            raise AttributeError("No exception was caught") from None
 
     @property
     def type(self) -> type[BaseException]:
-        """Access the caught exception type."""
-        if self.excinfo is None:
-            msg = "No exception was caught"
-            raise AttributeError(msg)
-        return self.excinfo.type
+        """Access the caught exception type — see :attr:`value`."""
+        excinfo = self.excinfo
+        if excinfo is None:
+            raise AttributeError("No exception was caught")
+        try:
+            return excinfo.type
+        except AssertionError:
+            raise AttributeError("No exception was caught") from None
+
+
+@overload
+def raises(
+    expected_exception: type[BaseException] | tuple[type[BaseException], ...] | None = ...,
+    *,
+    match: Any = ...,
+    check: Callable[[BaseException], bool] | None = ...,
+) -> RaisesContext: ...
+
+
+@overload
+def raises(
+    expected_exception: type[BaseException] | tuple[type[BaseException], ...],
+    func: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> ExceptionInfo: ...
 
 
 def raises(
-    exc_type: type[BaseException] | tuple[type[BaseException], ...],
-    *,
-    match: str | None = None,
-) -> RaisesContext:
-    """Assert that code raises a specific exception.
+    expected_exception: type[BaseException] | tuple[type[BaseException], ...] | None = None,
+    *args: Any,
+    **kwargs: Any,
+) -> RaisesContext | ExceptionInfo:
+    """Assert that a code block — or a call — raises a specific exception.
+
+    Port of `_pytest/raises.py::raises` (pytest 8.4.2, l. 104-300).  **Two forms**, and the
+    presence of a positional ``func`` is what selects between them:
+
+    * ``raises(Exc)`` / ``raises(Exc, match=...)`` / ``raises(match=...)`` returns a
+      :class:`RaisesContext` to be used with ``with``;
+    * ``raises(Exc, func, *args, **kwargs)`` — pytest's **legacy callable form** — calls
+      ``func(*args, **kwargs)`` immediately and returns the :class:`ExceptionInfo`.  Note
+      that in this form ``**kwargs`` are forwarded to ``func``: ``raises(E, f, match="x")``
+      passes ``match="x"`` to ``f`` (pytest l. 296, and its docstring l. 128-131).  jinja2
+      uses this form 41 times, which is why rustest's keyword-only signature cost that
+      suite 50 tests.
 
     Args:
-        exc_type: The expected exception type(s). Can be a single type or tuple of types.
-        match: Optional regex pattern to match against the exception message.
-
-    Returns:
-        A context manager that catches and validates the exception.
+        expected_exception: The expected exception type(s), or ``None`` to match on
+            ``match``/``check`` alone.
+        *args: Empty for the context-manager form; ``(func, *func_args)`` for the callable
+            form.
+        **kwargs: ``match``/``check`` for the context-manager form; forwarded to ``func``
+            for the callable form.
 
     Raises:
-        AssertionError: If no exception is raised, or if the message doesn't match.
+        AssertionError: If no exception is raised, or the message/check does not match.
+        TypeError: On an unknown keyword in the context-manager form, or a non-callable
+            ``func``.
+        ValueError: On a falsy ``expected_exception`` in the callable form.
 
     Usage:
         with raises(ValueError):
@@ -1144,15 +1363,38 @@ def raises(
         with raises(ValueError, match="invalid literal"):
             int("not a number")
 
-        with raises((ValueError, TypeError)):
-            some_function()
-
-        # Access the caught exception
-        with raises(ValueError) as exc_info:
-            raise ValueError("oops")
-        assert "oops" in str(exc_info.value)
+        excinfo = raises(ValueError, int, "not a number")
+        assert "invalid literal" in str(excinfo.value)
     """
-    return RaisesContext(exc_type, match=match)
+    __tracebackhide__ = True
+
+    if not args:
+        # pytest lists *every* keyword, not only the offending one (l. 276-280).
+        if set(kwargs) - {"match", "check", "expected_exception"}:
+            msg = "Unexpected keyword arguments passed to pytest.raises: "
+            msg += ", ".join(sorted(kwargs))
+            msg += "\nUse context-manager form instead?"
+            raise TypeError(msg)
+        if expected_exception is None:
+            return RaisesContext(**kwargs)
+        return RaisesContext(expected_exception, **kwargs)
+
+    if not expected_exception:
+        raise ValueError(
+            "Expected an exception type or a tuple of exception types, but got "
+            + f"`{expected_exception!r}`. Raising exceptions is already understood as "
+            + "failing the test, so you don't need any special code to say 'this should "
+            + "never raise an exception'."
+        )
+    func = args[0]
+    if not callable(func):
+        raise TypeError(f"{func!r} object (type: {type(func)}) must be callable")
+    with RaisesContext(expected_exception) as excinfo:
+        _ = func(*args[1:], **kwargs)
+    try:
+        return excinfo
+    finally:
+        del excinfo
 
 
 class Failed(Exception):
