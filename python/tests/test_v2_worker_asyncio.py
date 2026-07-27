@@ -26,7 +26,7 @@ whole-run comparison cannot localise.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 import sys
@@ -44,9 +44,11 @@ from rustest._v2_worker import (
     FixtureDef,
     FixtureRunner,
     MarkSpec,
+    ScopeMismatch,
     WorkerState,
     build_registry,
     collect_module,
+    execute_batch,
     execute_test,
     handle_init,
 )
@@ -212,12 +214,15 @@ def test_init_carries_the_three_asyncio_values(tmp_path: Path) -> None:
     ("marked", "default", "fixture_scope", "expected"),
     [
         # `mark ?? asyncio_default_fixture_loop_scope ?? fixturedef.scope` — plugin.py
-        # l. 736-741, one row per rung of the ladder.
-        ("class", "session", "module", "class"),
+        # l. 736-741, one row per rung of the ladder.  Every row's loop scope is at least as
+        # wide as the fixture's own, because a narrower one is a ScopeMismatch — see
+        # `test_a_fixture_may_not_run_on_a_narrower_loop` for that half.
+        ("session", "class", "module", "session"),
         (None, "session", "module", "session"),
         (None, None, "module", "module"),
         (None, None, "function", "function"),
         (None, None, "session", "session"),
+        ("module", None, "function", "module"),
     ],
 )
 def test_fixture_loop_scope_precedence(
@@ -237,6 +242,66 @@ def test_fixture_loop_scope_precedence(
         body._loop_scope = marked  # pyright: ignore[reportFunctionMemberAccess]
     runner = FixtureRunner(AsyncioConfig(default_fixture_loop_scope=default))
     assert runner.fixture_loop_scope(fixturedef("f", fixture_scope, body)) == expected
+
+
+@pytest.mark.parametrize(
+    ("marked", "default", "fixture_scope"),
+    [
+        # Reached from the mark...
+        ("function", None, "session"),
+        ("class", "session", "module"),
+        # ...and from the ini alone, which is the shape a whole suite can land on at once.
+        (None, "function", "session"),
+        (None, "module", "session"),
+    ],
+)
+def test_a_fixture_may_not_run_on_a_narrower_loop(
+    marked: str | None, default: str | None, fixture_scope: str
+) -> None:
+    """A wider fixture on a narrower loop is a ``ScopeMismatch``, as it is under pytest.
+
+    The oracle never had to write this rule down: it acquires the loop by *requesting* the
+    ``_{loop_scope}_scoped_runner`` fixture (`plugin.py::pytest_fixture_setup` l. 742-743),
+    so ordinary fixture scope checking rejects it. This port calls ``loop_runner`` directly
+    and so had to be told — :meth:`FixtureRunner._check_loop_scope`.
+
+    Probed on pytest 8.4.2 + pytest-asyncio 1.2.0 with
+    ``@pytest_asyncio.fixture(scope="session", loop_scope="function")``: **2 errors**, with
+    the message this port reproduces. Before the check, rustest ran the same file **green**,
+    resuming the async generator's teardown on a newly built loop after the setup loop had
+    closed (``teardown same=False setup_loop_closed=True``).
+    """
+
+    async def body() -> None:
+        yield  # pyright: ignore[reportGeneralTypeIssues] - shape only; never executed
+
+    if marked is not None:
+        body._loop_scope = marked  # pyright: ignore[reportFunctionMemberAccess]
+    runner = FixtureRunner(AsyncioConfig(default_fixture_loop_scope=default))
+
+    with pytest.raises(ScopeMismatch) as excinfo:
+        _ = runner.fixture_loop_scope(fixturedef("wide", fixture_scope, body))
+
+    expected_loop = marked or default
+    assert (
+        f"You tried to access the {expected_loop} scoped fixture "
+        f"_{expected_loop}_scoped_runner with a {fixture_scope} scoped request object"
+    ) in str(excinfo.value), str(excinfo.value)
+
+
+def test_a_narrow_fixture_on_a_wider_loop_is_allowed() -> None:
+    """The other direction is legal and is the whole point of the acceptance shape.
+
+    ``asyncio_default_fixture_loop_scope = session`` puts every fixture, function-scoped ones
+    included, on the session loop — which is what lets a function-scoped async fixture talk
+    to a session-scoped client. A check written as ``!=`` rather than ``>=`` would reject the
+    configuration this phase exists to support.
+    """
+
+    async def body() -> None: ...
+
+    runner = FixtureRunner(AsyncioConfig(default_fixture_loop_scope="session"))
+    assert runner.fixture_loop_scope(fixturedef("narrow", "function", body)) == "session"
 
 
 @pytest.mark.parametrize(
@@ -658,6 +723,13 @@ def test_tests_sharing_a_loop_scope_run_sequentially(tmp_path: Path) -> None:
 
     Asserted on the interleaving rather than the wall clock, so it does not become a timing
     test: under ``gather`` both tests would enter before either left.
+
+    **Driven through :func:`execute_batch`, not a loop over :func:`execute_test`**, because
+    that is the layer a gather would be re-added at: `execute_batch` is the only place that
+    holds more than one test at a time, so it is the only place that *could* overlap them. A
+    pin that ran the tests one `execute_test` at a time would be asserting that a function
+    given one coroutine runs one coroutine — true, unfalsifiable, and green on the day
+    somebody batches inside the op it never calls.
     """
     target = write(
         tmp_path / "test_sequential.py",
@@ -689,8 +761,11 @@ def test_tests_sharing_a_loop_scope_run_sequentially(tmp_path: Path) -> None:
         _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry, config)
         for plan in plans:
             worker._execution_plans[plan.id] = plan  # pyright: ignore[reportPrivateUsage]
-        for plan in plans:
-            _ = execute_test(plan.id)
+        emitted: list[Mapping[str, object]] = []
+        done = execute_batch([plan.id for plan in plans], False, emitted.append)
+
+        assert done == {"op": "batch_done", "executed": 2, "stopped": False}
+        assert [result["status"] for result in emitted] == ["passed", "passed"]
         assert module.ORDER == ["one-enter", "one-leave", "two-enter", "two-leave"]
 
 

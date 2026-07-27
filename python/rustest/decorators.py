@@ -764,17 +764,33 @@ class MarkGenerator:
         """
         import inspect
 
-        # "package" joins the four v1 accepted, because `_pytest/scope.py` has five members
-        # and pytest-asyncio validates against all of them (`_validate_scope` l. 237-245).
+        # WHAT IS CHECKED HERE, AND WHAT DELIBERATELY IS NOT.
+        #
+        # Checked: that each scope NAME is one of the five. "package" joins the four v1
+        # accepted, because `_pytest/scope.py` has five members and pytest-asyncio validates
+        # against all of them (`_validate_scope` l. 237-245).
+        #
+        # NOT checked: `loop_scope` and `scope` being passed TOGETHER. That is the deprecated
+        # alias's one real conflict, and pytest-asyncio raises it from
+        # `_get_marked_loop_scope` (l. 771-774) at *setup*, so the run reports a per-test
+        # `error` and exits 1. The worker reproduces it there
+        # (`_v2_worker.py::_marked_loop_scope`); rejecting it here would move the same
+        # complaint to import time, i.e. to a collection error at exit 2, and the corpus
+        # differential would diverge on a shape that is otherwise byte-identical.
+        #
+        # KNOWN DIVERGENCE, and it is the name check above rather than anything below:
+        # rejecting a typo'd scope at DECORATION makes it a collection error, so
+        # `@mark.asyncio(loop_scope="sesion")` costs the whole file. Measured -- pytest:
+        # `1 passed, 1 error`, exit 1 (the healthy sibling still runs); rustest: `1 error`,
+        # exit 2 (it does not). Kept because failing at the definition is the better error
+        # for a typo and because this signature is shipped v1 surface with its own tests;
+        # recorded in the Phase 3 Task 1 report alongside the unknown-keyword holdout, which
+        # has the same root.
         valid_scopes = {"function", "class", "module", "package", "session"}
         if loop_scope is not None and loop_scope not in valid_scopes:
             valid = ", ".join(sorted(valid_scopes))
             msg = f"Invalid loop_scope '{loop_scope}'. Must be one of: {valid}"
             raise ValueError(msg)
-        # NOT validated here, deliberately: `scope` is the deprecated alias and the only
-        # thing that can be wrong about it -- being passed alongside `loop_scope` -- is what
-        # pytest-asyncio reports at setup time. Rejecting it at decoration would turn a
-        # per-test `error` at exit 1 into a collection error at exit 2.
         if scope is not None and scope not in valid_scopes:
             valid = ", ".join(sorted(valid_scopes))
             msg = f"Invalid scope '{scope}'. Must be one of: {valid}"

@@ -168,6 +168,7 @@ if TYPE_CHECKING:
     # the stdlib imports).  `from __future__ import annotations` makes every annotation a
     # string, so nothing here is evaluated at import time.
     import asyncio
+    import contextvars
 
 __all__ = [
     "AsyncioConfig",
@@ -1495,6 +1496,51 @@ def _marked_loop_scope(mark: MarkSpec, default_loop_scope: str) -> str:
     return cast(str, scope)
 
 
+def _apply_contextvar_changes(
+    context: contextvars.Context,
+) -> Callable[[], None] | None:
+    """Port of `plugin.py::_apply_contextvar_changes` (l. 385-414), verbatim in behaviour.
+
+    Copies whatever *context* changed into the **current** context and returns an undo, or
+    ``None`` when nothing changed.
+
+    The oracle's own comment says why a fixture author cannot do this themselves: "the author
+    of the fixture can't write such a finalizer because they have no way to capture the
+    Context in which the setup function was run" (l. 368-375).
+
+    **It is what makes a fixture's ``ContextVar`` reach the test that requested it**, and it
+    became load-bearing here the moment test bodies got their own context
+    (:func:`_consume_test_result`). Before that, fixtures and tests shared the runner's
+    context and the reachability was accidental; isolating the test body alone broke it —
+    measured, a session fixture setting a ``ContextVar`` went from ``from-fixture`` to
+    ``unset`` where pytest keeps saying ``from-fixture``. The two halves are one change.
+
+    ``var.get() is context.get(var)`` compares identity, not equality, exactly as the oracle
+    does: a fixture that reassigns a ``ContextVar`` to an equal-but-distinct object has still
+    changed it, and a ``__eq__`` that raises must not take the teardown down with it.
+    """
+    context_tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
+    for var in context:
+        try:
+            if var.get() is context.get(var):
+                # Unmodified, so leave it as-is.
+                continue
+        except LookupError:
+            # Not yet set in the current context at all.
+            pass
+        context_tokens.append((var, var.set(context.get(var))))
+
+    if not context_tokens:
+        return None
+
+    def restore_contextvars() -> None:
+        while context_tokens:
+            var, token = context_tokens.pop()
+            var.reset(token)
+
+    return restore_contextvars
+
+
 def _default_event_loop_policy() -> object:
     """Port of `plugin.py::_get_event_loop_policy` (l. 634-637), warning filter included.
 
@@ -2626,14 +2672,26 @@ class FixtureRunner:
         self._extras_stack.append(finalizer.calls)
         try:
             if wraps_async and inspect.isasyncgenfunction(func):
+                import contextvars
+
                 loop_scope = self.fixture_loop_scope(fixturedef)
+                # `_wrap_asyncgen_fixture` l. 317-318: one context, built here, used for BOTH
+                # halves of the generator -- the setup run below and the resume in the
+                # finalizer -- which is why it is captured into the teardown partial.
+                context = contextvars.copy_context()
                 agen = cast(Any, func)(**kwargs)
                 try:
-                    value = self.run_coroutine(agen.__anext__(), loop_scope)
+                    value = self.run_coroutine(agen.__anext__(), loop_scope, context=context)
                 except StopAsyncIteration:
                     raise FixtureLookupError(f"{fixturedef.name} did not yield a value") from None
                 teardown: Callable[[], object] | None = functools.partial(
-                    _teardown_async_yield, self, fixturedef, agen, loop_scope
+                    _teardown_async_yield,
+                    self,
+                    fixturedef,
+                    agen,
+                    loop_scope,
+                    context,
+                    _apply_contextvar_changes(context),
                 )
             elif inspect.isgeneratorfunction(func):
                 generator = cast(Any, func)(**kwargs)
@@ -2665,7 +2723,19 @@ class FixtureRunner:
                 # extension, and it is confined to the mode that already means "rustest runs
                 # async things for you".
                 if wraps_async and hasattr(value, "__await__"):
-                    value = self.run_coroutine(value, self.fixture_loop_scope(fixturedef))
+                    import contextvars
+
+                    # `_wrap_async_fixture` l. 365-378: run the body in a copied context,
+                    # replay whatever it changed into the caller's, and register the undo as
+                    # an ordinary finalizer of this fixture -- which is what
+                    # `request.addfinalizer(reset_contextvars)` is.
+                    context = contextvars.copy_context()
+                    value = self.run_coroutine(
+                        value, self.fixture_loop_scope(fixturedef), context=context
+                    )
+                    reset = _apply_contextvar_changes(context)
+                    if reset is not None:
+                        finalizer.calls.append(reset)
                 teardown = None
         finally:
             _ = self._extras_stack.pop()
@@ -2675,13 +2745,24 @@ class FixtureRunner:
 
     # -- asyncio ----------------------------------------------------------
 
-    def run_coroutine(self, coro: Any, scope: str, timeout: float | None = None) -> object:
+    def run_coroutine(
+        self,
+        coro: Any,
+        scope: str,
+        timeout: float | None = None,
+        context: contextvars.Context | None = None,
+    ) -> object:
         """Drive *coro* to completion on the event loop of *scope*.
 
         *scope* is **required and has no default**, which is the point: every one of the four
         call sites has already resolved a loop scope from the config and the marks, and a
         default here would let a fifth one silently pick a loop rather than fail to compile.
         "It ran on the wrong loop" is diagnosed three frames inside somebody's library.
+
+        *context* is the ``contextvars.Context`` the coroutine runs in, and ``None`` means
+        "the runner's own" — which is what an ``asyncio.Runner`` uses by default and what
+        every *fixture* call site passes.  The **test** call site passes a fresh
+        ``copy_context()``; see :func:`_consume_test_result` for why the two differ.
 
         **One loop per loop-scope, for that scope's lifetime** — the model this replaced was
         one loop per *worker*, which made ``@mark.asyncio(loop_scope=...)`` decorative and
@@ -2714,12 +2795,12 @@ class FixtureRunner:
         if timeout is not None:
             coro = asyncio.wait_for(coro, timeout)
             try:
-                return runner.run(coro)
+                return runner.run(coro, context=context)
             except TimeoutError:
                 # v1's wording (`async_executor.py` l. 85), kept so a suite that greps its
                 # CI output for the phrase keeps finding it.
                 _fail(f"Test timed out after {timeout} seconds")
-        return runner.run(coro)
+        return runner.run(coro, context=context)
 
     def loop_runner(self, scope: str) -> asyncio.Runner:
         """The ``asyncio.Runner`` for *scope*, created on first use.
@@ -2844,6 +2925,11 @@ class FixtureRunner:
         one.  That is why the option travels as an ``Option`` all the way from
         ``src/v2/config.rs``: collapsing "unset" into ``"function"`` would put every wider
         async fixture on a loop that dies before it does.
+
+        The scope check is **inside** this method rather than beside its callers, because the
+        answer and its legality are one question: there is no caller that wants an
+        unchecked loop scope, and a second entry point would be a second way to skip
+        :meth:`_check_loop_scope`.
         """
         func = getattr(fixturedef.func, "__func__", fixturedef.func)
         marked = _safe_getattr(func, "_loop_scope", None)
@@ -2853,7 +2939,48 @@ class FixtureRunner:
                 f"{scope!r} is not a valid loop_scope for fixture {fixturedef.name!r}. "
                 + f"Valid scopes are: {', '.join(SCOPE_NAMES)}."
             )
+        self._check_loop_scope(fixturedef, cast(str, scope))
         return cast(str, scope)
+
+    def _check_loop_scope(self, fixturedef: FixtureDef, loop_scope: str) -> None:
+        """A fixture may not run on a loop narrower than itself.  ``ScopeMismatch`` if it does.
+
+        **The oracle gets this for free and this port had to be told.**  pytest-asyncio
+        acquires the loop through the fixture's *own* request —
+        ``runner = request.getfixturevalue(f"_{loop_scope}_scoped_runner")``
+        (`plugin.py::pytest_fixture_setup` l. 742-743) — so pytest's ordinary
+        ``SubRequest._check_scope`` fires: a session-scoped fixture asking for a
+        function-scoped runner fixture is the same error as a session-scoped fixture asking
+        for any other function-scoped fixture.  :meth:`loop_runner` is called directly here,
+        which skips the fixture graph and therefore skipped the check.
+
+        **What it cost, measured.**  ``@pytest_asyncio.fixture(scope="session",
+        loop_scope="function")`` — a shape reachable straight from the configuration
+        pytest-asyncio's own deprecation warning steers people towards — ran **green** under
+        rustest while pytest reported ``2 errors``: the async-generator's teardown resumed on
+        a *different, newly built* loop after the loop its setup ran on had been closed
+        (probed: ``teardown same=False setup_loop_closed=True``).  A fixture holding anything
+        loop-bound — a connection pool, a task, a lock — is then torn down against a foreign
+        loop, silently, in the one direction where "it passed" is the wrong answer.
+
+        The first two lines of the message are pytest's, byte for byte, including the
+        synthetic ``_{scope}_scoped_runner`` fixture name an operator would grep for.  The
+        ``Requested fixture:`` line is **not** faked: pytest points at
+        ``pytest_asyncio/plugin.py:800``'s ``_scoped_runner`` because that function exists;
+        here the loop is :meth:`loop_runner`, and naming a plugin file this runner does not
+        use would send a reader to source that has nothing to do with the failure.
+        """
+        if _SCOPE_INDEX[loop_scope] >= _SCOPE_INDEX[fixturedef.scope]:
+            return
+        raise ScopeMismatch(
+            f"ScopeMismatch: You tried to access the {loop_scope} scoped "
+            + f"fixture _{loop_scope}_scoped_runner with a {fixturedef.scope} scoped "
+            + "request object. Requesting fixture stack:\n"
+            + f"{_format_fixturedef_line(fixturedef)}\n"
+            + "Requested fixture:\n"
+            + f"  the {loop_scope}-scoped event loop "
+            + "(python/rustest/_v2_worker.py::FixtureRunner.loop_runner)"
+        )
 
     def wraps_async_fixture(self, func: object) -> bool:
         """Would pytest-asyncio drive this fixture's body on a loop?
@@ -3010,7 +3137,12 @@ class FixtureRunner:
 
 
 def _teardown_async_yield(
-    runner: FixtureRunner, fixturedef: FixtureDef, generator: object, loop_scope: str
+    runner: FixtureRunner,
+    fixturedef: FixtureDef,
+    generator: object,
+    loop_scope: str,
+    context: contextvars.Context,
+    reset_contextvars: Callable[[], None] | None,
 ) -> None:
     """The async twin of :func:`_teardown_yield`: resume an ``async def`` + ``yield`` fixture.
 
@@ -3033,7 +3165,11 @@ def _teardown_async_yield(
             return
         raise ValueError(f"fixture {fixturedef.name} has more than one 'yield'")
 
-    _ = runner.run_coroutine(drain(), loop_scope)
+    _ = runner.run_coroutine(drain(), loop_scope, context=context)
+    # `_wrap_asyncgen_fixture` l. 335-337: the undo runs AFTER the generator is drained, so
+    # the second half of the body still sees the variables its first half set.
+    if reset_contextvars is not None:
+        reset_contextvars()
 
 
 def _teardown_yield(fixturedef: FixtureDef, generator: object) -> None:
@@ -4891,12 +5027,41 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
     The third branch — a test that ``return``s a non-``None`` value — is pytest's
     ``PytestReturnNotNoneWarning``. v2 has no warnings channel, so it is silently ignored,
     exactly as before; the outcome is identical either way.
+
+    **A fresh ``contextvars.Context`` per test body, and it is isolation, not tidiness.**
+    pytest-asyncio builds one per item — ``context = contextvars.copy_context()`` in
+    `PytestAsyncioFunction.runtest` (l. 465-473), handed to `_synchronize_coroutine`
+    (l. 708-723) as ``runner.run(coro, context=context)``. Without it every test sharing a
+    runner shares **one** context, which is the runner's own, so a ``ContextVar`` set in one
+    test is still set in the next. Measured under ``asyncio_mode = auto`` with both loop
+    scopes ``session`` — the acceptance shape, and Member Designer's config — where pytest
+    printed ``unset`` for the second test and rustest printed ``from-test-one``. Anything
+    that stores request state, a DB session or a trace id in a ``ContextVar`` (structlog,
+    SQLAlchemy's async session, OpenTelemetry) leaks across tests on that shape, and leaks
+    *forward*, so the symptom lands on a test that did nothing wrong.
+
+    The **fixture** call sites deliberately pass no context and run in the runner's own,
+    which is where a fixture's ``ContextVar`` writes have to end up for a test to see them:
+    the oracle achieves the same reachability the long way round, copying a context per
+    fixture and then replaying the changes into the caller's with
+    ``_apply_contextvar_changes`` (l. 385-414). Both routes make a session fixture's
+    ``ContextVar`` visible to the tests it serves — probed, ``from-fixture`` on both runners,
+    before and after this change. What the oracle additionally buys with the long route is a
+    *reset* finalizer at the end of the fixture's scope, which this does not have; see the
+    named gaps in the Task 1 report.
     """
     if hasattr(result, "__await__"):
         scope = runner.test_loop_scope(plan)
         if scope is None:
             _fail(ASYNC_NOT_SUPPORTED_MESSAGE)
-        _ = runner.run_coroutine(result, scope, _asyncio_timeout(_asyncio_mark(plan.marks)))
+        import contextvars
+
+        _ = runner.run_coroutine(
+            result,
+            scope,
+            _asyncio_timeout(_asyncio_mark(plan.marks)),
+            contextvars.copy_context(),
+        )
     elif hasattr(result, "__aiter__"):
         _fail(ASYNC_NOT_SUPPORTED_MESSAGE)
 

@@ -207,7 +207,14 @@ async def test_explicit_session_with_fixture(session_counter):
 # Test 5: Class-based Tests with loop scopes
 # =============================================================================
 
-CLASS_LOOPS: dict[str, int] = {}
+# The loop **objects**, not their ids.
+#
+# `id()` is unique only among LIVE objects, and the class-scoped loop is closed when the
+# class ends -- CPython then reuses its address for the next loop it builds. Measured on
+# the equivalent corpus case (`conformance/corpus/async/loop-scope-override`), where an
+# id-based `not in` assertion failed under **pytest** against a loop already torn down.
+# Holding the object keeps every address distinct for the length of the run.
+CLASS_LOOPS: dict[str, object] = {}
 
 
 @mark.asyncio(loop_scope="class")
@@ -228,12 +235,12 @@ class TestClassLoopScope:
     async def test_class_method_1(self, class_counter):
         """First method should use class loop."""
         class_counter["value"] += 1
-        CLASS_LOOPS["first"] = id(asyncio.get_event_loop())
+        CLASS_LOOPS["first"] = asyncio.get_event_loop()
 
     async def test_class_method_2(self, class_counter):
         """Second method should reuse same class loop."""
         class_counter["value"] += 1
-        assert id(asyncio.get_event_loop()) == CLASS_LOOPS["first"]
+        assert asyncio.get_event_loop() is CLASS_LOOPS["first"]
 
 
 class TestAutoDetectInClass:
@@ -241,7 +248,7 @@ class TestAutoDetectInClass:
 
     async def test_a_different_class_gets_a_different_class_loop(self):
         """The other half of `loop_scope="class"`: it is per class, not per file."""
-        assert id(asyncio.get_event_loop()) != CLASS_LOOPS["first"]
+        assert asyncio.get_event_loop() is not CLASS_LOOPS["first"]
 
     async def test_auto_session_in_class(self, session_counter):
         """Method using session fixture should auto-detect session loop."""
