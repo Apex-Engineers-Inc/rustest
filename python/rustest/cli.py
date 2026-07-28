@@ -333,6 +333,20 @@ def build_parser() -> _Parser:
         ),
     )
     _ = parser.add_argument(
+        "-o",
+        "--override-ini",
+        action="append",
+        default=None,
+        metavar="OPTION=VALUE",
+        dest="override_ini",
+        help=(
+            "Override an ini option, e.g. -o addopts=. Supported key: addopts."
+            " Registered here for --help and usage errors; the values are consumed by"
+            " _extract_ini_overrides before the config is resolved, because addopts has to"
+            " be known before argv is assembled."
+        ),
+    )
+    _ = parser.add_argument(
         "--maxfail",
         type=int,
         default=0,
@@ -498,6 +512,62 @@ def _config_for_addopts(raw: list[str], parser: _Parser) -> "dict[str, Any]":
         return {}
 
 
+#: The ini keys ``-o``/``--override-ini`` can actually override.
+#:
+#: **One key, and the restriction is honest rather than lazy.** ``addopts`` is the only ini
+#: value the *Python CLI* consumes -- it is spliced onto argv by :func:`main` -- so it is the
+#: only one this layer can change. Every other key (``testpaths``, ``python_files``,
+#: ``norecursedirs``, ...) is read by the Rust config resolver, which has no override channel
+#: and would silently ignore anything set here. Accepting ``-o python_files=...`` and doing
+#: nothing with it is precisely the class of silent no-op this project refuses, so an
+#: unsupported key is a **usage error (exit 4)** naming what is supported.
+OVERRIDABLE_INI_KEYS: frozenset[str] = frozenset({"addopts"})
+
+
+def _extract_ini_overrides(raw: list[str]) -> "tuple[list[str], dict[str, str], list[str]]":
+    """Split ``-o KEY=VALUE`` / ``--override-ini=KEY=VALUE`` out of *raw*.
+
+    Returns ``(remaining_args, overrides, malformed)``.  Both attached (``-oaddopts=``,
+    ``--override-ini=addopts=``) and separated (``-o addopts=``) spellings are accepted,
+    which is pytest's own surface (`_pytest/config/argparsing.py` registers ``-o`` with
+    ``action="append"`` and ``Config._override_ini`` splits on the first ``=``).
+
+    Extraction happens **before** the ``addopts`` splice in :func:`main`, and that ordering is
+    the whole feature: ``addopts`` is prepended to argv, so a value that arrives after the
+    splice could not change what was spliced.
+
+    Splitting on the **first** ``=`` only, so ``-o addopts=-k "a=b"`` keeps its inner ``=``.
+    A token with no ``=`` at all is collected into *malformed* rather than guessed at.
+    """
+    remaining: list[str] = []
+    overrides: dict[str, str] = {}
+    malformed: list[str] = []
+    index = 0
+    while index < len(raw):
+        arg = raw[index]
+        value: str | None = None
+        if arg in ("-o", "--override-ini"):
+            if index + 1 < len(raw):
+                value = raw[index + 1]
+                index += 1
+            else:
+                malformed.append(arg)
+        elif arg.startswith("--override-ini="):
+            value = arg[len("--override-ini=") :]
+        elif arg.startswith("-o") and len(arg) > 2:
+            value = arg[2:]
+        else:
+            remaining.append(arg)
+        if value is not None:
+            key, sep, setting = value.partition("=")
+            if not sep:
+                malformed.append(value)
+            else:
+                overrides[key.strip()] = setting
+        index += 1
+    return remaining, overrides, malformed
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
 
@@ -511,8 +581,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     # 1386-1392). Recorded as a limitation rather than added, because it would change the
     # behaviour of every rustest invocation in an environment that happens to export it —
     # including this repo's own conformance harness — for a mechanism no ledgered suite uses.
+    # `-o`/`--override-ini` is pulled out **first**, because the one key it supports is the
+    # one that decides what argv even is. See `OVERRIDABLE_INI_KEYS` for why the list is one
+    # entry long, and `_extract_ini_overrides` for why extraction precedes the splice.
+    #
+    # MECHANISM M1 of the Phase 4 Task 1b sweep, and the only architectural one of the nine.
+    # rustest is RIGHT to refuse a collection-changing flag it does not implement --
+    # silently ignoring `--doctest-modules` would manufacture a quiet divergence, and that
+    # flag stays unimplemented here. The defect was that there was no way to say "read this
+    # project's config except that key": no `-o`, no `--override-ini`, no `-c`. So a project
+    # with such a flag in its ini `addopts` was a hard BLOCK rather than a degraded run --
+    # measured on humanize, where `--doctest-modules` is provably inert (784 tests collected
+    # with and without it) and still cost the entire suite, because rustest fails while
+    # parsing the ini it found by walking up from its own cwd and the target repo is
+    # read-only to the caller.
+    raw, ini_overrides, malformed_overrides = _extract_ini_overrides(raw)
+    if malformed_overrides:
+        print(
+            "ERROR: -o/--override-ini takes OPTION=VALUE; got "
+            + ", ".join(repr(item) for item in malformed_overrides),
+            file=sys.stderr,
+        )
+        return 4
+    unsupported = sorted(set(ini_overrides) - OVERRIDABLE_INI_KEYS)
+    if unsupported:
+        print(
+            "ERROR: -o/--override-ini cannot override "
+            + ", ".join(repr(key) for key in unsupported)
+            + f" (supported: {', '.join(sorted(OVERRIDABLE_INI_KEYS))})."
+            + " Every other ini key is read by the engine's own config resolver, which has"
+            + " no override channel -- accepting the flag and ignoring it would be a silent"
+            + " no-op.",
+            file=sys.stderr,
+        )
+        return 4
+
     resolved = _config_for_addopts(raw, parser)
-    addopts = [str(opt) for opt in resolved.get("addopts", ())]
+    if "addopts" in ini_overrides:
+        # `shlex.split` for the same reason the engine's `getini_args` does shell-like
+        # splitting: `addopts` is one ini STRING, and `-k "not slow"` has to survive as two
+        # arguments rather than three.
+        import shlex
+
+        addopts = shlex.split(ini_overrides["addopts"])
+    else:
+        addopts = [str(opt) for opt in resolved.get("addopts", ())]
     raw = addopts + raw
     # pytest appends these two lines to **every** usage error, not only to one sourced from
     # a config file: they come from `_parser.extra_info`, which `Config._initini` fills in as

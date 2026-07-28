@@ -259,3 +259,111 @@ def test_maxfail_matches_pytest(tmp_path: Path) -> None:
         ours = _rustest(tree, ["-n", "1", f"--maxfail={limit}"])
         assert f"{limit} failed" in oracle.stdout, oracle.stdout
         assert f"{limit} failed" in ours.stderr, ours.stderr
+
+
+# ---------------------------------------------------------------------------
+# `-o` / `--override-ini` — MECHANISM M1 of the Phase 4 Task 1b sweep
+# ---------------------------------------------------------------------------
+
+
+def _doctest_tree(tmp_path: Path) -> Path:
+    """humanize's shape: an ini whose `addopts` carries a flag rustest does not implement."""
+    tree = tmp_path / "override_project"
+    _write(tree / "tox.ini", "[pytest]\naddopts = --color=yes --doctest-modules\n")
+    _write(tree / "test_a.py", "def test_one():\n    assert True\n")
+    return tree
+
+
+def test_a_collection_changing_flag_in_addopts_is_still_refused(tmp_path: Path) -> None:
+    """The refusal itself is CORRECT and stays.
+
+    `--doctest-modules` changes what gets collected. Silently ignoring it would manufacture
+    a quiet divergence, which is why it is not on `IGNORED_PYTEST_FLAGS` (that table is
+    deliberately limited to reporting-only flags). What M1 adds is an escape hatch, not a
+    relaxation.
+    """
+    tree = _doctest_tree(tmp_path)
+    result = _rustest(tree, ["."])
+    assert result.returncode == 4, result.stderr
+    assert "unrecognized arguments: --doctest-modules" in result.stderr
+    # ...and it still names the file to edit.
+    assert "inifile:" in result.stderr
+
+
+def test_override_ini_neutralizes_addopts(tmp_path: Path) -> None:
+    """`-o addopts=...` replaces the ini value, which unblocks the whole class.
+
+    Measured on humanize during the sweep: `--doctest-modules` there is INERT (784 tests
+    collected with it and 784 without), and it still cost the entire suite, because rustest
+    fails while parsing the ini it found by walking up from its own cwd and the target repo
+    is read-only to the caller. Nothing in `pytest_args`/`rustest_args` could reach it.
+    """
+    tree = _doctest_tree(tmp_path)
+    for form in (
+        ["-o", "addopts=--color=yes", "."],
+        ["--override-ini=addopts=--color=yes", "."],
+        ["-oaddopts=--color=yes", "."],
+    ):
+        result = _rustest(tree, form)
+        assert result.returncode == 0, (form, result.stderr)
+        assert "1 passed" in result.stderr, (form, result.stderr)
+
+
+def test_override_ini_to_empty_drops_addopts_entirely(tmp_path: Path) -> None:
+    tree = _doctest_tree(tmp_path)
+    result = _rustest(tree, ["-o", "addopts=", "."])
+    assert result.returncode == 0, result.stderr
+    assert "1 passed" in result.stderr
+
+
+def test_override_ini_splits_the_value_like_a_shell(tmp_path: Path) -> None:
+    """`addopts` is one ini STRING, so `-m "not slow"` has to survive as two arguments."""
+    tree = _tree(tmp_path, "")
+    result = _rustest(tree, ["-o", "addopts=-m 'not slow'"])
+    assert result.returncode == 0, result.stderr
+    assert "1 passed" in result.stderr, result.stderr
+
+
+def test_override_ini_beats_the_ini_and_pytest_agrees(tmp_path: Path) -> None:
+    """Differential: the same override, the same selection, on both runners."""
+    tree = _tree(tmp_path, "-m 'not slow'")
+    oracle = _pytest(tree, ["-o", "addopts="])
+    ours = _rustest(tree, ["-o", "addopts="])
+    assert "2 passed" in oracle.stdout, oracle.stdout
+    assert "2 passed" in ours.stderr, ours.stderr
+
+
+def test_an_unsupported_ini_key_is_a_loud_usage_error(tmp_path: Path) -> None:
+    """Refused, not ignored — accepting it and doing nothing is the silent no-op class.
+
+    Only `addopts` is consumable by the Python CLI; every other ini key is read by the
+    engine's own config resolver, which has no override channel.
+    """
+    tree = _tree(tmp_path, "")
+    result = _rustest(tree, ["-o", "python_files=x_*.py"])
+    assert result.returncode == 4, result.stderr
+    assert "cannot override 'python_files'" in result.stderr
+    assert "supported: addopts" in result.stderr
+
+
+def test_a_value_without_an_equals_sign_is_a_usage_error(tmp_path: Path) -> None:
+    tree = _tree(tmp_path, "")
+    result = _rustest(tree, ["-o", "addopts"])
+    assert result.returncode == 4, result.stderr
+    assert "takes OPTION=VALUE" in result.stderr
+
+
+def test_only_the_first_equals_sign_splits(tmp_path: Path) -> None:
+    """The value keeps every `=` after the first — `partition`, not `split`.
+
+    Proved through `-k`, which refuses an `=` in an expression: the error names
+    `nomatch=nothing` in full, so the whole string reached the flag. A `split("=")` would
+    have delivered `nomatch` and dropped the rest silently.
+    """
+    tree = _tree(tmp_path, "")
+    result = _rustest(tree, ["-o", "addopts=-k nomatch=nothing"])
+    assert "nomatch=nothing" in result.stderr, result.stderr
+
+    # The benign form of the same thing: `--color=yes` survives intact and runs.
+    ok = _rustest(tree, ["-o", "addopts=--color=yes"])
+    assert ok.returncode == 0, ok.stderr
