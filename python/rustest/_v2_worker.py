@@ -71,14 +71,6 @@ traceback filtering — because those distinguish one outcome from another.
 * *No ``pytest_generate_tests`` hook.*  Decorator metadata (function **and** class level)
   and fixture ``params=`` are the only sources of parametrization; a module- or class-level
   ``pytest_generate_tests`` is not called.
-* *``indirect=`` is rustest's, not pytest's.*  ``@parametrize("data", ["big"],
-  indirect=True)`` treats each value as **the name of a fixture** and hands the test that
-  fixture's value (`decorators.py::parametrize`, and :meth:`FixtureRunner.setup`); pytest
-  passes the value to a same-named fixture as ``request.param``.  The two are different
-  features wearing one keyword.  v1's semantics are reproduced because v1's suites depend on
-  them and pytest refuses the call outright (`_parametrize() got an unexpected keyword
-  argument 'indirect'` through the compat shim) — there is no behaviour to be compatible
-  *with*.
 * *Class-level ``@parametrize`` cross-products in v1's order, not pytest's.*  See
   :func:`_cross_product_cases`: pytest emits ``test[10-1]`` where this emits ``test[1-10]``.
 * *Async tests sharing a loop run **sequentially**, where rustest v1 batched them.*  v1's
@@ -1083,11 +1075,14 @@ def _cross_product_cases(outer: list[_Case], inner: list[_Case]) -> list[_Case]:
 
 
 def _indirect_names(func: object) -> frozenset[str]:
-    """Argnames a ``@parametrize(..., indirect=...)`` marked as fixture *references*.
+    """Argnames a ``@parametrize(..., indirect=...)`` routes **through a fixture**.
 
     Read from ``__rustest_parametrization_indirect__``, which
-    ``decorators.py::parametrize`` writes.  See :meth:`FixtureRunner.setup` for what the
-    values mean — and for why rustest's ``indirect`` is not pytest's.
+    ``decorators.py::parametrize`` writes after normalising through
+    ``_normalize_indirect`` (the port of `_pytest/python.py::Metafunc._resolve_args_directness`).
+    An indirect name is pytest's ``arg_directness[...] == "indirect"``: it keeps its
+    fixturedefs in the closure, its parametrized value is delivered to that fixture as
+    ``request.param``, and the *test* receives whatever the fixture returns.
     """
     raw = _safe_getattr(func, "__rustest_parametrization_indirect__", None)
     if not isinstance(raw, (list, tuple)):
@@ -1314,10 +1309,12 @@ def _fixture_names(
       which a ``self``/``cls`` name test gets right.  The guard on
       ``POSITIONAL_ONLY`` is ported with it.
 
-    This is :func:`_requested_argnames` minus the names the *parametrization* supplies:
-    those come from the decorator, not from a fixture, so reporting them as requested
-    fixtures would be a lie on the wire.  Limitation: ``indirect=True`` parameters are
-    fixtures in pytest but are excluded here as ordinary parametrized names.
+    This is :func:`_requested_argnames` minus the names the *direct* parametrization
+    supplies: those come from the decorator, not from a fixture, so reporting them as
+    requested fixtures would be a lie on the wire.  An ``indirect=`` name is **not**
+    subtracted — it really is resolved through a fixture of that name, which is what
+    `_pytest/python.py::Metafunc._get_direct_parametrize_args` encodes by filtering on
+    ``"direct"``.
     """
     return [
         argname for argname in _requested_argnames(func, name, owner) if argname not in param_names
@@ -2013,10 +2010,6 @@ class ExecutionPlan:
     marks: tuple[MarkSpec, ...]
     unittest_case: type | None = None
     unittest_method: str | None = None
-    #: ``argname -> fixture name`` for rustest's ``indirect=`` parametrization; empty for
-    #: every ordinary test.  Disjoint from :attr:`direct_params` by construction, since a
-    #: name is either a value or a fixture reference and never both.
-    indirect_params: Mapping[str, str] = field(default_factory=lambda: {})
 
     @property
     def class_name(self) -> str | None:
@@ -2397,17 +2390,10 @@ class FixtureRunner:
         )
         self.current_node = _ItemNode(plan, self.instance)
         values: dict[str, object] = dict(plan.direct_params)
-        # An `indirect` name's parametrized value is the *name of a fixture*, not the value:
-        # `@parametrize("data", ["big", "small"], indirect=True)` runs the test once with the
-        # `big` fixture's value and once with `small`'s.  That is rustest's own spelling of
-        # `indirect` (`decorators.py::parametrize`) and it is **not pytest's**, which passes
-        # the value to a same-named fixture as `request.param`; the two are documented as
-        # divergent in the module docstring.  Resolution goes through the ordinary
-        # `_resolve_active` path — including its registry fallback for a name outside the
-        # static closure — so an indirect fixture is scope-checked and torn down like any
-        # other.
-        for name, fixture_name in plan.indirect_params.items():
-            values[name] = self.resolve(fixture_name, plan.closure, plan.fixture_params, ())
+        # `indirect` names are deliberately absent from `direct_params`: they are ordinary
+        # closure members whose fixture reads the parametrized value off `request.param`
+        # (seeded into `plan.fixture_params` at collection), so the loop below resolves them
+        # like any other fixture — scope-checked, cached per parameter, torn down in order.
         for name in plan.closure.names:
             if name in values:
                 continue
@@ -3554,8 +3540,14 @@ def _collect_function(
     direct_cases: list[tuple[str | None, Mapping[str, object]]] = (
         [(None, {})] if cases is None else [(case_id, values) for case_id, values in cases]
     )
-    direct_argnames = frozenset(name for _case_id, values in direct_cases for name in values)
-    indirect = _indirect_names(func) & direct_argnames
+    parametrized = frozenset(name for _case_id, values in direct_cases for name in values)
+    indirect = _indirect_names(func) & parametrized
+    # `_pytest/fixtures.py::FixtureManager.getfixtureinfo` passes
+    # `_get_direct_parametrize_args`, which is the **direct** names only
+    # (`_pytest/python.py::Metafunc._get_direct_parametrize_args` filters on
+    # `_params_directness[...] == "direct"`). An *indirect* name must keep its fixturedefs,
+    # because routing the value through that fixture is the whole feature.
+    direct_argnames = parametrized - indirect
 
     argnames = _requested_argnames(func, name, owner)
     closure = build_closure(
@@ -3564,7 +3556,11 @@ def _collect_function(
         ignore_args=direct_argnames,
         usefixtures=usefixtures_names(marks),
     )
-    dimensions = fixture_param_dimensions(closure, direct_argnames)
+    # Both direct and indirect names are excluded here: pytest skips a fixture's own
+    # `params=` whenever "the test itself parametrizes using this argname"
+    # (`FixtureManager.pytest_generate_tests`), and an indirect `@parametrize` is still the
+    # test parametrizing it.
+    dimensions = fixture_param_dimensions(closure, parametrized)
 
     entries: list[CollectedTestDict] = []
     for combination in itertools.product(*(values for _name, values in dimensions)):
@@ -3580,7 +3576,7 @@ def _collect_function(
                 full_parts,
                 param_id,
                 marks,
-                _fixture_names(func, name, owner, frozenset(case_values)),
+                _fixture_names(func, name, owner, frozenset(case_values) - indirect),
             )
             entries.append(entry)
             context.plans.append(
@@ -3592,15 +3588,20 @@ def _collect_function(
                     func=cast(Callable[..., object], func),
                     owner=owner,
                     closure=closure,
-                    fixture_params=fixture_params,
+                    # An indirect name's value rides here, keyed by the fixture it is routed
+                    # to, which is exactly where `_SubRequest.__init__` looks for
+                    # `request.param` and where `_resolve_active` reads its per-parameter
+                    # cache key. Nothing else has to change for teardown-per-parameter and
+                    # for a wider-scoped fixture to be rebuilt once per value.
+                    fixture_params={
+                        **fixture_params,
+                        **{key: value for key, value in case_values.items() if key in indirect},
+                    },
                     direct_params={
                         key: value for key, value in case_values.items() if key not in indirect
                     },
                     argnames=tuple(argnames),
                     marks=tuple(marks),
-                    indirect_params={
-                        key: str(value) for key, value in case_values.items() if key in indirect
-                    },
                 )
             )
     return entries

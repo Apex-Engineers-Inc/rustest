@@ -321,23 +321,34 @@ def parametrize(
         values: Parameter values for each test case (rustest style)
         argvalues: Parameter values for each test case (pytest style, alias for values)
         ids: Test IDs - either a list of strings or a callable
-        indirect: Controls which parameters should be resolved as fixtures:
-            - False (default): All parameters are direct values
-            - True: All parameters are passed to fixtures with matching names
-            - ["param1", "param2"]: Only specified parameters are passed to fixtures
-            - "param1": Single parameter passed to fixture
+        indirect: Which parameters are routed **through a fixture of the same name**
+            instead of being handed to the test directly:
+            - False (default): every parameter is a direct value
+            - True: every parameter is routed
+            - ["param1", "param2"]: only those parameters are routed
 
-            When a parameter is indirect, its value is treated as a fixture name,
-            and that fixture is resolved and its value used for the test.
+            A routed parameter's value reaches the fixture as ``request.param``; what the
+            test receives is the fixture's return value. Ids are still generated from the
+            *parameter*, so the node id is unchanged by making a name indirect.
+
+            This is pytest's meaning (`_pytest/python.py::Metafunc._resolve_args_directness`,
+            l. 1417-1454). **It is not what rustest's `indirect=` used to mean** — before
+            Phase 4 the value was read as *the name of a fixture to resolve*, a
+            rustest-only feature that no pytest suite could use and that cost Apex Member
+            Designer 120 of the 129 failures in its `tests/test_startup` subtree.
+
+            Note that a **string is a Sequence**, so `indirect="data"` is iterated
+            character by character exactly as it is in pytest, and fails with
+            ``indirect fixture 'd' doesn't exist``. Pass ``["data"]`` or ``True``.
 
             Example:
                 @fixture
-                def my_data():
-                    return {"value": 42}
+                def doubled(request):
+                    return request.param * 2
 
-                @parametrize("data", ["my_data"], indirect=True)
-                def test_example(data):
-                    assert data["value"] == 42
+                @parametrize("doubled", [3, 5], indirect=True)
+                def test_example(doubled):
+                    assert doubled in (6, 10)
     """
     # Support both 'values' (rustest style) and 'argvalues' (pytest style)
     actual_values = argvalues if argvalues is not None else values
@@ -346,9 +357,15 @@ def parametrize(
         raise TypeError(msg)
 
     normalized_names = _normalize_arg_names(arg_names)
-    normalized_indirect = _normalize_indirect(indirect, normalized_names)
 
     def decorator(func: Callable[Q, S]) -> Callable[Q, S]:
+        # Validated inside the decorator so the failure can name the function, as pytest's
+        # does. pytest reports it from `Metafunc.parametrize` during collection; rustest
+        # reports it at decoration, i.e. at import, and both are a collection error with
+        # exit 2 (measured on both runners).
+        normalized_indirect = _normalize_indirect(
+            indirect, normalized_names, getattr(func, "__name__", "<unknown>")
+        )
         new_cases = _build_cases(normalized_names, actual_values, ids)
 
         # Check if there are already parametrizations from previous decorators
@@ -384,36 +401,42 @@ def _normalize_arg_names(arg_names: str | Sequence[str]) -> tuple[str, ...]:
 
 
 def _normalize_indirect(
-    indirect: bool | Sequence[str] | str, param_names: tuple[str, ...]
+    indirect: bool | Sequence[str] | str,
+    param_names: tuple[str, ...],
+    func_name: str,
 ) -> list[str]:
-    """Normalize the indirect parameter to a list of parameter names.
+    """Which parametrized names are routed through a same-named fixture.
 
-    Args:
-        indirect: The indirect value from parametrize
-        param_names: All parameter names from the parametrization
+    Port of `_pytest/python.py::Metafunc._resolve_args_directness` (pytest 8.4.2,
+    l. 1417-1454), including the two shapes that are easy to get wrong and were **measured**
+    on the oracle before being written here:
 
-    Returns:
-        A list of parameter names that should be treated as indirect (fixture references)
+    * a ``bool`` decides for *every* name at once — ``indirect=True`` routes all of them;
+    * anything else is iterated as a ``Sequence``, and **a ``str`` is a Sequence**. So
+      ``indirect="doubled"`` is not the one-name shorthand rustest used to accept: pytest
+      iterates the characters and fails with ``indirect fixture 'd' doesn't exist``. Probed:
+      ``pytest -q`` on that shape reports exactly that, one collection error, exit 2.
 
-    Raises:
-        ValueError: If an indirect parameter name is not in param_names
+    ``bool`` is checked before ``Sequence`` because it has to be — the order is pytest's and
+    reversing it would make ``True`` an unindexable Sequence.
     """
-    if indirect is False:
-        return []
-    if indirect is True:
-        return list(param_names)
-    if isinstance(indirect, str):
-        if indirect not in param_names:
-            msg = f"indirect parameter '{indirect}' not found in parametrize argument names {param_names}"
-            raise ValueError(msg)
-        return [indirect]
-    # It's a sequence of strings
-    indirect_list = list(indirect)
-    for param in indirect_list:
-        if param not in param_names:
-            msg = f"indirect parameter '{param}' not found in parametrize argument names {param_names}"
-            raise ValueError(msg)
-    return indirect_list
+    if isinstance(indirect, bool):
+        return list(param_names) if indirect else []
+    # The annotation says `Sequence[str] | str`, so the type checker calls this branch
+    # unreachable; it is not, because `indirect` is user input and pytest's own `else:` is
+    # the message a caller who passed `indirect=3` gets.
+    if not isinstance(indirect, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance]
+        msg = (
+            f"In {func_name}: expected Sequence or boolean"
+            + f" for indirect, got {type(indirect).__name__}"  # pyright: ignore[reportUnreachable]
+        )
+        raise ValueError(msg)  # pyright: ignore[reportUnreachable]
+    routed: list[str] = []
+    for arg in indirect:
+        if arg not in param_names:
+            raise ValueError(f"In {func_name}: indirect fixture '{arg}' doesn't exist")
+        routed.append(arg)
+    return routed
 
 
 def _build_cases(

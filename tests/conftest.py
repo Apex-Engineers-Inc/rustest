@@ -26,6 +26,7 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
         # Find real rustest and copy its __path__ to make this a proper package
         # This allows submodule imports like `import rustest._runtime_config`
         import importlib.util
+
         spec = importlib.util.find_spec("rustest")
         if spec and spec.origin and "tests/conftest.py" not in str(spec.origin):
             # Get the real rustest package path
@@ -34,14 +35,19 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
             if hasattr(real_rustest_loader, "__path__"):
                 compat_module.__path__ = real_rustest_loader.__path__
 
-        def _fixture(func=None, *, scope="function", autouse=False, name=None, params=None, ids=None):
+        def _fixture(
+            func=None, *, scope="function", autouse=False, name=None, params=None, ids=None
+        ):
             """Redirect to pytest.fixture with full parametrization support.
 
             Also sets rustest-specific attributes so rustest's discovery can find these fixtures.
             """
+
             def decorate(f):
                 # Apply pytest fixture decorator
-                decorated = pytest.fixture(f, scope=scope, autouse=autouse, name=name, params=params, ids=ids)
+                decorated = pytest.fixture(
+                    f, scope=scope, autouse=autouse, name=name, params=params, ids=ids
+                )
                 # Set rustest-specific attributes for discovery
                 setattr(decorated, "__rustest_fixture__", True)
                 setattr(decorated, "__rustest_fixture_scope__", scope)
@@ -60,9 +66,16 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
             # Called without arguments: @fixture
             return decorate(func)
 
-        def _parametrize(argnames, argvalues, *, ids=None):
-            """Redirect to pytest.mark.parametrize."""
-            return pytest.mark.parametrize(argnames, argvalues, ids=ids)
+        def _parametrize(argnames, argvalues, *, ids=None, indirect=False):
+            """Redirect to pytest.mark.parametrize.
+
+            ``indirect=`` is forwarded verbatim since Phase 4 Task 1: rustest's
+            ``indirect`` now *means* pytest's (values routed through a same-named fixture as
+            ``request.param``), so the shim can hand it straight over and
+            ``tests/test_indirect_parametrization.py`` runs under both runners. It used to
+            be a rustest-only feature, which is why that file was ``--ignore``d.
+            """
+            return pytest.mark.parametrize(argnames, argvalues, ids=ids, indirect=indirect)
 
         def _skip(reason=None):
             """Redirect to pytest.mark.skip."""
@@ -115,10 +128,12 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
             """Delegate unknown attributes to real rustest module."""
             try:
                 import importlib.util
+
                 spec = importlib.util.find_spec("rustest")
                 if spec and spec.origin and "tests/conftest.py" not in str(spec.origin):
                     # Load the real rustest module
                     import importlib
+
                     # Use import_module to get the actual installed rustest package
                     # Remove the shim temporarily to allow real import
                     saved_shim = sys.modules.pop("rustest", None)

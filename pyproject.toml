@@ -142,8 +142,6 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 python_files = ["test_*.py", "*_test.py", "pytest_*.py"]
-# Ignore tests that use rustest-specific features not compatible with pytest
-addopts = "--ignore=tests/test_indirect_parametrization.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",

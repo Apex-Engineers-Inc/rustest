@@ -152,37 +152,62 @@ def test_multiply(multiplier: int, value: int, expected: int) -> None:
 
 ## Indirect Parametrization
 
-The `indirect` parameter allows you to use fixture references in parametrization. When a parameter is marked as indirect, its value is treated as a fixture name, and that fixture is resolved:
+`indirect=` routes a parametrized value **through a fixture of the same name** instead of
+handing it straight to the test. The fixture reads it as `request.param`; the test receives
+whatever the fixture returns. Node ids are generated from the parameter either way, so
+making a name indirect never changes a test id.
+
+This is pytest's meaning, ported in full
+(`_pytest/python.py::Metafunc._resolve_args_directness`).
+
+!!! warning "Changed in 0.18"
+    Before 0.18, rustest read an indirect value as *the name of a fixture to resolve*. That
+    was a rustest-only feature that happened to borrow pytest's keyword, and a suite written
+    for pytest got the wrong value. Rewrite `@parametrize("data", ["fixture_a"],
+    indirect=True)` as a fixture that reads `request.param` — the recipes below show how,
+    including the `request.getfixturevalue(request.param)` form that reproduces the old
+    behaviour exactly when you really do want to select a fixture by name.
 
 ### Using `indirect` with a List
 
-Specify which parameters should be resolved as fixtures:
+Name the parameters to route; the rest stay direct:
 
 ```python
 from rustest import fixture, parametrize
 
 @fixture
-def data_1():
-    return {"value": 42, "name": "first"}
+def scaled(request):
+    return request.param * 10
 
-@fixture
-def data_2():
-    return {"value": 100, "name": "second"}
-
-@parametrize("data_fixture, multiplier", [
-    ("data_1", 2),
-    ("data_2", 3),
-], indirect=["data_fixture"])
-def test_with_indirect(data_fixture: dict, multiplier: int) -> None:
-    # data_fixture is resolved as a fixture
-    # multiplier is used as a direct value
-    result = data_fixture["value"] * multiplier
-    assert result in [84, 300]  # 42*2 or 100*3
+@parametrize("scaled, expected", [
+    (2, 20),
+    (3, 30),
+], indirect=["scaled"])
+def test_with_indirect(scaled: int, expected: int) -> None:
+    # `scaled` came through the fixture; `expected` is a direct value.
+    assert scaled == expected
 ```
 
 ### Using `indirect=True`
 
-Mark all parameters as indirect:
+Route every parametrized name:
+
+```python
+from rustest import fixture, parametrize
+
+@fixture
+def dataset(request):
+    return [value * request.param for value in (1, 2, 3)]
+
+@parametrize("dataset", [1, 10], indirect=True)
+def test_all_positive(dataset: list) -> None:
+    assert all(x > 0 for x in dataset)
+```
+
+### Selecting a Fixture by Name
+
+The pre-0.18 behaviour, written the way pytest writes it — one fixture that resolves the
+name it is handed:
 
 ```python
 from rustest import fixture, parametrize
@@ -195,45 +220,25 @@ def dataset_a():
 def dataset_b():
     return [4, 5, 6]
 
-@parametrize("data", ["dataset_a", "dataset_b"], indirect=True)
-def test_all_positive(data: list) -> None:
-    # Both 'dataset_a' and 'dataset_b' strings are resolved as fixtures
-    assert all(x > 0 for x in data)
+@fixture
+def chosen(request):
+    return request.getfixturevalue(request.param)
+
+@parametrize("chosen", ["dataset_a", "dataset_b"], indirect=True)
+def test_all_positive(chosen: list) -> None:
+    assert all(x > 0 for x in chosen)
 ```
 
-### Single Parameter as Indirect
-
-Use a string to mark one parameter:
-
-```python
-from rustest import fixture, parametrize
-
-@fixture
-def config_dev():
-    return {"env": "dev", "debug": True}
-
-@fixture
-def config_prod():
-    return {"env": "prod", "debug": False}
-
-@parametrize("config, expected_env", [
-    ("config_dev", "dev"),
-    ("config_prod", "prod"),
-], indirect="config")
-def test_environment(config: dict, expected_env: str) -> None:
-    assert config["env"] == expected_env
-```
+!!! note "`indirect="name"` is not a shorthand"
+    A `str` is a `Sequence`, so pytest iterates it character by character and
+    `indirect="config"` fails with `indirect fixture 'c' doesn't exist`. rustest reproduces
+    that. Pass `["config"]` or `True`.
 
 ### Why Use Indirect Parametrization?
 
-Indirect parametrization is the standard pytest pattern for parametrizing with fixtures. It's useful when:
-
-- **Testing with different configurations**: Use different fixture instances for each test case
-- **Complex setup per parameter**: Each fixture can have its own setup/teardown logic
-- **Fixture reuse**: Same fixtures used in parametrization can be used directly in other tests
-- **Type safety**: IDE autocomplete works with fixture names
-
-This replaces the need for third-party plugins like `pytest-lazy-fixtures`.
+- **Complex setup per parameter**: the fixture can do work — and teardown — for each value
+- **Wider scopes**: a module-scoped fixture parametrized indirectly is built once per value
+- **Reuse**: the same fixture serves tests that do not parametrize it at all
 
 ## Complex Parameter Values
 
