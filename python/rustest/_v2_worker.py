@@ -1742,12 +1742,14 @@ BUILTIN_FIXTURES: Final = tuple(_builtins.V2_BUILTIN_FIXTURES)
 #:
 #: Phase 3 Task 2 emptied most of it — ``cache``, ``capfd``, ``caplog``, ``mocker``,
 #: ``pytestconfig``, ``tmpdir`` and ``tmpdir_factory`` all moved into
-#: :data:`BUILTIN_FIXTURES`.  What is left is genuinely unimplemented, and each entry is a
-#: distinct piece of machinery rather than a variation on one that exists:
+#: :data:`BUILTIN_FIXTURES`; Phase 4 Task 1c moved ``recwarn`` (MECHANISM M5), whose entry
+#: here claimed it "needs a warnings channel, which the v2 wire does not have" — it does
+#: not, because it records **in-process** and tells the orchestrator nothing.  What is left
+#: is genuinely unimplemented, and each entry is a distinct piece of machinery rather than a
+#: variation on one that exists:
 #:
 #: * the ``*binary`` capture pair and ``capteesys`` need a bytes-flavoured capture class and,
 #:   for ``capteesys``, a *tee* — output both captured and passed through;
-#: * ``recwarn`` needs a warnings channel, which the v2 wire does not have;
 #: * ``pytester``/``testdir`` are pytest's own in-process test harness;
 #: * ``record_property`` and friends write JUnit XML attributes, and there is no XML report;
 #: * ``doctest_namespace`` belongs to a doctest collector this engine does not have.
@@ -1761,7 +1763,6 @@ UNSUPPORTED_BUILTIN_FIXTURES: Final = frozenset(
         "record_property",
         "record_testsuite_property",
         "record_xml_attribute",
-        "recwarn",
         "testdir",
     }
 )

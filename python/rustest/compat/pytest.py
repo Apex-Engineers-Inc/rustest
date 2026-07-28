@@ -73,6 +73,7 @@ from rustest.decorators import (
     ExceptionInfo,
     ParameterSet,
 )
+from rustest._warnings import WarningsRecorder as _WarningsRecorder
 from rustest.approx import approx as _rustest_approx
 from rustest.builtin_fixtures import (
     Cache,
@@ -810,10 +811,25 @@ def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any)
     return ParameterSet(values=values, id=id, marks=marks)
 
 
-class WarningsChecker:
-    """Context manager for capturing and checking warnings.
+class WarningsChecker(_WarningsRecorder):
+    """``pytest.warns()`` — a :class:`rustest._warnings.WarningsRecorder` that also asserts.
 
-    This implements pytest.warns() functionality for rustest.
+    **Subclassing the recorder is pytest's own arrangement** (`_pytest/recwarn.py` l. 258:
+    ``class WarningsChecker(WarningsRecorder)``) and it is what makes ``warns`` and
+    ``recwarn`` the same object with the same API. Phase 4 Task 1c unified them; before it,
+    ``warns`` carried a private ``catch_warnings`` of its own and ``recwarn`` did not exist,
+    so "a recorded warning" had two independent definitions and only one of them had a
+    ``.list``, a ``.pop()`` or a ``.clear()``.
+
+    One consequence is visible to callers and is the pytest-correct direction:
+    ``with warns(...) as rec`` now binds the **recorder**, not the raw list. Everything the
+    list supported still works (``len(rec)``, ``rec[0].message``, iteration), and
+    ``rec.list`` / ``rec.pop(SomeWarning)`` work in addition.
+
+    The assertion half below is rustest's own and is deliberately left as it was: its
+    messages are pinned by the corpus and by seventeen real suites, and pytest's
+    ``WarningsChecker.__exit__`` additionally *re-emits* unmatched warnings, which is a
+    behaviour no ledgered suite depends on.
     """
 
     def __init__(
@@ -824,21 +840,15 @@ class WarningsChecker:
         super().__init__()
         self.expected_warning = expected_warning
         self.match = match
-        self._records: list[Any] = []
-        self._catch_warnings: Any = None
 
-    def __enter__(self) -> list[Any]:
-        import warnings
-
-        self._catch_warnings = warnings.catch_warnings(record=True)
-        self._records = self._catch_warnings.__enter__()
-        # Cause all warnings to always be triggered
-        warnings.simplefilter("always")
-        return self._records
+    @property
+    def _records(self) -> list[Any]:
+        """The recorder's list, under the name this class's assertion half already used."""
+        return cast("list[Any]", self.list)
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if self._catch_warnings is not None:
-            self._catch_warnings.__exit__(exc_type, exc_val, exc_tb)
+        records = list(self._records)
+        super().__exit__(exc_type, exc_val, exc_tb)
 
         # If there was an exception, don't check warnings
         if exc_type is not None:
@@ -850,7 +860,7 @@ class WarningsChecker:
 
         # Check that at least one matching warning was raised
         matching_warnings: list[Any] = []
-        for record in self._records:
+        for record in records:
             # Check warning type
             if isinstance(self.expected_warning, tuple):
                 type_matches = issubclass(record.category, self.expected_warning)
@@ -880,8 +890,8 @@ class WarningsChecker:
             if self.match:
                 expected_str += f" matching {self.match!r}"
 
-            if self._records:
-                actual = ", ".join(f"{r.category.__name__}({r.message!s})" for r in self._records)
+            if records:
+                actual = ", ".join(f"{r.category.__name__}({r.message!s})" for r in records)
                 msg = f"Expected {expected_str} but got: {actual}"
             else:
                 msg = f"Expected {expected_str} but no warnings were raised"

@@ -45,10 +45,12 @@ import logging
 import os
 import re
 import sys
+import warnings
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
+from ._warnings import WarningsRecorder
 from .decorators import fixture
 
 if TYPE_CHECKING:
@@ -73,6 +75,7 @@ __all__ = [
     "TempPathFactory",
     "TempdirFactory",
     "V2_BUILTIN_FIXTURES",
+    "WarningsRecorder",
     "cache",
     "caplog",
     "capfd",
@@ -82,6 +85,7 @@ __all__ = [
     "mocker",
     "monkeypatch",
     "pytestconfig",
+    "recwarn",
     "set_log_capture",
     "tmp_path",
     "tmp_path_factory",
@@ -1546,6 +1550,35 @@ def pytestconfig() -> Config:
     return current_config()
 
 
+@fixture
+def recwarn() -> Generator[WarningsRecorder, None, None]:
+    """Record every warning the test raises — pytest's ``recwarn`` fixture.
+
+    Port of `_pytest/recwarn.py::recwarn` (pytest 8.4.2, l. 33-40), which is four lines and
+    whose every one of them matters::
+
+        wrec = WarningsRecorder(_ispytest=True)
+        with wrec:
+            warnings.simplefilter("default")
+            yield wrec
+
+    The recorder is **entered for the whole test** and left open across the ``yield``, so
+    warnings raised by the body land in it; and ``simplefilter("default")`` deliberately
+    *relaxes* the ``"always"`` :meth:`WarningsRecorder.__enter__` installs, which is
+    pytest's choice and is observable — ``"default"`` is once-per-location, so a warning
+    raised twice from the same line records once.
+
+    MECHANISM M5 of the Task 1b sweep: this was listed as unimplementable on the grounds
+    that it "needs a warnings channel the v2 wire does not have". It does not — nothing
+    leaves the process. attrs' ``tests/test_packaging.py`` reads ``recwarn.list`` and the
+    gap cost 4 tests.
+    """
+    recorder = WarningsRecorder()
+    with recorder:
+        warnings.simplefilter("default")
+        yield recorder
+
+
 #: The fixtures this module contributes, in the order
 #: ``_v2_worker._register_builtin_fixtures`` registers them.  Dependencies first, so the
 #: registration order reads like the dependency order even though the registry does not care.
@@ -1561,4 +1594,5 @@ V2_BUILTIN_FIXTURES: Final[Sequence[str]] = (
     "cache",
     "mocker",
     "pytestconfig",
+    "recwarn",
 )

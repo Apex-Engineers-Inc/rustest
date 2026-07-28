@@ -1314,12 +1314,16 @@ class ExceptionInfo:
     is why the accessors are properties with pytest's exact assertion messages rather than
     the plain attributes rustest used to set in ``__init__``.
 
-    **One documented divergence.** pytest's :attr:`traceback` is a ``Traceback`` — a
-    sequence of ``TracebackEntry`` objects with ``.lineno``/``.frame``/``.statement`` — while
-    rustest's is the raw ``types.TracebackType``, the same object as :attr:`tb`.  Modelling
-    ``Traceback`` means modelling ``TracebackEntry``, ``Source`` and ``Frame``; nothing in
-    the four real-world suites reads it (jinja2's ``tests/test_debug.py`` uses ``.tb``), so
-    the alias is kept and recorded instead of half-built.  ``__repr__``'s ``tblen`` is
+    :attr:`traceback` is a real :class:`rustest._code.Traceback` as of Phase 4 Task 1c — a
+    ``list`` subclass of ``TracebackEntry``, so ``len()``, indexing and iteration all work.
+    It used to be an alias for the raw ``types.TracebackType``, on the recorded ground that
+    modelling it meant modelling ``TracebackEntry``, ``Source`` and ``Frame`` and that no
+    suite then in the corpus read it. The seventeen-suite sweep found one that does
+    (MECHANISM M3): werkzeug's ``test_import_string_provides_traceback`` iterates it and
+    joins ``str(line)``, and got ``TypeError: 'traceback' object is not iterable``. So the
+    three classes were built after all.  It is **settable**, because pytest's own callers
+    assign a filtered traceback back onto the info object
+    (`_pytest/python.py::importtestmodule` does exactly that).  ``__repr__``'s ``tblen`` is
     computed by walking ``tb_next``, so it agrees with pytest's number.
     """
 
@@ -1333,6 +1337,8 @@ class ExceptionInfo:
         self._excinfo: tuple[type[BaseException], BaseException, Any] | None = (
             None if exc_type is None or exc_value is None else (exc_type, exc_value, exc_tb)
         )
+        #: Cache for :attr:`traceback`, and the slot its setter writes.
+        self._traceback: Any = None
 
     @classmethod
     def for_later(cls) -> ExceptionInfo:
@@ -1375,8 +1381,20 @@ class ExceptionInfo:
 
     @property
     def traceback(self) -> Any:
-        """The raw traceback — see the class docstring for how this differs from pytest's."""
-        return self.tb
+        """pytest's ``Traceback`` over :attr:`tb` — `_code/code.py::ExceptionInfo.traceback`.
+
+        Built lazily and cached, as pytest's is (``self._traceback``), so repeated reads
+        return the same list and an assignment to it survives.
+        """
+        if self._traceback is None:
+            from rustest._code import Traceback
+
+            self._traceback = Traceback(self.tb)
+        return self._traceback
+
+    @traceback.setter
+    def traceback(self, value: Any) -> None:
+        self._traceback = value
 
     def exconly(self, tryshort: bool = False) -> str:
         """The exception rendered as ``traceback.format_exception_only`` renders it.

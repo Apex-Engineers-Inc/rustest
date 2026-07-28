@@ -665,16 +665,18 @@ def test_unknown_fixture_errors_at_setup_with_pytests_wording(tmp_path: Path) ->
 
 
 def test_unsupported_builtin_says_so_instead_of_not_found(tmp_path: Path) -> None:
-    """``recwarn`` is a gap in this worker, not a fixture the user forgot to write.
+    """``pytester`` is a gap in this worker, not a fixture the user forgot to write.
 
-    The subject used to be ``caplog``; Phase 3 Task 2 implemented it, so the case moved to a
-    name that is still genuinely missing rather than being deleted — the *wording* rule is
-    what it tests, and the rule outlives any particular gap. ``recwarn`` needs a warnings
-    channel the v2 wire does not have, which is why it is the one that will still be here.
+    The subject has now moved twice: it was ``caplog`` until Phase 3 Task 2 implemented it,
+    then ``recwarn`` until Phase 4 Task 1c did (MECHANISM M5 — the recorded claim that it
+    "needs a warnings channel the v2 wire does not have" turned out to be wrong, since it
+    records **in-process** and tells the orchestrator nothing). The *wording* rule is what
+    this tests and it outlives any particular gap. ``pytester`` is pytest's own in-process
+    test harness — genuinely different machinery, not a fixture waiting to be written.
     """
     target = write(
-        tmp_path / "test_recwarn.py",
-        "def test_warns(recwarn):\n    pass\n",
+        tmp_path / "test_pytester.py",
+        "def test_harness(pytester):\n    pass\n",
     )
     with isolated_import_state():
         _ids, plans = collect(target, tmp_path)
