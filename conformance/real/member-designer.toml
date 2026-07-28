@@ -89,13 +89,104 @@ dropped = []
 
 [run]
 pytest_args = []
-rustest_args = []
+# `-n 1`, and it is the one runner flag this target carries. NOT a compensation for a
+# compat defect: it is the only way to ask the two runners the same question about a suite
+# whose fixtures **drop and recreate a single shared MongoDB database**. rustest's default
+# worker pool gives each worker its own session-scoped fixtures, so worker B's `testDB`
+# teardown lands while worker A is mid-insert and pymongo answers
+# `OperationFailure: The database is currently being dropped`. Measured on this tree:
+# default pool -> 262 errors + 94 failures; `-n 1` -> 0 errors, 25 failures, 6082 passed.
+# The parallel result is ledgered under [divergence.global] rather than hidden, because it
+# is a real and reportable property of running this suite under rustest.
+rustest_args = ["-n", "1"]
 # ~6k tests against a real MongoDB, twice.
 timeout_s = 7200
+# `strip_params`, for the reason click and jinja2 declare it: this suite parametrizes over
+# dataclass scenarios, enums and numpy arrays, and rustest's parametrize ids do not
+# reproduce pytest's `IdMaker` for any non-scalar. Under `exact` those 473 spelling
+# differences arrive as 946 separate per-id problems and drown every real one. Under
+# `strip_params` the raw id difference is raised as its own graded `ids` problem -- it still
+# needs a mechanism, and it still goes stale the moment `IdMaker` is ported -- and outcomes
+# are compared per `file::function` as a status multiset. The cost is that it cannot say
+# WHICH parameter case moved, and it is blind to two cases of one function trading statuses.
+id_policy = "strip_params"
+
 
 [divergence.ids]
-# EMPTY as of Phase 4 Task 1: `pytestmark = pytest.mark.asyncio` is a mark value again
-# (commit 343841b -- `MarkGenerator.asyncio` is a `BareOrFactoryMark`), so the four
-# collection errors that stopped the whole suite are gone, and `indirect=` has pytest's
-# semantics (commit f039e5d), which is what the 120 `TestAPIEndpoints` failures needed.
+# The four collection errors that stopped the whole suite are gone (`pytestmark =
+# pytest.mark.asyncio` is a mark value again, commit 343841b) and so are the 120
+# `TestAPIEndpoints` failures (`indirect=` has pytest's semantics, commits f039e5d and
+# e39251a). What is left is 25 tests under `-n 1`, in six groups, each with a mechanism.
+
+"tests/test_lib/test_designs/test_wood/test_adjustment_factors/test_cl_verification.py::*" = """\
+PER-PARAMETER MARKS ARE NOT APPLIED. The `conftest.py` in that directory wraps the \
+scenarios whose RB exceeds NDS 3.3.3.7 in `pytest.param(scenario, marks=pytest.mark.xfail(\
+raises=DesignValidationError, strict=True))`. pytest applies the mark to that parameter's \
+item only; rustest's `decorators.py::ParameterSet` stores `marks` and its own comment says \
+"Currently not used, but stored for future support", so the mark reaches nothing and the 9 \
+tests report `failed` where pytest reports `xfailed`. The mechanism is one stored attribute \
+and one merge site -- `_parametrization` would have to fold a case's marks into the entry's \
+marks. DECISION: not fixed in Task 1, which is scoped to its six ledgered mechanisms; it is \
+the single clearest NEW mechanism this re-sweep found. PHASE-4-FOLLOWUP."""
+
+"tests/test_lib/test_designs/test_wood/test_deflection_check.py::TestSelectPlaneDeflections::*" = """\
+XUNIT-STYLE `setup_method` IS NOT CALLED. The class sets `self.dy`/`self.dz` in \
+`setup_method`, which pytest invokes before each test of a plain (non-`TestCase`) class; \
+the v2 worker instantiates the class and calls the test method, and nothing calls \
+`setup_method`/`teardown_method`/`setup_class`/`teardown_class`. 8 tests report \
+`AttributeError: 'TestSelectPlaneDeflections' object has no attribute 'dy'`. DECISION: not \
+fixed in Task 1 -- outside its six mechanisms, and it is a whole xunit-setup surface (four \
+hooks plus their fixture-equivalence rules), not a one-liner. PHASE-4-FOLLOWUP."""
+
+"tests/fixtures/SCENARIOS.md::*" = """\
+MARKDOWN CODE BLOCKS ARE COLLECTED BY DEFAULT, and that is a rustest PRODUCT FEATURE rather \
+than a defect: `rustest <path>` collects python code blocks out of `.md` files unless \
+`--no-codeblocks` is passed, and pytest has no such behaviour without a plugin \
+(pytest-codeblocks). rustest therefore collects 13 ids pytest never sees, of which 4 fail \
+because the blocks are documentation snippets referencing names (`dataclass`, `pytest`, \
+`pytest_asyncio`) their own text does not import. DECISION: documented, not changed -- the \
+feature is deliberate and shipped, and a repo that does not want it passes \
+`--no-codeblocks`. Recorded because "flagless rustest matches pytest" is false for any \
+repo with python in its markdown, which the compat page has to say. KNOWN-LIMITATION."""
+
+"tests/test_lib/test_designs/test_steel/test_flange_bracing.py::*" = """\
+UNADJUDICATED, 2 tests. Both fail with `ValueError: The truth value of an array with more \
+than one element is ambiguous`, i.e. a numpy array reaching a boolean context that does not \
+see one under pytest. Not traced to a mechanism inside Task 1's time box, and deliberately \
+not guessed at; named here so the next run cannot mistake it for noise. PHASE-4-FOLLOWUP."""
+
+"tests/test_lib/test_helpers/test_link_helpers.py::TestAnalyticFootprintHelpers::*" = """\
+UNADJUDICATED, 1 test. `TypeError: '>' not supported between instances of 'NoneType' and \
+'float'`. Same treatment as the entry above. PHASE-4-FOLLOWUP."""
+
+"tests/test_lib/test_models/test_analysis/test_framing_2d_member.py::TestJackStudReleases::*" = """\
+UNADJUDICATED, 1 test. `TypeError: 'LineString' object is not iterable`. Same treatment. \
+PHASE-4-FOLLOWUP."""
 [divergence.global]
+ids = """\
+TWO MECHANISMS, both id-spelling only. (1) PARAMETRIZE ID GENERATION -- the same `IdMaker` \
+gap click's and jinja2's ledgers record: 473 of pytest's ids and 473 of rustest's differ by \
+spelling alone wherever the parameter is a non-scalar (a dataclass scenario, an enum, a \
+numpy array), rustest emitting `param<index>` where pytest emits `<argname><index>` or the \
+value's own name. (2) MARKDOWN CODE BLOCKS -- the remaining 13 rustest-only ids are \
+`tests/fixtures/SCENARIOS.md::codeblock_*`, the product feature the per-id entry above \
+describes. No test is missing from either side for any other reason. PHASE-4 / \
+KNOWN-LIMITATION."""
+exit_code = """\
+rustest exits 1 (tests failed) where pytest exits 0, which is the consequence of the 25 \
+per-id entries above and of nothing else."""
+tally = """\
+Under `-n 1` (what the gate runs): pytest 6084 passed / 37 skipped / 10 xfailed / 1 xpassed \
+/ 0 failed / 0 error; rustest 6082 passed / 37 skipped / 1 xfailed / 25 failed / 0 error, \
+out of 6145 collected against pytest's 6132 (the 13 markdown blocks). Every difference is \
+one of the six per-id entries.
+
+UNDER THE DEFAULT WORKER POOL, and this is the reportable part: 262 errors and 94 failures, \
+almost all `pymongo.errors.OperationFailure: The database is currently being dropped`. This \
+suite's fixtures drop and recreate ONE shared MongoDB database, and rustest gives each \
+worker its own session-scoped fixtures, so one worker's teardown lands inside another \
+worker's transaction. It is not a compat defect -- rustest runs the tests the suite asked \
+for -- but it is a real cost of running a shared-database suite under a parallel runner, \
+and the fix available today is `-n 1`, which is what `[run] rustest_args` pins. Wall clock, \
+same machine, sequential: pytest 302s; rustest 116s with the pool (wrong answers) and 319s \
+with `-n 1`. KNOWN-LIMITATION."""
