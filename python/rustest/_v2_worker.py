@@ -2292,7 +2292,16 @@ class _ItemNode:
         self.fspath: Final = plan.path
         self.cls: Final = plan.owner
         self.module: Final = plan.module
-        self.function: Final = plan.func
+        #: pytest's ``Function.function`` is ``self.obj``, which for a ``TestCaseFunction``
+        #: is the **bound method on the instance** (`_pytest/python.py::PyobjMixin.obj` ->
+        #: ``getattr(self.instance, self.name)``), not a plain function. A ``TestCase`` plan
+        #: carries no ``func``, so it is read off the instance here -- which is what makes
+        #: ``setup_method(self, request.function)`` receive a method rather than ``None``.
+        self.function: Final = (
+            _safe_getattr(instance, plan.unittest_method, None)
+            if plan.unittest_case is not None and plan.unittest_method is not None
+            else plan.func
+        )
         self.instance: Final = instance
         self.own_markers: list[MarkSpec] = list(plan.marks)
 
@@ -2627,9 +2636,7 @@ class FixtureRunner:
         self.note_test_boundary(plan.class_name)
         self._active = (plan.closure, plan.fixture_params)
         self._open_test_loop(plan)
-        self.instance = (
-            plan.owner() if plan.owner is not None and plan.unittest_case is None else None
-        )
+        self.instance = self._build_instance(plan)
         self.current_node = _ItemNode(plan, self.instance)
         values: dict[str, object] = dict(plan.direct_params)
         # `indirect` names are deliberately absent from `direct_params`: they are ordinary
@@ -2641,6 +2648,28 @@ class FixtureRunner:
                 continue
             values[name] = self.resolve(name, plan.closure, plan.fixture_params, ())
         return {name: values[name] for name in plan.argnames if name in values}
+
+    @staticmethod
+    def _build_instance(plan: ExecutionPlan) -> object | None:
+        """The object this test runs on, built once per test and shared with its fixtures.
+
+        Port of `_pytest/python.py::Function.instance` (l. 1637-1646), which **caches**
+        ``self._instance = self._getinstance()``, and of
+        `_pytest/unittest.py::TestCaseFunction._getinstance` (l. 208-210), which is
+        ``self.parent.obj(self.name)`` -- the ``TestCase`` constructed with the method name
+        it will run.
+
+        Building the ``TestCase`` **here** rather than in :func:`_run_call` is what makes
+        MECHANISM M4 fixable at all. pytest's ``unittest_setup_method_fixture`` calls
+        ``setup(request.instance, request.function)``, so ``setup_method`` must receive the
+        *same* object the body then runs on; a second instance constructed at call time
+        would take every attribute ``setup_method`` assigned with it. The single cached
+        instance is exactly pytest's arrangement.
+        """
+        if plan.unittest_case is not None:
+            factory = cast("Callable[[str], object]", plan.unittest_case)
+            return factory(plan.unittest_method or "runTest")
+        return plan.owner() if plan.owner is not None else None
 
     def _open_test_loop(self, plan: ExecutionPlan) -> None:
         """Resolve — and build — an async test's event loop during **setup**.
@@ -3899,25 +3928,117 @@ def _unittest_class_registry(
     — ``TestCase.run`` reports that skip itself, and building the class would run
     ``setUpClass`` for a class nobody is going to test.  Ported, so a skipped class with a
     deliberately-exploding ``setUpClass`` still reports SKIPPED rather than ERROR.
+
+    **Three fixtures, not one — MECHANISM M4.**  ``UnitTestCase.collect`` (l. 85-96) calls
+    *three* registrars in a row, and rustest used to port only the middle one::
+
+        self._register_unittest_setup_method_fixture(cls)   # setup_method  / teardown_method
+        self._register_unittest_setup_class_fixture(cls)    # setUpClass    / tearDownClass
+        self._register_setup_class_fixture()                # setup_class   / teardown_class
+
+    The first and third are pytest's **xunit** hooks, and a ``TestCase`` subclass gets them
+    *as well as* unittest's native ones. Nothing about the class opts in; inheriting
+    ``unittest.TestCase`` does not opt a suite out of pytest's own vocabulary.
+
+    dateutil's ``tests/test_parser.py::ParserTest`` is exactly that shape: it declares its
+    shared state in ``@classmethod def setup_class(cls)`` — the pytest spelling — so under
+    rustest ``cls.tzinfos``/``brsttz``/``default``/``uni_str``/``str_str`` were never
+    assigned, and precisely the 8 tests of ~240 in the class that read one of the five failed
+    with ``AttributeError``. The failure set was self-confirming: every test that never
+    touched class state passed.
+
+    ``setup_method`` is registered through :func:`_unittest_setup_method_fixture` rather than
+    through :func:`_xunit_fixturedefs` because pytest uses a *different* function for the
+    ``TestCase`` case (l. 174-200) whose call convention is not the same: it passes
+    ``(instance, request.function)`` unconditionally, where the plain-class version
+    (`python.py::_register_setup_method_fixture`) goes through
+    ``_call_with_optional_argument``. ``setup_class``, by contrast, IS the plain-class
+    registrar — pytest calls `Class._register_setup_class_fixture` itself — so it reuses
+    :func:`_xunit_fixturedefs` verbatim.
+
+    Note what is *not* registered: ``setup_function``/``teardown_function``, which pytest
+    scopes to module-level functions and stands down inside any class.
     """
     class_registry = registry.child()
     if _is_unittest_skipped(cls):
         return class_registry
-    fixture = _unittest_class_fixture(cls)
-    if fixture is None:
-        return class_registry
-    class_registry.register(
-        FixtureDef(
-            name=f"_unittest_setUpClass_fixture_{cls.__qualname__}",
-            func=fixture,
-            scope="class",
-            params=None,
-            autouse=True,
-            baseid=f"{context.rel_path}::{'::'.join(parts)}",
-            argnames=(),
+    baseid = f"{context.rel_path}::{'::'.join(parts)}"
+    defs: list[FixtureDef] = []
+
+    method_fixture = _unittest_setup_method_fixture(cls)
+    if method_fixture is not None:
+        defs.append(
+            FixtureDef(
+                name=f"_unittest_setup_method_fixture_{cls.__qualname__}",
+                func=method_fixture,
+                scope="function",
+                params=None,
+                autouse=True,
+                baseid=baseid,
+                argnames=("request",),
+                needs_instance=False,
+            )
         )
-    )
+
+    fixture = _unittest_class_fixture(cls)
+    if fixture is not None:
+        defs.append(
+            FixtureDef(
+                name=f"_unittest_setUpClass_fixture_{cls.__qualname__}",
+                func=fixture,
+                scope="class",
+                params=None,
+                autouse=True,
+                baseid=baseid,
+                argnames=(),
+            )
+        )
+
+    # `_register_setup_class_fixture()` — the *plain-class* xunit pair, reached here because
+    # `UnitTestCase.collect` calls it on a TestCase too.
+    defs.extend(_xunit_fixturedefs(cls, baseid, kind="class"))
+
+    for definition in defs:
+        class_registry.register(definition)
     return class_registry
+
+
+def _unittest_setup_method_fixture(cls: type) -> Callable[..., Iterator[None]] | None:
+    """``setup_method``/``teardown_method`` on a ``TestCase``, or ``None``.
+
+    Port of `_pytest/unittest.py::UnitTestCase._register_unittest_setup_method_fixture`
+    (l. 172-200).  Three details are pytest's and none is incidental:
+
+    * the hooks are found with a plain ``getattr``, **not** ``_get_first_non_fixture_func``
+      — pytest uses the bare form here, so a ``setup_method`` that is also a fixture is
+      still called as a hook on a ``TestCase`` (it would not be on a plain class);
+    * they are called as ``setup(self, request.function)`` with **both** arguments always,
+      never through ``_call_with_optional_argument``. A ``TestCase``'s ``setup_method`` that
+      takes only ``self`` is a ``TypeError`` under pytest, and reproducing that is the point
+      of porting rather than paraphrasing;
+    * a ``@unittest.skip``-decorated *instance* raises ``skip.Exception`` from the fixture,
+      before ``setup_method`` runs.
+
+    ``self`` is ``request.instance``, which is the instance the body will run on — see
+    :meth:`FixtureRunner._build_instance` for why that is now true.
+    """
+    setup = _safe_getattr(cls, "setup_method", None)
+    teardown = _safe_getattr(cls, "teardown_method", None)
+    if setup is None and teardown is None:
+        return None
+
+    def unittest_setup_method_fixture(request: object) -> Iterator[None]:
+        instance = _safe_getattr(request, "instance", None)
+        if _is_unittest_skipped(instance):
+            raise _Skipped(_safe_getattr(instance, "__unittest_skip_why__", ""))
+        function = _safe_getattr(request, "function", None)
+        if setup is not None:
+            cast("Callable[..., object]", setup)(instance, function)
+        yield
+        if teardown is not None:
+            cast("Callable[..., object]", teardown)(instance, function)
+
+    return unittest_setup_method_fixture
 
 
 def _collect_unittest_class(
@@ -5020,10 +5141,10 @@ def _unittest_class_fixture(cls: type) -> Callable[..., Iterator[None]] | None:
     including unittest's own rule that cleanups run for ``Exception`` but not for a bare
     ``BaseException``.
 
-    Not ported: ``_register_unittest_setup_method_fixture`` (pytest-style ``setup_method`` on
-    a ``TestCase``, l. 172-200) and ``parsefactories`` over the instance — an autouse
-    ``@pytest.fixture`` written inside a ``TestCase`` body is not picked up.  Both are
-    recorded gaps, not silent ones.
+    Not ported: ``parsefactories`` over the instance — an autouse ``@pytest.fixture``
+    written inside a ``TestCase`` body is not picked up.  A recorded gap, not a silent one.
+    (``_register_unittest_setup_method_fixture`` used to be listed here too; Phase 4 Task 1c
+    ported it as :func:`_unittest_setup_method_fixture`.)
     """
     setup = _safe_getattr(cls, "setUpClass", None)
     teardown = _safe_getattr(cls, "tearDownClass", None)
@@ -5294,8 +5415,17 @@ def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, o
     """Run the test body: a ``TestCase`` through ``unittest``, anything else directly."""
     if plan.unittest_case is not None:
         recorder = _UnittestOutcomeRecorder()
-        case = cast(Callable[[str], unittest.TestCase], plan.unittest_case)(
-            plan.unittest_method or "runTest"
+        # The instance the SETUP phase built (`FixtureRunner._build_instance`), never a
+        # fresh one: `setup_method` and any instance-touching fixture have already run
+        # against it, and constructing a second here would silently discard everything they
+        # did. pytest caches the same object on the item for the same reason.
+        built = runner.instance
+        case = (
+            built
+            if isinstance(built, unittest.TestCase)
+            else cast(Callable[[str], unittest.TestCase], plan.unittest_case)(
+                plan.unittest_method or "runTest"
+            )
         )
         case(result=recorder)
         outcome = recorder.first_outcome()
