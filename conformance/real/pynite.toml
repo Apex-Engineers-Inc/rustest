@@ -21,7 +21,13 @@ test_paths = ["Testing"]
 # project (no pyproject build backend), so install the requirements plus the package
 # itself non-editably from the tree.
 setup = [
-  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # 3.13, NOT 3.14, for the same reason jinja2.toml and werkzeug.toml record: this box's
+  # uv-managed CPython 3.14.2 has a broken `_ssl` (missing libcrypto-3-x64.dll). Pynite's
+  # requirements.txt pulls `anyio` transitively, `anyio/_core/_sockets.py` does `import ssl`,
+  # and on 3.14 pytest died during collection with `ImportError: DLL load failed while
+  # importing _ssl` before writing a report. Interpreter-install fault on this machine, not a
+  # property of Pynite or of rustest.
+  ["uv", "venv", "--python", "3.13", "{venv}"],
   ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
   ["uv", "pip", "install", "--python", "{py}", "-r", "{repo}/requirements.txt"],
   ["uv", "pip", "install", "--python", "{py}", "{repo}"],
@@ -33,7 +39,7 @@ setup = [
     "{py}",
     "--reinstall-package",
     "rustest",
-    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+    "{wheels}/rustest-0.16.2-cp313-cp313-win_amd64.whl",
   ],
 ]
 pythonpath = []

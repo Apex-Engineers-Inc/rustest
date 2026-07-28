@@ -66,13 +66,69 @@ dropped = []
 pytest_args = []
 rustest_args = []
 timeout_s = 1800
-# Draft default. slots/frozen fixture params are scalar booleans (already known to agree per
-# click's ledger), but test_make.py/test_validators.py parametrize ~55-65 combined cases over
-# non-scalar values too (builder kwargs dicts, attribute-definition tuples) going by file size
-# and naming conventions -- expect the same spelling-only id divergence click/jinja2/humanize/
-# tabulate hit. Verify at gate time; relax to "exact" if it turns out cleaner than expected.
+# MEASURED, not the draft's guess. The draft expected the click/jinja2 IdMaker spelling gap;
+# that gap is closed and is NOT what happens here. Exactly 3 of 1387 ids differ, and all 3 are
+# a downstream symptom of the length-1-sequence-unpack defect ledgered below -- rustest binds
+# a different VALUE, so it then generates a different id from it. `strip_params` is kept for
+# that reason: it raises the raw id difference as its own graded `ids` problem (below) instead
+# of scattering it across per-id noise, and it goes stale the moment the unpack is fixed. Once
+# it is, re-test `exact` here -- on this evidence the suite should reach it.
 id_policy = "strip_params"
 
 [divergence.ids]
+"tests/test_packaging.py::TestLegacyMetadataHack::*" = """\
+NEW MECHANISM (first sighting in this sweep), 4 errors (2 tests x 2 params): the **`recwarn` \
+builtin fixture is not implemented**. rustest is honest about it rather than silently \
+skipping -- it raises `FixtureLookupError: fixture 'recwarn' is not supported by the rustest \
+v2 worker yet`, and helpfully lists what IS supported (tmp_path_factory, tmp_path, \
+tmpdir_factory, tmpdir, monkeypatch, capsys, capfd, caplog, cache, mocker, pytestconfig). \
+pytest passes all 4. These tests use `recwarn` to assert the DeprecationWarning attrs' legacy \
+`__version__`/`__version_info__` metadata hack emits. Reproduces on the one file alone. \
+rustest DEFECT (a missing builtin, not a wrong behaviour). PHASE-4-FOLLOWUP."""
+
+"tests/test_validators.py::TestMinLen::test_check_invalid*" = """\
+KNOWN MECHANISM, fifth independent sighting: rustest unpacks a length-1 sequence argvalue \
+under a SINGLE argname. `@pytest.mark.parametrize("value", ["", list(range(1))])` \
+(tests/test_validators.py:1071-1078). `list(range(1))` is `[0]` -- one argname, a length-1 \
+list -- so rustest binds `value = 0`, the bare int. attrs' `min_len` validator then calls \
+`len(value)` and raises `TypeError: object of type 'int' has no len()` instead of the \
+`ValueError` the test expects. The `""` case is unaffected and passes. pytest passes both. \
+Same defect as Member Designer / marshmallow / werkzeug; fix is `len(argnames) > 1`. \
+PHASE-4-FOLLOWUP."""
 
 [divergence.global]
+ids = """\
+3 of 1387 raw node ids differ, and all 3 are downstream of the length-1-sequence-unpack defect \
+ledgered above -- rustest is generating a correct id for the WRONG VALUE, which is not the \
+IdMaker spelling gap click and jinja2 used to carry (that one is closed).
+
+2 of the 3 come from `tests/test_setattr.py::TestSetAttr::test_validator`, and they are the \
+sighting that shows this defect also corrupts node ids and not just bound values. \
+`@pytest.mark.parametrize("on_setattr", [setters.validate, [setters.validate], \
+setters.pipe(setters.validate)])` (tests/test_setattr.py:72-75): the second argvalue is the \
+length-1 list `[setters.validate]`, rustest unpacks it to the bare function, that function IS \
+IdMaker-representable, so cases 0 and 1 both generate the id `validate` and rustest's \
+duplicate resolution renames them `validate0`/`validate1`. pytest keeps the list intact, \
+cannot represent it, and ids it `on_setattr1` -- leaving case 0 as plain `validate`. Hence \
+pytest `[validate]`/`[on_setattr1]` vs rustest `[validate0]`/`[validate1]`. Both cases still \
+PASS on both sides, because for attrs a bare validator and a one-element list of validators \
+behave identically -- so here the defect was visible ONLY through the node id, which is \
+exactly why this entry is graded rather than absorbed. (It is carried here, not as a per-id \
+entry, because under `strip_params` the per-function status multisets match and no per-id \
+problem is raised for it.)
+
+The 3rd is `tests/test_validators.py::TestMinLen::test_check_invalid`, whose ledger entry \
+above covers it. All 3 go stale the moment unpacking is gated on `len(argnames) > 1`."""
+exit_code = """\
+rustest exits 1 where pytest exits 0: 4 errors (recwarn) plus 1 failure (length-1 unpack)."""
+tally = """\
+pytest 1380 passed / 5 skipped / 2 xfailed / 0 failed / 0 error; rustest 1375 passed / 5 \
+skipped / 2 xfailed / 1 failed / 4 error. Identical skip and xfail sets. The 5-test delta is \
+the 4 `recwarn` errors and the 1 `min_len` failure, both ledgered above.
+
+Two things the pre-clone audit flagged that turned out to be non-events, worth recording \
+because they were the reason this pick was classified KEEP-WITH-LEDGERED-HOOKS rather than \
+clean: the conftest's `pytest_configure` (which only registers/loads a Hypothesis settings \
+profile) and its two-entry `collect_ignore` (both conditions true on the 3.14 pin, so nothing \
+is ignored) produce NO divergence at all -- 1387 ids on both sides. The `slots`/`frozen` \
+parametrized boolean fixtures likewise agree everywhere."""

@@ -70,7 +70,7 @@ dropped = []
 
 [run]
 pytest_args = []
-rustest_args = []
+rustest_args = ["-n", "1"]
 # Suite-generated test-method count is large (6 drafts wired up out of 8 vendored, each with
 # dozens of core+format+optional JSON case files, each holding multiple test instances per
 # case -- grounded estimate well into the thousands, not individually counted). Same 1800s
@@ -87,3 +87,39 @@ id_policy = "exact"
 [divergence.ids]
 
 [divergence.global]
+# EMPTY, and under `-n 1` this suite is a clean MATCH: 7815 ids on both sides with identical
+# spelling, 7287 passed / 527 skipped / 1 failed on BOTH runners, same exit code 1. The one
+# failure is the target's own -- see the note below.
+#
+# TWO OBSERVATIONS THAT ARE NOT DIVERGENCES, recorded because both would be easy to misread:
+#
+# 1. `jsonschema/tests/test_deprecations.py::TestDeprecations::test_import_cli` FAILS UNDER
+#    PYTEST TOO, and is the reason `[run] rustest_args` pins `-n 1`. The test is
+#    order-dependent by construction:
+#
+#        with self.assertWarnsRegex(DeprecationWarning, message) as w:
+#            import jsonschema.cli
+#            importlib.reload(jsonschema.cli)
+#        self.assertEqual(w.filename, importlib.__file__)
+#
+#    `assertWarns` captures the FIRST matching warning, so the assertion only holds if
+#    `jsonschema.cli` was ALREADY imported by something earlier in the same process -- then
+#    the `import` line is a no-op and the warning comes from the `reload`, attributed to
+#    importlib. Run that file alone, under pytest, and it fails exactly the same way (measured:
+#    `1 failed, 22 deselected`). It is a latent bug in the suite that a whole-session run
+#    happens to hide.
+#
+#    Under rustest's DEFAULT worker pool the test lands in a worker that never imported
+#    `jsonschema.cli`, so it fails: rustest 2 failed vs pytest 1. Under `-n 1` the priming
+#    import happens in the same process and the tallies become identical. Same shape as
+#    member-designer's shared-MongoDB entry: not a compat defect -- rustest runs exactly the
+#    tests the suite asked for -- but a real and reportable cost of running an
+#    order-dependent suite under a parallel runner. KNOWN-LIMITATION.
+#
+# 2. NODE ID PREFIXES are repo-root-relative in an unexpected way (`conformance/real/_work/
+#    jsonschema/jsonschema/tests/...`) because jsonschema ships NO pytest config of any kind --
+#    no ini_options, no pytest.ini, no setup.cfg, no tox.ini section -- so the rootdir search
+#    walks all the way up out of the clone and anchors on THIS repo's pyproject.toml, which
+#    does carry `[tool.pytest.ini_options]`. BOTH runners resolve it identically and agree on
+#    every id, so nothing is graded here; it is an artifact of staging clones inside the
+#    rustest tree, not a rustest behaviour. Worth knowing before reading the id list.
