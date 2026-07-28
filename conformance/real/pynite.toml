@@ -1,0 +1,58 @@
+# PyniteFEA -- finite-element structural analysis (user-designated 2026-07-27). Audited
+# clean: ZERO conftest.py files, ZERO pytest_ hooks, NO pytest configuration anywhere --
+# the purest bare-defaults suite in the slate. Its `Testing/` directory is a PACKAGE
+# (__init__.py present) with a non-standard capitalized name, and its tests are
+# unittest-heavy: together this exercises package-identity module naming, the unittest
+# translation path, and the no-config rootdir walk at once. `T Matrix Test.py` (spaces,
+# no test_ prefix) must be ignored by both engines -- a free naming-rule differential.
+#
+# Like member-designer, this is a LOCAL tree used strictly read-only.
+
+[repo]
+kind = "local"
+path = 'C:\Users\JeffreyMBloss\local-repos\Pynite'
+# Audited at this rev (git log -1 at audit time). The gate verifies the work tree still
+# sits here and is clean, and fails rather than silently re-baselining.
+rev = "59aca05"
+test_paths = ["Testing"]
+
+[env]
+# Isolated venv; deps from the repo's requirements.txt (numpy/scipy stack). setup.py
+# project (no pyproject build backend), so install the requirements plus the package
+# itself non-editably from the tree.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  ["uv", "pip", "install", "--python", "{py}", "-r", "{repo}/requirements.txt"],
+  ["uv", "pip", "install", "--python", "{py}", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# No pytest config in the repo: nothing to replay.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+# FEA solves are numerically heavy; give headroom over the utility suites.
+timeout_s = 3600
+
+[divergence.ids]
+
+[divergence.global]
+# Expected friction to adjudicate at run time, not pre-waived:
+# - test_Visualization.py may require VTK/matplotlib backends; if it errors identically
+#   under both engines that is a MATCH; if only one engine surfaces it, mechanism or bust.

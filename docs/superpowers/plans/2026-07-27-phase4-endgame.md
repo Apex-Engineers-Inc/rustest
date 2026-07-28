@@ -29,10 +29,12 @@ Fix each sweep-ledgered mechanism, cited to its oracle, differential-pinned, the
 
 User approved (2026-07-27) for cloning: **networkx, Pygments, marshmallow, rich, Werkzeug, sqlparse, python-dateutil** (packaging not selected; alternates cachetools/humanize/tabulate/itsdangerous if any fails the hook audit — swap requires a note in the report, not new approval, per the named-alternate arrangement).
 
+[AUDIT ADJUDICATED 2026-07-27: KEEP marshmallow/rich/Werkzeug/sqlparse; SWAP networkx→cachetools (load-bearing 55-file collect_ignore) and Pygments→humanize (custom collector classes); dateutil KEPT over the auditor's mechanical flag (single shallow modifyitems = the user's "limited ways" case; delta ledgered; hypothesis in its own venv). USER ADDITION: **PyniteFEA** (local read-only tree, audited zero-hooks/zero-config, unittest-heavy `Testing/` package — config drafted at conformance/real/pynite.toml). Slate = EIGHT new suites; twelve total in the final table.]
+
 - Pre-clone hook audit per project (WebFetch their conftest.py files at the pinned rev): any `pytest_generate_tests`/custom-collector/hook-heavy conftest → swap to an alternate, documented.
 - Each: shallow clone at pinned rev (documented), isolated venv, `conformance/real/<name>.toml`, pytest-then-rustest sequential, outcome diff + wall-clock, per-repo ledger with mechanisms. hypothesis-marked tests (dateutil) deselected+documented if they trip.
 - Acceptance: all seven MATCH or minimally ledgered with mechanism + decision; **new-mechanism budget: if the seven suites surface more than TWO new fix-worthy mechanisms, pause and report to the user before fixing** (signal that the edge-case tail isn't converging).
-- Wall-clock table for all eleven suites goes to the report (README numbers come from this table in Task 3).
+- Wall-clock table for all twelve suites goes to the report (README numbers come from this table in Task 3).
 
 ### Task 2: v1 deletion + repo simplification (spot-review)
 

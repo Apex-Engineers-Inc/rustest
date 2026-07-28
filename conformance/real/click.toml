@@ -34,16 +34,14 @@ setup = [
 pythonpath = []
 
 [addopts]
-# pyproject.toml: addopts = "-m 'not stress'". rustest parses `addopts`
-# (src/v2/config.rs) but nothing applies it, so pytest honouring the value while rustest
-# ignores it would ask the two runners different questions -- pytest would run 0 stress
-# tests and rustest all of them, a "divergence" that is entirely the harness's fault.
-# So the value is neutralized on the pytest side (`-o addopts=`) and replayed to BOTH
-# runners on the command line, which keeps the suite running the way its authors intended
-# and keeps the comparison honest. That rustest ignores `addopts` at all is a real
-# divergence and is ledgered under [divergence.global] rather than hidden here.
+# pyproject.toml: addopts = "-m 'not stress'". Recorded, not replayed: since Phase 4 Task 1
+# rustest applies `addopts` itself (`cli.py::main`, the port of `Config._preparse`), so both
+# runners read this value out of click's own pyproject.toml and neither gets it on the
+# command line. Through Phase 3 the value had to be neutralized on the pytest side and
+# replayed to both, because rustest parsed the key and applied it nowhere -- pytest ran
+# 1 686 tests and rustest 32 686, a "divergence" that was entirely the harness's fault.
 configured = ["-m", "not stress"]
-replay = ["-m", "not stress"]
+replay = []
 dropped = []
 
 [run]
@@ -57,36 +55,10 @@ timeout_s = 1800
 # are still compared per `file::function` as a status multiset.
 id_policy = "strip_params"
 
-[notes]
-addopts_ini = """\
-DIVERGENCE, COMPENSATED. rustest parses the `addopts` ini key (`src/v2/config.rs`, and it \
-is part of the manifest-cache fingerprint) but never applies it to its own argv, where \
-pytest prepends it to the command line (`_pytest/config/__init__.py::Config._preparse`). \
-click's value is `-m 'not stress'`, so uncompensated the two runners would not even be \
-running the same set of tests. The harness neutralizes it on the pytest side and replays \
-it to both runners on the command line. PHASE-4 / KNOWN-LIMITATION."""
-
 [divergence.ids]
-# One mechanism, four call sites. `tests/test_shell_completion.py`'s `_patch_for_completion`
-# helper calls the *string-target* form of monkeypatch:
-#
-#     monkeypatch.setattr("click.shell_completion.BashComplete._check_version", lambda self: True)
-#
-# rustest's `MonkeyPatch.setattr` (python/rustest/builtin_fixtures.py:95) resolves that with
-# a single `target.rsplit(".", 1)` and then `importlib.import_module(module_path)`, i.e. it
-# assumes everything before the last dot is a MODULE. Here it is not -- `BashComplete` is a
-# class inside `click.shell_completion` -- so the import raises
-# `ModuleNotFoundError: No module named 'click.shell_completion.BashComplete';
-# 'click.shell_completion' is not a package` during setup, and the test is an ERROR.
-# pytest imports the longest importable prefix and then walks the remainder with getattr
-# (`_pytest/monkeypatch.py::derive_importpath` -> `resolve`/`annotated_getattr`), which is
-# why the same line works there. Small and general, but it is product code in
-# python/rustest/ and this task's surface is the harness: PHASE-4 / KNOWN-LIMITATION.
-"tests/test_shell_completion.py::test_full_source" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
-"tests/test_shell_completion.py::test_full_complete" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
-"tests/test_shell_completion.py::test_zsh_full_complete_with_colons" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
-"tests/test_shell_completion.py::test_context_settings" = "monkeypatch.setattr dotted-path resolution assumes a module prefix; see the note above. PHASE-4"
-
+# EMPTY as of Phase 4 Task 1: the monkeypatch dotted-path defect that errored
+# `tests/test_shell_completion.py`'s 14 parameter cases is fixed (commit 8daac97 --
+# `_pytest/monkeypatch.py::resolve` ported). Nothing in click is ledgered by id any more.
 [divergence.global]
 ids = """\
 PARAMETRIZE ID GENERATION. rustest does not reproduce pytest's `IdMaker` \
@@ -102,11 +74,3 @@ characters and appends `...`.
 Scalars (short str, int, float, bool, None) already agree, which is why the corpus's \
 `parametrize/*` cases pass: they use nothing else. That is a corpus gap this sweep found. \
 PHASE-4 / KNOWN-LIMITATION."""
-exit_code = """\
-CONSEQUENCE of the `tests/test_shell_completion.py` monkeypatch entry above, not an \
-independent divergence: 14 tests error under rustest, so it exits 1 where pytest exits 0. \
-Nothing else in the suite fails on either side."""
-tally = """\
-CONSEQUENCE of the same monkeypatch entry: pytest 1590 passed / 0 error, rustest 1576 \
-passed / 14 error. The 14 are exactly the ids ledgered above; `skipped` (95), `xfailed` \
-(1), `xpassed` (0), `failed` (0) and `deselected` (31000) are identical on both sides."""

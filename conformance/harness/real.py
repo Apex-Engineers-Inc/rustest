@@ -363,6 +363,16 @@ def _plugin_dir(tmp: Path) -> Path:
 
 
 def _env_for(target: RealTarget, extra_paths: Iterable[Path]) -> dict[str, str]:
+    """``PYTHONPATH`` for one runner: the plugin directory, plus any ``[env] pythonpath``.
+
+    That second part is a **compensation lever** and no target uses it as of Phase 4 Task 1.
+    It existed for Member Designer's ``pythonpath = ["src"]``, which pytest honoured and v2
+    did not implement, so without it every one of that suite's ~285 files failed to import
+    and the sweep measured one missing ini option instead of a suite. v2 implements the ini
+    now (``_v2_worker::_apply_pythonpath``), so the key is empty everywhere; it is kept
+    because a future target may need the same kind of scaffolding, and an empty list is a
+    visible "nothing is being compensated here".
+    """
     env = dict(os.environ)
     parts = [str(p) for p in extra_paths]
     parts += [str((target.repo / rel).resolve()) for rel in target.pythonpath]
@@ -394,13 +404,17 @@ def _timed(
 def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
     """Run the target's suite under real pytest, reading statuses from the plugin.
 
-    ``-o addopts=<replay>`` is passed unconditionally. The target's own ``addopts`` are
-    **not** silently honoured, because rustest does not honour ``addopts`` at all
-    (``src/v2/config.rs`` parses the key; nothing applies it) -- leaving pytest to apply
-    them would ask the two runners different questions. What the config declares as
-    ``replay`` is handed to *both* runners on the command line instead, so the suite still
-    runs the way its authors intended; what it declares as ``dropped`` is recorded in the
-    report as a deliberate, per-flag documented omission.
+    **The ``addopts`` compensation is retired (Phase 4 Task 1).** Through Phase 3 this
+    passed ``-o addopts=`` to neutralize the target's own ``addopts`` and replayed the value
+    to *both* runners on the command line, because rustest parsed the key and applied it
+    nowhere -- letting pytest honour it alone would have asked the two runners different
+    questions (click: 1 686 tests against 32 686). rustest now applies ``addopts`` itself
+    (``cli.py::main``, the port of ``Config._preparse``), so **each runner reads the
+    target's config for itself**, which is the thing the sweep is supposed to measure.
+
+    ``[addopts] replay``/``dropped`` stay in the configs as documentation of what each
+    target declares, and ``dropped`` keeps its meaning for a future target with a flag
+    rustest cannot accept -- but nothing is replayed on the command line any more.
     """
     report = tmp / "pytest-report.json"
     env = _env_for(target, [_plugin_dir(tmp)])
@@ -413,12 +427,6 @@ def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
         "no:cacheprovider",
         "-p",
         _PLUGIN_MODULE,
-        # Neutralized, not replayed, so the *only* place addopts can enter the comparison
-        # is the command line both runners get. Replaying here as well would double-apply
-        # every flag on the pytest side alone.
-        "-o",
-        "addopts=",
-        *target.addopts_replay,
         *target.pytest_args,
         *target.test_paths,
     ]
@@ -443,6 +451,10 @@ def run_rustest_real(target: RealTarget, tmp: Path) -> RunOutcome:
     ``--report-json`` is the entire read surface, exactly as in the corpus run gate: the
     terminal prose is worded differently by design, and worker stderr legitimately carries
     boundary teardown output on a green run.
+
+    **Flagless** now means it: the ``addopts`` replay is gone (see :func:`run_pytest_real`),
+    so rustest reads the target's ``addopts`` -- and its ``pythonpath`` -- out of the
+    target's own config exactly as pytest does.
     """
     report = tmp / "rustest-report.json"
     env = _env_for(target, [])
@@ -454,7 +466,6 @@ def run_rustest_real(target: RealTarget, tmp: Path) -> RunOutcome:
         "rustest",
         "--report-json",
         str(report),
-        *target.addopts_replay,
         *target.rustest_args,
         *target.test_paths,
     ]

@@ -69,22 +69,22 @@ setup = [
   ],
 ]
 
-# THE COMPENSATION, AND IT IS A DIVERGENCE, NOT A CONVENIENCE. The repo sets
-# `pythonpath = ["src"]`, which pytest honours (`_pytest/python_path.py`) and rustest's v2
-# engine does not implement at all -- v1 did, in `src/python_support.rs`
-# ::read_pythonpath_from_pyproject. Without compensation every one of the ~285 test files
-# fails to import and the comparison degenerates to "6132 passed vs 285 collection
-# errors", which measures one missing ini option and nothing else about the suite. So the
-# harness exports the same entry on PYTHONPATH for BOTH runners and the missing option is
-# ledgered as its own divergence below, where it can be read.
-pythonpath = ["src"]
+# NO COMPENSATION, as of Phase 4 Task 1. Through Phase 3 the harness exported the repo's
+# `pythonpath = ["src"]` on PYTHONPATH for both runners, because pytest honoured the ini
+# (`Config._configure_python_path`) and rustest's v2 engine did not implement it -- without
+# the scaffolding every one of the ~285 test files failed to import and the comparison
+# measured one missing ini option instead of a suite. v2 reads and applies the ini itself
+# now (`_v2_worker::_apply_pythonpath`, protocol v6), so the scaffolding is gone and rustest
+# resolves `src/` from the repo's own pyproject.toml exactly as pytest does.
+pythonpath = []
 
 [addopts]
-# pyproject.toml: addopts = ["-vv", "-s"]. Both are core pytest flags rustest also
-# accepts, so both are replayed to both runners and nothing is dropped. (The repo's
-# commented-out `--cov --cov-report=xml:cov.xml` line is not active and is not replayed.)
+# pyproject.toml: addopts = ["-vv", "-s"]. Recorded, not replayed: since Phase 4 Task 1
+# each runner applies the target's own `addopts` for itself, so nothing is put on either
+# command line. Both are core pytest flags rustest also accepts, so nothing is dropped.
+# (The repo's commented-out `--cov --cov-report=xml:cov.xml` line is not active.)
 configured = ["-vv", "-s"]
-replay = ["-vv", "-s"]
+replay = []
 dropped = []
 
 [run]
@@ -93,53 +93,9 @@ rustest_args = []
 # ~6k tests against a real MongoDB, twice.
 timeout_s = 7200
 
-[notes]
-pythonpath_ini = """\
-DIVERGENCE, COMPENSATED. rustest's v2 engine does not implement the `pythonpath` ini \
-option; pytest does (`_pytest/python_path.py::pytest_load_initial_conftests`), and \
-rustest's own v1 engine did (`src/python_support.rs::read_pythonpath_from_pyproject`), so \
-this is a regression the rewrite has not yet closed. Probed directly: a two-file tree with \
-`pythonpath = ["src"]` collects and passes under pytest and raises \
-`ModuleNotFoundError: No module named 'mylib'` under rustest. The harness exports the same \
-entry on PYTHONPATH for both runners so the remaining ~6k-test comparison is about test \
-semantics rather than sys.path. PHASE-4 / KNOWN-LIMITATION."""
-
 [divergence.ids]
-# ONE defect, and it stops the entire suite. Four modules do
-#
-#     pytestmark = pytest.mark.asyncio
-#
-# at module level (`tests/test_lib/test_analysis/test_wall_fem/
-# test_flush_bearing_ownership_regression.py:39` and `.../test_wall_column_ownership_
-# regression.py`, `tests/test_lib/test_designs/test_wood/test_flush_header_golden_gate.py:43`,
-# `tests/test_lib/test_links/test_corner_king_candidacy_regression.py`).
-#
-# `MarkGenerator.asyncio` is a plain METHOD on the class (python/rustest/decorators.py:709),
-# not one of the `BareOrFactoryMark` instances `__init__` binds for skipif/xfail/usefixtures.
-# As a decorator that is fine -- `@mark.asyncio` calls the method with `func`. As a *value* it
-# is not: `pytest.mark.asyncio` evaluates to a bound method, and rustest's module-level
-# pytestmark validation rejects it with
-#   "malformed pytestmark entry on '<module>': <bound method MarkGenerator.asyncio ...>
-#    is not a mark".
-# The class's own docstring already names this failure mode for the other three marks --
-# "a method cannot tell a decoration from a factory call and silently ate the test function
-# when used bare (defects #136 and #137)" -- and `asyncio` is the one that kept its method
-# form, so it carries the same defect into the `pytestmark` position.
-#
-# Four collection errors mean NOTHING RUNS: pytest's `pytest_runtestloop` raises `Interrupted`
-# before the first item and `src/v2/execute.rs::stage` encodes the identical rule, so rustest
-# exits 2 with an empty test list. Every one of pytest's 6132 ids is therefore "missing from
-# rustest" for this single reason, which is what the `*` glob says. §5 of the task report
-# records a supplementary run over `tests/test_startup` -- a subtree with none of the four
-# files in it -- showing what the suite actually does once collection succeeds.
-# PHASE-4 / KNOWN-LIMITATION (the fix is one line: bind `asyncio` as a `BareOrFactoryMark`).
-"*" = "collection interrupted: `pytestmark = pytest.mark.asyncio` is a bound method, not a mark, in 4 modules; 4 collection errors => nothing runs. See the note above. PHASE-4"
-
+# EMPTY as of Phase 4 Task 1: `pytestmark = pytest.mark.asyncio` is a mark value again
+# (commit 343841b -- `MarkGenerator.asyncio` is a `BareOrFactoryMark`), so the four
+# collection errors that stopped the whole suite are gone, and `indirect=` has pytest's
+# semantics (commit f039e5d), which is what the 120 `TestAPIEndpoints` failures needed.
 [divergence.global]
-exit_code = """\
-CONSEQUENCE of the pytestmark entry: rustest exits 2 (collection error) where pytest exits \
-0. It is pytest's own exit code for the same situation, applied to a situation pytest does \
-not have."""
-tally = """\
-CONSEQUENCE of the same entry: pytest 6084 passed / 37 skipped / 10 xfailed / 1 xpassed / 0 \
-errors, rustest 0 of everything with 4 collection errors."""
