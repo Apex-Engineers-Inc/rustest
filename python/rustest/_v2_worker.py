@@ -3489,6 +3489,7 @@ def _collect_function(
     registry: FixtureRegistry,
     context: _CollectContext,
     outer_cases: list[_Case] | None = None,
+    outer_indirect: frozenset[str] = frozenset(),
 ) -> list[CollectedTestDict]:
     """Port of `_pytest/python.py::pytest_pycollect_makeitem`'s function branch.
 
@@ -3541,7 +3542,16 @@ def _collect_function(
         [(None, {})] if cases is None else [(case_id, values) for case_id, values in cases]
     )
     parametrized = frozenset(name for _case_id, values in direct_cases for name in values)
-    indirect = _indirect_names(func) & parametrized
+    # `outer_indirect` carries a **class-level** `@parametrize(..., indirect=[...])`, whose
+    # metadata `decorators.py::parametrize` wrote onto the class object where a method cannot
+    # see it -- functions do not inherit class attributes. Apex Member Designer's
+    # `TestAPIEndpoints` is exactly that shape (`@pytest.mark.parametrize("model_class,
+    # endpoint,model_instance", MODEL_CONFIGS, indirect=["model_instance"])` on the *class*),
+    # and reading only the function's own metadata left 120 of its tests receiving the raw
+    # string instead of the fixture's return: `'str' object has no attribute 'model_dump'`.
+    # Threaded explicitly for the same reason `outer_cases` is, and it composes through
+    # nested classes for free.
+    indirect = (_indirect_names(func) | outer_indirect) & parametrized
     # `_pytest/fixtures.py::FixtureManager.getfixtureinfo` passes
     # `_get_direct_parametrize_args`, which is the **direct** names only
     # (`_pytest/python.py::Metafunc._get_direct_parametrize_args` filters on
@@ -3721,6 +3731,7 @@ def _collect_class(
     registry: FixtureRegistry,
     context: _CollectContext,
     outer_cases: list[_Case] | None = None,
+    outer_indirect: frozenset[str] = frozenset(),
 ) -> list[CollectedTestDict]:
     """Port of `_pytest/python.py::Class.collect`.
 
@@ -3759,6 +3770,9 @@ def _collect_class(
         outer_cases = (
             class_cases if outer_cases is None else _cross_product_cases(outer_cases, class_cases)
         )
+    # ...and the same for `indirect=`, which rides on the same decorator and therefore lands
+    # on the same object.
+    outer_indirect = outer_indirect | _indirect_names(cls)
     entries: list[CollectedTestDict] = []
     for member_name, member in _mro_ordered_members(cls):
         entries.extend(
@@ -3771,6 +3785,7 @@ def _collect_class(
                 class_registry,
                 context,
                 outer_cases,
+                outer_indirect,
             )
         )
     return entries
@@ -3785,6 +3800,7 @@ def _make_items(
     registry: FixtureRegistry,
     context: _CollectContext,
     outer_cases: list[_Case] | None = None,
+    outer_indirect: frozenset[str] = frozenset(),
 ) -> list[CollectedTestDict]:
     """Dispatch one namespace entry, mirroring pytest's ``pytest_pycollect_makeitem`` hooks.
 
@@ -3805,11 +3821,13 @@ def _make_items(
         return _collect_unittest_class(cast(type, obj), name, parts, outer_marks, registry, context)
     if inspect.isclass(obj):
         if _is_test_class(obj, name, context.naming):
-            return _collect_class(obj, name, parts, outer_marks, registry, context, outer_cases)
+            return _collect_class(
+                obj, name, parts, outer_marks, registry, context, outer_cases, outer_indirect
+            )
         return []
     if _is_test_function(obj, name, context.naming):
         return _collect_function(
-            obj, name, parts, owner, outer_marks, registry, context, outer_cases
+            obj, name, parts, owner, outer_marks, registry, context, outer_cases, outer_indirect
         )
     return []
 

@@ -68,3 +68,21 @@ def test_getfixturevalue_shape(chosen):
 def test_stacked(labelled, plain):
     assert labelled in ("<1>", "<2>")
     assert plain in ("x", "y")
+
+
+@pytest.mark.parametrize("label,chosen", [("a", "alpha"), ("b", "beta")], indirect=["chosen"])
+class TestClassLevelIndirect:
+    """A class-level `@parametrize(..., indirect=[...])` -- Member Designer's shape.
+
+    `decorators.py::parametrize` writes its metadata onto whatever it decorates, so a
+    class-level `indirect=` lands on the *class object*, where a method cannot see it
+    (functions do not inherit class attributes). Reading only the function's own metadata
+    left Apex Member Designer's 240 `TestAPIEndpoints` cases receiving the raw string:
+    `AttributeError: 'str' object has no attribute 'model_dump'`.
+    """
+
+    def test_one(self, label, chosen):
+        assert chosen in ("A", "B")
+
+    def test_two(self, label, chosen):
+        assert chosen in ("A", "B")

@@ -168,3 +168,21 @@ def test_the_manifest_reports_an_indirect_name_as_a_fixture() -> None:
 
     direct = frozenset({"plain"})
     assert _fixture_names(test_x, "test_x", None, direct) == ["routed", "tmp_path"]
+
+
+def test_class_level_indirect_reaches_the_methods() -> None:
+    """A class-level `@parametrize(..., indirect=[...])` writes onto the **class**.
+
+    Methods do not inherit class attributes, so `_indirect_names(method)` sees nothing and
+    the routing has to be threaded down from `_collect_class` the way `outer_cases` already
+    is. Member Designer's `TestAPIEndpoints` is exactly this shape, and it is why 120 of its
+    tests still failed after the function-level implementation landed.
+    """
+
+    @parametrize("label,chosen", [("a", "alpha")], indirect=["chosen"])
+    class TestBox:
+        def test_one(self, label: str, chosen: object) -> None:
+            pass
+
+    assert _indirect_names(TestBox) == frozenset({"chosen"})
+    assert _indirect_names(TestBox.test_one) == frozenset()
