@@ -49,8 +49,20 @@ setup = [
   ["uv", "venv", "--python", "3.14", "{venv}"],
   # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
   ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "psleak", "pywin32", "wmi"],
-  # Non-editable, version-pinned install from PyPI -- see the build-requirement note above.
-  ["uv", "pip", "install", "--python", "{py}", "psutil==7.2.2"],
+  # EDITABLE, which reverses the draft's "non-editable from PyPI" plan, and the reason is
+  # specific to psutil's layout. Both runners are invoked with cwd = the clone root, and the
+  # clone contains a `psutil/` PACKAGE DIRECTORY. That directory shadows whatever is installed
+  # in site-packages, and in a fresh checkout it has no compiled extension -- so the PyPI
+  # wheel, although present and correct, is never the one imported and all 19 test modules die
+  # with `ModuleNotFoundError: No module named 'psutil._psutil_windows'` (measured: pytest
+  # exit 2 / 19 collection errors, rustest exit 2 / 19 -- identical on both sides, and
+  # correctly reported as EE rather than a vacuous match).
+  #
+  # An editable install builds the C extension IN PLACE (`psutil/_psutil_windows.pyd` appears
+  # in the clone), so the shadowing directory becomes the real, working package. This machine
+  # has MSVC, so the build succeeds in ~21s; the draft's wheel-only plan was written to avoid
+  # needing a compiler, but on this layout there is no way to avoid it.
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
   [
     "uv",
     "pip",
@@ -102,9 +114,53 @@ timeout_s = 1800
 id_policy = "exact"
 
 [divergence.ids]
+"*psutil/tests/*" = """\
+NEW MECHANISM (first sighting in this sweep), and the highest-leverage single finding of the \
+whole Task 1b sweep: **`pytest.fail.Exception` / `pytest.skip.Exception` / \
+`pytest.xfail.Exception` do not exist on rustest's compat shim.** ONE missing attribute makes \
+the ENTIRE suite uncollectable -- rustest ran, wrote a report, and it contained **zero \
+tests** against pytest's 713.
+
+pytest builds these in `_pytest/outcomes.py` with an `@_with_exception(Failed)` decorator that \
+hangs the exception class off the function object, so `pytest.fail.Exception is Failed`. It is \
+a long-standing, widely used part of the public surface -- typically, as here, to catch \
+"either a real assertion or a pytest failure". psutil's `tests/__init__.py` line 760 does:
+
+    exception=(AssertionError, pytest.fail.Exception),
+
+at MODULE level. rustest's shim exposes `fail` as a plain function, so that line raises \
+`AttributeError: 'function' object has no attribute 'Exception'`, `tests/__init__.py` fails to \
+import, and because every test module imports the shared `PsutilTestCase` from it, ALL 19 \
+modules fail to collect. Measured on the shim: `fail.Exception` MISSING, `skip.Exception` \
+MISSING, `xfail.Exception` MISSING; only `exit.Exception` is present \
+(`rustest.compat.pytest.Exit`), which shows the pattern is known and was applied to exactly \
+one of the four.
+
+This entry deliberately globs the whole suite: there are 713 divergent ids and they all have \
+this one cause, so 713 separate entries would be 713 copies of one sentence. It goes stale the \
+moment the three attributes are added, at which point this target should be re-run from
+scratch and re-ledgered against whatever it finds THEN -- nothing below this line has ever \
+actually been observed, because no psutil test has yet executed under rustest.
+
+rustest DEFECT. Trivial fix (three attribute assignments), outsized payoff. PHASE-4-FOLLOWUP."""
 
 [divergence.global]
-# Expected friction to flag, not pre-waived:
+# NO `exit_code` ENTRY ON PURPOSE. Both runners exit 2, so the grader raises no exit-code
+# divergence -- but they exit 2 for OPPOSITE reasons, and the agreement must not be misread as
+# health: pytest exits 2 because 9 of the 713 tests it actually ran failed in this unelevated,
+# non-CI environment; rustest exits 2 because it collected nothing at all (19 collection
+# errors). A ledger entry here would simply go stale, so the observation lives in this comment.
+tally = """\
+pytest 329 passed / 375 skipped / 9 failed across 713 ids; rustest 0 of everything, 19 \
+collection errors. Entirely the `pytest.fail.Exception` blocker ledgered above.
+
+The 375 skips on the pytest side are the platform gating this target was picked to exercise \
+(`@pytest.mark.skipif(not WINDOWS, ...)` on the per-platform base classes covering \
+test_bsd/test_linux/test_osx/test_aix/test_sunos). Whether rustest reproduces them is STILL \
+UNMEASURED -- that was the point of the pick, and the blocker prevented the measurement. \
+Re-run this target once the attributes land."""
+# Two pre-flight flags from the audit, both still UNTESTED for the same reason -- rustest never
+# collected, so neither question has been answered yet:
 # - tests/test_sudo.py needs elevated privileges and is run OUTSIDE pytest entirely in
 #   upstream CI (`python -m unittest tests.test_sudo`, not part of `make test`'s pytest
 #   invocation). It's still inside `test_paths = ["tests"]` here and will get collected by

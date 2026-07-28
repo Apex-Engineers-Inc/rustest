@@ -86,16 +86,64 @@ dropped = ["-ra", "--color=auto"]
 pytest_args = []
 rustest_args = []
 timeout_s = 1800
-# Draft default. Format-specific test files parametrize heavily over mode/option/buffer-vs-path
-# axes with tuples and byte-string values (e.g. `@pytest.mark.parametrize("cid", (b"IHDR",
-# b"sRGB", ...))` in test_file_png.py) -- the same non-scalar-value id-spelling divergence
-# click/jinja2/humanize/tabulate/attrs are ledgered for. Verify at gate time.
+# UNVERIFIED, and honestly so: no Pillow test has ever executed under rustest (see the ledger
+# below), so the draft's guess about parametrize id spelling has not been tested either way.
+# `strip_params` is left in place only because it keeps the blocker's 2150 consequences
+# readable. Re-decide this the moment the blocker is fixed.
 id_policy = "strip_params"
 
 [divergence.ids]
+"*pillow/Tests/*" = """\
+NEW MECHANISM (first sighting in this sweep), and the second of the two blockers this sweep \
+found that cost an entire suite: **`pytest.skip(reason, allow_module_level=True)` is not \
+honoured.** rustest collected **zero** of Pillow's 4036 tests.
+
+`allow_module_level=True` is pytest's sanctioned way to skip a whole module from its top level \
+-- the standard idiom for "this file needs an optional dependency" or "this file is for another \
+platform". rustest's `decorators.py::skip` ignores the flag and raises `Skipped` unconditionally, \
+which escapes module import and is recorded as a COLLECTION ERROR. Collection errors then abort \
+the session -- which is correct, pytest aborts too -- so six skipped modules zero the entire run.
+
+The six, each a plain optional-dependency or platform guard:
+  Tests/oss-fuzz/test_fuzzers.py  "Fuzzer doesn't run on Windows or iOS"
+  Tests/test_arro3.py             "Arro3 not installed"
+  Tests/test_image_array.py       "NumPy not installed"
+  Tests/test_nanoarrow.py         "Nanoarrow not installed"
+  Tests/test_numpy.py             "NumPy not installed"
+  Tests/test_pyarrow.py           "PyArrow not installed"
+
+pytest skips all six as modules and runs the other 4036 tests. Minimal repro -- two files, one
+with a module-level skip and one ordinary:
+
+    # test_aml.py
+    import pytest
+    pytest.skip("module-level skip", allow_module_level=True)
+    def test_never_runs(): assert False
+    # test_other.py
+    def test_ordinary(): assert True
+
+pytest: `1 passed, 1 skipped`. rustest: `1 error`, and `test_other.py::test_ordinary` never runs \
+-- the collateral damage is the whole point.
+
+This entry globs the suite deliberately: 2150 function-level divergences, one cause. It goes \
+stale the moment the flag is honoured, at which point this target must be re-run and re-ledgered \
+from scratch -- everything the audit wanted from this pick (C-extension image I/O, the \
+`pytest_plugins = ["Tests.helper"]` root conftest, the marker-registering `pytest_configure`, the \
+CLI-tool-gated skips) is STILL UNMEASURED. rustest DEFECT. PHASE-4-FOLLOWUP."""
 
 [divergence.global]
-# Expected friction to flag, not pre-waived:
+ids = """\
+4036 ids in pytest, 0 in rustest -- wholly the `allow_module_level` blocker ledgered above, not \
+an id-spelling question. The draft's `strip_params` guess about parametrize ids remains \
+untested."""
+exit_code = """\
+pytest exits 0 (3745 passed / 288 skipped / 3 xfailed, nothing failed); rustest exits 2 (6 \
+collection errors, session aborted). Same blocker."""
+tally = """\
+pytest 3745 passed / 288 skipped / 3 xfailed across 4036 ids; rustest 0 of everything with 6 \
+collection errors. Same blocker."""
+# Expected friction to flag, not pre-waived -- ALL of it still unmeasured, because rustest never
+# collected a single test:
 # - Tests/images/, Tests/fonts/, Tests/icc/ hold a large binary format-sample corpus bundled
 #   directly in the repo tree (not fetched separately) -- irrelevant to install size (wheel
 #   install doesn't pull it), but the checked-out {repo} tree used for test_paths is sizeable.
