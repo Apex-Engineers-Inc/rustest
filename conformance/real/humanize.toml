@@ -58,16 +58,74 @@ pythonpath = []
 
 [addopts]
 # tox.ini's [pytest] section (the config pytest actually resolves to, see header note):
-# addopts = --color=yes --doctest-modules. Both runners read that ini for themselves; the
-# harness retired the addopts replay in Phase 4 Task 1. What this table now records is which
+# addopts = --color=yes --doctest-modules. Both runners read that ini for themselves -- the
+# harness retired the addopts replay in Phase 4 Task 1 -- so what this table records is which
 # of the configured options each runner ENDS UP applying, and why they differ.
 #
 # "--color=yes" is a harmless display flag and reaches both. "--doctest-modules" reaches
-# pytest and is neutralized for rustest with `-o addopts=--color=yes` (see [run]), because
-# rustest deliberately does not implement it -- see the [divergence.global]
+# pytest and is neutralized for rustest with the `-o addopts=` escape hatch in [run], because
+# rustest deliberately does not implement it. See the global divergence note below.
+configured = ["--color=yes", "--doctest-modules"]
+replay = ["--color=yes"]
+dropped = ["--doctest-modules"]
+
+[run]
+pytest_args = []
+# THE ESCAPE HATCH, added in Phase 4 Task 1c with the M1 fix, and the reason this target
+# grades at all. `-o addopts=...` replaces the ini value for rustest only; pytest still reads
+# its own tox.ini and still runs with `--doctest-modules`. That is a deliberate ASYMMETRY and
+# it is sound here for one measured reason: the flag is INERT on this suite. Measured on this
+# clone at Task 1b -- `pytest --collect-only -q tests` collects 784 with the repo's addopts
+# and 784 with `-o addopts=--color=yes`, because humanize's `tests/` modules carry no
+# doctests. So both runners are answering the same question. `id_policy = "exact"` is the
+# guard: a doctest item pytest collected and rustest did not would appear as an extra id, not
+# as a silently absorbed difference.
+rustest_args = ["-o", "addopts=--color=yes"]
+timeout_s = 1800
+# Draft default. test_number.py/test_time.py parametrize heavily over (value, expected)
+# tuples and locale strings -- the same value-kinds click/jinja2 already ledgered as
+# spelling-only id divergences under rustest's parametrize-id generation. Expect the same
+# mechanism here; verify at gate time and relax from "exact" if so.
+id_policy = "exact"
+
+[divergence.ids]
+"tests/test_number.py::test_metric*" = """\
+NEW MECHANISM (first sighting: this target has never graded before -- it was BLOCKED on M1 \
+until Phase 4 Task 1c unblocked it), 10 entries = 5 id pairs, spelling only, all ten \
+PASSING on both runners: **pytest ASCII-escapes an id returned by a callable `ids=`, and \
+rustest does not.** `@pytest.mark.parametrize(..., ids=str)` (tests/test_number.py:314) over \
+values whose `str()` contains non-ASCII. pytest's `_pytest/python.py::IdMaker._idval` \
+l. 951-963 ends the callable branch with `return _ascii_escaped_by_config(generated_id, \
+self.config)`, so `str("120 \u00b5")` becomes the literal seven characters `120 \\u03bc`; \
+rustest's `_resolve_case_id` returns the callable's result verbatim, so it emits the \
+character. Measured side by side on this clone with `--collect-only`: pytest \
+`test_metric[[0.00012]-120 \\u03bc]`, rustest `test_metric[[0.00012]-120 \u00b5]`.
+
+Exactly five ids differ and each differs ONLY in that escaping; the tally is identical on \
+both sides (700 passed / 69 skipped / 15 error), every one of the five passes on both, and \
+no test is lost or gained. The escaping applies to the CALLABLE branch specifically -- \
+rustest already ports `ascii_escaped` (`decorators.py::_ascii_escaped`, from \
+`_pytest/compat.py` l. 195-215) and applies it inside `_idval_from_value` for plain str and \
+bytes values, which is why every other non-ASCII id in this corpus already matches. The gap \
+is the one call site.
+
+REPORTED, NOT FIXED, per the Phase 4 Task 1c directive: the re-sweep reports new mechanisms \
+rather than fixing them, so the convergence measurement stays honest. rustest DEFECT \
+(cosmetic: node-id spelling only, no test lost, no status changed). PHASE-4-FOLLOWUP."""
+
+[divergence.global]
+# NO GLOBAL LEDGER ENTRIES, and the reason is worth stating: the exit code AGREES (1 on
+# both runners) and the tally agrees exactly (700 passed / 69 skipped / 15 error). Both
+# sides exit 1 for the same environmental reason -- 15 errors from
+# tests/test_benchmarks.py, whose tests request the `benchmark` fixture pytest-benchmark
+# supplies and which this target's [env] deliberately does not install, the corpus
+# convention for benchmarking plugins. Identical ids, identical count, both runners. That
+# is a property of the target's environment, not a divergence, so it gets a comment rather
+# than a ledger entry -- an entry describing something the gate cannot see goes stale.
+
 # ============================================================================================
 # UNBLOCKED at Phase 4 Task 1c (MECHANISM M1). The history is kept because the fix is an
-# escape hatch rather than a feature, and the distinction is the whole point.
+# escape hatch rather than a feature, and that distinction is the whole point.
 #
 # WHAT WAS BLOCKED. tox.ini's `[pytest]` section -- the config pytest actually resolves to
 # here, since pyproject.toml misspells the table as `[tool.pytest]` -- carries
@@ -83,33 +141,26 @@ pythonpath = []
 # WHY THE REFUSAL WAS RIGHT, AND STILL IS. `--doctest-modules` changes what gets COLLECTED.
 # Silently ignoring it would manufacture a quiet divergence, which is why it is not on
 # rustest's `IGNORED_PYTEST_FLAGS` table -- that table is deliberately limited to
-# reporting-only flags. **rustest still refuses it**, and Task 1c did not change that: doctest
+# reporting-only flags. rustest STILL REFUSES IT and Task 1c did not change that: doctest
 # collection is a distinct absorption (a whole collector, `_pytest/doctest.py`), not a
-# compat-shim gap, and implementing it was explicitly out of scope. Adding it to the
-# warn-and-drop allowlist was considered and REJECTED on the evidence rule: a drop is only
-# honest where the flag is provably inert, and that is a property of THIS suite, not of the
-# flag. A project with doctests in its collected tree would silently under-collect.
+# compat-shim gap. Adding it to the warn-and-drop allowlist was considered and REJECTED on
+# the evidence rule -- a drop is only honest where the flag is provably inert, and that is a
+# property of THIS suite, not of the flag; a project with doctests in its collected tree
+# would silently under-collect.
 #
 # WHAT WAS ACTUALLY MISSING, AND WHAT WAS FIXED. There was no way to say "read this project's
 # config except that key": no `-o`, no `--override-ini`, no `-c`. pytest has both levers;
-# rustest had neither, so any project with a collection-changing flag in its ini `addopts` was
-# a HARD BLOCK rather than a degraded run -- and nothing the harness could put in
+# rustest had neither, so any project with a collection-changing flag in its ini `addopts`
+# was a HARD BLOCK rather than a degraded run -- and nothing the harness could put in
 # `pytest_args`/`rustest_args` could reach it, because rustest fails while parsing the ini it
-# found by walking up from its own cwd and the target repo is read-only to this harness.
-# Task 1c implements `-o`/`--override-ini` for the `addopts` key (`python/rustest/cli.py`:
-# `_extract_ini_overrides`, `OVERRIDABLE_INI_KEYS`). Any other ini key is a LOUD usage error
-# (exit 4) naming what is supported, because those keys are read by the engine's own config
-# resolver, which has no override channel -- accepting them and doing nothing would be the
-# silent no-op this project refuses.
-#
-# THE EVIDENCE THAT MAKES THE ASYMMETRY SOUND HERE. `--doctest-modules` is inert on this
-# suite: 784 collected with it, 784 without (measured on this clone at Task 1b). humanize's
-# `tests/` modules carry no doctests. So pytest running with the flag and rustest running
-# without it are answering the same question, and `id_policy = "exact"` is the guard -- any
-# doctest item pytest collected and rustest did not would appear as an extra id, not as a
-# silently absorbed difference.
+# finds by walking up from its own cwd and the target repo is read-only to this harness.
+# Task 1c implements `-o`/`--override-ini` for the `addopts` key
+# (`python/rustest/cli.py::_extract_ini_overrides`, `OVERRIDABLE_INI_KEYS`). Any other ini
+# key is a LOUD usage error (exit 4) naming what is supported, because those keys are read by
+# the engine's own config resolver, which has no override channel -- accepting them and doing
+# nothing would be the silent no-op this project refuses.
 #
 # WILD-READINESS IMPACT: the class this suite stands for -- a collection-changing flag in ini
-# addopts -- is now a degraded run a caller opts into, not a block. That is the honest fix.
-# `--doctest-modules` itself remains unimplemented and remains refused.
+# addopts -- is now a degraded run a caller opts into, not a block. `--doctest-modules`
+# itself remains unimplemented and remains refused.
 # ============================================================================================

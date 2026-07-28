@@ -93,55 +93,16 @@ timeout_s = 1800
 id_policy = "strip_params"
 
 [divergence.ids]
-"*pillow/Tests/*" = """\
-NEW MECHANISM (first sighting in this sweep), and the second of the two blockers this sweep \
-found that cost an entire suite: **`pytest.skip(reason, allow_module_level=True)` is not \
-honoured.** rustest collected **zero** of Pillow's 4036 tests.
-
-`allow_module_level=True` is pytest's sanctioned way to skip a whole module from its top level \
--- the standard idiom for "this file needs an optional dependency" or "this file is for another \
-platform". rustest's `decorators.py::skip` ignores the flag and raises `Skipped` unconditionally, \
-which escapes module import and is recorded as a COLLECTION ERROR. Collection errors then abort \
-the session -- which is correct, pytest aborts too -- so six skipped modules zero the entire run.
-
-The six, each a plain optional-dependency or platform guard:
-  Tests/oss-fuzz/test_fuzzers.py  "Fuzzer doesn't run on Windows or iOS"
-  Tests/test_arro3.py             "Arro3 not installed"
-  Tests/test_image_array.py       "NumPy not installed"
-  Tests/test_nanoarrow.py         "Nanoarrow not installed"
-  Tests/test_numpy.py             "NumPy not installed"
-  Tests/test_pyarrow.py           "PyArrow not installed"
-
-pytest skips all six as modules and runs the other 4036 tests. Minimal repro -- two files, one
-with a module-level skip and one ordinary:
-
-    # test_aml.py
-    import pytest
-    pytest.skip("module-level skip", allow_module_level=True)
-    def test_never_runs(): assert False
-    # test_other.py
-    def test_ordinary(): assert True
-
-pytest: `1 passed, 1 skipped`. rustest: `1 error`, and `test_other.py::test_ordinary` never runs \
--- the collateral damage is the whole point.
-
-This entry globs the suite deliberately: 2150 function-level divergences, one cause. It goes \
-stale the moment the flag is honoured, at which point this target must be re-run and re-ledgered \
-from scratch -- everything the audit wanted from this pick (C-extension image I/O, the \
-`pytest_plugins = ["Tests.helper"]` root conftest, the marker-registering `pytest_configure`, the \
-CLI-tool-gated skips) is STILL UNMEASURED. rustest DEFECT. PHASE-4-FOLLOWUP."""
-
+# EMPTY as of Phase 4 Task 1c -- this target went from BLOCKED (0 tests collected) to a
+# clean MATCH of all 4 036.
+#
+# What used to be here: a whole-suite block. Six of Pillow's modules call
+# `pytest.skip(..., allow_module_level=True)` or `pytest.importorskip` at module scope
+# for optional codecs; rustest raised that out of collection, and a collection error
+# aborts the session, so all 4 036 tests were lost to six skips (MECHANISM M7).
+# Re-swept: 3745 passed / 288 skipped / 3 xfailed on BOTH runners, exit 0 on both,
+# and rustest is 1.63x faster (48.4s vs 78.8s).
 [divergence.global]
-ids = """\
-4036 ids in pytest, 0 in rustest -- wholly the `allow_module_level` blocker ledgered above, not \
-an id-spelling question. The draft's `strip_params` guess about parametrize ids remains \
-untested."""
-exit_code = """\
-pytest exits 0 (3745 passed / 288 skipped / 3 xfailed, nothing failed); rustest exits 2 (6 \
-collection errors, session aborted). Same blocker."""
-tally = """\
-pytest 3745 passed / 288 skipped / 3 xfailed across 4036 ids; rustest 0 of everything with 6 \
-collection errors. Same blocker."""
 # Expected friction to flag, not pre-waived -- ALL of it still unmeasured, because rustest never
 # collected a single test:
 # - Tests/images/, Tests/fonts/, Tests/icc/ hold a large binary format-sample corpus bundled

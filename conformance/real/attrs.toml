@@ -73,62 +73,31 @@ timeout_s = 1800
 # that reason: it raises the raw id difference as its own graded `ids` problem (below) instead
 # of scattering it across per-id noise, and it goes stale the moment the unpack is fixed. Once
 # it is, re-test `exact` here -- on this evidence the suite should reach it.
-id_policy = "strip_params"
+# TIGHTENED to `exact` at Phase 4 Task 1c, and that is a result in its own right. The
+# `strip_params` policy was here because the length-1 unpack (MECHANISM M2) corrupted
+# node ids as well as values -- `test_setattr`'s id differed with BOTH cases passing on
+# BOTH runners, which is the sighting that proved the defect can be entirely silent.
+# With M2 ported, the ids agree, so the gate now compares them one for one.
+id_policy = "exact"
 
 [divergence.ids]
-"tests/test_packaging.py::TestLegacyMetadataHack::*" = """\
-NEW MECHANISM (first sighting in this sweep), 4 errors (2 tests x 2 params): the **`recwarn` \
-builtin fixture is not implemented**. rustest is honest about it rather than silently \
-skipping -- it raises `FixtureLookupError: fixture 'recwarn' is not supported by the rustest \
-v2 worker yet`, and helpfully lists what IS supported (tmp_path_factory, tmp_path, \
-tmpdir_factory, tmpdir, monkeypatch, capsys, capfd, caplog, cache, mocker, pytestconfig). \
-pytest passes all 4. These tests use `recwarn` to assert the DeprecationWarning attrs' legacy \
-`__version__`/`__version_info__` metadata hack emits. Reproduces on the one file alone. \
-rustest DEFECT (a missing builtin, not a wrong behaviour). PHASE-4-FOLLOWUP."""
-
-"tests/test_validators.py::TestMinLen::test_check_invalid*" = """\
-KNOWN MECHANISM, fifth independent sighting: rustest unpacks a length-1 sequence argvalue \
-under a SINGLE argname. `@pytest.mark.parametrize("value", ["", list(range(1))])` \
-(tests/test_validators.py:1071-1078). `list(range(1))` is `[0]` -- one argname, a length-1 \
-list -- so rustest binds `value = 0`, the bare int. attrs' `min_len` validator then calls \
-`len(value)` and raises `TypeError: object of type 'int' has no len()` instead of the \
-`ValueError` the test expects. The `""` case is unaffected and passes. pytest passes both. \
-Same defect as Member Designer / marshmallow / werkzeug; fix is `len(argnames) > 1`. \
-PHASE-4-FOLLOWUP."""
-
+# EMPTY as of Phase 4 Task 1c -- this target is now a clean MATCH at 1380 passed /
+# 5 skipped / 2 xfailed on both runners, exit 0 on both.
+#
+# What used to be here, 5 tests across 2 mechanisms:
+#
+# * FOUR errors (2 tests x 2 params) from the missing `recwarn` builtin (MECHANISM
+#   M5). `TestLegacyMetadataHack` reads `recwarn.list` to assert the
+#   DeprecationWarning attrs' legacy `__version__` hack emits. rustest was honest
+#   about the gap rather than silently skipping -- `FixtureLookupError: ... not
+#   supported by the rustest v2 worker yet` -- and the recorded reason for the gap
+#   ('needs a warnings channel the v2 wire does not have') turned out to be wrong:
+#   `recwarn` records in-process and tells the orchestrator nothing.
+# * ONE failure from the length-1 unpack (M2): `@pytest.mark.parametrize("value",
+#   ["", list(range(1))])` -- `[0]` is a length-1 list under one argname, so rustest
+#   bound the bare int and attrs' `min_len` raised `TypeError: object of type 'int'
+#   has no len()` instead of the expected `ValueError`. The `""` case was unaffected.
 [divergence.global]
-ids = """\
-3 of 1387 raw node ids differ, and all 3 are downstream of the length-1-sequence-unpack defect \
-ledgered above -- rustest is generating a correct id for the WRONG VALUE, which is not the \
-IdMaker spelling gap click and jinja2 used to carry (that one is closed).
-
-2 of the 3 come from `tests/test_setattr.py::TestSetAttr::test_validator`, and they are the \
-sighting that shows this defect also corrupts node ids and not just bound values. \
-`@pytest.mark.parametrize("on_setattr", [setters.validate, [setters.validate], \
-setters.pipe(setters.validate)])` (tests/test_setattr.py:72-75): the second argvalue is the \
-length-1 list `[setters.validate]`, rustest unpacks it to the bare function, that function IS \
-IdMaker-representable, so cases 0 and 1 both generate the id `validate` and rustest's \
-duplicate resolution renames them `validate0`/`validate1`. pytest keeps the list intact, \
-cannot represent it, and ids it `on_setattr1` -- leaving case 0 as plain `validate`. Hence \
-pytest `[validate]`/`[on_setattr1]` vs rustest `[validate0]`/`[validate1]`. Both cases still \
-PASS on both sides, because for attrs a bare validator and a one-element list of validators \
-behave identically -- so here the defect was visible ONLY through the node id, which is \
-exactly why this entry is graded rather than absorbed. (It is carried here, not as a per-id \
-entry, because under `strip_params` the per-function status multisets match and no per-id \
-problem is raised for it.)
-
-The 3rd is `tests/test_validators.py::TestMinLen::test_check_invalid`, whose ledger entry \
-above covers it. All 3 go stale the moment unpacking is gated on `len(argnames) > 1`."""
-exit_code = """\
-rustest exits 1 where pytest exits 0: 4 errors (recwarn) plus 1 failure (length-1 unpack)."""
-tally = """\
-pytest 1380 passed / 5 skipped / 2 xfailed / 0 failed / 0 error; rustest 1375 passed / 5 \
-skipped / 2 xfailed / 1 failed / 4 error. Identical skip and xfail sets. The 5-test delta is \
-the 4 `recwarn` errors and the 1 `min_len` failure, both ledgered above.
-
-Two things the pre-clone audit flagged that turned out to be non-events, worth recording \
-because they were the reason this pick was classified KEEP-WITH-LEDGERED-HOOKS rather than \
-clean: the conftest's `pytest_configure` (which only registers/loads a Hypothesis settings \
-profile) and its two-entry `collect_ignore` (both conditions true on the 3.14 pin, so nothing \
-is ignored) produce NO divergence at all -- 1387 ids on both sides. The `slots`/`frozen` \
-parametrized boolean fixtures likewise agree everywhere."""
+# EMPTY as of Phase 4 Task 1c: exit codes agree (0 on both) and the tally agrees
+# exactly. The two hooks the pre-clone audit flagged -- Hypothesis profile registration
+# and the two-entry `collect_ignore` -- produce no divergence at all, as Task 1b found.

@@ -124,61 +124,24 @@ timeout_s = 1800
 id_policy = "exact"
 
 [divergence.ids]
-"tests/test_parser.py::ParserTest::*" = """\
-NEW MECHANISM (first sighting in this sweep), 8 tests: **pytest's xunit `setup_class` and \
-`setup_method` hooks are honoured on `unittest.TestCase` subclasses; rustest's are not.** \
-`class ParserTest(unittest.TestCase)` (tests/test_parser.py:408) defines its shared state in \
-`@classmethod def setup_class(cls)` -- the PYTEST xunit spelling -- not unittest's own \
-`setUpClass`. pytest's `_pytest/unittest.py::UnitTestCase.collect()` calls \
-`_inject_setup_class_fixture()` and `_inject_setup_method_fixture()`, so a TestCase subclass \
-gets BOTH unittest's native hooks and pytest's xunit ones. rustest honours only the native \
-`setUpClass`/`setUp` on such a class, so `cls.tzinfos`/`cls.brsttz`/`cls.default`/ \
-`cls.uni_str`/`cls.str_str` are never assigned and every test that reads one dies with \
-`AttributeError: 'ParserTest' object has no attribute 'brsttz'` (or `'default'`, or \
-`'str_str'`).
-
-The failure set is self-confirming: exactly the 8 tests of ~240 in this class that touch one \
-of those five attributes fail (testDateCommandFormat, testDateCommandFormatReversed, \
-testFuzzy, testFuzzyWithTokens, testParserParseStr, testPertain, testRandomFormat24, \
-test_hmBY); the rest of the class passes, because it never reads class state.
-
-Minimal repro, and it shows the gap is WIDER than this suite reveals -- both spellings are \
-affected, not just the class one:
-
-    class TCWithSetupClass(unittest.TestCase):
-        @classmethod
-        def setup_class(cls): cls.value = "x"
-        def test_sees_it(self): assert getattr(self, "value", None) == "x"
-
-    class TCWithSetupMethod(unittest.TestCase):
-        def setup_method(self, method): self.mval = "y"
-        def test_sees_it(self): assert getattr(self, "mval", None) == "y"
-
-pytest: 2 passed. rustest: 2 failed. Note the adjacent case already works -- xunit hooks on a \
-PLAIN (non-TestCase) class are honoured, which is what HEAD's `fix(compat): ... xunit ...` \
-commit addressed; the uncovered case is specifically their injection onto TestCase \
-subclasses. Not order-dependent (reproduces on the one file, and on the 4-line repro). \
-rustest DEFECT. PHASE-4-FOLLOWUP."""
-
+# EMPTY as of Phase 4 Task 1c -- this target is now a clean MATCH.
+#
+# What used to be here: 8 tests of `ParserTest` failing with `AttributeError`, because
+# the class declares its shared state in `@classmethod def setup_class(cls)` -- the
+# PYTEST xunit spelling -- and rustest honoured only unittest's native `setUpClass` on
+# a `TestCase` subclass (MECHANISM M4). `_pytest/unittest.py::UnitTestCase.collect`
+# calls THREE registrars, and rustest ported only the middle one; all three are ported
+# now. Re-swept: 2001 passed / 74 skipped / 20 xfailed on BOTH runners, exit 0 on
+# both, 2095 ids identical -- including `xfail_strict = true`, the three-pattern
+# `python_files` override, twelve bare markers, `filterwarnings = error` and all three
+# Hypothesis `@given` property modules.
 [divergence.global]
-exit_code = """\
-rustest exits 1 where pytest exits 0, entirely as a consequence of the 8 failures ledgered \
-above."""
-tally = """\
-pytest 2001 passed / 74 skipped / 20 xfailed / 0 failed; rustest 1993 passed / 74 skipped / \
-20 xfailed / 8 failed. 2095 ids on both sides, identical spelling, identical skip and xfail \
-sets -- which is the notable part beyond the failures: `xfail_strict = true` in ini, the \
-three-pattern `python_files` override (including `*_solution.py`), the twelve bare markers, \
-`filterwarnings = error, error::DeprecationWarning, error::PendingDeprecationWarning`, the \
-unittest/native-pytest mix, and all three Hypothesis `@given` property modules \
-(tests/property/) all agree exactly. NOTHING was deselected: the task allowed deselecting \
-hypothesis-driven tests if they diverged for hypothesis-internal reasons, and they did not \
-diverge, so the full suite runs.
-
-The conftest's `pytest_collection_modifyitems` -- the hook the pre-clone audit flagged -- is \
-confirmed INERT under this gate exactly as the adjudication predicted: it only adds \
-`pytest.mark.no_cover` to already-xfailed items, no coverage run consumes it, selection and \
-ordering are untouched, and the 2095 ids match. The one thing it does require is that the \
-marker be REGISTERED (see [env]): without pytest-cov installed, `filterwarnings = error` \
-turns the resulting PytestUnknownMarkWarning into an exception inside the hook and pytest \
-INTERNALERRORs."""
+# EMPTY as of Phase 4 Task 1c: exit codes agree (0 on both) and the tally agrees
+# exactly. The claim the retired `tally` entry carried is worth keeping, because it is
+# this target's whole reason for being kept over the pre-clone audit's SWAP flag: the
+# conftest's `pytest_collection_modifyitems` is confirmed INERT under this gate, exactly
+# as the adjudication predicted. It only adds `pytest.mark.no_cover` to already-xfailed
+# items, no coverage run consumes it, selection and ordering are untouched, and the 2095
+# ids match. The one thing it does require is that the marker be REGISTERED (see [env]):
+# without pytest-cov installed, `filterwarnings = error` turns the resulting
+# PytestUnknownMarkWarning into an exception inside the hook and pytest INTERNALERRORs.

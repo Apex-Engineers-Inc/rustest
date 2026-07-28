@@ -124,48 +124,34 @@ timeout_s = 3600
 id_policy = "exact"
 
 [divergence.ids]
-"*fastapi/tests/*" = """\
-THE PARTIAL RUN DID NOT GET TO RUN, and the reason is NOT the anyio blocker it was scoped \
-around. rustest collected **zero** of the 3289 tests pytest selected, stopped by 8 collection \
-errors -- and collection errors abort the session, in rustest as in pytest. Two mechanisms, \
-both found elsewhere in this sweep too, neither of them anyio:
-
-(1) 5 errors -- MODULE-LEVEL SKIP NOT HONOURED. Identical to the blocker ledgered against \
-Pillow: `pytest.skip(reason, allow_module_level=True)` raises out of module import and is \
-recorded as a collection error instead of skipping the module. Here it is the benchmark \
-modules ("Benchmark tests are skipped by default; run with --codspeed"):
-  tests/benchmarks/test_general_performance.py, tests/benchmarks/test_openapi.py,
-  tests/memory_benchmarks/{test_dependency_graph,test_openapi,test_route_dependency_graph}.py
-An earlier run of this target also showed the OTHER canonical spelling of the same idea \
-failing the same way -- `pytest.importorskip("orjson")` at module scope, in \
-test_orjson_response_class.py and three test_tutorial/test_custom_response modules. `orjson` \
-is now installed (see [env]) so those four collect, but the mechanism is the same one and a \
-fix must cover both spellings.
-
-(2) 3 errors -- NEW MECHANISM: **`parametrize()` does not accept pytest's `argnames` \
-keyword.** pytest's public signature is `parametrize(argnames, argvalues, indirect=False, \
-ids=None, scope=None)`, and calling it by keyword is ordinary usage. FastAPI does exactly that \
-(tests/test_security_oauth2.py:107, `argnames=["grant_type"], argvalues=[...]`). rustest's \
-`decorators.py::parametrize` names its first parameter `arg_names`, so the call raises \
-`TypeError: parametrize() got an unexpected keyword argument 'argnames'. Did you mean \
-'arg_names'?` at import, killing:
-  tests/test_security_oauth2.py, tests/test_security_oauth2_optional.py,
-  tests/test_security_oauth2_optional_description.py
-Note `argvalues` IS already accepted as a keyword-only alias in that same signature -- the \
-aliasing was simply never applied to `argnames`. A one-line fix. rustest DEFECT.
-
-This entry globs the suite because 3289 ids share these 8 causes. It goes stale the moment \
-either blocker is fixed; at that point re-run and re-ledger, because THE ANYIO QUESTION THIS \
-TARGET EXISTS TO ANSWER IS STILL UNANSWERED -- no FastAPI test has executed under rustest, so \
-nothing is yet known about how the sync TestClient majority actually behaves. PHASE-4-FOLLOWUP."""
-
+# EMPTY as of Phase 4 Task 1c -- this target went from BLOCKED (0 tests collected, 8
+# collection errors) to EXPLAINED over all 3 289 ids, with the per-id status map IDENTICAL
+# on both runners.
+#
+# What used to be here: a whole-suite block, from two mechanisms compounding.
+#
+# * MODULE-LEVEL SKIP (MECHANISM M7). Several modules call `pytest.importorskip` or
+#   `pytest.skip(..., allow_module_level=True)` at import; rustest raised that out of
+#   collection, and a collection error aborts the session.
+# * `argnames=` AS A KEYWORD (MECHANISM M8). Three modules write
+#   `@pytest.mark.parametrize(argnames=..., argvalues=...)`. pytest's own signature is
+#   `Metafunc.parametrize(argnames, argvalues, indirect=False, ids=None, scope=None)`, so
+#   calling it by keyword is ordinary usage; rustest's first parameter was spelled
+#   `arg_names` and the `argvalues` alias already existed, so this was a completed pattern
+#   with one case missed. One alias, 3 289 tests.
+#
+# Re-swept: 3248 passed / 8 failed / 5 skipped / 5 xfailed / 23 error on BOTH runners, exit
+# 1 on both. pytest's own 8 failures and 23 errors are environment-conditioned (this is not
+# FastAPI's CI container) and rustest reproduces them exactly, which is the strongest form
+# of the claim: the two runners agree test by test, including on what this environment
+# breaks.
 [divergence.global]
-exit_code = """\
-pytest exits 1 (it ran the suite; 8 failed and 23 errored in this environment); rustest exits \
-2 (8 collection errors, session aborted). Wholly the blockers ledgered above."""
 tally = """\
-pytest 3248 passed / 23 error / 8 failed / 5 skipped / 5 xfailed across 3289 ids, 18 \
-deselected; rustest 0 of everything, 8 collection errors, 9 deselected.
+The ONLY tally difference left is the deselected count: pytest 18, rustest 9. Everything \
+else is identical -- 3248 passed / 8 failed / 5 skipped / 5 xfailed / 23 error on both \
+sides, over the same 3289 ids, exit 1 on both. (Before Phase 4 Task 1c this entry read \
+"rustest 0 of everything, 8 collection errors": the suite did not collect at all. See the \
+ids ledger above for the two mechanisms that blocked it.)
 
 THE DESELECTED COUNTS DIFFER 18 vs 9, AND THAT PART IS REAL AND EXPECTED -- it is the anyio \
 asymmetry this partial run was designed around, showing up in the one number that survived. \
@@ -178,5 +164,6 @@ outcome the user's partial-run decision called for, and it is confirmed as a mea
 rather than an assumption.
 
 pytest's own 23 errors + 8 failures are environment-conditioned (this is not FastAPI's CI \
-container) and are NOT a rustest question -- rustest never got far enough to have an opinion \
-about them."""
+container). rustest now reproduces every one of them, id for id, which is a stronger result \
+than a clean run would have been: the two runners agree about what this environment breaks, \
+not merely about what it passes."""

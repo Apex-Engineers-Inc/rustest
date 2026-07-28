@@ -72,24 +72,11 @@ the same diff appears between two consecutive pytest runs. Deliberately NOT work
 (no id normalization, no freezegun): the corpus's rule is that the gate reports what the \
 runners actually emit."""
 
-"tests/test_decorators.py::TestValidatesSchemaDecorator::test_validator_nested_many_pass_original_and_pass_collection*" = """\
-KNOWN MECHANISM, second independent sighting: rustest unpacks a length-1 sequence argvalue \
-under a SINGLE argname. Same defect Member Designer's `TestJackStudReleases` residual was \
-adjudicated to in this task -- found there first, confirmed here in an unrelated suite. The \
-declaration is `@pytest.mark.parametrize("data", ([{"foo": 1, "bar": 2}],))` \
-(tests/test_decorators.py:457): one argname, and the single argvalue is the length-1 LIST \
-`[{"foo": 1, "bar": 2}]`. pytest binds `data` to that list; rustest unpacks it and binds \
-`data` to the bare dict. The test then calls `schema.validate({"nested": data})` with a dict \
-where a list of one dict was intended, marshmallow builds a differently-shaped error \
-structure, and `error["_schema"]` raises `TypeError: list indices must be integers` / \
-`string indices must be integers`. 2 of the test's 2 cases fail. pytest passes both. \
-Reproduces with the single test file alone (`-k` on the one test): not order-dependent. \
-rustest DEFECT; fix is to gate unpacking on `len(argnames) > 1`, which closes this and the \
-Member Designer sighting together. PHASE-4-FOLLOWUP."""
-
 [divergence.global]
-tally = """\
-pytest 1177 passed / 1 failed; rustest 1175 passed / 3 failed. Exit codes AGREE (both 1) -- \
-the suite has one genuine self-failure on both sides. The 2-test delta is entirely the \
-length-1-sequence-unpacking defect ledgered above; the datetime-id churn moves no counts \
-because both of those tests pass on their own side."""
+# EMPTY as of Phase 4 Task 1c. The `tally` entry that lived here described the
+# 2-test delta from the length-1-sequence unpack (MECHANISM M2); with M2 ported from
+# `ParameterSet._for_parametrize`, the tallies agree exactly -- 1177 passed / 1 failed
+# on BOTH runners, and the one failure is the suite's own, present on both sides. The
+# `test_validator_nested_many_pass_original_and_pass_collection` ids entry went with
+# it: `@pytest.mark.parametrize("data", ([{...}],))` now binds `data` to the length-1
+# list, as pytest does, and both of its cases pass.

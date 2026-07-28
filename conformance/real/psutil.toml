@@ -107,7 +107,15 @@ dropped = [
 [run]
 pytest_args = []
 rustest_args = []
-timeout_s = 1800
+# RAISED from 1800 at Phase 4 Task 1c, and the reason is measured rather than defensive.
+# 1800s was already only a 20% margin on Task 1b's pytest half (1 488s -- psutil's suite is
+# dominated by `time.sleep` and process spawning, not by CPU), and that measurement was taken
+# while rustest's half cost 8.5s because the suite did not collect at all. With MECHANISM M6
+# fixed, rustest actually runs all 713 tests, most of which sleep for the same reasons pytest's
+# do -- so the target's total roughly doubles. The first Task 1c attempt exceeded 1800s on the
+# pytest half alone and had to be abandoned mid-run. Nothing about the suite changed; what
+# changed is that there is now a second real run in the same budget.
+timeout_s = 5400
 # unittest.TestCase methods, zero parametrize usage confirmed directly in the three largest
 # sampled files -- stable string ids, no value-derived parametrize id machinery in play.
 # Same reasoning as cachetools'/jsonschema's drafts.
@@ -115,34 +123,53 @@ id_policy = "exact"
 
 [divergence.ids]
 "*psutil/tests/*" = """\
-NEW MECHANISM (first sighting in this sweep), and the highest-leverage single finding of the \
-whole Task 1b sweep: **`pytest.fail.Exception` / `pytest.skip.Exception` / \
-`pytest.xfail.Exception` do not exist on rustest's compat shim.** ONE missing attribute makes \
-the ENTIRE suite uncollectable -- rustest ran, wrote a report, and it contained **zero \
-tests** against pytest's 713.
+STATUS AT PHASE 4 TASK 1c: **the collection blocker is FIXED and confirmed; the suite now \
+fails to complete for a DIFFERENT and newly-found reason.** This entry describes both, \
+because the target is the one row of the seventeen without a graded verdict and the record \
+has to say exactly why.
 
-pytest builds these in `_pytest/outcomes.py` with an `@_with_exception(Failed)` decorator that \
-hangs the exception class off the function object, so `pytest.fail.Exception is Failed`. It is \
-a long-standing, widely used part of the public surface -- typically, as here, to catch \
-"either a real assertion or a pytest failure". psutil's `tests/__init__.py` line 760 does:
+WHAT WAS FIXED (MECHANISM M6). `pytest.fail.Exception` / `skip.Exception` / `xfail.Exception` \
+did not exist on rustest's compat shim. pytest builds them in `_pytest/outcomes.py` with an \
+`@_with_exception(Failed)` decorator that hangs the exception class off the function object, \
+so `pytest.fail.Exception is Failed`; psutil's `tests/__init__.py` l. 760 reads \
+`exception=(AssertionError, pytest.fail.Exception)` at MODULE level, so the attribute is \
+reached at IMPORT time and never has to be raised. Without it every one of psutil's 19 test \
+modules failed to import, collection aborted, and rustest wrote a report containing ZERO \
+tests against pytest's 713 -- the highest-leverage single finding of the Task 1b sweep, and \
+three attribute assignments to fix. Task 1c added all three (plus `exit.Exception`, which \
+already existed, completing pytest's set) and pinned them with the corpus case \
+`marks/outcome-exception-attrs`, which MATCHes under both v2 gates. **Confirmed on this \
+target in the Task 1c re-sweep: the 19 collection errors are gone, the manifest is built, and \
+the worker pool starts and is dispatched work.**
 
-    exception=(AssertionError, pytest.fail.Exception),
+WHAT IS NOW IN THE WAY (MECHANISM M11, NEW, REPORTED NOT FIXED). rustest's execution of this \
+suite **stalls**. pytest completed the run in 2 137s; rustest ran for 95 minutes without \
+finishing, and the evidence that it is a stall rather than slowness is direct: sampling the \
+four surviving worker processes ~50 seconds apart returned byte-identical `UserModeTime` AND \
+`KernelModeTime` for every one of them. They are idle, not busy. One worker had burned 642s \
+of kernel time and then stopped; another had accumulated ZERO CPU since it started.
 
-at MODULE level. rustest's shim exposes `fail` as a plain function, so that line raises \
-`AttributeError: 'function' object has no attribute 'Exception'`, `tests/__init__.py` fails to \
-import, and because every test module imports the shared `PsutilTestCase` from it, ALL 19 \
-modules fail to collect. Measured on the shim: `fail.Exception` MISSING, `skip.Exception` \
-MISSING, `xfail.Exception` MISSING; only `exit.Exception` is present \
-(`rustest.compat.pytest.Exit`), which shows the pattern is known and was applied to exactly \
-one of the four.
+The plausible cause is specific to this target and is already a known class in this corpus: \
+psutil's tests manipulate process-global state -- spawning and reaping children, counting \
+handles, waiting on pids, killing process trees -- and several assume they are the only thing \
+doing so. Run in a pool that is exactly the isolation hazard already ledgered for jsonschema's \
+`test_import_cli` and for Apex Member Designer's shared database, both of which are pinned \
+with `-n 1`. psutil is NOT pinned, because until M6 was fixed it never got far enough to need \
+to be.
 
-This entry deliberately globs the whole suite: there are 713 divergent ids and they all have \
-this one cause, so 713 separate entries would be 713 copies of one sentence. It goes stale the \
-moment the three attributes are added, at which point this target should be re-run from
-scratch and re-ledgered against whatever it finds THEN -- nothing below this line has ever \
-actually been observed, because no psutil test has yet executed under rustest.
+THE DIAGNOSTIC THAT SEPARATES THE TWO POSSIBILITIES, and the next step for this target: re-run \
+with `-n 1`. If it completes, this is a target-side parallelism hazard and the answer is a \
+pinned `-n 1` plus a ledger entry, exactly like its two siblings. If it still stalls, it is a \
+deadlock in rustest's own pool and a Phase 4 blocker. Those have very different costs and the \
+evidence so far does not separate them. NOT attempted in Task 1c: the directive for the \
+re-sweep is to report new mechanisms, not to fix or chase them.
 
-rustest DEFECT. Trivial fix (three attribute assignments), outsized payoff. PHASE-4-FOLLOWUP."""
+A HARNESS DEFECT COMPOUNDS IT and cost this task most of its wall clock. The `timeout_s` fired \
+and could not recover: `subprocess.run(capture_output=True, timeout=...)` kills only the \
+DIRECT child, and the orphaned workers keep the inherited stdout/stderr pipes open, so the \
+reap blocks forever and no verdict is ever written. Two earlier attempts produced an empty log \
+rather than a timeout verdict, which is why the stall was misread as slowness for most of the \
+task. The run had finally to be killed by pid. PHASE-4-FOLLOWUP."""
 
 [divergence.global]
 # NO `exit_code` ENTRY ON PURPOSE. Both runners exit 2, so the grader raises no exit-code

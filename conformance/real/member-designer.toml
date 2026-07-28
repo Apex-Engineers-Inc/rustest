@@ -113,6 +113,36 @@ id_policy = "strip_params"
 
 
 [divergence.ids]
+# EMPTY as of Phase 4 Task 1c -- this target is now a clean MATCH of all 6 132 ids:
+# 6084 passed / 37 skipped / 10 xfailed / 1 xpassed on BOTH runners, exit 0 on both.
+#
+# What used to be here: the four residuals Task 1 ledgered UNADJUDICATED and Task 1b
+# adjudicated to two mechanisms. All four are closed.
+#
+# * `test_flange_bracing.py` (2 tests) -- MECHANISM M9a. `ApproxBase.__array_ufunc__ =
+#   None` / `__array_priority__ = 100` are the entire reason `ndarray == approx(scalar)`
+#   returns a bool; without them numpy won the dispatch and produced an elementwise bool
+#   ARRAY, so the enclosing assert raised `ValueError: The truth value of an array ... is
+#   ambiguous`. Measured in THIS venv during Task 1b: `np.array([5.,5.,5.]) ==
+#   pytest.approx(5.0)` -> True; the same against the old rustest.approx -> `array([True,
+#   True, True])`.
+# * `test_link_helpers.py` (1 test) -- MECHANISM M9b. pytest's signature defaults `rel`
+#   and `abs` to `None` meaning 'unspecified', resolved by `ApproxScalar.tolerance`; this
+#   repo's own `def approx(expected, abs_tol=None): return pytest.approx(expected,
+#   abs=abs_tol)` therefore passes `abs=None` on every call. rustest defaulted them to
+#   numbers and took the `None` literally: `TypeError: '>' not supported between
+#   'NoneType' and 'float'`. It only fired for values that are NOT bit-identical, because
+#   exact equality short-circuits first -- which is why one test tripped it and hundreds
+#   of sibling approx assertions did not.
+# * `test_framing_2d_member.py` (1 test) -- MECHANISM M2, the length-1 sequence unpack.
+#   Found here FIRST and then confirmed in three unrelated suites. A length-1 list holding
+#   a `LineString` was unpacked, so the test received the bare geometry where pytest hands
+#   it the list, and the failure surfaced only because the wrong value was un-iterable.
+#
+# `rustest.approx` is now a port of `_pytest/python_api.py` rather than a lookalike, and
+# `parametrize` a port of `ParameterSet._for_parametrize`; both are pinned by
+# `conformance/corpus/builtins/approx-numeric` and
+# `conformance/corpus/parametrize/single-argname-unpack`.
 # Everything this section used to hold is fixed. The four collection errors that stopped the
 # whole suite (`pytestmark = pytest.mark.asyncio`), the 120 `TestAPIEndpoints` failures
 # (`indirect=`), the 9 xfails that never applied (`pytest.param(marks=...)`, on a *fixture's*
@@ -123,67 +153,8 @@ id_policy = "strip_params"
 # exactly two mechanisms, both reproduced in isolation (single-file/single-class runs, so
 # neither is order-dependent, neither is environmental, and both are rustest defects).
 
-"tests/test_lib/test_designs/test_steel/test_flange_bracing.py::*" = """\
-ADJUDICATED (Phase 4 Task 1b), 2 tests. MECHANISM: `rustest.approx` is a simplified \
-reimplementation, not a port of `_pytest.python_api.approx`, and it omits pytest's \
-`ApproxBase.__array_ufunc__ = None` / `__array_priority__ = 100`. Those two attributes are \
-the entire reason `ndarray == approx(scalar)` works under pytest: they make numpy's \
-`ndarray.__eq__` return NotImplemented so Python falls back to approx's own `__eq__`, which \
-returns a plain bool. Without them numpy wins the dispatch and yields an elementwise bool \
-ARRAY, so the enclosing `assert` raises `ValueError: The truth value of an array with more \
-than one element is ambiguous`. Both tests assert `<ndarray> == approx(<float>)` \
-(`res.primary.available[sagging]`, `res.primary.cb`). Verified directly in this target's own \
-venv: `np.array([5.,5.,5.]) == pytest.approx(5.0)` -> `True`, `... == rustest.approx(5.0)` -> \
-`array([True, True, True])`. Reproduces running the one file alone. rustest DEFECT, \
-fix = port approx. PHASE-4-FOLLOWUP."""
-
-"tests/test_lib/test_helpers/test_link_helpers.py::TestAnalyticFootprintHelpers::*" = """\
-ADJUDICATED (Phase 4 Task 1b), 1 test. SAME MECHANISM as the flange_bracing entry above -- \
-`rustest.approx` vs `_pytest.python_api.approx` -- a different facet of it. pytest's \
-signature is `approx(expected, rel=None, abs=None, nan_ok=False)`, where None means \
-"unspecified"; rustest's is `approx(expected, rel=1e-6, abs=1e-12)` and takes whatever it is \
-handed literally. This suite's own helper is `def approx(expected, abs_tol=None): return \
-pytest.approx(expected, abs=abs_tol)`, so it passes `abs=None` explicitly on every call. \
-rustest then evaluates `max(self.rel * max(|actual|,|expected|), self.abs)` with `self.abs is \
-None` -> `TypeError: '>' not supported between instances of 'NoneType' and 'float'`. It only \
-surfaces when the two floats are NOT bit-identical, because `_is_close` short-circuits on \
-exact equality first -- which is why one test in this suite trips it and hundreds of other \
-bare-approx assertions do not. Probed facets of the same gap: `rel=None` -> `TypeError: \
-unsupported operand type(s) for *`, `nan_ok=True` -> `TypeError: unexpected keyword \
-argument`. Reproduces running the one class alone. rustest DEFECT, same fix. \
-PHASE-4-FOLLOWUP."""
-
-"tests/test_lib/test_models/test_analysis/test_framing_2d_member.py::TestJackStudReleases::*" = """\
-ADJUDICATED (Phase 4 Task 1b), 1 test (the `[header_lines1]` case; `[header_lines0]` passes). \
-MECHANISM, and it is a DIFFERENT and more serious one than the approx entries: **rustest \
-unpacks a length-1 sequence argvalue under a SINGLE argname.** The declaration is \
-`@pytest.mark.parametrize("header_lines", [None, [LineString(...)]])`; pytest binds \
-`header_lines = [LineString(...)]` (a list), rustest binds `header_lines = LineString(...)` \
-(the bare element), and the suite's `for line in lines` then raises `TypeError: 'LineString' \
-object is not iterable`. pytest unpacks an argvalue into multiple parameters only when \
-`len(argnames) > 1`; rustest evidently unpacks whenever `len(value) == len(argnames)`, and \
-the two rules collide at exactly one argname + one element. Minimal repro, single argname \
-`x`, values `[None, ["a"], ["a","b"], ("t",)]`: pytest binds `None / ['a'] / ['a','b'] / \
-('t',)`, rustest binds `None / 'a' / ['a','b'] / 't'`. Note `["a","b"]` is unaffected (len 2 \
-!= 1 argname), so this is specifically the length-1 case. The dangerous property is that it \
-is usually SILENT -- a test receives the wrong value and still passes -- and it was only \
-visible here because the wrong value happened to be un-iterable. Reproduces running the one \
-class alone. rustest DEFECT, fix = gate unpacking on `len(argnames) > 1`. PHASE-4-FOLLOWUP."""
 [divergence.global]
-exit_code = """\
-rustest exits 1 (tests failed) where pytest exits 0, which is the consequence of the 4 \
-failing tests named in the per-id entries above and of nothing else."""
-tally = """\
-Under `-n 1` (what the gate runs): pytest 6084 passed / 37 skipped / 10 xfailed / 1 xpassed \
-/ 0 failed / 0 error; rustest 6080 passed / 4 failed and every other bucket identical. 6132 \
-ids on both sides -- the same set, the same spelling. The four failures are the four per-id \
-entries above and nothing else.
-
-UNDER THE DEFAULT WORKER POOL, and this is the reportable part: hundreds of errors, almost \
-all `pymongo.errors.OperationFailure: The database is currently being dropped`. This \
-suite's fixtures drop and recreate ONE shared MongoDB database, and rustest gives each \
-worker its own session-scoped fixtures, so one worker's teardown lands inside another \
-worker's transaction. It is not a compat defect -- rustest runs the tests the suite asked \
-for -- but it is a real cost of running a shared-database suite under a parallel runner, \
-and the fix available today is `-n 1`, which is what `[run] rustest_args` pins. \
-KNOWN-LIMITATION."""
+# EMPTY as of Phase 4 Task 1c: exit codes agree (0 on both) and the tally agrees exactly.
+# The `-n 1` this target pins in [run] is unchanged and is NOT a compat divergence -- it is
+# a real cost of running an order-dependent suite (a shared test database) under a parallel
+# runner, the same class as jsonschema's `test_import_cli`, and it is recorded in [run].
