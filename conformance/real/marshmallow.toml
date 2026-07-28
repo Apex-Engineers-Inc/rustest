@@ -21,7 +21,14 @@ setup = [
   ["uv", "venv", "--python", "3.14", "{venv}"],
   # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2), for the same
   # reason every other OSS target in this corpus is.
-  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "simplejson"],
+  # `tzdata` is NOT in marshmallow's own dependency-groups, and it is not a compensation for
+  # anything rustest does: `tests/base.py` does `ZoneInfo("America/Chicago")` at module import,
+  # and Windows ships no IANA time-zone database, so on this platform BOTH runners die in
+  # conftest import with `ZoneInfoNotFoundError` (measured: pytest exit 4, no report at all,
+  # which the harness correctly reports as EE rather than a vacuous match). On Linux the OS
+  # supplies the same data. This makes the suite runnable at all; it is symmetric across the
+  # two runners by construction, since it is installed once into the one shared venv.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "simplejson", "tzdata"],
   ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
   [
     "uv",
@@ -52,5 +59,37 @@ timeout_s = 1800
 id_policy = "exact"
 
 [divergence.ids]
+"tests/test_deserialization.py::TestFieldDeserialization::test_invalid_datetime_deserialization*" = """\
+NOT A RUSTEST DIVERGENCE -- the target suite is not deterministic. Two of this test's \
+parameter values are `dt.datetime.now().strftime("%H:%M:%S %Y-%m-%d")` and \
+`dt.datetime.now().strftime("%m-%d-%Y %H:%M:%S")` (tests/test_deserialization.py:446-447), \
+evaluated at IMPORT time, so the node id carries the wall-clock second of whichever process \
+imported the module. The gate runs pytest first and rustest second, seconds apart, so the two \
+runs legitimately produce different ids: e.g. pytest `[03:07:59 2026-07-28]` vs rustest \
+`[03:08:07 2026-07-28]`. That arrives as 2 ids "missing from rustest" and 2 "extra in \
+rustest", all four `passed` on their own side. Nothing about rustest is being measured here; \
+the same diff appears between two consecutive pytest runs. Deliberately NOT worked around \
+(no id normalization, no freezegun): the corpus's rule is that the gate reports what the \
+runners actually emit."""
+
+"tests/test_decorators.py::TestValidatesSchemaDecorator::test_validator_nested_many_pass_original_and_pass_collection*" = """\
+KNOWN MECHANISM, second independent sighting: rustest unpacks a length-1 sequence argvalue \
+under a SINGLE argname. Same defect Member Designer's `TestJackStudReleases` residual was \
+adjudicated to in this task -- found there first, confirmed here in an unrelated suite. The \
+declaration is `@pytest.mark.parametrize("data", ([{"foo": 1, "bar": 2}],))` \
+(tests/test_decorators.py:457): one argname, and the single argvalue is the length-1 LIST \
+`[{"foo": 1, "bar": 2}]`. pytest binds `data` to that list; rustest unpacks it and binds \
+`data` to the bare dict. The test then calls `schema.validate({"nested": data})` with a dict \
+where a list of one dict was intended, marshmallow builds a differently-shaped error \
+structure, and `error["_schema"]` raises `TypeError: list indices must be integers` / \
+`string indices must be integers`. 2 of the test's 2 cases fail. pytest passes both. \
+Reproduces with the single test file alone (`-k` on the one test): not order-dependent. \
+rustest DEFECT; fix is to gate unpacking on `len(argnames) > 1`, which closes this and the \
+Member Designer sighting together. PHASE-4-FOLLOWUP."""
 
 [divergence.global]
+tally = """\
+pytest 1177 passed / 1 failed; rustest 1175 passed / 3 failed. Exit codes AGREE (both 1) -- \
+the suite has one genuine self-failure on both sides. The 2-test delta is entirely the \
+length-1-sequence-unpacking defect ledgered above; the datetime-id churn moves no counts \
+because both of those tests pass on their own side."""

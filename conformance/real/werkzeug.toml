@@ -21,7 +21,14 @@ test_paths = ["tests"]
 # addopts key at all, see below), so presumably applied per-test via decorator/marker in
 # individual files; confirm at gate time whether any test actually needs it to terminate.
 setup = [
-  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # 3.13, NOT 3.14, for exactly the reason jinja2.toml records: this machine's uv-managed
+  # CPython 3.14.2 has a broken `_ssl` (`ImportError: DLL load failed while importing _ssl`,
+  # missing libcrypto-3-x64.dll). werkzeug's `tests/conftest.py` does a bare `import ssl` at
+  # line 8, so on 3.14 the conftest itself fails to import and BOTH runners exit 4 having
+  # collected nothing -- measured, and reported by the harness as EE rather than a vacuous
+  # match. This is an interpreter-install fault on this box, not a rustest or werkzeug
+  # property, and the fix is a working interpreter; 3.13 is the one that has one.
+  ["uv", "venv", "--python", "3.13", "{venv}"],
   # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
   [
     "uv",
@@ -45,7 +52,7 @@ setup = [
     "{py}",
     "--reinstall-package",
     "rustest",
-    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+    "{wheels}/rustest-0.16.2-cp313-cp313-win_amd64.whl",
   ],
 ]
 pythonpath = []
@@ -67,5 +74,49 @@ timeout_s = 1800
 id_policy = "exact"
 
 [divergence.ids]
+"tests/test_datastructures.py::test_range_to_header*" = """\
+KNOWN MECHANISM, third independent sighting: rustest unpacks a length-1 sequence argvalue \
+under a SINGLE argname (found in Member Designer, confirmed in marshmallow, confirmed again \
+here). `@pytest.mark.parametrize("ranges", ([(0, 1), (-5, None)], [(5, None)]))` \
+(tests/test_datastructures.py:1273). pytest binds `ranges` to each LIST; rustest unpacks the \
+length-1 one and binds the bare tuple. The test then asserts `r.ranges == ranges`, comparing \
+werkzeug's parsed `[(5, None)]` against rustest's `(5, None)` -- list != tuple, fail.
+
+This suite is the cleanest available PROOF of the mechanism, because the failure set predicts \
+itself exactly: `ranges0` is `[(0, 1), (-5, None)]`, length 2, unaffected and PASSES; \
+`ranges1` is `[(5, None)]`, length 1, and FAILS. See the companion entry below for the same \
+prediction over four cases. rustest DEFECT. PHASE-4-FOLLOWUP."""
+
+"tests/test_datastructures.py::test_range_validates_ranges*" = """\
+SAME KNOWN MECHANISM as `test_range_to_header` above, and the confirming case. \
+`@pytest.mark.parametrize("ranges", ([(0, 0)], [(None, 1)], [(1, 0)], [(0, 1), (-5, 10)]))` \
+(tests/test_datastructures.py:1280-1282). The first three argvalues are length-1 lists and \
+all three FAIL under rustest (`ranges0`, `ranges1`, `ranges2`); the fourth is a length-2 list \
+and PASSES (`ranges3` is not in the divergence set). Four cases, one rule, four correct \
+predictions -- there is no remaining ambiguity about what this mechanism is. rustest DEFECT; \
+fix is to gate unpacking on `len(argnames) > 1`. PHASE-4-FOLLOWUP."""
+
+"tests/test_utils.py::test_import_string_provides_traceback" = """\
+NEW MECHANISM (first sighting in this sweep): `ExceptionInfo.traceback` is not pytest's \
+`Traceback`. pytest's `_pytest._code.code.ExceptionInfo.traceback` returns a \
+`_pytest._code.code.Traceback`, which is a **list subclass** whose elements are \
+`TracebackEntry` objects, so `for line in excinfo.traceback` walks the frames. rustest's \
+returns the raw CPython `types.TracebackType`, which is not iterable at all. The test does \
+`traceback = "".join(str(line) for line in baz_exc.traceback)` (tests/test_utils.py:209) and \
+gets `TypeError: 'traceback' object is not iterable`. Verified side by side in this target's \
+venv: pytest -> `Traceback`, mro `[Traceback, list, object]`, iterable True; rustest -> \
+`traceback`, iterable False. Reproduces with the one file alone -- not order-dependent.
+
+Related history: the jinja2 ledger records that `ExceptionInfo`'s `.tb` and `.match()` \
+readers were added in commit bb03e06. `.traceback` exists but returns the wrong TYPE, which \
+is why that work did not catch this. rustest DEFECT, fix = port `Traceback`/`TracebackEntry`. \
+PHASE-4-FOLLOWUP."""
 
 [divergence.global]
+exit_code = """\
+rustest exits 1 where pytest exits 0, entirely as a consequence of the 5 failing tests \
+ledgered above (4 length-1-unpack, 1 ExceptionInfo.traceback)."""
+tally = """\
+pytest 967 passed / 2 skipped / 0 failed; rustest 962 passed / 2 skipped / 5 failed. Same 969 \
+ids on both sides, identical spelling, identical skips. The 5-test delta is exactly the 5 \
+per-id entries above."""

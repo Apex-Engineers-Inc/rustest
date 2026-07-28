@@ -52,5 +52,31 @@ timeout_s = 1800
 id_policy = "exact"
 
 [divergence.ids]
+"test_traceback.py::test_suppress" = """\
+BY DESIGN, and it is the compat layer's defining property rather than a defect. The test is \
+`Traceback(suppress=[pytest, "foo"]); assert "pytest" in traceback.suppress[0]` \
+(tests/test_traceback.py:286-293). rich resolves a MODULE passed to `suppress=` into the \
+directory holding it (`os.path.dirname(module.__file__)`), so the assertion is really about \
+where the `pytest` module object lives on disk. Under rustest, `sys.modules["pytest"]` is \
+`rustest.compat.pytest` -- rustest shadows the real pytest package even when, as here, real \
+pytest IS installed in the venv, because the suite's `pytest.fixture` / `pytest.mark` / \
+`pytest.raises` have to be rustest's for rustest to run the suite at all. The directory is \
+therefore `...\\site-packages\\rustest\\compat`, which does not contain the substring \
+"pytest", and the assert fails. Measured: `AssertionError: assert 'pytest' in \
+'...\\site-packages\\rustest\\compat'`. Reproduces with the one file alone -- not \
+order-dependent.
+
+There is no fix available that keeps the compat layer: any shim that makes `pytest.__file__` \
+point at real pytest would also hand the suite real pytest's decorators. This is the one \
+class of test rustest structurally cannot pass -- a test that introspects the IDENTITY of the \
+pytest module rather than using its API. Worth stating plainly in the compat docs; not worth \
+a code change. KNOWN-LIMITATION."""
 
 [divergence.global]
+exit_code = """\
+rustest exits 1 where pytest exits 0, entirely because of the single `test_suppress` failure \
+ledgered above."""
+tally = """\
+pytest 984 passed / 23 skipped; rustest 983 passed / 1 failed / 23 skipped. The same 1007 ids \
+on both sides with identical spelling, the same 23 skips, and the one-test delta is \
+`test_suppress` and nothing else."""

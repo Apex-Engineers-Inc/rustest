@@ -74,8 +74,52 @@ timeout_s = 1800
 # tuples and locale strings -- the same value-kinds click/jinja2 already ledgered as
 # spelling-only id divergences under rustest's parametrize-id generation. Expect the same
 # mechanism here; verify at gate time and relax from "exact" if so.
-id_policy = "strip_params"
+id_policy = "exact"
 
 [divergence.ids]
 
 [divergence.global]
+# ============================================================================================
+# BLOCKED-BY-CAPABILITY (Phase 4 Task 1b). This target does not grade, and the reason is worth
+# more than a green row would have been.
+#
+# rustest cannot run this suite AT ALL. tox.ini's `[pytest]` section -- the config pytest
+# actually resolves to here, since pyproject.toml misspells the table as `[tool.pytest]` --
+# carries `addopts = --color=yes --doctest-modules`. Both runners read that ini for themselves
+# (the harness retired the addopts replay in Phase 4 Task 1). pytest honours it; rustest
+# rejects it:
+#
+#   rustest: error: unrecognized arguments: --doctest-modules
+#     inifile: .../humanize/tox.ini
+#     rootdir: .../humanize
+#
+# exit 4, no report written, so the harness reports EE -- correctly, because no comparison
+# happened. That is the honest status and it is deliberately left standing rather than papered
+# over.
+#
+# Two things make this sharper than a plain "unimplemented flag":
+#
+# 1. THE FLAG IS INERT HERE. Measured on this clone: `pytest --collect-only -q tests` collects
+#    **784** tests with the repo's addopts, and **784** with `-o addopts=--color=yes` (i.e.
+#    with --doctest-modules removed). humanize's `tests/` modules carry no doctests, so the
+#    flag changes nothing about what is collected -- and it still costs the entire suite.
+#
+# 2. THERE IS NO ESCAPE HATCH. rustest's refusal is itself right: `--doctest-modules` changes
+#    what gets COLLECTED, and silently ignoring it would manufacture a quiet divergence
+#    (rustest's `IGNORED_PYTEST_FLAGS` table is deliberately limited to reporting-only flags).
+#    The gap is that rustest implements neither `--doctest-modules` NOR pytest's
+#    `-o`/`--override-ini`, and it has no `-c <inifile>` either, so there is no way to tell it
+#    "read this project's config except that key". pytest has both levers; rustest has
+#    neither. Nothing the harness can put in `pytest_args`/`rustest_args` fixes it, because
+#    rustest fails while parsing the ini it found by walking up from its own cwd, and the
+#    target repo is read-only to this harness.
+#
+# WILD-READINESS IMPACT, which is the reason this suite stays in the slate as a blocked row:
+# any project with a collection-changing flag in its ini `addopts` is a hard block, not a
+# degraded run. `--doctest-modules` in particular is a common pattern. Fixing EITHER lever
+# unblocks this class: implement `--doctest-modules`, or implement `-o/--override-ini` so a
+# caller can neutralize the key. NEW MECHANISM, PHASE-4-FOLLOWUP.
+#
+# The config is kept (not deleted) so the blocker is re-testable the moment either lands: run
+# `python -m conformance --real humanize` and it grades itself.
+# ============================================================================================
