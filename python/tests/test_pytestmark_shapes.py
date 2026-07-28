@@ -151,3 +151,46 @@ def test_module_level_parametrize_is_still_refused() -> None:
     """
     entry = native_mark.parametrize("x", [1, 2])
     assert not hasattr(entry, "name")
+
+
+def test_called_skip_is_a_mark_value() -> None:
+    """``pytestmark = pytest.mark.skip(reason=...)`` — matplotlib's shape.
+
+    The compat surface routes ``skip`` to its own decorator so v1's Rust collector can read
+    ``__rustest_skip__``; the *called* form returned that function's inner closure, which
+    answers no ``.name``/``.args``/``.kwargs``, so the module was refused with ``malformed
+    pytestmark entry``. It is now a ``SkipMarkDecorator`` — a real ``MarkDecorator`` whose
+    ``__call__`` writes the attribute instead of a second mark entry.
+    """
+    from rustest.compat import pytest as compat_pytest
+    from rustest.decorators import SkipMarkDecorator
+
+    entry = compat_pytest.mark.skip(reason="later")
+    assert isinstance(entry, SkipMarkDecorator)
+    assert _spec(entry) == ("skip", (), {"reason": "later"})
+
+
+def test_bare_skip_is_still_a_mark_value_and_still_decorates() -> None:
+    from rustest.compat import pytest as compat_pytest
+
+    assert _spec(compat_pytest.mark.skip) == ("skip", (), {})
+
+    def victim() -> None:
+        pass
+
+    decorated = compat_pytest.mark.skip(reason="why")(victim)
+    assert decorated is victim
+    assert victim.__rustest_skip__ == "why"
+
+
+def test_a_decorated_skip_records_exactly_one_skip() -> None:
+    """Writing ``__rustest_skip__`` *and* a ``__rustest_marks__`` entry would make
+    ``_mark_specs`` report the same skip twice."""
+    from rustest.compat import pytest as compat_pytest
+
+    def victim() -> None:
+        pass
+
+    _ = compat_pytest.mark.skip(reason="once")(victim)
+    assert _marks(victim) == []
+    assert victim.__rustest_skip__ == "once"

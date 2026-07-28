@@ -1336,13 +1336,13 @@ def test_ready_declares_the_version_the_worker_speaks(tmp_path: Path) -> None:
     assert response == {"op": "ready", "protocol_version": PROTOCOL_VERSION}
     # Pinned as a literal, not read from the constant: this and `PROTOCOL_VERSION` in
     # `src/v2/protocol.rs` must move together, so bumping one alone has to fail here.
-    assert PROTOCOL_VERSION == 6
+    assert PROTOCOL_VERSION == 7
 
 
 def test_ready_line_matches_the_rust_golden() -> None:
     assert (
         encode_response({"op": "ready", "protocol_version": PROTOCOL_VERSION})
-        == '{"op":"ready","protocol_version":6}'
+        == '{"op":"ready","protocol_version":7}'
     )
 
 
@@ -2048,12 +2048,35 @@ def test_apply_pythonpath_prepends_in_ini_order() -> None:
     """`for path in reversed(entries): sys.path.insert(0, ...)` -> `[a, b, *original]`."""
     from rustest._v2_worker import _apply_pythonpath
 
+    first, second = str(Path("/first")), str(Path("/second"))
     original = list(sys.path)
     try:
         applied = _apply_pythonpath(["/first", "/second"])
-        assert applied == ["/first", "/second"]
-        assert sys.path[:2] == ["/first", "/second"]
+        assert applied == [first, second]
+        assert sys.path[:2] == [first, second]
         assert sys.path[2:] == original
+    finally:
+        sys.path[:] = original
+
+
+def test_apply_pythonpath_normalises_the_wire_posix_to_native_separators() -> None:
+    """The wire is posix; `sys.path` must not be.
+
+    An entry inserted verbatim as `C:/repo/src` imports fine on Windows, but every module
+    found through it then carries a forward-slash `__file__`, which no longer compares equal
+    to the same path under pytest (which inserts `str(Path)`). Silent, and it was live on the
+    acceptance target. No-op on posix, which is why the assertion is written against
+    `os.sep` rather than against a literal.
+    """
+    from rustest._v2_worker import _apply_pythonpath
+
+    original = list(sys.path)
+    try:
+        applied = _apply_pythonpath(["/some/posix/dir"])
+        assert applied == [str(Path("/some/posix/dir"))]
+        assert all(os.sep in entry or "/" not in entry for entry in applied)
+        if os.sep == "\\":
+            assert "/" not in applied[0]
     finally:
         sys.path[:] = original
 

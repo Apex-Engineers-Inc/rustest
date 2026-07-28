@@ -66,9 +66,17 @@ def test_fail_pytrace_parameter():
         fail("Test failure", pytrace=False)
 
 
-def test_failed_exception_is_exception():
-    """Test that Failed is a proper Exception subclass."""
-    assert issubclass(Failed, Exception)
+def test_failed_exception_is_a_base_exception():
+    """`Failed` is a **BaseException**, as pytest's is.
+
+    `_pytest/outcomes.py` declares `class OutcomeException(BaseException)` and
+    `class Failed(OutcomeException)` so that a test body's `except Exception:` cannot
+    swallow the runner's own "this test failed" signal. Measured before the change: a
+    `raises` block that did not raise, wrapped in `except Exception`, reported **passed**
+    under rustest and **failed** under pytest.
+    """
+    assert issubclass(Failed, BaseException)
+    assert not issubclass(Failed, Exception)
 
 
 def test_failed_exception_message():

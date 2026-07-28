@@ -219,14 +219,24 @@ class TestPytestParam:
         assert result.id == "test_case"
         assert result.values == (1, 2)
 
-    def test_param_with_marks_warns(self):
-        """Test that param() with marks emits a warning."""
+    def test_param_with_marks_is_implemented_and_no_longer_warns(self):
+        """`marks=` used to be accepted, warned about and ignored.
+
+        Phase 4 Task 1 implemented it (`_pytest/mark/structures.py::ParameterSet.param`), so
+        the warning is gone and the marks are stored normalised. A value that is not a mark
+        is now a `TypeError` rather than a silently kept string.
+        """
+        from rustest import mark
+
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            _ = param(1, marks="some_mark")
+            one = param(1, marks=mark.xfail(reason="known"))
 
-            assert len(w) == 1
-            assert "marks are not yet supported" in str(w[0].message)
+        assert w == []
+        assert [m.name for m in one.marks] == ["xfail"]
+
+        with pytest.raises(TypeError, match="marks must be a mark or a collection of marks"):
+            _ = param(1, marks="some_mark")
 
     def test_param_in_parametrize(self):
         """Test that param() works with parametrize decorator."""
@@ -630,10 +640,22 @@ class TestAllExceptionTypesExported:
         assert hasattr(pytest_compat, "XFailed")
 
     def test_exceptions_are_exceptions(self):
-        """Test that all exception types inherit from Exception."""
+        """The outcome exceptions are catchable, and `Failed` is a **BaseException**.
+
+        pytest declares `class OutcomeException(BaseException)` and `class
+        Failed(OutcomeException)` precisely so a test body's `except Exception:` cannot
+        swallow the runner's own "this test failed" signal. rustest's `Failed` derived from
+        `Exception` until Phase 4 Task 1's review measured what that costs: a `raises` block
+        that did not raise reported **passed** here and **failed** under pytest.
+
+        `Skipped`/`XFailed` are left on `Exception` for now -- v1's collector and the compat
+        shim both catch them broadly, and v1 is deleted in Task 2, which is the right moment
+        to align the rest of the hierarchy.
+        """
         from rustest.compat.pytest import Failed, Skipped, XFailed
 
-        assert issubclass(Failed, Exception)
+        assert issubclass(Failed, BaseException)
+        assert not issubclass(Failed, Exception)
         assert issubclass(Skipped, Exception)
         assert issubclass(XFailed, Exception)
 

@@ -59,7 +59,7 @@ except (
 from rustest.decorators import (
     fixture as _rustest_fixture,
     parametrize as _rustest_parametrize,
-    skip_decorator as _rustest_skip_decorator,
+    SkipMarkDecorator as _SkipMarkDecorator,
     BareOrFactoryMark as _BareOrFactoryMark,
     mark as _rustest_mark,
     raises as _rustest_raises,
@@ -727,16 +727,20 @@ class _PytestMarkCompat:
 
     def __init__(self) -> None:
         super().__init__()
+
         # `skip` cannot simply be delegated to `_rustest_mark`: the native `mark.skip` only
         # records a mark dict in `__rustest_marks__`, and v1's Rust collector reads skips
         # from the `__rustest_skip__` attribute alone (src/discovery.rs::collect_tests).
         # The compat surface therefore keeps its own routing to `skip_decorator`, wrapped in
         # the same bare-or-factory discrimination as the rest -- being a plain *method* is
         # what made the bare `@pytest.mark.skip` replace the test with a closure (#136).
+        def _skip_factory(reason: str | None = None) -> _SkipMarkDecorator:
+            return _SkipMarkDecorator("skip", (), {"reason": reason})
+
         self._skip = _BareOrFactoryMark(
             "skip",
-            _rustest_skip_decorator,
-            bare=_rustest_skip_decorator(reason=None),
+            _skip_factory,
+            bare=_SkipMarkDecorator("skip", (), {"reason": None}),
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -798,18 +802,10 @@ def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any)
         A ParameterSet object that will be handled by parametrize
 
     Note:
-        The 'marks' parameter is accepted but not yet functional.
-        Tests with marks will run normally but marks won't be applied.
+        ``marks`` is applied to **that parameter set alone**, as in pytest
+        (`_pytest/mark/structures.py::ParameterSet.param`). It was accepted and ignored
+        (with a warning) until Phase 4 Task 1.
     """
-    if marks is not None:
-        import warnings
-
-        warnings.warn(
-            "pytest.param() marks are not yet supported in rustest pytest-compat mode. The test will run but marks will be ignored.",
-            UserWarning,
-            stacklevel=2,
-        )
-
     return ParameterSet(values=values, id=id, marks=marks)
 
 

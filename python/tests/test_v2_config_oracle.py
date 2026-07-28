@@ -381,3 +381,40 @@ def test_an_absolute_pythonpath_entry_replaces_the_base(tmp_path: Path) -> None:
     _write(root / "conftest.py", CONFTEST)
     resolved = _assert_agrees_with_pytest(root, ["tests"])
     assert [_norm(p) for p in resolved["pythonpath"]] == [_norm(str(absolute))]
+
+
+# --------------------------------------------------------------------------------------
+# The other half of `pythonpath`: what the *runner* puts on `sys.path`.
+# --------------------------------------------------------------------------------------
+
+
+def test_pythonpath_reaches_sys_path_with_the_same_spelling_pytest_uses(tmp_path: Path) -> None:
+    """Differential on `sys.path[0]` and on the imported module's `__file__`.
+
+    pytest inserts `str(path)` for a `pathlib.Path` (`Config._configure_python_path`), i.e.
+    **native** separators. rustest carries the entry over the worker protocol as posix like
+    every other path, and inserting that verbatim imports fine on Windows but leaves every
+    module found through it with a forward-slash `__file__` -- which then compares unequal
+    to the same path under pytest for any `relative_to`/string check a suite does. Silent,
+    and it was live on the acceptance target until Phase 4 Task 1's review.
+    """
+    root = tmp_path / "sep_project"
+    _write(root / "pytest.ini", "[pytest]\npythonpath = src\n")
+    _write(root / "src" / "seplib" / "__init__.py", "VALUE = 1\n")
+    _write(
+        root / "tests" / "test_sep.py",
+        'import seplib\n\n\ndef test_sep():\n    print("SEPPROBE", repr(seplib.__file__))\n',
+    )
+
+    def _probe(argv: list[str]) -> str:
+        proc = subprocess.run(argv, cwd=str(root), capture_output=True, text=True, check=False)
+        for line in (proc.stdout + proc.stderr).splitlines():
+            if line.strip().startswith("SEPPROBE"):
+                return line.split("SEPPROBE", 1)[1].strip()
+        raise AssertionError(f"probe printed nothing: {proc.stdout}{proc.stderr}")
+
+    oracle = _probe([sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "-s"])
+    ours = _probe([sys.executable, "-m", "rustest", "-q", "-s"])
+
+    assert _norm(oracle.strip("'\"")) == _norm(ours.strip("'\"")), f"{oracle} vs {ours}"
+    assert (os.sep in ours) or ("/" not in ours), ours

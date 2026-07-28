@@ -34,3 +34,17 @@ class TestBox:
 
     def test_class_mark_applies(self):
         assert False
+
+
+class TestSkipAsAValue:
+    """`pytestmark = pytest.mark.skip(reason=...)` -- matplotlib's shape.
+
+    The compat surface routes `skip` to its own decorator so v1's Rust collector can read
+    `__rustest_skip__`; the *called* form used to return that function's inner closure,
+    which answers no `.name`/`.args`/`.kwargs`, so the module was refused outright.
+    """
+
+    pytestmark = pytest.mark.skip(reason="skipped as a value")
+
+    def test_never_runs(self):
+        raise AssertionError("this body must not execute")

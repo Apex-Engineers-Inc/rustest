@@ -251,11 +251,24 @@ class MonkeyPatch:
         os.chdir(os.fspath(path))
 
     def undo(self) -> None:
+        """Reverse every recorded change, newest first.
+
+        Port of `_pytest/monkeypatch.py::MonkeyPatch.undo` (l. 322-350).
+
+        **One deliberate softening, and it is the `delattr` branch.** pytest calls
+        ``delattr(obj, name)`` bare: an attribute that was absent when it was patched and has
+        since been *removed by the test itself* makes pytest's undo raise ``AttributeError``.
+        This swallows that, because the alternative is a teardown error attributed to the
+        fixture rather than to the test that deleted the attribute, and the state pytest and
+        rustest end in is identical either way -- the attribute is gone, which is what undo
+        was asked to arrange. Noted rather than silently different: a suite that *relies* on
+        the raise (nothing plausibly does) would see a green teardown here.
+        """
         for obj, attr_name, original in reversed(self._setattrs):
             if original is _NOT_SET:
                 try:
                     delattr(obj, attr_name)
-                except AttributeError:  # pragma: no cover - defensive
+                except AttributeError:  # the test already removed it; see the docstring
                     pass
             else:
                 setattr(obj, attr_name, original)

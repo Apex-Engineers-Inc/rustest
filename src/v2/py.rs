@@ -352,6 +352,7 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
     keyword=None,
     mark_expr=None,
     fail_fast=false,
+    max_fail=0,
     last_failed_mode="none",
     no_capture=false,
     codeblocks=true,
@@ -368,6 +369,7 @@ pub fn v2_run(
     keyword: Option<String>,
     mark_expr: Option<String>,
     fail_fast: bool,
+    max_fail: usize,
     last_failed_mode: &str,
     no_capture: bool,
     codeblocks: bool,
@@ -378,6 +380,7 @@ pub fn v2_run(
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let options = RunOptions {
         fail_fast,
+        max_fail,
         last_failed: parse_last_failed(last_failed_mode)?,
         no_capture,
         codeblocks,

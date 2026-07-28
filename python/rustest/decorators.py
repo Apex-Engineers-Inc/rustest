@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import inspect
 import sys
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, overload, cast
+from typing import TYPE_CHECKING, Any, Final, ParamSpec, TypeVar, overload, cast
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -15,6 +15,47 @@ TFunc = TypeVar("TFunc", bound=Callable[..., Any])
 
 # Valid fixture scopes
 VALID_SCOPES = frozenset(["function", "class", "module", "package", "session"])
+
+
+def _normalize_param_marks(marks: Any) -> tuple[Any, ...]:
+    """One mark, an iterable of marks, or nothing -> a tuple.
+
+    Port of `_pytest/mark/structures.py::ParameterSet.param` (l. 60-73), which does
+    ``if isinstance(marks, MarkDecorator): marks = (marks,) else: assert isinstance(marks,
+    collections.abc.Collection)``. A bare (uncalled) `mark.slow` is a `BareOrFactoryMark`
+    here rather than a `MarkDecorator`, and it is just as legal a value, so the test is
+    "does it answer `.name`" rather than an isinstance against one class.
+    """
+    if marks is None:
+        return ()
+    if isinstance(getattr(marks, "name", None), str):
+        return (marks,)
+    if isinstance(marks, (list, tuple)):
+        return tuple(cast("Sequence[Any]", marks))
+    raise TypeError(f"marks must be a mark or a collection of marks, got {marks!r}")
+
+
+def _mark_payloads(marks: Sequence[Any]) -> list[dict[str, Any]]:
+    """Marks -> the ``{"name", "args", "kwargs"}`` dicts the worker already reads.
+
+    The same shape ``MarkDecorator.__call__`` writes into ``__rustest_marks__``, so
+    ``_v2_worker::_spec_from_mark_dict`` consumes a per-parameter mark with no new reader.
+    ``_normalize_args`` is deliberately not applied: it evaluates a *string* skipif condition
+    against a target function, and a parameter set has no target.
+    """
+    payloads: list[dict[str, Any]] = []
+    for mark in marks:
+        name = getattr(mark, "name", None)
+        if not isinstance(name, str):
+            raise TypeError(f"{mark!r} is not a mark")
+        payloads.append(
+            {
+                "name": name,
+                "args": tuple(getattr(mark, "args", ())),
+                "kwargs": dict(getattr(mark, "kwargs", {})),
+            }
+        )
+    return payloads
 
 
 class ParameterSet:
@@ -28,7 +69,16 @@ class ParameterSet:
         super().__init__()
         self.values = values
         self.id = id
-        self.marks = marks  # Currently not used, but stored for future support
+        #: The marks this **one parameter set** carries, normalised to a tuple.
+        #:
+        #: `_pytest/mark/structures.py::ParameterSet.param` accepts a single mark or an
+        #: iterable of them and stores `tuple(marks)`; `Metafunc.parametrize` then hands each
+        #: set's marks to the item built from it, so
+        #: `pytest.param(x, marks=pytest.mark.xfail(...))` xfails **that case alone**.
+        #: rustest stored the attribute and read it nowhere ("Currently not used, but stored
+        #: for future support") until Phase 4 Task 1's re-sweep measured the cost: 9 Apex
+        #: Member Designer tests reporting `failed` where pytest reports `xfailed`.
+        self.marks: tuple[Any, ...] = _normalize_param_marks(marks)
 
     def __repr__(self) -> str:
         return f"ParameterSet(values={self.values!r}, id={self.id!r})"
@@ -129,7 +179,7 @@ def fixture(
         # Handle fixture parametrization
         if params is not None:
             # Build parameter cases with IDs
-            param_cases = _build_fixture_params(params, ids)
+            param_cases = _build_fixture_params(params, ids, _fixture_id_name(f))
             setattr(f, "__rustest_fixture_params__", param_cases)
 
         return f
@@ -140,9 +190,19 @@ def fixture(
     return decorator
 
 
+def _fixture_id_name(func: object) -> str:
+    """The name a fixture's params are parametrized under — its own registered name."""
+    override = getattr(func, "__rustest_fixture_name__", None)
+    if isinstance(override, str):
+        return override
+    name = getattr(func, "__name__", None)
+    return name if isinstance(name, str) else "param"
+
+
 def _build_fixture_params(
     params: Sequence[Any],
     ids: Sequence[str] | Callable[[Any], str | None] | None,
+    fixture_name: str = "param",
 ) -> list[dict[str, Any]]:
     """Build fixture parameter cases with IDs.
 
@@ -172,59 +232,98 @@ def _build_fixture_params(
                 param_value.values[0] if len(param_value.values) == 1 else param_value.values
             )
 
+        # A fixture's params bind to the fixture's own name, which is what pytest passes as
+        # `argname` when it parametrizes one (`FixtureManager.pytest_generate_tests` calls
+        # `metafunc.parametrize(argname, fixturedef.params, ...)`), so the `<argname><index>`
+        # fallback reads `flavour0`/`flavour1` rather than `param0`/`param1`.
         case_id = _resolve_case_id(
             param_set_id=param_set_id,
             ids=ids,
             ids_is_callable=ids_is_callable,
             value=actual_value,
             index=index,
+            bound=[(fixture_name, actual_value)],
         )
 
-        cases.append({"id": case_id, "value": actual_value})
+        case: dict[str, Any] = {"id": case_id, "value": actual_value}
+        # A fixture's params take marks too -- `pytest.fixture(params=[pytest.param(x,
+        # marks=pytest.mark.xfail(...))])`. pytest reaches them through the same
+        # `ParameterSet`, because `FixtureManager.pytest_generate_tests` hands
+        # `fixturedef.params` straight to `metafunc.parametrize`, and Apex Member Designer's
+        # CL scenarios are exactly this shape: 9 tests reporting `failed` where pytest
+        # reports `xfailed`.
+        if isinstance(param_value, ParameterSet) and param_value.marks:
+            case["marks"] = _mark_payloads(param_value.marks)
+        cases.append(case)
 
     return cases
 
 
-def _generate_param_id(value: Any, index: int) -> str:
-    """Generate a readable ID for a parameter value.
+#: `_pytest/compat.py` l. 187-192 — every non-printable ASCII code point, plus the three
+#: whitespace escapes, mapped to their backslash form.
+_NON_PRINTABLE_ASCII: Final[dict[int, str]] = {
+    **{i: f"\\x{i:02x}" for i in range(128) if i not in range(32, 127)},
+    ord("\t"): "\\t",
+    ord("\r"): "\\r",
+    ord("\n"): "\\n",
+}
 
-    Args:
-        value: The parameter value
-        index: The index of the parameter
 
-    Returns:
-        A string ID for the parameter
+def _ascii_escaped(value: str | bytes) -> str:
+    """Port of `_pytest/compat.py::ascii_escaped` (l. 195-215).
+
+    Bytes are decoded with ``backslashreplace`` so every byte survives as an escape rather
+    than as whatever UTF-8 it happened to spell; strings go through ``unicode_escape``. The
+    translate table then replaces the non-printable ASCII the first step leaves behind.
     """
-    # Try to generate a readable ID from the value
-    if value is None:
-        return "None"
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        # Truncate long strings
-        if len(value) <= 20:
-            return value
-        return f"{value[:17]}..."
-    if isinstance(value, (list, tuple)):
-        seq_value = cast(list[Any] | tuple[Any, ...], value)
-        if len(seq_value) == 0:
-            return "empty"
-        # Try to create a short representation
-        items = [_generate_param_id(v, 0) for v in seq_value[:3]]
-        result = "-".join(items)
-        if len(seq_value) > 3:
-            result += f"-...({len(seq_value)})"
-        return result
-    if isinstance(value, dict):
-        dict_value = cast(dict[Any, Any], value)
-        if len(dict_value) == 0:
-            return "empty_dict"
-        return f"dict({len(dict_value)})"
+    if isinstance(value, bytes):
+        ret = value.decode("ascii", "backslashreplace")
+    else:
+        ret = value.encode("unicode_escape").decode("ascii")
+    return ret.translate(_NON_PRINTABLE_ASCII)
 
-    # Fallback to index-based ID
-    return f"param{index}"
+
+def _idval_from_value(value: Any) -> str | None:
+    """Port of `_pytest/python.py::IdMaker._idval_from_value` (l. 989-1007).
+
+    ``None`` means "this type has no id of its own", and the caller falls back to
+    ``<argname><index>``. That fallback is the rule rustest used to be missing: it invented a
+    value-derived name for containers (``dict(1)``, ``empty_dict``, ``1-2``) and
+    ``param<index>`` for everything else, where pytest says ``x0``/``v0``. 915 of click's ids
+    and 95 of jinja2's differed on nothing else.
+
+    The order is pytest's and matters twice over: ``bool`` is an ``int`` so it never reaches
+    the enum branch, and ``str``/``bytes`` are tested before everything because a ``str`` has
+    no ``__name__`` but plenty of objects do.
+    """
+    import enum
+    import re
+
+    if isinstance(value, (str, bytes)):
+        return _ascii_escaped(value)
+    if value is None or isinstance(value, (float, int, bool, complex)):
+        return str(value)
+    if isinstance(value, re.Pattern):
+        return _ascii_escaped(cast("re.Pattern[str]", value).pattern)
+    if isinstance(value, enum.Enum):
+        return str(value)
+    name = getattr(value, "__name__", None)
+    if isinstance(name, str):
+        # A class, a function, a module -- anything that names itself.
+        return name
+    return None
+
+
+def _generate_param_id(value: Any, index: int, argname: str = "param") -> str:
+    """One id component: the value's own spelling, or ``<argname><index>``.
+
+    Port of `_pytest/python.py::IdMaker._idval` minus the two hooks rustest has no equivalent
+    for (``ids=`` is applied by :func:`_resolve_case_id`, and there is no
+    ``pytest_make_parametrize_id``). The fallback is
+    ``IdMaker._idval_from_argname`` (l. 1023-1027): ``str(argname) + str(idx)``.
+    """
+    idval = _idval_from_value(value)
+    return idval if idval is not None else f"{argname}{index}"
 
 
 def _resolve_case_id(
@@ -234,6 +333,7 @@ def _resolve_case_id(
     ids_is_callable: bool,
     value: Any,
     index: int,
+    bound: Sequence[tuple[str, Any]] = (),
 ) -> str:
     """Resolve the ID for a parametrization case.
 
@@ -242,10 +342,27 @@ def _resolve_case_id(
     if param_set_id is not None:
         return param_set_id
     if ids is None:
-        return _generate_param_id(value, index)
+        # `"-".join(self._idval(val, argname, idx) for val, argname in zip(values, argnames))`
+        # -- `IdMaker._resolve_ids` l. 945-948. One component per **argname**, which is what
+        # makes the fallback `<argname><index>` rather than a single `param<index>` for the
+        # whole set.
+        return "-".join(_generate_param_id(item, index, name) for name, item in bound)
     if ids_is_callable:
-        generated_id = cast(Callable[[Any], str | None], ids)(value)
-        return str(generated_id) if generated_id is not None else _generate_param_id(value, index)
+        # **Per value, not per tuple.** `_pytest/python.py::IdMaker._idval` calls the
+        # `ids` callable with each individual argvalue and joins the results with `-`;
+        # rustest called it once with the whole tuple, so
+        # `ids=lambda v: f"<{v}>"` over `("a,b", [(1, "x")])` produced
+        # `[<(1, 'x')>]` where pytest produces `[<1>-<x>]`. A value the callable answers
+        # `None` for falls back to that *component's* generated id, again per value
+        # (`if id is None: ... else: return _idvalset(...)`).
+        maker = cast(Callable[[Any], str | None], ids)
+        parts: list[str] = []
+        for name, item in bound:
+            generated = maker(item)
+            parts.append(
+                str(generated) if generated is not None else _generate_param_id(item, index, name)
+            )
+        return "-".join(parts)
     return cast(Sequence[str], ids)[index]
 
 
@@ -301,7 +418,17 @@ def _cross_product_cases(
             # Combine the IDs with a hyphen separator
             combined_id = f"{existing_case['id']}-{new_case['id']}"
 
-            combined.append({"id": combined_id, "values": combined_values})
+            merged: dict[str, object] = {"id": combined_id, "values": combined_values}
+            # Per-parameter marks survive a cross product and **accumulate**: a case built
+            # from an xfailed outer value and a slow inner value carries both, which is what
+            # pytest produces (each `parametrize` contributes its set's marks to the item).
+            marks = [
+                *cast("Sequence[Any]", existing_case.get("marks", ())),
+                *cast("Sequence[Any]", new_case.get("marks", ())),
+            ]
+            if marks:
+                merged["marks"] = marks
+            combined.append(merged)
 
     return tuple(combined)
 
@@ -490,15 +617,21 @@ def _build_cases(
             else:
                 raise ValueError("Parametrized value does not match argument names")
 
+        # `zip(parameterset.values, self.argnames)`: pytest builds the id from the *bound*
+        # pairs, in argname order, which is what `data` already holds.
         case_id = _resolve_case_id(
             param_set_id=param_set_id,
             ids=ids,
             ids_is_callable=ids_is_callable,
             value=actual_case,
             index=index,
+            bound=[(name, data[name]) for name in names],
         )
 
-        case_payloads.append({"id": case_id, "values": data})
+        payload: dict[str, object] = {"id": case_id, "values": data}
+        if isinstance(case, ParameterSet) and case.marks:
+            payload["marks"] = _mark_payloads(case.marks)
+        case_payloads.append(payload)
     return tuple(case_payloads)
 
 
@@ -558,6 +691,34 @@ class AsyncioMarkDecorator(MarkDecorator):
             marked_method = MarkDecorator(self.name, self.args, self.kwargs)(method)
             setattr(marked, name, marked_method)
         return cast(TFunc, marked)
+
+
+class SkipMarkDecorator(MarkDecorator):
+    """``pytest.mark.skip``'s decorator, which is **also** a legal ``pytestmark`` value.
+
+    The compat surface cannot delegate ``skip`` to the native ``mark.skip``, because v1's
+    Rust collector reads skips from the ``__rustest_skip__`` attribute alone
+    (`src/discovery.rs::collect_tests`) and the native mark only records a dict in
+    ``__rustest_marks__``. Routing it to :func:`skip_decorator` instead solved that and
+    created a second problem, found in Phase 4 Task 1's review: the *called* form
+    ``pytest.mark.skip(reason="...")`` returned that function's inner **closure**, which
+    answers no ``.name``/``.args``/``.kwargs``, so ``pytestmark = pytest.mark.skip(reason=…)``
+    — matplotlib's shape — refused the whole module with ``malformed pytestmark entry``.
+
+    Same shape as :class:`AsyncioMarkDecorator`: a real ``MarkDecorator`` (so it is a mark
+    value) whose ``__call__`` additionally does the one v1-only thing. The attribute write
+    goes away with v1.
+    """
+
+    def __call__(self, func: TFunc) -> TFunc:
+        # `__rustest_skip__` **only** -- deliberately not `MarkDecorator.__call__`'s
+        # `__rustest_marks__` entry as well. `_v2_worker::_mark_specs` reads both sources and
+        # would then report the same skip twice. The object is still a legal `pytestmark`
+        # *value* because it is a `MarkDecorator` and answers `.name`/`.args`/`.kwargs`;
+        # what changes here is only what decorating writes.
+        reason = self.kwargs.get("reason")
+        setattr(func, "__rustest_skip__", reason or "skipped via rustest.skip")
+        return func
 
 
 def _mark_decoration_target(
@@ -1201,6 +1362,25 @@ class ExceptionInfo:
         return f"<{type(self).__name__} {rendered} tblen={length}>"
 
 
+def _parse_exc(exc: object) -> type[BaseException]:
+    """Port of `_pytest/raises.py::AbstractRaises._parse_exc` (l. 437-472), message for message.
+
+    The three wordings are pytest's, including its own "unclear if the Type/ValueError
+    distinction is even helpful here" split: a **class** that is not a `BaseException`
+    subclass is a ``ValueError``, an **instance** and anything else are ``TypeError``.
+    The ``ExceptionGroup`` generic-alias branch is not modelled (see
+    :class:`RaisesContext`'s "not modelled" list).
+    """
+    if isinstance(exc, type) and issubclass(exc, BaseException):
+        return exc
+    msg = "expected exception must be a BaseException type, not "
+    if isinstance(exc, type):
+        raise ValueError(msg + f"{exc.__name__!r}")
+    if isinstance(exc, BaseException):
+        raise TypeError(msg + f"an exception instance ({type(exc).__name__})")
+    raise TypeError(msg + repr(type(exc).__name__))
+
+
 class RaisesContext:
     """Context manager for asserting that code raises a specific exception.
 
@@ -1254,6 +1434,19 @@ class RaisesContext:
             expected = (exc_type,)
         if not expected and match is None and check is None:
             raise ValueError("You must specify at least one parameter to match on.")
+        # Validation happens **at construction**, as pytest's does, so a typo is reported
+        # where it was written rather than at the end of the block -- or, for a bad regex,
+        # not at all until something raises.
+        expected = tuple(_parse_exc(entry) for entry in expected)
+        if isinstance(match, str):
+            import re as _re
+
+            try:
+                _ = _re.compile(match)
+            except _re.error as exc:
+                # `fail(...)`, i.e. `Failed`, exactly as `AbstractRaises.__init__` does
+                # (`_pytest/raises.py` l. 393-400).
+                raise Failed(f"Invalid regex pattern provided to 'match': {exc}") from None
         self.expected_exceptions: tuple[type[BaseException], ...] = expected
         self.exc_type = exc_type
         self.match_pattern = match
@@ -1288,12 +1481,16 @@ class RaisesContext:
         __tracebackhide__ = True
         # No exception was raised — pytest's three wordings, `raises.py` l. 707-713.
         if exc_type is None:
+            # `Failed`, not `AssertionError`, because pytest's three wordings all come out of
+            # `fail()` (`_pytest/raises.py` l. 707-713) and `raises.Exception is
+            # fail.Exception`. It matters beyond taxonomy: `Failed` is a `BaseException`, so a
+            # test body that wraps the block in `except Exception` cannot swallow the failure.
             expected = self.expected_exceptions
             if not expected:
-                raise AssertionError("DID NOT RAISE any exception")
+                raise Failed("DID NOT RAISE any exception")
             if len(expected) > 1:
-                raise AssertionError(f"DID NOT RAISE any of {expected!r}")
-            raise AssertionError(f"DID NOT RAISE {next(iter(expected))!r}")
+                raise Failed(f"DID NOT RAISE any of {expected!r}")
+            raise Failed(f"DID NOT RAISE {next(iter(expected))!r}")
 
         assert exc_val is not None, "exc_val must not be None when exc_type is not None"
 
@@ -1447,10 +1644,24 @@ def raises(
         del excinfo
 
 
-class Failed(Exception):
-    """Exception raised by fail() to mark a test as failed."""
+class Failed(BaseException):
+    """Exception raised by fail() to mark a test as failed.
 
-    pass
+    **A ``BaseException``, as pytest's is** (`_pytest/outcomes.py`: ``class
+    OutcomeException(BaseException)``, ``class Failed(OutcomeException)``). It derived from
+    ``Exception`` until Phase 4 Task 1's review found what that costs: a test body that wraps
+    a call in ``try: ... except Exception:`` swallows the runner's own "this test failed"
+    signal, so a ``raises`` block that did not raise reported **passed** under rustest and
+    **failed** under pytest. Reviewer's three-test repro: pytest 3 failed, rustest 3 passed.
+
+    The worker catches ``BaseException`` at every test-body boundary
+    (:func:`_v2_worker._phases` and friends), so nothing else had to move.
+    """
+
+
+# `_pytest/raises.py` l. 303-311 sets the same alias: what `raises` raises when the block did
+# not, so a plugin (or a test) can name it without importing the outcome module.
+raises.Exception = Failed  # type: ignore[attr-defined]
 
 
 def fail(reason: str = "", pytrace: bool = True) -> None:

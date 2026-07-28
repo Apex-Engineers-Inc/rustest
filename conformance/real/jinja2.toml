@@ -65,10 +65,8 @@ id_policy = "strip_params"
 # `ExceptionInfo` readers (`.tb`, `.match()`) are implemented (commit bb03e06), and with
 # them the 50 failures across 46 functions this section used to name.
 [divergence.global]
-ids = """\
-PARAMETRIZE ID GENERATION, the same mechanism click's ledger records in full. Here the \
-values are functions: pytest names a lambda `<lambda>0`/`<lambda>1` and a named function \
-by its `__name__` (`auto_aiter`, `iter`, `reversed`), while rustest emits \
-`param<index>`; and `test_groupby_case`'s multi-line string values are truncated at 17 \
-characters. 95 of 909 ids differ, none of them by more than spelling. PHASE-4 / \
-KNOWN-LIMITATION."""
+# EMPTY as of Phase 4 Task 1's review. The last entry here was PARAMETRIZE ID GENERATION --
+# rustest did not reproduce `_pytest/python.py::IdMaker` for containers, enums, bytes,
+# functions or long strings, and this suite's ids differed from pytest's by spelling alone.
+# `decorators.py::_idval_from_value` and `src/v2/static_collect.rs::generate_param_id` are
+# now ports of it, both halves of the tier pair moving together, and the suite MATCHES.

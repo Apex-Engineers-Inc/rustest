@@ -1,0 +1,89 @@
+# jsonschema -- KEEP (Phase 4 Task 1b batch 2). ZERO conftest.py anywhere in the repo --
+# confirmed by direct probes of every plausible location (root, jsonschema/, jsonschema/tests/,
+# docs/) plus a full root-tree listing showing only .github/, docs/, json/, jsonschema/ exist.
+# Classification: NONE, the cleanest of this batch.
+#
+# The suite's real complexity is NOT a pytest mechanism at all: the vendored official
+# JSON-Schema-Test-Suite (`json/`, fully committed to the tree at this tag -- confirmed NOT a
+# git submodule, see below) is turned into test classes by `jsonschema/tests/_suite.py`'s
+# `Version.to_unittest_testcase()`, a plain `type(name, (unittest.TestCase,), methods)` call
+# executed at MODULE IMPORT TIME from `jsonschema/tests/test_jsonschema_test_suite.py` (six
+# module-level assignments: TestDraft3/4/6/7/201909/202012). No `pytest_generate_tests`, no
+# `metafunc.parametrize`, no `@pytest.mark.parametrize`, no custom `pytest.Collector`/`Item`,
+# no `pytest_collect_file`, no pytest entry-point plugin -- skipping uses stdlib
+# `unittest.skip(reason)`/`unittest.expectedFailure`, not pytest's mark equivalents. When
+# pytest points at this tree it exercises nothing but its own built-in, out-of-the-box
+# unittest.TestCase discovery -- the same code path as any hand-written unittest suite. New
+# domain: JSON Schema validation, versus everything else in the corpus.
+#
+# Submodule check (relevant to whether a plain checkout even has the test data): `.gitmodules`
+# is 404 at this tag, and `raw.githubusercontent.com/.../json/README.md` returns real content
+# (a git submodule "gitlink" entry has no blob content a raw-content CDN could serve) --
+# `json/` is vendored directly, not a submodule. No `git submodule update` step needed.
+
+[repo]
+kind = "oss"
+url = "https://github.com/python-jsonschema/jsonschema.git"
+tag = "v4.26.0"
+# Release-workflow-published tag (softprops/action-gh-release via GitHub's Release API, which
+# creates annotated tag objects) -- api.github.com's `git/refs/tags` endpoint that would give
+# API-verified confirmation was 403-blocked this session; the commit below is corroborated via
+# two independent github.com web-UI fetches (the release page and the tag's commits page)
+# instead, not API-verified. Flag for the implementer to re-verify with `gh api` if certainty
+# matters before gate time.
+rev = "a7277432b0f7bcd0551f6e589d30457017125df4"
+test_paths = ["jsonschema/tests"]
+
+[env]
+# [dependency-groups].test = ["virtue", "jsonpath-ng"]. Notably, pytest itself is NOT a
+# declared dependency anywhere in this project -- its canonical/CI-enforced runner is `virtue`
+# ("a modern, extensible, unittest-compliant test runner... not a test framework", same
+# author as jsonschema). `virtue` isn't needed to run the suite under pytest (pytest's builtin
+# unittest.TestCase collection is sufficient on its own), so it's left out below; `jsonpath-ng`
+# is a plain data-library hard-import kept in. Same shape as cachetools/tabulate: install our
+# own pytest pin regardless of what the project itself declares as its runner.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "jsonpath-ng"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# No [tool.pytest.ini_options], no pytest.ini/setup.cfg/tox.ini pytest section anywhere --
+# confirmed by direct fetch (all 404). ruff config even documents why: `[tool.ruff.lint]
+# ignore = ["PT", ...]  # We use unittest`.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+# Suite-generated test-method count is large (6 drafts wired up out of 8 vendored, each with
+# dozens of core+format+optional JSON case files, each holding multiple test instances per
+# case -- grounded estimate well into the thousands, not individually counted). Same 1800s
+# budget as the rest of the corpus as a starting point; flag for the implementer to raise if
+# it proves too tight.
+timeout_s = 1800
+# unittest.TestCase methods get stable string ids (ClassName.method_name, the method names
+# built by _suite.py's own delimiter-substitution scheme at class-creation time) -- not
+# pytest's value-derived parametrize id machinery at all, so no id-spelling divergence
+# mechanism should apply here. Same reasoning as cachetools' draft; verify at gate time before
+# fully trusting it given the sheer test-method volume.
+id_policy = "exact"
+
+[divergence.ids]
+
+[divergence.global]

@@ -1,0 +1,78 @@
+# attrs -- KEEP-with-ledgered-hooks (Phase 4 Task 1b batch 2). tests/conftest.py at 26.1.0 is
+# the ONLY conftest.py in the repo (33 lines, full text quoted in the audit). One hook,
+# `pytest_configure`, whose entire body registers + loads a Hypothesis settings profile
+# (`settings.register_profile("patience", ...)`, raises the deadline, suppresses
+# `HealthCheck.too_slow`) -- Hypothesis config, not a pytest marker/collection mechanism, and
+# it does NOT call `config.addinivalue_line`. Plus two trivial parametrized boolean fixtures
+# (`slots`, `frozen`, `params=(True, False)`) and a two-entry `collect_ignore`
+# (`test_pattern_matching.py` unless PY_3_10_PLUS, `test_forward_references.py` unless
+# PY_3_14_PLUS -- both true on our Python 3.14 pin, so nothing is actually ignored here).
+# Squarely LIMITED per the batch-2 rule (marker/config registration + a handful-of-files
+# collect_ignore): no pytest_generate_tests, no custom collectors, no plugin registration of
+# attrs' own. New domain: class-boilerplate generation, versus schema validation
+# (marshmallow), CLI (click), templating (jinja2), WSGI (werkzeug).
+#
+# One adjacent HEAVY mechanism intentionally NOT counted against this pick: `pytest-mypy-plugins`
+# (a custom `.yml`-file collector) only activates for `tests/test_mypy.yml` when that plugin is
+# installed, gated to a separate `mypy` tox/dependency-group env outside this draft's `tests`
+# testpaths -- not installed here, so it never loads.
+
+[repo]
+kind = "oss"
+url = "https://github.com/python-attrs/attrs.git"
+tag = "26.1.0"
+# Annotated + cryptographically signed tag (SSH-signed by hynek); this is the commit it
+# resolves to, not the tag object's own SHA.
+rev = "7bfc49e9b22d5ba25b6e429524c3d49fee27cb36"
+test_paths = ["tests"]
+
+[env]
+# [dependency-groups].tests: cloudpickle (CPython-only, pickle-compat regression data),
+# hypothesis (drives most edge-case tests; also supplies the conftest's "patience" profile),
+# pympler (memory-usage checks in a handful of tests), pytest, pytest-xdist[psutil] (parallel
+# execution via `-n auto`, not required for correctness -- left out, same call made for every
+# other target in this corpus that only uses a plugin for perf/output shaping).
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "hypothesis", "pympler", "cloudpickle"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# [tool.pytest.ini_options]: addopts = ["-ra", "--strict-markers", "--strict-config",
+# "--import-mode=importlib"]; xfail_strict = true; testpaths = "tests"; filterwarnings =
+# ["once::Warning", "ignore:::pympler[.*]"]. No `markers` key at all (consistent with the
+# conftest registering none). Same mechanism as click's addopts: rustest applies `addopts`
+# itself by reading `[tool.pytest.ini_options]` out of the target's own pyproject.toml (Phase
+# 4 Task 1 port of `Config._preparse`), so both runners pick this up automatically -- nothing
+# to inject on the command line.
+configured = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# Draft default. slots/frozen fixture params are scalar booleans (already known to agree per
+# click's ledger), but test_make.py/test_validators.py parametrize ~55-65 combined cases over
+# non-scalar values too (builder kwargs dicts, attribute-definition tuples) going by file size
+# and naming conventions -- expect the same spelling-only id divergence click/jinja2/humanize/
+# tabulate hit. Verify at gate time; relax to "exact" if it turns out cleaner than expected.
+id_policy = "strip_params"
+
+[divergence.ids]
+
+[divergence.global]

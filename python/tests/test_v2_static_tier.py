@@ -531,9 +531,11 @@ def test_a_non_utf8_encoding_cookie_routes_the_file_to_d(tmp_path: Path) -> None
 
     assert _strip_tier(hybrid) == _strip_tier(oracle)
     assert hybrid["tests"][0].get("tier", "d") == "d", hybrid["tests"][0]
-    # Tier D decodes the cookie the way the interpreter does; the id carries the two
-    # latin-1 characters, not the single UTF-8 one Tier S used to emit.
-    assert hybrid["tests"][0]["id"] == "test_enc.py::test_x[Ã©]"
+    # Tier D decodes the cookie the way the interpreter does, so the id carries the two
+    # latin-1 characters rather than the single UTF-8 one Tier S used to emit -- and since
+    # Phase 4 Task 1 ported `_pytest/compat.py::ascii_escaped`, it carries them **escaped**,
+    # which is what pytest's own id is (`_idval_from_value` -> `_ascii_escaped_by_config`).
+    assert hybrid["tests"][0]["id"] == "test_enc.py::test_x[" + "\\xc3\\xa9]"
 
 
 def test_a_falsy_constructor_binding_matches_tier_d_not_pytest(tmp_path: Path) -> None:
@@ -599,14 +601,16 @@ def test_a_fixture_kwargs_splat_routes_the_directory_to_d(tmp_path: Path) -> Non
     assert all(test.get("tier", "d") == "d" for test in hybrid["tests"])
 
 
-def test_class_level_parametrize_matches_tier_d_not_pytest(tmp_path: Path) -> None:
-    """The one shape where "match Tier D" and "match pytest" are different instructions.
+def test_class_level_parametrize_matches_tier_d_and_pytest(tmp_path: Path) -> None:
+    """Tier S, Tier D and pytest now agree on class-parametrize id order.
 
-    Tier D is the contract Tier S has to meet, because the two must be interchangeable; the
-    rustest/pytest gap in class-parametrize id order is an engine-wide divergence recorded in
-    ``_v2_worker.py::_cross_product_cases`` and owned elsewhere. Asserting **both** halves
-    here is what keeps that distinction honest: if the gap is ever closed, this test fails and
-    says so, rather than quietly turning into a tautology.
+    This test used to assert the opposite -- Tier S matching Tier D while **both** diverged
+    from pytest, whose ``[10-1]`` rustest spelled ``[1-10]`` -- and it carried the
+    instruction "if the gap is ever closed, this test fails and says so, rather than quietly
+    turning into a tautology". Phase 4 Task 1's review closed it: pytest appends each
+    ``parametrize`` call's id component to ``CallSpec2._idlist`` in call order, a method's
+    own decorator is applied before the enclosing class's mark is unpacked, so the method
+    dimension leads the id *and* varies slowest. Both halves are still asserted.
     """
     root = tmp_path / "suite"
     root.mkdir()
@@ -618,14 +622,12 @@ def test_class_level_parametrize_matches_tier_d_not_pytest(tmp_path: Path) -> No
 
     assert _strip_tier(hybrid) == _strip_tier(oracle)
     assert all(test["tier"] == "s" for test in hybrid["tests"])
-    assert [test["id"] for test in hybrid["tests"]] == [
-        "test_grid.py::TestGrid::test_m[1-10]",
-        "test_grid.py::TestGrid::test_m[2-10]",
-    ]
-    assert _pytest_ids(root, []) == [
+    expected = [
         "test_grid.py::TestGrid::test_m[10-1]",
         "test_grid.py::TestGrid::test_m[10-2]",
-    ], "the rustest/pytest class-parametrize divergence has moved; re-read the waiver"
+    ]
+    assert [test["id"] for test in hybrid["tests"]] == expected
+    assert _pytest_ids(root, []) == expected
 
 
 def test_a_fully_static_suite_spawns_no_worker(tmp_path: Path) -> None:

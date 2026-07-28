@@ -179,8 +179,33 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 | **`loop_scope`** | Accepted and ignored — one event loop per worker. | Async fixtures work; per-scope loop isolation does not. |
 | **Async concurrency** | Async tests in the same loop scope run sequentially. | No wall-clock overlap between them. |
 | **`PYTEST_ADDOPTS`** | The `addopts` **ini** is applied; the environment variable is not. | Options exported into the environment are ignored. Set them in the ini or on the command line. |
+| **Markdown code blocks** | rustest collects python fences out of a `.md` file **named as an argument**; a *directory* walk collects none. | `rustest docs/guide/` runs nothing — name the files (`rustest docs/guide/*.md`). pytest has no equivalent without a plugin, which is why the walk does not. |
+| **Reporting-only flags** | Accepted and ignored, with a note on stderr naming each one. | See the table below. |
 | **Capture is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors. | Output from a subprocess or a C extension is not captured. |
 | **`xfail_strict` ini, `--runxfail`** | Not implemented. The `strict=` *keyword* works. | Set `strict=` on the mark. |
+
+### Reporting flags rustest accepts and ignores
+
+These change how pytest *reports*, not what it runs, and they live in a project's `addopts`
+forever. rustest drops each one with a single line on stderr rather than refusing the run —
+erroring on a cosmetic flag would make an ordinary `addopts = "-ra --tb=short"` unrunnable.
+Anything **not** on this list is still a usage error (exit 4), because a flag that changes
+what runs must never be ignored quietly.
+
+| Flag | Note |
+| --- | --- |
+| `-ra`, `-rfE`, any `-r<chars>` | rustest's summary is always the full one. |
+| `--tb=...` | Tracebacks are rendered rustest's way. |
+| `--durations=...`, `--durations-min=...` | No timing table yet. |
+| `--strict-markers`, `--strict-config`, `--strict` | Unknown marks are never an error here. |
+| `-p <plugin>` / `-p no:<plugin>` | rustest has no plugin manager to load or disable. |
+| `--import-mode=...` | Import mode is not configurable. |
+| `--showlocals` / `-l`, `--full-trace` | Traceback detail is not configurable. |
+
+`--color` **is** implemented, and takes pytest's `yes`/`no` as well as rustest's
+`always`/`never`. `--maxfail=N` is implemented too; with more than one worker it stops
+dispatching at N rather than mid-flight, so a parallel run can report a few more than N —
+the same granularity `pytest-xdist` has.
 
 Two entries that used to live in that table are gone as of 0.18, and both were among the
 sharpest:

@@ -1,0 +1,81 @@
+# humanize -- SWAP-IN for Pygments (Phase 4 Task 1b audit). All three of Pygments' conftest.py
+# files at 2.20.0 (tests/, tests/snippets/, tests/examplefiles/) are HEAVY: pytest_collect_file
+# + custom pytest.File/pytest.Item subclasses (LexerTestFile/LexerTestItem/
+# LexerSeparateTestItem/LexerInlineTestItem) overriding runtest()/repr_failure()/reportinfo(),
+# plus pytest_addoption and pytest_runtest_teardown -- the deepest, least-portable layer of
+# the pytest plugin API, and it drives the *majority* of what the suite actually collects
+# (per-lexer example/snippet files), not a side path. Exactly the HEAVY bucket the user's
+# "no/limited hook usage" directive rules out.
+#
+# humanize has NO conftest.py anywhere and NO pytest_* hooks anywhere in the repo -- the one
+# fixture that exists is a plain autouse session fixture in tests/test_benchmarks.py that
+# pre-warms gettext catalogs. One real wrinkle found in its own config, not rustest's:
+# pyproject.toml declares "[tool.pytest]" (verified character-for-character via raw fetch,
+# twice) -- NOT the pytest-recognized "[tool.pytest.ini_options]" -- so its minversion = "9.0"
+# / addopts = ["--color=yes"] / testpaths / filterwarnings = ["error"] are silently inert to a
+# bare `pytest` invocation. The config that actually governs one is tox.ini's own [pytest]
+# section, which is real and is what [addopts] below reflects.
+
+[repo]
+kind = "oss"
+url = "https://github.com/python-humanize/humanize.git"
+tag = "4.16.0"
+# Lightweight tag; commit SHA directly.
+rev = "3c577d7650508d52aa2982e930b0e744c343082f"
+test_paths = ["tests"]
+
+[env]
+# [project.optional-dependencies].tests is freezegun, pytest>=9, pytest-benchmark,
+# pytest-codspeed, pytest-cov. freezegun is a hard import in tests/test_time.py. The other
+# three are left OUT of this first-pass draft: pytest-cov is coverage-reporting-only (same
+# call made for every other OSS target in this corpus); pytest-benchmark/pytest-codspeed are
+# needed only by tests/test_benchmarks.py (a `benchmark`-fixture consumer) -- without them
+# those specific tests should ERROR identically on both runners (missing fixture, not a
+# behavioral divergence) rather than silently skip, which the implementer should confirm at
+# gate time before deciding whether to add the plugins in.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2). humanize's own
+  # ini nominally asks for pytest>=9 (project.optional-dependencies.tests), but per the header
+  # note that constraint lives under a pyproject.toml key pytest never reads
+  # ("[tool.pytest]", not "[tool.pytest.ini_options]") and tox.ini's real [pytest] section
+  # declares no minversion at all -- so 8.4.2 should run this suite same as everywhere else
+  # in the corpus. Flagged for the implementer to double check at gate time regardless.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "freezegun"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# tox.ini's [pytest] section (the config pytest actually resolves to, see header note):
+# addopts = --color=yes --doctest-modules. "--color=yes" is a harmless display flag, replayed
+# to both runners. "--doctest-modules" additionally collects doctest examples out of
+# humanize's own source docstrings -- a stdlib-doctest pytest builtin whose rustest support is
+# unverified; dropped from the replay pending that check rather than assumed either way.
+configured = ["--color=yes", "--doctest-modules"]
+replay = ["--color=yes"]
+dropped = ["--doctest-modules"]
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# Draft default. test_number.py/test_time.py parametrize heavily over (value, expected)
+# tuples and locale strings -- the same value-kinds click/jinja2 already ledgered as
+# spelling-only id divergences under rustest's parametrize-id generation. Expect the same
+# mechanism here; verify at gate time and relax from "exact" if so.
+id_policy = "strip_params"
+
+[divergence.ids]
+
+[divergence.global]

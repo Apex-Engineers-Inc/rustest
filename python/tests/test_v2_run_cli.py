@@ -867,6 +867,7 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         keyword: str | None,
         mark_expr: str | None,
         fail_fast: bool,
+        max_fail: int,
         last_failed_mode: str,
         no_capture: bool,
         codeblocks: bool,
@@ -874,7 +875,7 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         coverage: str | None,
     ) -> str:
         del invocation_dir, python, fail_fast, last_failed_mode, no_capture, codeblocks
-        del assert_rewrite, coverage
+        del assert_rewrite, coverage, max_fail
         seen.append((list(args), workers, keyword, mark_expr))
         return json.dumps(
             {
@@ -916,6 +917,7 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         keyword: str | None,
         mark_expr: str | None,
         fail_fast: bool,
+        max_fail: int,
         last_failed_mode: str,
         no_capture: bool,
         codeblocks: bool,
@@ -923,7 +925,7 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         coverage: str | None,
     ) -> str:
         del invocation_dir, python, workers, keyword, mark_expr
-        del fail_fast, last_failed_mode, no_capture, codeblocks, assert_rewrite
+        del fail_fast, max_fail, last_failed_mode, no_capture, codeblocks, assert_rewrite
         del coverage
         seen.append(list(args))
         return json.dumps(
@@ -967,6 +969,7 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         keyword: str | None,
         mark_expr: str | None,
         fail_fast: bool,
+        max_fail: int,
         last_failed_mode: str,
         no_capture: bool,
         codeblocks: bool,
@@ -974,7 +977,7 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         coverage: str | None,
     ) -> str:
         del invocation_dir, args, python, workers, keyword, mark_expr
-        del fail_fast, last_failed_mode, no_capture, codeblocks, assert_rewrite
+        del fail_fast, max_fail, last_failed_mode, no_capture, codeblocks, assert_rewrite
         del coverage
         raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
 

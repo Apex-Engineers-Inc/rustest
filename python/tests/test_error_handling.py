@@ -6,6 +6,7 @@ import pytest
 
 from .helpers import ensure_rust_stub
 from rustest import parametrize, fixture, raises
+from rustest.decorators import Failed
 
 ensure_rust_stub()
 
@@ -318,7 +319,9 @@ class TestRaises:
 
     def test_raises_no_exception(self) -> None:
         """Test that raises fails when no exception is raised."""
-        with pytest.raises(AssertionError, match="DID NOT RAISE"):
+        # `Failed`, not `AssertionError`: pytest's three DID-NOT-RAISE wordings all come
+        # out of `fail()` and `raises.Exception is fail.Exception`.
+        with pytest.raises(Failed, match="DID NOT RAISE"):
             with raises(ValueError):
                 pass  # No exception raised
 
@@ -391,13 +394,13 @@ class TestRaises:
 
     def test_raises_format_exc_name_single(self) -> None:
         """pytest reports the *repr* of the type (`_pytest/raises.py` l. 713)."""
-        with pytest.raises(AssertionError, match=r"DID NOT RAISE <class 'ValueError'>"):
+        with pytest.raises(Failed, match=r"DID NOT RAISE <class 'ValueError'>"):
             with raises(ValueError):
                 pass
 
     def test_raises_format_exc_name_tuple(self) -> None:
         """...and the repr of the whole tuple for more than one (l. 711)."""
-        with pytest.raises(AssertionError, match=r"DID NOT RAISE any of \(<class 'ValueError'>"):
+        with pytest.raises(Failed, match=r"DID NOT RAISE any of \(<class 'ValueError'>"):
             with raises((ValueError, TypeError)):
                 pass
 

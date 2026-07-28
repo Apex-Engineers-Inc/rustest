@@ -194,6 +194,7 @@ def v2_run(
     keyword: str | None = ...,
     mark_expr: str | None = ...,
     fail_fast: bool = ...,
+    max_fail: int = ...,
     last_failed_mode: str = ...,
     no_capture: bool = ...,
     codeblocks: bool = ...,

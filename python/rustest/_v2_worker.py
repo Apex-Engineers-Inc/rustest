@@ -71,8 +71,6 @@ traceback filtering — because those distinguish one outcome from another.
 * *No ``pytest_generate_tests`` hook.*  Decorator metadata (function **and** class level)
   and fixture ``params=`` are the only sources of parametrization; a module- or class-level
   ``pytest_generate_tests`` is not called.
-* *Class-level ``@parametrize`` cross-products in v1's order, not pytest's.*  See
-  :func:`_cross_product_cases`: pytest emits ``test[10-1]`` where this emits ``test[1-10]``.
 * *Async tests sharing a loop run **sequentially**, where rustest v1 batched them.*  v1's
   ``async_executor.py::run_coroutines_parallel`` collects every async test in a loop scope
   wider than ``function`` into one ``asyncio.gather`` (dispatched from
@@ -250,7 +248,11 @@ __all__ = [
 #: ``pytest_load_initial_conftests``).  **Absent** when the ini is unset, which is almost
 #: every project; the absence is why a plain run's ``init`` line is byte-identical to v5's
 #: apart from the number.
-PROTOCOL_VERSION: Final = 6
+#:
+#: v7 adds ``execute_batch.max_fail`` — ``--maxfail=N``'s **remaining** budget for that
+#: batch, so a worker can cut it on the Nth failure rather than only on the first.  Absent
+#: when there is no limit, which keeps an ordinary batch line byte-identical to v6's.
+PROTOCOL_VERSION: Final = 7
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -994,8 +996,8 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
     return specs
 
 
-def _parametrization(func: object) -> list[tuple[str, Mapping[str, object]]] | None:
-    """Read v1's parametrize metadata and return ``(param_id, values)`` per case.
+def _parametrization(func: object) -> "list[_Case] | None":
+    """Read v1's parametrize metadata and return ``(param_id, values, marks)`` per case.
 
     The ids are **v1's, consumed verbatim** — not recomputed.  They are produced at
     decoration time by ``python/rustest/decorators.py::parametrize`` ->
@@ -1026,6 +1028,7 @@ def _parametrization(func: object) -> list[tuple[str, Mapping[str, object]]] | N
 
     raw_ids: list[str] = []
     valuesets: list[Mapping[str, object]] = []
+    marksets: list[tuple[MarkSpec, ...]] = []
     for case in cast(Sequence[object], cases):
         if not isinstance(case, dict):
             # Silently collapsing to a single unparametrized entry would delete every
@@ -1043,34 +1046,53 @@ def _parametrization(func: object) -> list[tuple[str, Mapping[str, object]]] | N
             if isinstance(values, dict)
             else {}
         )
-    return list(zip(_unique_parameterset_ids(raw_ids), valuesets, strict=True))
+        # `pytest.param(x, marks=...)` — the payloads `decorators.py::_mark_payloads`
+        # writes are the same `{"name", "args", "kwargs"}` dicts `__rustest_marks__` uses,
+        # so the existing reader takes them unchanged.
+        raw_marks = entry.get("marks", ())
+        marksets.append(
+            tuple(_spec_from_mark_dict(raw, func) for raw in cast(Sequence[object], raw_marks))
+            if isinstance(raw_marks, (list, tuple))
+            else ()
+        )
+    return list(zip(_unique_parameterset_ids(raw_ids), valuesets, marksets, strict=True))
 
 
-#: One parametrization case: its id component and the values it supplies.
-_Case = tuple[str, Mapping[str, object]]
+#: One parametrization case: its id component, the values it supplies, and the marks that
+#: **that set alone** carries (`pytest.param(..., marks=...)`).
+_Case = tuple[str, Mapping[str, object], tuple["MarkSpec", ...]]
 
 
 def _cross_product_cases(outer: list[_Case], inner: list[_Case]) -> list[_Case]:
-    """Combine an enclosing class's cases with a method's own — v1's rule, verbatim.
+    """Combine an enclosing class's cases with a method's own — **pytest's order**.
 
-    Mirror of ``python/rustest/decorators.py::_cross_product_cases``: ids join with ``-``
-    **outer first**, values merge with the inner call winning a name collision, and the outer
-    dimension varies slowest.
+    The *values* merge with the inner (method) call winning a name collision and the outer
+    (class) dimension varying slowest, which is what makes the run order
+    ``[10-1], [10-2], [20-1], [20-2]`` for a class carrying ``@parametrize("x", [1, 2])``
+    and a method carrying ``@parametrize("y", [10, 20])``.
 
-    **Divergence from pytest, measured and kept.**  For a class carrying
-    ``@parametrize("x", [1, 2])`` whose method carries ``@parametrize("y", [10, 20])``,
-    pytest 8.4.2 emits ``test_combined[10-1]`` (method component first, method varying
-    slowest) and rustest v1 emits ``test_combined[1-10]``.  v1's spelling is kept because
-    this worker consumes v1's decorator metadata and its pre-computed ids verbatim — see
-    :func:`_parametrization` — so re-ordering here would produce ids that match neither
-    engine, and would silently break every ``-k "test_combined[1-10]"`` a user has written.
-    The whole id-generation family is already a documented v1-inherited divergence; this is
-    one more row in it, not a new class of problem.
+    The *id* joins **method component first**, which is the opposite of the values' nesting
+    and is not a typo: pytest appends each ``parametrize`` call's id component to
+    ``CallSpec2._idlist`` in the order the calls are *made*, and a method's own decorator is
+    applied before the enclosing class's mark is unpacked. Measured on pytest 8.4.2:
+    ``test_m[10-1]``.
+
+    v1 emits ``test_m[1-10]``, and this worker used to inherit that spelling because it
+    consumes v1's pre-computed ids. Phase 4 Task 1's review took the other side of that
+    trade: the id is the thing a user writes in ``-k`` and reads in CI output, matching
+    pytest is the product promise, and v1 is deleted in Task 2 — so the inherited spelling
+    would have outlived the engine it came from.
     """
+    # The **method** dimension is the outer loop as well as the leading id component: both
+    # are the same fact, and pytest shows it as `[10-1], [10-2], [20-1], [20-2]`.
     return [
-        (f"{outer_id}-{inner_id}", {**outer_values, **inner_values})
-        for outer_id, outer_values in outer
-        for inner_id, inner_values in inner
+        (
+            f"{inner_id}-{outer_id}",
+            {**outer_values, **inner_values},
+            (*outer_marks, *inner_marks),
+        )
+        for inner_id, inner_values, inner_marks in inner
+        for outer_id, outer_values, outer_marks in outer
     ]
 
 
@@ -1249,6 +1271,68 @@ def _requested_argnames(
     if hasattr(func, "__wrapped__"):
         names = names[_num_mock_patch_args(func) :]
     return names
+
+
+def _default_arg_names(func: object, name: str, owner: type | None) -> frozenset[str]:
+    """Parameters that carry a **default**, i.e. what `getfuncargnames` deliberately drops.
+
+    Port of `_pytest/compat.py::get_default_arg_names` (l. 174-181), used by
+    :func:`_validate_if_using_arg_names` for pytest's more specific wording: parametrizing a
+    name the function already accepts *with a default* is a different mistake from
+    parametrizing a name it does not accept at all, and pytest says so.
+
+    The bound-method first argument is not stripped here because it never has a default.
+    """
+    _ = name, owner
+    try:
+        signature = inspect.signature(cast(Any, func))
+    except (TypeError, ValueError):  # pragma: no cover - builtins never reach here
+        return frozenset()
+    return frozenset(
+        parameter.name
+        for parameter in signature.parameters.values()
+        if parameter.default is not inspect.Parameter.empty
+    )
+
+
+def _validate_if_using_arg_names(
+    func: object,
+    name: str,
+    owner: type | None,
+    argnames: AbstractSet[str],
+    indirect: AbstractSet[str],
+    fixturenames: AbstractSet[str],
+) -> None:
+    """Every parametrized name must be something the test can actually receive.
+
+    Port of `_pytest/python.py::Metafunc._validate_if_using_arg_names` (pytest 8.4.2,
+    l. 1455-1483), message for message. Four shapes, all measured on the oracle first and
+    all of which rustest used to accept silently — the test ran and **passed**, with the
+    parameter simply never delivered:
+
+    * ``@parametrize("nosuch", ...)`` on a function that does not take ``nosuch`` ->
+      ``In <func>: function uses no argument 'nosuch'``;
+    * the same with ``indirect`` -> ``... uses no **fixture** 'nosuch'``. The word changes
+      with the directness of *that* name, which is why `indirect` is a set here and not a
+      flag;
+    * ``@parametrize("val", ...)`` where ``def test(val=7)`` -> ``In <func>: function
+      already takes an argument 'val' with a default value``;
+    * one bad name inside a multi-name ``"a,b"`` -> reported for that name alone.
+
+    All four are collection errors, exit 2, on both runners.
+    """
+    defaults = _default_arg_names(func, name, owner)
+    func_name = str(_safe_getattr(func, "__name__", name))
+    for arg in sorted(argnames):
+        if arg in fixturenames:
+            continue
+        if arg in defaults:
+            raise CollectionRefusal(
+                f"In {func_name}: function already takes an argument "
+                + f"{arg!r} with a default value"
+            )
+        kind = "fixture" if arg in indirect else "argument"
+        raise CollectionRefusal(f"In {func_name}: function uses no {kind} {arg!r}")
 
 
 def _num_mock_patch_args(func: object) -> int:
@@ -1699,7 +1783,11 @@ class FixtureDef:
     name: str
     func: Callable[..., object]
     scope: str
-    params: tuple[tuple[str, object], ...] | None
+    #: `(id, value, marks)` per parameter — the marks being those of a
+    #: `pytest.param(..., marks=...)` inside `params=`, which pytest carries because
+    #: `FixtureManager.pytest_generate_tests` hands `fixturedef.params` to
+    #: `metafunc.parametrize` as ordinary parameter sets.
+    params: tuple[tuple[str, object, tuple["MarkSpec", ...]], ...] | None
     autouse: bool
     baseid: str
     argnames: tuple[str, ...]
@@ -1710,7 +1798,9 @@ class FixtureDef:
     needs_instance: bool = False
 
 
-def _fixture_param_cases(func: object, fixture_name: str) -> tuple[tuple[str, object], ...] | None:
+def _fixture_param_cases(
+    func: object, fixture_name: str
+) -> tuple[tuple[str, object, tuple[MarkSpec, ...]], ...] | None:
     """Read v1's ``__rustest_fixture_params__`` into ``(id, value)`` pairs.
 
     The ids are v1's, consumed verbatim, exactly as :func:`_parametrization` consumes the
@@ -1739,6 +1829,7 @@ def _fixture_param_cases(func: object, fixture_name: str) -> tuple[tuple[str, ob
         )
     ids: list[str] = []
     values: list[object] = []
+    marksets: list[tuple[MarkSpec, ...]] = []
     for case in cast(Sequence[object], raw):
         if not isinstance(case, dict):
             raise CollectionRefusal(
@@ -1748,9 +1839,136 @@ def _fixture_param_cases(func: object, fixture_name: str) -> tuple[tuple[str, ob
         entry = cast(Mapping[str, object], case)
         ids.append(str(entry.get("id", "")))
         values.append(entry.get("value"))
+        raw_marks = entry.get("marks", ())
+        marksets.append(
+            tuple(_spec_from_mark_dict(item, func) for item in cast(Sequence[object], raw_marks))
+            if isinstance(raw_marks, (list, tuple))
+            else ()
+        )
     if not ids:
         return None
-    return tuple(zip(_unique_parameterset_ids(ids), values, strict=True))
+    return tuple(zip(_unique_parameterset_ids(ids), values, marksets, strict=True))
+
+
+def _call_with_optional_argument(func: Callable[..., object], arg: object) -> None:
+    """Port of `_pytest/python.py::_call_with_optional_argument` (l. 682-689).
+
+    xunit hooks may take the collected object or take nothing: ``def setup_module()`` and
+    ``def setup_module(module)`` are both legal, and pytest decides by counting the
+    signature's parameters rather than by trying and catching a ``TypeError`` -- which would
+    swallow a genuine ``TypeError`` raised *inside* a correct one-argument hook.
+    """
+    numargs = len(_requested_argnames(func, getattr(func, "__name__", "hook"), None))
+    if numargs:
+        _ = func(arg)
+    else:
+        _ = func()
+
+
+def _get_first_non_fixture_func(
+    holder: object, names: Sequence[str]
+) -> Callable[..., object] | None:
+    """Port of `_pytest/python.py::_get_first_non_fixture_func` (l. 674-679).
+
+    A name that has been turned into a *fixture* is not an xunit hook -- pytest looks past
+    it rather than calling it twice, and rustest's marker for that is
+    ``__rustest_fixture__`` where pytest's is ``FixtureFunctionDefinition``.
+    """
+    for name in names:
+        meth = _safe_getattr(holder, name, None)
+        if meth is not None and not _safe_getattr(meth, "__rustest_fixture__", False):
+            return cast("Callable[..., object]", meth)
+    return None
+
+
+def _xunit_fixturedefs(
+    holder: object,
+    baseid: str,
+    *,
+    kind: str,
+) -> list[FixtureDef]:
+    """The xunit setup/teardown hooks of *holder*, as autouse fixtures.
+
+    Port of `_pytest/python.py`'s four ``_register_setup_*_fixture`` methods (l. 559-627 for
+    the module pair, l. 776-839 for the class pair). pytest injects each as an **autouse
+    fixture** at the right scope rather than calling it from a bespoke hook, "so we play
+    nicely and unsurprisingly with other fixtures (#517)" -- and doing the same here means
+    ordering, teardown-on-error and scope caching are the ones this worker already has.
+
+    Nothing is registered when neither half exists, which is what keeps a suite that uses no
+    xunit hooks byte-identical to before.
+
+    Ported faithfully, including the two rules that are easy to miss:
+
+    * ``setup_function``/``teardown_function`` **stand down inside a class** --
+      ``if request.instance is not None: yield; return`` (l. 607-612) -- because
+      ``setup_method`` owns that case;
+    * the hooks are looked up through :func:`_get_first_non_fixture_func`, so a name the
+      suite turned into a fixture is not also called as a hook.
+
+    **Not ported:** ``setUpModule``/``tearDownModule`` are accepted alongside
+    ``setup_module``/``teardown_module`` (pytest checks both, in that order), but
+    ``unittest.TestCase``'s own ``setUp``/``tearDown`` are not -- those already run through
+    the unittest path.
+    """
+    arg_of: Callable[[object], object]
+    if kind == "module":
+        setup = _get_first_non_fixture_func(holder, ("setUpModule", "setup_module"))
+        teardown = _get_first_non_fixture_func(holder, ("tearDownModule", "teardown_module"))
+        scope = "module"
+        arg_of = lambda request: _safe_getattr(request, "module", None)  # noqa: E731
+    elif kind == "function":
+        setup = _get_first_non_fixture_func(holder, ("setup_function",))
+        teardown = _get_first_non_fixture_func(holder, ("teardown_function",))
+        scope = "function"
+        arg_of = lambda request: _safe_getattr(request, "function", None)  # noqa: E731
+    elif kind == "class":
+        setup = _get_first_non_fixture_func(holder, ("setup_class",))
+        teardown = _get_first_non_fixture_func(holder, ("teardown_class",))
+        scope = "class"
+        arg_of = lambda request: _safe_getattr(request, "cls", None)  # noqa: E731
+    else:  # "method"
+        setup = _get_first_non_fixture_func(holder, ("setup_method",))
+        teardown = _get_first_non_fixture_func(holder, ("teardown_method",))
+        scope = "function"
+        arg_of = lambda request: _safe_getattr(request, "function", None)  # noqa: E731
+    if setup is None and teardown is None:
+        return []
+
+    is_method = kind == "method"
+
+    def xunit_fixture(request: object) -> Iterator[None]:
+        instance = _safe_getattr(request, "instance", None)
+        if kind == "function" and instance is not None:
+            # Bound to an instance: `setup_method` owns this one (pytest l. 607-612).
+            yield
+            return
+        arg = arg_of(request)
+        if setup is not None:
+            # A method hook is re-read off the *instance* so it binds to this test's object,
+            # which is what `getattr(instance, setup_name)` does in pytest (l. 825).
+            bound = _safe_getattr(instance, setup.__name__, setup) if is_method else setup
+            _call_with_optional_argument(cast("Callable[..., object]", bound), arg)
+        yield
+        if teardown is not None:
+            bound = _safe_getattr(instance, teardown.__name__, teardown) if is_method else teardown
+            _call_with_optional_argument(cast("Callable[..., object]", bound), arg)
+
+    label = _safe_getattr(holder, "__qualname__", None) or _safe_getattr(holder, "__name__", kind)
+    return [
+        FixtureDef(
+            # pytest's own "use a unique name to speed up lookup" naming, so two classes in
+            # one module cannot collide and neither can shadow a user fixture.
+            name=f"_xunit_setup_{kind}_fixture_{label}",
+            func=xunit_fixture,
+            scope=scope,
+            params=None,
+            autouse=True,
+            baseid=baseid,
+            argnames=("request",),
+            needs_instance=False,
+        )
+    ]
 
 
 class FixtureRegistry:
@@ -1952,7 +2170,7 @@ def build_closure(
 def fixture_param_dimensions(
     closure: FixtureClosure,
     direct_argnames: AbstractSet[str],
-) -> list[tuple[str, tuple[tuple[str, object], ...]]]:
+) -> list[tuple[str, tuple[tuple[str, object, tuple[MarkSpec, ...]], ...]]]:
     """Which closure fixtures parametrize the test, in pytest's order.
 
     Port of `_pytest/fixtures.py::FixtureManager.pytest_generate_tests` (l. 1666-1710):
@@ -1973,7 +2191,7 @@ def fixture_param_dimensions(
     direct ones**, because pluggy calls the last-registered ``pytest_generate_tests``
     first and ``FixtureManager`` is registered after the ``python`` plugin).
     """
-    dimensions: list[tuple[str, tuple[tuple[str, object], ...]]] = []
+    dimensions: list[tuple[str, tuple[tuple[str, object, tuple[MarkSpec, ...]], ...]]] = []
     for argname in closure.names:
         defs = closure.arg2defs.get(argname)
         if not defs or argname in direct_argnames:
@@ -2029,7 +2247,7 @@ class _ItemNode:
     :class:`ExecutionPlan` carrying the attributes real conftests actually read.  It exists
     because "no tree" is an implementation choice and ``request.node.name`` is a public
     pytest API: rustest's own ``tests/test_conftest_nested`` uses it in an autouse fixture,
-    and 21 of its tests were erroring on ``'_SubRequest' object has no attribute 'node'``.
+    and 21 of its tests were erroring on ``'SubRequest' object has no attribute 'node'``.
 
     What is *not* here is as deliberate as what is: no ``session``, no ``config``, no
     ``parent``, no ``listchain`` — each would need a tree, and returning a stub that answers
@@ -2125,8 +2343,14 @@ class _ItemNode:
         return next(self.iter_markers(name), default)
 
 
-class _SubRequest:
+class SubRequest:
     """The ``request`` object a fixture (or a test) receives.
+
+    **Named without the underscore on purpose.** The class name reaches users through
+    ``AttributeError``/``TypeError`` messages -- ``'SubRequest' object has no attribute
+    'node'`` -- and pytest's own class is `_pytest/fixtures.py::SubRequest` (l. 727). A
+    reader who searches the message should land on pytest's documentation for the same
+    object, not on a name that exists nowhere else.
 
     pytest special-cases ``request`` in `_get_active_fixturedef` (l. 566-570): it is never
     a registered fixture, it is a ``PseudoFixtureDef`` synthesised per requester.  Same
@@ -2545,7 +2769,7 @@ class FixtureRunner:
         if name == "request":
             requester = chain[-1] if chain else None
             return (
-                _SubRequest(
+                SubRequest(
                     self,
                     closure,
                     params,
@@ -3375,7 +3599,17 @@ def build_registry(path: Path, rootdir: Path) -> tuple[types.ModuleType, Fixture
         registry.parse_factories(conftest_module, _conftest_baseid(conftest, rootdir))
         _register_declared_plugins(conftest_module, registry)
     module = import_test_module(path, rootdir)
-    registry.parse_factories(module, _relative_posix(path, rootdir))
+    # xunit module/function hooks, as autouse fixtures, registered **before** the module's
+    # own fixtures — `Module.collect` calls `_register_setup_module_fixture` and
+    # `_register_setup_function_fixture` at l. 554-555 and only then `parsefactories`
+    # (l. 556). Autouse order is registration order, so the reverse makes `setup_function`
+    # run *after* a user's autouse fixture. Measured: pytest
+    # `['setup_function', 'fixture']`, rustest `['fixture', 'setup_function']`.
+    module_baseid = _relative_posix(path, rootdir)
+    for kind in ("module", "function"):
+        for fixturedef in _xunit_fixturedefs(module, module_baseid, kind=kind):
+            registry.register(fixturedef)
+    registry.parse_factories(module, module_baseid)
     _register_declared_plugins(module, registry)
     return module, registry
 
@@ -3538,10 +3772,12 @@ def _collect_function(
         )
     else:
         cases = own_cases
-    direct_cases: list[tuple[str | None, Mapping[str, object]]] = (
-        [(None, {})] if cases is None else [(case_id, values) for case_id, values in cases]
+    direct_cases: list[tuple[str | None, Mapping[str, object], tuple[MarkSpec, ...]]] = (
+        [(None, {}, ())]
+        if cases is None
+        else [(case_id, values, case_marks) for case_id, values, case_marks in cases]
     )
-    parametrized = frozenset(name for _case_id, values in direct_cases for name in values)
+    parametrized = frozenset(name for _case_id, values, _m in direct_cases for name in values)
     # `outer_indirect` carries a **class-level** `@parametrize(..., indirect=[...])`, whose
     # metadata `decorators.py::parametrize` wrote onto the class object where a method cannot
     # see it -- functions do not inherit class attributes. Apex Member Designer's
@@ -3570,22 +3806,34 @@ def _collect_function(
     # `params=` whenever "the test itself parametrizes using this argname"
     # (`FixtureManager.pytest_generate_tests`), and an indirect `@parametrize` is still the
     # test parametrizing it.
+    # pytest validates this on the Metafunc, i.e. after the closure is known, and so does
+    # this: `closure.names` is the port of `metafunc.fixturenames`.
+    _validate_if_using_arg_names(
+        func, name, owner, parametrized, indirect, frozenset(closure.names)
+    )
     dimensions = fixture_param_dimensions(closure, parametrized)
 
     entries: list[CollectedTestDict] = []
     for combination in itertools.product(*(values for _name, values in dimensions)):
-        fixture_ids = [param_id for param_id, _value in combination]
+        fixture_ids = [param_id for param_id, _value, _marks in combination]
         fixture_params = {
-            dimension[0]: value for dimension, (_id, value) in zip(dimensions, combination)
+            dimension[0]: value for dimension, (_id, value, _marks) in zip(dimensions, combination)
         }
-        for case_id, case_values in direct_cases:
+        # A `pytest.param(..., marks=...)` inside a fixture's `params=` marks the tests that
+        # draw that value, exactly as one inside `@parametrize` marks its own case.
+        fixture_marks = [mark for _id, _value, marks in combination for mark in marks]
+        for case_id, case_values, case_marks in direct_cases:
             id_parts = [*fixture_ids, *([] if case_id is None else [case_id])]
             param_id = "-".join(id_parts) if id_parts else None
+            # A parameter set's own marks come **last**, so a per-case `xfail` is evaluated
+            # after (and can override the effect of) anything the function or module
+            # declared -- which is the order pytest builds `own_markers` in for the item.
+            case_all_marks = [*marks, *fixture_marks, *case_marks]
             entry = _build_entry(
                 context.rel_path,
                 full_parts,
                 param_id,
-                marks,
+                case_all_marks,
                 _fixture_names(func, name, owner, frozenset(case_values) - indirect),
             )
             entries.append(entry)
@@ -3599,7 +3847,7 @@ def _collect_function(
                     owner=owner,
                     closure=closure,
                     # An indirect name's value rides here, keyed by the fixture it is routed
-                    # to, which is exactly where `_SubRequest.__init__` looks for
+                    # to, which is exactly where `SubRequest.__init__` looks for
                     # `request.param` and where `_resolve_active` reads its per-parameter
                     # cache key. Nothing else has to change for teardown-per-parameter and
                     # for a wider-scoped fixture to be rebuilt once per value.
@@ -3611,7 +3859,7 @@ def _collect_function(
                         key: value for key, value in case_values.items() if key not in indirect
                     },
                     argnames=tuple(argnames),
-                    marks=tuple(marks),
+                    marks=tuple(case_all_marks),
                 )
             )
     return entries
@@ -3758,7 +4006,14 @@ def _collect_class(
     class_marks = _mark_specs(cls, consider_mro=True) + outer_marks
     child_parts = (*parts, name)
     class_registry = registry.child()
-    class_registry.parse_factories(cls, f"{context.rel_path}::{'::'.join(child_parts)}", cls)
+    class_baseid = f"{context.rel_path}::{'::'.join(child_parts)}"
+    # ...and the class/method pair, which `Class.collect` registers at l. 769-770 — again
+    # *before* `parsefactories` (l. 772), which is what puts `setup_method` ahead of a
+    # class-body autouse fixture.
+    for kind in ("class", "method"):
+        for fixturedef in _xunit_fixturedefs(cls, class_baseid, kind=kind):
+            class_registry.register(fixturedef)
+    class_registry.parse_factories(cls, class_baseid, cls)
     # A class-level `@parametrize` writes its cases onto the **class object**
     # (`decorators.py::parametrize` is target-agnostic), where a method cannot see them:
     # functions do not inherit class attributes.  So the cases are read here and handed down
@@ -3891,7 +4146,16 @@ def collect_module(
     if registry is None:
         registry = FixtureRegistry()
         _register_builtin_fixtures(registry)
-        registry.parse_factories(module, _relative_posix(path, rootdir))
+        # xunit module/function hooks, as autouse fixtures, registered **before** the
+        # module's own — `Module.collect` calls `_register_setup_module_fixture` and
+        # `_register_setup_function_fixture` (l. 554-555) and only then `parsefactories`
+        # (l. 556). Autouse order is registration order, so the reverse would make
+        # `setup_function` run *after* a user's autouse fixture.
+        module_baseid = _relative_posix(path, rootdir)
+        for kind in ("module", "function"):
+            for fixturedef in _xunit_fixturedefs(module, module_baseid, kind=kind):
+                registry.register(fixturedef)
+        registry.parse_factories(module, module_baseid)
 
     context = _CollectContext(
         module=module,
@@ -5450,7 +5714,13 @@ def _apply_pythonpath(raw: object) -> list[str]:
     """
     if not raw:
         return []
-    entries = [str(entry) for entry in cast("Sequence[object]", raw)]
+    # `str(Path(...))`, not the wire string verbatim. The entries travel as **posix** like
+    # every other path on the protocol, and inserting `C:/repo/src` on Windows works for the
+    # import itself but leaves every module found through it with a forward-slash
+    # `__file__` -- so `Path(mod.__file__).relative_to(rootdir)` and every string comparison
+    # against a native path silently disagrees with the same run under pytest, which inserts
+    # `str(Path)`. Native-separator normalisation is a no-op on posix.
+    entries = [str(Path(str(entry))) for entry in cast("Sequence[object]", raw)]
     for entry in reversed(entries):
         sys.path.insert(0, entry)
     return entries
@@ -5665,6 +5935,7 @@ def execute_batch(
     ids: Sequence[str],
     stop_on_failure: bool,
     emit: Callable[[Mapping[str, object]], None],
+    max_fail: int | None = None,
 ) -> BatchDoneResponse:
     """Run a whole file's tests, emitting one ``test_result`` each, then ``batch_done``.
 
@@ -5680,19 +5951,27 @@ def execute_batch(
     user needs, and only what comes after it is cancelled. See
     ``src/v2/protocol.rs::WorkerRequest::ExecuteBatch``.
 
+    ``max_fail`` is ``--maxfail``'s **remaining budget** for this batch (protocol v7), which
+    is why it is a count and not the configured ``N``: the orchestrator has already
+    subtracted what the rest of the pool failed. Same "emit, then decide" rule as
+    ``stop_on_failure``, so the Nth failure is still reported.
+
     :class:`UnknownTestError` propagates rather than being answered, exactly as it does for a
     single ``execute_test``: an id this worker never collected is a routing bug, and the
     results already emitted stay on the wire for the orchestrator to keep.
     """
     executed = 0
     stopped = False
+    failures = 0
     for test_id in ids:
         result = execute_test(test_id)
         emit(result)
         executed += 1
-        if stop_on_failure and result["status"] in ("failed", "error"):
-            stopped = True
-            break
+        if result["status"] in ("failed", "error"):
+            failures += 1
+            if stop_on_failure or (max_fail is not None and failures >= max_fail):
+                stopped = True
+                break
     return {"op": "batch_done", "executed": executed, "stopped": stopped}
 
 
@@ -5963,7 +6242,13 @@ def _protocol_loop(
                 )
                 return 2
             try:
-                done = execute_batch(cast("list[str]", ids), stop_on_failure, emit_buffered)
+                raw_max_fail = request.get("max_fail")
+                done = execute_batch(
+                    cast("list[str]", ids),
+                    stop_on_failure,
+                    emit_buffered,
+                    int(cast(int, raw_max_fail)) if raw_max_fail is not None else None,
+                )
             except UnknownTestError as exc:
                 # Whatever the batch already wrote is flushed before the worker dies, so the
                 # orchestrator keeps the results it earned and reports the drift against the

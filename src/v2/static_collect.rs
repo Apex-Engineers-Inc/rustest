@@ -1083,49 +1083,49 @@ impl Lit {
 
 /// Port of `python/rustest/decorators.py::_generate_param_id`.
 ///
-/// This is **v1's** id generator, not `_pytest/python.py::IdMaker`.  `_v2_worker.py::
-/// _parametrization` consumes the ids v1 computed at decoration time verbatim, so Tier S has
-/// to reproduce v1 — including where v1 differs from pytest (long strings truncate here and
-/// hash there; containers get a joined id here and `<argname><index>` there).  Those
-/// divergences are already documented in `_parametrization`'s docstring and waived by the
-/// corpus; reproducing pytest instead would make Tier S disagree with Tier D, which is the one
-/// thing it may never do.
+/// Port of `_pytest/python.py::IdMaker._idval_from_value` (l. 989-1007) and
+/// `_idval_from_argname` (l. 1023-1027), matching `decorators.py::_generate_param_id`.
 ///
-/// `index` is the case's position, used only by the fallback branch — which this port cannot
-/// reach, because every value that would fall through to it is refused as a non-literal.
-fn generate_param_id(value: &Lit, _index: usize) -> Option<String> {
+/// It used to be **v1's** generator, which invented a value-derived name for containers
+/// (`empty`, `1-2`, `dict(1)`) and truncated long strings at 17 characters. Phase 4 Task 1
+/// replaced both halves with pytest's: a container has no id of its own and falls back to
+/// `<argname><index>`, and a string is ascii-escaped in full. 915 of click's ids and 95 of
+/// jinja2's differed on nothing else, and the two engines have to agree, so Tier S moves with
+/// Tier D or it may not answer at all.
+///
+/// `None` means "no static id" -- the caller refuses the file to the worker rather than
+/// guessing, which is what keeps a value kind this does not model from silently getting a
+/// different id from the one the worker would compute.
+fn generate_param_id(value: &Lit, index: usize, argname: &str) -> Option<String> {
     match value {
         Lit::None | Lit::Bool(_) | Lit::Int { .. } => value.python_str(),
-        Lit::Str(text) => {
-            // `if len(value) <= 20: return value` / `return f"{value[:17]}..."`.  Python
-            // slices by code point, so this counts characters, not bytes.
-            let chars: Vec<char> = text.chars().collect();
-            Some(if chars.len() <= 20 {
-                text.clone()
-            } else {
-                format!("{}...", chars[..17].iter().collect::<String>())
-            })
-        }
-        Lit::Seq(items) => {
-            if items.is_empty() {
-                return Some("empty".to_string());
-            }
-            let mut parts = Vec::new();
-            for item in items.iter().take(3) {
-                parts.push(generate_param_id(item, 0)?);
-            }
-            let mut result = parts.join("-");
-            if items.len() > 3 {
-                result.push_str(&format!("-...({})", items.len()));
-            }
-            Some(result)
-        }
-        Lit::Dict(items) => Some(if items.is_empty() {
-            "empty_dict".to_string()
-        } else {
-            format!("dict({})", items.len())
-        }),
+        Lit::Str(text) => Some(ascii_escaped(text)),
+        // `_idval_from_value` answers `None` for a container, and `_idval` then falls back to
+        // `str(argname) + str(idx)`.
+        Lit::Seq(_) | Lit::Dict(_) => Some(format!("{argname}{index}")),
     }
+}
+
+/// Port of `_pytest/compat.py::ascii_escaped` (l. 195-215) for the `str` half.
+///
+/// `str.encode("unicode_escape")` in Rust terms: every code point outside printable ASCII
+/// becomes its `\xNN`/`\uNNNN`/`\UNNNNNNNN` escape, and the three whitespace characters get
+/// their short forms. Backslash itself doubles, which `unicode_escape` also does.
+fn ascii_escaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\\' => out.push_str("\\\\"),
+            c if (' '..='~').contains(&c) => out.push(c),
+            c if (c as u32) < 0x100 => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) < 0x10000 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push_str(&format!("\\U{:08x}", c as u32)),
+        }
+    }
+    out
 }
 
 /// Port of `_v2_worker.py::_unique_parameterset_ids`, itself a port of
@@ -1170,20 +1170,54 @@ fn unique_parameterset_ids(ids: Vec<String>) -> Vec<String> {
 /// One parametrization case: the id component and the argnames it binds.
 type Case = (String, Vec<String>);
 
-/// `python/rustest/decorators.py::_cross_product_cases` — ids join with `-` **outer first**,
-/// and the outer dimension varies slowest.
+/// `python/rustest/decorators.py::_cross_product_cases` — **stacked decorators on one
+/// function**: ids join with `-` outer first, and the outer dimension varies slowest.
 fn cross_product_cases(outer: &[Case], inner: &[Case]) -> Vec<Case> {
+    cross_cases(outer, inner, false)
+}
+
+/// `_v2_worker.py::_cross_product_cases` — a **class's** cases crossed with a *method's*.
+///
+/// Same nesting (the class dimension varies slowest) but the id joins **method component
+/// first**, because pytest appends each `parametrize` call's component to
+/// `CallSpec2._idlist` in call order and a method's own decorator is applied before the
+/// enclosing class's mark is unpacked. Measured on pytest 8.4.2: `test_m[10-1]` for a class
+/// carrying `[1, 2]` and a method carrying `[10, 20]`.
+fn cross_class_and_method_cases(outer: &[Case], inner: &[Case]) -> Vec<Case> {
+    cross_cases(outer, inner, true)
+}
+
+fn cross_cases(outer: &[Case], inner: &[Case], method_outermost: bool) -> Vec<Case> {
     let mut combined = Vec::with_capacity(outer.len() * inner.len());
-    for (outer_id, outer_names) in outer {
-        for (inner_id, inner_names) in inner {
-            let mut names = outer_names.clone();
-            for name in inner_names {
-                if !names.contains(name) {
-                    names.push(name.clone());
-                }
+    // `method_outermost` flips **both** halves together, and they have to move together: the
+    // id order and the iteration order are the same fact seen twice. pytest emits
+    // `[10-1], [10-2], [20-1], [20-2]` for a class carrying `[1, 2]` and a method carrying
+    // `[10, 20]` -- method component first in the id, and the method dimension varying
+    // slowest in the run.
+    let pairs: Vec<(&Case, &Case)> = if method_outermost {
+        inner
+            .iter()
+            .flat_map(|i| outer.iter().map(move |o| (o, i)))
+            .collect()
+    } else {
+        outer
+            .iter()
+            .flat_map(|o| inner.iter().map(move |i| (o, i)))
+            .collect()
+    };
+    for ((outer_id, outer_names), (inner_id, inner_names)) in pairs {
+        let mut names = outer_names.clone();
+        for name in inner_names {
+            if !names.contains(name) {
+                names.push(name.clone());
             }
-            combined.push((format!("{outer_id}-{inner_id}"), names));
         }
+        let id = if method_outermost {
+            format!("{inner_id}-{outer_id}")
+        } else {
+            format!("{outer_id}-{inner_id}")
+        };
+        combined.push((id, names));
     }
     combined
 }
@@ -1997,11 +2031,30 @@ impl<'a> Scan<'a> {
             if matches!(value, Lit::Dict(_)) && names.len() > 1 {
                 return Err(flag("@parametrize mapping value sets are not modelled"));
             }
-            let id = match &ids {
-                Some(ids) => ids[index].clone(),
-                None => generate_param_id(value, index)
-                    .ok_or_else(|| flag("@parametrize value has no static id"))?,
-            };
+            let id =
+                match &ids {
+                    Some(ids) => ids[index].clone(),
+                    // One component per **argname**, joined with `-`, which is
+                    // `IdMaker._resolve_ids` l. 945-948. A single-name parametrize has one
+                    // component and reads exactly as before for scalars.
+                    None => {
+                        let mut parts = Vec::with_capacity(bound.len());
+                        match value {
+                            Lit::Seq(items) if items.len() == names.len() && names.len() > 1 => {
+                                for (item, name) in items.iter().zip(names.iter()) {
+                                    parts.push(generate_param_id(item, index, name).ok_or_else(
+                                        || flag("@parametrize value has no static id"),
+                                    )?);
+                                }
+                            }
+                            _ => parts.push(
+                                generate_param_id(value, index, &names[0])
+                                    .ok_or_else(|| flag("@parametrize value has no static id"))?,
+                            ),
+                        }
+                        parts.join("-")
+                    }
+                };
             cases.push((id, bound));
         }
         Ok(cases)
@@ -2067,7 +2120,7 @@ impl<'a> Scan<'a> {
         let cases: Option<Vec<Case>> = match (outer_cases.is_empty(), own_cases) {
             (true, own) => own,
             (false, None) => Some(outer_cases.to_vec()),
-            (false, Some(own)) => Some(cross_product_cases(outer_cases, &own)),
+            (false, Some(own)) => Some(cross_class_and_method_cases(outer_cases, &own)),
         };
 
         let is_static_method = decorators.contains(&Decor::StaticMethod);
@@ -3061,9 +3114,15 @@ mod tests {
     /// `IdMaker`'s: `None`/bools spell out, a long string truncates at 17 + `...`, an empty
     /// container is `empty`, and a container over three items gains `-...(n)`.
     #[test]
-    fn v1_id_generation_branches() {
+    fn id_generation_branches_match_pytests_idmaker() {
         assert_eq!(
-            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [None, True, False, -3])\ndef test_x(v):\n    pass\n"),
+            ids("import pytest
+
+
+@pytest.mark.parametrize(\"v\", [None, True, False, -3])
+def test_x(v):
+    pass
+"),
             [
                 "test_a.py::test_x[None]",
                 "test_a.py::test_x[True]",
@@ -3071,23 +3130,51 @@ mod tests {
                 "test_a.py::test_x[-3]"
             ]
         );
+        // Kept whole: pytest ascii-escapes and does not truncate. v1 cut at 17 and appended
+        // `...`, which is what 95 of jinja2's ids differed by.
         assert_eq!(
-            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [\"abcdefghijklmnopqrstuvwxyz\"])\ndef test_x(v):\n    pass\n"),
-            ["test_a.py::test_x[abcdefghijklmnopq...]"]
+            ids("import pytest
+
+
+@pytest.mark.parametrize(\"v\", [\"abcdefghijklmnopqrstuvwxyz\"])
+def test_x(v):
+    pass
+"),
+            ["test_a.py::test_x[abcdefghijklmnopqrstuvwxyz]"]
         );
+        // A container has no id of its own -- `<argname><index>`, not `empty`/`1-2-3-...(4)`.
         assert_eq!(
-            ids("import pytest\n\n\n@pytest.mark.parametrize(\"v\", [[], [1, 2, 3, 4]])\ndef test_x(v):\n    pass\n"),
-            ["test_a.py::test_x[empty]", "test_a.py::test_x[1-2-3-...(4)]"]
+            ids("import pytest
+
+
+@pytest.mark.parametrize(\"v\", [[], [1, 2, 3, 4]])
+def test_x(v):
+    pass
+"),
+            ["test_a.py::test_x[v0]", "test_a.py::test_x[v1]"]
         );
     }
 
     #[test]
     fn a_class_level_parametrize_is_the_outer_dimension() {
+        // pytest's spelling and pytest's order, since Phase 4 Task 1's review: the
+        // **method** component leads the id and the method dimension varies slowest.
+        // Measured on pytest 8.4.2 with `[1, 2]` on the class and `[10, 20]` on the method.
         assert_eq!(
-            ids("import pytest\n\n\n@pytest.mark.parametrize(\"x\", [1, 2])\nclass TestBox:\n    @pytest.mark.parametrize(\"y\", [10])\n    def test_m(self, x, y):\n        pass\n"),
+            ids("import pytest
+
+
+@pytest.mark.parametrize(\"x\", [1, 2])
+class TestBox:
+    @pytest.mark.parametrize(\"y\", [10, 20])
+    def test_m(self, x, y):
+        pass
+"),
             [
-                "test_a.py::TestBox::test_m[1-10]",
-                "test_a.py::TestBox::test_m[2-10]"
+                "test_a.py::TestBox::test_m[10-1]",
+                "test_a.py::TestBox::test_m[10-2]",
+                "test_a.py::TestBox::test_m[20-1]",
+                "test_a.py::TestBox::test_m[20-2]"
             ]
         );
     }
@@ -3551,8 +3638,10 @@ mod tests {
     }
 
     #[test]
-    fn generate_param_id_matches_the_v1_port() {
-        let id = |lit: Lit| generate_param_id(&lit, 7).unwrap();
+    fn generate_param_id_matches_pytests_idmaker() {
+        // pytest's `IdMaker._idval_from_value`, not v1's generator: a container has no id of
+        // its own and falls back to `<argname><index>`, and a long string is kept whole.
+        let id = |lit: Lit| generate_param_id(&lit, 7, "x").unwrap();
         assert_eq!(id(Lit::None), "None");
         assert_eq!(id(Lit::Bool(true)), "True");
         assert_eq!(
@@ -3563,14 +3652,13 @@ mod tests {
             "0"
         );
         assert_eq!(id(Lit::Str("short".to_string())), "short");
-        assert_eq!(id(Lit::Str("x".repeat(20))), "x".repeat(20));
-        assert_eq!(
-            id(Lit::Str("x".repeat(21))),
-            format!("{}...", "x".repeat(17))
-        );
-        assert_eq!(id(Lit::Seq(Vec::new())), "empty");
-        assert_eq!(id(Lit::Dict(Vec::new())), "empty_dict");
-        assert_eq!(id(Lit::Dict(vec![("a".to_string(), Lit::None)])), "dict(1)");
+        assert_eq!(id(Lit::Str("x".repeat(30))), "x".repeat(30));
+        assert_eq!(id(Lit::Str("tab\there".to_string())), "tab\\there");
+        assert_eq!(id(Lit::Str("uni\u{6e2c}".to_string())), "uni\\u6e2c");
+        assert_eq!(id(Lit::Seq(Vec::new())), "x7");
+        assert_eq!(id(Lit::Seq(vec![Lit::None])), "x7");
+        assert_eq!(id(Lit::Dict(Vec::new())), "x7");
+        assert_eq!(id(Lit::Dict(vec![("a".to_string(), Lit::None)])), "x7");
     }
 
     // -- conftest chain --------------------------------------------------

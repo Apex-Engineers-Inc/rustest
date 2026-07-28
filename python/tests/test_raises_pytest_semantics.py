@@ -17,11 +17,14 @@ probe found, and what this file pins:
 * ``match=`` compared against ``str(exc)`` where pytest compares against
   ``stringify_exception`` — i.e. the message **plus PEP-678 ``__notes__``**.
 
-Known, deliberate divergence: a failed ``raises`` raises ``AssertionError`` where pytest
-raises ``_pytest.outcomes.Failed`` (a *BaseException*).  Both report the test as ``failed``
-with the same text, which is all any of the four real suites can observe; the type is
-recorded in the report rather than changed, because rustest's ``Failed`` derives from
-``Exception`` and swapping it would change what a user's ``except Exception`` catches.
+Phase 4 Task 1's review closed the one divergence this file used to record: a
+DID-NOT-RAISE failure is now ``rustest.decorators.Failed``, a **BaseException**, exactly as
+pytest's is (``raises.Exception is fail.Exception``, and ``OutcomeException(BaseException)``).
+It matters beyond taxonomy -- a test body that wraps the block in ``except Exception:``
+swallowed the failure and reported **passed** where pytest reported **failed**
+(three-shape repro in ``scratchpad/probe/catch``: pytest 3 failed, rustest 3 passed before,
+3 failed after). A ``match``/``check`` mismatch stays an ``AssertionError``, because that is
+what pytest raises there (``raise AssertionError(self._fail_reason)``, l. 722).
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from typing import Any, NoReturn
 import pytest
 
 from rustest import ExceptionInfo, raises
+from rustest.decorators import Failed
 
 
 def boom(*args: Any, **kwargs: Any) -> NoReturn:
@@ -74,7 +78,7 @@ def test_legacy_callable_form_accepts_a_tuple_of_types() -> None:
 
 
 def test_legacy_callable_form_that_does_not_raise() -> None:
-    with pytest.raises(AssertionError) as outer:
+    with pytest.raises(Failed) as outer:
         raises(ValueError, quiet)
     assert str(outer.value) == "DID NOT RAISE <class 'ValueError'>"
 
@@ -144,21 +148,21 @@ def test_wrong_type_propagates_even_when_match_is_given() -> None:
 
 
 def test_did_not_raise_single_type_message() -> None:
-    with pytest.raises(AssertionError) as outer:
+    with pytest.raises(Failed) as outer:
         with raises(ValueError):
             pass
     assert str(outer.value) == "DID NOT RAISE <class 'ValueError'>"
 
 
 def test_did_not_raise_multiple_types_message() -> None:
-    with pytest.raises(AssertionError) as outer:
+    with pytest.raises(Failed) as outer:
         with raises((ValueError, TypeError)):
             pass
     assert str(outer.value) == ("DID NOT RAISE any of (<class 'ValueError'>, <class 'TypeError'>)")
 
 
 def test_did_not_raise_with_no_expected_type_message() -> None:
-    with pytest.raises(AssertionError) as outer:
+    with pytest.raises(Failed) as outer:
         with raises(match="x"):
             pass
     assert str(outer.value) == "DID NOT RAISE any exception"
@@ -255,3 +259,68 @@ def test_context_object_before_exit_still_raises_attribute_error() -> None:
     ctx = raises(ValueError)
     with pytest.raises(AttributeError, match="No exception was caught"):
         _ = ctx.value
+
+
+# ------------------------------------------------------- catchability, and construction
+
+
+def test_a_did_not_raise_failure_survives_except_exception() -> None:
+    """The reviewer's repro, inverted into an assertion.
+
+    `except Exception:` around a `raises` block must NOT swallow the failure — that is the
+    whole reason pytest's `Failed` is a `BaseException`.
+    """
+    caught = False
+    try:
+        with raises(ValueError):
+            pass
+    except Exception:  # noqa: BLE001 - the point of the test
+        caught = True
+    except Failed:
+        pass
+    assert not caught, "`except Exception` swallowed the runner's failure signal"
+
+
+def test_nested_raises_still_composes() -> None:
+    with raises(TypeError):
+        with raises(ValueError):
+            raise TypeError("inner")
+
+
+def test_an_invalid_match_regex_fails_at_construction() -> None:
+    """`AbstractRaises.__init__` l. 393-400 calls `fail()`, so this is `Failed`, not `re.error`."""
+    with pytest.raises(Failed) as outer:
+        raises(ValueError, match="([)")
+    assert str(outer.value).startswith("Invalid regex pattern provided to 'match': ")
+
+
+def test_a_non_exception_class_is_a_value_error() -> None:
+    """`_parse_exc` l. 466-472 — pytest's own Type/ValueError split, reproduced."""
+    with pytest.raises(ValueError) as outer:
+        raises(int)  # type: ignore[arg-type]
+    assert str(outer.value) == "expected exception must be a BaseException type, not 'int'"
+
+
+def test_a_non_type_is_a_type_error() -> None:
+    with pytest.raises(TypeError) as outer:
+        raises(3)  # type: ignore[arg-type]
+    assert str(outer.value) == "expected exception must be a BaseException type, not 'int'"
+
+
+def test_a_bad_entry_inside_a_tuple_is_caught_too() -> None:
+    with pytest.raises(TypeError) as outer:
+        raises((ValueError, 3))  # type: ignore[arg-type]
+    assert str(outer.value) == "expected exception must be a BaseException type, not 'int'"
+
+
+def test_an_exception_instance_names_itself() -> None:
+    with pytest.raises(TypeError) as outer:
+        raises(ValueError("boom"))  # type: ignore[arg-type]
+    assert str(outer.value) == (
+        "expected exception must be a BaseException type, not an exception instance (ValueError)"
+    )
+
+
+def test_raises_exception_alias_is_failed() -> None:
+    """`raises.Exception is fail.Exception` — `_pytest/raises.py` l. 303-311."""
+    assert raises.Exception is Failed  # type: ignore[attr-defined]

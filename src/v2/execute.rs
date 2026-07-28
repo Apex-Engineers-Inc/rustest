@@ -44,7 +44,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Instant;
 
@@ -97,7 +97,21 @@ pub const REPORT_SCHEMA_VERSION: u32 = 2;
 #[derive(Debug, Clone, Default)]
 pub struct RunOptions {
     /// `-x` / `--exitfirst`: stop dispatching once a test has failed.  See [`run_with_launcher`].
+    ///
+    /// `-x` is `--maxfail=1`, and that is how the CLI spells it: [`Self::max_fail`] carries
+    /// the number and this stays the "stop the worker mid-batch" switch, which only the
+    /// first failure can justify.
     pub fail_fast: bool,
+    /// `--maxfail=N`: stop dispatching once **N** tests have failed. `0` means no limit.
+    ///
+    /// pytest counts failures in one process and raises `Failed` from
+    /// `pytest_runtest_logreport` the moment the count is reached
+    /// (`_pytest/main.py::pytest_runtest_logreport`), so it never starts test N+1. This pool
+    /// counts across workers and stops **dispatching** at N, so with `-n>1` and `N>1` the
+    /// tests already in flight still finish and the run can report more than N failures --
+    /// the same granularity `pytest-xdist` has, and for the same reason. `N == 1` keeps the
+    /// exact `-x` behaviour, because `fail_fast` also travels into the batch.
+    pub max_fail: usize,
     /// `--lf` / `--ff`: how the last-failed cache reorders the selection.
     pub last_failed: LastFailedMode,
     /// `-s` / `--no-capture`: the worker does not redirect a test's streams.
@@ -132,6 +146,7 @@ impl RunOptions {
     pub fn defaults() -> Self {
         Self {
             fail_fast: false,
+            max_fail: 0,
             last_failed: LastFailedMode::None,
             no_capture: false,
             codeblocks: true,
@@ -474,14 +489,37 @@ pub fn run(
 #[derive(Clone, Copy)]
 struct StopSignals<'a> {
     fail_fast: bool,
+    /// `--maxfail=N`; `0` is no limit.  Counted in [`StopSignals::failures`].
+    max_fail: usize,
     stop: &'a AtomicBool,
+    /// How many failures the whole pool has recorded, for `--maxfail`.
+    failures: &'a AtomicUsize,
     session_over: &'a AtomicBool,
 }
 
 impl StopSignals<'_> {
     fn should_stop(&self) -> bool {
         self.session_over.load(Ordering::SeqCst)
-            || (self.fail_fast && self.stop.load(Ordering::SeqCst))
+            || ((self.fail_fast || self.max_fail > 0) && self.stop.load(Ordering::SeqCst))
+    }
+
+    /// `--maxfail`'s budget for the next batch, or `None` when there is no limit.
+    fn remaining_budget(&self) -> Option<usize> {
+        if self.max_fail == 0 {
+            return None;
+        }
+        Some(
+            self.max_fail
+                .saturating_sub(self.failures.load(Ordering::SeqCst)),
+        )
+    }
+
+    /// Record one failure and answer whether the run has hit `--maxfail`.
+    fn note_failure(&self) -> bool {
+        if self.max_fail == 0 {
+            return false;
+        }
+        self.failures.fetch_add(1, Ordering::SeqCst) + 1 >= self.max_fail
     }
 }
 
@@ -585,6 +623,8 @@ fn run_with_launcher(
     // a subprocess round trip and the ordering question is then not one anybody has to think
     // about again.
     let stop = AtomicBool::new(false);
+    // `--maxfail`'s counter, shared across the pool.
+    let failures = AtomicUsize::new(0);
     let stop = &stop;
     // A second flag, because `stop` alone is ambiguous: under `-x` it means "a test failed",
     // and only a `fail_fast` run acts on it.  A `pytest.exit()` must stop dispatch whether or
@@ -594,6 +634,8 @@ fn run_with_launcher(
     let session_over = &session_over;
     let signals = StopSignals {
         fail_fast: options.fail_fast,
+        max_fail: options.max_fail,
+        failures: &failures,
         stop,
         session_over,
     };
@@ -997,12 +1039,24 @@ fn worker_life(
         // `-x` travels *into* the batch as well as being checked between batches. Without
         // it, `-x` would silently weaken from "nothing runs after the failing test" to
         // "nothing runs after the failing file" — see `WorkerRequest::ExecuteBatch`.
-        let batch = worker.execute_batch(&ids, signals.fail_fast, &mut outcomes);
+        // The **remaining** budget, not the configured N: a worker cannot know what the
+        // rest of the pool has already failed, so the orchestrator subtracts and sends what
+        // is left. `None` is "no limit"; a budget that has already been spent sends `Some(0)`
+        // and the batch is never dispatched, because `should_stop` fired first.
+        let budget = signals.remaining_budget();
+        let batch = worker.execute_batch(&ids, signals.fail_fast, budget, &mut outcomes);
         // The results are folded in **before** the batch's own outcome is inspected, so the
         // `SessionExit` arm below returns with them already recorded.
         for ((slot, _), outcome) in group.iter().zip(outcomes) {
-            if signals.fail_fast && outcome.status.is_failure() {
-                signals.stop.store(true, Ordering::SeqCst);
+            if outcome.status.is_failure() {
+                if signals.fail_fast {
+                    signals.stop.store(true, Ordering::SeqCst);
+                }
+                // `--maxfail` stops dispatch through the *same* flag `-x` uses, so one check
+                // in `should_stop` covers both. The counter is what makes N > 1 possible.
+                if signals.note_failure() {
+                    signals.stop.store(true, Ordering::SeqCst);
+                }
             }
             results.push((*slot, outcome));
         }
@@ -2043,7 +2097,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":6}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":7}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -2549,7 +2603,10 @@ def test_bails():
         let err = run_default(tmp.path(), &[], &scripted(&script), 1, None, None)
             .expect_err("an unsolicited `stopped` is fatal");
         let message = err.to_string();
-        assert!(message.contains("`-x` was not in effect"), "{message}");
+        assert!(
+            message.contains("neither `-x` nor `--maxfail` was in effect"),
+            "{message}"
+        );
         assert!(message.contains("test_a.py::test_two"), "{message}");
     }
 

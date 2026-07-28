@@ -186,3 +186,64 @@ def test_class_level_indirect_reaches_the_methods() -> None:
 
     assert _indirect_names(TestBox) == frozenset({"chosen"})
     assert _indirect_names(TestBox.test_one) == frozenset()
+
+
+# --------------------------------------------------- `_validate_if_using_arg_names` (I3)
+
+
+def test_a_parametrized_name_the_function_does_not_take_is_a_collection_error() -> None:
+    """Port of `_pytest/python.py::Metafunc._validate_if_using_arg_names` (l. 1455-1483).
+
+    rustest used to accept all four shapes silently — the test ran, **passed**, and the
+    parameter was never delivered. Measured on pytest 8.4.2: each is one collection error,
+    exit 2, with the message asserted here.
+    """
+    from rustest._v2_worker import _validate_if_using_arg_names, CollectionRefusal
+
+    def test_x(other: int = 0) -> None:
+        pass
+
+    with pytest.raises(CollectionRefusal) as excinfo:
+        _validate_if_using_arg_names(
+            test_x, "test_x", None, frozenset({"nosuch"}), frozenset(), frozenset()
+        )
+    assert str(excinfo.value) == "In test_x: function uses no argument 'nosuch'"
+
+
+def test_the_word_changes_for_an_indirect_name() -> None:
+    from rustest._v2_worker import _validate_if_using_arg_names, CollectionRefusal
+
+    def test_x() -> None:
+        pass
+
+    with pytest.raises(CollectionRefusal) as excinfo:
+        _validate_if_using_arg_names(
+            test_x, "test_x", None, frozenset({"nosuch"}), frozenset({"nosuch"}), frozenset()
+        )
+    assert str(excinfo.value) == "In test_x: function uses no fixture 'nosuch'"
+
+
+def test_a_parameter_with_a_default_gets_its_own_message() -> None:
+    from rustest._v2_worker import _validate_if_using_arg_names, CollectionRefusal
+
+    def test_x(val: int = 7) -> None:
+        pass
+
+    with pytest.raises(CollectionRefusal) as excinfo:
+        _validate_if_using_arg_names(
+            test_x, "test_x", None, frozenset({"val"}), frozenset(), frozenset()
+        )
+    assert str(excinfo.value) == (
+        "In test_x: function already takes an argument 'val' with a default value"
+    )
+
+
+def test_a_name_in_the_closure_is_accepted() -> None:
+    from rustest._v2_worker import _validate_if_using_arg_names
+
+    def test_x(used: int) -> None:
+        pass
+
+    _validate_if_using_arg_names(
+        test_x, "test_x", None, frozenset({"used"}), frozenset(), frozenset({"used"})
+    )

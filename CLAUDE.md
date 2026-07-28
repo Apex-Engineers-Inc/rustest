@@ -301,9 +301,10 @@ assert value == expected  # These variables don't need to exist
 uv run python -m rustest README.md
 uv run python -m rustest docs/guide/fixtures.md -v
 
-# Test entire directories
-uv run python -m rustest docs/guide/
-uv run python -m rustest README.md docs/guide/ docs/api/
+# Test whole directories of docs -- markdown must be NAMED, not walked: a directory
+# argument collects no `.md` (pytest walking the same tree collects none either).
+uv run python -m rustest docs/guide/*.md
+uv run python -m rustest README.md docs/guide/*.md docs/api/*.md
 ```
 
 #### Common Patterns

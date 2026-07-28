@@ -51,7 +51,11 @@ jobs:
         run: .venv/bin/python -m rustest --v1 tests/ examples/tests/ -v
 
       - name: Test documentation code blocks with rustest
-        run: .venv/bin/python -m rustest README.md docs/guide/ docs/getting-started/ docs/api/
+        run: .venv/bin/python -m rustest README.md docs/guide/*.md docs/getting-started/*.md docs/api/*.md
+        # Markdown is named, not walked: since 0.18 a *directory* argument collects no
+        # `.md` at all, because pytest walking the same tree collects none either and a
+        # repo with python fences in its docs was getting tests under `rustest tests/`
+        # that `pytest tests/` never sees. Naming the files keeps the docs tested.
 
   lint:
     name: Lint and Format

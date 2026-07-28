@@ -470,10 +470,26 @@ def test_markdown_code_blocks_are_collected_by_default(tmp_path: Path) -> None:
     assert _summary_line(result.stderr) == "1 passed, 1 skipped", result.stderr
 
 
-def test_markdown_files_are_found_by_walking_a_directory(tmp_path: Path) -> None:
+def test_markdown_files_are_not_found_by_walking_a_directory(tmp_path: Path) -> None:
+    """A directory argument collects **no** markdown — pytest walking it collects none.
+
+    This test asserted the opposite until Phase 4 Task 1's re-sweep measured the cost: any
+    repo with python fences in its docs got tests under `rustest tests/` that
+    `pytest tests/` never sees (13 of them on the acceptance target, 4 failing, because
+    documentation snippets do not import what they reference). Naming the file still works
+    and is how this repo tests its own docs — see the test below.
+    """
     tree = _tree(tmp_path, "mdwalk", {"docs/guide.md": MARKDOWN})
 
     result = _rustest(tree, ["docs", "-n", "1"])
+
+    assert result.returncode == 5, result.stdout + result.stderr
+
+
+def test_a_named_markdown_file_is_still_collected(tmp_path: Path) -> None:
+    tree = _tree(tmp_path, "mdnamed", {"docs/guide.md": MARKDOWN})
+
+    result = _rustest(tree, ["docs/guide.md", "-n", "1"])
 
     assert _summary_line(result.stderr) == "1 passed, 1 skipped", result.stderr
 

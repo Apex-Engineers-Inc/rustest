@@ -372,7 +372,12 @@ impl WorkerLauncher {
 /// is which.
 #[derive(Debug, Clone, Default)]
 pub struct CollectOptions {
-    /// Collect python fences in `.md` files — `--no-codeblocks` turns it off.
+    /// Collect python fences out of a `.md` file **named as an argument** —
+    /// `--no-codeblocks` turns even that off.
+    ///
+    /// It has never applied to a *directory walk* since Phase 4 Task 1's review: pytest
+    /// collects no markdown at all, so walking one in meant `rustest tests/` found tests
+    /// `pytest tests/` never sees, in any repo with python in its docs.
     pub codeblocks: bool,
     pub tier: TierMode,
     pub cache: CacheMode,
@@ -866,7 +871,7 @@ fn discover(
     let mut seen = Seen::default();
     for root in &roots {
         if root.is_dir() {
-            walk(root, &config, codeblocks, &mut targets, &mut seen);
+            walk(root, &config, &mut targets, &mut seen);
         } else if initial_file_target(root, codeblocks)? {
             seen.push_file_arg(root, &mut targets);
         }
@@ -988,13 +993,7 @@ fn absolutepath(invocation_dir: &Path, path: &Path) -> PathBuf {
 /// key ("always collect `__init__.py` first").  Applying it unconditionally is equivalent:
 /// a directory holding an `__init__.py` *is* a Package, and in any other directory the
 /// first tuple element is constant.
-fn walk(
-    dir: &Path,
-    config: &ResolvedConfig,
-    codeblocks: bool,
-    out: &mut Vec<PathBuf>,
-    seen: &mut Seen,
-) {
+fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>, seen: &mut Seen) {
     // `scandir` returns `[]` for a directory that cannot be opened, rather than raising.
     let Ok(reader) = std::fs::read_dir(dir) else {
         return;
@@ -1028,11 +1027,21 @@ fn walk(
             if should_prune(&name, &path, config) {
                 continue;
             }
-            walk(&path, config, codeblocks, out, seen);
+            walk(&path, config, out, seen);
         } else if is_file(&path, file_type)
-            && ((is_python_source(&path) && matches_python_files(&path, config))
-                || (codeblocks && is_markdown(&path)))
+            && is_python_source(&path)
+            && matches_python_files(&path, config)
         {
+            // **No `.md` here, deliberately.** A markdown file is collected only when it is
+            // named as an *argument* (`initial_file_target`), never when a directory walk
+            // happens to pass over it. pytest walks the same tree and collects no markdown
+            // at all, so a repo with python fences in its docs got extra tests under
+            // flagless rustest and nowhere else -- measured on Apex Member Designer, whose
+            // `tests/fixtures/SCENARIOS.md` contributed 13 ids pytest never sees, 4 of them
+            // failing because documentation snippets do not import what they reference.
+            // Testing the docs is still one command away (`rustest README.md docs/`), which
+            // is how this repo tests its own; it just is not something `rustest tests/`
+            // does behind the user's back.
             seen.push_walked(&path, out);
         }
     }
@@ -1559,7 +1568,8 @@ impl Worker {
     ///   missing test would simply be absent from the report;
     /// * a batch that ended without `stopped` must have executed every id. Anything else is a
     ///   worker that dropped work without saying so;
-    /// * a batch may only report `stopped` when this request asked for it. `stopped` is the
+    /// * a batch may only report `stopped` when this request asked for it -- `-x` **or**
+    ///   `--maxfail`. `stopped` is the
     ///   one field a worker can set that legitimately *shrinks* the report, and the
     ///   orchestrator acts on it by setting the pool-wide stop flag — so an unsolicited
     ///   `stopped` would truncate a run that never asked to stop, and every test after it
@@ -1573,6 +1583,7 @@ impl Worker {
         &mut self,
         ids: &[String],
         stop_on_failure: bool,
+        max_fail: Option<usize>,
         out: &mut Vec<TestOutcome>,
     ) -> Result<bool, CollectError> {
         let first = ids.first().map(String::as_str).unwrap_or("<empty batch>");
@@ -1580,6 +1591,7 @@ impl Worker {
         let request = WorkerRequest::ExecuteBatch {
             ids: ids.to_vec(),
             stop_on_failure,
+            max_fail,
         };
         if let Err(err) = self.send(&request) {
             return Err(self.execute_died(first, format!("could not send execute_batch: {err}")));
@@ -1673,10 +1685,13 @@ impl Worker {
                     // lost result it is.  So the one claim a batch can make that silently
                     // shrinks a green run is exactly the one that must be checked against
                     // what was asked, not taken on the worker's word.
-                    if stopped && !stop_on_failure {
+                    // `--maxfail` is the second thing that legitimately stops a batch, and
+                    // the check has to know about it or a `--maxfail=2` run is a protocol
+                    // error instead of a short run.
+                    if stopped && !stop_on_failure && max_fail.is_none() {
                         return Err(self.execute_protocol(
                             expected,
-                            "the batch reports stopping early, but `-x` was not in effect"
+                            "the batch reports stopping early, but neither `-x` nor `--maxfail` was in effect"
                                 .to_string(),
                             line,
                         ));
@@ -1988,7 +2003,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":6}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":7}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked
@@ -2469,59 +2484,72 @@ mod tests {
         );
     }
 
-    /// The walk finds `.md` files too — `rustest docs/` has to work, not just
-    /// `rustest docs/guide.md` — and they take their place in the same name-sorted order as
-    /// everything else rather than being appended.
+    /// A directory walk finds **no** markdown, whatever `--no-codeblocks` says.
+    ///
+    /// It used to, and Phase 4 Task 1's re-sweep measured what that costs: pytest walks a
+    /// tree and collects no markdown at all, so `rustest tests/` on any repo with python
+    /// fences in its docs found tests `pytest tests/` never sees -- 13 of them on the
+    /// acceptance target, 4 failing because documentation snippets do not import what they
+    /// reference. Testing the docs is still `rustest README.md docs/`, which is how this
+    /// repo tests its own; it is no longer something a `tests/` run does unasked.
     #[test]
-    fn the_walk_finds_markdown_in_name_order() {
+    fn the_walk_finds_no_markdown() {
         let tmp = tree(&[("test_b.py", &module("b"))]);
         write_file(
             &tmp.path().join("guide.md"),
-            "```python\nassert True\n```\n",
+            "```python
+assert True
+```
+",
         );
 
-        assert_eq!(discovered(&tmp, &[]), vec!["guide.md", "test_b.py"]);
+        assert_eq!(discovered(&tmp, &[]), vec!["test_b.py"]);
     }
 
-    /// ...and does not, with the tier off.  Pinned as its own case because a walk that
-    /// ignored the flag would still pass the argument-level test above.
+    /// ...and naming the file is still how you get it.
     #[test]
-    fn the_walk_ignores_markdown_when_codeblocks_are_off() {
+    fn a_named_markdown_file_is_still_collected() {
         let tmp = tree(&[("test_b.py", &module("b"))]);
         write_file(
             &tmp.path().join("guide.md"),
-            "```python\nassert True\n```\n",
+            "```python
+assert True
+```
+",
         );
 
-        let (config, targets) = discover(tmp.path(), &[], false).unwrap();
-        let names: Vec<String> = targets
-            .iter()
-            .map(|path| {
-                path.strip_prefix(&config.rootdir)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            })
-            .collect();
-        assert_eq!(names, vec!["test_b.py"]);
+        assert_eq!(
+            discovered(&tmp, &[tmp.path().join("guide.md")]),
+            vec!["guide.md"]
+        );
     }
 
-    /// `python_files` governs `.py` and nothing else: a project narrowing it must not lose
-    /// its markdown tier, and must not acquire a second collector for a `.md` file either.
+    /// `python_files` governs `.py` and nothing else: a project narrowing it must not
+    /// acquire a second collector for a `.md` file, and must not pick markdown up off a
+    /// walk either.
     #[test]
     fn markdown_is_not_matched_against_python_files() {
         let tmp = TempDir::new().unwrap();
         write_file(
             &tmp.path().join("pytest.ini"),
-            "[pytest]\npython_files = check_*.py\n",
+            "[pytest]
+python_files = check_*.py
+",
         );
         write_file(
             &tmp.path().join("guide.md"),
-            "```python\nassert True\n```\n",
+            "```python
+assert True
+```
+",
         );
         write_file(&tmp.path().join("test_a.py"), &module("a"));
 
-        assert_eq!(discovered(&tmp, &[]), vec!["guide.md"]);
+        assert!(discovered(&tmp, &[]).is_empty());
+        assert_eq!(
+            discovered(&tmp, &[tmp.path().join("guide.md")]),
+            vec!["guide.md"]
+        );
     }
 
     // --- routing ----------------------------------------------------------

@@ -138,6 +138,66 @@ REMOVED_FLAGS: dict[str, str] = {
 }
 
 
+#: pytest flags rustest **accepts and ignores**, with the value they take.
+#:
+#: Every one of these changes how pytest *reports*, not what it runs, and every one of them
+#: is the kind of thing that lives in a project's `addopts` forever. Before Phase 4 Task 1's
+#: review they were unrecognised, so `addopts = "-ra --tb=short"` -- an entirely ordinary
+#: line -- made `rustest` exit 4 on a repo pytest runs happily. Erroring on a *cosmetic*
+#: flag is the wrong trade: the run it describes is one rustest can do, just with its own
+#: output.
+#:
+#: The value is how many following tokens the flag consumes when it is written separately
+#: (`--tb short`), so the argument is dropped with it rather than left behind to be read as
+#: a path.
+#:
+#: **Dropping is loud.** One stderr line per flag, naming it, so a reader is never wondering
+#: why `--durations=10` produced no timing table. Anything *not* on this list is still exit 4
+#: (`_Parser.error`), because a flag that changes what runs must never be silently ignored.
+IGNORED_PYTEST_FLAGS: dict[str, int] = {
+    "--tb": 1,
+    "--durations": 1,
+    "--durations-min": 1,
+    "--import-mode": 1,
+    "--strict-markers": 0,
+    "--strict-config": 0,
+    "--strict": 0,
+    "-p": 1,
+    "--showlocals": 0,
+    "-l": 0,
+    "--full-trace": 0,
+}
+
+
+def _drop_ignored_pytest_flags(raw: list[str]) -> tuple[list[str], list[str]]:
+    """Split *raw* into (what the parser sees, what was dropped).
+
+    ``-rA``/``-ra``/``-rfE`` are handled apart from the table because pytest's ``-r`` takes
+    its characters **attached** and there is no separate-token form to consume.
+    """
+    kept: list[str] = []
+    dropped: list[str] = []
+    index = 0
+    while index < len(raw):
+        token = raw[index]
+        index += 1
+        # `-r` + report characters, always attached (`-ra`, `-rfEsxX`).
+        if len(token) > 2 and token.startswith("-r") and not token.startswith("--"):
+            dropped.append(token)
+            continue
+        name, _, inline = token.partition("=")
+        takes = IGNORED_PYTEST_FLAGS.get(name)
+        if takes is None:
+            kept.append(token)
+            continue
+        dropped.append(token)
+        # `--tb short` (separate token) as well as `--tb=short`; only consume when the flag
+        # takes a value and did not already carry one, and never consume another flag.
+        if takes and not inline and index < len(raw) and not raw[index].startswith("-"):
+            index += 1
+    return kept, dropped
+
+
 def is_ci_environment() -> bool:
     """Detect if running in a CI environment.
 
@@ -260,12 +320,24 @@ def build_parser() -> _Parser:
     )
     _ = parser.add_argument(
         "--color",
-        choices=["auto", "always", "never"],
+        # pytest spells these `yes`/`no`/`auto` (`_pytest/terminal.py::pytest_addoption`);
+        # rustest shipped `always`/`never`/`auto`. Both are accepted, and `_color_mode`
+        # folds pytest's onto rustest's. Before Phase 4 Task 1's review a repo with
+        # `addopts = --color=yes` -- humanize, today -- hit `invalid choice` and exited 4
+        # on a flag rustest *has*.
+        choices=["auto", "always", "never", "yes", "no"],
         default="auto",
         help=(
-            "When to use colored output: auto (default, detect CI), always, or never "
-            "(--v1 only; the default engine's output is not colored yet)."
+            "When to use colored output: auto (default, detect CI), always/yes, or "
+            "never/no (--v1 only; the default engine's output is not colored yet)."
         ),
+    )
+    _ = parser.add_argument(
+        "--maxfail",
+        type=int,
+        default=0,
+        metavar="NUM",
+        help="Exit after the first NUM failures or errors (0 means no limit).",
     )
     _ = parser.add_argument(
         "--no-codeblocks",
@@ -361,6 +433,7 @@ def build_parser() -> _Parser:
         last_failed=False,
         failed_first=False,
         fail_fast=False,
+        maxfail=0,
         quiet=False,
         report_json=None,
         v2_collect_only=False,
@@ -461,6 +534,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         else None
     )
 
+    # Cosmetic pytest flags are dropped **before** the removed-flag scan and before parsing,
+    # so `addopts = "-ra --tb=short"` is a note rather than an exit 4. See
+    # `IGNORED_PYTEST_FLAGS` for what qualifies and why the list is short.
+    raw, ignored = _drop_ignored_pytest_flags(raw)
+    for flag in ignored:
+        print(
+            f"NOTE: {flag} is a pytest reporting option rustest does not implement;"
+            + " it was ignored.",
+            file=sys.stderr,
+        )
+
     # Scanned *after* the splice, so a repo whose `addopts` still carries a removed flag is
     # told so instead of having it swallowed by `nargs="*"` as a path.
     for flag, message in REMOVED_FLAGS.items():
@@ -556,7 +640,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         keyword=args.pattern,
         mark_expr=args.mark_expr,
         report_json=args.report_json,
-        fail_fast=args.fail_fast,
+        # `-x` is `--maxfail=1`, which is how pytest defines it
+        # (`_pytest/main.py::pytest_addoption`: `-x` is `--maxfail=1`'s alias). Passing both
+        # is not an error there either; the stricter of the two wins.
+        max_fail=1 if args.fail_fast else args.maxfail,
+        fail_fast=args.fail_fast or args.maxfail == 1,
         last_failed_mode=_last_failed_mode(args),
         capture=args.capture_output,
         codeblocks=args.enable_codeblocks,
@@ -589,10 +677,9 @@ def _run_v1(args: argparse.Namespace) -> int:
     if args.color == "auto":
         # Auto-detect: colors enabled locally, disabled in CI
         use_color = not is_ci_environment()
-    elif args.color == "always":
-        use_color = True
-    else:  # "never"
-        use_color = False
+    else:
+        # `yes`/`no` are pytest's spellings of `always`/`never`; both reach here.
+        use_color = args.color in ("always", "yes")
 
     report = run(
         paths=list(args.paths),

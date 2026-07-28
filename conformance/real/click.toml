@@ -60,17 +60,8 @@ id_policy = "strip_params"
 # `tests/test_shell_completion.py`'s 14 parameter cases is fixed (commit 8daac97 --
 # `_pytest/monkeypatch.py::resolve` ported). Nothing in click is ledgered by id any more.
 [divergence.global]
-ids = """\
-PARAMETRIZE ID GENERATION. rustest does not reproduce pytest's `IdMaker` \
-(`_pytest/python.py`) for four kinds of value, probed directly on a 13-case file:
-  * containers -- pytest falls back to `<argname><index>` (`x0`, `v0`), rustest invents a \
-value-derived name (`dict(1)`, `empty_dict`, `1-2` for `[1, 2]`, `3-4` for `(3, 4)`);
-  * any other non-scalar -- pytest still uses `<argname><index>` (`v2`), rustest uses \
-`param<index>`;
-  * enum members and bytes -- pytest has explicit rules (`E.UNSET`, `bytes`), rustest \
-falls back to `param<index>`;
-  * long strings -- pytest keeps the whole ascii-escaped value, rustest truncates at 17 \
-characters and appends `...`.
-Scalars (short str, int, float, bool, None) already agree, which is why the corpus's \
-`parametrize/*` cases pass: they use nothing else. That is a corpus gap this sweep found. \
-PHASE-4 / KNOWN-LIMITATION."""
+# EMPTY as of Phase 4 Task 1's review. The last entry here was PARAMETRIZE ID GENERATION --
+# rustest did not reproduce `_pytest/python.py::IdMaker` for containers, enums, bytes,
+# functions or long strings, and this suite's ids differed from pytest's by spelling alone.
+# `decorators.py::_idval_from_value` and `src/v2/static_collect.rs::generate_param_id` are
+# now ports of it, both halves of the tier pair moving together, and the suite MATCHES.

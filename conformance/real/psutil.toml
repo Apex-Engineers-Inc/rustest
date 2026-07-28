@@ -1,0 +1,116 @@
+# psutil -- KEEP (Phase 4 Task 1b batch 2). ZERO conftest.py anywhere in the repo -- confirmed
+# by direct listing of every plausible directory (top-level tests/, the psutil/ package dir
+# itself, repo root, scripts/). Classification: NONE, as clean as jsonschema's.
+#
+# All shared test infrastructure lives in tests/__init__.py instead: `class
+# PsutilTestCase(unittest.TestCase)` ("All test classes should derive from this one, even if
+# we use pytest" -- the project's own docstring), with platform gating done entirely through
+# plain `@pytest.mark.skipif(not WINDOWS, ...)`/`@pytest.mark.skipif(PYPY, ...)` decorators on
+# per-platform base classes (e.g. `WindowsTestCase`), not hooks. No `pytest_*` function exists
+# anywhere in tests/__init__.py either -- confirmed directly, not just inferred from the
+# missing conftest.py. No pytest_generate_tests, no custom collectors, no plugin registration
+# of psutil's own. `@pytest.mark.parametrize` usage is essentially absent (checked
+# test_process.py/test_connections.py/test_misc.py explicitly -- zero occurrences). New
+# domain: process/system introspection, versus everything else in the corpus.
+
+[repo]
+kind = "oss"
+url = "https://github.com/giampaolo/psutil.git"
+tag = "v7.2.2"
+# psutil pushes two tags per release pointing at the same commit (v7.2.2 and release-7.2.2);
+# either resolves identically. Annotated (GitHub's tag page shows an explicit "tagged this"
+# attribution line, only rendered for annotated tag objects) -- api.github.com's
+# `git/refs/tags` endpoint that would API-verify this was 403-blocked this session; the commit
+# below is corroborated via two independent github.com web-UI fetches (tag page + commit
+# page), not API-verified. Flag for the implementer to re-verify with `gh api` if it matters.
+rev = "9eea97dd6f1d16ea33f5144c8925f1ce7a0688e1"
+test_paths = ["tests"]
+
+[env]
+# BUILD-REQUIREMENT NOTE, same shape as Pillow's: psutil compiles a real per-platform C
+# extension (setup.py `ext_modules`, e.g. `_psutil_windows.c`) -- an editable/from-source
+# install (`-e {repo}`) would force a local compile. PyPI instead publishes a stable-ABI wheel,
+# `psutil-7.2.2-cp37-abi3-win_amd64.whl`, which covers every CPython from 3.7 through current
+# (3.13/3.14 included) on win_amd64 -- so this draft installs psutil NON-EDITABLE, by version
+# pin from PyPI (`uv pip install psutil==7.2.2`, which resolves the abi3 wheel automatically),
+# and uses `{repo}` only as the source of the `tests/` tree. No local compilation needed.
+#
+# setup.py's TEST_DEPS = ["psleak", "pytest", "pytest-instafail", "pytest-xdist",
+# "setuptools", plus pywin32/wheel/wmi guarded by `os_name == "nt" and implementation_name !=
+# "pypy"` (true here)]. Installed below: `psleak` (giampaolo's own leak-assertion lib, used by
+# test_memleaks.py) and `pywin32`/`wmi` -- these two are NOT optional on Windows: test_windows.py
+# imports `win32api`/`win32con`/`win32process`/`wmi` at MODULE SCOPE guarded only by `if
+# WINDOWS and not PYPY:`, so without them that whole file fails to import/collect rather than
+# skipping cleanly. Left out: pytest-instafail/pytest-xdist (output-formatting/parallelism
+# plugins, only activated via `-p instafail`/`-p xdist` in [tool.pytest] addopts, which is
+# inert under this corpus's pytest pin -- see [addopts] below, so there's nothing for them to
+# hook into), setuptools/wheel (build tooling, not test-runtime imports).
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "psleak", "pywin32", "wmi"],
+  # Non-editable, version-pinned install from PyPI -- see the build-requirement note above.
+  ["uv", "pip", "install", "--python", "{py}", "psutil==7.2.2"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# pyproject.toml declares `[tool.pytest]` (NOT `[tool.pytest.ini_options]`) with a large
+# addopts list: "--capture=no", "--instafail", "--no-header", "--strict-config",
+# "--strict-markers", "--tb=short", "--verbose", "-p instafail", "-p no:doctest", "-p
+# no:junitxml", "-p no:nose", "-p no:pastebin", "-p xdist"; plus verbosity_subtests = "0",
+# testpaths = ["tests/"], python_files = ["test_*.py"]. `[tool.pytest]` is pytest 9's native
+# TOML config table (added in pytest 9.0) -- this corpus's oracle pin, pytest==8.4.2, predates
+# that and does not read it at all, so this entire block (including the plugin-enabling `-p`
+# flags) is silently inert to the pytest leg, which is actually the SIMPLER outcome: no need
+# to install/wire pytest-instafail or pytest-xdist to match it. `testpaths`/`python_files` are
+# separately covered by `[repo].test_paths` and pytest's own `test_*.py` default respectively.
+# OPEN ITEM for the implementer, same as Pillow's: confirm whether rustest's own
+# pyproject-config reader also ignores bare `[tool.pytest]` (matching pytest 8.4.2) or already
+# supports it like pytest 9 -- if rustest reads it and pytest 8.4.2 doesn't, `--strict-markers`
+# / `--capture=no` / the `-p no:*` disables applying on one side only is itself a divergence
+# source, not just a dropped no-op.
+configured = [
+  "--capture=no", "--instafail", "--no-header", "--strict-config", "--strict-markers",
+  "--tb=short", "--verbose", "-p instafail", "-p no:doctest", "-p no:junitxml",
+  "-p no:nose", "-p no:pastebin", "-p xdist",
+]
+replay = []
+dropped = [
+  "--capture=no", "--instafail", "--no-header", "--strict-config", "--strict-markers",
+  "--tb=short", "--verbose", "-p instafail", "-p no:doctest", "-p no:junitxml",
+  "-p no:nose", "-p no:pastebin", "-p xdist",
+]
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# unittest.TestCase methods, zero parametrize usage confirmed directly in the three largest
+# sampled files -- stable string ids, no value-derived parametrize id machinery in play.
+# Same reasoning as cachetools'/jsonschema's drafts.
+id_policy = "exact"
+
+[divergence.ids]
+
+[divergence.global]
+# Expected friction to flag, not pre-waived:
+# - tests/test_sudo.py needs elevated privileges and is run OUTSIDE pytest entirely in
+#   upstream CI (`python -m unittest tests.test_sudo`, not part of `make test`'s pytest
+#   invocation). It's still inside `test_paths = ["tests"]` here and will get collected by
+#   both engines; if neither runner is elevated, both should hit the same failures/errors
+#   identically (a MATCH per the pynite.toml precedent), but confirm at gate time rather than
+#   assume -- consider excluding it explicitly if it proves noisy.
+# - tests/test_memleaks.py is run with PYTHONMALLOC=malloc in upstream CI (a separate
+#   invocation); not set here. May behave differently without it -- flag if leak-detection
+#   tests are flaky.

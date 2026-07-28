@@ -718,6 +718,7 @@ def v2_run(
     mark_expr: str | None = None,
     report_json: str | None = None,
     fail_fast: bool = False,
+    max_fail: int = 0,
     last_failed_mode: str = "none",
     capture: bool = True,
     codeblocks: bool = True,
@@ -760,6 +761,7 @@ def v2_run(
         mark_expr: The raw ``-m`` expression, or ``None``.
         report_json: Where to write the schema-v2 JSON report, or ``None``.
         fail_fast: ``-x`` -- stop dispatching after the first failure.
+        max_fail: ``--maxfail=N`` -- stop dispatching after N failures; 0 is no limit.
         last_failed_mode: ``"none"``, ``"only"`` (``--lf``) or ``"first"`` (``--ff``).
         capture: ``False`` for ``-s``; the workers stop redirecting a test's streams.
         codeblocks: Collect python fences from ``.md`` files (``--no-codeblocks`` clears it).
@@ -793,6 +795,7 @@ def v2_run(
                 keyword,
                 mark_expr,
                 fail_fast,
+                max_fail,
                 last_failed_mode,
                 not capture,
                 codeblocks,

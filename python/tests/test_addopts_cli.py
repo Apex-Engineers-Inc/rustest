@@ -167,3 +167,95 @@ def test_no_addopts_means_no_change_to_argv(tmp_path: Path) -> None:
 
     assert ours.returncode == 0, ours.stdout + ours.stderr
     assert "1 passed" in ours.stderr, ours.stderr
+
+
+# ---------------------------------------------------- reporting flags, accepted and ignored
+
+
+def test_reporting_flags_in_addopts_are_dropped_with_a_note(tmp_path: Path) -> None:
+    """`addopts = "-ra --tb=short"` is an ordinary line; it used to exit 4.
+
+    These change how pytest *reports*, not what it runs, so refusing the run over one is the
+    wrong trade — but dropping it silently is worse, hence one stderr line naming each.
+    """
+    tree = _tree(tmp_path, "-ra --tb=short --durations=10 -p no:cacheprovider")
+
+    oracle = _pytest(tree, [])
+    ours = _rustest(tree, [])
+
+    assert oracle.returncode == 0, oracle.stdout
+    assert ours.returncode == 0, ours.stdout + ours.stderr
+    for flag in ("-ra", "--tb=short", "--durations=10", "-p"):
+        assert f"NOTE: {flag} is a pytest reporting option" in ours.stderr, ours.stderr
+
+
+def test_strict_markers_is_ignored_and_that_is_a_real_divergence(tmp_path: Path) -> None:
+    """`--strict-markers` is on the ignore list, and unlike the rest it is **not** cosmetic.
+
+    pytest turns an unregistered mark into a collection error under it; rustest has no mark
+    registry, so it ignores the flag and the run proceeds. Measured on the same tree, whose
+    `@pytest.mark.slow` is not declared: pytest exits **2**, rustest exits **0**.
+
+    Ignored rather than refused because the alternative is exit 4 on a flag half the
+    ecosystem has in `addopts`, and refusing to run is worse than running without a check
+    rustest cannot perform. The stderr note is what keeps it from being silent.
+    """
+    tree = _tree(tmp_path, "--strict-markers")
+
+    oracle = _pytest(tree, [])
+    ours = _rustest(tree, [])
+
+    assert oracle.returncode == 2, oracle.stdout
+    assert ours.returncode == 0, ours.stdout + ours.stderr
+    assert "NOTE: --strict-markers is a pytest reporting option" in ours.stderr, ours.stderr
+
+
+def test_a_separately_written_value_is_dropped_with_its_flag(tmp_path: Path) -> None:
+    """`--tb short` must not leave `short` behind to be read as a path argument."""
+    tree = _tree(tmp_path, "--tb short")
+
+    ours = _rustest(tree, [])
+
+    assert ours.returncode == 0, ours.stdout + ours.stderr
+    assert "2 passed" in ours.stderr, ours.stderr
+
+
+def test_an_unknown_flag_is_still_a_usage_error(tmp_path: Path) -> None:
+    """The allowlist is an allowlist: anything else still exits 4."""
+    tree = _tree(tmp_path, "--bogus-flag")
+
+    assert _pytest(tree, []).returncode == 4
+    assert _rustest(tree, []).returncode == 4
+
+
+def test_color_accepts_pytests_spelling(tmp_path: Path) -> None:
+    """rustest *has* `--color`; it just spelled its values differently, so `--color=yes`
+    — humanize's `addopts`, today — hit `invalid choice` and exited 4."""
+    tree = _tree(tmp_path, "--color=yes")
+
+    oracle = _pytest(tree, [])
+    ours = _rustest(tree, [])
+
+    assert oracle.returncode == 0, oracle.stdout
+    assert ours.returncode == 0, ours.stdout + ours.stderr
+
+
+def test_maxfail_matches_pytest(tmp_path: Path) -> None:
+    """`--maxfail=N` stops on the Nth failure — `-x` generalized.
+
+    Single worker, which is where pytest's own granularity is reproducible: with a pool the
+    orchestrator stops *dispatching* at N and tests already in flight still finish, the same
+    granularity pytest-xdist has.
+    """
+    tree = tmp_path / "maxfail_project"
+    _write(tree / "pytest.ini", "[pytest]\n")
+    _write(
+        tree / "test_all_fail.py",
+        "".join(f"def test_{n}():\n    assert False\n\n\n" for n in range(1, 6)),
+    )
+
+    for limit in (1, 2, 3):
+        oracle = _pytest(tree, [f"--maxfail={limit}"])
+        ours = _rustest(tree, ["-n", "1", f"--maxfail={limit}"])
+        assert f"{limit} failed" in oracle.stdout, oracle.stdout
+        assert f"{limit} failed" in ours.stderr, ours.stderr

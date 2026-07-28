@@ -425,7 +425,11 @@ def test_fixture_metadata_is_read_from_the_decorator(tmp_path: Path) -> None:
         assert registry.getfixturedefs("_hidden") is None
         choice = registry.getfixturedefs("choice")
         assert choice is not None
-        assert choice[-1].params == (("one", 1), ("two", 2))
+        # `(id, value, marks)` since Phase 4 Task 1: a fixture's `params=` takes
+        # `pytest.param(..., marks=...)`, which pytest carries because
+        # `FixtureManager.pytest_generate_tests` hands `fixturedef.params` to
+        # `metafunc.parametrize` as ordinary parameter sets.
+        assert choice[-1].params == (("one", 1, ()), ("two", 2, ()))
         assert registry.autouse_names == ("renamed",)
 
 

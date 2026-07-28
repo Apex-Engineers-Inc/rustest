@@ -1,0 +1,71 @@
+# Werkzeug -- KEEP (no swap needed), and Pallets sibling #3 in this corpus alongside click and
+# jinja2. tests/conftest.py at 3.1.8 is the only conftest.py in the repo: helper/data classes
+# (UnixSocketHTTPConnection, DataHTTPResponse, DevServerClient, a t.Protocol) plus two plain
+# @pytest.fixture functions (dev_server, standard_app). Zero pytest_* hooks anywhere -- LIMITED,
+# and lighter than click (no custom-marker-driven addopts) or jinja2 (no async fixture
+# params). New domain within the same org: WSGI/HTTP primitives rather than CLI or templating.
+
+[repo]
+kind = "oss"
+url = "https://github.com/pallets/werkzeug.git"
+tag = "3.1.8"
+# Annotated tag; this is the commit it points at, not the tag object's own SHA.
+rev = "c1a26b45fb06d5e086b4d6be820c3302f588d815"
+test_paths = ["tests"]
+
+[env]
+# [dependency-groups].tests: cffi, cryptography, ephemeral-port-reserve, pytest,
+# pytest-timeout, watchdog. cffi/cryptography/ephemeral-port-reserve back real TLS/socket
+# dev-server tests (an execution-environment concern, not a hook-compatibility one).
+# pytest-timeout is the only pytest plugin in the footprint -- not referenced via addopts (no
+# addopts key at all, see below), so presumably applied per-test via decorator/marker in
+# individual files; confirm at gate time whether any test actually needs it to terminate.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "pytest==8.4.2",
+    "pytest-timeout",
+    "cffi",
+    "cryptography",
+    "ephemeral-port-reserve",
+    "watchdog",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# [tool.pytest.ini_options]: testpaths = ["tests"], filterwarnings = ["error",
+# "always::pytest.PytestUnraisableExceptionWarning"], markers = ["dev_server: ..."]. No
+# addopts key at all -- nothing to replay or drop. (filterwarnings/markers are separate ini
+# keys from addopts, same as click's and jinja2's own filterwarnings=["error"], which those
+# configs likewise don't route through this section.)
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+
+[divergence.global]

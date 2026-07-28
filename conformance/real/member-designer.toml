@@ -113,41 +113,17 @@ id_policy = "strip_params"
 
 
 [divergence.ids]
-# The four collection errors that stopped the whole suite are gone (`pytestmark =
-# pytest.mark.asyncio` is a mark value again, commit 343841b) and so are the 120
-# `TestAPIEndpoints` failures (`indirect=` has pytest's semantics, commits f039e5d and
-# e39251a). What is left is 25 tests under `-n 1`, in six groups, each with a mechanism.
+# Everything this section used to hold is fixed. The four collection errors that stopped the
+# whole suite (`pytestmark = pytest.mark.asyncio`), the 120 `TestAPIEndpoints` failures
+# (`indirect=`), the 9 xfails that never applied (`pytest.param(marks=...)`, on a *fixture's*
+# params), the 8 `setup_method` failures (xunit hooks), the 13 markdown ids (no `.md` on a
+# directory walk) and the 946 spelling differences (`IdMaker`) are all gone.
+#
+# What is left is **four tests**, none of them traced to a mechanism inside Task 1's time
+# box and none of them guessed at.
 
-"tests/test_lib/test_designs/test_wood/test_adjustment_factors/test_cl_verification.py::*" = """\
-PER-PARAMETER MARKS ARE NOT APPLIED. The `conftest.py` in that directory wraps the \
-scenarios whose RB exceeds NDS 3.3.3.7 in `pytest.param(scenario, marks=pytest.mark.xfail(\
-raises=DesignValidationError, strict=True))`. pytest applies the mark to that parameter's \
-item only; rustest's `decorators.py::ParameterSet` stores `marks` and its own comment says \
-"Currently not used, but stored for future support", so the mark reaches nothing and the 9 \
-tests report `failed` where pytest reports `xfailed`. The mechanism is one stored attribute \
-and one merge site -- `_parametrization` would have to fold a case's marks into the entry's \
-marks. DECISION: not fixed in Task 1, which is scoped to its six ledgered mechanisms; it is \
-the single clearest NEW mechanism this re-sweep found. PHASE-4-FOLLOWUP."""
 
-"tests/test_lib/test_designs/test_wood/test_deflection_check.py::TestSelectPlaneDeflections::*" = """\
-XUNIT-STYLE `setup_method` IS NOT CALLED. The class sets `self.dy`/`self.dz` in \
-`setup_method`, which pytest invokes before each test of a plain (non-`TestCase`) class; \
-the v2 worker instantiates the class and calls the test method, and nothing calls \
-`setup_method`/`teardown_method`/`setup_class`/`teardown_class`. 8 tests report \
-`AttributeError: 'TestSelectPlaneDeflections' object has no attribute 'dy'`. DECISION: not \
-fixed in Task 1 -- outside its six mechanisms, and it is a whole xunit-setup surface (four \
-hooks plus their fixture-equivalence rules), not a one-liner. PHASE-4-FOLLOWUP."""
 
-"tests/fixtures/SCENARIOS.md::*" = """\
-MARKDOWN CODE BLOCKS ARE COLLECTED BY DEFAULT, and that is a rustest PRODUCT FEATURE rather \
-than a defect: `rustest <path>` collects python code blocks out of `.md` files unless \
-`--no-codeblocks` is passed, and pytest has no such behaviour without a plugin \
-(pytest-codeblocks). rustest therefore collects 13 ids pytest never sees, of which 4 fail \
-because the blocks are documentation snippets referencing names (`dataclass`, `pytest`, \
-`pytest_asyncio`) their own text does not import. DECISION: documented, not changed -- the \
-feature is deliberate and shipped, and a repo that does not want it passes \
-`--no-codeblocks`. Recorded because "flagless rustest matches pytest" is false for any \
-repo with python in its markdown, which the compat page has to say. KNOWN-LIMITATION."""
 
 "tests/test_lib/test_designs/test_steel/test_flange_bracing.py::*" = """\
 UNADJUDICATED, 2 tests. Both fail with `ValueError: The truth value of an array with more \
@@ -163,30 +139,20 @@ UNADJUDICATED, 1 test. `TypeError: '>' not supported between instances of 'NoneT
 UNADJUDICATED, 1 test. `TypeError: 'LineString' object is not iterable`. Same treatment. \
 PHASE-4-FOLLOWUP."""
 [divergence.global]
-ids = """\
-TWO MECHANISMS, both id-spelling only. (1) PARAMETRIZE ID GENERATION -- the same `IdMaker` \
-gap click's and jinja2's ledgers record: 473 of pytest's ids and 473 of rustest's differ by \
-spelling alone wherever the parameter is a non-scalar (a dataclass scenario, an enum, a \
-numpy array), rustest emitting `param<index>` where pytest emits `<argname><index>` or the \
-value's own name. (2) MARKDOWN CODE BLOCKS -- the remaining 13 rustest-only ids are \
-`tests/fixtures/SCENARIOS.md::codeblock_*`, the product feature the per-id entry above \
-describes. No test is missing from either side for any other reason. PHASE-4 / \
-KNOWN-LIMITATION."""
 exit_code = """\
 rustest exits 1 (tests failed) where pytest exits 0, which is the consequence of the 25 \
 per-id entries above and of nothing else."""
 tally = """\
 Under `-n 1` (what the gate runs): pytest 6084 passed / 37 skipped / 10 xfailed / 1 xpassed \
-/ 0 failed / 0 error; rustest 6082 passed / 37 skipped / 1 xfailed / 25 failed / 0 error, \
-out of 6145 collected against pytest's 6132 (the 13 markdown blocks). Every difference is \
-one of the six per-id entries.
+/ 0 failed / 0 error; rustest 6080 passed / 4 failed and every other bucket identical. 6132 \
+ids on both sides -- the same set, the same spelling. The four failures are the four per-id \
+entries above and nothing else.
 
-UNDER THE DEFAULT WORKER POOL, and this is the reportable part: 262 errors and 94 failures, \
-almost all `pymongo.errors.OperationFailure: The database is currently being dropped`. This \
+UNDER THE DEFAULT WORKER POOL, and this is the reportable part: hundreds of errors, almost \
+all `pymongo.errors.OperationFailure: The database is currently being dropped`. This \
 suite's fixtures drop and recreate ONE shared MongoDB database, and rustest gives each \
 worker its own session-scoped fixtures, so one worker's teardown lands inside another \
 worker's transaction. It is not a compat defect -- rustest runs the tests the suite asked \
 for -- but it is a real cost of running a shared-database suite under a parallel runner, \
-and the fix available today is `-n 1`, which is what `[run] rustest_args` pins. Wall clock, \
-same machine, sequential: pytest 302s; rustest 116s with the pool (wrong answers) and 319s \
-with `-n 1`. KNOWN-LIMITATION."""
+and the fix available today is `-n 1`, which is what `[run] rustest_args` pins. \
+KNOWN-LIMITATION."""

@@ -90,7 +90,11 @@ use serde::{Deserialize, Serialize};
 /// v5's apart from the number; the bump is still real, because a v5 worker handed the field
 /// rejects it (`deny_unknown_fields`) and a v5 worker that *tolerated* it would fail to
 /// import every module under a `src/` layout while claiming to honour the ini.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// **v7** adds `execute_batch.max_fail`: `--maxfail=N`'s remaining budget, so a worker can
+/// cut a batch on the Nth failure rather than only on the first. Omitted when there is no
+/// limit, which is every run without the flag, so an ordinary batch line is byte-identical
+/// to v6's.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The `--cov` instruction carried on [`WorkerRequest::Init`].
 ///
@@ -258,6 +262,16 @@ pub enum WorkerRequest {
     ExecuteBatch {
         ids: Vec<String>,
         stop_on_failure: bool,
+        /// `--maxfail`'s **remaining budget** for this batch, or absent for no limit.
+        ///
+        /// The count has to travel, not just the flag: `stop_on_failure` cuts a batch at the
+        /// *first* failure, which is `--maxfail=1`, and a worker cannot know how many
+        /// failures the rest of the pool has already recorded. The orchestrator subtracts
+        /// what it has seen and sends what is left, so a single-worker run stops on exactly
+        /// the Nth failure — pytest's own granularity — and a parallel run stops at the next
+        /// batch boundary, which is `pytest-xdist`'s.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_fail: Option<usize>,
     },
     /// Graceful shutdown; worker replies Bye then exits 0.
     Shutdown,
@@ -398,9 +412,9 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -501,7 +515,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":6,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -645,6 +659,7 @@ mod tests {
                 "tests/test_math.py::test_sub".to_string(),
             ],
             stop_on_failure: false,
+            max_fail: None,
         };
 
         assert_eq!(
@@ -712,7 +727,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":6}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":7}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -1280,6 +1295,7 @@ mod tests {
                     "tests/test_math.py::test_sub".to_string(),
                 ],
                 stop_on_failure: true,
+                max_fail: None,
             },
             WorkerRequest::Shutdown,
         ];
