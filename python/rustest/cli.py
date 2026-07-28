@@ -29,7 +29,7 @@ from .core import run, terminal_columns, v2_collect_only, v2_run
 if TYPE_CHECKING:
     # Annotation-only; see the note in `core.py` about keeping `typing` off the run-time
     # import path.
-    from typing import Any
+    from typing import Any, NoReturn
 
 
 class _LazyHelpFormatter(argparse.HelpFormatter):
@@ -178,8 +178,33 @@ def is_ci_environment() -> bool:
     return any(os.getenv(var) for var in ci_vars)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+class _Parser(argparse.ArgumentParser):
+    """``ArgumentParser`` whose usage errors exit **4**, and can name where the flag came from.
+
+    Two reasons, and they point the same way.
+
+    *pytest exits 4 for a usage error* — ``UsageError`` is ``ExitCode.USAGE_ERROR``. Measured
+    on pytest 8.4.2: an unrecognised flag, whether typed on the command line or read out of
+    ``addopts``, prints ``error: unrecognized arguments: --bogus-flag`` and exits 4. argparse's
+    stock ``error`` exits **2**, which in this CLI already means "collection error" — the
+    exact collision ``REMOVED_FLAGS`` was given its own branch to avoid.
+
+    *And the flag may not be the user's.* When a bad option arrives through ``addopts``,
+    pytest appends the config file and rootdir to the message so the reader knows which file
+    to edit (``Config._validate_args`` sets ``_config_source_hint``). :attr:`config_source_hint`
+    is that, under a different name.
+    """
+
+    config_source_hint: str | None = None
+
+    def error(self, message: str) -> "NoReturn":
+        self.print_usage(sys.stderr)
+        hint = f"\n{self.config_source_hint}" if self.config_source_hint else ""
+        self.exit(4, f"{self.prog}: error: {message}{hint}\n")
+
+
+def build_parser() -> _Parser:
+    parser = _Parser(
         prog="rustest",
         description="Run Python tests at blazing speed with a Rust powered core.",
         # See :class:`_LazyHelpFormatter`: without it, describing the arguments below
@@ -373,16 +398,79 @@ def _verbosity(args: argparse.Namespace) -> int:
     return int(args.verbose) - int(args.quiet)
 
 
+def _config_for_addopts(raw: list[str], parser: _Parser) -> "dict[str, Any]":
+    """Resolve the config that owns ``addopts``, from the *path-ish* arguments only.
+
+    Mirrors `_pytest/config/__init__.py::Config._initini`, which parses the command line
+    with ``parse_known_and_unknown_args`` and then hands ``ns.file_or_dir + unknown_args`` to
+    ``determine_setup``.  Parsing first is what stops ``-k pattern`` from being read as a
+    directory named ``pattern`` and resolving the config from the wrong tree.
+
+    A config file rustest cannot use is **not** reported here: the engine resolves the same
+    config a moment later and raises the same error with the same exit code, and complaining
+    twice about one file is worse than complaining once.
+    """
+    import json
+
+    from . import rust
+
+    known, unknown = parser.parse_known_args(raw)
+    probe: list[str] = []
+    if known.paths is not parser.get_default("paths"):
+        probe.extend(str(path) for path in known.paths)
+    probe.extend(arg for arg in unknown if not arg.startswith("-"))
+    try:
+        return json.loads(rust.v2_resolve_config(os.getcwd(), probe))
+    except Exception:  # noqa: BLE001 - re-raised by the engine, with its own message
+        return {}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
+
+    parser = build_parser()
+    # `addopts` is prepended to argv, which is what `Config._preparse` does
+    # (`args[:] = self._validate_args(self.getini("addopts"), "via addopts config") + args`,
+    # l. 1394-1397). *Prepended*, not appended, so an explicit command-line flag still wins a
+    # last-one-wins option, and paths in `addopts` come first.
+    #
+    # NOT modelled: `PYTEST_ADDOPTS`, which pytest splices ahead of the ini value (l.
+    # 1386-1392). Recorded as a limitation rather than added, because it would change the
+    # behaviour of every rustest invocation in an environment that happens to export it —
+    # including this repo's own conformance harness — for a mechanism no ledgered suite uses.
+    resolved = _config_for_addopts(raw, parser)
+    addopts = [str(opt) for opt in resolved.get("addopts", ())]
+    raw = addopts + raw
+    # pytest appends these two lines to **every** usage error, not only to one sourced from
+    # a config file: they come from `_parser.extra_info`, which `Config._initini` fills in as
+    # soon as rootdir is known (l. 1254-1255). Measured — a mistyped flag typed at the prompt
+    # prints them too. `inifile:` is dropped rather than printed as `None` when there is no
+    # config file, which is the one place this is deliberately terser than the oracle.
+    config_file = resolved.get("config_file")
+    rootdir = resolved.get("rootdir")
+    parser.config_source_hint = (
+        "\n".join(
+            line
+            for line in (
+                f"  inifile: {config_file}" if config_file else "",
+                f"  rootdir: {rootdir}",
+            )
+            if line
+        )
+        if rootdir
+        else None
+    )
+
+    # Scanned *after* the splice, so a repo whose `addopts` still carries a removed flag is
+    # told so instead of having it swallowed by `nargs="*"` as a path.
     for flag, message in REMOVED_FLAGS.items():
         if flag in raw or any(arg.startswith(flag + "=") for arg in raw):
             # pytest's exit 4 (USAGE_ERROR), because that is exactly what this is.  argparse
             # would say 2, which in this CLI already means "collection error".
-            print(f"ERROR: {message}", file=sys.stderr)
+            source = f"\n{parser.config_source_hint}" if flag in addopts else ""
+            print(f"ERROR: {message}{source}", file=sys.stderr)
             return 4
 
-    parser = build_parser()
     args = parser.parse_args(raw)
 
     # Checked before the engine split, because every one of these is a refusal whichever

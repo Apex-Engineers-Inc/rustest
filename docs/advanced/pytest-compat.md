@@ -178,13 +178,20 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 | **`package` scope** | Cached for the worker's lifetime; not torn down at the package boundary. | Late teardown. |
 | **`loop_scope`** | Accepted and ignored — one event loop per worker. | Async fixtures work; per-scope loop isolation does not. |
 | **Async concurrency** | Async tests in the same loop scope run sequentially. | No wall-clock overlap between them. |
-| **`pythonpath` ini** | Not read. A `src/` layout needs an editable install or `PYTHONPATH`. | Matches real pytest, which also errors here; it is the *legacy* engine that silently inserted `src/`. |
+| **`PYTEST_ADDOPTS`** | The `addopts` **ini** is applied; the environment variable is not. | Options exported into the environment are ignored. Set them in the ini or on the command line. |
 | **Capture is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors. | Output from a subprocess or a C extension is not captured. |
 | **`xfail_strict` ini, `--runxfail`** | Not implemented. The `strict=` *keyword* works. | Set `strict=` on the mark. |
 
-`indirect=` deserves its own note: in rustest it is a **rustest feature with rustest
-semantics** — the value names a fixture — and the compat shim refuses pytest's spelling
-outright rather than accepting it and meaning something else.
+Two entries that used to live in that table are gone as of 0.18, and both were among the
+sharpest:
+
+- **`pythonpath` ini** is now read, `type="paths"` and all, and applied to the worker's
+  `sys.path` before anything is imported. A `src/` layout works with no editable install.
+- **`indirect=`** is now *pytest's* `indirect=`: the value is routed through a fixture of
+  the same name as `request.param`. It used to be a rustest-only feature that read the value
+  as a fixture *name*. See the
+  [parametrization guide](../guide/parametrization.md#indirect-parametrization) for the
+  rewrite, including the one-liner that reproduces the old behaviour.
 
 ## Migration
 
