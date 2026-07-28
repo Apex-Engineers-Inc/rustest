@@ -32,13 +32,14 @@ class TestErrorHandling:
             def _test(_x: int, _y: int) -> None:
                 pass
 
-        assert "does not match" in str(ctx.value).lower()
+        # pytest's own wording, from `ParameterSet._for_parametrize` l. 204-208.
+        assert "must be equal to the number of values" in str(ctx.value)
 
     def test_parametrize_mismatched_ids_raises_error(self) -> None:
         """Test that mismatched IDs raises ValueError."""
         with pytest.raises(ValueError) as ctx:
 
-            @parametrize("value", [(1,), (2,)], ids=["only_one"])
+            @parametrize("value", [1, 2], ids=["only_one"])
             def _test(_: int) -> None:
                 pass
 
@@ -138,7 +139,7 @@ class TestEdgeCases:
     def test_parametrize_with_nested_tuples(self) -> None:
         """Test parametrization with nested tuple values."""
 
-        @parametrize("data", [((1, 2),), ((3, 4),)])
+        @parametrize("data", [(1, 2), (3, 4)])
         def test_func(data: tuple) -> tuple:
             return data
 
@@ -151,11 +152,11 @@ class TestEdgeCases:
         @parametrize(
             "value",
             [
-                (1,),
-                ("string",),
-                (None,),
-                (True,),
-                ([1, 2, 3],),
+                1,
+                "string",
+                None,
+                True,
+                [1, 2, 3],
             ],
         )
         def test_func(value) -> None:  # type: ignore
@@ -182,7 +183,7 @@ class TestEdgeCases:
 
     def test_parametrize_with_large_number_of_cases(self) -> None:
         """Test parametrization with many cases."""
-        cases_data = [(i,) for i in range(100)]
+        cases_data = [i for i in range(100)]
 
         @parametrize("x", cases_data)
         def test_func(x: int) -> int:
@@ -199,11 +200,11 @@ class TestEdgeCases:
         @parametrize(
             "text",
             [
-                ("",),  # Empty string
-                ("\\n",),  # Escaped newline
-                ("\n",),  # Actual newline
-                ("\t",),  # Tab
-                ("'\"",),  # Quotes
+                "",  # Empty string
+                "\\n",  # Escaped newline
+                "\n",  # Actual newline
+                "\t",  # Tab
+                "'\"",  # Quotes
             ],
         )
         def test_func(text: str) -> str:
@@ -271,7 +272,7 @@ class TestRobustness:
         obj1 = DummyClass(1)
         obj2 = DummyClass(2)
 
-        @parametrize("obj", [(obj1,), (obj2,)])
+        @parametrize("obj", [obj1, obj2])
         def test_func(obj: DummyClass) -> int:
             return obj.value
 

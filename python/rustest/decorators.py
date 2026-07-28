@@ -434,9 +434,10 @@ def _cross_product_cases(
 
 
 def parametrize(
-    arg_names: str | Sequence[str],
+    arg_names: str | Sequence[str] | None = None,
     values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
     *,
+    argnames: str | Sequence[str] | None = None,
     argvalues: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet] | None = None,
     ids: Sequence[str] | Callable[[Any], str | None] | None = None,
     indirect: bool | Sequence[str] | str = False,
@@ -444,8 +445,17 @@ def parametrize(
     """Parametrise a test function.
 
     Args:
-        arg_names: Parameter name(s) as a string or sequence
+        arg_names: Parameter name(s) as a string or sequence (rustest style)
         values: Parameter values for each test case (rustest style)
+        argnames: Parameter name(s) (pytest style, alias for ``arg_names``). pytest's own
+            signature is ``parametrize(argnames, argvalues, ...)``
+            (`_pytest/python.py::Metafunc.parametrize` l. 1163-1167), and a suite that spells
+            **either** parameter as a keyword is spelling pytest's name, not rustest's.
+            The ``argvalues`` half of that pair was already accepted; this is the other half,
+            and its absence cost the whole of FastAPI in the Task 1b sweep -- three of its
+            modules write ``@pytest.mark.parametrize(argnames="path,expected", ...)``, each
+            raised ``TypeError`` at import, and a collection error aborts the session
+            (MECHANISM M8, 3 289 tests lost to one missing alias).
         argvalues: Parameter values for each test case (pytest style, alias for values)
         ids: Test IDs - either a list of strings or a callable
         indirect: Which parameters are routed **through a fixture of the same name**
@@ -477,13 +487,25 @@ def parametrize(
                 def test_example(doubled):
                     assert doubled in (6, 10)
     """
-    # Support both 'values' (rustest style) and 'argvalues' (pytest style)
+    # Support both the rustest spellings and pytest's. Positional use is unaffected: the
+    # first two parameters keep their rustest names and their positions, so
+    # `parametrize("a,b", values)` and `parametrize(argnames="a,b", argvalues=values)` are
+    # the same call. The keyword wins over the positional when both are given, which cannot
+    # happen from a pytest suite and is a caller error either way.
+    actual_names = argnames if argnames is not None else arg_names
     actual_values = argvalues if argvalues is not None else values
+    if actual_names is None:
+        msg = "parametrize() requires either 'arg_names' or 'argnames' parameter"
+        raise TypeError(msg)
     if actual_values is None:
         msg = "parametrize() requires either 'values' or 'argvalues' parameter"
         raise TypeError(msg)
 
-    normalized_names = _normalize_arg_names(arg_names)
+    # `ParameterSet._parse_parametrize_args` (l. 165-177): a **str** `argnames` naming
+    # exactly one parameter is the only shape that wraps each argvalue as a single
+    # value. A sequence -- even `("x",)` -- never does. See `_build_cases`.
+    normalized_names = _normalize_arg_names(actual_names)
+    force_tuple = isinstance(actual_names, str) and len(normalized_names) == 1
 
     def decorator(func: Callable[Q, S]) -> Callable[Q, S]:
         # Validated inside the decorator so the failure can name the function, as pytest's
@@ -493,7 +515,7 @@ def parametrize(
         normalized_indirect = _normalize_indirect(
             indirect, normalized_names, getattr(func, "__name__", "<unknown>")
         )
-        new_cases = _build_cases(normalized_names, actual_values, ids)
+        new_cases = _build_cases(normalized_names, actual_values, ids, force_tuple=force_tuple)
 
         # Check if there are already parametrizations from previous decorators
         existing_cases = getattr(func, "__rustest_parametrization__", None)
@@ -566,11 +588,71 @@ def _normalize_indirect(
     return routed
 
 
+def _extract_from(case: object, force_tuple: bool) -> Any:
+    """The values *case* contributes -- port of `ParameterSet.extract_from`.
+
+    `_pytest/mark/structures.py` l. 137-161, all three arms:
+
+    * an existing ``ParameterSet`` (i.e. ``pytest.param(...)``) is returned as it stands,
+      so its own ``values`` tuple is authoritative;
+    * with ``force_tuple`` the whole object becomes **one** value -- ``cls.param(x)``, whose
+      ``values`` is ``(x,)``;
+    * otherwise the object **is** the values sequence -- ``cls(parameterset, marks=[],
+      id=None)``, taken verbatim.
+
+    Returning the raw object in the last arm rather than ``tuple(...)``-ing it is
+    deliberate and observable: pytest calls ``len()`` on it and ``zip()``s it, so a value
+    that is neither sized nor iterable raises the same ``TypeError`` here that it does
+    there, rather than being quietly repackaged into something that "works".
+    """
+    if isinstance(case, ParameterSet):
+        return case.values
+    if force_tuple:
+        return (case,)
+    return case
+
+
 def _build_cases(
     names: tuple[str, ...],
     values: Sequence[Sequence[object] | Mapping[str, object] | ParameterSet],
     ids: Sequence[str] | Callable[[Any], str | None] | None,
+    *,
+    force_tuple: bool,
 ) -> tuple[dict[str, object], ...]:
+    """Bind each argvalue to *names* -- port of `ParameterSet._for_parametrize`.
+
+    `_pytest/mark/structures.py` l. 188-227.  **``force_tuple`` is the whole mechanism**,
+    and it is decided by the caller (:func:`parametrize`) because pytest decides it from the
+    *spelling* of ``argnames``, which is information this function no longer has:
+    ``_parse_parametrize_args`` (l. 165-177) sets it to ``len(argnames) == 1`` **only when
+    ``argnames`` is a ``str``**, and to ``False`` for any sequence -- so ``("x",)`` and
+    ``"x"`` are not the same declaration.
+
+    What it fixes (MECHANISM M2 of the Task 1b sweep, and that sweep's priority item because
+    it is *usually silent*): rustest used to decide unpacking by comparing lengths, so a
+    **length-1 sequence under a single argname** -- ``@parametrize("value", [[42], [7]])`` --
+    was unpacked, and the test received ``42`` where pytest hands it ``[42]``.  The test
+    still runs, and usually still passes, having tested something other than what its author
+    wrote.  It announced itself in four suites only because the wrong value happened to be
+    un-iterable (Member Designer's ``LineString``), un-``len``-able (attrs), or unequal to
+    the assertion (werkzeug's ``test_range_validates_ranges``, whose three length-1 sets
+    failed while its one length-2 set passed -- four predictions, four hits); in attrs'
+    ``test_setattr`` it changed nothing but the **node id**, both cases still passing.
+
+    Two consequences of porting it exactly that look like regressions and are not:
+
+    * ``@parametrize(["x"], [[1, 2]])`` is now an **error** ("the number of names (1) must be
+      equal to the number of values (2)"), because a sequence ``argnames`` does not force a
+      tuple. That is pytest's answer to the same input.
+    * a ``Mapping`` argvalue no longer gets a name-keyed lookup. rustest used to bind
+      ``@parametrize("a,b", [{"a": 1, "b": 2}])`` as ``a=1, b=2``; pytest binds the dict's
+      **keys** positionally (``len({"a": 1, "b": 2}) == 2``, and ``zip`` over a dict yields
+      its keys), i.e. ``a="a", b="b"``. The old behaviour was a rustest-only reading of a
+      shape pytest already accepts and reads differently -- the same silent-wrong-value class
+      M2 belongs to. Nothing in this repo, its docs or the seventeen-suite corpus uses it. A
+      single-name mapping -- ``@parametrize("value", [{"a": 1}])`` -- is unaffected:
+      ``force_tuple`` makes the dict one value, exactly as before.
+    """
     case_payloads: list[dict[str, object]] = []
 
     # Handle callable ids (e.g., ids=str)
@@ -582,40 +664,23 @@ def _build_cases(
             raise ValueError(msg)
 
     for index, case in enumerate(values):
-        # Handle ParameterSet objects (from pytest.param())
-        param_set_id: str | None = None
-        actual_case: Any = case
-        if isinstance(case, ParameterSet):
-            param_set_id = case.id
-            actual_case = case.values  # Extract the actual values
-            # If it's a single value tuple, unwrap it for consistency
-            if len(actual_case) == 1:
-                actual_case = actual_case[0]
+        param_set_id = case.id if isinstance(case, ParameterSet) else None
+        case_values = _extract_from(case, force_tuple)
 
-        # Mappings are only treated as parameter mappings when there are multiple parameters
-        # For single parameters, dicts/mappings are treated as values
-        data: dict[str, Any]
-        if isinstance(actual_case, Mapping) and len(names) > 1:
-            data = {name: actual_case[name] for name in names}
-        elif isinstance(actual_case, (tuple, list)):
-            seq_case = cast(tuple[Any, ...] | list[Any], actual_case)
-            if len(seq_case) == len(names):
-                # Tuples and lists are unpacked to match parameter names (pytest convention)
-                # This handles both single and multiple parameters
-                data = {name: seq_case[pos] for pos, name in enumerate(names)}
-            else:
-                # Length mismatch
-                if len(names) == 1:
-                    data = {names[0]: actual_case}
-                else:
-                    raise ValueError("Parametrized value does not match argument names")
-        else:
-            # Everything else is treated as a single value
-            # This includes: primitives, dicts (single param), objects
-            if len(names) == 1:
-                data = {names[0]: actual_case}
-            else:
-                raise ValueError("Parametrized value does not match argument names")
+        # `_for_parametrize` l. 201-217: every parameter set must carry exactly as many
+        # values as there are names, and pytest reports the mismatch with `fail(...,
+        # pytrace=False)` -- a collection error naming both counts and both lists.
+        # Reproduced message-for-message minus the nodeid prefix, which rustest reports
+        # separately (this raises at decoration, i.e. at import, where the traceback already
+        # names the function).
+        if len(case_values) != len(names):
+            raise ValueError(
+                'in "parametrize" the number of names '
+                + f"({len(names)}):\n  {list(names)}\n"
+                + f"must be equal to the number of values ({len(case_values)}):\n"
+                + f"  {case_values}"
+            )
+        data: dict[str, Any] = dict(zip(names, case_values))
 
         # `zip(parameterset.values, self.argnames)`: pytest builds the id from the *bound*
         # pairs, in argname order, which is what `data` already holds.
@@ -623,7 +688,7 @@ def _build_cases(
             param_set_id=param_set_id,
             ids=ids,
             ids_is_callable=ids_is_callable,
-            value=actual_case,
+            value=case_values,
             index=index,
             bound=[(name, data[name]) for name in names],
         )
@@ -1701,9 +1766,39 @@ def fail(reason: str = "", pytrace: bool = True) -> None:
 
 
 class Skipped(Exception):
-    """Exception raised by skip() to dynamically skip a test."""
+    """Exception raised by skip() to dynamically skip a test.
 
-    pass
+    Port of `_pytest/outcomes.py::Skipped` (pytest 8.4.2, l. 43-60)'s **data** half: the
+    three attributes anything downstream reads -- ``msg``, ``allow_module_level`` and the
+    private ``_use_item_location`` -- with pytest's own defaults and ordering.
+
+    ``allow_module_level`` is the load-bearing one and it is not decoration.  pytest's
+    `_pytest/python.py::importtestmodule` (l. 534-542) catches ``skip.Exception`` around the
+    module import and branches on exactly this attribute: set, the module is **skipped**
+    (nothing collected, no error); unset, it is a collection error with a message telling
+    the author to pass the flag.  rustest carried the flag on ``skip()``'s signature and
+    then dropped it on the floor, so ``pytest.skip(..., allow_module_level=True)`` at module
+    scope was reported as an unhandled exception during collection -- and since a collection
+    error aborts the session, Pillow's six such modules cost all 4 036 of its tests.
+
+    Still an ``Exception`` rather than pytest's ``BaseException``: unlike :class:`Failed`,
+    nothing in the corpus turns on a test body's ``except Exception`` swallowing a skip, and
+    the worker's classification tables list this class explicitly.
+    """
+
+    def __init__(
+        self,
+        msg: str | None = None,
+        pytrace: bool = True,
+        allow_module_level: bool = False,
+        *,
+        _use_item_location: bool = False,
+    ) -> None:
+        super().__init__(msg)
+        self.msg = msg
+        self.pytrace = pytrace
+        self.allow_module_level = allow_module_level
+        self._use_item_location = _use_item_location
 
 
 def skip(reason: str = "", allow_module_level: bool = False) -> None:
@@ -1715,8 +1810,12 @@ def skip(reason: str = "", allow_module_level: bool = False) -> None:
 
     Args:
         reason: The reason why the test is being skipped
-        allow_module_level: If True, allow calling skip() at module level
-                           (not fully implemented in rustest)
+        allow_module_level: If True, this call is legal at *module* scope and skips the
+                           whole module: nothing in it is collected, and it is reported as
+                           one skip with no node id -- pytest's own answer
+                           (`_pytest/python.py::importtestmodule` l. 534-542). Without it,
+                           a module-scope call is a collection error carrying pytest's
+                           "pass `allow_module_level=True`" message.
 
     Raises:
         Skipped: Always raised to skip the test
@@ -1736,7 +1835,7 @@ def skip(reason: str = "", allow_module_level: bool = False) -> None:
             # Docker tests here
     """
     __tracebackhide__ = True
-    raise Skipped(reason)
+    raise Skipped(reason, allow_module_level=allow_module_level)
 
 
 class XFailed(Exception):
@@ -1772,3 +1871,25 @@ def xfail(reason: str = "") -> None:
     """
     __tracebackhide__ = True
     raise XFailed(reason)
+
+
+# Each outcome helper carries the class it raises, so `except pytest.fail.Exception` names it
+# without importing an internal module. Port of `_pytest/outcomes.py::_with_exception`
+# (pytest 8.4.2, l. 92-98) and its three decorated uses -- `@_with_exception(Skipped)` on
+# `skip` (l. 125), `@_with_exception(Failed)` on `fail` (l. 162), `@_with_exception(XFailed)`
+# on `xfail` (l. 184). pytest builds it with a decorator and a `_WithException` Protocol
+# purely so mypy accepts an attribute on a function; three assignments are the same object
+# graph, and `rustest.compat.pytest` re-exports these very functions, so setting it here sets
+# it on `pytest.fail` too.
+#
+# **The blast radius of not having it is total.** `psutil/tests/__init__.py` does
+# `except pytest.fail.Exception:` at *import* time inside a helper's body -- reaching the
+# attribute is enough, the exception never has to be raised -- so every one of psutil's 19
+# test modules failed to import, collection aborted, and all 713 tests were lost to three
+# missing assignments (Task 1b sweep, §5 M6).
+#
+# `exit.Exception` is set on `rustest.compat.pytest.exit`, next to that function, because
+# `Exit` is defined there; the four together are pytest's complete set.
+fail.Exception = Failed  # type: ignore[attr-defined]
+skip.Exception = Skipped  # type: ignore[attr-defined]
+xfail.Exception = XFailed  # type: ignore[attr-defined]

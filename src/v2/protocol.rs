@@ -294,6 +294,16 @@ pub enum WorkerResponse {
         tests: Vec<CollectedTest>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<CollectionErrorEntry>,
+        /// The module asked not to be collected: `pytest.skip(..., allow_module_level=True)`
+        /// or an `importorskip` that could not import, raised while the file was being
+        /// imported. Carries the reason.
+        ///
+        /// A **third** exclusive shape beside `tests` and `error`, not a flavour of either,
+        /// because pytest treats it as neither: no node id is produced (so it is not
+        /// `tests`) and the session continues (so it is not `error`). See
+        /// [`crate::v2::manifest::CollectionManifest::module_skipped`] for the probe.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skipped: Option<String>,
     },
     /// Outcome of one [`WorkerRequest::ExecuteTest`], one line per executed test.
     ///
@@ -755,6 +765,7 @@ mod tests {
                 tier: crate::v2::manifest::Tier::Dynamic,
             }],
             error: None,
+            skipped: None,
         }
     }
 
@@ -766,6 +777,7 @@ mod tests {
                 path: "tests/test_broken.py".to_string(),
                 message: "ImportError: No module named 'nope'".to_string(),
             }),
+            skipped: None,
         }
     }
 
@@ -1311,6 +1323,7 @@ mod tests {
                 path: "tests/test_broken.py".to_string(),
                 message: "Traceback (most recent call last):\n  File \"t.py\", line 1\n    import nope\nModuleNotFoundError: No module named 'nope'".to_string(),
             }),
+            skipped: None,
         };
 
         let multi_line_result = WorkerResponse::TestResult {

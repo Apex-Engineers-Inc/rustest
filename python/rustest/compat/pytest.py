@@ -46,6 +46,7 @@ Usage:
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Callable, NoReturn, TypeVar, TypedDict, cast
 
 try:
@@ -947,63 +948,104 @@ def importorskip(
     minversion: str | None = None,
     reason: str | None = None,
     *,
-    exc_type: type[ImportError] = ImportError,
+    exc_type: type[ImportError] | None = None,
 ) -> Any:
+    """Port of `_pytest/outcomes.py::importorskip` (pytest 8.4.2, l. 208-317).
+
+    Rewritten from a paraphrase into a port in Phase 4 Task 1c, because the paraphrase's
+    one structural difference cost two whole suites. **The skip it raises must be a
+    module-level skip.** pytest's is ``Skipped(reason, allow_module_level=True)`` (l. 285 and
+    l. 313); rustest called its own ``skip()``, which defaults the flag to ``False``, so the
+    overwhelmingly common shape::
+
+        np = pytest.importorskip("numpy")   # at module scope
+
+    raised a *non*-module-level skip during collection.  That is a collection error, and a
+    collection error aborts the session -- Pillow and FastAPI both ended at 0 tests
+    collected (Task 1b sweep, §5 M7).
+
+    Four other differences from the paraphrase, all of them pytest's behaviour:
+
+    * ``exc_type`` defaults to ``None``, not ``ImportError``.  ``None`` means "catch
+      ``ImportError`` **and** warn if what we caught was not a ``ModuleNotFoundError``" --
+      pytest's #11523 deprecation, where a module that exists but raises on import looks
+      identical to one that is absent.  Passing ``exc_type=ImportError`` explicitly is how a
+      caller silences that, and it could not be expressed at all while ``None`` was
+      unrepresentable.
+    * the warning is raised **outside** the ``catch_warnings`` block, as pytest is careful to
+      do (l. 258-259, 299-300): raising it inside would have it swallowed by the very
+      ``simplefilter("ignore")`` that is there to suppress ``ImportWarning`` from namespace
+      directories.
+    * the module comes from ``sys.modules[modname]`` after ``__import__``, not from
+      ``importlib.import_module``'s return value.  For a dotted name those differ:
+      ``__import__("a.b")`` returns ``a``, and pytest's ``sys.modules`` lookup is what makes
+      ``pytest.importorskip("os.path")`` return ``os.path``.  (``import_module`` also returns
+      the leaf, so this direction is unchanged -- it is written pytest's way so the two
+      cannot drift.)
+    * a ``minversion`` miss and a missing ``__version__`` are **one** branch with one message
+      (``module 'x' has __version__ None, required is: '1.0'``), and it ignores ``reason``.
+      The paraphrase had three branches, two messages, and let ``reason`` override them.
+
+    ``packaging.version.Version`` is imported lazily inside the ``minversion`` branch, as
+    pytest does (l. 309-310), so the common no-version call pays nothing for it.
     """
-    Import and return the requested module, or skip the test if unavailable.
-
-    This function attempts to import a module and returns it if successful.
-    If the import fails or the version is too old, the current test is skipped.
-
-    Args:
-        modname: The name of the module to import
-        minversion: Minimum required version string (compared with pkg.__version__)
-        reason: Custom reason message to display when skipping
-        exc_type: The exception type to catch (default: ImportError)
-
-    Returns:
-        The imported module
-
-    Example:
-        numpy = pytest.importorskip("numpy")
-        pandas = pytest.importorskip("pandas", minversion="1.0")
-    """
-    import importlib
+    import warnings
 
     __tracebackhide__ = True
+    compile(modname, "", "eval")  # to catch syntaxerrors
 
-    compile(modname, "", "eval")  # Validate module name syntax
+    if exc_type is None:
+        exc_type = ImportError
+        warn_on_import_error = True
+    else:
+        warn_on_import_error = False
 
-    try:
-        mod = importlib.import_module(modname)
-    except exc_type as exc:
-        if reason is None:
-            reason = f"could not import {modname!r}: {exc}"
-        _rustest_skip_function(reason=reason)
-        raise  # This line won't be reached due to skip, but satisfies type checker
+    skipped: _rustest_Skipped | None = None
+    warning: Warning | None = None
 
-    if minversion is not None:
-        mod_version = getattr(mod, "__version__", None)
-        if mod_version is None:
+    with warnings.catch_warnings():
+        # Ignore ImportWarnings raised by a directory that shares the module's name but has
+        # no `__init__.py` (pytest l. 274-277).
+        warnings.simplefilter("ignore")
+
+        try:
+            __import__(modname)
+        except exc_type as exc:
             if reason is None:
-                reason = f"module {modname!r} has no __version__ attribute"
-            _rustest_skip_function(reason=reason)
-        else:
-            # Simple version comparison (works for most common cases)
-            from packaging.version import Version
+                reason = f"could not import {modname!r}: {exc}"
+            skipped = _rustest_Skipped(reason, allow_module_level=True)
 
-            try:
-                if Version(mod_version) < Version(minversion):
-                    if reason is None:
-                        reason = f"module {modname!r} has version {mod_version}, required is {minversion}"
-                    _rustest_skip_function(reason=reason)
-            except Exception:
-                # Fallback to string comparison if packaging fails
-                if mod_version < minversion:
-                    if reason is None:
-                        reason = f"module {modname!r} has version {mod_version}, required is {minversion}"
-                    _rustest_skip_function(reason=reason)
+            if warn_on_import_error and not isinstance(exc, ModuleNotFoundError):
+                lines = [
+                    "",
+                    f"Module '{modname}' was found, but when imported by pytest it raised:",
+                    f"    {exc!r}",
+                    "In pytest 9.1 this warning will become an error by default.",
+                    "You can fix the underlying problem, or alternatively overwrite this"
+                    + " behavior and silence this warning by passing exc_type=ImportError"
+                    + " explicitly.",
+                    "See https://docs.pytest.org/en/stable/deprecations.html"
+                    + "#pytest-importorskip-default-behavior-regarding-importerror",
+                ]
+                warning = DeprecationWarning("\n".join(lines))
 
+    if warning:
+        warnings.warn(warning, stacklevel=2)
+    if skipped:
+        raise skipped
+
+    mod = sys.modules[modname]
+    if minversion is None:
+        return mod
+    verattr = getattr(mod, "__version__", None)
+    # Imported lazily to improve start-up time, exactly as pytest does.
+    from packaging.version import Version
+
+    if verattr is None or Version(verattr) < Version(minversion):
+        raise _rustest_Skipped(
+            f"module {modname!r} has __version__ {verattr!r}, required is: {minversion!r}",
+            allow_module_level=True,
+        )
     return mod
 
 

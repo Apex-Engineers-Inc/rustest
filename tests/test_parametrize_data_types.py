@@ -79,12 +79,17 @@ def test_parametrize_bytes(value: bytes) -> None:
 # =============================================================================
 
 
-# Note: Lists and tuples in parametrize are treated as argument unpacking.
-# To pass a list/tuple as a single value, wrap in param() with explicit tuple.
+# Note: with a single *string* argname, each argvalue is ONE value -- a list or tuple is
+# not unpacked (`ParameterSet._for_parametrize`'s `force_tuple`, ported in Phase 4 Task 1c).
+# `param(x)` therefore takes the value directly; the extra tuple these lines used to carry
+# was pinning a rustest-only double-unwrap that pytest does not perform. Probed on pytest
+# 8.4.2: `param(([],))` under one name binds `([],)`, a tuple, and fails `isinstance(value,
+# list)`; `param([])` binds `[]` and passes. This file skips itself under pytest, which is
+# why the divergence survived until the seventeen-suite sweep found it elsewhere.
 @parametrize("value", [
-    param(([],), id="empty_list"),
-    param(([1],), id="single_list"),
-    param(([1, 2, 3],), id="multi_list"),
+    param([], id="empty_list"),
+    param([1], id="single_list"),
+    param([1, 2, 3], id="multi_list"),
 ])
 def test_parametrize_list(value: list[Any]) -> None:
     """Test parametrization with list values (wrapped in param)."""
@@ -92,9 +97,9 @@ def test_parametrize_list(value: list[Any]) -> None:
 
 
 @parametrize("value", [
-    param(((),), id="empty_tuple"),
-    param(((1,),), id="single_tuple"),
-    param(((1, 2, 3),), id="multi_tuple"),
+    param((), id="empty_tuple"),
+    param((1,), id="single_tuple"),
+    param((1, 2, 3), id="multi_tuple"),
 ])
 def test_parametrize_tuple(value: tuple[Any, ...]) -> None:
     """Test parametrization with tuple values (wrapped in param)."""
@@ -239,8 +244,8 @@ def test_parametrize_multiple_values_with_ids(a: int, b: int, expected: int) -> 
 
 
 @parametrize("value", [
-    param(([None],), id="list_single_none"),
-    param(([None, None],), id="list_double_none"),
+    param([None], id="list_single_none"),
+    param([None, None], id="list_double_none"),
 ])
 def test_parametrize_list_with_none(value: list[None]) -> None:
     """Test parametrization with lists containing None."""
@@ -249,9 +254,9 @@ def test_parametrize_list_with_none(value: list[None]) -> None:
 
 
 @parametrize("value", [
-    param(((None, 1),), id="none_first"),
-    param(((1, None),), id="none_second"),
-    param(((None, None),), id="both_none"),
+    param((None, 1), id="none_first"),
+    param((1, None), id="none_second"),
+    param((None, None), id="both_none"),
 ])
 def test_parametrize_tuple_with_none(value: tuple[Any, Any]) -> None:
     """Test parametrization with tuples containing None."""
@@ -268,9 +273,9 @@ def test_parametrize_dict_with_empty_string(value: dict[str, str]) -> None:
 @parametrize(
     "value",
     [
-        param(((1, 2, 3),), id="homogeneous"),
-        param(((1, "two", 3.0),), id="heterogeneous"),
-        param(((1, [2, 3], {"four": 4}),), id="nested"),
+        param((1, 2, 3), id="homogeneous"),
+        param((1, "two", 3.0), id="heterogeneous"),
+        param((1, [2, 3], {"four": 4}), id="nested"),
     ],
 )
 def test_parametrize_nested_structures(value: tuple[Any, ...]) -> None:

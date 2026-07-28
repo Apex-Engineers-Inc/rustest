@@ -114,6 +114,26 @@ pub struct CollectionManifest {
     /// [`MANIFEST_SCHEMA_VERSION`] does not move.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub deselected: usize,
+    /// How many **modules** asked, at import time, not to be collected —
+    /// `pytest.skip(..., allow_module_level=True)` and `pytest.importorskip` at module
+    /// scope.
+    ///
+    /// A count with no ids, for the same reason `deselected` is one, and measured on pytest
+    /// 8.4.2 rather than assumed: over a tree with two module-level-skipped files and one
+    /// live one, `--collect-only -q` lists **only** the live file's tests, while the run
+    /// summary reads `1 passed, 2 skipped`. So the skip is invisible to the id list and
+    /// visible to the tally, which is exactly a field of this shape.
+    ///
+    /// Kept apart from `errors` deliberately: routing it there would abort the session
+    /// (exit 2) for a file pytest collects past, which is what cost the Task 1b sweep both
+    /// Pillow (4 036 tests) and FastAPI (3 289) — every one of them lost to six and eight
+    /// module-level skips respectively.
+    ///
+    /// Omitted when zero, so every manifest that has none is byte-identical to what the
+    /// schema froze before this field existed; additive and compatible, so
+    /// [`MANIFEST_SCHEMA_VERSION`] does not move.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub module_skipped: usize,
 }
 
 fn is_zero(count: &usize) -> bool {
@@ -192,6 +212,7 @@ mod tests {
                 message: "ImportError: No module named 'nope'".to_string(),
             }],
             deselected: 0,
+            module_skipped: 0,
         }
     }
 
@@ -299,6 +320,7 @@ mod tests {
             tests: Vec::new(),
             errors: Vec::new(),
             deselected: 0,
+            module_skipped: 0,
         };
 
         let encoded = serde_json::to_string(&manifest).expect("manifest serializes");
@@ -324,6 +346,7 @@ mod tests {
             tests: Vec::new(),
             errors: Vec::new(),
             deselected: 3,
+            module_skipped: 0,
         };
 
         let encoded = serde_json::to_string(&manifest).expect("manifest serializes");

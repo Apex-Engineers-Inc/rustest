@@ -279,6 +279,9 @@ impl RunSummary {
         let mut summary = RunSummary {
             total: selection.kept,
             deselected: selection.deselected,
+            // A module-level skip is one `skipped` with no id and no seat in `total`; see
+            // `Selection::module_skipped` for the pytest probe that fixes both halves.
+            skipped: selection.module_skipped,
             duration,
             ..RunSummary::default()
         };
@@ -752,6 +755,7 @@ fn run_with_launcher(
             Selection {
                 kept: staged.selected.len(),
                 deselected: staged.deselected,
+                module_skipped: staged.module_skipped,
             },
             residue,
             stopped_early,
@@ -796,6 +800,10 @@ struct Staged {
     selected: Vec<CollectedTest>,
     errors: Vec<CollectionErrorEntry>,
     deselected: usize,
+    /// Modules that skipped themselves at import, straight through from
+    /// [`crate::v2::collect::Assembled::module_skipped`]. Never selected against — a skip
+    /// with no id cannot match `-k` or `-m`, and pytest does not try either.
+    module_skipped: usize,
     /// Indexed by worker, then by **file**: `(report slot, test id)`.
     ///
     /// The file grouping used to be flattened away here and reconstructed nowhere, because
@@ -874,6 +882,10 @@ fn stage(
             selected: Vec::new(),
             errors: assembled.errors,
             deselected,
+            // Carried across the collection-error bail-out because pytest carries it:
+            // probed, a tree with two module-skipped files and one unimportable file
+            // prints `2 skipped, 1 error` — the skips survive the interrupt.
+            module_skipped: assembled.module_skipped,
             per_worker: vec![Vec::new(); pool_size],
         });
     }
@@ -916,6 +928,7 @@ fn stage(
         selected,
         errors: assembled.errors,
         deselected,
+        module_skipped: assembled.module_skipped,
         per_worker: grouped,
     })
 }
@@ -942,6 +955,12 @@ struct WorkerResidue {
 struct Selection {
     kept: usize,
     deselected: usize,
+    /// Modules that skipped themselves at import (`allow_module_level` /
+    /// `importorskip`). Folded into `skipped` and **not** into `kept`, which is pytest's
+    /// own split — probed on 8.4.2: a tree of two module-skipped files and no others
+    /// prints `2 skipped` and exits **5** (`no tests ran`), so the skip counts in the
+    /// tally and not in what was collected.
+    module_skipped: usize,
 }
 
 fn finish(
@@ -1125,6 +1144,7 @@ mod tests {
         let selection = Selection {
             kept: tests.len(),
             deselected: 0,
+            module_skipped: 0,
         };
         finish(
             "/repo".to_string(),
@@ -1310,6 +1330,7 @@ mod tests {
             Selection {
                 kept: tests.len(),
                 deselected: 4,
+                module_skipped: 0,
             },
             1.5,
         );
@@ -1322,6 +1343,29 @@ mod tests {
         assert_eq!(summary.error, 1);
         assert_eq!(summary.deselected, 4);
         assert_eq!(summary.duration, 1.5);
+    }
+
+    /// A module-level skip lands in `skipped` and **nowhere else** -- in particular not in
+    /// `total`, which is what pytest collected.
+    ///
+    /// Both halves are pytest's, probed on 8.4.2: a tree of two self-skipping modules and
+    /// no other file prints `2 skipped` (so the tally counts them) and exits **5**, `no
+    /// tests ran` (so `total` does not). Getting only one half right would be worse than
+    /// getting neither: counting them in `total` turns that exit 5 into a 0.
+    #[test]
+    fn a_module_level_skip_counts_as_skipped_but_not_as_collected() {
+        let summary = RunSummary::tally(
+            &[outcome("t::a", TestStatus::Passed)],
+            Selection {
+                kept: 1,
+                deselected: 0,
+                module_skipped: 2,
+            },
+            0.0,
+        );
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.skipped, 2);
     }
 
     /// `xfailed`/`xpassed` are **not** folded into `skipped`/`passed`. That fold is exactly
@@ -1337,6 +1381,7 @@ mod tests {
             Selection {
                 kept: tests.len(),
                 deselected: 0,
+                module_skipped: 0,
             },
             0.0,
         );

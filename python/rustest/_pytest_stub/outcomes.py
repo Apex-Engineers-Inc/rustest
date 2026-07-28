@@ -93,13 +93,21 @@ def fail(msg: str = "", pytrace: bool = True):
     raise Failed(msg)
 
 
-def skip(msg: str = ""):
+def skip(msg: str = "", allow_module_level: bool = False):
     """
     Skip the current test with a reason.
 
     Prefer using: pytest.skip(msg)
     """
-    raise Skipped(msg)
+    raise Skipped(msg, allow_module_level=allow_module_level)
+
+
+# `_pytest/outcomes.py::_with_exception` (l. 92-98) sets these on the real module's helpers,
+# so a plugin that reached for the internal module still finds `fail.Exception`. Mirrored here
+# for the same reason the classes are: this stub's whole job is that such an import keeps
+# working.
+fail.Exception = Failed  # type: ignore[attr-defined]
+skip.Exception = Skipped  # type: ignore[attr-defined]
 
 
 # Pytest internal - outcome tuple for internal pytest use

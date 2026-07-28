@@ -309,10 +309,28 @@ class ReadyResponse(TypedDict):
 
 
 class CollectedResponse(TypedDict):
+    """``WorkerResponse::Collected`` (``src/v2/protocol.rs``).
+
+    ``skipped`` is the module-level skip: the file asked, at import time, not to be
+    collected at all (``pytest.skip(..., allow_module_level=True)`` or an
+    ``importorskip`` that could not import).  It is **neither** ``tests`` nor ``error``,
+    and it needs its own field because pytest reports it as neither:
+
+    * it contributes **no node id** — probed on pytest 8.4.2, ``--collect-only -q`` over a
+      tree with two module-level-skipped files lists only the surviving file's tests;
+    * it *does* contribute **one ``skipped``** to the summary line — the same probe prints
+      ``1 passed, 2 skipped``.
+
+    So a count with no id, which is exactly the shape ``CollectionManifest::deselected``
+    already has. Carrying it as ``tests`` would invent an id pytest does not have; carrying
+    it as ``error`` would abort the session for a file pytest ran past.
+    """
+
     op: str
     path: str
     tests: NotRequired[list[CollectedTestDict]]
     error: NotRequired[CollectionErrorDict]
+    skipped: NotRequired[str]
 
 
 class ResultResponse(TypedDict):
@@ -4470,6 +4488,17 @@ SKIPPED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
     unittest.SkipTest,
 )
 
+#: What :func:`collect_file` treats as a *module-level* skip request, i.e. what pytest's
+#: ``except skip.Exception`` arm in `_pytest/python.py::importtestmodule` (l. 534-542)
+#: catches around the module import.
+#:
+#: **Deliberately narrower than :data:`SKIPPED_EXCEPTIONS`**: ``unittest.SkipTest`` is
+#: absent.  pytest converts that class to a skip only in ``pytest_runtest_makereport``,
+#: which is a *runtest* hook; nothing converts it during collection, so a module raising
+#: ``unittest.SkipTest`` at import is an ordinary collection error under pytest, and adding
+#: it here would turn one of pytest's errors into a silent non-collection.
+MODULE_SKIP_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Skipped, _StubSkipped)
+
 #: "The test declared itself an expected failure while running."  Port of
 #: `_pytest/outcomes.py::XFailed`, consumed by `_pytest/skipping.py` l. 279-282, which turns
 #: it into ``outcome="skipped"`` plus ``wasxfail`` — i.e. the ``xfailed`` category —
@@ -5919,6 +5948,25 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
         # calmly continue — the silent no-op this fix exists to remove, moved one phase
         # earlier. Ctrl-C reaches the same arm for the same reason.
         raise
+    except MODULE_SKIP_EXCEPTIONS as exc:
+        # Port of `_pytest/python.py::importtestmodule` l. 534-542, the `except
+        # skip.Exception` arm.  The flag decides between two entirely different answers, and
+        # the message for the unset case is pytest's, word for word — it is the only thing
+        # that tells an author *why* their module-scope `pytest.skip()` was refused.
+        if _safe_getattr(exc, "allow_module_level", False):
+            reason = _safe_getattr(exc, "msg", None)
+            response["skipped"] = reason if isinstance(reason, str) else str(exc)
+            return response
+        response["error"] = {
+            "path": _relative_posix(file_path, state.rootdir),
+            "message": (
+                "Using pytest.skip outside of a test will skip the entire module. "
+                "If that's your intention, pass `allow_module_level=True`. "
+                "If you want to skip a specific test or an entire class, "
+                "use the @pytest.mark.skip or @pytest.mark.skipif decorators."
+            ),
+        }
+        return response
     except Exception as exc:
         response["error"] = {
             "path": _relative_posix(file_path, state.rootdir),

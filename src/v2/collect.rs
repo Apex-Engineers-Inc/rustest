@@ -471,6 +471,10 @@ impl TierMode {
 pub(crate) struct FileOutcome {
     pub(crate) tests: Vec<CollectedTest>,
     pub(crate) error: Option<CollectionErrorEntry>,
+    /// The file was skipped at module level (`pytest.skip(allow_module_level=True)` /
+    /// `importorskip`). Mutually exclusive with both other fields; contributes one
+    /// `skipped` to the tally and no ids.
+    pub(crate) skipped: Option<String>,
 }
 
 /// Everything a run needs before a single process is spawned: the files, the pool size,
@@ -705,6 +709,9 @@ pub(crate) struct Assembled {
     pub(crate) tests: Vec<CollectedTest>,
     pub(crate) errors: Vec<CollectionErrorEntry>,
     pub(crate) origin: Vec<usize>,
+    /// How many targets answered "module-level skip" — a count, because that is all pytest
+    /// exposes for it (no ids).
+    pub(crate) module_skipped: usize,
 }
 
 pub(crate) fn assemble(
@@ -725,6 +732,10 @@ pub(crate) fn assemble(
                 // whose import could fail, is refused as dynamic and the worker reports the
                 // error with pytest's own wording.
                 error: None,
+                // ...and for the same reason it never produces a module-level skip: the
+                // skip is raised *by running* the module, which Tier S does not do. A file
+                // whose top level calls anything is refused as dynamic long before this.
+                skipped: None,
             })
         })
         .collect();
@@ -735,6 +746,7 @@ pub(crate) fn assemble(
     let mut tests = Vec::new();
     let mut errors = Vec::new();
     let mut origin = Vec::new();
+    let mut module_skipped = 0usize;
     for (index, (path, slot)) in targets.iter().zip(slots).enumerate() {
         let Some(outcome) = slot else {
             return Err(CollectError::MissingResponse { path: path.clone() });
@@ -742,12 +754,14 @@ pub(crate) fn assemble(
         origin.extend(std::iter::repeat_n(index, outcome.tests.len()));
         tests.extend(outcome.tests);
         errors.extend(outcome.error);
+        module_skipped += usize::from(outcome.skipped.is_some());
     }
 
     Ok(Assembled {
         tests,
         errors,
         origin,
+        module_skipped,
     })
 }
 
@@ -799,6 +813,7 @@ fn collect_with_launcher(
             tests: assembled.tests,
             errors: assembled.errors,
             deselected,
+            module_skipped: assembled.module_skipped,
         });
     }
 
@@ -848,6 +863,7 @@ fn collect_with_launcher(
         tests: assembled.tests,
         errors: assembled.errors,
         deselected,
+        module_skipped: assembled.module_skipped,
     })
 }
 
@@ -1502,6 +1518,7 @@ impl Worker {
                 path: echoed,
                 tests,
                 error,
+                skipped,
             } => {
                 if echoed != posix {
                     return Err(self.protocol(
@@ -1510,16 +1527,27 @@ impl Worker {
                         line,
                     ));
                 }
-                // The one malformed shape serde cannot reject (see `protocol.rs`): treated
-                // exactly like a decode error.
-                if !tests.is_empty() && error.is_some() {
+                // The malformed shapes serde cannot reject (see `protocol.rs`): treated
+                // exactly like a decode error.  The three fields are exclusive by contract
+                // and only by contract, so every pair is checked — a line carrying both
+                // tests and a module-level skip would otherwise be absorbed as "tests", and
+                // the tally would be silently one short.
+                let present = usize::from(!tests.is_empty())
+                    + usize::from(error.is_some())
+                    + usize::from(skipped.is_some());
+                if present > 1 {
                     return Err(self.protocol(
                         path,
-                        "the response carries both tests and an error".to_string(),
+                        "the response carries more than one of tests, error and skipped"
+                            .to_string(),
                         line,
                     ));
                 }
-                Ok(FileOutcome { tests, error })
+                Ok(FileOutcome {
+                    tests,
+                    error,
+                    skipped,
+                })
             }
             other => Err(self.protocol(
                 path,

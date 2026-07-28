@@ -36,7 +36,7 @@ class TestSkipDecorator:
 
 class TestParametrizeDecorator:
     def test_parametrize_with_string_names(self) -> None:
-        @parametrize("value", [(1,), (2,)], ids=["one", "two"])
+        @parametrize("value", [1, 2], ids=["one", "two"])
         def test_func(value: int) -> int:
             return value
 
@@ -186,3 +186,101 @@ class TestMarkDecorator:
         first_case = cases[0]["values"]
         calculated, expected = test_func(10, first_case["addend"], first_case["expected_total"])
         assert calculated == expected
+
+
+class TestParametrizeForceTuple:
+    """`ParameterSet._for_parametrize`'s unpacking rule, pinned shape by shape.
+
+    Port target: `_pytest/mark/structures.py` l. 137-227. The rule is decided by
+    `_parse_parametrize_args` (l. 165-177) -- `force_tuple = len(argnames) == 1` **and only
+    when `argnames` is a `str`** -- and applied by `extract_from` (l. 137-161).
+
+    MECHANISM M2 of the Phase 4 Task 1b sweep. Before the port, rustest decided unpacking by
+    comparing lengths, so a length-1 sequence under a single argname was unpacked and the
+    test silently received the wrong value. Each assertion below is an oracle answer probed
+    on pytest 8.4.2, not an inference.
+    """
+
+    def test_a_single_string_name_makes_each_argvalue_one_value(self) -> None:
+        @parametrize("value", [[42], [7, 8], (1,), "ab", {"k": 1}])
+        def test_func(value: object) -> object:
+            return value
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        assert [case["values"]["value"] for case in cases] == [
+            [42],
+            [7, 8],
+            (1,),
+            "ab",
+            {"k": 1},
+        ]
+
+    def test_a_sequence_name_never_forces_a_tuple(self) -> None:
+        """`("solo",)` is a Sequence, so `(9,)` IS the value set, not one value."""
+
+        @parametrize(("solo",), [(9,), (10,)])
+        def test_func(solo: int) -> int:
+            return solo
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        assert [case["values"]["solo"] for case in cases] == [9, 10]
+
+    def test_a_sequence_name_with_an_over_long_value_set_is_an_error(self) -> None:
+        """`@parametrize(["x"], [[1, 2]])` -- one name, two values. pytest fails it."""
+        with pytest.raises(ValueError) as excinfo:
+
+            @parametrize(["x"], [[1, 2]])
+            def _test(_x: object) -> None:
+                pass
+
+        assert "must be equal to the number of values" in str(excinfo.value)
+
+    def test_two_names_still_unpack_lists_and_tuples_alike(self) -> None:
+        @parametrize("a,b", [(1, 2), [3, 4]])
+        def test_func(a: int, b: int) -> int:
+            return a + b
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        assert [case["values"] for case in cases] == [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
+
+    def test_ids_are_generated_from_the_bound_value_not_the_wrapper(self) -> None:
+        """The defect corrupted node ids too -- attrs' `test_setattr` diverged on id alone."""
+
+        @parametrize("rng", [(0,), (0, 1)])
+        def test_func(rng: tuple[int, ...]) -> tuple[int, ...]:
+            return rng
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        # Both are containers, so pytest falls back to `<argname><index>` for each.
+        assert [case["id"] for case in cases] == ["rng0", "rng1"]
+
+
+class TestParametrizePytestKeywordSpelling:
+    """`parametrize(argnames=..., argvalues=...)` -- pytest's parameter names as keywords.
+
+    MECHANISM M8. pytest's signature is `Metafunc.parametrize(argnames, argvalues, ...)`
+    (`_pytest/python.py` l. 1163-1167); the `argvalues` alias already existed and the
+    `argnames` one did not, which cost the whole of FastAPI (3 289 tests) in the Task 1b
+    sweep because three of its modules spell it as a keyword and a collection error aborts
+    the session.
+    """
+
+    def test_both_names_as_keywords(self) -> None:
+        @parametrize(argnames="a,b", argvalues=[(1, 2)])
+        def test_func(a: int, b: int) -> int:
+            return a + b
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        assert cases == ({"id": "1-2", "values": {"a": 1, "b": 2}},)
+
+    def test_keyword_argnames_still_decides_force_tuple(self) -> None:
+        @parametrize(argnames="value", argvalues=[[1], [2, 3]])
+        def test_func(value: list[int]) -> list[int]:
+            return value
+
+        cases = getattr(test_func, "__rustest_parametrization__")
+        assert [case["values"]["value"] for case in cases] == [[1], [2, 3]]
+
+    def test_neither_spelling_given_is_a_type_error(self) -> None:
+        with pytest.raises(TypeError):
+            parametrize(argvalues=[1, 2])  # pyright: ignore[reportCallIssue]

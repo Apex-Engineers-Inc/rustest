@@ -282,7 +282,9 @@ class TestListParametrize:
             (3, 4),  # Tuple should be unpacked
         ]
 
-        cases = _build_cases(names, values, None)
+        # Two names, so `force_tuple` is False either way -- the values sequence is
+        # taken verbatim and zipped against the names.
+        cases = _build_cases(names, values, None, force_tuple=False)
 
         assert len(cases) == 2
         assert cases[0]["values"] == {"x": 1, "y": 2}
@@ -309,15 +311,20 @@ class TestListParametrize:
         assert cases[2]["values"] == {"a": 7, "b": 8, "c": 9}
 
     def test_single_param_with_list_value(self):
-        """Test single parameter with list as the value itself."""
+        """A single *string* argname makes each argvalue exactly one value.
+
+        `force_tuple=True` is what `parametrize("items", ...)` computes, so the
+        list arrives whole. Wrapping it in a tuple first, as this test used to,
+        is the shape pytest reads as a two-element... no: as a ONE-element value
+        set whose single value is the tuple. Both spellings are pinned below.
+        """
         names = ("items",)
-        values = [
-            ([1, 2, 3],),  # List is the value, wrapped in tuple
-        ]
 
-        cases = _build_cases(names, values, None)
+        bare = _build_cases(names, [[1, 2, 3]], None, force_tuple=True)
+        assert bare[0]["values"] == {"items": [1, 2, 3]}
 
-        assert cases[0]["values"] == {"items": [1, 2, 3]}
+        wrapped = _build_cases(names, [([1, 2, 3],)], None, force_tuple=True)
+        assert wrapped[0]["values"] == {"items": ([1, 2, 3],)}
 
     def test_nested_list_in_parameters(self):
         """Test that nested lists work correctly."""
@@ -390,7 +397,7 @@ class TestParameterSetInBuildCases:
         ]
 
         # Even with ids parameter, ParameterSet id should win
-        cases = _build_cases(names, values, ["override_id"])
+        cases = _build_cases(names, values, ["override_id"], force_tuple=True)
 
         assert cases[0]["id"] == "param_id"
 
@@ -401,20 +408,23 @@ class TestParameterSetInBuildCases:
             ParameterSet((10, 20), id="test"),
         ]
 
-        cases = _build_cases(names, values, None)
+        cases = _build_cases(names, values, None, force_tuple=False)
 
         assert cases[0]["values"] == {"a": 10, "b": 20}
 
-    def test_parameter_set_single_value_unwrapped(self):
-        """Test that single-value ParameterSet is unwrapped correctly."""
+    def test_parameter_set_is_never_re_wrapped(self):
+        """An existing ParameterSet is authoritative -- `force_tuple` cannot touch it.
+
+        `ParameterSet.extract_from` returns it as it stands (l. 153-154), *before*
+        the `force_tuple` branch, so `pytest.param(42)` is one value under one name
+        whichever way the names were spelled.
+        """
         names = ("x",)
-        values = [
-            ParameterSet((42,), id="single"),
-        ]
+        values = [ParameterSet((42,), id="single")]
 
-        cases = _build_cases(names, values, None)
-
-        assert cases[0]["values"] == {"x": 42}
+        for force_tuple in (True, False):
+            cases = _build_cases(names, values, None, force_tuple=force_tuple)
+            assert cases[0]["values"] == {"x": 42}
 
 
 # =============================================================================
