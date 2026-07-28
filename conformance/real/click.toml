@@ -48,12 +48,15 @@ dropped = []
 pytest_args = []
 rustest_args = []
 timeout_s = 1800
-# click parametrizes over dicts, tuples, enums and long strings, all four of which rustest
-# names differently from pytest -- see [divergence.global] ids. With `exact` the gate can
-# say nothing else about the suite, because ~1800 ids differ by spelling alone. Under
-# `strip_params` the id divergence is raised as its own graded problem (below) and outcomes
-# are still compared per `file::function` as a status multiset.
-id_policy = "strip_params"
+# TIGHTENED TO `exact` in Phase 4 Task 1b, and this is the point of the entry. click
+# parametrizes over dicts, tuples, enums and long strings, all four of which rustest used to
+# name differently from pytest, so through Phase 4 Task 1 this said `strip_params` and the
+# ~1800 spelling differences were raised as one graded `ids` problem. With `IdMaker` ported
+# (`decorators.py::_idval_from_value` + `src/v2/static_collect.rs::generate_param_id`) the raw
+# ids are byte-identical, so the relaxation is no longer buying anything and is removed:
+# the gate now proves per-node-id parity across all 1686 selected tests, and compares
+# statuses id by id rather than as a per-function multiset. Measured green under `exact`.
+id_policy = "exact"
 
 [divergence.ids]
 # EMPTY as of Phase 4 Task 1: the monkeypatch dotted-path defect that errored

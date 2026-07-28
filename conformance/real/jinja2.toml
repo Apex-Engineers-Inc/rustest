@@ -54,11 +54,13 @@ dropped = []
 pytest_args = []
 rustest_args = []
 timeout_s = 1800
-# jinja2 parametrizes over *functions* (`params=[_asyncio_run, trio.run]`, and bare lambdas
-# for the sync/async variants), which is one of the value kinds rustest names differently
-# from pytest -- 95 of 909 ids differ by spelling alone. Same treatment as click: the id
-# divergence becomes its own graded problem below, outcomes are still compared per function.
-id_policy = "strip_params"
+# TIGHTENED TO `exact` in Phase 4 Task 1b, same story as click. jinja2 parametrizes over
+# *functions* (`params=[_asyncio_run, trio.run]`, plus bare lambdas for the sync/async
+# variants), which used to be one of the value kinds rustest named differently -- 95 of 909
+# ids differed by spelling alone, so the config said `strip_params`. The `IdMaker` port makes
+# the raw ids byte-identical, so the relaxation is removed and the gate proves per-node-id
+# parity across all 909 tests. Measured green under `exact`.
+id_policy = "exact"
 
 [divergence.ids]
 # EMPTY as of Phase 4 Task 1: `pytest.raises`'s legacy callable form and the missing
