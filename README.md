@@ -177,7 +177,7 @@ documented rather than discovered. rustest does **not** have:
 
 - **A plugin system or hook system.** By design. A conftest's fixtures load; its hooks are
   ignored. [Why, and what replaces the ten most popular plugins](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-plugins.html)
-- **Ten built-in fixtures**, including `pytester`, `recwarn`, `capfdbinary` and
+- **Nine built-in fixtures**, including `pytester`, `testdir`, `capfdbinary` and
   `record_property`. Requesting one is a loud, named error — never a silent skip
 - **`xfail_strict` ini or `--runxfail`** (the `strict=` keyword does work)
 - **Item reordering** for shared higher-scoped parametrized fixtures
