@@ -1349,6 +1349,107 @@ fn worker_for(path: &Path, workers: usize) -> usize {
 // The pool
 // ---------------------------------------------------------------------------
 
+/// A Windows job object holding exactly one worker, configured to kill everything in it
+/// when the last handle closes.
+///
+/// **This is the whole process-tree lifetime story, and it fixes two separate leaks.**
+///
+/// * `Child::kill` terminates the worker and *only* the worker. A test that started a
+///   server, a reloader or a helper interpreter leaves that grandchild running: the Phase
+///   4b profile found four of werkzeug's `live_apps/run.py` reloaders alive eleven hours
+///   after the sweep that started them, burning ~0.2 cores apiece and quietly poisoning
+///   every subsequent measurement. Closing a job with `KILL_ON_JOB_CLOSE` terminates every
+///   process in it, and a process added to a job cannot escape it — the grandchildren are
+///   in the job because their parent was.
+/// * A killed, crashed or `Ctrl-C`'d orchestrator never runs [`Worker::drop`] at all. The
+///   OS closes its handles regardless, so the job closes, so the pool dies with it. That
+///   is issue #140, and it is a property of the handle rather than of any cleanup code
+///   this crate could be trusted to reach.
+///
+/// Failure to create or assign is **not** fatal: the job is a containment improvement over
+/// `kill`, not a prerequisite for running tests, and an environment that refuses it (an
+/// outer job that forbids nesting, a sandbox) must still be able to run a suite.
+#[cfg(windows)]
+struct JobObject(std::os::windows::io::RawHandle);
+
+/// SAFETY: a Win32 `HANDLE` is a process-wide token, not a thread-affine resource, and
+/// this one is owned exclusively by the [`Worker`] that holds it — which `execute` moves
+/// into a scoped thread.  Only `Send` is claimed: the handle is never shared by reference.
+#[cfg(windows)]
+unsafe impl Send for JobObject {}
+
+#[cfg(windows)]
+impl JobObject {
+    /// Put `child` in a fresh kill-on-close job. `None` if the OS refused at any step, in
+    /// which case the worker is reaped the old way and nothing else changes.
+    fn adopt(child: &Child) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        // SAFETY: every call below is a documented Win32 entry point given a handle this
+        // function owns (or, for `child`, one that outlives the call). The
+        // `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` passed to `SetInformationJobObject` is
+        // zeroed and sized by `size_of`, which is exactly the contract that API states.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_mut(&mut limits).cast(),
+                u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+                    .unwrap_or(0),
+            );
+            // Without the limit the job would be an inert grouping that kills nothing, so
+            // it is not worth keeping: drop back to plain `kill` rather than pretend.
+            if set == 0 || AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+                windows_sys::Win32::Foundation::CloseHandle(job);
+                return None;
+            }
+            Some(Self(job as _))
+        }
+    }
+
+    /// Close the handle, which is what terminates the job's processes.
+    fn close(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the handle came from `CreateJobObjectW` above, is owned here, and is
+            // nulled immediately so it can never be closed twice.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.0 as _);
+            }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+/// A stand-in on every other platform, so the call sites need no `cfg`.
+///
+/// Not an oversight and not a TODO: rustest's process-tree problem is a Windows one.
+/// `Child::kill` is a `SIGKILL` to a process group leader nowhere, but the harness and the
+/// conformance corpus that exposed both leaks run on Windows, and inventing a
+/// `PR_SET_PDEATHSIG`/`setsid` design with no failing case to test it against would be
+/// speculative plumbing.
+#[cfg(not(windows))]
+struct JobObject;
+
+#[cfg(not(windows))]
+impl JobObject {
+    fn adopt(_child: &Child) -> Option<Self> {
+        None
+    }
+
+    fn close(&mut self) {}
+}
+
 /// One worker process and its pipes.
 pub(crate) struct Worker {
     index: usize,
@@ -1358,6 +1459,8 @@ pub(crate) struct Worker {
     stderr: Arc<Mutex<Vec<u8>>>,
     /// Disconnects when the stderr drain thread finishes; see [`Worker::diagnostics`].
     stderr_done: Receiver<()>,
+    /// The job this worker (and anything it spawns) lives in; see [`JobObject`].
+    job: Option<JobObject>,
     reaped: bool,
 }
 
@@ -1402,6 +1505,12 @@ impl Worker {
             drop(done);
         });
 
+        // After `spawn` rather than before, because there is no portable way to create a
+        // process suspended.  The window is the microseconds between `CreateProcess`
+        // returning and this call, during which the child has not finished loading
+        // CPython, let alone run a test that could spawn anything.
+        let job = JobObject::adopt(&child);
+
         Ok(Self {
             index,
             child,
@@ -1409,6 +1518,7 @@ impl Worker {
             stdout,
             stderr,
             stderr_done,
+            job,
             reaped: false,
         })
     }
@@ -1454,12 +1564,18 @@ impl Worker {
     /// worker itself is gone, and joining outright would hang the orchestrator forever on
     /// the one path that exists to report a failure.  A truncated diagnostic beats a hung
     /// test run.
+    ///
+    /// The job is closed **before** that wait, not after, and the order is the point: the
+    /// grandchildren holding the stderr pipe die with the job, so the drain thread reaches
+    /// EOF on its own and the bounded wait stops being the thing that saves the run.  It
+    /// is a fallback for the platforms and the environments with no job, not the design.
     fn diagnostics(&mut self) -> String {
         if !self.reaped {
             let _ = self.child.kill();
             let _ = self.child.wait();
             self.reaped = true;
         }
+        self.reap_tree();
         let _ = self
             .stderr_done
             .recv_timeout(std::time::Duration::from_millis(500));
@@ -1467,6 +1583,18 @@ impl Worker {
             .lock()
             .map(|buffer| String::from_utf8_lossy(&buffer).trim_end().to_string())
             .unwrap_or_default()
+    }
+
+    /// Kill everything the worker started, by closing its job.
+    ///
+    /// Idempotent, and a no-op where there is no job.  Called from both reaping paths, so
+    /// a worker that shut down cleanly leaves no more behind than one that was killed —
+    /// which is the case that actually leaks, because a test's server or reloader outlives
+    /// the *successful* run that started it.
+    fn reap_tree(&mut self) {
+        if let Some(job) = self.job.as_mut() {
+            job.close();
+        }
     }
 
     /// The receiving half of the handshake: read one `ready` and validate it.
@@ -1951,15 +2079,17 @@ impl Worker {
 }
 
 impl Drop for Worker {
-    /// Never leave an orphan interpreter behind when a run aborts early.  The drain thread
-    /// is left detached: it ends on its own when the pipe closes, and waiting for it here
-    /// would reintroduce the hang [`Worker::diagnostics`] exists to avoid.
+    /// Never leave an orphan interpreter behind when a run aborts early — nor anything the
+    /// worker's tests started.  The drain thread is left detached: it ends on its own when
+    /// the pipe closes, and waiting for it here would reintroduce the hang
+    /// [`Worker::diagnostics`] exists to avoid.
     fn drop(&mut self) {
         if !self.reaped {
             let _ = self.child.kill();
             let _ = self.child.wait();
             self.reaped = true;
         }
+        self.reap_tree();
     }
 }
 
@@ -2898,6 +3028,83 @@ assert True
             .expect("four workers must be alive at once");
 
         assert!(manifest.tests.is_empty() && manifest.errors.is_empty());
+    }
+
+    /// A process a *test* started dies when the worker that ran the test is reaped.
+    ///
+    /// The leak this pins is not hypothetical: the Phase 4b profile found four werkzeug
+    /// `live_apps/run.py` reloaders still spinning eleven hours after the sweep that
+    /// started them, and four more appeared during Task 2 itself.  `Child::kill` cannot
+    /// see them — they are the worker's children, not the orchestrator's — so only the job
+    /// object closes this.
+    ///
+    /// The grandchild appends a byte every 20 ms.  After collection returns (every worker
+    /// dropped), the file stops growing iff it is dead; a live one would add ~50 bytes a
+    /// second.  Both windows are 1 s, i.e. ~50x the heartbeat, so the assertion does not
+    /// depend on scheduler luck — and the "it was really running" half is asserted too, so
+    /// a grandchild that never started could not pass this by staying at zero.
+    #[cfg(windows)]
+    #[test]
+    fn a_reaped_worker_takes_its_grandchildren_with_it() {
+        let tmp = tree(&[("test_a.py", &module("a"))]);
+        let beat = TempDir::new().unwrap();
+        let beat_path = to_posix(&beat.path().join("heartbeat"));
+        let gc_path = beat.path().join("grandchild.py");
+        fs::write(
+            &gc_path,
+            "import sys, time\n\
+             beat = open(sys.argv[1], 'ab', buffering=0)\n\
+             while True:\n\
+             \x20   beat.write(b'.')\n\
+             \x20   time.sleep(0.02)\n",
+        )
+        .unwrap();
+        // `close_fds=False` is the *hostile* setting on purpose: the grandchild inherits
+        // whatever it can, exactly as a real test's `subprocess.Popen` would.  The worker
+        // refuses to answer `init` until the heartbeat is ticking, so "it was alive during
+        // the run" is established by the run itself rather than by a sleep.
+        let script = format!(
+            "import json, os, subprocess, sys, time\n\
+             child = subprocess.Popen([sys.executable, r'{gc}', r'{beat}'], close_fds=False)\n\
+             deadline = time.monotonic() + 30.0\n\
+             while not os.path.exists(r'{beat}') or os.path.getsize(r'{beat}') == 0:\n\
+             \x20   if time.monotonic() > deadline:\n\
+             \x20       sys.exit('the grandchild never started')\n\
+             \x20   time.sleep(0.01)\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   if message['op'] == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif message['op'] == 'collect_file':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': message['path']}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n",
+            gc = to_posix(&gc_path),
+            beat = beat_path
+        );
+
+        let manifest = collect_default(tmp.path(), &[], &scripted_worker(&script), 1).unwrap();
+        assert!(manifest.errors.is_empty(), "{:?}", manifest.errors);
+
+        let size = || fs::metadata(beat.path().join("heartbeat")).map_or(0, |meta| meta.len());
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let settled = size();
+        assert!(
+            settled > 0,
+            "the grandchild never ran, so nothing was proved"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        assert_eq!(
+            settled,
+            size(),
+            "the grandchild outlived the worker that spawned it"
+        );
     }
 
     /// Nothing to collect means no process is spawned at all — asserted with a launcher

@@ -39,6 +39,23 @@ ruff_python_parser = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b84
 ruff_python_ast = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
 ruff_text_size = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
 
+# Job objects, and nothing else.  A worker is put in its own job at spawn
+# (`src/v2/collect.rs::JobObject`) so that closing the job handle kills the worker *and
+# every process the tests it ran spawned* — and so that a killed or crashed orchestrator
+# takes its pool with it instead of leaving interpreters spinning for hours (#140).  There
+# is no portable API for this, and `windows-sys` is the raw-FFI crate the standard library
+# itself uses.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  # `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` embeds `IO_COUNTERS`, which lives under
+  # Threading.  The extended struct is not optional: `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+  # is documented as requiring it, and the basic struct silently ignores the flag.
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 pyo3 = { version = "0.27", features = ["auto-initialize"] }
 tempfile = "3"

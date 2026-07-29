@@ -827,6 +827,7 @@ dependencies = [
  "tempfile",
  "toml",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
