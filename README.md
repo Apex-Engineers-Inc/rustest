@@ -20,7 +20,8 @@ rustest tests/
 
 pytest compatibility is **on by default** — `import pytest` resolves to rustest's shim, so
 existing suites just run. (The old `--pytest-compat` flag is gone; it is now the default.
-`--v1` selects the legacy engine while the new one catches up — see CHANGELOG.md.)
+So is `--v1` — the legacy engine it selected was deleted, not frozen; both flags exit 4
+naming the change. See CHANGELOG.md.)
 
 See the speedup immediately, then migrate to native rustest for full features.
 
@@ -48,8 +49,12 @@ Rustest delivers consistent speedups across test suites of all sizes:
 
 **[📊 Full Performance Analysis →](https://apex-engineers-inc.github.io/rustest/advanced/performance/)**
 
-The table above is the **v1** engine (`--v1`). Read on for what the new default (v2)
-measures today.
+> **These tables are historical and cannot be reproduced.** Both were measured on the **v1**
+> engine, which was deleted in Phase 4 — there is no flag that runs it. They are left in
+> place only until this page is rewritten against the current engine's own figures; do not
+> quote them. The live numbers are in `conformance/baselines.json` and the `--real` sweep.
+
+Read on for what the current engine measured at the time of that rewrite's baseline.
 
 ## v2 Baselines (the Phase 2 gate)
 

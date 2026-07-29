@@ -323,9 +323,8 @@ def v2_collect_only(
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
-    This is the whole of ``rustest --v2-collect-only``. It runs the v2 spine end to end
-    (config resolution -> file walk -> worker pool -> manifest) and never touches the v1
-    discovery or execution path.
+    This is the whole of ``rustest --v2-collect-only``. It runs the v2 spine end to end:
+    config resolution -> file walk -> worker pool -> manifest.
 
     Output is shaped so stdout is a machine-readable node id list:
 
@@ -741,10 +740,9 @@ def v2_run(
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
-    This is the whole of a default ``rustest <paths>``.  It runs the v2 spine end to end --
+    This is the whole of a default ``rustest <paths>``.  It runs the v2 spine end to end:
     config resolution, the file walk, a worker pool that collects and then stays alive to
-    execute, ``-k``/``-m`` selection and ``--lf``/``--ff`` reordering in between -- and never
-    touches the v1 discovery or execution path.
+    execute, with ``-k``/``-m`` selection and ``--lf``/``--ff`` reordering in between.
 
     Output is a three-rung ladder -- pytest's own verbosity ladder, narrowed to three rungs:
 

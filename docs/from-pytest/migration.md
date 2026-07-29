@@ -4,7 +4,8 @@
     Compatibility is **on by default** as of the v2 engine flip: `import pytest`
     always resolves to rustest's shim, so `rustest tests/` is what every example
     below means. Passing `--pytest-compat` now exits 4 with a pointer to
-    `CHANGELOG.md`. `--v1` selects the legacy engine.
+    `CHANGELOG.md`, and so does `--v1` -- the legacy engine it selected was deleted
+    outright in Phase 4, not frozen behind a flag.
 
 Migrating from pytest to rustest is straightforward. This guide shows you how to get up and running quickly.
 

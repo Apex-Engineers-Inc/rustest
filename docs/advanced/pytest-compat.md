@@ -18,12 +18,10 @@ rustest tests/
 !!! warning "`--pytest-compat` was removed"
     It used to opt into a *compatibility mode*. The v2 engine flip made that mode the
     default and the only behaviour, so the flag could only have been a no-op or a lie.
-    Passing it now exits **4** with a pointer to `CHANGELOG.md`. `--v1` selects the frozen
-    legacy engine, which is a different thing entirely — see
+    Passing it now exits **4** with a pointer to `CHANGELOG.md`, and so does `--v1` — see
     [The legacy engine](#the-legacy-engine) below.
 
-Everything on this page describes the **default engine**. Where the legacy engine behaves
-differently, that is called out; nothing else here applies to it.
+There is one engine, so everything on this page describes it.
 
 ## What this page is for
 
@@ -249,15 +247,16 @@ a rustest run; under pytest, `import pytest` is pytest.
 
 ## The legacy engine
 
-`--v1` runs the pre-flip engine. Two things about it are worth knowing:
+**It is gone.** `--v1` used to run the pre-flip engine, frozen, as somewhere for a suite the
+current engine could not yet run to go. Phase 4 deleted both halves of it — the Rust
+discovery/execution core and the Python runtime around it, roughly 15 000 lines and six Rust
+dependencies — rather than keep a second answer alive behind a flag that no gate measured.
 
-- **It is frozen.** It receives no fixes. It exists so that a suite the current engine
-  cannot yet run has somewhere to go, and it can only serve that purpose if nothing about
-  it changes.
-- **It does not install the compat shim.** `--v1` is byte-identical to the pre-flip
-  default, which means `import pytest` there imports whatever `pytest` your environment has.
-
-It will be removed. Do not build on it.
+Passing `--v1` exits **4** with a message naming the change. `rustest.run()`, which used to
+be that engine's Python API, now drives the default engine and returns pytest's exit code
+(see [the API overview](../api/overview.md)). If your suite ran under `--v1` and does not run
+under the default, that is a bug worth filing: the conformance corpus and the seventeen-suite
+real-world sweep exist to make it one.
 
 ## Performance
 
