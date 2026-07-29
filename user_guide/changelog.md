@@ -7,22 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — THE FLIP: the v2 engine is now the default
+This entry covers the **v2 arc**: a ground-up rewrite of rustest's engine, validated
+against a conformance corpus that diffs rustest against real pytest case by case, and
+against seventeen real open-source pytest suites graded on every node id and every outcome
+count (13 MATCH / 4 EXPLAINED / 0 DIVERGE). Read **Breaking changes** first — several of
+them will stop a working command line.
+
+### ⚠ Breaking changes
+
+Seven, in rough order of how likely they are to reach you.
+
+1. **`--pytest-compat` is removed.** The shim it enabled is now always on, so the flag
+   could only ever be a no-op or a lie. Passing it exits **4** (pytest's `USAGE_ERROR`)
+   with a message pointing here. *Action:* delete it from every CI command line,
+   pre-commit hook, `addopts` and script.
+
+2. **`--v1` is removed, and so is the engine it selected.** The legacy Rust and Python
+   engines were **deleted** — about 15,000 lines and six Rust dependencies — rather than
+   left to rot behind a flag nobody could test. Passing `--v1` exits **4**. There is no
+   fallback engine, which means the "Known gaps" list below is the complete statement of
+   what rustest does, with no escape hatch behind it.
+
+3. **Python 3.12 is now the floor** (`requires-python = ">=3.12"`). The coverage
+   integration uses `sys.monitoring` unconditionally and that module does not exist
+   earlier. Python 3.10 and 3.11 are no longer supported.
+
+4. **`rustest.run()` changed both its arguments and its return type.** It is now
+   **keyword-only** and returns pytest's **exit code as an `int`**, where it used to
+   return a `rustest.reporting.RunReport`. It is an alias for the v2 entry point rather
+   than a translating wrapper, deliberately: a shim would have accepted
+   `pytest_compat=False` and silently done the opposite, and would have returned an
+   integer where the old type hint promised a report object. An old call raises
+   `TypeError` naming the keyword it does not recognise. For counts, pass `report_json=`
+   and read the file, or use `--llm`.
+
+   | Old keyword | Now |
+   |---|---|
+   | `capture_output=` | `capture=` |
+   | `pytest_compat=` | gone — the shim is unconditional |
+   | `ascii=`, `no_color=` | gone — the output is plain and uncolored |
+   | `verbose=` (bool) | `verbosity=` (`-1`/`0`/`1`) |
+   | `enable_codeblocks=` | `codeblocks=` |
+   | `pattern=` | `keyword=` |
+   | *returns* `RunReport` | *returns* `int` |
+
+5. **`--llm` output is schema version 2, and it is a hard break for a 0.18 consumer.**
+   See the callout below.
+
+6. **`indirect=` parametrization now means what it means in pytest.** A routed parameter's
+   value reaches the fixture as `request.param` and the test receives the fixture's return
+   value. It used to be read as *the name of a fixture to resolve* — a rustest-only reading
+   no pytest suite could use, and one that accounted for 120 of the 129 failures in one
+   real target's `tests/test_startup` subtree. Ids still come from the parameter, so making
+   a name indirect does not move a node id. Note that a **string is a Sequence**:
+   `indirect="data"` is iterated character by character exactly as under pytest and fails
+   with `indirect fixture 'd' doesn't exist`; pass `["data"]` or `True`.
+
+7. **A directory argument no longer collects markdown.** `rustest docs/` used to pick up
+   `.md` files and run their python fences; it no longer does, because pytest walking the
+   same tree collects none either and a repo with fences in its docs was silently getting
+   tests under `rustest tests/` that `pytest tests/` never sees — measured on a real suite,
+   where a fixtures directory contributed 13 ids pytest never sees, 4 of them failing.
+   Markdown must be **named**: `rustest README.md user_guide/*.md`.
+
+> ### Release note for tooling authors: `--llm` schema 2
+>
+> The flag *surface* is 0.18's — `--llm`, `--llm-full`, `--llm-schema`, JSONL on stdout, a
+> `meta` header, a `summary` sentinel last — so a script that runs `rustest --llm` keeps
+> running. **The payload is not compatible.** A tool pinned to schema 1 sees a `meta` line
+> with no `v` key at all; it should **refuse** rather than half-read, and the published
+> schema marks `schema_version` as `const: 2` so it can. `rustest --llm-schema` prints the
+> current contract and is answered before argument parsing, so it works from a directory
+> whose `addopts` would make the run itself exit 4.
+
+### Changed — the flip: the v2 engine is the default
 
 `rustest <paths>` with no mode flag runs the **v2 engine**: a Rust orchestrator, process
 workers, pytest's config resolution and node ids, pytest's exit codes, and the pytest
 compatibility shim installed unconditionally. Every run is now a compat run.
 
-- **`--pytest-compat` is removed.** The shim it enabled is always on, so the flag could only
-  be a no-op or a lie. Passing it exits **4** (pytest's `USAGE_ERROR`) with a message
-  pointing here.
 - **`--v2` is a no-op alias** and prints a deprecation note, so pipelines that adopted it
   early keep working.
-- **`--v1` is removed, and so is the engine it selected.** The legacy Rust and Python
-  engines were deleted outright in Phase 4 — around 15 000 lines and six Rust dependencies —
-  rather than left to rot behind a flag nobody could test. Passing `--v1` exits **4** with a
-  message naming the change. `rustest.run()` (the Python API) drives v2 too; it used to be
-  v1's entry point and printed v1's diagnostics.
 
 ### Added
 
@@ -34,11 +99,9 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   prints a draft-2020-12 JSON Schema and exits 0. The exit code is never changed by the flag,
   stdout is JSONL and nothing else (a `--cov` table and the workers' stderr move to stderr),
   and `--lf --llm` is the intended second half of the agent loop. See
-  `docs/guide/llm-output.md`.
+  `user_guide/llm-output.md`.
 
-  **Schema version 2, and the fields differ from 0.18's schema 1.** The flag *surface* is
-  0.18's, so scripts keep working, but the payload is built from the v2 engine's structured
-  report rather than parsed back out of a rendered traceback:
+  **What schema 2 changed, field by field:**
 
   - `summary` carries all six status buckets (`passed`/`failed`/`skipped`/`xfailed`/
     `xpassed`/`error`) plus `deselected`, `collection_errors`, `exit_code` and — when `-x` or
@@ -76,62 +139,97 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   byte-identical to pytest's own summary line.
 - `-s` / `--no-capture` on the default engine. Uncaptured output reaches you on **stderr**
   (a worker's stdout is the protocol channel), interleaved across a pool.
-- Markdown code-block tests on the default engine, including directory walking, so
-  `rustest README.md docs/` keeps working. `--no-codeblocks` restores pytest's answer for a
+- Markdown code-block tests on the default engine. `.md` files must be named rather than
+  walked — see breaking change 7 — and `--no-codeblocks` restores pytest's answer for a
   `.md` argument.
 - `RUSTEST_ENGINE=v2` in the worker environment (alongside the long-standing
   `RUSTEST_RUNNING=1`), for suites that need to branch during the transition.
+- **A worker's whole process tree is torn down with it** (job-object containment on
+  Windows), closing #140 — a real leak that could leave orphaned grandchildren of a
+  subprocess-spawning test running indefinitely after a crashed or killed run. Measured on
+  the werkzeug suite: rustest leaks 0 processes where pytest leaks 6.
+- `pythonpath` ini support (`type="paths"`, applied to the worker's `sys.path` before
+  anything is imported), so a `src/` layout works with no editable install.
+- Coverage through `sys.monitoring` — `--cov`, `--cov-report`, opt-in behind the `cov`
+  extra, and structurally free when off (a run that does not ask for it registers no
+  monitoring tool at all).
 
 ### Fixed
 
-- **A failing `async def` test now fails.** The v2 worker previously called an async test like
+Several of these were real, shipped defects that reported **green** on a broken test —
+the worst answer a test runner can give.
+
+- **`unittest.TestCase` failures, errors and skips are no longer reported as PASSED.**
+  (#129) Any `unittest`-style test that failed, errored or was skipped showed green. Fixed
+  by routing through `unittest.TestResult`'s callbacks the way pytest does, instead of
+  discarding the result object.
+- **`conftest.py` is no longer imported twice as two distinct module objects.** (#130)
+  State written by one test and read via `import conftest` in another now really is shared.
+- **`@pytest.mark.skipif` is no longer ignored.** (#131) The guarded body used to run
+  anyway; the condition is now evaluated, string conditions included.
+- **Bare `@pytest.mark.skip` (no parentheses) no longer destroys the test body.** (#136)
+  It used to replace the test function with the decorator's own closure.
+- **Bare `@pytest.mark.xfail` (no parentheses) no longer deletes the test from
+  collection.** (#137) The test used to vanish with no error and exit 0.
+- **A failing `async def` test now fails.** The worker previously called an async test like
   a sync one, got a coroutine back, raised nothing and reported PASSED. Async fixtures
   (`async def` and `async def` + `yield`) are likewise awaited instead of handed over as
-  coroutine objects.
-- **A class-scoped fixture requested by a module-level test is rebuilt per test**, as pytest
-  does it (`SubRequest.node` falls back to the function item when there is no class). It was
-  being cached for the whole file.
-- `@parametrize` on a **class** now applies to its methods on the default engine.
-- `mock.patch`-injected arguments are no longer mistaken for fixture requests
-  (pytest's `num_mock_patch_args`).
-- `pytest_plugins = "..."` in a conftest now registers that module's fixtures.
-- `request.node`, `request.applymarker`, `request.instance`, `request.cls`,
-  `request.function`, `request.module` and `request.path` exist on the default engine.
-- `@mark.usefixtures` is honoured by the default engine's fixture closure.
-- **`indirect=` parametrization now means what it means in pytest, and that is a breaking
-  change.** A routed parameter's value reaches the fixture as `request.param`, and the test
-  receives the fixture's return value (`_pytest/python.py::Metafunc._resolve_args_directness`).
-  It used to be read as *the name of a fixture to resolve* — a rustest-only reading that no
-  pytest suite could use, and that accounted for 120 of the 129 failures in one real target's
-  `tests/test_startup` subtree. Ids are still generated from the parameter, so making a name
-  indirect does not change a node id. Note that a **string is a Sequence**: `indirect="data"`
-  is iterated character by character exactly as under pytest and fails with
-  `indirect fixture 'd' doesn't exist`; pass `["data"]` or `True`.
-  Class-level `@parametrize(..., indirect=[...])` propagates to the class's test methods.
+  coroutine objects. Found in this project's own suite: 100+ async tests were passing
+  vacuously.
 - **`pytest.exit()` stops the session.** It was a silent no-op: the compat shim's catch-all
   attribute table manufactured a do-nothing stub, so the call returned, the test passed, and
-  every test after it ran anyway. It now raises a real `Exit`; the default engine keeps the
+  every test after it ran anyway. It now raises a real `Exit`; the engine keeps the
   results already produced and exits **2**, which is pytest's answer. `pytest.exit(returncode=N)`'s
-  N is not honoured yet, and a `pytest.exit()` at import time exits 3 rather than 2.
+  N is not honoured yet, and a `pytest.exit()` at import time is a collection error at exit 2.
 - **An `async def` + `yield` test body is no longer a silent pass.** It reported PASSED
   without running; it is now `xfailed` with pytest-asyncio's own reason
   ("Tests based on asynchronous generators are not supported"), matching that plugin exactly.
-- **Non-coroutine awaitables are awaited.** The guard is now pytest's duck-typed
-  `hasattr(result, "__await__")` rather than `inspect.iscoroutine`, so a test — or a fixture —
-  handing back a `Future`, a task wrapper or any custom awaitable is run instead of silently
-  dropped. A returned *async generator* is a failure, with pytest's own message.
-- `--v1 --v2-collect-only` used to **run** the suite. It became a usage error (exit 4) at the
-  flip, and is moot now that `--v1` itself is gone.
-- `-v`'s percent column is over the tests the run *selected*, so a `-x` run stops short of
-  100% instead of claiming it finished — pytest's `session.testscollected` denominator.
+- **`pytest.warns()` with no argument no longer passes unconditionally.** `expected_warning`
+  defaulted to `None` and `None` was read as "assert nothing"; pytest's default is
+  `Warning`, because a caller who does not care *which* warning still cares that one
+  happened.
+- **`pytest.PytestWarning` and its twelve siblings are real `Warning` subclasses.** They
+  came out of a catch-all `__getattr__` that manufactured bare `object` subclasses, so
+  `warnings.simplefilter("error", pytest.PytestDeprecationWarning)` raised `TypeError` and
+  `issubclass(record.category, PytestWarning)` could never be true.
+- **`Skipped` and `XFailed` now derive from `BaseException`**, as pytest declares them, so
+  a test body's `except Exception:` cannot swallow the runner's own control flow and turn a
+  skip into a **pass**.
+- **A class-scoped fixture requested by a module-level test is rebuilt per test**, as pytest
+  does it (`SubRequest.node` falls back to the function item when there is no class). It was
+  being cached for the whole file.
 - **A `session`- or `package`-scoped `conftest.py` fixture is built once per worker, not once
   per test file.** It was rebuilt for every file that requested it — even at `-n 1` — so two
   files each got their own instance and each queued its own teardown, where pytest builds one
   and tears it down once. The same applies to a session fixture reached through
   `pytest_plugins`, and to the session-scoped builtins (`tmp_path_factory`, `tmpdir_factory`,
-  `cache`, `pytestconfig`), so a run now uses one temporary-directory root per worker instead
-  of one per file. Narrower scopes are unchanged: `module`, `class` and `function` values are
-  still discarded at their own boundaries.
+  `cache`, `pytestconfig`). On one 6,132-test real-world suite pinned to `-n 1`, this was the
+  difference between 0.72x and 1.10x against pytest. Narrower scopes are unchanged.
+- **A conftest reached under two path spellings is one module again on Windows.** The
+  content-cache key was case-preserving while the module cache was case-insensitive, so a
+  single conftest could produce two fixture blocks — silently reintroducing the per-file
+  duplication the fix above exists to remove.
+- **`approx`'s comparison table reaches the assertion output.** A failing
+  `assert x == approx(y)` printed the generic explanation while the
+  `Index | Obtained | Expected` table pytest prints sat unreachable inside the port.
+- **Traceback statement ranges match pytest's for compound statements.** A frame stopped on
+  a `with`/`for`/`if`/`try` header used to render the entire block onto one traceback line,
+  and the longer the block the worse it got.
+- `@parametrize` on a **class** now applies to its methods.
+- `mock.patch`-injected arguments are no longer mistaken for fixture requests
+  (pytest's `num_mock_patch_args`).
+- `pytest_plugins = "..."` in a conftest now registers that module's fixtures.
+- `request.node`, `request.applymarker`, `request.instance`, `request.cls`,
+  `request.function`, `request.module` and `request.path` exist.
+- `@mark.usefixtures` is honoured by the fixture closure.
+- **Non-coroutine awaitables are awaited.** The guard is now pytest's duck-typed
+  `hasattr(result, "__await__")` rather than `inspect.iscoroutine`, so a test — or a fixture —
+  handing back a `Future`, a task wrapper or any custom awaitable is run instead of silently
+  dropped. A returned *async generator* is a failure, with pytest's own message.
+- `-v`'s percent column is over the tests the run *selected*, so a `-x` run stops short of
+  100% instead of claiming it finished — pytest's `session.testscollected` denominator.
+- `deprecated_call()` accepts `FutureWarning`, pytest's third deprecation category, which
+  numpy and pandas both use heavily.
 
 ### Known gaps
 
@@ -143,6 +241,9 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 > that was fixed, and trusts the entries that are still wrong. Every bullet below was
 > re-probed against pytest 8.4.2.
 
+- **No plugin system and no hook system.** By design. A `conftest.py` that defines hooks
+  loads fine and its *fixtures* are used; its hooks are ignored. See
+  `user_guide/pytest-plugins.md` for what replaces the ten most popular plugins.
 - **No item reordering**, and the visible symptom is a *setup-count* difference rather than
   an ordering one. pytest groups tests that share a higher-scoped parametrized fixture
   (`_pytest/fixtures.py::reorder_items`); that pass needs the whole session's item list,
@@ -154,7 +255,9 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - `session`/`package` scope is per **worker**, not per run: a worker is handed a subset of the
   files, so a suite spread over several workers gets one session-fixture instance per worker
   process. That is pytest-xdist's contract, and `-n 1` gives pytest's exactly. `package`
-  scope is additionally not torn down at the package boundary.
+  scope is additionally not torn down at the package boundary. A *parametrized* fixture above
+  function scope is still re-set-up per file, because its value-cache key carries the
+  parameter.
 - **Nine fixtures are still not provided**: `capsysbinary`, `capfdbinary`, `capteesys`,
   `doctest_namespace`, `pytester`, `testdir`, `record_property`, `record_testsuite_property`
   and `record_xml_attribute`. Requesting one is a loud error naming the fixture, never a
@@ -162,8 +265,7 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   `mocker`, `monkeypatch`, `pytestconfig`, `recwarn`, `request`, `tmp_path`,
   `tmp_path_factory`, `tmpdir` and `tmpdir_factory`.
 - **No `pytest_generate_tests` hook.** Decorator metadata (function *and* class level) and
-  fixture `params=` are the only sources of parametrization. A `conftest.py` that defines
-  hooks loads fine and its *fixtures* are used; its hooks are ignored.
+  fixture `params=` are the only sources of parametrization.
 - **No `xfail_strict` ini and no `--runxfail`.** The `strict=` *keyword* on the mark works,
   including strict xpass; only the ini and the flag are missing.
 - **No warnings channel.** pytest's own diagnostics — the `PytestCollectionWarning` for a
@@ -172,9 +274,12 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   case matches pytest; only the message is missing.
 - **`PYTEST_ADDOPTS` is not read.** The `addopts` *ini* is applied (pytest's
   `Config._preparse`); options exported into the environment are not.
-- **A `.md` directory argument collects nothing.** Markdown code-block tests are a rustest
-  tier with no pytest counterpart, so a `.md` file must be *named*: `rustest docs/guide/*.md`,
-  not `rustest docs/guide/`. pytest walking the same tree collects none either.
+- **A test that introspects the `pytest` module's identity cannot pass.** rustest installs
+  its own implementation under that name, so a test asserting on the real module object
+  (rather than using its API) is structurally out of reach. Exactly one test in the
+  seventeen-suite sweep does this.
+- **No `xdist_group` equivalent**, and worker distribution is at **file** granularity. A
+  suite sharing a database, a port or a filesystem path across files needs `-n 1`.
 - **Async tests sharing a loop scope run sequentially** — but so do pytest's. pytest-asyncio
   drives each coroutine through `asyncio.Runner.run`, which cannot be re-entered; probed on
   pytest-asyncio 1.2.0 with two tests each awaiting `asyncio.sleep(0.30)` on one
@@ -193,12 +298,45 @@ uniformly stream-level** — `capsys` redirects `sys.stdout`/`sys.stderr` exactl
 does, while `capfd` redirects the file descriptors and does catch a subprocess or a C
 extension (probed both ways against pytest).
 
+### Performance
+
+Measured, and stated with its bounds rather than as a headline multiplier. Full method,
+per-suite table and caveats in `user_guide/performance.md`.
+
+- **1.1x – 5.7x** wall-clock across seventeen real open-source pytest suites, run
+  sequentially on one machine, each target's two runners one after the other.
+- **1.23x** aggregated over all seventeen — a figure dominated by two suites that are
+  almost entirely their own test bodies. **2.74x** across the other fifteen.
+- **~37x** on warm collection and **~8x** on marginal per-test framework overhead
+  (500 files / 5,000 tests: 8.39s → 227.6ms, and 933.6µs → 117.9µs per test).
+- **4.0x** on the 5,000-test synthetic baseline (pytest 8.30s, rustest 2.07s).
+- Any speedup is bounded by a suite's *framework share* — the fraction of wall clock that
+  is not the user's own code. That fraction is measured per suite in the performance guide,
+  and it is why a 1.2x on one suite and a 5.7x on another can be the same result.
+- **The marginal-overhead figure is noisy on a loaded machine** and should not be quoted
+  from a single reading: a byte-identical control build reported 93.6, 61.9, 37.1, 94.1,
+  16.0 and 37.0 µs/test across six consecutive runs during one investigation.
+
+### Documentation
+
+- The site moved from zensical/MkDocs to **great-docs** (Quarto-based). Content lives in a
+  flat `user_guide/` directory; the API reference is **generated** from `python/rustest`'s
+  docstrings, replacing five hand-maintained pages that had drifted from the signatures.
+- Every restatement of the old **"8.5x average, up to 19x"** figure is gone. It was a
+  measurement of the *v1* engine, which no longer exists, and it had propagated across six
+  pages and the README hero.
+- CI's documentation-code-block gate widened from four subdirectories to the whole site.
+  That immediately caught 36 broken examples on pages that had never been tested.
+- `pytest-plugins.md` no longer tells readers that rustest cannot run tests in parallel and
+  that they should keep using pytest-xdist. `-n` has shipped for the whole of this arc.
+
 ### Reconciliation with 0.17.0 and 0.18.0
 
 This branch forked before 0.17.0 and does **not** carry those tags, so this section exists so
 that nothing shipped on the release line looks dropped when the two histories meet. Every
-user-facing fix in 0.17.0 and 0.18.0 was checked against this engine, one at a time; the full
-evidence table is in the release checklist.
+user-facing fix in 0.17.0 and 0.18.0 was checked against this engine, one at a time — 36
+items: **19 moot under v2, 8 ported, 9 deferred**. The full evidence table is in
+`RELEASE-CHECKLIST.md`.
 
 - **0.18.0's `--llm` (#128) is ported**, flag surface intact, payload rebuilt on the v2 report
   at schema version 2. See the entry under **Added** above.
@@ -227,7 +365,11 @@ evidence table is in the release checklist.
   feature-status half is applied — `-m` is no longer described as planned, and the worker-count
   flag is no longer spelled `-j` (it is `-n`) — but its console-output half could not be: the
   replacement text it introduced is v1's spinner-and-progress-bar rendering, which this engine
-  does not produce either. Correcting those samples is the docs wave's job, not a cherry-pick.
+  does not produce either.
+
+**Nothing was dropped silently.** The nine items this arc deliberately did *not* carry
+across are enumerated, with their reasons, in the "Deferred from the 0.17/0.18 delta" table
+in `RELEASE-CHECKLIST.md`.
 
 ## [0.16.2] - 2026-03-30
 
