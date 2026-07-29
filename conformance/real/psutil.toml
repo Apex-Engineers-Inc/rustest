@@ -122,70 +122,72 @@ timeout_s = 5400
 id_policy = "exact"
 
 [divergence.ids]
-"*psutil/tests/*" = """\
-STATUS AT PHASE 4 TASK 1c: **the collection blocker is FIXED and confirmed; the suite now \
-fails to complete for a DIFFERENT and newly-found reason.** This entry describes both, \
-because the target is the one row of the seventeen without a graded verdict and the record \
-has to say exactly why.
+# ONE ENTRY, ONE ID. This section used to hold a single blanket key, `*psutil/tests/*`,
+# because at Task 1c the whole suite was blocked and every id was a consequence. That key is
+# a pre-waiver over all 713 ids and would hide any real per-id divergence that appeared
+# later, so it is replaced here by the one id that actually differs.
+#
+# MEASURED at the Phase 4 final polish wave, at the DEFAULT worker pool:
+#   pytest : exit 1, 1948.05s, 327 passed / 11 failed / 375 skipped
+#   rustest: exit 1, 1663.86s, 328 passed / 10 failed / 375 skipped
+#   713 ids on both sides; 712 statuses identical, INCLUDING all 375 skips and 10 of the 11
+#   failures (`test_all`, `test_invocation`, `test_it`, `test_name`, `test_open_files`,
+#   `test_pids`, `test_procsmem`, `test_ps`, `test_pstree`, `test_username` -- psutil's own
+#   environment-conditioned failures, this being a developer laptop and not psutil's CI).
+#
+# The 375 skips are the reason this target was picked (`@pytest.mark.skipif(not WINDOWS, ...)`
+# on the per-platform base classes covering test_bsd/test_linux/test_osx/test_aix/test_sunos)
+# and Task 1c had to record them as "STILL UNMEASURED". They are now measured, and they are
+# exact.
+"conformance/real/_work/psutil/tests/test_windows.py::TestCpuAPIs::test_cpu_freq" = """THE TARGET'S OWN FLAKE, and note the DIRECTION: pytest **failed** this and rustest **passed** it. Whatever it is, it is not rustest failing something pytest passes.
 
-WHAT WAS FIXED (MECHANISM M6). `pytest.fail.Exception` / `skip.Exception` / `xfail.Exception` \
-did not exist on rustest's compat shim. pytest builds them in `_pytest/outcomes.py` with an \
-`@_with_exception(Failed)` decorator that hangs the exception class off the function object, \
-so `pytest.fail.Exception is Failed`; psutil's `tests/__init__.py` l. 760 reads \
-`exception=(AssertionError, pytest.fail.Exception)` at MODULE level, so the attribute is \
-reached at IMPORT time and never has to be raised. Without it every one of psutil's 19 test \
-modules failed to import, collection aborted, and rustest wrote a report containing ZERO \
-tests against pytest's 713 -- the highest-leverage single finding of the Task 1b sweep, and \
-three attribute assignments to fix. Task 1c added all three (plus `exit.Exception`, which \
-already existed, completing pytest's set) and pinned them with the corpus case \
-`marks/outcome-exception-attrs`, which MATCHes under both v2 gates. **Confirmed on this \
-target in the Task 1c re-sweep: the 19 collection errors are gone, the manifest is built, and \
-the worker pool starts and is dispatched work.**
+`TestCpuAPIs::test_cpu_freq` compares `psutil.cpu_freq()` against the frequency Windows reports through WMI/the registry. That is a live hardware reading on a laptop whose clock moves with turbo, thermal state and idle -- the two runners sampled it ~30 minutes apart in the same sweep and got different answers. It is a timing-dependent measurement of the machine, not a property of either runner, and it belongs in the same class as marshmallow's wall-clock-in-a-nodeid and jsonschema's import-order dependency: a target property the gate reports rather than hides.
 
-WHAT IS NOW IN THE WAY (MECHANISM M11, NEW, REPORTED NOT FIXED). rustest's execution of this \
-suite **stalls**. pytest completed the run in 2 137s; rustest ran for 95 minutes without \
-finishing, and the evidence that it is a stall rather than slowness is direct: sampling the \
-four surviving worker processes ~50 seconds apart returned byte-identical `UserModeTime` AND \
-`KernelModeTime` for every one of them. They are idle, not busy. One worker had burned 642s \
-of kernel time and then stopped; another had accumulated ZERO CPU since it started.
-
-The plausible cause is specific to this target and is already a known class in this corpus: \
-psutil's tests manipulate process-global state -- spawning and reaping children, counting \
-handles, waiting on pids, killing process trees -- and several assume they are the only thing \
-doing so. Run in a pool that is exactly the isolation hazard already ledgered for jsonschema's \
-`test_import_cli` and for Apex Member Designer's shared database, both of which are pinned \
-with `-n 1`. psutil is NOT pinned, because until M6 was fixed it never got far enough to need \
-to be.
-
-THE DIAGNOSTIC THAT SEPARATES THE TWO POSSIBILITIES, and the next step for this target: re-run \
-with `-n 1`. If it completes, this is a target-side parallelism hazard and the answer is a \
-pinned `-n 1` plus a ledger entry, exactly like its two siblings. If it still stalls, it is a \
-deadlock in rustest's own pool and a Phase 4 blocker. Those have very different costs and the \
-evidence so far does not separate them. NOT attempted in Task 1c: the directive for the \
-re-sweep is to report new mechanisms, not to fix or chase them.
-
-A HARNESS DEFECT COMPOUNDS IT and cost this task most of its wall clock. The `timeout_s` fired \
-and could not recover: `subprocess.run(capture_output=True, timeout=...)` kills only the \
-DIRECT child, and the orphaned workers keep the inherited stdout/stderr pipes open, so the \
-reap blocks forever and no verdict is ever written. Two earlier attempts produced an empty log \
-rather than a timeout verdict, which is why the stall was misread as slowness for most of the \
-task. The run had finally to be killed by pid. PHASE-4-FOLLOWUP."""
+NOT pre-waived any wider than this one id, deliberately. If this test starts flipping the other way, or if a second id joins it, the gate must say so."""
 
 [divergence.global]
-# NO `exit_code` ENTRY ON PURPOSE. Both runners exit 2, so the grader raises no exit-code
-# divergence -- but they exit 2 for OPPOSITE reasons, and the agreement must not be misread as
-# health: pytest exits 2 because 9 of the 713 tests it actually ran failed in this unelevated,
-# non-CI environment; rustest exits 2 because it collected nothing at all (19 collection
-# errors). A ledger entry here would simply go stale, so the observation lives in this comment.
-tally = """\
-pytest 329 passed / 375 skipped / 9 failed across 713 ids; rustest 0 of everything, 19 \
-collection errors. Entirely the `pytest.fail.Exception` blocker ledgered above.
+# The tally DOES still differ, by exactly one test moving between two buckets, and that is the
+# `test_cpu_freq` flake ledgered above showing up in the totals. Everything else is identical.
+tally = """pytest 327 passed / 11 failed / 375 skipped; rustest 328 passed / 10 failed / 375 skipped, over the same 713 ids, exit 1 on both. The whole of the difference is one test crossing from `failed` to `passed`: `test_windows.py::TestCpuAPIs::test_cpu_freq`, a live CPU-frequency reading, which the ids ledger above records as the target's own flake -- and which failed on PYTEST's side, not rustest's.
 
-The 375 skips on the pytest side are the platform gating this target was picked to exercise \
-(`@pytest.mark.skipif(not WINDOWS, ...)` on the per-platform base classes covering \
-test_bsd/test_linux/test_osx/test_aix/test_sunos). Whether rustest reproduces them is STILL \
-UNMEASURED -- that was the point of the pick, and the blocker prevented the measurement. \
-Re-run this target once the attributes land."""
+THE 375 SKIPS ARE NOW MEASURED AND EXACT, which is what this target was picked for. They are the platform gating (`@pytest.mark.skipif(not WINDOWS, ...)` on the per-platform base classes covering test_bsd/test_linux/test_osx/test_aix/test_sunos); Task 1c had to record them as STILL UNMEASURED because the suite did not collect. rustest reproduces all 375.
+
+The 10 shared failures are psutil's own, in an unelevated developer environment that is not psutil's CI: test_all, test_invocation, test_it, test_name, test_open_files, test_pids, test_procsmem, test_ps, test_pstree, test_username. Both runners fail the same ten."""
+
+# HISTORY, kept because two of this corpus's most expensive findings were recorded here and
+# both are now closed by measurement rather than by assertion.
+#
+# MECHANISM M6 -- FIXED and pinned. `pytest.fail.Exception` / `skip.Exception` /
+# `xfail.Exception` did not exist on the compat shim. pytest builds them in
+# `_pytest/outcomes.py` via `@_with_exception(Failed)`, which hangs the exception class off the
+# function object; psutil's `tests/__init__.py` l. 760 reads `exception=(AssertionError,
+# pytest.fail.Exception)` at MODULE level, so the attribute is reached at IMPORT time and never
+# has to be raised. Without it all 19 of psutil's test modules failed to import and rustest
+# reported ZERO tests against pytest's 713 -- the highest-leverage single finding of the Task 1b
+# sweep, and three attribute assignments to fix. Closed in Task 1c and pinned by the corpus case
+# `marks/outcome-exception-attrs`.
+#
+# MECHANISM M11 (the stall) -- **NOT REPRODUCED.** Task 1c measured rustest running this suite
+# for 95 minutes without finishing, and its evidence was not "slow" but "idle": four worker
+# processes whose UserModeTime AND KernelModeTime were byte-identical across samples ~50s apart,
+# one of them with zero CPU since start. That signature is absent now. Measured at the DEFAULT
+# pool (4 workers) during the final polish wave: the suite completed in 1 663.86s, and worker
+# CPU was sampled repeatedly throughout and rose monotonically at ~0.9 cores per live worker
+# (e.g. two workers 96s apart: 45.1 -> 132.7 and 31.7 -> 116.8 CPU-seconds), with workers
+# exiting as they finished their files. The suite is not pinned to `-n 1` and does not need to
+# be.
+#
+# What plausibly fixed it, in order of likelihood and NOT separable by this evidence: the
+# Windows job object (#140, `e0b9fe8`), which makes every grandchild psutil spawns die with its
+# worker; the default pool dropping from `cpu_count` to 4 on a suite whose tests manipulate
+# process-global state; and two-phase spawn changing the timing of everything after it. The
+# grandchild-inherits-the-protocol-pipe hypothesis is half wrong on its own terms --
+# `_v2_worker._detach_protocol_stream` already dups the protocol channel onto a private,
+# non-inheritable descriptor -- though the failure CLASS is real and is now reproduced and
+# contained in a unit test.
+#
+# The harness defect that compounded it (a fired `timeout_s` that could not reap orphaned
+# workers, so no verdict was ever written) is closed by the same job object.
 # Two pre-flight flags from the audit, both still UNTESTED for the same reason -- rustest never
 # collected, so neither question has been answered yet:
 # - tests/test_sudo.py needs elevated privileges and is run OUTSIDE pytest entirely in

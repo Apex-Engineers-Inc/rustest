@@ -60,6 +60,23 @@ from collections.abc import Set as AbstractSet
 from typing import Any, Final, TypeGuard, cast
 from unicodedata import normalize
 
+# `_pytest/assertion/util.py::_compare_eq_any` (l. 255) imports `ApproxBase` *inside* the
+# function; this module imports it at module scope. The reason is that there is no cycle to
+# avoid -- `rustest.approx` imports nothing from here -- and one import per worker is cheaper
+# than a `sys.modules` lookup on every rewritten comparison, since rustest's
+# `_call_reprcompare` reaches `_compare_eq_any` on the ordinary path where pytest's arrives
+# only after an assertion has already failed.
+#
+# It was first written as a per-call import and moved here mid-wave on what looked like a
+# measured regression in `bench.py`'s marginal per-test overhead. **That attribution was
+# wrong and is recorded because the correction is the useful part**: across six consecutive
+# bench runs the *v1* engine -- byte-identical code in every one of them, a pure control --
+# reported 93.6, 61.9, 37.1, 94.1, 16.0 and 37.0 us/test. A metric whose own control swings
+# 6x cannot resolve the ~40 us effect it was being used to attribute, and the "bisect" that
+# appeared to localise the cost to this file was reading noise. Module scope is kept on the
+# arguments above, not on a speed claim.
+from rustest.approx import ApproxBase
+
 __all__ = [
     "assertrepr_compare",
     "format_explanation",
@@ -388,11 +405,6 @@ def _compare_eq_any(left: Any, right: Any, verbose: int = 0) -> list[str]:
     if istext(left) and istext(right):
         explanation = _diff_text(left, right, verbose)
     else:
-        # `_pytest/assertion/util.py::_compare_eq_any` l. 255-262. Imported inside the
-        # function, as pytest imports `ApproxBase` inside its own, because the assertion
-        # runtime is on the hot path of every rewritten module and `rustest.approx` is not.
-        from rustest.approx import ApproxBase
-
         if isinstance(left, ApproxBase) or isinstance(right, ApproxBase):
             # "Although the common order should be obtained == expected, this ensures both
             # ways" -- pytest's own comment. Either operand may be the approx.

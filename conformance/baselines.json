@@ -3,58 +3,58 @@
     {
       "files": 10,
       "tests": 100,
-      "pytest_collect_s": 1.0440350000280887,
-      "pytest_run_s": 1.377830500015989,
-      "rustest_run_s": 0.5911614000215195,
-      "rustest_v2_run_s": 0.6116475000162609,
-      "rustest_collect_s": 0.18653529998846352,
-      "rustest_collect_warm_s": 0.24049930000910535
+      "pytest_collect_s": 1.2045524999848567,
+      "pytest_run_s": 1.0680364000145346,
+      "rustest_run_s": 0.5940516000264324,
+      "rustest_v2_run_s": 0.7097393000149168,
+      "rustest_collect_s": 0.3462924999766983,
+      "rustest_collect_warm_s": 0.19652709999354556
     },
     {
       "files": 100,
       "tests": 1000,
-      "pytest_collect_s": 2.064956500020344,
-      "pytest_run_s": 1.9459565000142902,
-      "rustest_run_s": 1.2575192999793217,
-      "rustest_v2_run_s": 0.84769269998651,
-      "rustest_collect_s": 0.1487429999979213,
-      "rustest_collect_warm_s": 0.16066259995568544
+      "pytest_collect_s": 2.756913799967151,
+      "pytest_run_s": 2.1010872999904677,
+      "rustest_run_s": 0.9960510000237264,
+      "rustest_v2_run_s": 1.0950208000140265,
+      "rustest_collect_s": 0.3145364000229165,
+      "rustest_collect_warm_s": 0.205110999988392
     },
     {
       "files": 500,
       "tests": 5000,
-      "pytest_collect_s": 9.193278199993074,
-      "pytest_run_s": 8.340484399988782,
-      "rustest_run_s": 4.385884999996051,
-      "rustest_v2_run_s": 1.984182599990163,
-      "rustest_collect_s": 0.182839100016281,
-      "rustest_collect_warm_s": 0.2073777000186965
+      "pytest_collect_s": 9.337165699980687,
+      "pytest_run_s": 8.299807799980044,
+      "rustest_run_s": 4.797906400053762,
+      "rustest_v2_run_s": 2.0682238999870606,
+      "rustest_collect_s": 0.26935560000129044,
+      "rustest_collect_warm_s": 0.25881799997296184
     }
   ],
   "derived": {
-    "pytest_overhead_us_per_test": 961.0249999823282,
-    "rustest_overhead_us_per_test": 31.608374993084002,
-    "rustest_v2_overhead_us_per_test": 111.9588000146905,
-    "pytest_per_file_ms": 5.281233750138199,
-    "rustest_v2_per_file_ms": 3.0937662499491125,
-    "rustest_v2_per_file_collect_ms": 0.014146500179776922
+    "pytest_overhead_us_per_test": 1052.2207999892998,
+    "rustest_overhead_us_per_test": 37.01405000174418,
+    "rustest_v2_overhead_us_per_test": 178.10607500723563,
+    "pytest_per_file_ms": 4.131188249884872,
+    "rustest_v2_per_file_ms": 3.9026962500065565,
+    "rustest_v2_per_file_collect_ms": 0.3452437500527594
   },
   "overhead": [
     {
       "files": 100,
       "tests": 1000,
       "repetitions": 5,
-      "pytest_run_s": 1.935511200048495,
-      "rustest_run_s": 0.8710481000016443,
-      "rustest_v2_run_s": 0.9490169999771751
+      "pytest_run_s": 2.1865552000235766,
+      "rustest_run_s": 1.1329467000323348,
+      "rustest_v2_run_s": 1.0810902999946848
     },
     {
       "files": 100,
       "tests": 5000,
       "repetitions": 5,
-      "pytest_run_s": 5.779611199977808,
-      "rustest_run_s": 0.9974815999739803,
-      "rustest_v2_run_s": 1.3968522000359371
+      "pytest_run_s": 6.395438399980776,
+      "rustest_run_s": 1.2810029000393115,
+      "rustest_v2_run_s": 1.7935146000236273
     }
   ],
   "per_file": [
@@ -62,17 +62,17 @@
       "files": 100,
       "tests": 5000,
       "repetitions": 3,
-      "pytest_run_s": 5.514373199956026,
-      "rustest_v2_run_s": 1.2610952000250109,
-      "rustest_v2_collect_s": 0.2180740999756381
+      "pytest_run_s": 6.008476500050165,
+      "rustest_v2_run_s": 1.5584230999811552,
+      "rustest_v2_collect_s": 0.20802520000142977
     },
     {
       "files": 500,
       "tests": 5000,
       "repetitions": 3,
-      "pytest_run_s": 7.6268667000113055,
-      "rustest_v2_run_s": 2.498601700004656,
-      "rustest_v2_collect_s": 0.22373270004754886
+      "pytest_run_s": 7.6609518000041135,
+      "rustest_v2_run_s": 3.119501599983778,
+      "rustest_v2_collect_s": 0.34612270002253354
     }
   ]
 }
