@@ -53,13 +53,6 @@ from pprint import pformat
 from re import Pattern
 from typing import Any, Callable, NoReturn, TypeVar, TypedDict, cast
 
-try:
-    from rustest import rust as _rust_bridge
-except (
-    Exception
-):  # pragma: no cover - rust module not available when running unit tests without extension
-    _rust_bridge = None
-
 # Import rustest's actual implementations
 from rustest.decorators import (
     fixture as _rustest_fixture,
@@ -90,7 +83,6 @@ from rustest.builtin_fixtures import (
     caplog,
     capsys,
     capfd,
-    pytestconfig,
 )
 
 __all__ = [
@@ -139,7 +131,6 @@ __all__ = [
     "caplog",
     "capsys",
     "capfd",
-    "pytestconfig",
     # Pytest plugin decorator
     "hookimpl",
 ]
@@ -460,25 +451,21 @@ class FixtureRequest:
         raise NotImplementedError(msg)
 
     def getfixturevalue(self, name: str) -> Any:
-        """Get the value of another fixture by name, resolving dependencies recursively."""
+        """Get the value of another fixture by name, resolving dependencies recursively.
+
+        **This is not the path a rustest run takes.** The v2 worker builds its own
+        ``FixtureRequest`` with its own ``getfixturevalue``
+        (``python/rustest/_v2_worker.py``), backed by the real fixture graph it assembled for
+        the file. This class is the compat shim's ``pytest.FixtureRequest``, reached when the
+        shim is imported *outside* a v2 worker -- under real pytest, or from library code --
+        so the Python-side registry is the whole resolver here.
+
+        It used to try ``rustest.rust.getfixturevalue`` first, a PyO3 function backed by v1's
+        executor thread-local. That engine is gone; the branch it fed went with it.
+        """
         # Check cache first
         if name in self._executed_fixtures:
             return self._executed_fixtures[name]
-
-        if _rust_bridge is not None:
-            try:
-                return _rust_bridge.getfixturevalue(name)
-            except (AttributeError, RuntimeError) as exc:
-                # When not running under rustest, fall back to Python resolver
-                message = str(exc)
-                if (
-                    "active rustest test" not in message
-                    and "only run while rustest is executing a test" not in message
-                ):
-                    raise
-                # Continue to fallback path below so users still get a value when
-                # calling request.getfixturevalue() in environments where the Rust
-                # extension is not active (e.g., plain pytest).
 
         # Import and use the fixture registry fallback
         from rustest.fixture_registry import resolve_fixture
