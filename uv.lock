@@ -540,7 +540,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "basedpyright", marker = "extra == 'dev'", specifier = ">=1.19" },
+    { name = "basedpyright", marker = "extra == 'dev'", specifier = ">=1.32.1,<1.33" },
     { name = "coverage", marker = "extra == 'cov'", specifier = ">=7.6" },
     { name = "coverage", marker = "extra == 'dev'", specifier = ">=7.6" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.4,<2" },
@@ -553,7 +553,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.2.0" },
     { name = "pytest-codeblocks", marker = "extra == 'dev'", specifier = ">=0.17.0" },
     { name = "rich", specifier = ">=13.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.9" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14.3,<0.15" },
     { name = "typing-extensions", specifier = ">=4.15" },
     { name = "zensical", marker = "extra == 'docs'" },
 ]

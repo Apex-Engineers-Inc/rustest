@@ -37,7 +37,10 @@ cov = [
     "coverage>=7.6",
 ]
 dev = [
-    "basedpyright>=1.19",
+    # Bounded, and the bound is load-bearing: `.pre-commit-config.yaml` pins the same
+    # basedpyright version as an `additional_dependencies` entry, and a hook running a
+    # different type checker from the CI step is a gate that disagrees with itself.
+    "basedpyright>=1.32.1,<1.33",
     # The `cov` extra, present here so this repository's own gates can exercise the coverage
     # path and diff it against coverage.py.  `coverage` registers no pytest plugin (unlike
     # pytest-cov, which is deliberately NOT installed), so its presence changes nothing about
@@ -60,7 +63,13 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=1.2.0",
     "pytest-codeblocks>=0.17.0",
-    "ruff>=0.1.9",
+    # **Bounded on purpose (#134).** `.pre-commit-config.yaml` pins `ruff-pre-commit` to an
+    # exact `rev`, and an unbounded floor here let the two drift six minor releases apart
+    # (v0.8.4 in the hook, 0.14.x in the lock). ruff's formatter changes between minors, so
+    # the skew was not cosmetic: `pre-commit run --all-files` and the CI `ruff format` step
+    # reformatted the same files differently, each undoing the other. The upper bound makes
+    # a `uv lock --upgrade` that would break the pairing fail resolution instead.
+    "ruff>=0.14.3,<0.15",
 ]
 docs = [
     "zensical",
