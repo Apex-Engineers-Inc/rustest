@@ -33,10 +33,15 @@ the port is unfinished:
   this passes :func:`dummy_highlighter`, which is pytest's own no-op used for exactly this
   purpose. rustest's failure sections are not coloured yet, so a highlighter would emit
   escape codes into a plain-text report.
-* **no ``ApproxBase`` branch.** pytest's ``_compare_eq_any`` asks ``approx`` objects for
-  ``_repr_compare``; ``rustest.approx`` has no such method, so the branch would be dead code
-  pretending to be a feature. An ``approx`` comparison therefore falls through to the
-  generic explanation, which is the pre-rewrite behaviour and is not a regression.
+
+(There used to be a third: *"no ``ApproxBase`` branch — ``rustest.approx`` has no
+``_repr_compare``, so the branch would be dead code pretending to be a feature."* That was
+true when it was written and stopped being true one commit later: Phase 4 Task 1's M9 fix
+replaced the ``approx`` lookalike with a **port** of ``_pytest/python_api.py``, and every
+``Approx*`` class in :mod:`rustest.approx` has carried ``_repr_compare`` since. The comment
+outlived the reason for it, and with it the wiring: a failing ``assert x == approx(y)``
+printed the generic explanation while the table pytest prints sat unreachable in the port.
+:func:`_compare_eq_any` now calls it, exactly where pytest does.)
 
 ``running_on_ci`` is ported **including** its environment sniff, because it changes the
 message (``Use -v to get more diff`` versus a full diff), and a differential test that
@@ -52,7 +57,7 @@ import reprlib
 import types
 from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from typing import Any, Final, TypeGuard
+from typing import Any, Final, TypeGuard, cast
 from unicodedata import normalize
 
 __all__ = [
@@ -383,7 +388,20 @@ def _compare_eq_any(left: Any, right: Any, verbose: int = 0) -> list[str]:
     if istext(left) and istext(right):
         explanation = _diff_text(left, right, verbose)
     else:
-        if type(left) is type(right) and (isdatacls(left) or isattrs(left) or isnamedtuple(left)):
+        # `_pytest/assertion/util.py::_compare_eq_any` l. 255-262. Imported inside the
+        # function, as pytest imports `ApproxBase` inside its own, because the assertion
+        # runtime is on the hot path of every rewritten module and `rustest.approx` is not.
+        from rustest.approx import ApproxBase
+
+        if isinstance(left, ApproxBase) or isinstance(right, ApproxBase):
+            # "Although the common order should be obtained == expected, this ensures both
+            # ways" -- pytest's own comment. Either operand may be the approx.
+            approx_side = left if isinstance(left, ApproxBase) else right
+            other_side = right if isinstance(left, ApproxBase) else left
+            # `_repr_compare` is pytest's own call site for a deliberately private hook:
+            # `ApproxBase` publishes it *for* the assertion layer and nothing else.
+            explanation = approx_side._repr_compare(other_side)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        elif type(left) is type(right) and (isdatacls(left) or isattrs(left) or isnamedtuple(left)):
             # Unlike dataclasses/attrs, namedtuples compare only field values; this branch
             # handles the same-type case only, exactly as pytest's does.
             explanation = _compare_eq_cls(left, right, verbose)
@@ -395,7 +413,11 @@ def _compare_eq_any(left: Any, right: Any, verbose: int = 0) -> list[str]:
             explanation = _compare_eq_dict(left, right, verbose)
 
         if isiterable(left) and isiterable(right):
-            explanation.extend(_compare_eq_iterable(left, right, verbose))
+            explanation.extend(
+                _compare_eq_iterable(
+                    cast("Iterable[Any]", left), cast("Iterable[Any]", right), verbose
+                )
+            )
 
     return explanation
 
