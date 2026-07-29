@@ -57,13 +57,25 @@ def test_fail_with_detailed_message():
 
 
 def test_fail_pytrace_parameter():
-    """Test that pytrace parameter is accepted (for pytest compatibility)."""
-    # pytrace doesn't affect behavior in rustest, but should be accepted
-    with raises(Failed):
-        fail("Test failure", pytrace=True)
+    """``pytrace`` reaches the exception, rather than being accepted and dropped.
 
-    with raises(Failed):
+    It was accepted and dropped until the Phase 4 convergence wave, and this test asserted
+    only that the call did not raise a ``TypeError`` -- which a signature with the parameter
+    misspelled would also have satisfied. ``Failed.pytrace`` is the channel
+    ``_v2_worker.py::_module_outcome_error_message`` reads to decide between pytest's two
+    collection-error renderings, so the value has to survive the call.
+    """
+    with raises(Failed) as traced:
+        fail("Test failure", pytrace=True)
+    assert traced.value.pytrace is True
+
+    with raises(Failed) as untraced:
         fail("Test failure", pytrace=False)
+    assert untraced.value.pytrace is False
+
+    with raises(Failed) as defaulted:
+        fail("Test failure")
+    assert defaulted.value.pytrace is True
 
 
 def test_failed_exception_is_a_base_exception():

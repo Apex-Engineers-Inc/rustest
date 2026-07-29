@@ -4835,6 +4835,36 @@ SKIPPED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
 #: it here would turn one of pytest's errors into a silent non-collection.
 MODULE_SKIP_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Skipped,)
 
+#: The *other* outcome exceptions a module body can raise, and what :func:`collect_file`
+#: must turn into an ordinary **collection error**.
+#:
+#: They need their own arm because :class:`rustest.decorators.OutcomeException` is a
+#: ``BaseException`` on purpose (so a test body's ``except Exception:`` cannot swallow the
+#: runner's control flow), which also means :func:`collect_file`'s ``except Exception``
+#: handler never sees them.  Without this arm a module-level ``pytest.fail()`` or
+#: ``pytest.xfail()`` escapes the worker entirely, the worker dies, and the orchestrator
+#: reports an internal failure at **exit 3** — the whole run lost to one bad file.
+#:
+#: pytest's answer is exit **2**, and it is not a special case there: collection runs inside
+#: `_pytest/runner.py::pytest_make_collect_report`'s ``CallInfo.from_call``, which catches
+#: ``BaseException`` with ``reraise=(KeyboardInterrupt, SystemExit)`` and files everything
+#: that is not a ``Skipped`` as a failed collect — then ``Session.perform_collect`` raises
+#: ``Interrupted`` and ``wrap_session`` sets ``ExitCode.INTERRUPTED``.  Probed on pytest
+#: 8.4.2: a module calling ``pytest.fail("boom")`` reports ``ERROR collecting`` /
+#: ``E   Failed: boom`` at exit 2, and ``pytest.xfail("xf")`` reports
+#: ``E   _pytest.outcomes.XFailed: xf`` at exit 2.
+#:
+#: ``XFailed`` is already a ``Failed`` subclass, so naming it is redundant *today*; it is
+#: named anyway because this tuple's correctness would otherwise depend on a hierarchy
+#: detail documented two declarations below as load-bearing for a different reason.
+#:
+#: ``SystemExit`` is deliberately **absent** for the same reason it is absent from
+#: :data:`ABORT_EXCEPTIONS`'s neighbours: pytest *reraises* it out of collection, which ends
+#: that session as an internal error, and rustest's worker dying at exit 3 is the same
+#: answer.  ``KeyboardInterrupt`` and ``Exit`` are handled earlier, by
+#: :data:`ABORT_EXCEPTIONS`.
+MODULE_ERROR_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Failed, _XFailed)
+
 #: "The test declared itself an expected failure while running."  Port of
 #: `_pytest/outcomes.py::XFailed`, consumed by `_pytest/skipping.py` l. 279-282, which turns
 #: it into ``outcome="skipped"`` plus ``wasxfail`` — i.e. the ``xfailed`` category —
@@ -6229,6 +6259,24 @@ def handle_shutdown() -> ByeResponse:
     return {"op": "bye"}
 
 
+def _module_outcome_error_message(exc: BaseException) -> str:
+    """The collection-error body pytest prints for a module-level ``fail()``/``xfail()``.
+
+    ``pytrace=False`` is the one branch that is not "format the traceback".
+    `_pytest/nodes.py::Node._repr_failure_py` (l. 481-484) sets ``style="value"`` for a
+    ``fail.Exception`` that asked for no traceback, and a ``"value"`` repr is the message
+    **alone**.  Probed on pytest 8.4.2, both at module scope: ``pytest.fail("np",
+    pytrace=False)`` prints exactly ``np`` under the ``ERROR collecting`` banner, while the
+    default ``pytest.fail("boom")`` prints the whole import traceback ending in
+    ``E   Failed: boom``.  Collapsing the two would either bury a deliberately terse message
+    in plumbing frames or hide the line that actually raised.
+    """
+    if _safe_getattr(exc, "pytrace", True) is False:
+        message = _safe_getattr(exc, "msg", None)
+        return message if isinstance(message, str) else str(exc)
+    return "".join(traceback.format_exception(exc)).rstrip()
+
+
 def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
     """Collect one file and build its ``collected`` response.
 
@@ -6247,9 +6295,12 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
     keep plain asserts".
 
     Any import-time exception becomes an error entry rather than killing the worker,
-    since one unimportable file must not lose the whole run.  ``BaseException`` is
-    deliberately *not* caught: a ``SystemExit`` or ``KeyboardInterrupt`` raised at
-    import time should end the process, exactly as it would under pytest.
+    since one unimportable file must not lose the whole run.  A blanket ``BaseException``
+    is deliberately *not* caught: a ``SystemExit`` or ``KeyboardInterrupt`` raised at
+    import time should end the process, exactly as it would under pytest.  The two
+    ``BaseException`` subclasses that must **not** end it are named instead —
+    :data:`MODULE_SKIP_EXCEPTIONS` and :data:`MODULE_ERROR_EXCEPTIONS`, i.e. the outcome
+    signals, which pytest files as a skip and as a collection error respectively.
     """
     if _state is None:
         raise NotInitializedError("collect_file received before init")
@@ -6308,6 +6359,16 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
                 "If you want to skip a specific test or an entire class, "
                 "use the @pytest.mark.skip or @pytest.mark.skipif decorators."
             ),
+        }
+        return response
+    except MODULE_ERROR_EXCEPTIONS as exc:
+        # See :data:`MODULE_ERROR_EXCEPTIONS`.  Same answer as the `except Exception` arm
+        # below -- one file's collection error, the run continues, exit 2 -- and it needs its
+        # own arm only because these are `BaseException` subclasses, so that arm cannot see
+        # them and the worker would die at exit 3 instead.
+        response["error"] = {
+            "path": _relative_posix(file_path, state.rootdir),
+            "message": _module_outcome_error_message(exc),
         }
         return response
     except Exception as exc:

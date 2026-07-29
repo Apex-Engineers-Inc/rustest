@@ -1835,8 +1835,15 @@ def fail(reason: str = "", pytrace: bool = True) -> None:
 
     Args:
         reason: The failure message to display
-        pytrace: If False, hide the Python traceback (not implemented in rustest,
-                 kept for pytest compatibility)
+        pytrace: If False, report the message alone instead of a traceback, as
+                 `_pytest/nodes.py::Node._repr_failure_py` (l. 481-484) does for a
+                 ``fail.Exception`` that asked for no traceback. It reaches the report
+                 through :attr:`Failed.pytrace`; the flag was accepted and dropped on
+                 the floor until the Phase 4 convergence wave, so a module-level
+                 ``fail(..., pytrace=False)`` printed the import plumbing it exists to
+                 suppress. Currently honoured at **collection** (see
+                 ``_v2_worker.py::_module_outcome_error_message``); a failing test *body*
+                 still renders its traceback either way.
 
     Raises:
         Failed: Always raised to fail the test
@@ -1859,7 +1866,7 @@ def fail(reason: str = "", pytrace: bool = True) -> None:
                 fail(f"Operation failed: {result.error_message}")
     """
     __tracebackhide__ = True
-    raise Failed(reason)
+    raise Failed(reason, pytrace=pytrace)
 
 
 class Skipped(OutcomeException):

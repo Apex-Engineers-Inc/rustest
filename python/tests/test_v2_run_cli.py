@@ -1340,6 +1340,86 @@ def test_a_flagless_module_level_skip_is_refused_in_pytests_own_words(tmp_path: 
     assert sentence in (ours.stdout + ours.stderr), _context("v2", ours)
 
 
+@pytest.mark.parametrize(
+    ("call", "typename"),
+    [
+        ("pytest.fail('boom at module level')", "Failed"),
+        ("pytest.xfail('xf at module level')", "XFailed"),
+    ],
+    ids=["fail", "xfail"],
+)
+def test_a_module_level_fail_or_xfail_is_a_collection_error_not_a_dead_worker(
+    tmp_path: Path, call: str, typename: str
+) -> None:
+    """The semantics-review regression: exit **3** where pytest says **2**.
+
+    ``pytest.skip()`` at module scope had an arm (``MODULE_SKIP_EXCEPTIONS``) and its two
+    siblings did not. ``OutcomeException`` is a ``BaseException`` on purpose, so
+    ``collect_file``'s ``except Exception`` handler could not see a ``Failed``/``XFailed``:
+    it escaped the worker, the worker died, and ``src/v2/py.rs`` reported an *internal*
+    failure at exit 3 -- **the whole run lost to one bad file**, and the second file below
+    never ran. pytest files it as an ordinary collection error at exit 2 and keeps going.
+
+    The second file is the load-bearing half of this test. Exit 2 alone would also be
+    produced by a worker that died in a slightly tidier way; ``test_ok.py`` still having been
+    collected is what distinguishes "one file errored" from "the run stopped".
+    """
+    tree = _tree(
+        tmp_path,
+        f"modoutcome-{typename}",
+        {
+            "test_modoutcome.py": f"import pytest\n\n{call}\n\n\ndef test_never():\n    pass\n",
+            "test_ok.py": "def test_y():\n    pass\n",
+        },
+    )
+
+    # NOT `_run_pytest`: `--tb=no` would suppress the message this asserts on.
+    oracle = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"], tree)
+    ours = _run_v2(tree, [])
+
+    assert oracle.returncode == 2, _context("pytest", oracle)
+    assert ours.returncode == 2, _context("v2", ours)
+
+    for label, proc in (("pytest", oracle), ("v2", ours)):
+        blob = proc.stdout + proc.stderr
+        assert typename in blob, _context(label, proc)
+        assert "at module level" in blob, _context(label, proc)
+        assert "1 error" in blob, _context(label, proc)
+
+
+def test_a_module_level_fail_without_a_traceback_prints_the_message_alone(
+    tmp_path: Path,
+) -> None:
+    """``pytrace=False`` is the one branch that is not "format the traceback".
+
+    `_pytest/nodes.py::Node._repr_failure_py` l. 481-484 renders a ``fail.Exception`` that
+    asked for no traceback with ``style="value"`` -- the message and nothing else. A terse
+    "this platform is unsupported, and here is why" line is the whole point of the flag, and
+    burying it in ten frames of import plumbing would undo it.
+    """
+    tree = _tree(
+        tmp_path,
+        "modfailnp",
+        {
+            "test_modfailnp.py": (
+                "import pytest\n\npytest.fail('terse and deliberate', pytrace=False)\n"
+            ),
+        },
+    )
+
+    oracle = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"], tree)
+    ours = _run_v2(tree, [])
+
+    assert oracle.returncode == 2, _context("pytest", oracle)
+    assert ours.returncode == 2, _context("v2", ours)
+
+    blob = ours.stdout + ours.stderr
+    assert "terse and deliberate" in blob, _context("v2", ours)
+    # The discriminator: with a traceback the raising frame is quoted by name.
+    assert "pytest.fail(" not in blob, _context("v2", ours)
+    assert "pytest.fail(" not in oracle.stdout, _context("pytest", oracle)
+
+
 def test_the_flagged_form_is_a_skip_not_an_error(tmp_path: Path) -> None:
     """The control: one word of difference turns the refusal above into a clean skip."""
     tree = _tree(
