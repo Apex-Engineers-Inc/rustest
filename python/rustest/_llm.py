@@ -259,7 +259,8 @@ def _summary_object(report: _RunReport) -> dict[str, Any]:
     "is the suite green?" -- and reading it off the summary line is one parse instead of a
     process-status round trip through whatever shell wrapper the agent is using.  It is
     **reported**, never decided, here: ``--llm`` changes no exit code, which
-    ``test_llm_does_not_change_the_exit_code`` pins across all five shapes.
+    ``test_llm_does_not_change_the_exit_code`` pins by running the same tree both ways across
+    all four reachable shapes (0 clean, 1 failures, 2 collection errors, 5 nothing collected).
 
     ``collection_errors`` is its own count and is deliberately *not* folded into ``error``.
     The human summary line folds them (a reader wants one number); a machine reader can afford
