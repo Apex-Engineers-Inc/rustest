@@ -23,6 +23,7 @@ nav = [
     { "Assertion Helpers" = "guide/assertions.md" },
     { "Markdown Testing" = "guide/markdown-testing.md" },
     { "CLI Usage" = "guide/cli.md" },
+    { "LLM Output (--llm)" = "guide/llm-output.md" },
     { "Python API" = "guide/python-api.md" }
   ]},
   { "API Reference" = [

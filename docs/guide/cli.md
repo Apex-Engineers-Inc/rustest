@@ -416,6 +416,22 @@ rustest
 rustest --no-capture
 ```
 
+### Machine-Readable Output (`--llm`)
+
+`--llm` replaces the human output with **JSONL** — one JSON object per line, meta
+header first and a summary sentinel last — for LLM coding agents and other tools
+that parse test output rather than read it.
+
+```bash
+rustest tests/ --llm              # failures + summary, as JSONL on stdout
+rustest tests/ --llm --llm-full   # do not truncate captured output
+rustest --llm-schema              # print the JSON Schema and exit 0
+```
+
+The exit code is unchanged, and `stdout` is JSONL and nothing else. See
+[LLM Output Mode](llm-output.md) for the full contract, the verbosity ladder and
+the `--lf` agent loop.
+
 ## Markdown Code Block Testing
 
 ### Enable/Disable

@@ -381,6 +381,38 @@ def build_parser() -> _Parser:
         action="store_true",
         help="Not implemented: rustest measures line coverage only. Refused rather than ignored.",
     )
+    # `--llm` and its two satellites. The flag *surface* is 0.18's, deliberately -- a project
+    # that already scripts `rustest --llm`, `--llm-full` or `--llm-schema` keeps working -- while
+    # the JSONL the first of them emits is schema 2 and shaped to the v2 report. See
+    # `docs/guide/llm-output.md` for the contract and `_llm_schema.SCHEMA_VERSION` for why the
+    # major version moved.
+    _ = parser.add_argument(
+        "--llm",
+        action="store_true",
+        dest="llm",
+        help=(
+            "Emit the run as JSONL on stdout for LLM tooling: one object per line, "
+            "meta first and a summary sentinel last. Replaces the human output entirely."
+        ),
+    )
+    _ = parser.add_argument(
+        "--llm-full",
+        action="store_true",
+        dest="llm_full",
+        help=(
+            "With --llm: attach captured output whole, instead of the last 50 lines. "
+            "Refused on its own, because it would be inert."
+        ),
+    )
+    _ = parser.add_argument(
+        "--llm-schema",
+        action="store_true",
+        dest="llm_schema",
+        help=(
+            "Print the JSON Schema for --llm output on stdout and exit 0. "
+            "Runs nothing; every other option is ignored."
+        ),
+    )
     _ = parser.add_argument(
         "--v2-collect-only",
         action="store_true",
@@ -411,6 +443,9 @@ def build_parser() -> _Parser:
         cov=None,
         cov_report=None,
         cov_branch=False,
+        llm=False,
+        llm_full=False,
+        llm_schema=False,
     )
     return parser
 
@@ -623,7 +658,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"ERROR: {message}{source}", file=sys.stderr)
             return 4
 
+    # `--llm-schema` is a **query**, not a run: it answers "what does --llm emit?" and exits,
+    # which is what `--help` is and is why it is answered here rather than off `args`.
+    #
+    # *Before* `parse_args`, deliberately. A tool discovering the output format should not have
+    # to be standing in a project rustest can run -- and after the `addopts` splice above, a
+    # repo whose ini carries a flag this CLI refuses (`--doctest-modules`, say) would make
+    # `parse_args` exit 4 before any `args.llm_schema` branch could fire. Scanning `raw`
+    # *after* the splice rather than before also means the flag works from `addopts`, which is
+    # where a project that always wants the schema would put it.
+    #
+    # The argument is still registered on the parser (see `build_parser`): that is what puts it
+    # in `--help` and what keeps `--llm-schema` from being read as a path by `nargs="*"` on the
+    # `_config_for_addopts` probe.
+    if "--llm-schema" in raw:
+        from ._llm_schema import schema_json
+
+        print(schema_json())
+        return 0
+
     args = parser.parse_args(raw)
+
+    # Inert-flag refusals, in the shape `--cov-report`-without-`--cov` already uses below.
+    # `--llm-full` alone changes nothing about a human run, and accepting it would be the
+    # silent no-op this CLI refuses everywhere else.
+    if args.llm_full and not args.llm:
+        print(
+            "ERROR: --llm-full only affects --llm output, and --llm was not given, so it"
+            + " would do nothing. Add --llm or drop --llm-full.",
+            file=sys.stderr,
+        )
+        return 4
 
     # `--cov-branch` must be refused even when it is the *only* coverage flag given: a
     # `--cov-branch` with no `--cov` is still a request rustest cannot honour, and answering
@@ -650,6 +715,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
 
     if args.v2_collect_only:
+        if args.llm:
+            # Collect-only's stdout is already a machine format -- one node id per line -- and
+            # it produces no result, no status and no capture, so there is nothing for a
+            # `fail` or `summary` line to say. Answering with a stream of `meta` and an
+            # all-zero `summary` would be a well-formed lie about a run that never happened.
+            print(
+                "ERROR: --llm and --v2-collect-only ask for different things: collect-only"
+                + " runs no test, so there is no result to report as JSONL. Its stdout is"
+                + " already machine-readable -- one node id per line. Drop one.",
+                file=sys.stderr,
+            )
+            return 4
         if args.cov is not None:
             # Collect-only runs no test, so the only lines it could report are import-time
             # ones. Refused rather than answered with a number that means nothing.
@@ -690,4 +767,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         verbosity=_verbosity(args),
         cov=args.cov,
         cov_report=args.cov_report,
+        llm=args.llm,
+        llm_full=args.llm_full,
     )

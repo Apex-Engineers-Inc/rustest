@@ -737,6 +737,8 @@ def v2_run(
     verbosity: int = 0,
     cov: Sequence[str] | None = None,
     cov_report: Sequence[str] | None = None,
+    llm: bool = False,
+    llm_full: bool = False,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
@@ -753,6 +755,9 @@ def v2_run(
       terminal without ``--report-json``.
     * ``verbosity > 0`` (``-v``) -- plus one line per test in pytest's verbose wording
       (``PASSED``/``FAILED``/``SKIPPED (reason)``/``XFAIL``/``XPASS``/``ERROR``).
+
+    ``llm`` replaces that ladder wholesale with JSONL (:mod:`rustest._llm`); see the argument
+    notes below and ``docs/guide/llm-output.md``.
 
     The summary line carries pytest's ``in <n>s`` tail. Everything before the tail stays
     byte-identical to pytest's own summary line, which is what the differential tests
@@ -782,6 +787,14 @@ def v2_run(
             the workers with no ``sys.monitoring`` tool registered.
         cov_report: ``--cov-report`` values (``term``, ``xml[:PATH]``); ``term`` when a
             ``--cov`` run gives none, matching pytest-cov's default.
+        llm: ``--llm`` -- replace **all** of the human output above with JSONL on stdout
+            (:mod:`rustest._llm`).  The ladder still applies, one rung shifted: ``-q`` drops
+            captures, ``-v`` adds skip lines.  Everything that has no JSONL representation --
+            the workers' own stderr, a ``pytest.exit()`` banner, a coverage table -- moves to
+            **stderr**, so stdout is JSONL and nothing else.
+        llm_full: ``--llm-full`` -- with *llm*, keep captures whole instead of truncating
+            them to the last :data:`rustest._llm.CAPTURE_MAX_LINES` lines.  Inert without it,
+            which is why the CLI refuses the combination rather than accepting it silently.
 
     Returns:
         pytest's exit code: 0 clean, 1 failures (or errors, or an unattributable teardown
@@ -831,31 +844,48 @@ def v2_run(
             Path(report_json).write_text(json.dumps(report, indent=2), encoding="utf-8")
 
         tests = report["tests"]
-        if verbosity > 0:
-            # The denominator is what the run **selected**, not what it managed to run:
-            # pytest's percent column is over `session.testscollected`, so a `-x` run that
-            # stops at the second of three prints `[ 33%]`, `[ 66%]` and never reaches 100%.
-            # Probed against pytest 8.4.2 both ways -- and `-k` selecting 2 of 4 does move the
-            # denominator to 2, which is why it is `summary.total` (post-deselection) rather
-            # than a collected count.
-            total = max(report["summary"]["total"], len(tests))
-            for index, test in enumerate(tests):
-                print(_progress_line(test, index, total))
+        # `--llm` is a **replacement** renderer, not an addition: every branch below that
+        # writes to stdout is skipped, and the three diagnostics that have no JSONL line
+        # (`worker_stderr`, the `Exit:` banner, a coverage table) keep going to stderr, where
+        # they already were or where they are moved to. The result is that `rustest --llm`
+        # redirected to a file is a valid JSONL document with nothing to strip -- which is the
+        # only property that makes the mode worth having.
+        if llm:
+            from ._llm import render as _render_llm
 
-        if verbosity >= 0:
-            _print_failure_sections(tests)
+            # Collection errors, teardown errors, the failure sections, the `stopping after N
+            # failures` banner and the summary line are all *inside* the report, so the
+            # renderer emits them as lines rather than this function printing them twice.
+            _render_llm(report, verbosity=verbosity, full=llm_full)
+        else:
+            if verbosity > 0:
+                # The denominator is what the run **selected**, not what it managed to run:
+                # pytest's percent column is over `session.testscollected`, so a `-x` run that
+                # stops at the second of three prints `[ 33%]`, `[ 66%]` and never reaches
+                # 100%. Probed against pytest 8.4.2 both ways -- and `-k` selecting 2 of 4 does
+                # move the denominator to 2, which is why it is `summary.total`
+                # (post-deselection) rather than a collected count.
+                total = max(report["summary"]["total"], len(tests))
+                for index, test in enumerate(tests):
+                    print(_progress_line(test, index, total))
 
-        for error in report["collection_errors"]:
-            print(f"ERROR collecting {error['path']}", file=sys.stderr)
-            for line in error["message"].splitlines():
-                print(f"  {line}", file=sys.stderr)
+            if verbosity >= 0:
+                _print_failure_sections(tests)
+
+            for error in report["collection_errors"]:
+                print(f"ERROR collecting {error['path']}", file=sys.stderr)
+                for line in error["message"].splitlines():
+                    print(f"  {line}", file=sys.stderr)
 
         # Never graded, never discarded: boundary teardown output lands here on runs that
-        # are entirely green -- and, under ``-s``, so does every test's own output.
+        # are entirely green -- and, under ``-s``, so does every test's own output.  It stays
+        # on stderr under ``--llm`` too: it is arbitrary user text with no field to put it in,
+        # and inventing one would make every ``print`` in a teardown a JSON line.
         for chunk in report.get("worker_stderr", []):
             print(chunk, file=sys.stderr, end="" if chunk.endswith("\n") else "\n")
-        for failure in report.get("teardown_errors", []):
-            print(f"ERROR {failure}", file=sys.stderr)
+        if not llm:
+            for failure in report.get("teardown_errors", []):
+                print(f"ERROR {failure}", file=sys.stderr)
 
         session_exit = report.get("session_exit")
         if session_exit:
@@ -863,10 +893,11 @@ def v2_run(
             # forwards it verbatim rather than re-wording the user's own reason.
             print(session_exit, file=sys.stderr)
 
-        if report.get("stopped_early") and not session_exit:
+        if report.get("stopped_early") and not session_exit and not llm:
             # pytest's own wording, from the ``!!!! stopping after 1 failures !!!!`` banner
             # ``_pytest/main.py`` puts on the terminal when ``maxfail`` trips.  Without it a
-            # ``-x`` run looks like a suite that simply has fewer tests than it does.
+            # ``-x`` run looks like a suite that simply has fewer tests than it does.  Under
+            # ``--llm`` the same fact is the summary line's ``stopped_early`` field.
             stopped = report["summary"]["failed"] + report["summary"]["error"]
             print(f"stopping after {stopped} failures (-x)", file=sys.stderr)
 
@@ -881,11 +912,19 @@ def v2_run(
         # Failures here are reported and do not change the exit code -- the tests' verdict is
         # the run's verdict, and a broken report must not turn a red run green or a green one
         # red.
-        coverage.render(sys.stdout)
+        #
+        # Under ``--llm`` it goes to **stderr** instead: a coverage table is a human artefact
+        # with no JSONL line, and writing it to stdout would put non-JSON in the middle of the
+        # document. `--cov --llm` is therefore a legal, useful combination rather than a
+        # refused one -- the table lands where the rest of the diagnostics do.
+        coverage.render(sys.stderr if llm else sys.stdout)
 
-        summary_line = _run_summary(report["summary"], len(report["collection_errors"]))
-        tail = _format_duration(report["summary"]["duration"])
-        print(f"{summary_line} in {tail}", file=sys.stderr)
+        if not llm:
+            # The sentinel's job under ``--llm``; there is exactly one summary per run and it
+            # is the JSONL one.
+            summary_line = _run_summary(report["summary"], len(report["collection_errors"]))
+            tail = _format_duration(report["summary"]["duration"])
+            print(f"{summary_line} in {tail}", file=sys.stderr)
 
     return report["exit_code"]
 

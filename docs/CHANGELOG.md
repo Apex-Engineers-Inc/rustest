@@ -26,6 +26,33 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
+- **`--llm`: the run as JSONL, for coding agents.** One JSON object per line on stdout — a
+  `meta` header, an `error` line per collection or unattributable-teardown failure, a `fail`
+  line per failed/errored test, `skip` lines under `-v`, and a `summary` sentinel last.
+  Lines are in manifest order at any `-n`, so identical failures produce identical bytes.
+  `--llm-full` keeps captured output whole instead of the last 50 lines; `--llm-schema`
+  prints a draft-2020-12 JSON Schema and exits 0. The exit code is never changed by the flag,
+  stdout is JSONL and nothing else (a `--cov` table and the workers' stderr move to stderr),
+  and `--lf --llm` is the intended second half of the agent loop. See
+  `docs/guide/llm-output.md`.
+
+  **Schema version 2, and the fields differ from 0.18's schema 1.** The flag *surface* is
+  0.18's, so scripts keep working, but the payload is built from the v2 engine's structured
+  report rather than parsed back out of a rendered traceback:
+
+  - `summary` carries all six status buckets (`passed`/`failed`/`skipped`/`xfailed`/
+    `xpassed`/`error`) plus `deselected`, `collection_errors`, `exit_code` and — when `-x` or
+    `--maxfail` cut the run short — `stopped_early`. Schema 1 had three buckets and no exit
+    code, and folded xfails into skips.
+  - `fail` lines carry the failure message **whole** in `msg` — the frame-filtered traceback
+    whose last line is the assertion-rewritten comparison (`AssertionError: assert 41 == 42`).
+    Schema 1 split the same string into `error`/`msg`/`expected`/`actual`/`code`/`frames`
+    with six regexes, which lost the rewriting and only produced `expected`/`actual` for the
+    comparisons a pattern happened to match.
+  - `line` is read off the last traceback frame and **omitted** when there is none; schema 1
+    emitted `0`, a line number no file has.
+  - `summary.rerun` is gone. `--lf` does the same job with no id round-trip and a warm
+    collect, which is the loop the guide documents.
 - `-x` / `--exitfirst` on the default engine: dispatch stops after the first failure, the
   report contains only the tests that ran, and the exit code is 1 — pytest's `--maxfail=1`
   semantics. Sequential-exact at `-n 1`; with a worker pool, tests already in flight finish.
