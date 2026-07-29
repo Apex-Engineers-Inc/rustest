@@ -38,7 +38,7 @@
 //!   attribute one file's tests to another);
 //! * EOF mid-protocol names the file that was in flight and surfaces the worker's stderr.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -628,11 +628,7 @@ pub(crate) fn plan_with_options(
 
     // The dispatch index recorded here is what puts the manifest back into walk order
     // afterwards, whichever tier produced each file's tests.
-    let mut assignments: Vec<Vec<(usize, PathBuf)>> = vec![Vec::new(); pool_size];
-    for index in dynamic {
-        let path = &targets[index];
-        assignments[worker_for(path, pool_size)].push((index, path.clone()));
-    }
+    let assignments = route(&targets, &dynamic, pool_size);
 
     // Computed **after** selection, so a `-k` that empties the tree does not pay for a plan
     // nobody will use, and over `targets` rather than the dynamic subset, so the vector stays
@@ -1337,12 +1333,107 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 /// Which worker collects `path`: a hash of the file **stem**, so every same-stem file
 /// lands on one interpreter (see the module docs for why that is load-bearing).
+///
+/// Retained as the **tie-break** inside [`route`] rather than as the router itself: a hash
+/// is a fine way to break a tie between two equal-weight groups and a poor way to balance a
+/// pool, because `hash % workers` is not a permutation and its collisions are what left two
+/// of Pynite's sixteen workers with no files at all.
 fn worker_for(path: &Path, workers: usize) -> usize {
     let stem = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
     (fnv1a(stem.as_bytes()) % workers.max(1) as u64) as usize
+}
+
+/// What a file is assumed to cost a worker beyond its own bytes: one module import.
+///
+/// Bin-packing on raw file size alone would put ten one-line files on one worker and a
+/// single 40 KB file on another and call that balanced, when the ten cost ten imports.
+/// The Phase 4b profile measured the per-file term directly — 5 000 tests in 100 files ran
+/// in 5.64 s and the same 5 000 in 500 files took 21.46 s, i.e. **~40 ms per file** — which
+/// is real work no byte count sees.  Expressed in bytes-equivalent so the two terms add:
+/// 8 KB is roughly the median test module in the conformance corpus, so a file's fixed cost
+/// and its content cost are comparable at the median, and size only dominates for the
+/// genuine outliers (jsonschema's 93.8%-of-tests mega-file) where it should.
+const FILE_IMPORT_WEIGHT: u64 = 8 * 1024;
+
+/// Assign every dynamic file to a worker, balancing the pool by estimated cost.
+///
+/// **Longest-processing-time-first bin packing**, which is the standard 4/3-approximation
+/// for exactly this problem: sort the items heaviest-first and put each on whichever bin is
+/// currently lightest.  It replaces `fnv1a(stem) % pool_size`, and the profile is unambiguous
+/// about why — a static hash is not a permutation, so at Pynite's `-n 16` two workers were
+/// handed no files at all while the top three held 67% of the pool's CPU, and each of those
+/// two still cost a full interpreter startup to do nothing.
+///
+/// **The item is a stem group, not a file.**  Same-stem files must share an interpreter —
+/// that is what reproduces pytest's `import file mismatch`, and Tier S refuses a shared stem
+/// outright so the group is always entirely dynamic — so a group is indivisible here and is
+/// weighed as the sum of its members.
+///
+/// **The weight is file size plus [`FILE_IMPORT_WEIGHT`] per file.**  Size is the only
+/// signal available at plan time: a Tier D file's test count is unknown until a worker
+/// imports it, which is the very work being scheduled.  It is a proxy, not a measurement,
+/// and it is a good one for the failure this fixes — the pathological case is always one
+/// enormous file, and enormous files are large.
+///
+/// **Deterministic**, and deliberately so: the same tree must produce the same plan on
+/// every run or a `-n 4` reproduction of a routing bug is not a reproduction.  Ties in
+/// weight break on [`worker_for`]'s stem hash and then on the stem itself, neither of which
+/// depends on walk order or filesystem timing.
+fn route(targets: &[PathBuf], dynamic: &[usize], pool_size: usize) -> Vec<Vec<(usize, PathBuf)>> {
+    let mut assignments: Vec<Vec<(usize, PathBuf)>> = vec![Vec::new(); pool_size];
+    if pool_size == 0 {
+        return assignments;
+    }
+
+    // Group by stem, keeping each group's members in walk order so a worker still collects
+    // its files in the order the tree presented them.
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, (u64, Vec<usize>)> = HashMap::new();
+    for index in dynamic {
+        let path = &targets[*index];
+        let stem = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let weight = std::fs::metadata(path).map_or(0, |meta| meta.len()) + FILE_IMPORT_WEIGHT;
+        let entry = groups.entry(stem.clone()).or_insert_with(|| {
+            order.push(stem);
+            (0, Vec::new())
+        });
+        entry.0 += weight;
+        entry.1.push(*index);
+    }
+
+    // Heaviest first — the half of LPT that does the work.  A light group placed early can
+    // be corrected by the groups after it; a heavy one placed last cannot.
+    order.sort_by(|left, right| {
+        let (left_weight, _) = &groups[left];
+        let (right_weight, _) = &groups[right];
+        right_weight
+            .cmp(left_weight)
+            .then_with(|| {
+                worker_for(Path::new(left), pool_size).cmp(&worker_for(Path::new(right), pool_size))
+            })
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut load = vec![0u64; pool_size];
+    for stem in order {
+        let (weight, members) = &groups[&stem];
+        // `min_by_key` returns the **first** minimum, so an empty pool fills 0, 1, 2 … and
+        // the plan for N equal files on N workers is the identity rather than a scramble.
+        let worker = (0..pool_size)
+            .min_by_key(|index| load[*index])
+            .unwrap_or_default();
+        load[worker] += weight;
+        for member in members {
+            assignments[worker].push((*member, targets[*member].clone()));
+        }
+    }
+    assignments
 }
 
 // ---------------------------------------------------------------------------
@@ -2772,6 +2863,141 @@ assert True
         let max = *counts.iter().max().unwrap();
         assert!(min > 0, "a worker got nothing: {counts:?}");
         assert!(max < min * 3, "badly unbalanced: {counts:?}");
+    }
+
+    /// Build a tree of `(name, bytes-of-body)` and return the per-worker file lists the
+    /// plan produced, as stems, so a routing assertion reads as the shape it is about.
+    fn routed(files: &[(&str, usize)], workers: usize) -> Vec<Vec<String>> {
+        let bodies: Vec<(String, String)> = files
+            .iter()
+            .map(|(name, bulk)| {
+                // A real body, padded with a comment so the *file size* varies without the
+                // test count doing so — which is exactly the signal `route` weighs.
+                (
+                    (*name).to_string(),
+                    format!("{}\n# {}\n", module("x"), "p".repeat(*bulk)),
+                )
+            })
+            .collect();
+        let spec: Vec<(&str, &str)> = bodies
+            .iter()
+            .map(|(name, body)| (name.as_str(), body.as_str()))
+            .collect();
+        let tmp = tree(&spec);
+        let dispatch = plan_with_options(
+            tmp.path(),
+            &[],
+            workers,
+            &CollectOptions {
+                codeblocks: true,
+                tier: TierMode::DynamicOnly,
+                cache: CacheMode::Off,
+                ..CollectOptions::default()
+            },
+        )
+        .unwrap();
+        dispatch
+            .assignments
+            .iter()
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|(_, path)| path.file_stem().unwrap().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// **No worker gets nothing while another gets two.**  This is the shape the stem hash
+    /// could not produce: `fnv1a(stem) % 16` is not a permutation, so at Pynite's `-n 16`
+    /// two of sixteen workers were handed no files at all and still paid a full interpreter
+    /// startup, while the top three held 67% of the pool's CPU.  Eight equal files into
+    /// eight bins must be one apiece.
+    #[test]
+    fn routing_leaves_no_worker_empty_while_another_holds_two() {
+        let files: Vec<(String, usize)> = (0..8)
+            .map(|index| (format!("test_m{index}.py"), 100))
+            .collect();
+        let spec: Vec<(&str, usize)> = files
+            .iter()
+            .map(|(name, bulk)| (name.as_str(), *bulk))
+            .collect();
+
+        let plan = routed(&spec, 8);
+
+        let sizes: Vec<usize> = plan.iter().map(Vec::len).collect();
+        assert_eq!(sizes, vec![1; 8], "equal files must fill the pool evenly");
+    }
+
+    /// The pathological file gets a worker to itself.
+    ///
+    /// jsonschema is the worked example: 93.8% of its tests live in one module, and under
+    /// the hash that module shared a worker with whatever else collided with it.  A
+    /// bin-pack puts the heavy item down first and everything else goes elsewhere.
+    #[test]
+    fn routing_gives_the_heaviest_file_a_worker_of_its_own() {
+        let plan = routed(
+            &[
+                ("test_huge.py", 200_000),
+                ("test_a.py", 10),
+                ("test_b.py", 10),
+                ("test_c.py", 10),
+            ],
+            2,
+        );
+
+        let heavy = plan
+            .iter()
+            .find(|files| files.iter().any(|stem| stem == "test_huge"))
+            .expect("the big file is routed somewhere");
+        assert_eq!(
+            heavy,
+            &vec!["test_huge".to_string()],
+            "the mega-file must not share a worker: {plan:?}"
+        );
+    }
+
+    /// Same stem, same worker — through the **plan**, not through [`worker_for`] alone,
+    /// because the bin-pack is what has to honour it now and it is the property pytest's
+    /// `import file mismatch` reproduction rests on.  The two files differ wildly in size
+    /// so a router weighing them independently would certainly split them.
+    #[test]
+    fn routing_keeps_a_same_stem_pair_together_however_they_are_weighed() {
+        let plan = routed(
+            &[
+                ("alpha/test_dup.py", 60_000),
+                ("beta/test_dup.py", 10),
+                ("test_other.py", 10),
+            ],
+            3,
+        );
+
+        let together = plan
+            .iter()
+            .any(|files| files.iter().filter(|stem| *stem == "test_dup").count() == 2);
+        assert!(
+            together,
+            "a same-stem pair was split across workers: {plan:?}"
+        );
+    }
+
+    /// The same tree plans identically every time.  Bin packing walks a hash map, and a
+    /// router that inherited that iteration order would produce a different plan per run —
+    /// which would make a `-n 4` reproduction of a routing bug not a reproduction.
+    #[test]
+    fn routing_is_deterministic() {
+        let spec = [
+            ("test_a.py", 5_000),
+            ("test_b.py", 5_000),
+            ("test_c.py", 1_000),
+            ("test_d.py", 1_000),
+            ("test_e.py", 40_000),
+        ];
+
+        let first = routed(&spec, 3);
+        for _ in 0..4 {
+            assert_eq!(routed(&spec, 3), first, "the plan is not stable");
+        }
     }
 
     // --- the init line ----------------------------------------------------
