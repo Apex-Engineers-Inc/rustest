@@ -23,7 +23,7 @@ These features are **intentionally excluded** because they conflict with rustest
 | pytest-asyncio | Built-in `@mark.asyncio` |
 | pytest-mock | Built-in `mocker` fixture |
 | pytest-codeblocks | Built-in markdown testing |
-| pytest-cov | Use coverage.py directly ([guide](coverage.md)) |
+| pytest-cov | Built-in `--cov` / `--cov-report` (needs the `cov` extra) |
 
 For other plugins, see the [Plugin Migration Guide](plugins.md).
 
@@ -47,61 +47,9 @@ For other plugins, see the [Plugin Migration Guide](plugins.md).
 
 This covers 99% of use cases.
 
-### No Assertion Rewriting
-
-**Status:** ❌ Not planned
-
-**Why:** Pytest's assertion rewriting (detailed assert introspection) requires import hooks that add overhead.
-
-**What you get instead:**
-
-Rustest provides clear error messages through frame introspection:
-
-```python
-def test_example():
-    actual = 42
-    expected = 100
-    assert actual == expected
-```
-
-**Rustest output:**
-
-```
-Code:
-    def test_example():
-        actual = 42
-        expected = 100
-      → assert actual == expected
-
-E   AssertionError: assert 42 == 100
-E   Expected: 100
-E   Received: 42
-```
-
-You get the actual values without the overhead of assertion rewriting.
-
----
-
 ## Planned: Coming Soon
 
 These features are **planned** for future releases.
-
-### Parallel Execution
-
-**Status:** 🚧 Planned
-
-**Current:** Tests run serially (but very fast!)
-
-**Planned:** Control worker count with `-n` / `--workers`:
-
-```bash
-rustest -n 4  # Run with 4 workers
-rustest -n auto  # Auto-detect CPU count
-```
-
-**Workaround:** Rustest is already 8.5× faster on average, so parallelization is less critical. But for very large suites, it will help even more.
-
-**Tracking:** [GitHub Issue #XXX]
 
 ### JUnit XML Output
 
@@ -185,28 +133,6 @@ def test_with_timeout():
 
 These features work, but with limitations.
 
-### Mark Filtering (`-m`)
-
-**Status:** ⚠️ Partial support
-
-**Current:** Mark filtering is implemented but may have edge cases with complex expressions.
-
-**What works:**
-
-```bash
-rustest -m "slow"
-rustest -m "not slow"
-rustest -m "slow or fast"
-rustest -m "(slow or fast) and not integration"
-```
-
-**What might not work:**
-
-- Very complex boolean expressions with many operators
-- Custom mark validators
-
-**Note:** Basic mark filtering works well for most use cases.
-
 ### Request Object
 
 **Status:** ⚠️ Partial support
@@ -258,9 +184,11 @@ These pytest internals are **not available**:
 
 ---
 
-## Compatibility Mode Limitations
+## pytest Compatibility Shim Limitations
 
-When using `--pytest-compat`, some additional limitations apply:
+The shim that makes `import pytest` work is installed on **every** run -- there is no flag to
+turn it on or off. (`--pytest-compat` used to be that flag; it was removed, and passing it now
+exits 4 with a message saying so.) These limits therefore apply to every run, not to a mode:
 
 ### Plugin APIs Are Stubbed
 
@@ -268,7 +196,7 @@ When using `--pytest-compat`, some additional limitations apply:
 
 For example, `pytest_asyncio` imports without error, but rustest uses its own async implementation.
 
-**Workaround:** Don't rely on plugins in compatibility mode. Use native rustest features.
+**Workaround:** Don't rely on plugins. Use native rustest features.
 
 ### Some Advanced Features Don't Work
 
@@ -278,7 +206,6 @@ For example, `pytest_asyncio` imports without error, but rustest uses its own as
 
 - Custom pytest collectors
 - Complex hook interactions
-- Assertion rewriting edge cases
 
 **Workaround:** Migrate to native rustest imports for full functionality.
 
@@ -301,32 +228,6 @@ For example, `pytest_asyncio` imports without error, but rustest uses its own as
 **Alternative:** Use Python's standard import system and test discovery patterns.
 
 Most custom collectors are for non-standard test file layouts. Consider restructuring to use standard `test_*.py` patterns.
-
-### Need Assertion Rewriting?
-
-**Alternative:** Rustest's frame introspection provides clear errors:
-
-```python
-def test_example():
-    user = get_user("alice")
-    assert user.email == "alice@example.com"
-```
-
-**Output:**
-
-```
-E   AssertionError: assert 'alice@wrong.com' == 'alice@example.com'
-E   Expected: alice@example.com
-E   Received: alice@wrong.com
-```
-
-You see the values without assertion rewriting overhead.
-
-### Need Parallel Execution Now?
-
-**Alternative:** Rustest's serial execution is already 8.5× faster than pytest on average. For most projects, this is faster than pytest-xdist.
-
-If you need parallelization today, use pytest-xdist. Parallel rustest is planned for the future.
 
 ---
 

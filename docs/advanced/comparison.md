@@ -52,10 +52,10 @@ Rustest aims to provide the most commonly-used pytest features with dramatically
 | `@mark.skip` / `@skip` | ✅ | ✅ | Skip tests with reasons |
 | Custom marks (`@mark.slow`, etc.) | ✅ | ✅ | Full mark support |
 | Mark with arguments | ✅ | ✅ | `@mark.timeout(30)` |
-| Selecting tests by mark (`-m`) | ✅ | 🚧 | Mark metadata collected, filtering planned |
+| Selecting tests by mark (`-m`) | ✅ | ✅ | Full boolean expressions: `and` / `or` / `not`, parentheses, mark kwargs |
 | **Test Execution** |
-| Detailed assertion introspection | ✅ | ❌ | Uses standard Python assertions |
-| Parallel execution | ✅ (`pytest-xdist`) | 🚧 | Planned (Rust makes this easier) |
+| Detailed assertion introspection | ✅ | ✅ | Assertions are rewritten; a failure reports the values (`assert 41 == 42`) |
+| Parallel execution | ✅ (`pytest-xdist`) | ✅ | Built in: `-n` / `--workers`, a process pool the Rust orchestrator drives |
 | Test isolation | ✅ | ✅ | |
 | Stdout/stderr capture | ✅ | ✅ | `--no-capture` / `-s` |
 | **Reporting** |
@@ -251,7 +251,9 @@ def test_expensive():
     pass
 ```
 
-**pytest advantage:** Can filter by marks with `-m "slow"`. Rustest has this planned but not yet implemented.
+Both runners filter on these with `-m`, and rustest implements pytest's full expression
+grammar — `-m "slow and not integration"`, parentheses, and keyword matching on mark
+arguments. See [CLI Usage](../guide/cli.md).
 
 ### Assertion Helpers
 
@@ -314,9 +316,7 @@ See the [Performance](performance.md) page for detailed benchmarks.
 
 Planned rustest features to increase pytest compatibility:
 
-- 🚧 Mark-based filtering (`-m`)
 - 🚧 JUnit XML output
-- 🚧 Parallel test execution
 - 🚧 HTML reports
 
 Features not planned:

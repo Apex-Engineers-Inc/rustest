@@ -98,8 +98,16 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - `request.node`, `request.applymarker`, `request.instance`, `request.cls`,
   `request.function`, `request.module` and `request.path` exist on the default engine.
 - `@mark.usefixtures` is honoured by the default engine's fixture closure.
-- `indirect=` parametrization works on the default engine (rustest's semantics — the value
-  names a fixture).
+- **`indirect=` parametrization now means what it means in pytest, and that is a breaking
+  change.** A routed parameter's value reaches the fixture as `request.param`, and the test
+  receives the fixture's return value (`_pytest/python.py::Metafunc._resolve_args_directness`).
+  It used to be read as *the name of a fixture to resolve* — a rustest-only reading that no
+  pytest suite could use, and that accounted for 120 of the 129 failures in one real target's
+  `tests/test_startup` subtree. Ids are still generated from the parameter, so making a name
+  indirect does not change a node id. Note that a **string is a Sequence**: `indirect="data"`
+  is iterated character by character exactly as under pytest and fails with
+  `indirect fixture 'd' doesn't exist`; pass `["data"]` or `True`.
+  Class-level `@parametrize(..., indirect=[...])` propagates to the class's test methods.
 - **`pytest.exit()` stops the session.** It was a silent no-op: the compat shim's catch-all
   attribute table manufactured a do-nothing stub, so the call returned, the test passed, and
   every test after it ran anyway. It now raises a real `Exit`; the default engine keeps the
@@ -184,6 +192,42 @@ imported, so a `src/` layout works with no editable install; and **capture is no
 uniformly stream-level** — `capsys` redirects `sys.stdout`/`sys.stderr` exactly as pytest's
 does, while `capfd` redirects the file descriptors and does catch a subprocess or a C
 extension (probed both ways against pytest).
+
+### Reconciliation with 0.17.0 and 0.18.0
+
+This branch forked before 0.17.0 and does **not** carry those tags, so this section exists so
+that nothing shipped on the release line looks dropped when the two histories meet. Every
+user-facing fix in 0.17.0 and 0.18.0 was checked against this engine, one at a time; the full
+evidence table is in the release checklist.
+
+- **0.18.0's `--llm` (#128) is ported**, flag surface intact, payload rebuilt on the v2 report
+  at schema version 2. See the entry under **Added** above.
+- **0.17.0's twelve pytest-compat fixes (#124, closing #118/#120/#121) are all covered**, and
+  most of them by code that goes further than the fix did. Indirect parametrization, class-level
+  `indirect` propagation, session-scoped async fixtures on the session loop,
+  `asyncio_default_*_loop_scope` from the ini, `setup_method`/`teardown_method` on plain
+  classes, class-method fixtures sharing the test's instance, `getfixturevalue()` on async
+  fixtures, `@patch` tests running instead of being skipped, `xfail` with `strict`/`condition`,
+  and relative imports from nested packages: each is implemented here as a port of the pytest
+  source rather than as a targeted patch, and each has its own entry above or its own pin.
+  Two of the twelve have **no counterpart on purpose**: "test parameters resolve before
+  autouse" was a v1 workaround and pytest's order is the opposite one (autouse first, then a
+  scope sort), which is what this engine does; and "autouse fixtures included in loop-scope
+  auto-detection" patched a rustest-invented heuristic that does not exist here, because loop
+  scope comes from the mark and the ini exactly as in pytest-asyncio.
+- **0.17.0's async event-loop shutdown fix (#122) is structurally unnecessary here.** It
+  hand-rolled cancel-all-tasks, `gather(..., return_exceptions=True)` and `shutdown_asyncgens`
+  around `loop.close()`. This engine closes every loop through `asyncio.Runner.close()`, whose
+  stdlib implementation does all of that *and* `shutdown_default_executor()`, and registers the
+  close on the scope's teardown bucket at loop creation — so it happens by construction rather
+  than at two hand-placed call sites.
+- **0.17.0's deduplication refactor (#123) is already here**, commit for commit: this branch
+  carries the eleven original commits that 0.17.0 shipped as one squash.
+- **0.17.0's documentation-accuracy pass (#126) is partly re-authored rather than taken.** The
+  feature-status half is applied — `-m` is no longer described as planned, and the worker-count
+  flag is no longer spelled `-j` (it is `-n`) — but its console-output half could not be: the
+  replacement text it introduced is v1's spinner-and-progress-bar rendering, which this engine
+  does not produce either. Correcting those samples is the docs wave's job, not a cherry-pick.
 
 ## [0.16.2] - 2026-03-30
 

@@ -799,10 +799,13 @@ Do you use pytest plugins?
 
 While full plugin support is not planned, rustest aims to provide built-in alternatives for the most popular plugin use cases:
 
-**Planned features**:
+**Shipped**:
 
-- 🚧 **Coverage integration**: Built-in coverage reporting
-- 🚧 **Parallel control**: CLI options for worker count (`-j`, `--workers`)
+- ✅ **Coverage integration**: `--cov`, `--cov-report` (needs the `cov` extra)
+- ✅ **Parallel control**: `-n` / `--workers`
+
+**Planned**:
+
 - 🚧 **Timeout support**: Built-in test timeouts with `@mark.timeout(seconds)`
 - 🚧 **HTML reports**: Generate HTML test reports
 - 🚧 **JUnit XML**: JUnit-compatible XML output

@@ -8,12 +8,15 @@ For the complete changelog with all version history, see the [Changelog](CHANGEL
 
 Planned features for future releases:
 
-- **Parallel execution control**: CLI options to control worker count (`-j`, `--workers`)
 - **JUnit XML output**: Generate JUnit-compatible test reports
 - **HTML reports**: Generate HTML test reports
-- **Coverage integration**: Built-in coverage reporting
 - **Test timeouts**: Built-in timeout support with `@mark.timeout()`
-- **Better error messages**: More helpful assertion failure messages
+
+Three entries that used to be on this list have shipped: **parallel execution control** is
+`-n` / `--workers` (never `-j`, which this page listed and rustest has never had);
+**coverage integration** is `--cov` / `--cov-report`, which needs the `cov` extra; and
+**better error messages** arrived as assertion rewriting, so a failed `assert` now reports
+the values (`AssertionError: assert 41 == 42`).
 
 See our [GitHub issues](https://github.com/Apex-Engineers-Inc/rustest/issues) for the full roadmap.
 
