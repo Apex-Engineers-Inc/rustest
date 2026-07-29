@@ -89,29 +89,27 @@ timeout_s = 1800
 id_policy = "exact"
 
 [divergence.ids]
-"tests/test_number.py::test_metric*" = """\
-NEW MECHANISM (first sighting: this target has never graded before -- it was BLOCKED on M1 \
-until Phase 4 Task 1c unblocked it), 10 entries = 5 id pairs, spelling only, all ten \
-PASSING on both runners: **pytest ASCII-escapes an id returned by a callable `ids=`, and \
-rustest does not.** `@pytest.mark.parametrize(..., ids=str)` (tests/test_number.py:314) over \
-values whose `str()` contains non-ASCII. pytest's `_pytest/python.py::IdMaker._idval` \
-l. 951-963 ends the callable branch with `return _ascii_escaped_by_config(generated_id, \
-self.config)`, so `str("120 \u00b5")` becomes the literal seven characters `120 \\u03bc`; \
-rustest's `_resolve_case_id` returns the callable's result verbatim, so it emits the \
-character. Measured side by side on this clone with `--collect-only`: pytest \
-`test_metric[[0.00012]-120 \\u03bc]`, rustest `test_metric[[0.00012]-120 \u00b5]`.
-
-Exactly five ids differ and each differs ONLY in that escaping; the tally is identical on \
-both sides (700 passed / 69 skipped / 15 error), every one of the five passes on both, and \
-no test is lost or gained. The escaping applies to the CALLABLE branch specifically -- \
-rustest already ports `ascii_escaped` (`decorators.py::_ascii_escaped`, from \
-`_pytest/compat.py` l. 195-215) and applies it inside `_idval_from_value` for plain str and \
-bytes values, which is why every other non-ASCII id in this corpus already matches. The gap \
-is the one call site.
-
-REPORTED, NOT FIXED, per the Phase 4 Task 1c directive: the re-sweep reports new mechanisms \
-rather than fixing them, so the convergence measurement stays honest. rustest DEFECT \
-(cosmetic: node-id spelling only, no test lost, no status changed). PHASE-4-FOLLOWUP."""
+# EMPTY as of the Phase 4 final polish wave -- this target is now a clean MATCH of all 784
+# ids, and the entry that used to sit here documented its own fix.
+#
+# What used to be here: MECHANISM M10, five id pairs, spelling only, all ten PASSING on both
+# runners. `@pytest.mark.parametrize(..., ids=str)` (tests/test_number.py:314) over values
+# whose `str()` contains non-ASCII: pytest ASCII-escapes an id returned by a callable `ids=`
+# and rustest did not, so pytest collected `test_metric[[0.00012]-120 \u03bc]` where rustest
+# emitted the character itself.
+#
+# The mechanism was one call site, exactly as the entry predicted. `IdMaker._idval_from_function`
+# (`_pytest/python.py` l. 968-987) feeds the callable's answer BACK through `_idval_from_value`,
+# so a returned string is ascii-escaped like any other; `_resolve_case_id` used
+# `str(generated)` verbatim. Fixed in `python/rustest/decorators.py` by the final polish wave
+# and pinned by `python/tests/test_decorators.py::TestCallableIdsGoBackThroughIdMaker`, whose
+# five cases were each probed against pytest 8.4.2 first -- one of them corrected the fix (an
+# answer with no spelling of its own falls back to the ORIGINAL value's id, not to
+# `<argname><index>`).
+#
+# This entry went STALE-LEDGER on the first sweep after the fix, which is the detector doing
+# its job: a ledger entry that describes a defect nobody can reproduce any more is a claim
+# that has stopped being true.
 
 [divergence.global]
 # NO GLOBAL LEDGER ENTRIES, and the reason is worth stating: the exit code AGREES (1 on
