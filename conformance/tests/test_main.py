@@ -11,9 +11,7 @@ import conformance.__main__ as conformance_main
 from conformance.__main__ import (
     V2_COLLECT_WAIVERS,
     V2_RUN_WAIVERS,
-    WAIVERS,
     _FLAGS,
-    _grade_one,
     _grade_one_collect,
     _grade_one_run,
     _load_waivers_or_exit,
@@ -25,9 +23,7 @@ from conformance.harness.grade import CaseResult
 from conformance.harness.runners import (
     CollectResult,
     FullRunResult,
-    Outcomes,
     RunOutcomes,
-    RunResult,
 )
 
 # Every entry either v2 ledger is allowed to hold, named one by one. Both were EMPTY at
@@ -90,27 +86,14 @@ def test_grade_one_survives_malformed_case_toml(tmp_path: Path) -> None:
     case_dir.mkdir()
     (case_dir / "case.toml").write_text("[case\nargs = [1, 2", encoding="utf-8")
 
-    result = _grade_one(case_dir, "area/case", {})
-
-    assert result.status == "HARNESS-ERROR"
-    assert "harness error" in result.detail
-
-
-def test_grade_one_survives_runner_exception(tmp_path: Path) -> None:
-    def _raise(case_dir: Path, args: list[str]) -> RunResult:
-        raise subprocess.TimeoutExpired(cmd="pytest", timeout=1)
-
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-
-    result = _grade_one(case_dir, "area/case", {}, run_pytest_fn=_raise)
+    result = _grade_one_collect(case_dir, "area/case", {})
 
     assert result.status == "HARNESS-ERROR"
     assert "harness error" in result.detail
 
 
 def test_grade_one_collect_survives_runner_exception(tmp_path: Path) -> None:
-    """A collect-runner blowup is contained to its own case, like the v1 path's."""
+    """A collect-runner blowup is contained to its own case, as on the run gate."""
 
     def _raise(case_dir: Path, args: list[str]) -> CollectResult:
         raise subprocess.TimeoutExpired(cmd="pytest", timeout=1)
@@ -132,12 +115,12 @@ def test_grade_one_collect_survives_runner_exception(tmp_path: Path) -> None:
 def _blowing_up_grader(tmp_path: Path, waivers: dict[str, str]) -> CaseResult:
     """Grade one case whose pytest runner raises, under *waivers*."""
 
-    def _raise(case_dir: Path, args: list[str]) -> RunResult:
+    def _raise(case_dir: Path, args: list[str]) -> CollectResult:
         raise subprocess.TimeoutExpired(cmd="pytest", timeout=1)
 
     case_dir = tmp_path / "case"
     case_dir.mkdir(exist_ok=True)
-    return _grade_one(case_dir, "area/case", waivers, run_pytest_fn=_raise)
+    return _grade_one_collect(case_dir, "area/case", waivers, run_pytest_fn=_raise)
 
 
 def test_a_harness_error_is_not_a_divergence(tmp_path: Path) -> None:
@@ -166,11 +149,11 @@ def test_a_waiver_does_not_downgrade_a_harness_error(tmp_path: Path) -> None:
     The waiver text is still carried in the detail, as context for the reader, alongside an
     explicit statement that it does not apply.
     """
-    waived = _blowing_up_grader(tmp_path, {"area/case": "known v1 gap"})
+    waived = _blowing_up_grader(tmp_path, {"area/case": "known gap"})
 
     assert waived.status == "HARNESS-ERROR"
     assert "harness error" in waived.detail
-    assert "known v1 gap" in waived.detail
+    assert "known gap" in waived.detail
     assert "cannot apply" in waived.detail
 
 
@@ -219,8 +202,10 @@ def test_the_harness_error_flag_is_ee_and_distinct_from_every_other(
     # Injected at the grader rather than staged as a real broken case: the flag routing is
     # what is under test, and a corpus case that has to keep failing to prove it would be a
     # permanently red gate.
-    monkeypatch.setattr(conformance_main, "_grade_one", _broken)
-    monkeypatch.setattr(sys, "argv", ["conformance", "--only", "collection/class-collection"])
+    monkeypatch.setattr(conformance_main, "_grade_one_collect", _broken)
+    monkeypatch.setattr(
+        sys, "argv", ["conformance", "--v2-collect", "--only", "collection/class-collection"]
+    )
 
     exit_code = main()
 
@@ -247,7 +232,7 @@ def test_only_matching_no_cases_exits_1_and_says_so(
     names the prefix *and* lists the corpus, because the next thing anyone does after this
     error is look for the name they meant to type.
     """
-    monkeypatch.setattr(sys, "argv", ["conformance", "--only", "no/such-case"])
+    monkeypatch.setattr(sys, "argv", ["conformance", "--v2-collect", "--only", "no/such-case"])
 
     exit_code = main()
 
@@ -334,7 +319,7 @@ def test_every_ledger_key_names_a_real_case() -> None:
     """
     known = {name for name, _ in discover_cases()}
 
-    for ledger in (WAIVERS, V2_COLLECT_WAIVERS, V2_RUN_WAIVERS):
+    for ledger in (V2_COLLECT_WAIVERS, V2_RUN_WAIVERS):
         unknown = set(_load_waivers_or_exit(ledger)) - known
         assert not unknown, f"{ledger.name} waives cases that do not exist: {sorted(unknown)}"
 
@@ -424,15 +409,15 @@ def test_grade_one_run_passes_case_args_to_both_runners(tmp_path: Path) -> None:
     assert seen == {"pytest": ["-m", "smoke"], "v2": ["-m", "smoke"]}
 
 
-def test_main_v2_run_mode_grades_the_case_v1_silently_passes(
+def test_main_v2_run_mode_grades_the_case_the_old_engine_silently_passed(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end through the real CLI on the worst v1 bug the corpus found.
+    """End-to-end through the real CLI on the worst bug the corpus ever found.
 
-    ``collection/unittest-basic`` is #129: v1 discards ``TestCase.run()``'s result, so a
-    genuinely failing ``unittest`` suite reports **all green**. It is waived in the v1
-    ledger and must MATCH here -- a red run that v2 reports as red is the entire point
-    of the execution gate.
+    ``collection/unittest-basic`` is #129: the v1 engine discarded ``TestCase.run()``'s
+    result, so a genuinely failing ``unittest`` suite reported **all green**. It was waived
+    in the archived v1 ledger (``docs/superpowers/history/``) and must MATCH here -- a red
+    run reported as red is the entire point of the execution gate.
     """
     monkeypatch.setattr(sys, "argv", ["conformance", "--v2-run", "--only", "collection/unittest"])
 
@@ -442,6 +427,31 @@ def test_main_v2_run_mode_grades_the_case_v1_silently_passes(
     assert "[ok] collection/unittest-basic" in out
     assert "1 cases: 1 match, 0 waived, 0 stale-waivers, 0 diverged" in out
     assert exit_code == 0
+
+
+def test_main_with_no_gate_flag_refuses_instead_of_choosing_one(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare ``python -m conformance`` is a usage error (4), not a defaulted gate.
+
+    It used to be the **v1 end-to-end gate**, retired in Phase 4 Task 2 with the engine it
+    measured. Quietly re-pointing the bare invocation at one of the surviving gates is the
+    failure this refuses: an old CI file, or a maintainer's habit, would get a green from a
+    gate it never asked for and never notice the question had changed. Naming both gates
+    costs one line and cannot be misread.
+
+    ``--only`` names nothing so that a build which *does* default would grade zero cases and
+    return promptly rather than running the whole corpus.
+    """
+    monkeypatch.setattr(sys, "argv", ["conformance", "--only", "no/such-case"])
+
+    exit_code = main()
+
+    err = capsys.readouterr().err
+    assert exit_code == 4
+    assert "--v2-collect" in err, err
+    assert "--v2-run" in err, err
+    assert "v1" in err, err
 
 
 def test_main_rejects_both_v2_modes_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -468,9 +478,10 @@ def test_main_v2_collect_mode_grades_a_real_case(
 ) -> None:
     """End-to-end through the real CLI on the case this whole sub-phase exists for.
 
-    ``collection/class-collection`` is the case v1 cannot get right (it collects
-    methods on a class with ``__init__``; pytest refuses them) and is waived in the
-    v1 ledger. Under ``--v2-collect`` it must MATCH -- the headline result of 1b.1.
+    ``collection/class-collection`` is the case the v1 engine could not get right (it
+    collected methods on a class with ``__init__``; pytest refuses them), and it is the
+    first entry in the archived v1 ledger. Under ``--v2-collect`` it must MATCH -- the
+    headline result of 1b.1.
     """
     monkeypatch.setattr(sys, "argv", ["conformance", "--v2-collect", "--only", "collection/class"])
 
@@ -483,24 +494,21 @@ def test_main_v2_collect_mode_grades_a_real_case(
 
 
 def test_stale_waiver_flows_into_summary_and_exit_code(tmp_path: Path) -> None:
-    match = RunResult(
-        ids={"test_a.py::test_x"},
-        outcomes=Outcomes(1, 0, 0, 0, 0, False),
-    )
+    match = CollectResult(ids=["test_a.py::test_x"], exit_code=0)
 
-    def _matching(case_dir: Path, args: list[str]) -> RunResult:
+    def _matching(case_dir: Path, args: list[str]) -> CollectResult:
         return match
 
     case_dir = tmp_path / "case"
     case_dir.mkdir()
-    waivers = {"area/case": "known v1 gap"}
+    waivers = {"area/case": "known gap"}
 
-    result = _grade_one(
+    result = _grade_one_collect(
         case_dir,
         "area/case",
         waivers,
         run_pytest_fn=_matching,
-        run_rustest_fn=_matching,
+        run_v2_fn=_matching,
     )
     assert result.status == "STALE-WAIVER"
 

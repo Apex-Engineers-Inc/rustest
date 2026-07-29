@@ -18,17 +18,13 @@ crate-type = ["cdylib", "rlib"]
 # between a user and a silently stale manifest: it is collision resistant, and it is fast
 # enough that hashing every collected file's bytes costs less than the parse it replaces.
 blake3 = "1"
-indexmap = "2.1"
 pyo3 = { version = "0.27", features = ["extension-module", "anyhow"] }
+# Tier S parses files in parallel (`src/v2/static_collect.rs`); nothing else in the engine
+# uses a thread pool -- the run itself is parallelised by the process pool, not by rayon.
 rayon = "1.8"
-globset = "0.4.13"
-walkdir = "2.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-regex = "1.10"
-console = "0.15"
-indicatif = "0.17"
 # Tier S (`src/v2/static_collect.rs`) parses test files with ruff's own Python parser
 # instead of importing them.  ruff publishes no semver crates for these — karva (MIT, the
 # reference wiring) tracks `branch = "main"` — so they are **pinned by rev**: a moving

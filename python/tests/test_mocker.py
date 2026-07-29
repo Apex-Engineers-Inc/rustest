@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rustest import run
+from .helpers import run_tree
 
 
 def _write_mocker_test_module(target: Path) -> None:
@@ -112,15 +112,30 @@ def test_mock_call(mocker):
     assert mock_fn.call_args_list == [mocker.call(1, 2), mocker.call(3, 4)]
 
 
-def test_resetall(mocker):
-    '''Test resetall functionality.'''
-    mock_fn = mocker.Mock(return_value=42)
-    result = mock_fn()
-    assert result == 42
-    mock_fn.assert_called_once()
+def test_resetall_resets_patches_not_bare_mocks(mocker):
+    '''resetall() resets what the fixture CREATED -- patches -- and not a bare Mock().
+
+    This is pytest-mock's own rule, not a limitation. `MockerFixture.resetall` iterates
+    `self._mock_cache`, which is filled by `mocker.patch*` and `create_autospec`;
+    `mocker.Mock` is a plain alias for `unittest.mock.Mock` (pytest_mock/plugin.py
+    l. 88-104), so an object built through it was never registered and is not reset.
+
+    rustest's v1 fixture WRAPPED the Mock classes to track every instance, so a bare
+    `mocker.Mock()` was reset too -- a divergence from the library being emulated, and this
+    test asserted it. v2 is the faithful port; the assertion follows.
+    '''
+    patched = mocker.patch('os.remove')
+    bare = mocker.Mock(return_value=42)
+
+    os.remove('/tmp/file')
+    assert bare() == 42
+    patched.assert_called_once()
+    bare.assert_called_once()
 
     mocker.resetall()
-    mock_fn.assert_not_called()
+
+    patched.assert_not_called()
+    bare.assert_called_once()  # untracked by the fixture, so untouched by resetall()
 
 
 def test_stopall(mocker):
@@ -205,6 +220,6 @@ def test_mocker_basic_functionality(tmp_path: Path) -> None:
     test_file = tmp_path / "test_mocker_basic.py"
     _write_mocker_test_module(test_file)
 
-    report = run(paths=[str(test_file)])
+    report = run_tree(str(test_file))
     assert report.passed == 20
     assert report.failed == 0

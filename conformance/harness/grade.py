@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .runners import CollectResult, FullRunResult, RunOutcomes, RunResult
+from .runners import CollectResult, FullRunResult, RunOutcomes
 
 try:
     import tomllib
@@ -40,7 +40,7 @@ def _adjudicate(name: str, problems: list[str], waivers: dict[str, str]) -> Case
 
     Shared by both gates so the waiver discipline -- including STALE-WAIVER detection,
     the check that keeps an inert waiver from quietly surviving a fix -- is written
-    once and cannot drift between the v1 and v2-collect ledgers.
+    once and cannot drift between the collect and run ledgers.
     """
     if not problems:
         if name in waivers:
@@ -188,36 +188,4 @@ def grade_run_case(
         )
     if pytest_result.exit_code != v2_result.exit_code:
         problems.append(f"exit codes pytest={pytest_result.exit_code} v2={v2_result.exit_code}")
-    return _adjudicate(name, problems, waivers)
-
-
-def grade_case(
-    name: str,
-    pytest_result: RunResult,
-    rustest_result: RunResult,
-    waivers: dict[str, str],
-) -> CaseResult:
-    problems: list[str] = []
-    only_pytest = sorted(pytest_result.ids - rustest_result.ids)
-    only_rustest = sorted(rustest_result.ids - pytest_result.ids)
-    if only_pytest:
-        problems.append(f"missing from rustest: {only_pytest}")
-    if only_rustest:
-        problems.append(f"extra in rustest: {only_rustest}")
-    po, ro = pytest_result.outcomes, rustest_result.outcomes
-    if (po.passed, po.failed, po.skipped, po.errors) != (
-        ro.passed,
-        ro.failed,
-        ro.skipped,
-        ro.errors,
-    ):
-        pytest_counts = f"{po.passed}/{po.failed}/{po.skipped}/{po.errors}"
-        rustest_counts = f"{ro.passed}/{ro.failed}/{ro.skipped}/{ro.errors}"
-        problems.append(f"outcomes pytest={pytest_counts} rustest={rustest_counts}")
-    if po.exit_code != ro.exit_code:
-        problems.append(f"exit codes pytest={po.exit_code} rustest={ro.exit_code}")
-    if po.collection_error != ro.collection_error:
-        problems.append(
-            f"collection-error pytest={po.collection_error} rustest={ro.collection_error}"
-        )
     return _adjudicate(name, problems, waivers)

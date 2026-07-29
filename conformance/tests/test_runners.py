@@ -18,10 +18,8 @@ from conformance.harness.runners import (
     _isolate_case,
     parse_pytest_collect,
     parse_pytest_summary,
-    run_pytest,
     run_pytest_collect,
     run_pytest_full,
-    run_rustest,
     run_rustest_v2_collect,
     run_rustest_v2_run,
 )
@@ -52,7 +50,7 @@ MINI_SUITE = textwrap.dedent(
 )
 
 # pytest emits a module's ids in source order, so this doubles as the ordered
-# expectation for the collect gate. MINI_IDS stays a set for the v1 runners, which
+# expectation for both gates, which compare ids in order.
 # grade on membership only.
 MINI_IDS_ORDERED = [
     "test_mini.py::test_one",
@@ -218,124 +216,6 @@ def test_check_pytest_exit_raises_on_internal_and_usage_errors(returncode: int) 
 
 def _write_mini_suite(root: Path) -> None:
     (root / "test_mini.py").write_text(MINI_SUITE, encoding="utf-8")
-
-
-def test_run_pytest_integration(tmp_path: Path) -> None:
-    _write_mini_suite(tmp_path)
-    result = run_pytest(tmp_path, [])
-    assert result.ids == MINI_IDS
-    assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
-    assert result.outcomes.errors == 0
-
-
-def test_run_rustest_integration(tmp_path: Path) -> None:
-    _write_mini_suite(tmp_path)
-    result = run_rustest(tmp_path, [])
-    assert result.ids == MINI_IDS
-    assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
-    assert result.outcomes.errors == 0
-
-
-def test_run_rustest_can_express_a_case_that_names_its_own_paths(tmp_path: Path) -> None:
-    """A ``case.toml`` with **path** args reaches v1 as those paths and nothing else.
-
-    The v1 runner used to hand its script a literal ``.`` and append the case args after
-    it, which argparse cannot parse at all -- a ``nargs="*"`` positional split across an
-    optional yields ``unrecognized arguments`` -- so ``collection/dupe-args`` could not be
-    graded on the v1 side and surfaced as a harness error instead of a verdict. The default
-    root is now applied by the script only when the case named no paths, which is also the
-    only spelling under which pytest and v1 are asked the *same* question.
-
-    Asserted on a subdirectory rather than on ``.`` so that a regression to the old
-    unconditional prefix shows up as extra ids rather than as an identical answer.
-    """
-    (tmp_path / "pkg").mkdir()
-    _write_mini_suite(tmp_path / "pkg")
-    (tmp_path / "test_outside.py").write_text("def test_outside():\n    pass\n", encoding="utf-8")
-
-    result = run_rustest(tmp_path, ["pkg"])
-
-    assert all(node_id.startswith("pkg") for node_id in result.ids), result.ids
-    assert not any("test_outside" in node_id for node_id in result.ids), result.ids
-
-
-def test_run_pytest_ignores_surrounding_project_config(tmp_path: Path) -> None:
-    """A pytest config above the case dir must not influence the run."""
-    (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    _write_mini_suite(case_dir)
-    result = run_pytest(case_dir, [])
-    assert result.ids == MINI_IDS
-    assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
-
-
-def test_run_pytest_honours_a_case_owned_config(tmp_path: Path) -> None:
-    """A case that ships a qualifying config is run under it, not under the empty ini.
-
-    The v1 gate forces ``-c <empty ini>`` so a case cannot inherit this repo's
-    ``[tool.pytest.ini_options]``; that default is unchanged and is asserted by
-    ``test_run_pytest_ignores_surrounding_project_config`` above. The exception exists
-    because a case whose SUBJECT is a configuration value -- ``conformance/corpus/async/*``,
-    where ``asyncio_mode`` decides whether an unmarked ``async def`` test runs at all -- was
-    otherwise asked one question by the two v2 gates (which keep a case-owned config, see
-    ``_isolate_case``) and a different one here, filling the v1 ledger with entries
-    describing an empty ini rather than a divergence between runners.
-
-    Asserted through ``python_files``, which changes the *ids* and therefore cannot pass by
-    accident: under the empty ini ``check_mini.py`` collects nothing and pytest exits 5.
-    """
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    _ = (case_dir / "pytest.ini").write_text(
-        "[pytest]\npython_files = check_*.py\n", encoding="utf-8"
-    )
-    _ = (case_dir / "check_mini.py").write_text(
-        "def test_ok():\n    assert True\n", encoding="utf-8"
-    )
-
-    result = run_pytest(case_dir, [])
-
-    assert result.ids == {"check_mini.py::test_ok"}, result.ids
-    assert (result.outcomes.passed, result.outcomes.failed) == (1, 0)
-
-
-def test_run_pytest_ignores_a_non_qualifying_case_file(tmp_path: Path) -> None:
-    """...and *qualifying* is decided on content, exactly as `_qualifies_as_config` decides it.
-
-    A ``pyproject.toml`` carrying only ``[project]`` anchors nothing under either runner, so
-    it must not be handed to ``-c`` -- doing so would make pytest read a file it would have
-    walked straight past, which is the mirror image of the bug the exception exists to fix.
-    """
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    _ = (case_dir / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
-    _write_mini_suite(case_dir)
-
-    result = run_pytest(case_dir, [])
-
-    assert result.ids == MINI_IDS
-    assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
-
-
-def test_run_pytest_accepts_relative_case_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A relative case dir is resolved, so ``--rootdir`` stays valid.
-
-    ``--rootdir`` is resolved against pytest's own cwd, not the harness's, so an
-    unresolved relative path used to hand pytest a nonexistent rootdir and abort
-    with a usage error (exit 4) that the summary parser read as 0/0/0/0.
-    """
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    _write_mini_suite(case_dir)
-    monkeypatch.chdir(tmp_path)
-
-    result = run_pytest(Path("case"), [])
-
-    assert result.ids == MINI_IDS
-    assert (result.outcomes.passed, result.outcomes.failed) == (2, 1)
 
 
 def test_check_pytest_collect_exit_passes_through_collectable_outcomes() -> None:
@@ -572,10 +452,10 @@ def test_collect_runners_ignore_a_surrounding_project_config(
     This is the load-bearing protocol test. Run in place, the two runners disagree on
     rootdir by construction: v2 resolves config by walking up from its cwd and would
     adopt this ``pytest.ini`` (collecting nothing, since ``python_files`` no longer
-    matches ``test_mini.py``), while ``run_pytest``'s v1-mode isolation flags
-    (``-c`` + ``--rootdir``) pin pytest to the case dir. Copying the case out of the
-    tree removes the disagreement for both sides at once, without either runner
-    needing flags the ``--v2-collect-only`` surface does not have in 1b.1.
+    matches ``test_mini.py``), while pytest can be pinned to the case dir with ``-c`` +
+    ``--rootdir``. Copying the case out of the tree removes the disagreement for both sides
+    at once, without either runner needing flags the ``--v2-collect-only`` surface does not
+    have.
     """
     (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
 
@@ -1116,18 +996,3 @@ def test_run_rustest_v2_run_grades_the_process_exit_code_not_the_reports_claim(
     result = run_rustest_v2_run(case_dir, [])
 
     assert result.exit_code == 99
-
-
-def test_run_rustest_raises_when_no_report_is_written(tmp_path: Path) -> None:
-    """A rustest invocation that dies before writing the report is a harness fault.
-
-    An unrecognized flag makes the rustest CLI bail out in argparse, so no report
-    file exists. Returning a fabricated all-zeros result here would grade as a
-    silent divergence; the harness must surface the real failure instead. This
-    drives the real CLI rather than a monkeypatched stand-in, so it stays honest
-    if the failure mode changes.
-    """
-    _write_mini_suite(tmp_path)
-
-    with pytest.raises(RuntimeError, match="rustest wrote no report"):
-        run_rustest(tmp_path, ["--definitely-not-a-real-flag"])

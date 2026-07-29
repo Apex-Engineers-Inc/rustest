@@ -1,19 +1,13 @@
 """Command line interface helpers.
 
-**As of 0.17 the default engine is v2.**  ``rustest <paths>`` with no mode flag runs the v2
-spine end to end — config resolution, the file walk, a worker pool that collects and then
-executes, pytest's exit codes — with the pytest compatibility shim installed
-unconditionally.  ``--v1`` opts back into the legacy engine and ``--v2`` is a no-op alias
-kept so existing scripts and CI files keep working.
+**There is one engine.**  ``rustest <paths>`` runs the v2 spine end to end — config
+resolution, the file walk, a worker pool that collects and then executes, pytest's exit
+codes — with the pytest compatibility shim installed unconditionally.  ``--v2`` remains a
+no-op alias so existing scripts and CI files keep working.
 
-Two rules keep the two engines from contaminating each other, and both are structural rather
-than conventional:
-
-* the v2 branch **short-circuits at the top of** :func:`main`, before any v1 option is
-  interpreted and before ``core.run`` can touch v1's process-global runtime config;
-* every option the two share is *forwarded verbatim* rather than re-interpreted here, so
-  there is one owner per behaviour (v2 owns pytest's ``-k``/``-m`` grammar and its usage
-  errors, v1 owns its own).
+The v1 engine, reached through ``--v1`` between the Phase 1c flip and Phase 4 Task 2, is
+deleted.  ``--v1`` is now a **removed flag**: it exits 4 naming the change rather than being
+swallowed by ``nargs="*"`` as a path, which is what ``REMOVED_FLAGS`` exists for.
 """
 
 from __future__ import annotations
@@ -24,7 +18,7 @@ import sys
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from .core import run, terminal_columns, v2_collect_only, v2_run
+from .core import terminal_columns, v2_collect_only, v2_run
 
 if TYPE_CHECKING:
     # Annotation-only; see the note in `core.py` about keeping `typing` off the run-time
@@ -125,15 +119,24 @@ def _identity(text: str) -> str:
     return text
 
 
-#: ``--pytest-compat`` was deleted at the flip: the shim it enabled is now always installed,
-#: so the flag could only ever be a no-op or a lie.  It is rejected **loudly** rather than
-#: ignored — a CI file still passing it deserves to be told the behaviour it asked for is now
-#: the default, not to have the argument silently swallowed by ``nargs="*"`` as a path.
+#: Flags that once existed and are now refused **loudly** rather than ignored — a CI file
+#: still passing one deserves to be told what changed, not to have the argument silently
+#: swallowed by ``nargs="*"`` as a path.
+#:
+#: ``--pytest-compat`` went at the flip: the shim it enabled is now always installed, so the
+#: flag could only ever be a no-op or a lie.  ``--v1`` went with the engine it selected —
+#: and it is listed here rather than left to argparse precisely because "unrecognised flag"
+#: does not tell a reader whose CI has run ``--v1`` for months what to do about it.
 REMOVED_FLAGS: dict[str, str] = {
     "--pytest-compat": (
         "--pytest-compat has been removed: the pytest compatibility shim is now always"
         + " installed, so every run is a compat run. Drop the flag."
         + " See CHANGELOG.md (0.17.0, 'the flip')."
+    ),
+    "--v1": (
+        "--v1 has been removed: the legacy engine it selected is deleted. Drop the flag --"
+        + " the default engine is the only engine, and it is the one every conformance gate"
+        + " measures. See CHANGELOG.md."
     ),
 }
 
@@ -196,46 +199,6 @@ def _drop_ignored_pytest_flags(raw: list[str]) -> tuple[list[str], list[str]]:
         if takes and not inline and index < len(raw) and not raw[index].startswith("-"):
             index += 1
     return kept, dropped
-
-
-def is_ci_environment() -> bool:
-    """Detect if running in a CI environment.
-
-    Checks for common CI environment variables across all major providers:
-    - GitHub Actions
-    - GitLab CI
-    - CircleCI
-    - Travis CI
-    - Jenkins
-    - Azure Pipelines
-    - Bitbucket Pipelines
-    - TeamCity
-    - And many others
-
-    Returns:
-        True if running in CI, False otherwise
-    """
-    # Check for common CI environment variables
-    # This is the most reliable method across all CI providers
-    ci_vars = [
-        "CI",  # Generic CI indicator (GitHub Actions, Travis, CircleCI, GitLab)
-        "CONTINUOUS_INTEGRATION",  # Travis CI, CircleCI
-        "GITHUB_ACTIONS",  # GitHub Actions
-        "GITLAB_CI",  # GitLab CI
-        "CIRCLECI",  # CircleCI
-        "TRAVIS",  # Travis CI
-        "JENKINS_HOME",  # Jenkins
-        "JENKINS_URL",  # Jenkins
-        "BUILDKITE",  # Buildkite
-        "DRONE",  # Drone CI
-        "TEAMCITY_VERSION",  # TeamCity
-        "TF_BUILD",  # Azure Pipelines
-        "BITBUCKET_BUILD_NUMBER",  # Bitbucket Pipelines
-        "CODEBUILD_BUILD_ID",  # AWS CodeBuild
-        "APPVEYOR",  # AppVeyor
-    ]
-
-    return any(os.getenv(var) for var in ci_vars)
 
 
 class _Parser(argparse.ArgumentParser):
@@ -313,24 +276,27 @@ def build_parser() -> _Parser:
         action="store_true",
         help="Print only the summary line.",
     )
+    # `--ascii` and `--color` are **accepted and inert**, and that is deliberate rather than
+    # lazy. Both were v1 renderer options; v2's output is not coloured and uses no box-drawing
+    # characters, so neither can change what a run does. They stay on the parser because they
+    # are exactly the kind of flag that lives in a project's `addopts` or a Makefile forever
+    # (`--color=never` in CI is near-universal), and erroring on a *cosmetic* option would
+    # refuse a run rustest can do perfectly well. Anything that changes what RUNS is still
+    # exit 4 -- see `_Parser.error` and `REMOVED_FLAGS`.
     _ = parser.add_argument(
         "--ascii",
         action="store_true",
-        help="Use ASCII characters instead of Unicode symbols for output (--v1 only).",
+        help="Accepted and ignored: the default engine's output is already plain ASCII.",
     )
     _ = parser.add_argument(
         "--color",
         # pytest spells these `yes`/`no`/`auto` (`_pytest/terminal.py::pytest_addoption`);
-        # rustest shipped `always`/`never`/`auto`. Both are accepted, and `_color_mode`
-        # folds pytest's onto rustest's. Before Phase 4 Task 1's review a repo with
-        # `addopts = --color=yes` -- humanize, today -- hit `invalid choice` and exited 4
-        # on a flag rustest *has*.
+        # rustest shipped `always`/`never`/`auto`. Both spellings are accepted. Before Phase 4
+        # Task 1's review a repo with `addopts = --color=yes` -- humanize, today -- hit
+        # `invalid choice` and exited 4 on a flag rustest *has*.
         choices=["auto", "always", "never", "yes", "no"],
         default="auto",
-        help=(
-            "When to use colored output: auto (default, detect CI), always/yes, or "
-            "never/no (--v1 only; the default engine's output is not colored yet)."
-        ),
+        help="Accepted and ignored: the default engine's output is not colored.",
     )
     _ = parser.add_argument(
         "-o",
@@ -389,10 +355,6 @@ def build_parser() -> _Parser:
     # `nargs="?"` + `const=""` is pytest-cov's `--cov [SOURCE]` shape: the flag takes an
     # optional value, and `""` (bare `--cov`) means the rootdir. `append` because the option
     # is multi-allowed there too, and a project with two source trees is ordinary.
-    #
-    # `--cov` is a **v2-only** surface. `--v1` with it is refused in `main`, rather than
-    # ignored, for the same reason `--v2-collect-only` is: silently running unmeasured is the
-    # worst possible answer to "measure this".
     _ = parser.add_argument(
         "--cov",
         dest="cov",
@@ -433,13 +395,7 @@ def build_parser() -> _Parser:
         "--v2",
         action="store_true",
         dest="v2",
-        help="Deprecated no-op: the v2 engine is the default. Accepted so old scripts keep working.",
-    )
-    _ = parser.add_argument(
-        "--v1",
-        action="store_true",
-        dest="v1",
-        help="Run the legacy v1 engine. Removed in a future release.",
+        help="Deprecated no-op: there is one engine. Accepted so old scripts keep working.",
     )
     parser.set_defaults(
         capture_output=True,
@@ -452,7 +408,6 @@ def build_parser() -> _Parser:
         report_json=None,
         v2_collect_only=False,
         v2=False,
-        v1=False,
         cov=None,
         cov_report=None,
         cov_branch=False,
@@ -461,7 +416,7 @@ def build_parser() -> _Parser:
 
 
 def _last_failed_mode(args: argparse.Namespace) -> str:
-    """``--lf`` / ``--ff`` as the one string both engines' cores take.
+    """``--lf`` / ``--ff`` as the one string the core takes.
 
     ``--lf`` wins when both are given, matching pytest: ``LFPlugin`` checks
     ``config.getoption("lf")`` first and only falls through to the failed-first branch
@@ -670,22 +625,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(raw)
 
-    # Checked before the engine split, because every one of these is a refusal whichever
-    # engine was asked for, and because `--cov-branch` must be refused even when it is the
-    # *only* coverage flag given (a `--cov-branch` with no `--cov` is still a request rustest
-    # cannot honour, and answering it with a silent nothing is the failure mode
-    # `_v2_coverage.branch_refusal` exists to name).
+    # `--cov-branch` must be refused even when it is the *only* coverage flag given: a
+    # `--cov-branch` with no `--cov` is still a request rustest cannot honour, and answering
+    # it with a silent nothing is the failure mode `_v2_coverage.branch_refusal` exists to
+    # name.
     if args.cov_branch:
         from ._v2_coverage import branch_refusal
 
         print(f"ERROR: {branch_refusal()}", file=sys.stderr)
-        return 4
-    if args.cov is not None and args.v1:
-        print(
-            "ERROR: --cov is a v2-engine surface and cannot be combined with --v1"
-            + " (the legacy engine has no coverage support). Drop --v1.",
-            file=sys.stderr,
-        )
         return 4
     if args.cov is None and args.cov_report:
         print(
@@ -694,27 +641,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 4
-
-    if args.v1:
-        if args.v2_collect_only:
-            # `--v2-collect-only` is a v2 surface; there is no v1 collect-only mode. Before
-            # this guard the flag was simply ignored on the v1 branch and the suite **ran** —
-            # the single worst way to answer "list the tests, do not run anything", because
-            # it does the opposite silently and a user pointing it at a suite with side
-            # effects finds out afterwards.
-            print(
-                "ERROR: --v2-collect-only is a v2-engine surface and cannot be combined with"
-                + " --v1 (the legacy engine has no collect-only mode). Drop --v1.",
-                file=sys.stderr,
-            )
-            return 4
-        if args.v2:
-            print(
-                "ERROR: --v1 and --v2 select different engines and cannot be combined.",
-                file=sys.stderr,
-            )
-            return 4
-        return _run_v1(args)
 
     # argparse hands back the *default object itself* when no positional was supplied, so
     # identity separates `rustest` (no argument, and therefore `testpaths` decides the roots,
@@ -765,63 +691,3 @@ def main(argv: Sequence[str] | None = None) -> int:
         cov=args.cov,
         cov_report=args.cov_report,
     )
-
-
-def _run_v1(args: argparse.Namespace) -> int:
-    """The legacy engine, reached only through ``--v1``.
-
-    Byte-identical to the pre-flip default path apart from the banner — **including**
-    ``pytest_compat=False``.  That looks inconsistent next to "the shim is always installed"
-    and is deliberate: ``--v1`` exists so a suite that the new engine cannot yet run has
-    somewhere to go, and it can only serve that purpose if it behaves exactly as it did
-    before the flip.  Turning the shim on here would also silently disable v1's markdown
-    tier (`src/discovery.rs` l. 358 refuses code blocks in compat mode) and print v1's
-    compat banner — two behaviour changes on a path whose whole contract is "unchanged".
-    v1 is frozen, not maintained.
-    """
-    print(
-        "NOTE: --v1 selects the legacy engine, removed in a future release."
-        + " Run without --v1 for the default (v2) engine."
-        + " (If a message below suggests --pytest-compat, that flag no longer exists:"
-        + " run without --v1 instead, where compatibility is always on.)",
-        file=sys.stderr,
-    )
-
-    if args.color == "auto":
-        # Auto-detect: colors enabled locally, disabled in CI
-        use_color = not is_ci_environment()
-    else:
-        # `yes`/`no` are pytest's spellings of `always`/`never`; both reach here.
-        use_color = args.color in ("always", "yes")
-
-    report = run(
-        paths=list(args.paths),
-        pattern=args.pattern,
-        mark_expr=args.mark_expr,
-        workers=args.workers,
-        capture_output=args.capture_output,
-        enable_codeblocks=args.enable_codeblocks,
-        last_failed_mode=_last_failed_mode(args),
-        fail_fast=args.fail_fast,
-        pytest_compat=False,
-        verbose=args.verbose,
-        ascii=args.ascii,
-        no_color=not use_color,
-    )
-    if args.report_json:
-        from .json_report import write_json_report
-
-        write_json_report(report, args.report_json)
-    # Note: Rust now handles all output rendering with real-time progress
-    # The Python _print_report() function is no longer called
-
-    # Exit codes match pytest:
-    # 0 = all tests passed
-    # 1 = some tests failed
-    # 2 = collection errors (syntax errors, import errors, etc.)
-    if len(report.collection_errors) > 0:
-        return 2
-    elif report.failed > 0:
-        return 1
-    else:
-        return 0

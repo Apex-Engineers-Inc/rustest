@@ -3,37 +3,38 @@
 The fitness function for the rustest v2 rewrite
 (see `docs/superpowers/specs/2026-07-25-rustest-v2-architecture-design.md`).
 
-- `python -m conformance` — run every corpus case through real pytest and real
-  rustest, diff collected IDs + outcome counts + exit codes. Exit 1 on any
-  unwaived divergence. `--only PREFIX` filters cases.
+**Two gates**, and a bare `python -m conformance` is neither: it exits **4** naming them.
+It used to be a third gate — pytest against the **v1 engine**, end to end, against
+`conformance/waivers.toml` — retired in Phase 4 Task 2 with the engine it measured. Its
+ledger (24 entries, every one a v1 bug with a fixed-in-v2 citation) is archived at
+`docs/superpowers/history/2026-07-29-v1-conformance-ledger/`. Defaulting the bare
+invocation onto a surviving gate would answer a question nobody asked, so it refuses.
+
 - `python -m conformance --v2-collect` — the **Phase 1b.1 gate**: diff pytest's
   collected node IDs and collection exit code against
   `rustest --v2-collect-only`. Nothing is executed, so nothing but IDs and the
   exit code is graded. Uses `waivers-v2-collect.toml`.
 - `python -m conformance --v2-run` — the **Phase 1b.2 gate**: diff a real pytest
-  run against `rustest --v2 --report-json`. Graded on the **ordered** node IDs
+  run against flagless `rustest --report-json`. Graded on the **ordered** node IDs
   the schema-v2 report carries, the **six-value** outcome tally
   (`passed/failed/skipped/xfailed/xpassed/error`) and the exit code. Uses
   `waivers-v2-run.toml`. `--v2-collect` and `--v2-run` are mutually exclusive.
 - `conformance/corpus/<area>/<case>/` — one directory per case: `test_*.py`
   files, optional `conftest.py`, optional `case.toml` (`[case] args = [...]`).
-- `conformance/waivers.toml` — every known divergence with a mandatory reason.
-  Phase gates are defined as this file shrinking. `NEW-BUG:` prefix marks
-  divergences discovered by the corpus that the v1 audit didn't predict.
 - `conformance/waivers-v2-collect.toml` and `conformance/waivers-v2-run.toml` —
-  the same discipline for the two v2 gates, kept separate because an entry in one
-  ledger says nothing about the others (`collection/class-collection` is waived
-  for v1 and matches under both v2 gates; `marks/xfail-strict` likewise).
-  **Both v2 ledgers are empty**, which is the Phase 1b.2 result: every collection
-  and execution divergence the corpus found in v1 is fixed in v2.
+  every known divergence with a mandatory reason, one ledger per gate. Phase gates
+  are defined as these files shrinking. `NEW-BUG:` prefix marks divergences the
+  corpus discovered rather than predicted. They are kept separate because an entry
+  in one says nothing about the other: `fixtures/session-scope` and
+  `marks/pytest-exit` are waived for the run and MATCH on collect, because both
+  diverge only once something is executed.
 - `python -m conformance --real <name>` — the **Phase 3 Task 4 gate**: run a real-world
   suite under pytest, then under flagless `rustest`, and diff. `<name>` is a config in
   `conformance/real/` (`member-designer`, `more-itertools`, `click`, `jinja2`) or `all`.
   See "The `--real` protocol" below.
 - `python -m conformance.bench.bench [--quick]` — pytest collect / pytest run /
-  rustest v1 run / rustest v2 run / rustest v2 collect-only. As of Phase 1c
-  Task 3 all five columns are live; Phase 2 will split the collect column into
-  cold/warm rows once the manifest cache lands.
+  rustest run / rustest collect-only (cold and warm). The `rustest v1 run` column
+  was dropped in Phase 4 Task 2 along with the engine it timed.
 
 pytest is a dev-dependency only. It never ships with rustest.
 
@@ -46,9 +47,9 @@ Each corpus case is graded into exactly one of five statuses, printed as
 | Flag | Status          | Meaning                                                                                                                                                     |
 | ---- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ok` | `MATCH`         | pytest and rustest agree on collected IDs, outcome counts, and exit code.                                                                                    |
-| `~~` | `WAIVED`        | They diverge, but the divergence is recorded in `waivers.toml` with a reason. Exits 0.                                                                       |
+| `~~` | `WAIVED`        | They diverge, but the divergence is recorded in the gate's ledger with a reason. Exits 0.                                                                    |
 | `XX` | `DIVERGE`       | They diverge and there is no waiver for this case. Fails the run (exit 1).                                                                                    |
-| `!!` | `STALE-WAIVER`  | The case now matches, but `waivers.toml` still carries a waiver for it. Fails the run (exit 1) — remove the waiver. Shrinking `waivers.toml` is the phase-gate metric, so a waiver that has quietly gone inert must not go unnoticed. |
+| `!!` | `STALE-WAIVER`  | The case now matches, but the ledger still carries a waiver for it. Fails the run (exit 1) — remove the waiver. Shrinking the ledger is the phase-gate metric, so a waiver that has quietly gone inert must not go unnoticed. |
 | `EE` | `HARNESS-ERROR` | **The harness could not ask the question** — a malformed `case.toml`, a subprocess timeout, a runner that wrote no report. Fails the run (exit 1). **A waiver does not apply**: a waiver is a judgement about a known *divergence*, and no comparison happened for it to be about. |
 
 `DIVERGE` and `HARNESS-ERROR` are counted separately on the summary line for
@@ -59,10 +60,10 @@ Task 2. The cost of that ambiguity is on the record — a `1 diverged` reading
 that turned out to be a subprocess timeout under concurrent load (P1b.2 Task 5
 report §10.7), which is where this status was recommended.
 
-Under `--v2-collect` the same five statuses apply, graded on collected IDs and
-the collection exit code alone, against `waivers-v2-collect.toml`. Under
-`--v2-run` they apply to ordered IDs, the seven-value tally and the exit code,
-against `waivers-v2-run.toml`.
+Under `--v2-collect` the five statuses are graded on collected IDs and the
+collection exit code alone, against `waivers-v2-collect.toml`. Under `--v2-run`
+they apply to ordered IDs, the seven-value tally and the exit code, against
+`waivers-v2-run.toml`.
 
 `--only PREFIX` that matches no case **exits 1** with a message naming the
 prefix and listing the corpus. It used to print `0 cases: …` and exit 0, which
@@ -71,10 +72,9 @@ answered "all clear" to a question that was never asked.
 ## The `--v2-collect` comparison protocol
 
 Both runners see the **same** configuration environment, because otherwise they
-would not be answering the same question. `run_pytest` (v1 mode) pins pytest's
-rootdir with `-c <empty ini>` and `--rootdir=<case dir>`; the
-`--v2-collect-only` surface has neither flag in Phase 1b.1 and resolves config by
-walking *up* from its working directory. Run in place, the two disagree about
+would not be answering the same question. pytest can be pinned to a rootdir with
+`-c <empty ini>` and `--rootdir=<case dir>`; the `--v2-collect-only` surface has
+neither flag and resolves config by walking *up* from its working directory. Run in place, the two disagree about
 rootdir for every in-repo case — this repo's `pyproject.toml` carries
 `[tool.pytest.ini_options]`, so v2's IDs would read `conformance/corpus/…` while
 pytest's read `test_x.py`, and every case would "diverge" on a prefix neither
@@ -198,7 +198,15 @@ Rules the gate follows:
 and rebuilds the venv. Everything staged lives in the gitignored `conformance/real/_work/`
 and is reproducible from the configs.
 
-## Baselines (Phase 1c, v1 + v2, Windows)
+## Baselines (Phase 1c, v1 + v2, Windows) — HISTORICAL
+
+> **This section is a record of measurements taken while both engines existed**, and its
+> `rustest v1 run` column can no longer be reproduced: v1 was deleted in Phase 4 Task 2 and
+> the benchmark harness no longer times it (`rustest_run_s` is gone from `BenchRow` and from
+> `conformance/baselines.json`). The prose below is kept unedited because a benchmark table
+> is only worth anything with the conditions it was taken under; re-running the harness today
+> produces the same table minus that column. Phase 4 Task 3 regenerates the published numbers
+> for the README.
 
 Recorded with `python -m conformance.bench.bench --out conformance/baselines.json`
 on Windows 11 / Python 3.14 against the generated all-passing suites, all three

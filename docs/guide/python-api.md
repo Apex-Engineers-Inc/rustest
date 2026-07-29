@@ -367,22 +367,15 @@ run_with_custom_report()
 
 Rustest provides full type hints for the Python API:
 
+<!--rustest.mark.skip-->
 ```python
-from rustest import run, RunReport, TestResult
-from typing import Optional
+from rustest import run
 
-def run_tests(path: str, pattern: Optional[str] = None) -> RunReport:
-    """Type-safe test runner."""
-    report: RunReport = run(
-        paths=[path],
-        pattern=pattern,
-        capture_output=True
-    )
-    return report
+def run_tests(path: str, keyword: str | None = None) -> int:
+    """Type-safe test runner. Returns pytest's exit code."""
+    return run(paths=[path], keyword=keyword, capture=True)
 
-# IDE autocomplete and type checking work perfectly
-report = run_tests("tests", pattern="user")
-print(report.passed)  # Type: int
+exit_code = run_tests("tests", keyword="user")
 ```
 
 ## Error Handling

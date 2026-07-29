@@ -169,15 +169,15 @@ def _three_way(
 
     hybrid = _manifest(work, args, "auto")
     oracle = _manifest(work, args, "d")
-    assert _strip_tier(hybrid) == _strip_tier(
-        oracle
-    ), f"the static tier changed the manifest for {source.name}"
+    assert _strip_tier(hybrid) == _strip_tier(oracle), (
+        f"the static tier changed the manifest for {source.name}"
+    )
 
     if compare_pytest:
         expected = _pytest_ids(work, args)
-        assert [
-            test["id"] for test in hybrid["tests"]
-        ] == expected, f"hybrid ids diverge from pytest for {source.name}"
+        assert [test["id"] for test in hybrid["tests"]] == expected, (
+            f"hybrid ids diverge from pytest for {source.name}"
+        )
     return hybrid
 
 
@@ -441,9 +441,9 @@ def test_the_stdlib_allowlist_is_importable_and_actually_stdlib() -> None:
             # has no file at all, which is a stronger guarantee than living under `stdlib`.
             assert name in sys.builtin_module_names, name
             continue
-        assert (
-            Path(origin).resolve().is_relative_to(stdlib)
-        ), f"{name} resolves to {origin}, which is outside the standard library"
+        assert Path(origin).resolve().is_relative_to(stdlib), (
+            f"{name} resolves to {origin}, which is outside the standard library"
+        )
 
 
 def test_a_missing_dependency_is_still_a_collection_error(tmp_path: Path) -> None:

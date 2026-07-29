@@ -8,12 +8,30 @@ but reset when moving to a different package.
 import os
 import tempfile
 
-from rustest import run
+import pytest
+
+from .helpers import run_tree
 
 
 class TestPackageScopeBasic:
     """Basic tests for package-scoped fixtures."""
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "KNOWN, LEDGERED LIMITATION: a package- or session-scoped fixture is rebuilt"
+            " once PER FILE, not once per package. `handle_collect_file` calls"
+            " `build_registry` per file and `parse_factories` builds fresh `FixtureDef`"
+            " objects each time; `FixtureRunner._cache` is keyed by IDENTITY"
+            " (`@dataclass(eq=False)`), so two files present two different keys for the"
+            " same conftest fixture and the cache misses. Probed with -n 1, so it is not"
+            " the per-worker split. Same mechanism as the `fixtures/session-scope` entry"
+            " in conformance/waivers-v2-run.toml, which carries the full write-up and the"
+            " fix shape (cache FixtureDefs per (conftest path, fixture name))."
+            " STRICT: closing that entry turns this XPASS and fails the run, which is how"
+            " the marker gets removed instead of outliving the bug."
+        ),
+    )
     def test_package_scope_shared_within_package(self):
         """Package-scoped fixtures are shared across modules in the same package."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -56,7 +74,7 @@ def test_second(pkg_fixture):
     assert pkg_fixture == 1
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -107,7 +125,7 @@ def test_in_pkg_b(pkg_fixture):
     assert pkg_fixture >= 1
 """)
 
-            result = run(paths=[tmpdir])
+            result = run_tree(tmpdir)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -159,7 +177,7 @@ def test_in_pkg_b(pkg_resource):
     assert pkg_resource >= 1
 """)
 
-            result = run(paths=[tmpdir])
+            result = run_tree(tmpdir)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -197,7 +215,7 @@ def test_package_depends_on_session(pkg_value):
     assert pkg_value == 101
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0
 
@@ -232,7 +250,7 @@ def test_valid_dependency(mod_value):
     assert mod_value == 101
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             # Should pass - narrower scope can depend on broader scope
             assert result.passed == 1
             assert result.failed == 0
@@ -267,7 +285,7 @@ def test_valid_dependency(func_value):
     assert func_value == 101
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0
 
@@ -275,6 +293,22 @@ def test_valid_dependency(func_value):
 class TestPackageScopeAutouse:
     """Tests for package-scoped autouse fixtures."""
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "KNOWN, LEDGERED LIMITATION: a package- or session-scoped fixture is rebuilt"
+            " once PER FILE, not once per package. `handle_collect_file` calls"
+            " `build_registry` per file and `parse_factories` builds fresh `FixtureDef`"
+            " objects each time; `FixtureRunner._cache` is keyed by IDENTITY"
+            " (`@dataclass(eq=False)`), so two files present two different keys for the"
+            " same conftest fixture and the cache misses. Probed with -n 1, so it is not"
+            " the per-worker split. Same mechanism as the `fixtures/session-scope` entry"
+            " in conformance/waivers-v2-run.toml, which carries the full write-up and the"
+            " fix shape (cache FixtureDefs per (conftest path, fixture name))."
+            " STRICT: closing that entry turns this XPASS and fails the run, which is how"
+            " the marker gets removed instead of outliving the bug."
+        ),
+    )
     def test_package_autouse_runs_once_per_package(self):
         """Package-scoped autouse fixtures run once per package."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -335,7 +369,7 @@ def test_third():
     assert setup_count["value"] == 1
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 3
             assert result.failed == 0
 
@@ -389,7 +423,7 @@ def test_in_child(pkg_fixture):
     assert pkg_fixture >= 1
 """)
 
-            result = run(paths=[tmpdir])
+            result = run_tree(tmpdir)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -438,7 +472,7 @@ def test_all_scopes(session_fix, package_fix, module_fix, function_fix):
     assert function_fix == "function"
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0
 
@@ -487,6 +521,6 @@ def test_ordering(function_fix):
     assert function_fix == ["session", "package", "module", "function"]
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0

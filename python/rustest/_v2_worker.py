@@ -4762,33 +4762,56 @@ SESSION_EXIT_EXIT: Final = 4
 def _import_outcome_classes() -> tuple[type[BaseException], ...]:
     """The outcome exception classes this worker classifies **by type**.
 
-    Returns ``(Skipped, StubSkipped, XFailed, Failed, StubFailed)``.  Two sources, because a
-    real suite reaches rustest's outcomes by two different import paths and both must mean
-    the same thing:
+    Returns ``(Skipped, XFailed, Failed)`` — **one** source, and that is the point.
+
+    A real suite reaches rustest's outcomes by two different import paths:
 
     * ``rustest.decorators`` — what ``pytest.skip()`` / ``pytest.fail()`` / ``pytest.xfail()``
       raise through the compat shim (``compat/pytest.py`` l. 649-654 rebinds them verbatim);
     * ``rustest._pytest_stub.outcomes`` — what ``from _pytest.outcomes import Skipped``
       gives a suite that reaches into pytest's internals, which
-      :func:`install_pytest_shim` installs as ``sys.modules["_pytest.outcomes"]``.  They are
-      **different classes**, so an ``isinstance`` against only one of them would silently
-      reclassify half the ways a suite can skip.
+      :func:`install_pytest_shim` installs as ``sys.modules["_pytest.outcomes"]``.
 
-    The stub warns on import by design (it is a deprecation shim); the worker imports it for
-    its *types*, not to use it, so the warning is suppressed here — it is emitted anyway the
-    moment :func:`install_pytest_shim` runs.
+    Until the Phase 4 v1 deletion those were **different classes**, and this function listed
+    both so an ``isinstance`` here could not miss half the ways a suite can skip. That fixed
+    the worker's own table and nothing else: the divergence that actually cost verdicts was in
+    *user* code — ``except Skipped:`` and ``except Exception:`` around a skip resolve before
+    the worker ever sees the exception, and no table on this side can reach them. See
+    ``python/rustest/_pytest_stub/outcomes.py`` for the two probed verdict swaps.
+
+    ``_pytest.outcomes`` now aliases these very objects, so one source is the *complete*
+    source. :func:`_assert_outcome_aliases_are_identities` is the pin that keeps it that way.
     """
     from rustest.decorators import Failed, Skipped, XFailed
+
+    return (Skipped, XFailed, Failed)
+
+
+def _assert_outcome_aliases_are_identities() -> None:
+    """Fail loudly at import if ``_pytest.outcomes`` ever re-forks the outcome classes.
+
+    The stub warns on import by design (it is a deprecation shim); this reads it for its
+    *types*, not to use it, so the warning is suppressed here — it is emitted anyway the
+    moment :func:`install_pytest_shim` runs.
+    """
+    from rustest.decorators import Failed, Skipped
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         from rustest._pytest_stub.outcomes import Failed as StubFailed
         from rustest._pytest_stub.outcomes import Skipped as StubSkipped
 
-    return (Skipped, StubSkipped, XFailed, Failed, StubFailed)
+    if StubSkipped is not Skipped or StubFailed is not Failed:
+        raise RuntimeError(
+            "rustest._pytest_stub.outcomes must ALIAS rustest.decorators' outcome classes,"
+            + " not redeclare them: parallel types make `except Skipped:` in a test body catch"
+            + " only one of the two ways a suite can skip, which swaps the verdict."
+            + " See python/rustest/_pytest_stub/outcomes.py."
+        )
 
 
-_Skipped, _StubSkipped, _XFailed, _Failed, _StubFailed = _import_outcome_classes()
+_Skipped, _XFailed, _Failed = _import_outcome_classes()
+_assert_outcome_aliases_are_identities()
 
 #: "The test asked not to run."  Port of `_pytest/outcomes.py::Skipped` semantics.
 #:
@@ -4798,7 +4821,6 @@ _Skipped, _StubSkipped, _XFailed, _Failed, _StubFailed = _import_outcome_classes
 #: SKIPPED under pytest 8.4.2, not FAILED.
 SKIPPED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
     _Skipped,
-    _StubSkipped,
     unittest.SkipTest,
 )
 
@@ -4811,24 +4833,22 @@ SKIPPED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
 #: which is a *runtest* hook; nothing converts it during collection, so a module raising
 #: ``unittest.SkipTest`` at import is an ordinary collection error under pytest, and adding
 #: it here would turn one of pytest's errors into a silent non-collection.
-MODULE_SKIP_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Skipped, _StubSkipped)
+MODULE_SKIP_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Skipped,)
 
 #: "The test declared itself an expected failure while running."  Port of
 #: `_pytest/outcomes.py::XFailed`, consumed by `_pytest/skipping.py` l. 279-282, which turns
 #: it into ``outcome="skipped"`` plus ``wasxfail`` — i.e. the ``xfailed`` category —
 #: **whatever phase raised it**.
 #:
-#: Checked *before* :data:`FAILED_EXCEPTIONS`: pytest declares ``class XFailed(Failed)``, so
-#: on real pytest the order is load-bearing.  rustest's ``XFailed`` happens to derive
-#: straight from ``Exception``, which makes the order look irrelevant — it is not, and
-#: relying on that accident would break the day the hierarchy is aligned.
+#: Checked *before* :data:`FAILED_EXCEPTIONS`: pytest declares ``class XFailed(Failed)``, and
+#: since the Phase 4 polish wave so does rustest, so the order is load-bearing on both sides.
 XFAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_XFailed,)
 
 #: "The test failed on purpose" — ``pytest.fail()``.  Listed for documentation and for the
 #: unittest translation (an unexpected success becomes one of these); classification does
 #: not branch on it, because :func:`report_for_phase`'s **default** is already ``failed``,
 #: which is also where a plain ``AssertionError`` and every other exception land.
-FAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Failed, _StubFailed)
+FAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Failed,)
 
 
 def _visible_frames(exc: BaseException) -> list[bool]:

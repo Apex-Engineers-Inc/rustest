@@ -72,9 +72,6 @@ if TYPE_CHECKING:
     from .decorators import skip as skip
     from .decorators import skip_decorator as skip_decorator
     from .decorators import xfail as xfail
-    from .reporting import CollectionError as CollectionError
-    from .reporting import RunReport as RunReport
-    from .reporting import TestResult as TestResult
 
 #: ``public name -> (submodule, attribute)``.  The submodule is relative to this package.
 #:
@@ -101,10 +98,12 @@ _LAZY: Final[dict[str, tuple[str, str]]] = {
     "ParameterSet": ("decorators", "ParameterSet"),
     "RaisesContext": ("decorators", "RaisesContext"),
     # (`approx` is deliberately absent: it is bound eagerly above — see the comment there.)
-    # Reporting types
-    "CollectionError": ("reporting", "CollectionError"),
-    "RunReport": ("reporting", "RunReport"),
-    "TestResult": ("reporting", "TestResult"),
+    #
+    # `CollectionError`, `RunReport` and `TestResult` were exported here until Phase 4 Task 2.
+    # They were `rustest.reporting`'s dataclasses over v1's `PyRunReport`, and there is no v2
+    # object to repoint them at: the v2 engine's report is a JSON document (schema v2, six
+    # status buckets to v1's three), written by `--report-json` and described in
+    # `src/v2/execute.rs`. Re-exporting a name backed by nothing is worse than removing it.
     # Fixture types
     "Cache": ("builtin_fixtures", "Cache"),
     "CaptureFixture": ("builtin_fixtures", "CaptureFixture"),
@@ -126,10 +125,6 @@ __all__ = [
     "Failed",
     "Skipped",
     "XFailed",
-    # Reporting types
-    "CollectionError",
-    "RunReport",
-    "TestResult",
     # Fixture types
     "Cache",
     "CaptureFixture",

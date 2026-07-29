@@ -377,52 +377,39 @@ def test_missing_path_argument_is_a_usage_error(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Routing: the v2 flag must never touch the v1 path
+# Routing: collect-only must never execute anything
 # --------------------------------------------------------------------------------------
 
 
-def test_flag_short_circuits_before_v1_run() -> None:
-    """``--v2-collect-only`` returns before v1 discovery, so ``core.run`` is never called."""
+def test_collect_only_never_reaches_the_run_path() -> None:
+    """``--v2-collect-only`` returns before the runner, so ``core.v2_run`` is never called.
+
+    The negative half is the load-bearing one. "Collect and print the ids" and "run the
+    suite" are answered by different functions, and a router that called both would satisfy
+    an assertion on the collect call alone while executing every test -- which is exactly
+    the wrong answer to "do not run anything", and the reason a user pointing this at a
+    suite with side effects would find out afterwards.
+    """
     with (
-        patch("rustest.cli.run") as v1_run,
-        patch("rustest.cli.v2_collect_only", return_value=5) as v2,
+        patch("rustest.cli.v2_run") as run_path,
+        patch("rustest.cli.v2_collect_only", return_value=5) as collect,
     ):
         assert cli.main(["--v2-collect-only"]) == 5
 
-    v1_run.assert_not_called()
-    assert v2.call_count == 1
+    run_path.assert_not_called()
+    assert collect.call_count == 1
 
 
-def test_a_bare_invocation_reaches_v2_and_never_v1() -> None:
-    """**The flip, asserted at the routing level.**
-
-    Before Phase 1c ``rustest`` with no mode flag called ``core.run`` (v1); it now calls
-    ``core.v2_run``.  Both halves are checked, because a router that called *both* would
-    satisfy either one alone -- and calling v1 as well would re-run every test and leave v1's
-    process-global runtime config set behind the v2 run.
-    """
+def test_a_bare_invocation_runs_rather_than_collects() -> None:
+    """...and the converse: no mode flag means execute, and collect-only is not reached."""
     with (
-        patch("rustest.cli.run") as v1_run,
-        patch("rustest.cli.v2_run", return_value=0) as v2_run,
+        patch("rustest.cli.v2_collect_only") as collect,
+        patch("rustest.cli.v2_run", return_value=0) as run_path,
     ):
         assert cli.main([]) == 0
 
-    v1_run.assert_not_called()
-    assert v2_run.call_count == 1
-
-
-def test_the_v1_flag_reaches_v1_and_never_v2() -> None:
-    """...and the escape hatch is a real one: ``--v1`` must not touch the v2 path."""
-    with (
-        patch("rustest.cli.run") as v1_run,
-        patch("rustest.cli.v2_run") as v2_run,
-    ):
-        v1_run.return_value.collection_errors = ()
-        v1_run.return_value.failed = 0
-        assert cli.main(["--v1"]) == 0
-
-    v2_run.assert_not_called()
-    assert v1_run.call_count == 1
+    collect.assert_not_called()
+    assert run_path.call_count == 1
 
 
 def test_absent_path_arguments_are_passed_through_as_none_given() -> None:

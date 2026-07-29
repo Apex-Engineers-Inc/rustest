@@ -11,7 +11,7 @@ Test decorators including `@fixture`, `@parametrize`, `@skip`, `@mark`, and exce
 The `run()` function for programmatic test execution.
 
 ### [Reporting](reporting.md)
-Test result objects: `RunReport` and `TestResult`.
+How a run reports its results (the `--report-json` document).
 
 ### [Assertion Utilities](approx.md)
 The `approx()` function for floating-point comparisons.
@@ -30,14 +30,17 @@ from rustest import (
     raises,
     approx,
     run,
-    RunReport,
-    TestResult,
 )
 
 # Or import specific items
 from rustest import fixture, parametrize
-from rustest import run, RunReport
+from rustest import run
 ```
+
+!!! warning "`RunReport` and `TestResult` were removed"
+    They were dataclasses over the **v1** engine's report object, and v1 was deleted.
+    `run()` is the current engine's runner: it returns pytest's **exit code**, and the
+    machine-readable report is the JSON document written by `--report-json`.
 
 ### Decorators
 
@@ -108,11 +111,11 @@ All public APIs include full type annotations for use with type checkers like my
 
 <!--rustest.mark.skip-->
 ```python
-from rustest import run, RunReport
-from typing import Optional
+from rustest import run
 
-def run_tests(path: str, pattern: Optional[str] = None) -> RunReport:
-    return run(paths=[path], pattern=pattern)
+def run_tests(path: str, keyword: str | None = None) -> int:
+    """Returns pytest's exit code: 0 clean, 1 failures, 2 collection errors, 5 empty."""
+    return run(paths=[path], keyword=keyword)
 ```
 
 ### Fixture Type Annotations

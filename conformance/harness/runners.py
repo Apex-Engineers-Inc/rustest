@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from .ids import normalize_pytest_nodeid, normalize_rustest_id
-
 # The summary-line tokens the harness counts. `xfailed`/`xpassed` are listed even
 # though they end in `failed`/`passed`: the alternation is only ever tried at the
 # character right after `<digits> `, so "1 xfailed" cannot match `failed` (that would
@@ -70,14 +68,16 @@ _SECTION_BOUNDARY_RE = re.compile(r"^=+ .+ =+$")
 
 @dataclass(frozen=True)
 class Outcomes:
-    """What a v1 end-to-end run tallies, plus the two X buckets pytest also reports.
+    """Everything :func:`parse_pytest_summary` can read off a pytest summary line.
 
-    ``xfailed``/``xpassed``/``deselected`` are appended **with defaults** rather than
-    slotted in beside ``skipped`` so that positional construction keeps working, and they
-    are deliberately *not* part of ``grade_case``'s comparison: v1 has no xfail concept at
-    all, so the v1 gate grades the four buckets it can meaningfully diff and records the
-    rest in its ledger. ``parse_pytest_summary`` fills them because the **full-run** gate
-    reads the same parser and does grade all seven.
+    A *parse* result, not a graded contract: the run gate reshapes it into
+    :class:`RunOutcomes` (the seven counts it actually diffs) and drops ``exit_code`` and
+    ``collection_error``, which belong to :class:`FullRunResult`.
+
+    The three defaulted fields are defaulted for a history reason worth keeping: they were
+    appended rather than slotted in beside ``skipped`` so the v1 gate's positional
+    construction kept working. That gate is gone (Phase 4 Task 2), the defaults are now
+    merely harmless, and every caller passes all nine.
     """
 
     passed: int
@@ -89,12 +89,6 @@ class Outcomes:
     xfailed: int = 0
     xpassed: int = 0
     deselected: int = 0
-
-
-@dataclass(frozen=True)
-class RunResult:
-    ids: set[str]
-    outcomes: Outcomes
 
 
 @dataclass(frozen=True)
@@ -150,11 +144,11 @@ class FullRunResult:
 class CollectResult:
     """What a *collection-only* run produces, and nothing more.
 
-    Deliberately not a ``RunResult``: a collect-only surface has no pass/fail/skip
-    counts and no collection-error flag distinct from its exit code. Reusing
-    ``RunResult`` would force zeros into those fields, and every case would then
-    silently "agree" on execution neither side performed. The v2-collect gate grades
-    exactly these two things -- the ids on stdout and the process exit code.
+    Deliberately not a :class:`FullRunResult`: a collect-only surface has no
+    pass/fail/skip counts at all. Reusing the run type would force zeros into those
+    fields, and every case would then silently "agree" on execution neither side
+    performed. The v2-collect gate grades exactly two things -- the ids on stdout and
+    the process exit code.
 
     ``ids`` is an ordered ``list``, not a ``set``. Collection **order** is part of what
     v2 reproduces -- Task 3's name-sorted interleaved walk descends a directory at the
@@ -255,8 +249,8 @@ def parse_pytest_collect(text: str) -> list[str]:
     preceding bare colon to disqualify it.
 
     Ids are returned **in emission order**, with duplicates kept. pytest prints them
-    in collection order, which the v2-collect gate compares directly; callers that
-    only care about membership (``run_pytest``, the v1 gate) wrap this in a ``set``.
+    in collection order, which both gates compare directly -- neither sorts, de-duplicates
+    nor sets them, because order and cardinality are part of what is being graded.
     """
     ids: list[str] = []
     for raw_line in text.splitlines():
@@ -338,59 +332,6 @@ def _check_pytest_exit(proc: subprocess.CompletedProcess[str], phase: str) -> No
         raise RuntimeError(f"pytest {phase} failed (exit {proc.returncode}): {proc.stderr[-500:]}")
 
 
-def run_pytest(case_dir: Path, args: list[str]) -> RunResult:
-    """Collect and run *case_dir* with real pytest, returning normalized results.
-
-    The case runs under pure pytest defaults: an empty ini file is forced with
-    ``-c`` and the rootdir is pinned to *case_dir*, so pytest never walks up and
-    adopts a surrounding project's ``[tool.pytest.ini_options]`` (this repo's own
-    ``pyproject.toml`` would otherwise apply to every corpus case).
-
-    **Unless the case ships its own config**, in which case ``-c`` points at *that* and the
-    case's declared ini values apply. The qualifying rule is ``_qualifies_as_config``, the
-    same content check ``_isolate_case`` uses for the two v2 gates, so a case is configured
-    identically on all three -- which is the whole reason for the exception. Without it a
-    case whose subject *is* a configuration value (``conformance/corpus/async/*``, where
-    ``asyncio_mode`` decides whether an unmarked ``async def`` test runs at all) would be
-    asked one question by the v2 gates and a different one here, and the v1 ledger would
-    fill up with entries describing an empty ini rather than a divergence between runners.
-    The forced-empty ini remains the default and remains the point: a case that declares
-    nothing must not inherit this repo's ``[tool.pytest.ini_options]``.
-
-    *case_dir* is resolved first: ``--rootdir`` is interpreted relative to
-    pytest's own cwd, so a relative case directory would point pytest at a
-    nonexistent rootdir and abort with a usage error (exit 4).
-    """
-    case_dir = case_dir.resolve()
-    own_config = next(
-        (case_dir / name for name in _CASE_CONFIG_NAMES if _qualifies_as_config(case_dir / name)),
-        None,
-    )
-    with tempfile.TemporaryDirectory() as tmp:
-        empty_ini = Path(tmp) / "pytest.ini"
-        empty_ini.write_text("[pytest]\n", encoding="utf-8")
-        base = [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-p",
-            "no:cacheprovider",
-            "-c",
-            str(own_config or empty_ini),
-            f"--rootdir={case_dir}",
-        ]
-        collect = _run([*base, "--collect-only", "-q", *args], case_dir)
-        _check_pytest_exit(collect, "collect")
-        raw_ids = parse_pytest_collect(collect.stdout)
-        run = _run([*base, "-q", "--tb=no", *args], case_dir)
-        _check_pytest_exit(run, "run")
-    outcomes = parse_pytest_summary(run.stdout, run.returncode)
-    return RunResult(
-        ids={normalize_pytest_nodeid(i) for i in raw_ids},
-        outcomes=outcomes,
-    )
-
-
 def _check_pytest_collect_exit(proc: subprocess.CompletedProcess[str]) -> None:
     """Raise on a pytest *collect* fault, leaving real collection outcomes alone.
 
@@ -425,10 +366,10 @@ def _check_pytest_collect_exit(proc: subprocess.CompletedProcess[str]) -> None:
 def _isolate_case(case_dir: Path, dest_parent: Path) -> Path:
     """Copy *case_dir* under *dest_parent* as a self-contained, config-pinned tree.
 
-    This is the whole v2-collect comparison protocol. ``run_pytest`` (v1 mode) pins
-    rootdir with ``-c <empty ini>`` and ``--rootdir=<case dir>``; the
-    ``--v2-collect-only`` surface has neither flag in 1b.1 and resolves config by
-    walking *up* from its cwd. Run in place, the two therefore disagree about rootdir
+    This is the whole comparison protocol for both gates. pytest can be told where its
+    rootdir is (``-c <empty ini>``, ``--rootdir=<case dir>``); the ``rustest`` surfaces have
+    neither flag and resolve config by walking *up* from their cwd. Run in place, the two
+    therefore disagree about rootdir
     for every in-repo case -- this repo's own ``pyproject.toml`` carries
     ``[tool.pytest.ini_options]``, so v2's ids would read ``conformance/corpus/...``
     while pytest's read ``test_x.py``, and every case would "diverge" on a prefix
@@ -474,7 +415,7 @@ def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
     point -- any flag used here and unavailable there would make the comparison a
     comparison of harness invocations rather than of runners.
 
-    Ids are taken verbatim and **in order**, without ``normalize_pytest_nodeid``: the
+    Ids are taken verbatim and **in order**, with no normalisation at all: the
     v2 surface's contract is byte-parity with pytest's nodeids in pytest's own
     collection order, so normalizing or sorting either side would hide the precise
     defect this gate exists to catch.
@@ -675,111 +616,4 @@ def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
             deselected=summary["deselected"],
         ),
         exit_code=proc.returncode,
-    )
-
-
-#: The pre-flip ``rustest --pytest-compat . --color never --report-json X`` invocation,
-#: reproduced against v1's Python API.
-#:
-#: **Why this is not a CLI call any more.** Phase 1c deleted ``--pytest-compat``: the shim is
-#: unconditional in the v2 worker, so on the default engine the flag could only be a no-op or
-#: a lie. ``--v1`` deliberately did *not* inherit it — the legacy engine's contract is "byte
-#: identical to the pre-flip default", and turning the shim on there would change v1's own
-#: suite (measured: 46 skipped becomes 50, and v1's markdown tier switches off, because
-#: ``src/discovery.rs`` l. 358 refuses code blocks in compat mode).
-#:
-#: But the **v1 ledger** was established with the shim on, and every corpus case does
-#: ``import pytest``. Re-measuring it without the shim would not be "the v1 gate after the
-#: flip", it would be a different gate whose nine waivers all describe a configuration
-#: nothing runs. So this script calls exactly what ``cli.main``'s v1 branch called before the
-#: flip — ``core.run(..., pytest_compat=True)``, ``write_json_report``, and pytest's 2/1/0
-#: exit mapping — and the ledger keeps measuring the same thing. Options are parsed with
-#: rustest's own parser, so a case that sets ``args`` in its ``case.toml`` still works and an
-#: unknown flag still exits 2 with no report (the harness-fault path below).
-#:
-#: When ``--v1`` is removed, this and the whole v1 gate go with it.
-_V1_RUNNER = """\
-import sys
-from rustest.cli import build_parser
-from rustest.core import run
-from rustest.json_report import write_json_report
-
-report_path = sys.argv[1]
-args = build_parser().parse_args(sys.argv[2:])
-mode = "only" if args.last_failed else ("first" if args.failed_first else "none")
-# `.` is the *default* root, not a fixed prefix. Passing it unconditionally and appending
-# the case args after it -- which is what this script used to receive on its argv -- makes
-# argparse reject any case whose `case.toml` names paths: a `nargs="*"` positional cannot
-# be split across an optional, so `. --color never test_a.py test_a.py` dies with
-# "unrecognized arguments" and the case can never be graded on the v1 side at all.
-paths = list(args.paths) or ["."]
-report = run(
-    paths=paths,
-    pattern=args.pattern,
-    mark_expr=args.mark_expr,
-    workers=args.workers,
-    capture_output=args.capture_output,
-    enable_codeblocks=args.enable_codeblocks,
-    last_failed_mode=mode,
-    fail_fast=args.fail_fast,
-    pytest_compat=True,
-    verbose=args.verbose,
-    ascii=args.ascii,
-    no_color=True,
-)
-write_json_report(report, report_path)
-sys.exit(2 if report.collection_errors else (1 if report.failed else 0))
-"""
-
-
-def run_rustest(case_dir: Path, args: list[str]) -> RunResult:
-    """Run *case_dir* with real rustest **v1**, returning normalized results.
-
-    *case_dir* is resolved so the subprocess cwd and the ID normalization base
-    are absolute, matching ``run_pytest``.
-
-    A missing report file means rustest died before it could write one (bad
-    argv, crash, import-time abort). That is a harness fault, not a case
-    outcome, so it raises rather than returning a fabricated all-zeros result
-    that would silently grade as a divergence with no explanation.
-
-    ``case.toml`` args go last and **no default path is prepended**: the runner script
-    falls back to ``.`` only when the case named no paths of its own. Prepending it
-    unconditionally, as this did before ``collection/dupe-args`` existed, meant a case with
-    path args was compared against a *different invocation* on the two sides -- pytest saw
-    ``test_a.py test_a.py`` and v1 saw ``. test_a.py test_a.py`` -- which argparse refused
-    outright, so the case could not be graded at all.
-
-    See :data:`_V1_RUNNER` for why this drives v1's API rather than its CLI.
-    """
-    case_dir = case_dir.resolve()
-    with tempfile.TemporaryDirectory() as tmp:
-        report_path = Path(tmp) / "report.json"
-        cmd = [
-            sys.executable,
-            "-c",
-            _V1_RUNNER,
-            str(report_path),
-            "--color",
-            "never",
-            *args,
-        ]
-        proc = _run(cmd, case_dir)
-        if not report_path.exists():
-            raise RuntimeError(
-                f"rustest wrote no report (exit {proc.returncode}): {proc.stderr[-500:]}"
-            )
-        data: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
-    summary: dict[str, int] = data["summary"]
-    tests: list[dict[str, Any]] = data["tests"]
-    return RunResult(
-        ids={normalize_rustest_id(str(test["id"]), case_dir) for test in tests},
-        outcomes=Outcomes(
-            passed=summary["passed"],
-            failed=summary["failed"],
-            skipped=summary["skipped"],
-            errors=sum(1 for test in tests if test.get("status") == "error"),
-            exit_code=proc.returncode,
-            collection_error=bool(data["collection_errors"]),
-        ),
     )

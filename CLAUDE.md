@@ -4,7 +4,9 @@ This file provides guidance for Claude Code when working with the rustest codeba
 
 ## Project Overview
 
-**rustest** is a Rust-powered pytest-compatible test runner focused on raw performance. It delivers massive speedups (8.5x average, up to 19x faster) while maintaining familiar pytest ergonomics.
+**rustest** is a Rust-powered pytest-compatible test runner focused on raw performance, with familiar pytest ergonomics.
+
+> **No speed claim here on purpose.** The "8.5x average, up to 19x faster" line this file carried was measured on the **v1** engine, which was deleted in Phase 4 Task 2 — the number describes a runner that no longer exists. Phase 4 Task 3 rewrites the README against the current engine's measured figures; do not restate the old ones anywhere in the meantime. The live numbers are in `conformance/baselines.json` and the `--real` sweep table.
 
 - **Languages**: Rust (core engine) + Python (user API/CLI)
 - **Build System**: Maturin (PyO3 bridge for Rust-Python integration)
@@ -15,23 +17,31 @@ This file provides guidance for Claude Code when working with the rustest codeba
 
 ```
 src/                          # Rust core (rustest-core crate)
-├── lib.rs                    # Main entry point, PyO3 module
-├── discovery.rs              # Fast test file discovery
-├── execution.rs              # Test execution engine
-├── model.rs                  # Data structures (TestCase, Fixture, etc.)
-├── python_support.rs         # Rust-Python bridge
-├── mark_expr.rs              # Mark expression parsing
-├── cache.rs                  # Caching logic
-└── output/                   # Output formatting
+├── lib.rs                    # PyO3 boundary -- four functions, nothing else
+└── v2/                       # The engine
+    ├── config.rs             # rootdir + ini resolution (pytest's rules)
+    ├── collect.rs            # The file walk and the worker pool
+    ├── static_collect.rs     # Tier S: AST collection without importing
+    ├── manifest.rs           # Collection output as data
+    ├── manifest_cache.rs     # Tier S's content-addressed cache
+    ├── execute.rs            # Run orchestration, the schema-v2 report
+    ├── selection.rs          # -k / -m expression engine
+    ├── nodeid.rs             # pytest-byte-identical node ids
+    ├── protocol.rs           # The orchestrator <-> worker wire
+    ├── cache.rs              # --lf / --ff store
+    └── py.rs                 # The PyO3 functions themselves
 
 python/rustest/               # Python package (user API)
-├── __init__.py               # Public API exports
+├── __init__.py               # Public API exports (lazy)
 ├── __main__.py               # CLI entry point
-├── decorators.py             # @fixture, @parametrize, @mark, etc.
-├── builtin_fixtures.py       # tmp_path, tmpdir, monkeypatch, capsys, capfd, request
+├── decorators.py             # @fixture, @parametrize, @mark, outcome exceptions
+├── _v2_worker.py             # The worker: collection + execution inside Python
+├── _v2_builtins.py           # The engine's builtin fixtures (pytest ports)
+├── builtin_fixtures.py       # Public fixture TYPES + MonkeyPatch
 ├── cli.py                    # Command-line interface
-├── core.py                   # Wrapper around Rust layer
+├── core.py                   # Wrapper around the Rust layer; `run` lives here
 ├── approx.py                 # Numeric comparison helper
+├── _pytest_stub/             # `_pytest.*` import surface (aliases, not forks)
 └── compat/pytest.py          # pytest compatibility layer
 
 python/tests/                 # Python unit tests
@@ -64,14 +74,12 @@ uv run pytest python/tests -v
 # Integration tests
 uv run pytest tests/ examples/tests/ -v
 
-# Run with rustest itself (the v2 engine -- the default since the Phase 1c flip)
+# Run with rustest itself -- there is one engine
 uv run python -m rustest tests/ examples/tests/ -v
 
-# ...and with the legacy engine, which is still shipped behind --v1
-uv run python -m rustest --v1 tests/ examples/tests/ -v
-
-# Rust tests
-cargo test
+# Rust tests. `--test-threads=1` is required, not optional: these drive real Python
+# worker pools, and running them concurrently produces spurious subprocess timeouts.
+cargo test -- --test-threads=1
 
 # Example tests
 uv run rustest examples/tests/
@@ -131,10 +139,10 @@ poe tests     # Run integration and example tests
 ## Architecture Notes
 
 ### Hybrid Design
-1. **Rust Core** (`src/`) - High-performance engine for:
-   - Test discovery (globset, regex)
-   - Test execution (rayon for parallelization)
-   - Result formatting
+1. **Rust Core** (`src/v2/`) - High-performance engine for:
+   - Config resolution and the file walk
+   - Static (AST) collection and its manifest cache
+   - Orchestrating the spawn-based worker pool and reporting
 
 2. **Python Layer** (`python/rustest/`) - User-friendly API for:
    - Decorators (`@fixture`, `@parametrize`, `@mark`)
@@ -147,8 +155,9 @@ poe tests     # Run integration and example tests
 ### Key Entry Points
 - CLI: `python -m rustest` → `__main__.py` → `cli.py:main()`
 - Python API: `from rustest import fixture, mark, parametrize`
-- Test Discovery: `src/discovery.rs:discover_tests()`
-- Test Execution: `src/execution.rs:run_collected_tests()`
+- Test Discovery: `src/v2/collect.rs:collect()`
+- Test Execution: `src/v2/execute.rs:run()`
+- Worker (Python side): `python/rustest/_v2_worker.py`
 
 ## Pre-commit Requirements
 
@@ -169,11 +178,10 @@ poe tests     # Run integration and example tests
 - `uv run pre-commit run --all-files` - Run complete check suite
 
 ### Tests (ALL must pass)
-- `cargo test` - Rust unit tests
+- `cargo test -- --test-threads=1` - Rust unit tests (single-threaded; see above)
 - `uv run pytest python/tests -v` - Python unit tests (via pytest)
 - `uv run pytest tests/ examples/tests/ -v` - Integration tests (via pytest)
-- `uv run python -m rustest tests/ examples/tests/ -v` - Integration tests (via rustest, v2 engine)
-- `uv run python -m rustest --v1 tests/ examples/tests/ -v` - Integration tests (legacy engine)
+- `uv run python -m rustest tests/ examples/tests/ -v` - Integration tests (via rustest)
 - Documentation code blocks - README and docs Python examples are tested
 
 **CI will fail if ANY of the following exist**:
@@ -190,9 +198,9 @@ poe tests     # Run integration and example tests
 ### Test Execution
 Tests are run through multiple runners to ensure compatibility:
 1. **pytest** - Standard Python test runner
-2. **rustest** - The project's own test runner. `rustest <paths>` runs the **v2 engine**
-   (default since the Phase 1c flip, pytest compatibility always on); `--v1` runs the legacy
-   engine. `--pytest-compat` was removed -- passing it exits 4.
+2. **rustest** - The project's own test runner. `rustest <paths>` runs the engine with the
+   pytest compatibility shim always installed. `--pytest-compat` and `--v1` were both
+   removed -- passing either exits 4 with a message naming the change.
 3. **Documentation tests** - Python code blocks in README.md and docs/
 
 ### When Adding Features
