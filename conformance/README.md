@@ -193,6 +193,19 @@ Rules the gate follows:
   its tree from `uv export --frozen`, pytest runs with `-p no:cacheprovider`, and any
   `.rustest_cache` the run creates is removed again unless the repo already had one.
 - **The two runners never run concurrently**, because wall-clock is part of the record.
+- **A stale rustest is refused before anything is measured.** `ensure_env` returns the
+  moment a target's venv interpreter exists — reprovisioning seventeen targets on every
+  invocation would cost more than the sweep — so the freshness questions are asked
+  separately, on every run, by `verify_env` (is the extension *loadable*, and is this venv's
+  ABI the one the config named) and `assert_build_is_current` (is it *this tree's code*).
+  The second compares the mtime of each wheel a target's own `[env] setup` names against
+  this repo's newest build input, and the mtime of the file the target's interpreter would
+  actually import against that wheel. Both refuse rather than repair: rebuilding is per-ABI
+  (`member-designer` is `cp314t`, `werkzeug` is 3.13) and `uv pip install <explicit path>`
+  does not ABI-check a direct path, so "reinstall the wheel" is not a safe automatic action.
+  Phase 4c started a member-designer run against wheels seven hours old and caught it by
+  hand; the failure mode has no symptom — the suite runs, the ids match, and the number is a
+  real measurement of the previous commit.
 
 `--real-setup-only` clones and provisions without running; `--real-rebuild-env` discards
 and rebuilds the venv. Everything staged lives in the gitignored `conformance/real/_work/`

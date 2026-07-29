@@ -1584,8 +1584,7 @@ def test_the_approx_table_appears_when_approx_is_the_LEFT_operand(tmp_path: Path
     oracle, ours = _approx_explanation(
         tmp_path,
         "approxleft",
-        "import pytest\n\n\ndef test_left():\n"
-        "    assert pytest.approx([0.1, 0.3]) == [0.1, 0.2]\n",
+        "import pytest\n\n\ndef test_left():\n    assert pytest.approx([0.1, 0.3]) == [0.1, 0.2]\n",
     )
     for fragment in ("comparison failed", "Index | Obtained", "Max relative difference"):
         assert fragment in oracle, f"--- pytest ---\n{oracle}"
@@ -1608,7 +1607,10 @@ def test_the_approx_numpy_shape_mismatch_is_its_own_two_line_answer(tmp_path: Pa
         "import numpy as np\nimport pytest\n\n\ndef test_shape():\n"
         "    assert np.array([1.0, 2.0]) == pytest.approx(np.array([1.0, 2.0, 3.0]))\n",
     )
-    for fragment in ("Impossible to compare arrays with different shapes.", "Shapes: (3,) and (2,)"):
+    for fragment in (
+        "Impossible to compare arrays with different shapes.",
+        "Shapes: (3,) and (2,)",
+    ):
         assert fragment in oracle, f"--- pytest ---\n{oracle}"
         assert fragment in ours, f"--- v2 ---\n{ours}"
     # The discriminator against "it fell through to the table branch".

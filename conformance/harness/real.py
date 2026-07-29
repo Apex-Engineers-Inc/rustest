@@ -297,28 +297,173 @@ def ensure_repo(target: RealTarget) -> None:
         )
 
 
-def ensure_env(target: RealTarget, *, force: bool = False) -> None:
-    """Create the target's isolated venv and install into it, if it isn't there already.
-
-    Every command comes from the config's ``[env] setup``, with ``{py}``/``{venv}``/
-    ``{repo}``/``{work}``/``{wheels}`` substituted. Nothing is ever installed into the
-    rustest development venv or into a target repository's own environment.
-    """
-    if target.python.exists() and not force:
-        return
-    if force and target.venv.exists():
-        shutil.rmtree(target.venv)
-    subs = {
+def _setup_substitutions(target: RealTarget) -> dict[str, str]:
+    """The ``{py}``/``{venv}``/``{repo}``/``{work}``/``{wheels}`` map for ``[env] setup``."""
+    return {
         "py": str(target.python),
         "venv": str(target.venv),
         "repo": str(target.repo),
         "work": str(WORK_DIR),
         "wheels": str(WORK_DIR / "_wheels"),
     }
+
+
+def ensure_env(target: RealTarget, *, force: bool = False) -> None:
+    """Create the target's isolated venv and install into it, if it isn't there already.
+
+    Every command comes from the config's ``[env] setup``, with ``{py}``/``{venv}``/
+    ``{repo}``/``{work}``/``{wheels}`` substituted. Nothing is ever installed into the
+    rustest development venv or into a target repository's own environment.
+
+    **The early return is why :func:`verify_env` exists.** "The interpreter is there" says
+    nothing about *what is installed in it*, and this function is the wrong place to learn
+    otherwise: reprovisioning a target costs minutes and a `--real all` sweep enters here
+    seventeen times. So the cheap invariants -- is the extension loadable, is it the code in
+    this tree -- are asked on every invocation, after this returns.
+    """
+    if target.python.exists() and not force:
+        return
+    if force and target.venv.exists():
+        shutil.rmtree(target.venv)
+    subs = _setup_substitutions(target)
     for argv in target.setup:
         _run_command([word.format(**subs) for word in argv], cwd=WORK_DIR)
     if not target.python.exists():
         raise RuntimeError(f"{target.name}: setup finished but {target.python} does not exist")
+
+
+#: This repository's root: ``conformance/harness/real.py`` -> ``conformance/harness`` ->
+#: ``conformance`` -> the tree.
+_REPO_ROOT: Final = Path(__file__).resolve().parent.parent.parent
+
+#: What a rustest wheel is built *from*. A wheel older than any of these was built from
+#: different code than the one being graded. Deliberately the build inputs and not "every
+#: tracked file": a docs edit does not invalidate a measurement, and a check that cries wolf
+#: gets bypassed.
+_BUILD_INPUT_GLOBS: Final = (
+    "src/**/*.rs",
+    "python/rustest/**/*.py",
+    "Cargo.toml",
+    "Cargo.lock",
+    "pyproject.toml",
+)
+
+
+def _newest_build_input() -> tuple[float, Path]:
+    """The most recently modified build input, and which one it was."""
+    newest, where = 0.0, _REPO_ROOT
+    for pattern in _BUILD_INPUT_GLOBS:
+        for path in _REPO_ROOT.glob(pattern):
+            mtime = path.stat().st_mtime
+            if mtime > newest:
+                newest, where = mtime, path
+    return newest, where
+
+
+def _wheels_named_by(target: RealTarget) -> list[Path]:
+    """The rustest wheels **this target's own** ``[env] setup`` installs.
+
+    Read out of the config rather than globbed off disk, because each target names its own
+    ABI on purpose (``member-designer`` is ``cp314t``, ``werkzeug`` is 3.13) and "the" wheel
+    is not a thing that exists. ``uv pip install <explicit path>`` does **not** ABI-check a
+    direct path, so installing the wrong one across targets by hand succeeds and then fails
+    minutes later inside the run.
+    """
+    subs = _setup_substitutions(target)
+    wheels_dir = Path(subs["wheels"])
+    named: list[Path] = []
+    for argv in target.setup:
+        for word in argv:
+            path = Path(word.format(**subs))
+            if path.suffix == ".whl" and path.parent == wheels_dir:
+                named.append(path)
+    return named
+
+
+def assert_build_is_current(target: RealTarget) -> None:
+    """Refuse to grade a target whose installed rustest predates this tree's source.
+
+    Phase 4c lost a member-designer run to this and *very nearly published the number*.
+    :func:`ensure_env` returns the moment the venv's interpreter exists, so a `--real` run
+    silently measures whatever rustest was installed last -- and the failure has no symptom:
+    the suite runs, the ids match, and the wall-clock is a real measurement of the wrong
+    build. The first run of that task was started against wheels built seven hours earlier
+    and would have graded the *previous* commit; it was caught by hand, by someone who
+    happened to think to check.
+
+    Two hops, because each can be stale on its own:
+
+    * **wheel vs. source** -- a wheel older than the newest build input was built from
+      different code. Caught by mtime rather than by a version string, because the version
+      does not move between commits (`0.16.2` for this entire phase) and a content hash
+      would have to be stamped into the wheel by a build step that does not exist.
+    * **install vs. wheel** -- a wheel rebuilt but never reinstalled. The venv is asked for
+      the file it would actually import, and that file is stat'd.
+
+    Refusal, not repair: rebuilding is per-ABI (`maturin build --release -i python3.14t` for
+    the free-threaded target) and reinstalling "the" wheel across targets is the foot-gun
+    documented on :func:`_wheels_named_by`. The message names the wheel, the source file
+    that outran it, and both timestamps, so the reader can tell a real staleness from a
+    fresh `git checkout` rewriting every mtime.
+    """
+    newest_source, source_path = _newest_build_input()
+    wheels = _wheels_named_by(target)
+    if not wheels:
+        # A target that installs rustest some other way (editable, say) has nothing to
+        # compare; `verify_env`'s import probe is still the backstop.
+        return
+    for wheel in wheels:
+        if not wheel.exists():
+            raise RuntimeError(
+                f"{target.name}: its [env] setup installs {wheel}, which does not exist. "
+                + "Build it (`uv run maturin build --release -o "
+                + f"{wheel.parent}`, with `-i` naming this target's ABI) and re-run with "
+                + "--real-rebuild-env."
+            )
+        wheel_mtime = wheel.stat().st_mtime
+        if wheel_mtime < newest_source:
+            raise RuntimeError(
+                f"{target.name}: STALE WHEEL -- {wheel.name} was built "
+                + f"{_stamp(wheel_mtime)} but {source_path.relative_to(_REPO_ROOT).as_posix()} "
+                + f"changed {_stamp(newest_source)}. Grading this would measure the previous "
+                + "build and produce entirely plausible numbers about it. Rebuild "
+                + f"(`uv run maturin build --release -o {wheel.parent}`, `-i` naming this "
+                + "target's ABI -- each target names its own on purpose) and re-run with "
+                + "--real-rebuild-env."
+            )
+        installed = _installed_rustest_path(target)
+        if installed is not None and installed.exists() and installed.stat().st_mtime < wheel_mtime:
+            raise RuntimeError(
+                f"{target.name}: STALE INSTALL -- {wheel.name} was built "
+                + f"{_stamp(wheel_mtime)} but this venv's {installed.name} is from "
+                + f"{_stamp(installed.stat().st_mtime)}, so the wheel was rebuilt and never "
+                + "reinstalled here. Re-run with --real-rebuild-env."
+            )
+
+
+def _stamp(mtime: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+
+
+def _installed_rustest_path(target: RealTarget) -> Path | None:
+    """Where *target*'s own interpreter would import ``rustest.rust`` from, or ``None``.
+
+    Asked of the interpreter rather than assembled from ``site-packages`` conventions, for
+    the same reason :func:`verify_env` asks: the answer is what an ``import`` resolves to,
+    which is the only thing the run depends on.
+    """
+    proc = subprocess.run(  # noqa: S603 - argv is this module's own constant
+        [str(target.python), "-c", "import rustest.rust as r; print(r.__file__)"],
+        capture_output=True,
+        timeout=120,
+        check=False,
+        text=True,
+        encoding=_ENCODING,
+        errors=_ERRORS,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None  # `verify_env` reports this properly, with the ABI diagnosis.
+    return Path(proc.stdout.strip().splitlines()[-1])
 
 
 #: Asks the target's own interpreter whether the rustest it would import is the compiled
@@ -350,6 +495,9 @@ def verify_env(target: RealTarget) -> None:
 
     The ABI is read from ``Py_GIL_DISABLED`` and the message says so, because the next
     person to write an install loop will reach for ``sys.version_info`` again otherwise.
+
+    This answers "is it *usable*". :func:`assert_build_is_current` answers "is it *this
+    tree's*", which is the other half and fails without any symptom at all.
     """
     proc = subprocess.run(  # noqa: S603 - argv is this module's own constant
         [str(target.python), "-c", _ABI_PROBE],
@@ -739,6 +887,9 @@ def run_target(name: str, *, setup_only: bool = False, rebuild_env: bool = False
         ensure_repo(target)
         ensure_env(target, force=rebuild_env)
         verify_env(target)
+        # AFTER `verify_env`, so a venv holding a *broken* extension gets that diagnosis
+        # (which names the ABI trap) rather than a staleness one derived from it.
+        assert_build_is_current(target)
         if setup_only:
             return RealVerdict(name, "MATCH", None, None, [], [], [], detail="setup only")
         tmp = WORK_DIR / "_runs" / name

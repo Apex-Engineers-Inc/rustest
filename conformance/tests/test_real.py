@@ -7,6 +7,7 @@ the only thing standing between "6132 tests agree" and "6132 tests were never co
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -300,3 +301,128 @@ def test_plugin_reduction_precedence(phases: list[tuple[str, str]], expected: st
         current = plugin._stronger(current, status)  # pyright: ignore[reportPrivateUsage]
 
     assert current == expected
+
+
+# --------------------------------------------------------------------------------------
+# The staleness gate (Phase 4 convergence wave; Phase 4c Concern 3)
+# --------------------------------------------------------------------------------------
+
+
+def _staleness_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    wheel_age: float,
+    install_age: float | None,
+) -> RealTarget:
+    """A target whose named wheel and installed extension have chosen ages.
+
+    Ages are seconds *relative to the newest build input*, so a negative number is "older
+    than the source" -- the shape the gate exists to refuse. The real build inputs are
+    replaced by one file in ``tmp_path``, because a test that stats this repository would
+    pass or fail according to when someone last touched it.
+    """
+    source = tmp_path / "src" / "v2" / "engine.rs"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("// build input\n", encoding="utf-8")
+    monkeypatch.setattr(real_mod, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(real_mod, "_BUILD_INPUT_GLOBS", ("src/**/*.rs",))
+    monkeypatch.setattr(real_mod, "WORK_DIR", tmp_path / "_work")
+
+    base = source.stat().st_mtime
+    wheels = tmp_path / "_work" / "_wheels"
+    wheels.mkdir(parents=True, exist_ok=True)
+    wheel = wheels / "rustest-0.0.0-cp314-cp314-win_amd64.whl"
+    wheel.write_bytes(b"PK\x03\x04")
+    os.utime(wheel, (base + wheel_age, base + wheel_age))
+
+    if install_age is None:
+        monkeypatch.setattr(real_mod, "_installed_rustest_path", lambda _target: None)
+    else:
+        installed = tmp_path / "_venv" / "rust.pyd"
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        installed.write_bytes(b"MZ")
+        os.utime(installed, (base + install_age, base + install_age))
+        monkeypatch.setattr(real_mod, "_installed_rustest_path", lambda _target: installed)
+
+    return _target(setup=[["uv", "pip", "install", "{wheels}/" + wheel.name]])
+
+
+def test_a_wheel_older_than_the_source_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 4c Concern 3, and the reason this gate exists.
+
+    ``ensure_env`` returns the moment the venv's interpreter exists, so a `--real` run used
+    to measure whatever rustest was installed last. That failure has **no symptom**: the
+    suite runs, the ids match, the wall-clock is a real measurement -- of the wrong build.
+    One member-designer run was started that way and caught only because a human thought to
+    check by hand.
+
+    The message must name the wheel *and* the file that outran it: a fresh `git checkout`
+    rewrites every mtime, and the reader has to be able to tell that apart from real drift.
+    """
+    target = _staleness_fixture(tmp_path, monkeypatch, wheel_age=-60.0, install_age=None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        real_mod.assert_build_is_current(target)
+
+    message = str(excinfo.value)
+    assert "STALE WHEEL" in message
+    assert "rustest-0.0.0-cp314-cp314-win_amd64.whl" in message
+    assert "src/v2/engine.rs" in message
+
+
+def test_a_wheel_rebuilt_but_never_reinstalled_is_refused_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second hop, and it fails independently of the first.
+
+    Rebuilding the wheel makes the wheel-vs-source check pass while the venv still holds the
+    previous build -- the exact state a `maturin build` with no reinstall leaves behind, and
+    the one `--real-rebuild-env` is for.
+    """
+    target = _staleness_fixture(tmp_path, monkeypatch, wheel_age=60.0, install_age=-60.0)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        real_mod.assert_build_is_current(target)
+
+    assert "STALE INSTALL" in str(excinfo.value)
+
+
+def test_a_current_wheel_and_install_pass_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control: the gate must be quiet on a freshly built, freshly installed target.
+
+    Without this the two refusals above are also satisfied by a function that raises always,
+    and a check that always fires is a check that gets deleted.
+    """
+    target = _staleness_fixture(tmp_path, monkeypatch, wheel_age=60.0, install_age=120.0)
+
+    real_mod.assert_build_is_current(target)
+
+
+def test_a_missing_wheel_is_refused_before_anything_is_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A config naming a wheel that is not there must say so, not fall through to the run."""
+    target = _staleness_fixture(tmp_path, monkeypatch, wheel_age=60.0, install_age=120.0)
+    next(iter((tmp_path / "_work" / "_wheels").glob("*.whl"))).unlink()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        real_mod.assert_build_is_current(target)
+
+    assert "does not exist" in str(excinfo.value)
+
+
+def test_a_target_that_names_no_wheel_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An editable-install target has nothing to compare, and must not be refused for it.
+
+    `verify_env`'s import probe is still the backstop there -- this gate only ever speaks
+    about wheels a config actually names.
+    """
+    _ = _staleness_fixture(tmp_path, monkeypatch, wheel_age=-600.0, install_age=None)
+    real_mod.assert_build_is_current(_target(setup=[["uv", "pip", "install", "-e", "{repo}"]]))
