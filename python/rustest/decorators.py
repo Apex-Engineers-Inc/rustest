@@ -786,9 +786,9 @@ class AsyncioMarkDecorator(MarkDecorator):
 class SkipMarkDecorator(MarkDecorator):
     """``pytest.mark.skip``'s decorator, which is **also** a legal ``pytestmark`` value.
 
-    The compat surface cannot delegate ``skip`` to the native ``mark.skip``, because v1's
-    Rust collector reads skips from the ``__rustest_skip__`` attribute alone
-    (`src/discovery.rs::collect_tests`) and the native mark only records a dict in
+    The compat surface could not delegate ``skip`` to the native ``mark.skip``, because the
+    v1 Rust collector read skips from the ``__rustest_skip__`` attribute alone (the deleted
+    `src/discovery.rs::collect_tests`) and the native mark only records a dict in
     ``__rustest_marks__``. Routing it to :func:`skip_decorator` instead solved that and
     created a second problem, found in Phase 4 Task 1's review: the *called* form
     ``pytest.mark.skip(reason="...")`` returned that function's inner **closure**, which
@@ -796,8 +796,14 @@ class SkipMarkDecorator(MarkDecorator):
     — matplotlib's shape — refused the whole module with ``malformed pytestmark entry``.
 
     Same shape as :class:`AsyncioMarkDecorator`: a real ``MarkDecorator`` (so it is a mark
-    value) whose ``__call__`` additionally does the one v1-only thing. The attribute write
-    goes away with v1.
+    value) whose ``__call__`` writes ``__rustest_skip__`` *instead of*
+    ``MarkDecorator.__call__``'s ``__rustest_marks__`` entry.
+
+    That attribute began as a v1 requirement and is **still load-bearing**, which is why it
+    did not leave with the engine: ``_v2_worker::_mark_specs`` reads both sources, so this is
+    now simply which of the two channels a compat ``skip`` decoration uses — writing both
+    would report the same skip twice. Any future removal has to move the write, not delete
+    it.
     """
 
     def __call__(self, func: TFunc) -> TFunc:
@@ -1106,7 +1112,7 @@ class MarkGenerator:
         # `@mark.asyncio(loop_scope="sesion")` costs the whole file. Measured -- pytest:
         # `1 passed, 1 error`, exit 1 (the healthy sibling still runs); rustest: `1 error`,
         # exit 2 (it does not). Kept because failing at the definition is the better error
-        # for a typo and because this signature is shipped v1 surface with its own tests;
+        # for a typo and because this signature is shipped public surface with its own tests;
         # recorded in the Phase 3 Task 1 report alongside the unknown-keyword holdout, which
         # has the same root.
         valid_scopes = {"function", "class", "module", "package", "session"}

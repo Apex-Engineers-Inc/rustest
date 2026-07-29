@@ -736,8 +736,10 @@ class _PytestMarkCompat:
         super().__init__()
 
         # `skip` cannot simply be delegated to `_rustest_mark`: the native `mark.skip` only
-        # records a mark dict in `__rustest_marks__`, and v1's Rust collector reads skips
-        # from the `__rustest_skip__` attribute alone (src/discovery.rs::collect_tests).
+        # records a mark dict in `__rustest_marks__`, and the v1 Rust collector read skips
+        # from the `__rustest_skip__` attribute alone (the deleted
+        # src/discovery.rs::collect_tests). `_v2_worker::_mark_specs` reads both, so the
+        # routing survives the engine that required it -- see `SkipMarkDecorator`.
         # The compat surface therefore keeps its own routing to `skip_decorator`, wrapped in
         # the same bare-or-factory discrimination as the rest -- being a plain *method* is
         # what made the bare `@pytest.mark.skip` replace the test with a closure (#136).

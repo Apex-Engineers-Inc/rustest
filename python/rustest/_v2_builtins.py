@@ -1,7 +1,8 @@
 """The builtin fixtures the v2 worker provides, ported from pytest's own plugins.
 
-Separate from :mod:`rustest.builtin_fixtures` — which is **v1's** set and stays frozen while
-v1 ships — because three of the fixtures here had to change shape rather than grow:
+Separate from :mod:`rustest.builtin_fixtures` — which was the deleted v1 engine's set, and
+survives only as **public API** (its fixture *types* and :class:`MonkeyPatch` are exported
+and importable) — because three of the fixtures here had to change shape rather than grow:
 
 * ``capsys`` moved from "swap ``sys.stdout`` for a ``StringIO``" to pytest's
   ``SysCapture``/``MultiCapture``/``CaptureFixture`` stack, so that ``capfd`` could be the
