@@ -1433,6 +1433,21 @@ fn route(targets: &[PathBuf], dynamic: &[usize], pool_size: usize) -> Vec<Vec<(u
             assignments[worker].push((*member, targets[*member].clone()));
         }
     }
+
+    // Walk order **inside** each worker, restored after the packing.
+    //
+    // Bin packing visits groups heaviest-first, so appending in that order would have a
+    // worker import its files in size order — and import order is not a cosmetic property.
+    // It decides what is already in `sys.modules` when the next module runs, which is
+    // precisely the mechanism behind jsonschema's `test_import_cli` (see the Task 2 report
+    // §8): a test whose outcome flips depending on whether an earlier file in the same
+    // process imported `jsonschema.cli`.  Under the stem hash a worker's files were always a
+    // *subsequence of the walk*, which is the closest a pool can get to pytest's single-
+    // process order; sorting by target index here keeps that property, so the packing
+    // changes **which** worker owns a file and nothing else.
+    for files in &mut assignments {
+        files.sort_by_key(|(index, _)| *index);
+    }
     assignments
 }
 
@@ -2978,6 +2993,37 @@ assert True
         assert!(
             together,
             "a same-stem pair was split across workers: {plan:?}"
+        );
+    }
+
+    /// Each worker's files stay in **walk order**, however the packing reordered them.
+    ///
+    /// Import order is not cosmetic: it decides what is in `sys.modules` when the next
+    /// module runs, and a real corpus target turns on exactly that (jsonschema's
+    /// `test_import_cli` passes only if an earlier file in the same process imported
+    /// `jsonschema.cli`).  Under the stem hash a worker's files were always a subsequence of
+    /// the walk — the closest a pool can get to pytest's single-process order — and bin
+    /// packing must not quietly trade that away for a scheduling convenience.
+    ///
+    /// The sizes here are chosen so the pack order and the walk order **disagree**: the
+    /// heaviest file sorts last in the walk, so a router that appended in packing order
+    /// would put it first.
+    #[test]
+    fn routing_keeps_each_workers_files_in_walk_order() {
+        let plan = routed(
+            &[
+                ("test_a.py", 10),
+                ("test_b.py", 20_000),
+                ("test_c.py", 30),
+                ("test_d.py", 40_000),
+            ],
+            1,
+        );
+
+        assert_eq!(
+            plan[0],
+            vec!["test_a", "test_b", "test_c", "test_d"],
+            "one worker must import its files in the order the walk found them"
         );
     }
 
