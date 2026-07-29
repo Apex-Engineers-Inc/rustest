@@ -358,10 +358,35 @@ def _resolve_case_id(
         maker = cast(Callable[[Any], str | None], ids)
         parts: list[str] = []
         for name, item in bound:
+            # `IdMaker._idval_from_function` (l. 968-987): the callable's answer REPLACES the
+            # value and is then fed back through `_idval_from_value` -- it is not used raw.
+            #
+            #     generated_id = self.idfn(val)
+            #     if generated_id is not None:
+            #         val = generated_id
+            #     return self._idval_from_value(val)
+            #
+            # So the returned string goes through `ascii_escaped`, exactly like a `str` the
+            # user parametrized directly, and a returned NON-string is spelled by the same
+            # rules as any other value (an `int` -> `str(int)`, an object with a `__name__` ->
+            # that name, anything else -> None -> the `<argname><index>` fallback).
+            #
+            # rustest used `str(generated)` verbatim, which is identical for printable ASCII
+            # and different for everything else -- humanize's `ids=` callables return
+            # localised strings, and its five remaining id-pair divergences were all and only
+            # this (MECHANISM M10, `conformance/real/humanize.toml`).
+            # ...and when the callable's answer has NO spelling of its own,
+            # `IdMaker._idval` (l. 1009-1021) falls back to the ORIGINAL value's spelling
+            # before it reaches `<argname><index>`: `_idval_from_function` returns None, and
+            # the next arm re-asks `_idval_from_value(val)` with `val` still bound to the
+            # argvalue. Probed on pytest 8.4.2: `ids=lambda v: [1, 2]` over `[1, 2]` collects
+            # `[1]` and `[2]`, not `[value0]`/`[value1]`. Written the short way first, and
+            # this differential is what caught it.
             generated = maker(item)
-            parts.append(
-                str(generated) if generated is not None else _generate_param_id(item, index, name)
-            )
+            idval = None if generated is None else _idval_from_value(generated)
+            if idval is None:
+                idval = _idval_from_value(item)
+            parts.append(idval if idval is not None else f"{name}{index}")
         return "-".join(parts)
     return cast(Sequence[str], ids)[index]
 
@@ -1431,18 +1456,22 @@ class ExceptionInfo:
         return True
 
     def __repr__(self) -> str:
+        """Port of `_pytest/_code/code.py::ExceptionInfo.__repr__` (l. 639-642).
+
+        ``tblen`` is ``len(self.traceback)`` — the **Traceback**, not a walk of ``tb_next``.
+        The distinction is the whole reason :attr:`traceback` has a setter: pytest's own
+        callers assign a *filtered* traceback back onto the info object, and after that
+        assignment ``repr(excinfo)`` must report the filtered length. Walking the raw
+        ``tb_next`` chain reported the original length forever, so a ``cut``/``filter`` was
+        invisible in the one place a reader looks to check it took effect.
+        """
         if self._excinfo is None:
             return "<ExceptionInfo for raises contextmanager>"
-        length = 0
-        entry = self._excinfo[2]
-        while entry is not None:
-            length += 1
-            entry = entry.tb_next
         try:
             rendered = repr(self._excinfo[1])
         except Exception:  # pragma: no cover - saferepr's job in pytest
             rendered = f"<unrepresentable {type(self._excinfo[1]).__name__}>"
-        return f"<{type(self).__name__} {rendered} tblen={length}>"
+        return f"<{type(self).__name__} {rendered} tblen={len(self.traceback)}>"
 
 
 def _parse_exc(exc: object) -> type[BaseException]:
@@ -1727,18 +1756,68 @@ def raises(
         del excinfo
 
 
-class Failed(BaseException):
+class OutcomeException(BaseException):
+    """Port of `_pytest/outcomes.py::OutcomeException` (pytest 8.4.2, l. 17-38).
+
+    **The shared base of every "this is not an ordinary error, it is an outcome" signal**, and
+    a ``BaseException`` on purpose. pytest's whole outcome protocol rests on that choice: a
+    test body that wraps a call in ``try: ... except Exception:`` — which is ordinary,
+    defensive, everywhere — must not be able to swallow the runner's own control flow.
+
+    rustest arrived here in two steps, and the second is the Phase 4 final polish wave.
+    Phase 4 Task 1's review moved :class:`Failed` off ``Exception`` after measuring the cost
+    (a ``raises`` block that did not raise reported **passed** under rustest and **failed**
+    under pytest; the reviewer's three-test repro was pytest 3 failed, rustest 3 passed).
+    :class:`Skipped` and :class:`XFailed` were left behind on ``Exception`` with the note that
+    "nothing in the corpus turns on a test body's ``except Exception`` swallowing a skip" —
+    true of the corpus, and not a property of the class. The same three-line body swallows a
+    ``pytest.skip()`` just as happily, and then the test *passes*, which is the worst
+    available answer: a skip that silently becomes a green.
+
+    ``msg``/``pytrace`` and the "expected string as 'msg' parameter, got '...' instead.
+    Perhaps you meant to use a mark?" ``TypeError`` are pytest's, message for message — that
+    guard exists because ``pytest.skip(SomeMark)`` is a real mistake people make and the
+    resulting failure is otherwise unreadable. ``__repr__``/``__str__`` return the message
+    itself so a report prints the reason, not ``Skipped('reason')``.
+    """
+
+    def __init__(self, msg: str | None = None, pytrace: bool = True) -> None:
+        # Annotated `str | None`, checked anyway: the argument comes from user test code
+        # and `pytest.skip(some_mark)` is precisely the mistake the message names.
+        if msg is not None and not isinstance(msg, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            error_msg = (
+                "{} expected string as 'msg' parameter, got '{}' instead.\n"
+                "Perhaps you meant to use a mark?"
+            )
+            raise TypeError(error_msg.format(type(self).__name__, type(msg).__name__))
+        super().__init__(msg)
+        self.msg = msg
+        self.pytrace = pytrace
+
+    def __repr__(self) -> str:
+        if self.msg is not None:
+            return self.msg
+        return f"<{type(self).__name__} instance>"
+
+    __str__ = __repr__
+
+
+class Failed(OutcomeException):
     """Exception raised by fail() to mark a test as failed.
 
-    **A ``BaseException``, as pytest's is** (`_pytest/outcomes.py`: ``class
-    OutcomeException(BaseException)``, ``class Failed(OutcomeException)``). It derived from
-    ``Exception`` until Phase 4 Task 1's review found what that costs: a test body that wraps
-    a call in ``try: ... except Exception:`` swallows the runner's own "this test failed"
-    signal, so a ``raises`` block that did not raise reported **passed** under rustest and
-    **failed** under pytest. Reviewer's three-test repro: pytest 3 failed, rustest 3 passed.
+    Port of `_pytest/outcomes.py::Failed` (l. 79-83): ``class Failed(OutcomeException)``, so
+    a ``BaseException``. See :class:`OutcomeException` for why that matters.
 
     The worker catches ``BaseException`` at every test-body boundary
     (:func:`_v2_worker._phases` and friends), so nothing else had to move.
+
+    **pytest's ``__module__ = "builtins"`` hack is deliberately NOT copied** (here or on
+    :class:`Skipped`). It is cosmetic for pytest — it shortens the name in a report — and it
+    is not cosmetic here: the **v1** engine classifies outcomes by string-matching the
+    rendered traceback (`src/execution.rs::is_skip_exception` l. 649-657 looks for
+    ``"rustest.decorators.Skipped"`` first), and an exception whose ``__module__`` is
+    ``builtins`` renders with no module prefix at all. Taking the hack would silently move v1
+    onto its own fallback branch for every skip, to buy a shorter name.
     """
 
 
@@ -1783,10 +1862,10 @@ def fail(reason: str = "", pytrace: bool = True) -> None:
     raise Failed(reason)
 
 
-class Skipped(Exception):
+class Skipped(OutcomeException):
     """Exception raised by skip() to dynamically skip a test.
 
-    Port of `_pytest/outcomes.py::Skipped` (pytest 8.4.2, l. 43-60)'s **data** half: the
+    Port of `_pytest/outcomes.py::Skipped` (pytest 8.4.2, l. 41-61)'s **data** half: the
     three attributes anything downstream reads -- ``msg``, ``allow_module_level`` and the
     private ``_use_item_location`` -- with pytest's own defaults and ordering.
 
@@ -1799,9 +1878,14 @@ class Skipped(Exception):
     scope was reported as an unhandled exception during collection -- and since a collection
     error aborts the session, Pillow's six such modules cost all 4 036 of its tests.
 
-    Still an ``Exception`` rather than pytest's ``BaseException``: unlike :class:`Failed`,
-    nothing in the corpus turns on a test body's ``except Exception`` swallowing a skip, and
-    the worker's classification tables list this class explicitly.
+    **A ``BaseException`` as of the Phase 4 final polish wave**, via
+    :class:`OutcomeException`. It was an ``Exception`` on the recorded ground that "nothing in
+    the corpus turns on a test body's ``except Exception`` swallowing a skip" — which was a
+    statement about the corpus, not about the class. ``try: ... except Exception: pass``
+    around a call that skips turned the skip into a **pass**, and pytest's own answer to that
+    hazard is precisely this base class. pytest's ``__module__ = "builtins"`` hack (l. 43-44)
+    is **not** copied — see :class:`Failed` for why, which is v1's string-matched skip
+    detection in `src/execution.rs`.
     """
 
     def __init__(
@@ -1812,10 +1896,10 @@ class Skipped(Exception):
         *,
         _use_item_location: bool = False,
     ) -> None:
-        super().__init__(msg)
-        self.msg = msg
-        self.pytrace = pytrace
+        super().__init__(msg=msg, pytrace=pytrace)
         self.allow_module_level = allow_module_level
+        # If true, the skip location is reported as the item's location, instead of the
+        # place that raises the exception/calls skip().
         self._use_item_location = _use_item_location
 
 
@@ -1856,10 +1940,23 @@ def skip(reason: str = "", allow_module_level: bool = False) -> None:
     raise Skipped(reason, allow_module_level=allow_module_level)
 
 
-class XFailed(Exception):
-    """Exception raised by xfail() to mark a test as expected to fail."""
+class XFailed(Failed):
+    """Exception raised by xfail() to mark a test as expected to fail.
 
-    pass
+    ``class XFailed(Failed)`` is pytest's declaration (`_pytest/outcomes.py` l. 186-187), and
+    rustest's derived straight from ``Exception`` until the Phase 4 final polish wave. Two
+    consequences, both real:
+
+    * it is now a ``BaseException``, so ``except Exception`` in a test body cannot turn a
+      dynamic ``pytest.xfail()`` into a pass — the same hazard :class:`OutcomeException`
+      describes;
+    * the **order** of the worker's classification tables becomes load-bearing rather than
+      accidentally irrelevant. ``_v2_worker`` checks ``XFAILED_EXCEPTIONS`` *before*
+      ``FAILED_EXCEPTIONS`` and its comment already said so ("relying on that accident would
+      break the day the hierarchy is aligned"). This is that day, and the order was already
+      right; :func:`_v2_worker.report_for_phase` routes by ``isinstance`` in that order and
+      is re-verified by the outcome-classifier tests.
+    """
 
 
 def xfail(reason: str = "") -> None:

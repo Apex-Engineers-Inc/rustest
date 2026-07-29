@@ -255,6 +255,93 @@ class TestParametrizeForceTuple:
         assert [case["id"] for case in cases] == ["rng0", "rng1"]
 
 
+class TestCallableIdsGoBackThroughIdMaker:
+    """MECHANISM M10 -- what an ``ids=`` callable returns is **not** used verbatim.
+
+    `_pytest/python.py::IdMaker._idval_from_function` (l. 968-987) does::
+
+        generated_id = self.idfn(val)
+        if generated_id is not None:
+            val = generated_id
+        return self._idval_from_value(val)
+
+    i.e. the callable's answer REPLACES the value and is then spelled by the ordinary rules
+    -- which for a ``str`` means ``ascii_escaped``. rustest called ``str(generated)``, which
+    is identical for printable ASCII and different for everything else. humanize's five
+    remaining id-pair divergences (`conformance/real/humanize.toml`) were all and only this:
+    its ``ids=`` callables return localised strings.
+    """
+
+    def _ids(self, func: object) -> list[str]:
+        return [case["id"] for case in getattr(func, "__rustest_parametrization__")]
+
+    def test_a_non_ascii_return_is_escaped(self) -> None:
+        @parametrize("value", [1, 2], ids=lambda v: "näo" if v == 1 else "中文")
+        def test_func(value: int) -> int:
+            return value
+
+        assert self._ids(test_func) == ["n\\xe4o", "\\u4e2d\\u6587"]
+
+    def test_a_printable_ascii_return_is_unchanged(self) -> None:
+        """The control -- escaping must be invisible for the overwhelmingly common case."""
+
+        @parametrize("value", [1, 2], ids=lambda v: f"case-{v}")
+        def test_func(value: int) -> int:
+            return value
+
+        assert self._ids(test_func) == ["case-1", "case-2"]
+
+    def test_a_non_string_return_is_spelled_by_the_same_rules(self) -> None:
+        """An ``int`` becomes ``str(int)``; a class becomes its ``__name__``."""
+
+        @parametrize("value", [1, 2], ids=lambda v: v * 10)
+        def test_ints(value: int) -> int:
+            return value
+
+        assert self._ids(test_ints) == ["10", "20"]
+
+        @parametrize("value", [1], ids=lambda _v: ValueError)
+        def test_class(value: int) -> int:
+            return value
+
+        assert self._ids(test_class) == ["ValueError"]
+
+    def test_a_none_return_falls_back_to_the_values_own_id(self) -> None:
+        """``if generated_id is not None`` -- ``None`` leaves ``val`` alone, per component."""
+
+        @parametrize("value", ["kept", [1, 2]], ids=lambda _v: None)
+        def test_func(value: object) -> object:
+            return value
+
+        # "kept" spells itself; the list has no id of its own, so `<argname><index>`.
+        assert self._ids(test_func) == ["kept", "value1"]
+
+    def test_an_unspellable_return_falls_back_to_the_ORIGINAL_value(self) -> None:
+        """The subtle arm, and the one this was written wrong the first time.
+
+        A returned object with no id of its own does **not** go straight to
+        ``<argname><index>``: ``_idval_from_function`` returns ``None`` and ``_idval``'s next
+        arm re-asks ``_idval_from_value(val)`` with ``val`` still bound to the *argvalue*.
+        Probed on pytest 8.4.2 -- ``ids=lambda v: [1, 2]`` over ``[1, 2]`` collects ``[1]``
+        and ``[2]``.
+        """
+
+        @parametrize("value", [1, 2], ids=lambda _v: [1, 2])
+        def test_func(value: int) -> int:
+            return value
+
+        assert self._ids(test_func) == ["1", "2"]
+
+    def test_argname_index_is_reached_only_when_neither_has_a_spelling(self) -> None:
+        """Both unspellable -- the callable's answer and the value itself."""
+
+        @parametrize("value", [{"a": 1}, {"b": 2}], ids=lambda _v: [1, 2])
+        def test_func(value: dict[str, int]) -> dict[str, int]:
+            return value
+
+        assert self._ids(test_func) == ["value0", "value1"]
+
+
 class TestParametrizePytestKeywordSpelling:
     """`parametrize(argnames=..., argvalues=...)` -- pytest's parameter names as keywords.
 
