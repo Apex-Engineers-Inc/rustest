@@ -172,16 +172,15 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 
 | gap | what happens | cost |
 | --- | --- | --- |
-| **`pytest.exit()`** | Silently does nothing; the session does not stop and the tests after the call run. | A deliberate mid-run bail-out is ignored. Corpus case `marks/pytest-exit`. |
-| **Session fixtures across files** | A `session`-scoped fixture declared in `conftest.py` is set up once per **file**, not once per run. Two tests in one file share it correctly. | Repeated setup and teardown; cross-file shared state does not work. Corpus case `fixtures/session-scope`. |
+| **`pytest.exit(returncode=N)`** | `pytest.exit()` itself now stops the session and exits 2, pytest's answer. The `returncode=` payload is not honoured (the worker exit code is the whole channel), and an `exit()` at *import* time surfaces as exit 3 rather than 2. | A custom exit code is lost. Corpus case `marks/pytest-exit`. |
+| **Session fixtures across workers** | A `session`-scoped fixture is built once per **worker** process, and a worker is handed a subset of the files. At `-n 1` that is pytest's behaviour exactly; across a pool it is pytest-xdist's. | Cross-file shared state works within a worker, not across the pool. Corpus case `fixtures/session-scope`. |
 | **No item reordering** | pytest groups tests that share a higher-scoped parametrized fixture; rustest keeps source order. | A module-scoped `params=["a", "b"]` fixture costs 2 setups under pytest and 4 here. Corpus case `fixtures/module-param-reorder`. |
 | **`package` scope** | Cached for the worker's lifetime; not torn down at the package boundary. | Late teardown. |
-| **`loop_scope`** | Accepted and ignored — one event loop per worker. | Async fixtures work; per-scope loop isolation does not. |
-| **Async concurrency** | Async tests in the same loop scope run sequentially. | No wall-clock overlap between them. |
+| **Async concurrency** | Async tests in the same loop scope run sequentially — as they do under pytest-asyncio, which drives each coroutine through a non-re-entrant `asyncio.Runner.run`. | No wall-clock overlap, and none under pytest either. Listed so it is not mistaken for a divergence; `loop_scope` itself is implemented. |
 | **`PYTEST_ADDOPTS`** | The `addopts` **ini** is applied; the environment variable is not. | Options exported into the environment are ignored. Set them in the ini or on the command line. |
 | **Markdown code blocks** | rustest collects python fences out of a `.md` file **named as an argument**; a *directory* walk collects none. | `rustest docs/guide/` runs nothing — name the files (`rustest docs/guide/*.md`). pytest has no equivalent without a plugin, which is why the walk does not. |
 | **Reporting-only flags** | Accepted and ignored, with a note on stderr naming each one. | See the table below. |
-| **Capture is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors. | Output from a subprocess or a C extension is not captured. |
+| **`capsys` is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors — exactly as pytest's `capsys` is. | Use `capfd` for a subprocess or a C extension; it redirects the descriptors and does catch them (probed both ways). |
 | **`xfail_strict` ini, `--runxfail`** | Not implemented. The `strict=` *keyword* works. | Set `strict=` on the mark. |
 
 ### Reporting flags rustest accepts and ignores

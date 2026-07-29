@@ -18,18 +18,21 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   pointing here.
 - **`--v2` is a no-op alias** and prints a deprecation note, so pipelines that adopted it
   early keep working.
-- **`--v1` selects the legacy engine**, unchanged from its pre-flip behaviour, and prints a
-  banner. It will be removed in a future release.
+- **`--v1` is removed, and so is the engine it selected.** The legacy Rust and Python
+  engines were deleted outright in Phase 4 — around 15 000 lines and six Rust dependencies —
+  rather than left to rot behind a flag nobody could test. Passing `--v1` exits **4** with a
+  message naming the change. `rustest.run()` (the Python API) drives v2 too; it used to be
+  v1's entry point and printed v1's diagnostics.
 
 ### Added
 
 - `-x` / `--exitfirst` on the default engine: dispatch stops after the first failure, the
   report contains only the tests that ran, and the exit code is 1 — pytest's `--maxfail=1`
   semantics. Sequential-exact at `-n 1`; with a worker pool, tests already in flight finish.
-- `--lf` / `--ff` on the default engine, backed by a **separate** cache at
-  `.rustest_cache/v2/lastfailed` (v1's `.rustest_cache/lastfailed` is keyed on different id
-  strings and the two must not overwrite each other). The document shape is pytest's own
-  `{nodeid: true}`.
+- `--lf` / `--ff` on the default engine, backed by a cache at `.rustest_cache/v2/lastfailed`.
+  The path is nested because the removed v1 engine kept its own store at
+  `.rustest_cache/lastfailed` keyed on different id strings, and the two had to not overwrite
+  each other. The document shape is pytest's own `{nodeid: true}`.
 - `-v` prints one line per test in pytest's verbose wording (`PASSED` / `FAILED` /
   `SKIPPED (reason)` / `XFAIL` / `XPASS` / `ERROR`) with pytest's percent column; `-q` prints
   only the summary. `-v -q` cancel out, as under pytest.
@@ -82,8 +85,8 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   `hasattr(result, "__await__")` rather than `inspect.iscoroutine`, so a test — or a fixture —
   handing back a `Future`, a task wrapper or any custom awaitable is run instead of silently
   dropped. A returned *async generator* is a failure, with pytest's own message.
-- `--v1 --v2-collect-only` used to **run** the suite. The combination is now a usage error
-  (exit 4); `--v2-collect-only` is a v2 surface and the legacy engine has no collect-only mode.
+- `--v1 --v2-collect-only` used to **run** the suite. It became a usage error (exit 4) at the
+  flip, and is moot now that `--v1` itself is gone.
 - `-v`'s percent column is over the tests the run *selected*, so a `-x` run stops short of
   100% instead of claiming it finished — pytest's `session.testscollected` denominator.
 - **A `session`- or `package`-scoped `conftest.py` fixture is built once per worker, not once
@@ -95,32 +98,65 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   of one per file. Narrower scopes are unchanged: `module`, `class` and `function` values are
   still discarded at their own boundaries.
 
-### Known gaps on the default engine (use `--v1`, or wait for Phase 3)
+### Known gaps
 
-- No parallel async batching: same-`loop_scope` async tests run sequentially, and
-  `loop_scope` itself is accepted and ignored (one event loop per worker).
-- No automatic `src/` layout `sys.path` insertion — pytest does not do it either. Install the
-  package (editable is fine) or set `PYTHONPATH`. pytest's `pythonpath` ini is not read yet.
-- `capfd`, `capfdbinary`, `capsysbinary`, `capteesys`, `caplog`, `cache`, `mocker`,
-  `pytestconfig`, `recwarn`, `tmpdir`, `tmpdir_factory`, `pytester` and friends are not
-  provided; requesting one is a loud error naming the fixture.
+> **Rewritten in the Phase 4 convergence wave, because the list had drifted into being
+> wrong.** It offered `--v1` as an escape from an engine that no longer exists, listed eight
+> fixtures that are provided, said `pytest.exit()` does nothing three bullets below a Fixed
+> entry saying it stops the session, and called `pythonpath` unread and `rustest.run()` a v1
+> entry point. A stale limitations list is worse than none: a reader routes around a problem
+> that was fixed, and trusts the entries that are still wrong. Every bullet below was
+> re-probed against pytest 8.4.2.
+
+- **No item reordering**, and the visible symptom is a *setup-count* difference rather than
+  an ordering one. pytest groups tests that share a higher-scoped parametrized fixture
+  (`_pytest/fixtures.py::reorder_items`); that pass needs the whole session's item list,
+  which a per-file worker does not have. Two tests sharing a module-scoped
+  `params=["a", "b"]` fixture cost **2** setups under pytest (grouped) and **4** here
+  (interleaved) — both measured — so anything the fixture accumulates is reset twice as
+  often. Node ids stay correct; the collected *order* differs, which is what an id
+  comparison sees.
 - `session`/`package` scope is per **worker**, not per run: a worker is handed a subset of the
   files, so a suite spread over several workers gets one session-fixture instance per worker
-  process. That is pytest-xdist's contract, and `-n 1` gives pytest's exactly. (The *per-file*
-  granularity this entry used to describe is fixed — see Fixed, above.) `package` scope is
-  additionally not torn down at the package boundary.
-- No item reordering. pytest groups tests that share a higher-scoped parametrized fixture,
-  so a module-scoped `params=["a", "b"]` fixture costs 2 setups there and 4 here — and the
-  collected order differs, which is what a node-id comparison sees.
-- **`pytest.exit()` does nothing.** It resolves to a compat stub, so the session does not
-  stop and the tests after the call run.
-- No `pytest_generate_tests` hook, no `xfail_strict` ini, no `--runxfail`, no warnings
-  channel.
-- Capture is stream-level, not fd-level.
-- `rustest.run()` — the Python API in `docs/guide/python-api.md` — still drives the **v1**
-  engine, and prints v1's diagnostics (including advice about the removed `--pytest-compat`).
-  A v2 Python API is Phase 3; until then the CLI is the v2 surface. `--v1`'s banner now says
-  so, because v1's own error text routes users to a flag that no longer exists.
+  process. That is pytest-xdist's contract, and `-n 1` gives pytest's exactly. `package`
+  scope is additionally not torn down at the package boundary.
+- **Nine fixtures are still not provided**: `capsysbinary`, `capfdbinary`, `capteesys`,
+  `doctest_namespace`, `pytester`, `testdir`, `record_property`, `record_testsuite_property`
+  and `record_xml_attribute`. Requesting one is a loud error naming the fixture, never a
+  silent skip. Everything else pytest ships is here — `capsys`, `capfd`, `caplog`, `cache`,
+  `mocker`, `monkeypatch`, `pytestconfig`, `recwarn`, `request`, `tmp_path`,
+  `tmp_path_factory`, `tmpdir` and `tmpdir_factory`.
+- **No `pytest_generate_tests` hook.** Decorator metadata (function *and* class level) and
+  fixture `params=` are the only sources of parametrization. A `conftest.py` that defines
+  hooks loads fine and its *fixtures* are used; its hooks are ignored.
+- **No `xfail_strict` ini and no `--runxfail`.** The `strict=` *keyword* on the mark works,
+  including strict xpass; only the ini and the flag are missing.
+- **No warnings channel.** pytest's own diagnostics — the `PytestCollectionWarning` for a
+  class with `__init__`, the "usefixtures() without arguments has no effect" note — are not
+  printed, and neither `-W` nor the `filterwarnings` ini is honoured. The *behaviour* in each
+  case matches pytest; only the message is missing.
+- **`PYTEST_ADDOPTS` is not read.** The `addopts` *ini* is applied (pytest's
+  `Config._preparse`); options exported into the environment are not.
+- **A `.md` directory argument collects nothing.** Markdown code-block tests are a rustest
+  tier with no pytest counterpart, so a `.md` file must be *named*: `rustest docs/guide/*.md`,
+  not `rustest docs/guide/`. pytest walking the same tree collects none either.
+- **Async tests sharing a loop scope run sequentially** — but so do pytest's. pytest-asyncio
+  drives each coroutine through `asyncio.Runner.run`, which cannot be re-entered; probed on
+  pytest-asyncio 1.2.0 with two tests each awaiting `asyncio.sleep(0.30)` on one
+  session-scoped loop, the second started 3 ms *after* the first finished. This is listed so
+  it is not mistaken for a divergence: `loop_scope` itself is implemented.
+- **Reporting-only flags are accepted and ignored**, each with a line on stderr naming it:
+  `-r<chars>`, `--tb=...`, `--durations=...`, `--strict-markers`/`--strict-config`/`--strict`,
+  `-p`/`-p no:`, `--import-mode=...`, `--showlocals`/`-l`, `--full-trace`. Anything *not* on
+  that list is still a usage error, because a flag that changes what runs must never be
+  ignored quietly.
+
+Two entries this list used to carry are gone, and both were sharp: **`pythonpath`** is now
+read (`type="paths"` and all) and applied to the worker's `sys.path` before anything is
+imported, so a `src/` layout works with no editable install; and **capture is no longer
+uniformly stream-level** — `capsys` redirects `sys.stdout`/`sys.stderr` exactly as pytest's
+does, while `capfd` redirects the file descriptors and does catch a subprocess or a C
+extension (probed both ways against pytest).
 
 ## [0.16.2] - 2026-03-30
 
