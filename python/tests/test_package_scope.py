@@ -3,12 +3,22 @@
 Package scope shares fixtures across all tests in a package (directory).
 This is useful for expensive setup that should be reused within a package
 but reset when moving to a different package.
+
+**Two strict ``xfail`` markers used to live here and are gone**, and how they left is the
+point. They pinned "a package- or session-scoped fixture is rebuilt once PER FILE", the
+limitation the ``fixtures/session-scope`` ledger entry described, and they were ``strict``
+precisely so that fixing it would turn them into a red XPASS rather than an invisible pass.
+The two halves then landed in different places: the v1 deletion added the markers in a
+worktree while the caching fix (``_v2_worker.py::conftest_fixturedefs``) landed on the main
+branch, so neither side could see the other and the merge of the two was textually clean.
+The strict flag is what surfaced it -- the convergence wave's first `python/tests` run came
+back ``2 failed`` with the marker's own removal instructions in the failure message. Every
+assertion below is unchanged; only the markers were removed. ``run_tree`` pins
+``workers=1``, so this is a deterministic per-worker question, not a bin-packing one.
 """
 
 import os
 import tempfile
-
-import pytest
 
 from .helpers import run_tree
 
@@ -16,22 +26,6 @@ from .helpers import run_tree
 class TestPackageScopeBasic:
     """Basic tests for package-scoped fixtures."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "KNOWN, LEDGERED LIMITATION: a package- or session-scoped fixture is rebuilt"
-            " once PER FILE, not once per package. `handle_collect_file` calls"
-            " `build_registry` per file and `parse_factories` builds fresh `FixtureDef`"
-            " objects each time; `FixtureRunner._cache` is keyed by IDENTITY"
-            " (`@dataclass(eq=False)`), so two files present two different keys for the"
-            " same conftest fixture and the cache misses. Probed with -n 1, so it is not"
-            " the per-worker split. Same mechanism as the `fixtures/session-scope` entry"
-            " in conformance/waivers-v2-run.toml, which carries the full write-up and the"
-            " fix shape (cache FixtureDefs per (conftest path, fixture name))."
-            " STRICT: closing that entry turns this XPASS and fails the run, which is how"
-            " the marker gets removed instead of outliving the bug."
-        ),
-    )
     def test_package_scope_shared_within_package(self):
         """Package-scoped fixtures are shared across modules in the same package."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -293,22 +287,6 @@ def test_valid_dependency(func_value):
 class TestPackageScopeAutouse:
     """Tests for package-scoped autouse fixtures."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "KNOWN, LEDGERED LIMITATION: a package- or session-scoped fixture is rebuilt"
-            " once PER FILE, not once per package. `handle_collect_file` calls"
-            " `build_registry` per file and `parse_factories` builds fresh `FixtureDef`"
-            " objects each time; `FixtureRunner._cache` is keyed by IDENTITY"
-            " (`@dataclass(eq=False)`), so two files present two different keys for the"
-            " same conftest fixture and the cache misses. Probed with -n 1, so it is not"
-            " the per-worker split. Same mechanism as the `fixtures/session-scope` entry"
-            " in conformance/waivers-v2-run.toml, which carries the full write-up and the"
-            " fix shape (cache FixtureDefs per (conftest path, fixture name))."
-            " STRICT: closing that entry turns this XPASS and fails the run, which is how"
-            " the marker gets removed instead of outliving the bug."
-        ),
-    )
     def test_package_autouse_runs_once_per_package(self):
         """Package-scoped autouse fixtures run once per package."""
         with tempfile.TemporaryDirectory() as tmpdir:
