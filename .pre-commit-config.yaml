@@ -77,12 +77,17 @@ repos:
         types: [rust]
         pass_filenames: false
 
-  # Sync root CHANGELOG.md to docs/
+  # Sync root CHANGELOG.md into the documentation site.
+  #
+  # The target moved from `docs/CHANGELOG.md` to `user_guide/changelog.md` with the
+  # great-docs cutover: `user_guide/` is the site's content directory now, and great-docs'
+  # own `changelog:` key (which scrapes GitHub Releases) is disabled in `great-docs.yml`
+  # precisely so this file stays the single authored source.
   - repo: local
     hooks:
       - id: sync-changelog
         name: sync changelog to docs
-        entry: bash -c 'cp CHANGELOG.md docs/CHANGELOG.md && git add docs/CHANGELOG.md'
+        entry: bash -c 'cp CHANGELOG.md user_guide/changelog.md && git add user_guide/changelog.md'
         language: system
         files: ^CHANGELOG\.md$
         pass_filenames: false

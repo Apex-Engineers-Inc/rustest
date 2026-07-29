@@ -23,7 +23,13 @@ coverage.xml
 /external
 /rustest/
 test-results.json
-/site/
+# The great-docs build directory is ephemeral: `great-docs build` recreates the whole of
+# it (`_site/` plus the generated `reference/` pages) from `great-docs.yml` and
+# `user_guide/` on every run.
+/great-docs/
+# The docs toolchain lives in its own environment on purpose -- see the `docs` task in
+# `pyproject.toml` for why it is not in `.venv`.
+/.venv-docs/
 conformance/bench_results.json
 # `python -m conformance --real` stages shallow clones of the OSS targets, their isolated
 # venvs, the rustest wheels built for those interpreters, and per-run JSON reports here.

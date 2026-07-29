@@ -59,11 +59,21 @@ jobs:
         run: .venv/bin/python -m rustest tests/ examples/tests/ -v
 
       - name: Test documentation code blocks with rustest
-        run: .venv/bin/python -m rustest README.md docs/guide/*.md docs/getting-started/*.md docs/api/*.md
+        run: .venv/bin/python -m rustest README.md user_guide/*.md
         # Markdown is named, not walked: since 0.18 a *directory* argument collects no
         # `.md` at all, because pytest walking the same tree collects none either and a
         # repo with python fences in its docs was getting tests under `rustest tests/`
         # that `pytest tests/` never sees. Naming the files keeps the docs tested.
+        #
+        # `user_guide/*.md` is the WHOLE site now, not the four-directory subset this
+        # line used to name -- that subset was an artifact of the old `docs/` tree, and
+        # the pages outside it (the beginner track, the pytest-comparison pages) were
+        # never checked. The great-docs cutover also settles the question its research
+        # raised: the site is authored in `.md`, not `.qmd`, so this collector still sees
+        # every page. great-docs and Quarto render both formats, but rustest's collector
+        # keys on `.md` (`src/v2/collect.rs::is_markdown`), and keeping the source
+        # extension is what keeps the examples executable. Quarto's own executable fences
+        # are spelled ```{python}, which this collector deliberately does not match.
 
   lint:
     name: Lint and Format

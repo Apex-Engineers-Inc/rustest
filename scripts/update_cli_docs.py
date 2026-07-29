@@ -24,7 +24,11 @@ def get_cli_help() -> str:
 
 def update_cli_docs(help_text: str) -> None:
     """Update the CLI documentation with the captured help text."""
-    cli_doc_path = Path("docs/guide/cli.md")
+    # NOTE: this script syncs the "Quick Reference" `--help` block ONLY. The flags table
+    # further down `cli.md` is hand-maintained, which is how it kept a `--pytest-compat`
+    # row for a whole release after the flag started exiting 4. When you add or remove a
+    # flag, edit both.
+    cli_doc_path = Path("user_guide/cli.md")
 
     if not cli_doc_path.exists():
         print(f"Error: {cli_doc_path} not found")
