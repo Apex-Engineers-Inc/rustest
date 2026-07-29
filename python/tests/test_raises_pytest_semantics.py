@@ -210,7 +210,16 @@ def test_exception_info_attribute_surface() -> None:
     assert isinstance(excinfo.value, ValueError)
     assert excinfo.typename == "ValueError"
     assert excinfo.tb is excinfo.value.__traceback__
-    assert excinfo.traceback is excinfo.tb
+    # `.traceback` is NOT `.tb`, and has not been since `36bf9d6` (M3): pytest returns a
+    # `Traceback`, a `list` subclass of `TracebackEntry`, over the raw `types.TracebackType`
+    # that `.tb` still is. This assertion read `excinfo.traceback is excinfo.tb` and was left
+    # behind by that commit -- it is the assertion the fix was *made to falsify*.
+    from rustest._code import Traceback
+
+    assert isinstance(excinfo.traceback, Traceback)
+    assert excinfo.traceback is not excinfo.tb
+    assert len(excinfo.traceback) == 1
+    assert excinfo.traceback[0].frame.code.raw is excinfo.tb.tb_frame.f_code
     assert excinfo.exconly() == "ValueError: msg-here"
     assert excinfo.errisinstance(ValueError) is True
     assert excinfo.errisinstance(TypeError) is False
