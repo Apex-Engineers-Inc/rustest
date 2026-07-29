@@ -256,9 +256,59 @@ def _escaping_unencodable_output() -> Iterator[None]:
             stream.reconfigure(errors=errors)
 
 
+#: The default pool size, when the machine has at least this many CPUs.
+#:
+#: **Not** ``os.cpu_count()``, which is what this shipped with until Phase 4b Task 2 and
+#: which was measured wrong on fifteen suites out of fifteen. The whole derivation:
+#:
+#: Fifteen ``-n`` curves were measured on one machine in one window -- ten real corpus suites
+#: (more-itertools, cachetools, sqlparse, click, marshmallow, dateutil, attrs, rich, humanize,
+#: jsonschema) and five synthetics spanning the shapes the real ones do not cover (16x1,
+#: 100x50, 500x10, a body-bound suite of 32 files x 4 tests x 50 ms of CPU, and a
+#: Pynite-shaped skew of 33 files whose sizes span 50x). "Regret" is how much worse a fixed
+#: choice of ``-n`` is than that suite's own optimum:
+#:
+#: | fixed -n | mean regret | worst regret |
+#: |---|---|---|
+#: | 2 | 25.4% | +143% (the body-bound suite) |
+#: | 3 | 13.8% | +78% |
+#: | **4** | **8.3%** | **+41%** |
+#: | 6 | 18.9% | +90% |
+#: | 8 | 23.8% | +69% |
+#: | 16 (``cpu_count`` here, the old default) | 65.7% | +153% |
+#:
+#: Four wins on both statistics, and it is not close: against the old default it is worth
+#: 1.3-2.4x on eleven of the fifteen and costs nothing on the rest (more-itertools 0.98x is
+#: the only regression, and that suite has two test files, so its pool is clamped to 2
+#: whatever this says).
+#:
+#: **Why a small constant is the right shape and not a fudge.** Every extra worker costs a
+#: process startup *and* a complete re-import of the target's stack -- the Task 1 profile
+#: measured +3.32 CPU-seconds per worker on Pynite (numpy/scipy) against +0.49 s on sqlparse
+#: -- and buys a share of the *body* work only. What is available to buy is capped by file
+#: granularity, because a file has exactly one owner: that profile's ceiling table puts eight
+#: of thirteen corpus suites under **4x** no matter how many cores exist (cachetools 1.11x,
+#: jsonschema 1.57x, more-itertools 1.58x, sqlparse 1.91x, attrs 2.36x, pynite 3.64x, rich
+#: 3.73x). A default above that ceiling cannot be spent, and is charged anyway.
+#:
+#: **What this number is not.** It is not a claim about every machine: it was measured on one
+#: 16-core hybrid CPU (Intel Core Ultra 9 285H, 16 physical cores, no SMT). It is a *cap*, so
+#: a smaller machine still gets ``cpu_count`` and nothing changed for it. A 64-core CI box
+#: running a body-bound suite is exactly the case where it will be wrong, and the answer for
+#: that case is ``-n``, which overrides it completely and always did.
+_DEFAULT_POOL = 4
+
+
 def _pool_size(workers: int | None) -> int:
-    """One worker per CPU unless the caller said otherwise; the Rust side clamps to files."""
-    return workers if workers is not None and workers > 0 else (os.cpu_count() or 1)
+    """The pool size: the caller's ``-n`` if they gave one, else :data:`_DEFAULT_POOL`.
+
+    Capped by ``os.cpu_count()`` so a 2-core container never starts four interpreters, and
+    clamped again on the Rust side to the number of files that actually need a worker -- a
+    tree Tier S answers completely starts no pool at all.
+    """
+    if workers is not None and workers > 0:
+        return workers
+    return min(_DEFAULT_POOL, os.cpu_count() or 1)
 
 
 #: Forces every file through a Python worker when set to ``"d"``, disabling the Rust static
@@ -335,8 +385,9 @@ def v2_collect_only(
             argument was given", which is what lets ``testpaths`` decide the roots exactly
             as it does under pytest; passing ``["."]`` is an explicit argument and
             suppresses ``testpaths``.
-        workers: Collection pool size. ``None`` (and any non-positive value) means one
-            worker per CPU; the Rust side clamps the pool to the number of files found.
+        workers: Collection pool size. ``None`` (and any non-positive value) means
+            :data:`_DEFAULT_POOL`, capped by the CPU count; the Rust side clamps the pool
+            to the number of files found.
         keyword: The raw ``-k`` expression, or ``None``. Applied inside collection, exactly
             where pytest applies it -- and, for the files the static tier answered, *before*
             any worker is spawned, so a fully static tree whose every test is deselected
@@ -755,8 +806,8 @@ def v2_run(
     Args:
         paths: Files or directories to run. An **empty** sequence means "no path argument
             was given", which lets ``testpaths`` decide the roots exactly as under pytest.
-        workers: Pool size. ``None`` means one worker per CPU; the Rust side clamps it to
-            the number of files found.
+        workers: Pool size. ``None`` means :data:`_DEFAULT_POOL`, capped by the CPU
+            count; the Rust side clamps it to the number of files found.
         keyword: The raw ``-k`` expression, or ``None``.
         mark_expr: The raw ``-m`` expression, or ``None``.
         report_json: Where to write the schema-v2 JSON report, or ``None``.

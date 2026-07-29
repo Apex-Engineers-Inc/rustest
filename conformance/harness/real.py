@@ -321,6 +321,56 @@ def ensure_env(target: RealTarget, *, force: bool = False) -> None:
         raise RuntimeError(f"{target.name}: setup finished but {target.python} does not exist")
 
 
+#: Asks the target's own interpreter whether the rustest it would import is the compiled
+#: extension, and which ABI it is. ``Py_GIL_DISABLED`` is the discriminator, **not**
+#: ``sys.version_info``: a free-threaded build reports ``3.14`` exactly like a GIL build, so
+#: a version check cannot tell ``cp314`` from ``cp314t``.
+_ABI_PROBE: Final = (
+    "import sysconfig,rustest.rust as r;"
+    "print('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else '',"
+    "hasattr(r,'v2_run'), r.__file__)"
+)
+
+
+def verify_env(target: RealTarget) -> None:
+    """Refuse to run a target whose venv holds the wrong rustest, loudly and by name.
+
+    Phase 4 Task 1c lost a Member Designer run to exactly this and could not see it: MD's
+    venv is a **free-threaded** (``cp314t``) build, a blanket wheel-install loop keyed on
+    ``sys.version_info`` -- which reports ``3.14`` for both ABIs -- and force-installed the
+    GIL wheel over it. The ``.pyd`` cannot load under free-threading, so ``import
+    rustest.rust`` fell back to the pure-Python ``rust.py`` shim and the run died several
+    minutes later with ``AttributeError: module 'rustest.rust' has no attribute 'v2_run'``.
+    The target's own config had pinned the right wheel all along.
+
+    So the check is not "did the config name the right wheel" -- it did -- but "is what is
+    *installed right now* usable", asked of the interpreter that will run the suite, on
+    **every** invocation rather than only at venv creation. That is the half that matters:
+    the venv already existed, so the creation path was never re-entered.
+
+    The ABI is read from ``Py_GIL_DISABLED`` and the message says so, because the next
+    person to write an install loop will reach for ``sys.version_info`` again otherwise.
+    """
+    proc = subprocess.run(  # noqa: S603 - argv is this module's own constant
+        [str(target.python), "-c", _ABI_PROBE],
+        capture_output=True,
+        timeout=120,
+        check=False,
+        text=True,
+        encoding=_ENCODING,
+        errors=_ERRORS,
+    )
+    abi = "cp314t/free-threaded" if proc.stdout.startswith("t ") else "GIL"
+    if proc.returncode != 0 or "True" not in proc.stdout:
+        raise RuntimeError(
+            f"{target.name}: {target.python} cannot import a working rustest extension "
+            + f"(this venv is a {abi} build -- detect that with "
+            + "sysconfig.get_config_var('Py_GIL_DISABLED'), never sys.version_info, which "
+            + "reports 3.14 for both). Re-run with --real-rebuild-env, or install the wheel "
+            + f"the target's [env] setup names.\n{proc.stdout[-500:]}\n{proc.stderr[-500:]}"
+        )
+
+
 # --------------------------------------------------------------------------------------
 # Running
 # --------------------------------------------------------------------------------------
@@ -688,6 +738,7 @@ def run_target(name: str, *, setup_only: bool = False, rebuild_env: bool = False
         target = load_target(name)
         ensure_repo(target)
         ensure_env(target, force=rebuild_env)
+        verify_env(target)
         if setup_only:
             return RealVerdict(name, "MATCH", None, None, [], [], [], detail="setup only")
         tmp = WORK_DIR / "_runs" / name

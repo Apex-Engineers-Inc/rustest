@@ -85,3 +85,49 @@ class TestCoreRun:
         assert callable(captured_args["event_callback"])
         assert report.total == 1
         assert report.passed == 1
+
+
+class TestPoolSize:
+    """The default worker count, which Phase 4b Task 2 changed from ``os.cpu_count()``.
+
+    Guarded as behaviour rather than left to the constant, because the number is the output
+    of a measurement (fifteen ``-n`` curves; see :data:`rustest.core._DEFAULT_POOL`) and the
+    thing that would silently undo it is somebody restoring ``os.cpu_count()`` because it
+    reads like the obvious default.
+    """
+
+    def test_the_default_is_the_measured_cap_not_one_per_cpu(self, monkeypatch: object) -> None:
+        from rustest import core
+
+        # A machine with far more CPUs than the cap: the cap must win, or the old
+        # anti-scaling is back (measured at +153% over the optimum at cpu_count=16).
+        monkeypatch.setattr(core.os, "cpu_count", lambda: 64)  # pyright: ignore[reportAttributeAccessIssue]
+        assert core._pool_size(None) == core._DEFAULT_POOL
+
+    def test_a_small_machine_is_still_capped_by_its_cpu_count(self, monkeypatch: object) -> None:
+        """A 2-core container must not start four interpreters for its own sake."""
+        from rustest import core
+
+        monkeypatch.setattr(core.os, "cpu_count", lambda: 2)  # pyright: ignore[reportAttributeAccessIssue]
+        assert core._pool_size(None) == 2
+
+    def test_an_unknowable_cpu_count_falls_back_to_one(self, monkeypatch: object) -> None:
+        from rustest import core
+
+        monkeypatch.setattr(core.os, "cpu_count", lambda: None)  # pyright: ignore[reportAttributeAccessIssue]
+        assert core._pool_size(None) == 1
+
+    def test_dash_n_overrides_the_default_in_both_directions(self, monkeypatch: object) -> None:
+        """``-n`` is the escape hatch the default's honesty depends on, so it must be total.
+
+        Both directions matter: a user asking for *more* than the cap on a big machine is
+        the case the cap is knowingly wrong for, and a user asking for fewer is the ``-n 1``
+        pin two corpus targets rely on for correctness.
+        """
+        from rustest import core
+
+        monkeypatch.setattr(core.os, "cpu_count", lambda: 16)  # pyright: ignore[reportAttributeAccessIssue]
+        assert core._pool_size(32) == 32
+        assert core._pool_size(1) == 1
+        # Non-positive is "not specified", which is what the CLI's absent flag becomes.
+        assert core._pool_size(0) == core._DEFAULT_POOL

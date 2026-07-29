@@ -292,7 +292,7 @@ def build_parser() -> _Parser:
         "-n",
         "--workers",
         type=int,
-        help="Number of worker processes to use (default: one per CPU).",
+        help="Number of worker processes to use (default: 4, capped by CPU count).",
     )
     _ = parser.add_argument(
         "-s",
