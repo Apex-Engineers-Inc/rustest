@@ -11,7 +11,6 @@ from typing import Final
 
 from .harness.grade import (
     CaseResult,
-    grade_case,
     grade_collect_case,
     grade_run_case,
     load_case_args,
@@ -21,25 +20,26 @@ from .harness.real import available_targets, main_real
 from .harness.runners import (
     CollectResult,
     FullRunResult,
-    RunResult,
-    run_pytest,
     run_pytest_collect,
     run_pytest_full,
-    run_rustest,
     run_rustest_v2_collect,
     run_rustest_v2_run,
 )
 
 ROOT = Path(__file__).parent
 
-# Three gates, three ledgers. The v1 ledger records where the shipping runner diverges
-# from pytest end to end; the v2-collect ledger records only what
-# `rustest --v2-collect-only` cannot reproduce about pytest's *collection*; the v2-run
-# ledger the same for `rustest --v2`'s *execution*. They are kept apart because an entry
-# in one says nothing about the others -- `collection/empty-suite`, for instance, is
-# waived for v1 (exit 0 where pytest exits 5) and matches under both v2 gates, and
-# `marks/xfail-strict` is waived for v1 (no xfail concept at all) and matches under both.
-WAIVERS = ROOT / "waivers.toml"
+# Two gates, two ledgers. The collect ledger records only what
+# `rustest --v2-collect-only` cannot reproduce about pytest's *collection*; the run ledger
+# the same for a flagless `rustest`'s *execution*. They are kept apart because an entry in
+# one says nothing about the other: `fixtures/session-scope` and `marks/pytest-exit` are
+# waived for the run and MATCH on collect, because both diverge only once something is
+# executed.
+#
+# **There were three.** The first graded pytest against the v1 engine end to end, against
+# `waivers.toml` -- 24 entries, every one of them a v1 bug with a fixed-in-v2 citation. v1
+# was deleted in Phase 4 Task 2 and the gate went with it; the ledger is ARCHIVED, not
+# discarded, at `docs/superpowers/history/2026-07-29-v1-conformance-ledger/`, because it is
+# the record of what the rewrite was *for*.
 V2_COLLECT_WAIVERS = ROOT / "waivers-v2-collect.toml"
 V2_RUN_WAIVERS = ROOT / "waivers-v2-run.toml"
 CORPUS = ROOT / "corpus"
@@ -74,9 +74,9 @@ def discover_cases(corpus: Path = CORPUS) -> list[tuple[str, Path]]:
 
 
 def _load_waivers_or_exit(path: Path) -> dict[str, str]:
-    """Load waivers.toml, turning a malformed file into a one-line exit, not a traceback.
+    """Load a waiver ledger, turning a malformed file into a one-line exit, not a traceback.
 
-    waivers.toml is hand-edited; a syntax error in it is a routine mistake, not a
+    A ledger is hand-edited; a syntax error in it is a routine mistake, not a
     harness bug, and shouldn't dump a raw tomllib.TOMLDecodeError traceback on the
     user. Naming the file and the parse error is enough to fix it.
     """
@@ -122,24 +122,6 @@ def _contained(name: str, waivers: dict[str, str], grade: Callable[[], CaseResul
         return CaseResult(name, "HARNESS-ERROR", problem)
 
 
-def _grade_one(
-    case_dir: Path,
-    name: str,
-    waivers: dict[str, str],
-    run_pytest_fn: Callable[[Path, list[str]], RunResult] = run_pytest,
-    run_rustest_fn: Callable[[Path, list[str]], RunResult] = run_rustest,
-) -> CaseResult:
-    """Grade a single case end to end (collection + execution), pytest vs rustest v1."""
-
-    def grade() -> CaseResult:
-        case_args = load_case_args(case_dir)
-        pytest_result = run_pytest_fn(case_dir, case_args)
-        rustest_result = run_rustest_fn(case_dir, case_args)
-        return grade_case(name, pytest_result, rustest_result, waivers)
-
-    return _contained(name, waivers, grade)
-
-
 def _grade_one_collect(
     case_dir: Path,
     name: str,
@@ -171,7 +153,7 @@ def _grade_one_run(
     run_pytest_fn: Callable[[Path, list[str]], FullRunResult] = run_pytest_full,
     run_v2_fn: Callable[[Path, list[str]], FullRunResult] = run_rustest_v2_run,
 ) -> CaseResult:
-    """Grade a single case on a full run, pytest vs ``rustest --v2``.
+    """Grade a single case on a full run, pytest vs a flagless ``rustest``.
 
     ``case.toml`` args go to *both* runners unchanged, for the same reason they do in the
     collect gate: passing them to one side only asks the two runners different questions
@@ -191,8 +173,8 @@ def _summarize(results: list[CaseResult]) -> tuple[str, int]:
     """Build the trailing summary line and the process exit code for *results*.
 
     A STALE-WAIVER (a waiver whose case now matches) fails the run exactly
-    like an unwaived DIVERGE: shrinking waivers.toml is the v2 phase-gate
-    metric, so a waiver that has gone silently inert must not go unnoticed.
+    like an unwaived DIVERGE: shrinking the ledger is the phase-gate metric, so
+    a waiver that has gone silently inert must not go unnoticed.
 
     A HARNESS-ERROR fails the run too, and gets its **own count** on the line rather than
     being folded into ``diverged``. The count is the reason the status exists: a reader
@@ -220,7 +202,7 @@ def _summarize(results: list[CaseResult]) -> tuple[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="conformance")
     parser.add_argument("--only", default="", help="Only run cases whose name starts with PREFIX")
-    # Mutually exclusive because the two v2 gates grade different contracts against
+    # Mutually exclusive because the two gates grade different contracts against
     # different ledgers; asking for both is a mistake to refuse, not a precedence rule
     # the caller has to memorize.
     mode = parser.add_mutually_exclusive_group()
@@ -237,7 +219,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Grade a full run -- pytest's ordered node ids, six-value outcome tally and "
-            "exit code against `rustest --v2 --report-json` -- using waivers-v2-run.toml"
+            "exit code against `rustest --report-json` -- using waivers-v2-run.toml"
         ),
     )
     mode.add_argument(
@@ -275,7 +257,19 @@ def main() -> int:
     elif args.v2_collect:
         ledger, grade_one = V2_COLLECT_WAIVERS, _grade_one_collect
     else:
-        ledger, grade_one = WAIVERS, _grade_one
+        # A bare `python -m conformance` used to be the **v1 end-to-end gate**. That gate is
+        # gone with the engine it measured, and the one thing this must not do is quietly
+        # answer a different question: an old CI file, or a maintainer's habit, would get a
+        # green from a gate it never asked for. Naming both surviving gates costs one line
+        # and cannot be misread.
+        print(
+            "conformance: choose a gate -- --v2-collect (collection) or --v2-run (a full"
+            + " run). A bare invocation was the v1 end-to-end gate, which was retired with"
+            + " the v1 engine in Phase 4 Task 2; its ledger is archived under"
+            + " docs/superpowers/history/.",
+            file=sys.stderr,
+        )
+        return 4
     waivers = _load_waivers_or_exit(ledger)
     cases = discover_cases()
     results: list[CaseResult] = []

@@ -3,86 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from conformance.harness.grade import (
-    grade_case,
     grade_collect_case,
     grade_run_case,
     load_case_args,
     load_waivers,
 )
-from conformance.harness.runners import (
-    CollectResult,
-    FullRunResult,
-    Outcomes,
-    RunOutcomes,
-    RunResult,
-)
-
-
-def _result(ids: set[str], passed: int = 1, failed: int = 0) -> RunResult:
-    return RunResult(
-        ids=ids,
-        outcomes=Outcomes(passed, failed, 0, 0, 1 if failed else 0, False),
-    )
-
-
-def test_grade_match() -> None:
-    a = _result({"test_a.py::test_x"})
-    assert grade_case("area/case", a, a, {}).status == "MATCH"
-
-
-def test_grade_diverge_on_ids() -> None:
-    got = grade_case(
-        "area/case",
-        _result({"test_a.py::test_x", "test_a.py::testfoo"}),
-        _result({"test_a.py::test_x"}),
-        {},
-    )
-    assert got.status == "DIVERGE"
-    assert "testfoo" in got.detail
-
-
-def test_grade_waived() -> None:
-    got = grade_case(
-        "area/case",
-        _result({"test_a.py::test_x"}),
-        _result(set(), passed=0),
-        {"area/case": "known v1 gap"},
-    )
-    assert got.status == "WAIVED"
-    assert "known v1 gap" in got.detail
-
-
-def test_grade_diverge_on_errors_only() -> None:
-    same_ids = {"test_a.py::test_x"}
-    pytest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 1, 0, False))
-    rustest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 0, 0, False))
-
-    got = grade_case("area/case", pytest_result, rustest_result, {})
-
-    assert got.status == "DIVERGE"
-    assert "pytest=1/0/0/1" in got.detail
-    assert "rustest=1/0/0/0" in got.detail
-
-
-def test_grade_diverge_on_collection_error_only() -> None:
-    """Same counts and exit code, but only one runner reported a collection error."""
-    same_ids = {"test_a.py::test_x"}
-    pytest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 0, 0, True))
-    rustest_result = RunResult(ids=same_ids, outcomes=Outcomes(1, 0, 0, 0, 0, False))
-
-    got = grade_case("area/case", pytest_result, rustest_result, {})
-
-    assert got.status == "DIVERGE"
-    assert "collection-error pytest=True rustest=False" in got.detail
-
-
-def test_grade_stale_waiver() -> None:
-    a = _result({"test_a.py::test_x"})
-
-    got = grade_case("area/case", a, a, {"area/case": "known v1 gap"})
-
-    assert got.status == "STALE-WAIVER"
-    assert got.detail == "case matches but is waived: known v1 gap — remove the waiver"
+from conformance.harness.runners import CollectResult, FullRunResult, RunOutcomes
 
 
 def test_grade_collect_match() -> None:
@@ -197,7 +123,7 @@ def test_grade_collect_waived() -> None:
 
 
 def test_grade_collect_stale_waiver() -> None:
-    """Stale-waiver detection applies to the v2 ledger exactly as to the v1 one.
+    """Stale-waiver detection applies to the collect ledger exactly as to the run one.
 
     Shrinking the ledger is the phase-gate metric, so a waiver that has gone inert
     must fail the run rather than quietly persist.
@@ -415,11 +341,13 @@ def test_grade_run_stale_waiver() -> None:
     assert got.detail == "case matches but is waived: was broken once — remove the waiver"
 
 
-def test_grade_run_ignores_v1s_four_value_outcomes() -> None:
-    """``FullRunResult`` carries the six-value tally, never v1's four-value ``Outcomes``.
+def test_run_outcomes_is_a_tally_and_carries_no_run_level_fields() -> None:
+    """``RunOutcomes`` is the six-value tally plus ``deselected``, and nothing else.
 
-    Sharing v1's type would silently drop ``xfailed``/``xpassed`` -- the two buckets the
-    whole run gate was added to see -- and every xfail case would grade as a match.
+    ``exit_code`` and ``collection_error`` belong to the *run*, and live on
+    ``FullRunResult``. They were fields on the retired v1 gate's ``Outcomes``, which is now
+    only ``parse_pytest_summary``'s return type; letting them back onto the tally would
+    grade the same fact twice under two names.
     """
     assert not hasattr(RunOutcomes(0, 0, 0, 0, 0, 0, 0), "exit_code")
     assert not hasattr(RunOutcomes(0, 0, 0, 0, 0, 0, 0), "collection_error")

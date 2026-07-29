@@ -21,7 +21,6 @@ from conformance.bench.gen import generate_suite
 def _row(
     tests: int,
     pytest_run_s: float,
-    rustest_run_s: float,
     rustest_v2_run_s: float = 0.0,
 ) -> BenchRow:
     return {
@@ -29,7 +28,6 @@ def _row(
         "tests": tests,
         "pytest_collect_s": 0.1,
         "pytest_run_s": pytest_run_s,
-        "rustest_run_s": rustest_run_s,
         "rustest_v2_run_s": rustest_v2_run_s,
         "rustest_collect_s": 0.05,
         "rustest_collect_warm_s": 0.01,
@@ -39,7 +37,6 @@ def _row(
 def _overhead_row(
     tests: int,
     pytest_run_s: float,
-    rustest_run_s: float,
     rustest_v2_run_s: float = 0.0,
     files: int = 100,
 ) -> OverheadRow:
@@ -49,7 +46,6 @@ def _overhead_row(
         "tests": tests,
         "repetitions": 5,
         "pytest_run_s": pytest_run_s,
-        "rustest_run_s": rustest_run_s,
         "rustest_v2_run_s": rustest_v2_run_s,
     }
 
@@ -85,7 +81,6 @@ def test_run_benchmarks_quick() -> None:
     assert row["files"] == 2 and row["tests"] == 4
     assert row["pytest_collect_s"] > 0
     assert row["pytest_run_s"] > 0
-    assert row["rustest_run_s"] > 0
     # The two fields Phase 1c Task 3 wired up: the v2 default path, and v2 collect-only
     # (previously reserved/always None).
     assert row["rustest_v2_run_s"] > 0
@@ -99,7 +94,6 @@ def test_run_benchmarks_quick() -> None:
     # `--quick` measures one cell on each axis, and one point has no slope.
     assert report["derived"] == {
         "pytest_overhead_us_per_test": None,
-        "rustest_overhead_us_per_test": None,
         "rustest_v2_overhead_us_per_test": None,
         "pytest_per_file_ms": None,
         "rustest_v2_per_file_ms": None,
@@ -122,8 +116,8 @@ def test_derive_overhead_is_the_slope_between_the_two_cells() -> None:
     """Slope in microseconds per test, over the *test* delta only."""
     derived = derive_overhead(
         [
-            _overhead_row(1000, pytest_run_s=1.0, rustest_run_s=0.6, rustest_v2_run_s=0.9),
-            _overhead_row(5000, pytest_run_s=3.0, rustest_run_s=1.0, rustest_v2_run_s=1.7),
+            _overhead_row(1000, pytest_run_s=1.0, rustest_v2_run_s=0.9),
+            _overhead_row(5000, pytest_run_s=3.0, rustest_v2_run_s=1.7),
         ]
     )
     # (3.0 - 1.0) / 4000 * 1e6 = 500 us ; (1.0 - 0.6) / 4000 * 1e6 = 100 us
@@ -131,15 +125,14 @@ def test_derive_overhead_is_the_slope_between_the_two_cells() -> None:
     # `1.7 - 0.9` is 0.7999999999999998 in binary floating point, and a benchmark metric that
     # demanded exact decimal arithmetic would be asserting something it does not need.
     assert derived["pytest_overhead_us_per_test"] == pytest.approx(500.0)
-    assert derived["rustest_overhead_us_per_test"] == pytest.approx(100.0)
     assert derived["rustest_v2_overhead_us_per_test"] == pytest.approx(200.0)
 
 
 def test_derive_overhead_is_order_independent() -> None:
     """Cells are sorted by test count, so a caller cannot invert the sign by mistake."""
     cells = [
-        _overhead_row(5000, pytest_run_s=3.0, rustest_run_s=1.0, rustest_v2_run_s=1.7),
-        _overhead_row(1000, pytest_run_s=1.0, rustest_run_s=0.6, rustest_v2_run_s=0.9),
+        _overhead_row(5000, pytest_run_s=3.0, rustest_v2_run_s=1.7),
+        _overhead_row(1000, pytest_run_s=1.0, rustest_v2_run_s=0.9),
     ]
     assert derive_overhead(cells) == derive_overhead(list(reversed(cells)))
 
@@ -153,9 +146,9 @@ def test_the_overhead_sizes_hold_the_file_count_constant() -> None:
     """
     assert len(OVERHEAD_SIZES) >= 2
     assert len({files for files, _ in OVERHEAD_SIZES}) == 1, "file count must be constant"
-    assert len({tests for _, tests in OVERHEAD_SIZES}) == len(
-        OVERHEAD_SIZES
-    ), "the cells must differ in tests per file, or there is no slope"
+    assert len({tests for _, tests in OVERHEAD_SIZES}) == len(OVERHEAD_SIZES), (
+        "the cells must differ in tests per file, or there is no slope"
+    )
     # ...and it must not quietly become the row the **collect gate** measures. That is the
     # largest `DEFAULT_SIZES` entry, and a metric sharing a cell with a gate cannot be
     # retuned without moving the gate. Overlapping with a *smaller* row is harmless --
@@ -216,15 +209,14 @@ def test_the_per_file_sizes_hold_the_test_count_constant() -> None:
     assert len(PER_FILE_SIZES) >= 2
     totals = {files * per for files, per in PER_FILE_SIZES}
     assert len(totals) == 1, f"test count must be constant across the cells, got {totals}"
-    assert len({files for files, _ in PER_FILE_SIZES}) == len(
-        PER_FILE_SIZES
-    ), "the cells must differ in file count, or there is no slope"
+    assert len({files for files, _ in PER_FILE_SIZES}) == len(PER_FILE_SIZES), (
+        "the cells must differ in file count, or there is no slope"
+    )
 
 
 def test_derive_overhead_needs_two_distinct_cells() -> None:
     none: dict[str, float | None] = {
         "pytest_overhead_us_per_test": None,
-        "rustest_overhead_us_per_test": None,
         "rustest_v2_overhead_us_per_test": None,
         "pytest_per_file_ms": None,
         "rustest_v2_per_file_ms": None,

@@ -5,7 +5,6 @@
       "tests": 100,
       "pytest_collect_s": 1.2045524999848567,
       "pytest_run_s": 1.0680364000145346,
-      "rustest_run_s": 0.5940516000264324,
       "rustest_v2_run_s": 0.7097393000149168,
       "rustest_collect_s": 0.3462924999766983,
       "rustest_collect_warm_s": 0.19652709999354556
@@ -15,7 +14,6 @@
       "tests": 1000,
       "pytest_collect_s": 2.756913799967151,
       "pytest_run_s": 2.1010872999904677,
-      "rustest_run_s": 0.9960510000237264,
       "rustest_v2_run_s": 1.0950208000140265,
       "rustest_collect_s": 0.3145364000229165,
       "rustest_collect_warm_s": 0.205110999988392
@@ -25,7 +23,6 @@
       "tests": 5000,
       "pytest_collect_s": 9.337165699980687,
       "pytest_run_s": 8.299807799980044,
-      "rustest_run_s": 4.797906400053762,
       "rustest_v2_run_s": 2.0682238999870606,
       "rustest_collect_s": 0.26935560000129044,
       "rustest_collect_warm_s": 0.25881799997296184
@@ -33,7 +30,6 @@
   ],
   "derived": {
     "pytest_overhead_us_per_test": 1052.2207999892998,
-    "rustest_overhead_us_per_test": 37.01405000174418,
     "rustest_v2_overhead_us_per_test": 178.10607500723563,
     "pytest_per_file_ms": 4.131188249884872,
     "rustest_v2_per_file_ms": 3.9026962500065565,
@@ -45,7 +41,6 @@
       "tests": 1000,
       "repetitions": 5,
       "pytest_run_s": 2.1865552000235766,
-      "rustest_run_s": 1.1329467000323348,
       "rustest_v2_run_s": 1.0810902999946848
     },
     {
@@ -53,7 +48,6 @@
       "tests": 5000,
       "repetitions": 5,
       "pytest_run_s": 6.395438399980776,
-      "rustest_run_s": 1.2810029000393115,
       "rustest_v2_run_s": 1.7935146000236273
     }
   ],
