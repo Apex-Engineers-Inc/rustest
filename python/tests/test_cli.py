@@ -1,12 +1,18 @@
-from __future__ import annotations
+"""The CLI's **parser** surface.
 
-import os
-from unittest.mock import patch
+Argument parsing only. Everything the CLI actually *does* is driven end to end against real
+pytest in ``test_v2_flip_cli.py``, ``test_v2_run_cli.py`` and ``test_v2_collect_cli.py`` --
+a mocked engine proves that a flag was forwarded and nothing about whether it works.
+
+This module used to also hold `cli.run` mock tests, v1's exit-code mapping and a
+``TestCIDetection`` block for the colour auto-detection only ``_run_v1`` consulted. All
+three went with the v1 engine in Phase 4 Task 2.
+"""
+
+from __future__ import annotations
 
 import pytest
 
-from .helpers import stub_rust_module
-from rustest import RunReport, TestResult
 from rustest import cli
 
 
@@ -16,56 +22,6 @@ class TestCli:
         args = parser.parse_args([])
         assert tuple(args.paths) == (".",)
         assert args.capture_output is True
-
-    def test_main_invokes_core_run(self) -> None:
-        result = TestResult(
-            name="test_case",
-            path="tests/test_sample.py",
-            status="passed",
-            duration=0.1,
-            message=None,
-            stdout=None,
-            stderr=None,
-        )
-        report = RunReport(
-            total=1,
-            passed=1,
-            failed=0,
-            skipped=0,
-            duration=0.1,
-            results=(result,),
-            collection_errors=(),
-        )
-
-        # Clear CI environment variables to simulate local environment
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                exit_code = cli.main(["--v1", "tests"])
-
-            mock_run.assert_called_once_with(
-                paths=["tests"],
-                pattern=None,
-                mark_expr=None,
-                workers=None,
-                capture_output=True,
-                enable_codeblocks=True,
-                last_failed_mode="none",
-                fail_fast=False,
-                pytest_compat=False,
-                verbose=False,
-                ascii=False,
-                no_color=False,
-            )
-            assert exit_code == 0
-
-    def test_main_surfaces_rust_errors(self) -> None:
-        def raising_run(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-            raise RuntimeError("boom")
-
-        with stub_rust_module(run=raising_run):
-            with pytest.raises(RuntimeError):
-                cli.main(["--v1", "tests"])
 
 
 class TestCliArguments:
@@ -120,112 +76,6 @@ class TestCliArguments:
         assert args.verbose is True
         assert args.ascii is True
         assert args.color == "never"
-
-
-class TestCIDetection:
-    """Test CI environment detection."""
-
-    def test_ci_detected_with_github_actions(self) -> None:
-        """Test CI detection with GitHub Actions env var."""
-        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_detected_with_ci_var(self) -> None:
-        """Test CI detection with generic CI env var."""
-        with patch.dict(os.environ, {"CI": "true"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_detected_with_gitlab(self) -> None:
-        """Test CI detection with GitLab CI env var."""
-        with patch.dict(os.environ, {"GITLAB_CI": "true"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_detected_with_jenkins(self) -> None:
-        """Test CI detection with Jenkins env var."""
-        with patch.dict(os.environ, {"JENKINS_HOME": "/var/jenkins"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_not_detected_locally(self) -> None:
-        """Test CI is not detected in local environment."""
-        # Clear all CI environment variables
-        ci_vars = [
-            "CI",
-            "CONTINUOUS_INTEGRATION",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "TRAVIS",
-            "JENKINS_HOME",
-            "JENKINS_URL",
-            "BUILDKITE",
-            "DRONE",
-            "TEAMCITY_VERSION",
-            "TF_BUILD",
-            "BITBUCKET_BUILD_NUMBER",
-            "CODEBUILD_BUILD_ID",
-            "APPVEYOR",
-        ]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            assert cli.is_ci_environment() is False
-
-    def test_color_disabled_in_ci_by_default(self) -> None:
-        """Test that colors are disabled in CI when not explicitly set."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        with patch.dict(os.environ, {"CI": "true"}):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--v1"])
-
-            # Should have no_color=True in CI
-            assert mock_run.call_args.kwargs["no_color"] is True
-
-    def test_color_enabled_locally_by_default(self) -> None:
-        """Test that colors are enabled locally when not explicitly set."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        # Clear all CI vars to simulate local environment
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--v1"])
-
-            # Should have no_color=False (colors enabled) locally
-            assert mock_run.call_args.kwargs["no_color"] is False
-
-    def test_color_always_overrides_ci_detection(self) -> None:
-        """Test that --color always overrides CI detection."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        with patch.dict(os.environ, {"CI": "true"}):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--v1", "--color", "always"])
-
-            # Should have no_color=False even in CI when --color always is passed
-            assert mock_run.call_args.kwargs["no_color"] is False
 
 
 class TestCliEdgeCases:
@@ -352,7 +202,13 @@ class TestCliEdgeCases:
         assert args.mark_expr == "(slow or integration) and not smoke"
 
     def test_all_flags_combined(self) -> None:
-        """Test all flags can be combined."""
+        """Test all flags can be combined.
+
+        ``--ascii`` and ``--color`` are accepted and inert since Phase 4 Task 2 -- they were
+        v1 renderer options and v2's output is neither coloured nor box-drawn. They stay on
+        the parser because they live in projects' ``addopts`` forever, and refusing a purely
+        cosmetic flag would refuse a run rustest can do. Parsing them is still the contract.
+        """
         parser = cli.build_parser()
         args = parser.parse_args(
             [
@@ -382,149 +238,3 @@ class TestCliEdgeCases:
         assert args.fail_fast is True
         assert args.capture_output is False
         assert args.paths == ["tests/"]
-
-
-class TestCliReturnCodes:
-    """Test CLI return codes for different scenarios."""
-
-    def test_returns_zero_on_success(self) -> None:
-        """Test exit code is 0 when all tests pass."""
-        report = RunReport(
-            total=5,
-            passed=5,
-            failed=0,
-            skipped=0,
-            duration=0.5,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["--v1", "tests"])
-
-        assert exit_code == 0
-
-    def test_returns_one_on_failure(self) -> None:
-        """Test exit code is 1 when tests fail."""
-        result = TestResult(
-            name="test_failure",
-            path="tests/test_fail.py",
-            status="failed",
-            duration=0.1,
-            message="AssertionError",
-            stdout=None,
-            stderr=None,
-        )
-        report = RunReport(
-            total=1,
-            passed=0,
-            failed=1,
-            skipped=0,
-            duration=0.1,
-            results=(result,),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["--v1", "tests"])
-
-        assert exit_code == 1
-
-    def test_returns_two_on_collection_errors(self) -> None:
-        """Test exit code is 2 when there are collection errors."""
-        from rustest import CollectionError
-
-        collection_error = CollectionError(
-            path="tests/test_broken.py",
-            message="SyntaxError: invalid syntax",
-        )
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.1,
-            results=(),
-            collection_errors=(collection_error,),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["--v1", "tests"])
-
-        assert exit_code == 2
-
-    def test_returns_zero_with_only_skipped(self) -> None:
-        """Test exit code is 0 when all tests are skipped."""
-        result = TestResult(
-            name="test_skipped",
-            path="tests/test_skip.py",
-            status="skipped",
-            duration=0.0,
-            message="Skipped because reason",
-            stdout=None,
-            stderr=None,
-        )
-        report = RunReport(
-            total=1,
-            passed=0,
-            failed=0,
-            skipped=1,
-            duration=0.1,
-            results=(result,),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["--v1", "tests"])
-
-        assert exit_code == 0
-
-
-class TestCliOutput:
-    """Test CLI output formatting."""
-
-    def test_verbose_mode_passed_to_run(self) -> None:
-        """Test verbose flag is passed to run function."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--v1", "-v"])
-
-            assert mock_run.call_args.kwargs["verbose"] is True
-
-    def test_ascii_mode_passed_to_run(self) -> None:
-        """Test ascii flag is passed to run function."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--v1", "--ascii"])
-
-            assert mock_run.call_args.kwargs["ascii"] is True

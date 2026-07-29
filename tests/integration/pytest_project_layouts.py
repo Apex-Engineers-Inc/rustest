@@ -146,16 +146,14 @@ def test_src_layout_matches_pytest_on_the_default_engine(src_layout_project):
     ``ERROR collecting tests/test_basic.py: ModuleNotFoundError: No module named
     'mypackage'`` and exits 2 -- and the default engine's contract is pytest's behaviour.
 
-    ``--v1`` keeps the old convenience, and the second half of this test pins that, so the
-    escape hatch is verified to actually be one.
+    ``--v1`` kept the old convenience while the legacy engine existed, and the second half
+    of this test used to pin that. Phase 4 Task 2 deleted the engine, so the escape hatch is
+    gone and the *supported* answer is the one the next test pins: pytest's ``pythonpath``
+    ini, implemented in Phase 4 Task 1.
     """
     result = run_rustest(src_layout_project)
     assert result.returncode == 2, f"expected pytest's collection-error exit: {result.stderr}"
     assert "No module named 'mypackage'" in result.stdout + result.stderr, result.stderr
-
-    legacy = run_rustest(src_layout_project, "--v1")
-    assert legacy.returncode == 0, f"--v1 must keep the legacy src/ convenience: {legacy.stderr}"
-    assert "3 passed" in legacy.stderr, legacy.stderr
 
 
 def test_src_layout_works_once_the_pythonpath_ini_is_set(src_layout_project):

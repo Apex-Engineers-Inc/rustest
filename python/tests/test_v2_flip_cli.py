@@ -19,6 +19,8 @@ import re
 import subprocess
 import sys
 
+import pytest
+
 # The compiled extension is built and installed by `python/tests/__init__.py`.
 from rustest import cli
 
@@ -141,16 +143,21 @@ def test_the_v2_flag_is_a_no_op_alias_that_says_so(tmp_path: Path) -> None:
     assert "--v2 is a no-op" not in without.stderr
 
 
-def test_the_v1_flag_selects_the_legacy_engine_and_says_so(tmp_path: Path) -> None:
-    """``--v1`` reaches v1 — identified by v1's own renderer, not by the banner alone."""
+def test_the_v1_flag_is_refused_and_says_what_replaced_it(tmp_path: Path) -> None:
+    """``--v1`` selected the legacy engine until Phase 4 Task 2 deleted it.
+
+    It is a **removed flag** now, not an unrecognised one, and the difference is the whole
+    point: argparse's "unrecognized arguments: --v1" tells a reader whose CI has passed the
+    flag for months nothing about what to do. Exit 4 is pytest's ``USAGE_ERROR``; 2 already
+    means "collection error" in this CLI.
+    """
     tree = _tree(tmp_path, "legacy", {"test_ok.py": "def test_one():\n    assert True\n"})
 
     result = _rustest(tree, ["--v1", "--color", "never"])
 
-    assert result.returncode == 0, result.stderr
-    assert "legacy engine" in result.stderr, result.stderr
-    assert "removed in a future release" in result.stderr, result.stderr
-    assert "1 passed" in result.stdout + result.stderr
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "--v1 has been removed" in result.stderr, result.stderr
+    assert "CHANGELOG" in result.stderr, result.stderr
 
 
 def test_pytest_compat_is_rejected_with_pytests_usage_exit(tmp_path: Path) -> None:
@@ -684,56 +691,35 @@ def test_pytest_exit_outranks_an_earlier_failure(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# --v1 traps
+# removed flags
 # --------------------------------------------------------------------------------------
 
 
-def test_v1_with_collect_only_is_rejected_rather_than_running_the_suite(tmp_path: Path) -> None:
-    """``--v1 --v2-collect-only`` used to **run** the suite.
+def test_no_removed_flag_is_advertised_in_help(tmp_path: Path) -> None:
+    """``--help`` must not list a flag that exits 4.
 
-    That is the worst possible answer to "list the tests, do not run anything": it does the
-    opposite, silently, and a user pointing it at a suite with side effects finds out
-    afterwards. The v1 engine has no collect-only mode, so the combination is a usage error.
+    The pairing is what makes ``REMOVED_FLAGS`` honest: the flag is *recognised* well enough
+    to produce a real message, and *absent* everywhere a user could be told to use it. A
+    removed flag still in the help text is an instruction to type something that fails.
     """
-    marker = tmp_path / "ran.txt"
-    tree = _tree(
-        tmp_path,
-        "collectonly",
-        {
-            "test_side_effect.py": (
-                "from pathlib import Path\n\n\n"
-                "def test_writes():\n"
-                f"    Path({str(marker)!r}).write_text('ran')\n"
-                "    assert True\n"
-            )
-        },
-    )
+    tree = _tree(tmp_path, "help", {"test_ok.py": "def test_one():\n    assert True\n"})
 
-    result = _rustest(tree, ["--v1", "--v2-collect-only"])
+    result = _rustest(tree, ["--help"])
 
-    assert result.returncode == 4, result.stdout + result.stderr
-    assert "--v2-collect-only" in result.stderr and "--v1" in result.stderr, result.stderr
-    assert not marker.exists(), "the suite ran despite --v2-collect-only"
+    assert result.returncode == 0, result.stderr
+    for flag in cli.REMOVED_FLAGS:
+        assert flag not in result.stdout, f"{flag} is refused but still advertised in --help"
 
 
-def test_v1_and_v2_together_are_rejected(tmp_path: Path) -> None:
-    tree = _tree(tmp_path, "bothengines", {"test_ok.py": "def test_one():\n    assert True\n"})
+@pytest.mark.parametrize("flag", sorted(cli.REMOVED_FLAGS))
+def test_every_removed_flag_exits_four_and_names_itself(flag: str, tmp_path: Path) -> None:
+    """Parametrized over the table, so a flag added to it cannot skip the contract."""
+    tree = _tree(tmp_path, "removed", {"test_ok.py": "def test_one():\n    assert True\n"})
 
-    result = _rustest(tree, ["--v1", "--v2"])
+    result = _rustest(tree, [flag])
 
     assert result.returncode == 4, result.stdout + result.stderr
-    assert "cannot be combined" in result.stderr, result.stderr
-
-
-def test_the_v1_banner_redirects_its_own_stale_pytest_compat_advice(tmp_path: Path) -> None:
-    """The v1 engine still prints "Run with --pytest-compat" in some diagnostics, and that
-    flag no longer exists. v1 is frozen, so the banner carries the correction instead."""
-    tree = _tree(tmp_path, "v1banner", {"test_ok.py": "def test_one():\n    assert True\n"})
-
-    result = _rustest(tree, ["--v1", "--color", "never"])
-
-    assert "--pytest-compat" in result.stderr, result.stderr
-    assert "run without --v1 instead" in result.stderr, result.stderr
+    assert f"{flag} has been removed" in result.stderr, result.stderr
 
 
 # --------------------------------------------------------------------------------------

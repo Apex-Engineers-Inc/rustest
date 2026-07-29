@@ -6,7 +6,7 @@ Three layers, and they answer different questions:
   are "which lines" and "what does it cost", both of which a subprocess timing cannot answer
   on a machine whose noise is larger than the effect;
 * **CLI** -- the real binary end to end, because every refusal (`--cov-branch`, `--cov` with
-  `--v1`, an unknown `--cov-report`) is an *exit code* and a mocked parser proves nothing
+  an unknown `--cov-report`) is an *exit code* and a mocked parser proves nothing
   about one;
 * **differential** -- the same tree measured by ``rustest --cov`` and by ``coverage run -m
   pytest``, with the executed line sets compared file by file. That is the only test here that
@@ -632,7 +632,6 @@ def test_cov_branch_is_refused_loudly(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (["--v1", "--cov=src"], "cannot be combined with --v1"),
         (["--v2-collect-only", "--cov=src"], "collect-only"),
         (["--cov-report=term"], "without --cov"),
         (["--cov=src", "--cov-report=html"], "term"),

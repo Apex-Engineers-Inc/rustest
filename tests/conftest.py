@@ -24,7 +24,7 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
         compat_module.__package__ = "rustest"
 
         # Find real rustest and copy its __path__ to make this a proper package
-        # This allows submodule imports like `import rustest._runtime_config`
+        # This allows submodule imports like `import rustest.decorators`
         import importlib.util
 
         spec = importlib.util.find_spec("rustest")
@@ -123,7 +123,7 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
         compat_module.mark = pytest.mark
 
         # Add __getattr__ to delegate unknown attributes to real rustest
-        # This allows accessing things like _runtime_config from the shim
+        # This allows accessing things like `decorators` from the shim
         def __getattr__(name):
             """Delegate unknown attributes to real rustest module."""
             try:

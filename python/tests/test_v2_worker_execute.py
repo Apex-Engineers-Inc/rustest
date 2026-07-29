@@ -59,6 +59,33 @@ from rustest._v2_worker import (
 import rustest._v2_worker as worker
 
 
+def _stub_outcome(name: str, reason: str) -> BaseException:
+    """An outcome exception reached through ``_pytest.outcomes`` -- the *other* import path.
+
+    Imported inside the function rather than at module scope because the stub warns on import
+    by design. Since Phase 4 Task 2 these are the same classes as ``rustest.decorators``'s:
+    the stub **aliases** them rather than declaring its own, which is what closed the two
+    catch-path verdict swaps pinned in ``test_exception_stubs.py``. Constructing them through
+    this door is what keeps the parametrized cases below statements about import paths rather
+    than duplicates of their siblings.
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from rustest._pytest_stub import outcomes
+
+    return getattr(outcomes, name)(reason)
+
+
+def _stub_skipped(reason: str) -> BaseException:
+    return _stub_outcome("Skipped", reason)
+
+
+def _stub_failed(reason: str) -> BaseException:
+    return _stub_outcome("Failed", reason)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "conformance" / "corpus"
 
@@ -999,18 +1026,23 @@ def test_no_exception_is_a_pass() -> None:
     "exc",
     [
         worker._Skipped("reason"),  # pyright: ignore[reportPrivateUsage]
-        worker._StubSkipped("reason"),  # pyright: ignore[reportPrivateUsage]
+        _stub_skipped("reason"),
         unittest.SkipTest("reason"),
     ],
 )
 def test_every_skip_type_is_classified_as_skipped(exc: BaseException) -> None:
-    """Three *different classes* mean "skip", and all three must be recognised by type.
+    """Two *different classes* mean "skip", and both must be recognised by type.
 
-    ``rustest.decorators.Skipped`` is what ``pytest.skip()`` raises through the shim;
-    ``rustest._pytest_stub.outcomes.Skipped`` is what a suite importing pytest's internals
-    raises; ``unittest.SkipTest`` is what ``self.skipTest()`` and ``@unittest.skip`` raise and
-    what pytest converts explicitly.  Testing only one of them would leave the other two
-    silently reported as failures.
+    ``rustest.decorators.Skipped`` is what ``pytest.skip()`` raises through the shim and --
+    since Phase 4 Task 2 -- what ``from _pytest.outcomes import Skipped`` gives a suite
+    reaching into pytest's internals: the stub **aliases** the shim's class rather than
+    declaring its own, so the second parameter here is deliberately the same object arriving
+    by the other import path. ``unittest.SkipTest`` is the genuinely separate one --
+    ``self.skipTest()`` and ``@unittest.skip`` raise it and pytest converts it explicitly.
+
+    The stub leg is kept rather than folded into the first because the *import path* is what
+    a real suite varies, and a regression that re-forked the classes would show up here as
+    well as in ``test_exception_stubs.py``'s identity pin.
     """
     report = report_for_phase("call", exc, None)
     assert (report.outcome, report.status) == ("skipped", "skipped")
@@ -1056,7 +1088,7 @@ def test_an_empty_xfail_reason_is_still_an_xfail() -> None:
         AssertionError("assert 1 == 2"),
         ValueError("boom"),
         worker._Failed("explicit"),  # pyright: ignore[reportPrivateUsage]
-        worker._StubFailed("explicit"),  # pyright: ignore[reportPrivateUsage]
+        _stub_failed("explicit"),
     ],
 )
 def test_everything_else_from_the_body_is_a_failure(exc: BaseException) -> None:
