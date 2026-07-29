@@ -783,9 +783,28 @@ def main_real(selection: str, *, setup_only: bool = False, rebuild_env: bool = F
             file=sys.stderr,
         )
         return 1
-    verdicts = [run_target(name, setup_only=setup_only, rebuild_env=rebuild_env) for name in names]
-    for verdict in verdicts:
+    # STREAMED, not collected-then-printed, and the difference is two hours of wall clock.
+    #
+    # This was `verdicts = [run_target(...) for name in names]` followed by a print loop, so
+    # a full `--real all` sweep -- upwards of two hours, most of it psutil -- emitted NOTHING
+    # until the last target finished. Kill it at minute 100 and every verdict is gone with
+    # the process. That happened twice: the Phase 4b speed wave lost its sweep ~11 minutes
+    # into psutil and had to regrade twelve targets from the per-target artifacts on disk,
+    # and the wall-clock column could not be recovered at all because the harness measures it
+    # in-process and never writes it down.
+    #
+    # (That report diagnosed the loss as stdout block-buffering. It is not -- `python -u`
+    # does not help, because nothing had been *written* yet. The buffer was this list.)
+    #
+    # Printed and flushed as each target completes, so an interrupted sweep is worth exactly
+    # the targets it finished. `flush=True` on the print itself because stdout is a pipe
+    # whenever the sweep is redirected to a log, which is how a two-hour run is always driven.
+    verdicts: list[RealVerdict] = []
+    for name in names:
+        verdict = run_target(name, setup_only=setup_only, rebuild_env=rebuild_env)
+        verdicts.append(verdict)
         _print_verdict(verdict)
+        sys.stdout.flush()
     bad = [v for v in verdicts if v.status in ("DIVERGE", "STALE-LEDGER", "HARNESS-ERROR")]
     matched = sum(v.status == "MATCH" for v in verdicts)
     explained = sum(v.status == "EXPLAINED" for v in verdicts)
