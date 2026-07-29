@@ -46,7 +46,11 @@ Usage:
 
 from __future__ import annotations
 
+import re
 import sys
+import warnings
+from pprint import pformat
+from re import Pattern
 from typing import Any, Callable, NoReturn, TypeVar, TypedDict, cast
 
 try:
@@ -107,6 +111,20 @@ __all__ = [
     "warns",
     "deprecated_call",
     "importorskip",
+    # pytest's warning hierarchy (`_pytest/warning_types.py`), real `Warning` subclasses.
+    "PytestWarning",
+    "PytestAssertRewriteWarning",
+    "PytestCacheWarning",
+    "PytestCollectionWarning",
+    "PytestConfigWarning",
+    "PytestDeprecationWarning",
+    "PytestExperimentalApiWarning",
+    "PytestFDWarning",
+    "PytestRemovedIn9Warning",
+    "PytestReturnNotNoneWarning",
+    "PytestUnhandledThreadExceptionWarning",
+    "PytestUnknownMarkWarning",
+    "PytestUnraisableExceptionWarning",
     "Cache",
     "CaptureFixture",
     "LogCaptureFixture",
@@ -811,10 +829,113 @@ def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any)
     return ParameterSet(values=values, id=id, marks=marks)
 
 
+class PytestWarning(UserWarning):
+    """Port of `_pytest/warning_types.py::PytestWarning` (pytest 8.4.2, l. 13-16) — and of the
+    twelve classes below it, which are the whole of pytest's warning hierarchy.
+
+    **These used to be reached through this module's catch-all ``__getattr__``**, which
+    manufactures a bare ``type(name, (), ...)`` — an ``object`` subclass. That is not a
+    cosmetic difference: a warning category that is not a ``Warning`` subclass cannot be used
+    for anything a warning category is for.
+
+    * ``warnings.simplefilter("error", pytest.PytestDeprecationWarning)`` raises
+      ``TypeError: category must be a Warning subclass``, so a project that promotes pytest's
+      own deprecations to errors — the recommended posture — crashed on the filter itself;
+    * ``-W error::pytest.PytestUnraisableExceptionWarning`` on the command line, same;
+    * ``pytest.warns(pytest.PytestWarning)`` raised ``TypeError`` from the checker's own
+      type validation, and ``issubclass(record.category, ...)`` could never be true anyway;
+    * ``warnings.warn(PytestWarning("..."))`` is a ``TypeError`` outright.
+
+    The bases are pytest's exactly, and the two multiple-inheritance ones are the reason this
+    is a hierarchy rather than a list: ``PytestDeprecationWarning`` is **both** a
+    ``PytestWarning`` and a ``DeprecationWarning`` (l. 47-50), so ``-W error::DeprecationWarning``
+    catches it and ``pytest.deprecated_call()`` accepts it; ``PytestExperimentalApiWarning`` is
+    a ``FutureWarning`` (l. 60-67) for the same reason. Each also sets ``__module__ = "pytest"``,
+    as pytest does, because that string is what appears in a filter spelling and in the
+    rendered warning.
+    """
+
+    __module__ = "pytest"
+
+
+class PytestAssertRewriteWarning(PytestWarning):
+    """`warning_types.py` l. 20-23."""
+
+    __module__ = "pytest"
+
+
+class PytestCacheWarning(PytestWarning):
+    """`warning_types.py` l. 27-30."""
+
+    __module__ = "pytest"
+
+
+class PytestConfigWarning(PytestWarning):
+    """`warning_types.py` l. 34-37."""
+
+    __module__ = "pytest"
+
+
+class PytestCollectionWarning(PytestWarning):
+    """`warning_types.py` l. 41-44."""
+
+    __module__ = "pytest"
+
+
+class PytestDeprecationWarning(PytestWarning, DeprecationWarning):
+    """`warning_types.py` l. 47-50 — a ``PytestWarning`` **and** a ``DeprecationWarning``."""
+
+    __module__ = "pytest"
+
+
+class PytestRemovedIn9Warning(PytestDeprecationWarning):
+    """`warning_types.py` l. 53-56."""
+
+    __module__ = "pytest"
+
+
+class PytestExperimentalApiWarning(PytestWarning, FutureWarning):
+    """`warning_types.py` l. 60-67 — a ``PytestWarning`` **and** a ``FutureWarning``."""
+
+    __module__ = "pytest"
+
+
+class PytestReturnNotNoneWarning(PytestWarning):
+    """`warning_types.py` l. 75-82."""
+
+    __module__ = "pytest"
+
+
+class PytestUnknownMarkWarning(PytestWarning):
+    """`warning_types.py` l. 86-92."""
+
+    __module__ = "pytest"
+
+
+class PytestUnraisableExceptionWarning(PytestWarning):
+    """`warning_types.py` l. 96-104."""
+
+    __module__ = "pytest"
+
+
+class PytestUnhandledThreadExceptionWarning(PytestWarning):
+    """`warning_types.py` l. 108-114."""
+
+    __module__ = "pytest"
+
+
+class PytestFDWarning(PytestWarning):
+    """`warning_types.py` l. 138-141."""
+
+    __module__ = "pytest"
+
+
 class WarningsChecker(_WarningsRecorder):
     """``pytest.warns()`` — a :class:`rustest._warnings.WarningsRecorder` that also asserts.
 
-    **Subclassing the recorder is pytest's own arrangement** (`_pytest/recwarn.py` l. 258:
+    Port of `_pytest/recwarn.py::WarningsChecker` (pytest 8.4.2, l. 255-357).
+
+    **Subclassing the recorder is pytest's own arrangement** (l. 256:
     ``class WarningsChecker(WarningsRecorder)``) and it is what makes ``warns`` and
     ``recwarn`` the same object with the same API. Phase 4 Task 1c unified them; before it,
     ``warns`` carried a private ``catch_warnings`` of its own and ``recwarn`` did not exist,
@@ -822,135 +943,199 @@ class WarningsChecker(_WarningsRecorder):
     ``.list``, a ``.pop()`` or a ``.clear()``.
 
     One consequence is visible to callers and is the pytest-correct direction:
-    ``with warns(...) as rec`` now binds the **recorder**, not the raw list. Everything the
-    list supported still works (``len(rec)``, ``rec[0].message``, iteration), and
-    ``rec.list`` / ``rec.pop(SomeWarning)`` work in addition.
+    ``with warns(...) as rec`` binds the **recorder**, not the raw list. Everything the list
+    supported still works (``len(rec)``, ``rec[0].message``, iteration), and ``rec.list`` /
+    ``rec.pop(SomeWarning)`` work in addition.
 
-    The assertion half below is rustest's own and is deliberately left as it was: its
-    messages are pinned by the corpus and by seventeen real suites, and pytest's
-    ``WarningsChecker.__exit__`` additionally *re-emits* unmatched warnings, which is a
-    behaviour no ledgered suite depends on.
+    **The assertion half was rustest's own until the Phase 4 final polish wave, and it had a
+    false green in it.** ``expected_warning`` defaulted to ``None``, and ``None`` was read as
+    "assert nothing" — so::
+
+        with pytest.warns():
+            some_function_that_warns_about_nothing()
+
+    passed unconditionally. pytest's default is ``Warning`` (l. 259 and the ``warns``
+    signature at l. 224), i.e. *some* warning must be emitted, and that spelling is common in
+    the wild precisely because a caller who does not care which warning still cares that one
+    happened. Four further behaviours came back with the port:
+
+    * **categories are validated** as ``Warning`` subclasses, with pytest's message
+      (``exceptions must be derived from Warning, not %s``), instead of failing later inside
+      ``issubclass``;
+    * **``BaseException`` passes straight through** (l. 297-305): ``pytest.skip()``,
+      ``pytest.fail()``, ``pytest.exit()`` and Ctrl-C inside a ``warns`` block must not be
+      replaced by "DID NOT WARN". The old code returned early for *any* exception, which
+      swallowed the check for a plain ``Exception`` too — pytest deliberately still fails a
+      block that raised a normal exception without warning;
+    * **unmatched warnings are re-emitted** on exit (l. 328-338, pytest 8.0+), so a warning
+      the block raised but the assertion did not claim reaches the enclosing filter stack
+      rather than being silently eaten by the recorder;
+    * **the message shape is pytest's**, ``DID NOT WARN. No warnings of type ... were
+      emitted.`` with the ``pformat``-ed list of what *was* emitted, and a distinct wording
+      for "the category matched but the regex did not" — which is the more common failure and
+      the one the old single message could not distinguish.
     """
 
     def __init__(
         self,
-        expected_warning: type[Warning] | tuple[type[Warning], ...] | None = None,
-        match: str | None = None,
-    ):
+        expected_warning: type[Warning] | tuple[type[Warning], ...] = Warning,
+        match_expr: str | Pattern[str] | None = None,
+    ) -> None:
         super().__init__()
-        self.expected_warning = expected_warning
-        self.match = match
 
-    @property
-    def _records(self) -> list[Any]:
-        """The recorder's list, under the name this class's assertion half already used."""
-        return cast("list[Any]", self.list)
+        # Every check below is "unnecessary" to a type checker and load-bearing at runtime:
+        # the annotation says `type[Warning]`, the argument comes from user test code, and
+        # `pytest.warns(ValueError)` is the mistake this exists to name (`recwarn.py`
+        # l. 267-277). pytest carries the same runtime validation under the same annotation.
+        msg = "exceptions must be derived from Warning, not %s"
+        if isinstance(expected_warning, tuple):
+            for exc in expected_warning:
+                if not issubclass(exc, Warning):  # pyright: ignore[reportUnnecessaryIsInstance]
+                    raise TypeError(msg % type(exc))
+            expected_warning_tup = expected_warning
+        elif isinstance(expected_warning, type) and issubclass(  # pyright: ignore[reportUnnecessaryIsInstance]
+            expected_warning, Warning
+        ):
+            expected_warning_tup = (expected_warning,)
+        else:
+            raise TypeError(msg % type(expected_warning))
+
+        self.expected_warning: tuple[type[Warning], ...] = expected_warning_tup
+        self.match_expr: str | Pattern[str] | None = match_expr
+
+    def matches(self, warning: warnings.WarningMessage) -> bool:
+        """Category **and** regex, as one predicate — l. 284-288."""
+        return issubclass(warning.category, self.expected_warning) and bool(
+            self.match_expr is None or re.search(self.match_expr, str(warning.message))
+        )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        records = list(self._records)
         super().__exit__(exc_type, exc_val, exc_tb)
 
-        # If there was an exception, don't check warnings
-        if exc_type is not None:
+        __tracebackhide__ = True
+
+        # BaseExceptions like pytest.{skip,fail,xfail,exit} or Ctrl-C within pytest.warns
+        # should *not* trigger "DID NOT WARN" and get suppressed when the warning doesn't
+        # happen. Control-flow exceptions should always propagate. (`Exit` is an `Exception`,
+        # not a `BaseException`, for some reason -- pytest's own comment.)
+        if exc_val is not None and (
+            not isinstance(exc_val, Exception) or isinstance(exc_val, Exit)
+        ):
             return
 
-        # If no expected warning specified, just return the records
-        if self.expected_warning is None:
-            return
+        def found_str() -> str:
+            return pformat([record.message for record in self], indent=2)
 
-        # Check that at least one matching warning was raised
-        matching_warnings: list[Any] = []
-        for record in records:
-            # Check warning type
-            if isinstance(self.expected_warning, tuple):
-                type_matches = issubclass(record.category, self.expected_warning)
-            else:
-                type_matches = issubclass(record.category, self.expected_warning)
+        try:
+            if not any(issubclass(w.category, self.expected_warning) for w in self):
+                _rustest_fail(
+                    f"DID NOT WARN. No warnings of type {self.expected_warning} were emitted.\n"
+                    + f" Emitted warnings: {found_str()}."
+                )
+            elif not any(self.matches(w) for w in self):
+                _rustest_fail(
+                    f"DID NOT WARN. No warnings of type {self.expected_warning} matching the "
+                    + f"regex were emitted.\n Regex: {self.match_expr}\n"
+                    + f" Emitted warnings: {found_str()}."
+                )
+        finally:
+            # Whether or not any warnings matched, we want to re-emit all unmatched warnings.
+            for w in self:
+                if not self.matches(w):
+                    warnings.warn_explicit(
+                        message=w.message,
+                        category=w.category,
+                        filename=w.filename,
+                        lineno=w.lineno,
+                        module=w.__module__,
+                        source=w.source,
+                    )
 
-            if not type_matches:
-                continue
-
-            # Check message match if specified
-            if self.match is not None:
-                import re
-
-                message_str = str(record.message)
-                if not re.search(self.match, message_str):
+            # Currently in Python it is possible to pass other types than an `str` message
+            # when creating `Warning` instances, however this causes an exception when
+            # `warnings.filterwarnings` is used to filter those warnings. See
+            # https://github.com/python/cpython/issues/103577. While this can be considered a
+            # bug in CPython, we put guards in pytest as the error message produced without
+            # this check in place is confusing (#10865).
+            for w in self:
+                if type(w.message) is not UserWarning:
+                    # If the warning was of an incorrect type then `warnings.warn()` creates a
+                    # UserWarning. Any other warning must have been specified explicitly.
                     continue
-
-            matching_warnings.append(record)
-
-        if not matching_warnings:
-            # Build error message
-            if isinstance(self.expected_warning, tuple):
-                expected_str = " or ".join(w.__name__ for w in self.expected_warning)
-            else:
-                expected_str = self.expected_warning.__name__
-
-            if self.match:
-                expected_str += f" matching {self.match!r}"
-
-            if records:
-                actual = ", ".join(f"{r.category.__name__}({r.message!s})" for r in records)
-                msg = f"Expected {expected_str} but got: {actual}"
-            else:
-                msg = f"Expected {expected_str} but no warnings were raised"
-
-            raise AssertionError(msg)
+                if not w.message.args:
+                    # UserWarning() without arguments must have been specified explicitly.
+                    continue
+                msg = w.message.args[0]
+                if isinstance(msg, str):
+                    continue
+                raise TypeError(
+                    f"Warning must be str or Warning, got {msg!r} (type {type(msg).__name__})"
+                )
 
 
 def warns(
-    expected_warning: type[Warning] | tuple[type[Warning], ...] | None = None,
-    *,
-    match: str | None = None,
-) -> WarningsChecker:
+    expected_warning: type[Warning] | tuple[type[Warning], ...] = Warning,
+    *args: Any,
+    match: str | Pattern[str] | None = None,
+    **kwargs: Any,
+) -> Any:
+    r"""Assert that the block (or the call) raises a warning of the given class.
+
+    Port of `_pytest/recwarn.py::warns` (pytest 8.4.2, l. 222-252).
+
+    **The default is ``Warning``, not ``None``.** ``pytest.warns()`` with no argument asserts
+    that *something* was warned; rustest read the bare call as "assert nothing" and passed
+    unconditionally. See :class:`WarningsChecker` for the rest of what came back with the port.
+
+    **The callable form is pytest's second signature**, not a convenience::
+
+        pytest.warns(UserWarning, f, 1, 2)      # runs f(1, 2), returns its value
+
+    It is the form the standard library's own ``assertWarns`` heritage put into a lot of
+    suites, and it is why ``*args``/``**kwargs`` exist on this signature at all. Passing
+    keyword arguments *without* a callable is pytest's ``TypeError`` with its "Use
+    context-manager form instead?" hint, because that shape is almost always a typo for
+    ``match=``.
+
+    Note the asymmetry pytest carries and this port keeps: the callable form does **not**
+    forward ``match``. ``kwargs`` there belong to the function being called.
     """
-    Context manager to capture and assert warnings.
+    __tracebackhide__ = True
+    if not args:
+        if kwargs:
+            argnames = ", ".join(sorted(kwargs))
+            raise TypeError(
+                f"Unexpected keyword arguments passed to pytest.warns: {argnames}"
+                + "\nUse context-manager form instead?"
+            )
+        return WarningsChecker(expected_warning, match_expr=match)
+    else:
+        func = args[0]
+        if not callable(func):
+            raise TypeError(f"{func!r} object (type: {type(func)}) must be callable")
+        with WarningsChecker(expected_warning):
+            return func(*args[1:], **kwargs)
 
-    This function can be used as a context manager to check that certain
-    warnings are raised during execution.
 
-    Args:
-        expected_warning: The expected warning class(es), or None to capture all
-        match: Optional regex pattern to match against the warning message
+def deprecated_call(func: Any = None, *args: Any, **kwargs: Any) -> Any:
+    """Assert a ``DeprecationWarning``, ``PendingDeprecationWarning`` **or ``FutureWarning``**.
 
-    Returns:
-        A context manager that yields a list of captured warnings
+    Port of `_pytest/recwarn.py::deprecated_call` (pytest 8.4.2, l. 199-219).
 
-    Examples:
-        # Check that a DeprecationWarning is raised
-        with pytest.warns(DeprecationWarning):
-            some_deprecated_function()
+    ``FutureWarning`` is the third member and was missing. It is not an edge case: the whole
+    point of ``FutureWarning`` is a deprecation aimed at *end users* rather than developers,
+    so a library that chose it — numpy and pandas both do, extensively — had its
+    ``deprecated_call()`` assertions fail under rustest for warning about the right thing in
+    the documented way. Note also that ``PytestExperimentalApiWarning`` is a ``FutureWarning``
+    subclass, so pytest's own experimental-API warnings are caught by this too.
 
-        # Check warning message matches pattern
-        with pytest.warns(UserWarning, match="must be positive"):
-            function_with_warning(-1)
-
-        # Capture all warnings without asserting
-        with pytest.warns() as record:
-            some_code()
-        assert len(record) == 2
+    The callable form (``deprecated_call(f, 1, 2)``) is pytest's other signature and simply
+    prepends *func* to ``args`` before handing the whole thing to :func:`warns`.
     """
-    return WarningsChecker(expected_warning, match)
-
-
-def deprecated_call(*, match: str | None = None) -> WarningsChecker:
-    """
-    Context manager to check that a deprecation warning is raised.
-
-    This is a convenience wrapper around warns(DeprecationWarning).
-
-    Args:
-        match: Optional regex pattern to match against the warning message
-
-    Returns:
-        A context manager that yields a list of captured warnings
-
-    Example:
-        with pytest.deprecated_call():
-            some_deprecated_function()
-    """
-    return WarningsChecker((DeprecationWarning, PendingDeprecationWarning), match)
+    __tracebackhide__ = True
+    if func is not None:
+        args = (func, *args)
+    return warns((DeprecationWarning, PendingDeprecationWarning, FutureWarning), *args, **kwargs)
 
 
 def importorskip(
@@ -1037,7 +1222,14 @@ def importorskip(
                     "See https://docs.pytest.org/en/stable/deprecations.html"
                     + "#pytest-importorskip-default-behavior-regarding-importerror",
                 ]
-                warning = DeprecationWarning("\n".join(lines))
+                # `PytestDeprecationWarning`, which is what pytest raises here (l. 302) --
+                # NOT a bare `DeprecationWarning`. The distinction is the difference between
+                # a project being able to silence pytest's own #11523 deprecation
+                # (`-W ignore::pytest.PytestDeprecationWarning`) and having to silence every
+                # DeprecationWarning in the process to do it. Because
+                # `PytestDeprecationWarning` derives from `DeprecationWarning` as well,
+                # everything that used to catch this still does.
+                warning = PytestDeprecationWarning("\n".join(lines))
 
     if warning:
         warnings.warn(warning, stacklevel=2)
@@ -1130,6 +1322,16 @@ def __getattr__(name: str) -> Any:
     if name.startswith("_"):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+    # A name ending in "Warning" is a warning CATEGORY, and a category that is not a
+    # `Warning` subclass is unusable: `warnings.simplefilter("error", cat)` raises
+    # `TypeError: category must be a Warning subclass`, `warnings.warn(cat("..."))` raises,
+    # and `issubclass(record.category, cat)` can never be true. pytest's own thirteen are
+    # defined explicitly above (`PytestWarning` and friends); this arm covers a name some
+    # plugin reaches for that pytest has and this shim does not yet enumerate, so it is at
+    # least *shaped* like the thing it stands in for. Everything else keeps the inert
+    # `object` stub, which is right for a name that is only ever imported.
+    bases: tuple[type, ...] = (PytestWarning,) if name.endswith("Warning") else ()
+
     # Create a stub class dynamically
     def stub_init(self: Any, *args: Any, **kwargs: Any) -> None:
         pass
@@ -1137,20 +1339,18 @@ def __getattr__(name: str) -> Any:
     def stub_repr(self: Any) -> str:
         return f"<{name} (rustest compat stub)>"
 
-    stub_class = type(
-        name,
-        (),
-        {
-            "__doc__": (
-                f"Dynamically generated stub for pytest.{name}.\n\n"
-                f"NOT FUNCTIONAL in rustest pytest-compat mode. This stub exists\n"
-                f"to allow pytest plugins to import without errors."
-            ),
-            "__init__": stub_init,
-            "__repr__": stub_repr,
-            "__module__": __name__,
-        },
+    members: dict[str, Any] = {}
+    if not bases:
+        members["__init__"] = stub_init
+        members["__repr__"] = stub_repr
+
+    members["__doc__"] = (
+        f"Dynamically generated stub for pytest.{name}.\n\n"
+        f"NOT FUNCTIONAL in rustest pytest-compat mode. This stub exists\n"
+        f"to allow pytest plugins to import without errors."
     )
+    members["__module__"] = __name__
+    stub_class = type(name, bases, members)
 
     # Cache it so subsequent imports get the same class
     _dynamic_stubs[name] = stub_class

@@ -22,7 +22,7 @@ from rustest.compat.pytest import (
     importorskip,
     FixtureRequest,
 )
-from rustest.decorators import parametrize, ParameterSet, _build_cases
+from rustest.decorators import parametrize, ParameterSet, Failed, _build_cases
 from rustest.builtin_fixtures import CaptureFixture
 from rustest.fixture_registry import register_fixtures, clear_registry
 
@@ -57,20 +57,25 @@ class TestWarns:
             warnings.warn("this is a specific warning", UserWarning)
 
     def test_warns_match_pattern_fails_when_no_match(self):
-        """Test that warns raises when pattern doesn't match."""
-        with pytest.raises(AssertionError, match="Expected UserWarning"):
+        """The *category matched, regex did not* message -- pytest's second wording.
+
+        The old implementation had one message for both failures. pytest distinguishes them
+        because they have different causes and different fixes, and the regex miss is the
+        more common of the two (`_pytest/recwarn.py` l. 316-321).
+        """
+        with pytest.raises(Failed, match="matching the regex were emitted"):
             with warns(UserWarning, match="nonexistent"):
                 warnings.warn("different message", UserWarning)
 
     def test_warns_raises_when_no_warning(self):
-        """Test that warns raises when no warning is emitted."""
-        with pytest.raises(AssertionError, match="no warnings were raised"):
+        """The DID-NOT-WARN message shape, `_pytest/recwarn.py` l. 311-315."""
+        with pytest.raises(Failed, match="DID NOT WARN. No warnings of type"):
             with warns(UserWarning):
                 pass  # No warning emitted
 
     def test_warns_raises_when_wrong_type(self):
         """Test that warns raises when wrong warning type is emitted."""
-        with pytest.raises(AssertionError, match="Expected DeprecationWarning"):
+        with pytest.raises(Failed, match="DID NOT WARN"):
             with warns(DeprecationWarning):
                 warnings.warn("wrong type", UserWarning)
 
@@ -95,6 +100,87 @@ class TestWarns:
         with warns(Warning):
             warnings.warn("deprecated", DeprecationWarning)
 
+    # -- the Phase 4 final polish wave (review findings I3 and I7) -----------------
+
+    def test_warns_with_no_category_still_requires_a_warning(self):
+        """FINDING I3 -- the false green. ``pytest.warns()`` defaults to ``Warning``.
+
+        ``expected_warning`` defaulted to ``None`` and ``None`` was read as "assert nothing",
+        so a bare ``with pytest.warns():`` passed over a block that warned about nothing at
+        all. pytest's default is ``Warning`` (`_pytest/recwarn.py` l. 224 and l. 259), which
+        is why the spelling is common: a caller who does not care *which* warning still cares
+        that one happened.
+        """
+        with pytest.raises(Failed, match="DID NOT WARN"):
+            with warns():
+                pass
+
+    def test_the_default_is_the_class_warning_not_none(self):
+        """Read off the checker itself, so the default cannot drift back to ``None``."""
+        checker = warns()
+        assert checker.expected_warning == (Warning,)
+        assert checker.match_expr is None
+
+    def test_a_non_warning_category_is_a_type_error(self):
+        """pytest's own validation and message (`recwarn.py` l. 267-277)."""
+        with pytest.raises(TypeError, match="exceptions must be derived from Warning"):
+            warns(ValueError)  # pyright: ignore[reportArgumentType]
+        with pytest.raises(TypeError, match="exceptions must be derived from Warning"):
+            warns((UserWarning, ValueError))  # pyright: ignore[reportArgumentType]
+
+    def test_the_callable_form_runs_the_function_and_returns_its_value(self):
+        """pytest's second signature: ``warns(cat, func, *args, **kwargs)`` (l. 245-252)."""
+
+        def warner(a, b, c=0):
+            warnings.warn("called", UserWarning)
+            return a + b + c
+
+        assert warns(UserWarning, warner, 1, 2, c=3) == 6
+
+    def test_the_callable_form_rejects_a_non_callable(self):
+        with pytest.raises(TypeError, match="must be callable"):
+            warns(UserWarning, "not callable")
+
+    def test_keyword_arguments_without_a_callable_are_a_type_error(self):
+        """pytest's "Use context-manager form instead?" hint (l. 240-244)."""
+        with pytest.raises(TypeError, match="Use context-manager form instead"):
+            warns(UserWarning, nonsense=1)
+
+    def test_unmatched_warnings_are_re_emitted_on_exit(self):
+        """pytest 8.0+ (`recwarn.py` l. 328-338): a warning the assertion did not claim
+        must reach the enclosing filter stack rather than being eaten by the recorder.
+
+        This is pytest's own doctest, transcribed: the inner block matches on its regex, and
+        the *unmatched* UserWarning it also saw is re-raised into the outer ``warns``. Note
+        the two regexes are deliberately non-overlapping -- ``matches()`` is ``re.search``, so
+        "claimed"/"not claimed" would both match the inner pattern and nothing would be
+        re-emitted at all (which is how this test first passed for the wrong reason).
+        """
+        with warns(UserWarning, match="beta") as outer:
+            with warns(UserWarning, match="alpha"):
+                warnings.warn("alpha, claimed by the inner block", UserWarning)
+                warnings.warn("beta, not claimed by the inner block", UserWarning)
+        assert [str(w.message) for w in outer] == ["beta, not claimed by the inner block"]
+
+    def test_a_base_exception_passes_straight_through(self):
+        """`recwarn.py` l. 297-305: ``skip``/``fail``/``exit``/Ctrl-C must not become
+        "DID NOT WARN", because a control-flow exception is the answer, not a symptom.
+        """
+        with pytest.raises(KeyboardInterrupt):
+            with warns(UserWarning):
+                raise KeyboardInterrupt
+
+    def test_a_plain_exception_does_NOT_suppress_the_check(self):
+        """The other half, and the one the old early-return got wrong.
+
+        The old code returned for *any* exception, so a block that raised a normal error
+        without warning was silently accepted. pytest still fails it -- and both exceptions
+        surface, the ``Failed`` chained onto the original.
+        """
+        with pytest.raises(Failed, match="DID NOT WARN"):
+            with warns(UserWarning):
+                raise ValueError("something else went wrong")
+
 
 class TestDeprecatedCall:
     """Tests for the deprecated_call() context manager."""
@@ -116,9 +202,103 @@ class TestDeprecatedCall:
 
     def test_deprecated_call_raises_when_no_deprecation(self):
         """Test deprecated_call raises when no deprecation warning."""
-        with pytest.raises(AssertionError):
+        with pytest.raises(Failed, match="DID NOT WARN"):
             with deprecated_call():
                 pass  # No warning
+
+    def test_deprecated_call_captures_future_warning(self):
+        """FINDING I7 -- ``FutureWarning`` is the **third** member and was missing.
+
+        `_pytest/recwarn.py` l. 219: ``warns((DeprecationWarning, PendingDeprecationWarning,
+        FutureWarning), ...)``. Not an edge case: ``FutureWarning`` exists for deprecations
+        aimed at end users rather than developers, and numpy and pandas both use it heavily,
+        so a library that deprecated in the documented way had its own
+        ``deprecated_call()`` assertions fail under rustest.
+        """
+        with deprecated_call():
+            warnings.warn("this will change", FutureWarning)
+
+    def test_deprecated_call_expects_exactly_pytests_three_categories(self):
+        checker = deprecated_call()
+        assert checker.expected_warning == (
+            DeprecationWarning,
+            PendingDeprecationWarning,
+            FutureWarning,
+        )
+
+    def test_deprecated_call_callable_form(self):
+        """``deprecated_call(func, *args)`` -- pytest's other signature (l. 213-217)."""
+
+        def old_api(value):
+            warnings.warn("use v3", DeprecationWarning)
+            return value * 2
+
+        assert deprecated_call(old_api, 21) == 42
+
+
+class TestPytestWarningHierarchy:
+    """FINDING I5 -- ``pytest.Pytest*Warning`` must BE ``Warning`` subclasses.
+
+    They used to come out of this module's catch-all ``__getattr__``, which manufactures a
+    bare ``type(name, (), ...)``. An ``object`` subclass cannot be used as a warning category
+    for anything a warning category is for, so every one of the tests below raised
+    ``TypeError`` before the hierarchy was ported from `_pytest/warning_types.py`.
+    """
+
+    def test_pytest_warning_is_a_user_warning(self):
+        from rustest.compat.pytest import PytestWarning
+
+        assert issubclass(PytestWarning, UserWarning)
+
+    def test_pytest_deprecation_warning_has_both_bases(self):
+        """`warning_types.py` l. 47-50 -- ``PytestWarning`` AND ``DeprecationWarning``.
+
+        The second base is what makes ``-W error::DeprecationWarning`` catch pytest's own
+        deprecations and ``pytest.deprecated_call()`` accept them.
+        """
+        from rustest.compat.pytest import PytestDeprecationWarning, PytestWarning
+
+        assert issubclass(PytestDeprecationWarning, PytestWarning)
+        assert issubclass(PytestDeprecationWarning, DeprecationWarning)
+
+    def test_experimental_api_warning_is_a_future_warning(self):
+        from rustest.compat.pytest import PytestExperimentalApiWarning
+
+        assert issubclass(PytestExperimentalApiWarning, FutureWarning)
+
+    def test_a_pytest_warning_can_be_used_as_a_filter_category(self):
+        """The failure this fixes: ``TypeError: category must be a Warning subclass``."""
+        from rustest.compat.pytest import PytestDeprecationWarning
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PytestDeprecationWarning)
+            with pytest.raises(PytestDeprecationWarning):
+                warnings.warn(PytestDeprecationWarning("promoted to an error"))
+
+    def test_a_pytest_warning_can_be_caught_by_warns(self):
+        from rustest.compat.pytest import PytestCollectionWarning, PytestWarning
+
+        with warns(PytestWarning):
+            warnings.warn(PytestCollectionWarning("cannot collect"))
+
+    def test_an_unenumerated_warning_name_is_still_a_warning(self):
+        """The catch-all's ``*Warning`` arm: a name pytest has and this shim does not.
+
+        A stub for a warning category is at least *shaped* like the thing it stands in for,
+        so a plugin that filters on it does not crash on the filter.
+        """
+        import rustest.compat.pytest as _compat
+
+        stub = _compat.PytestSomeUnenumeratedWarning
+        assert issubclass(stub, _compat.PytestWarning)
+        assert issubclass(stub, Warning)
+
+    def test_a_non_warning_name_keeps_the_inert_object_stub(self):
+        import rustest.compat.pytest as _compat
+
+        stub = _compat.SomeUnknownPytestThing
+        assert not issubclass(stub, Warning)
+        assert "rustest compat stub" in repr(stub())
 
 
 # =============================================================================
@@ -360,25 +540,92 @@ class TestImportorskip:
         assert os_module is os
 
     def test_importorskip_with_missing_module(self):
-        """Test that importorskip skips when module is missing."""
-        with pytest.raises(Exception):  # Should raise skip
+        """A missing module raises `Skipped`, and it is a **BaseException** (finding I4).
+
+        This test used to say ``pytest.raises(Exception)``; that stopped being true when the
+        outcome hierarchy was aligned with pytest's, and naming the class is the stronger
+        assertion anyway.
+        """
+        from rustest.compat.pytest import Skipped
+
+        with pytest.raises(Skipped) as exc_info:
             importorskip("nonexistent_module_12345")
+        assert exc_info.value.allow_module_level is True
 
     def test_importorskip_with_custom_reason(self):
         """Test importorskip with custom reason."""
-        with pytest.raises(Exception) as exc_info:
+        from rustest.compat.pytest import Skipped
+
+        with pytest.raises(Skipped) as exc_info:
             importorskip("nonexistent_module", reason="custom reason")
 
-        # The skip should contain our custom reason
-        assert "custom reason" in str(exc_info.value) or True  # Skip raises
+        assert "custom reason" in str(exc_info.value)
 
     def test_importorskip_version_check(self):
         """Test importorskip with version requirement."""
-        # This should work - os has no __version__ but we handle that
-        try:
+        from rustest.compat.pytest import Skipped
+
+        # `os` has no `__version__`, which pytest treats as a version MISS -- one branch,
+        # one message (`module 'os' has __version__ None, required is: '0.0.1'`).
+        with pytest.raises(Skipped, match=r"has __version__ None, required is: '0.0.1'"):
             importorskip("os", minversion="0.0.1")
-        except Exception:
-            pass  # Expected if no __version__
+
+    def test_importorskip_warns_with_pytests_own_category(self):
+        """FINDING I5 -- the #11523 warning is a ``PytestDeprecationWarning`` (l. 302).
+
+        A bare ``DeprecationWarning`` cannot be silenced without silencing every
+        ``DeprecationWarning`` in the process. Because pytest's class derives from
+        ``DeprecationWarning`` as well, everything that used to catch this still does -- which
+        is the ``-W`` interaction this pins from both sides.
+        """
+        import importlib.abc
+        import importlib.machinery
+        import sys
+        import types
+
+        from rustest.compat.pytest import PytestDeprecationWarning, Skipped
+
+        modname = "rustest_importorskip_probe_module"
+
+        class _Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+            """A module that EXISTS but raises ``ImportError`` on import.
+
+            That is exactly the shape #11523 is about: from the outside it is
+            indistinguishable from an absent module, and the deprecation exists to say so.
+            A ``ModuleNotFoundError`` would NOT warn -- that one really is absent.
+            """
+
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname != modname:
+                    return None
+                return importlib.machinery.ModuleSpec(fullname, self)
+
+            def create_module(self, spec):
+                return types.ModuleType(spec.name)
+
+            def exec_module(self, module):
+                raise ImportError("a real import error, not a missing module")
+
+        finder = _Finder()
+        sys.meta_path.insert(0, finder)
+        try:
+            with warns(PytestDeprecationWarning, match="was found, but when imported"):
+                with pytest.raises(Skipped):
+                    importorskip(modname)
+            # `-W` interaction, the other direction: it is a `DeprecationWarning` too, so a
+            # project's broad filter still catches it.
+            with warns(DeprecationWarning):
+                with pytest.raises(Skipped):
+                    importorskip(modname)
+            # ...and `exc_type=ImportError` is how a caller silences it, as pytest documents.
+            # Under `simplefilter("error")` any warning at all would surface as an exception.
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                with pytest.raises(Skipped):
+                    importorskip(modname, exc_type=ImportError)
+        finally:
+            sys.meta_path.remove(finder)
+            sys.modules.pop(modname, None)
 
 
 # =============================================================================
@@ -552,10 +799,11 @@ class TestSkipFunction:
         assert True
 
     def test_skip_exception_type_exported(self):
-        """Test that Skipped exception is exported."""
+        """Test that Skipped exception is exported -- as a `BaseException` (finding I4)."""
         from rustest.compat.pytest import Skipped
 
-        assert issubclass(Skipped, Exception)
+        assert issubclass(Skipped, BaseException)
+        assert not issubclass(Skipped, Exception)
 
 
 class TestXFailFunction:
@@ -595,10 +843,12 @@ class TestXFailFunction:
         assert True
 
     def test_xfail_exception_type_exported(self):
-        """Test that XFailed exception is exported."""
-        from rustest.compat.pytest import XFailed
+        """Test that XFailed exception is exported -- as a `Failed` subclass (finding I4)."""
+        from rustest.compat.pytest import Failed as _Failed, XFailed
 
-        assert issubclass(XFailed, Exception)
+        assert issubclass(XFailed, _Failed)
+        assert issubclass(XFailed, BaseException)
+        assert not issubclass(XFailed, Exception)
 
 
 class TestFailFunction:
@@ -650,24 +900,49 @@ class TestAllExceptionTypesExported:
         assert hasattr(pytest_compat, "XFailed")
 
     def test_exceptions_are_exceptions(self):
-        """The outcome exceptions are catchable, and `Failed` is a **BaseException**.
+        """FINDING I4 -- the whole outcome hierarchy is on the ``BaseException`` side now.
 
-        pytest declares `class OutcomeException(BaseException)` and `class
-        Failed(OutcomeException)` precisely so a test body's `except Exception:` cannot
-        swallow the runner's own "this test failed" signal. rustest's `Failed` derived from
-        `Exception` until Phase 4 Task 1's review measured what that costs: a `raises` block
-        that did not raise reported **passed** here and **failed** under pytest.
+        pytest declares ``class OutcomeException(BaseException)``, ``class
+        Skipped(OutcomeException)``, ``class Failed(OutcomeException)`` and ``class
+        XFailed(Failed)`` precisely so a test body's ``except Exception:`` cannot swallow the
+        runner's own control flow.
 
-        `Skipped`/`XFailed` are left on `Exception` for now -- v1's collector and the compat
-        shim both catch them broadly, and v1 is deleted in Task 2, which is the right moment
-        to align the rest of the hierarchy.
+        rustest arrived in two steps. Phase 4 Task 1's review moved ``Failed`` after measuring
+        the cost (a ``raises`` block that did not raise reported **passed** here and
+        **failed** under pytest). ``Skipped``/``XFailed`` were left behind with the note that
+        "nothing in the corpus turns on a test body's ``except Exception`` swallowing a skip"
+        -- a statement about the corpus, not about the class. The Phase 4 final polish wave
+        finished the job: the same three-line ``try/except Exception: pass`` turns a skip into
+        a **pass**, which is a silent green, the worst answer available.
         """
         from rustest.compat.pytest import Failed, Skipped, XFailed
+        from rustest.decorators import OutcomeException
 
-        assert issubclass(Failed, BaseException)
-        assert not issubclass(Failed, Exception)
-        assert issubclass(Skipped, Exception)
-        assert issubclass(XFailed, Exception)
+        for cls in (Failed, Skipped, XFailed):
+            assert issubclass(cls, OutcomeException)
+            assert issubclass(cls, BaseException)
+            assert not issubclass(cls, Exception)
+        # `class XFailed(Failed)` -- pytest's declaration, and what makes the worker's
+        # "XFAILED before FAILED" classification order load-bearing rather than accidental.
+        assert issubclass(XFailed, Failed)
+        assert not issubclass(Failed, XFailed)
+
+    def test_an_except_exception_body_cannot_swallow_an_outcome(self):
+        """The defect in one shape, for each of the three outcome signals."""
+        from rustest.compat.pytest import fail, skip, xfail
+
+        for raiser in (lambda: skip("s"), lambda: fail("f"), lambda: xfail("x")):
+            swallowed = True
+            try:
+                try:
+                    raiser()
+                except Exception:  # noqa: BLE001 - the hazard, reproduced deliberately
+                    swallowed = True
+                else:
+                    swallowed = False
+            except BaseException:
+                swallowed = False
+            assert swallowed is False
 
     def test_exceptions_have_distinct_types(self):
         """Test that exception types are distinct."""
