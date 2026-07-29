@@ -2121,6 +2121,52 @@ def test_two_files_in_one_directory_share_their_conftest_fixturedefs(tmp_path: P
         assert first_defs[-1] is second_defs[-1]
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Two spellings of one path are two files on a case-sensitive filesystem.",
+)
+def test_a_conftest_reached_under_two_path_spellings_is_still_one_block(tmp_path: Path) -> None:
+    """The two caches must agree about identity, and on Windows they nearly did not.
+
+    ``_conftest_modules`` keys on ``Path``, whose hash is case-**in**sensitive on Windows
+    (``PurePath._str_normcase``); ``_content_key`` keyed on ``as_posix()``, which preserves
+    case.  One conftest reached under two spellings therefore produced **one module** and
+    **two** ``FixtureDef`` blocks -- and since the value cache keys on ``FixtureDef``
+    identity, that is the per-file duplication the Phase 4c cache exists to remove, quietly
+    resurrected: a session fixture ran its setup twice where pytest runs it once.
+
+    The realistic vector is not a typo, it is **drive-letter case**: ``c:\\repo`` from one
+    tool and ``C:\\repo`` from another are both ordinary, and nothing normalises between
+    them.  Hence swapping exactly that here, and hence ``os.path.normcase`` in
+    ``_content_key``.
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture(scope="session")
+        def resource():
+            return object()
+        """,
+    )
+    first = write(tmp_path / "test_a.py", "def test_a(resource):\n    pass\n")
+
+    # Same file, other drive-letter case. `Path` compares these equal; `as_posix()` does not.
+    native = str(tmp_path)
+    swapped_root = Path(native[0].swapcase() + native[1:])
+    assert str(swapped_root) != native, "drive letter did not change; the probe proves nothing"
+    second = Path(str(first)[0].swapcase() + str(first)[1:])
+
+    with isolated_import_state():
+        _module, one = build_registry(first, tmp_path)
+        _module, two = build_registry(second, swapped_root)
+        first_defs = one.getfixturedefs("resource")
+        second_defs = two.getfixturedefs("resource")
+        assert first_defs is not None and second_defs is not None
+        assert first_defs[-1] is second_defs[-1]
+
+
 def test_a_files_own_fixtures_do_not_reach_a_sibling_sharing_the_conftest(
     tmp_path: Path,
 ) -> None:

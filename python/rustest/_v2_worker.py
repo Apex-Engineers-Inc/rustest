@@ -102,10 +102,18 @@ traceback filtering — because those distinguish one outcome from another.
 * *No item reordering, and the visible symptom is a **setup-count** difference, not just an
   ordering one.*  pytest groups tests sharing a higher-scoped parametrized fixture
   (`_pytest/fixtures.py::reorder_items`); that pass needs the whole session's item list,
-  which a per-file worker does not have.  Ids stay correct, but two tests sharing a
-  module-scoped ``params=["a","b"]`` fixture cost **2** setups under pytest (grouped
-  ``a a b b``) and **4** here (interleaved ``a b a b``) — both measured — so anything the
-  fixture accumulates is reset twice as often.  See :func:`collect_module`.  Pinned by
+  which a per-file worker does not have.  Ids stay correct, but the fixture is re-set-up every
+  time the parameter changes instead of once per group, **at every scope above ``function``**:
+
+  * two tests sharing a *module*-scoped ``params=["a","b"]`` fixture cost **2** setups under
+    pytest (grouped ``a a b b``) and **4** here (interleaved ``a b a b``);
+  * three files sharing a *session*- or *package*-scoped ``params=["a","b"]`` fixture cost
+    **2** under pytest and **6** here — one per file per parameter.
+
+  Both measured.  The second is the one worth naming explicitly, because the Phase 4c conftest
+  cache below fixed the *unparametrized* session case and left this one exactly where it was:
+  the value cache keys on ``(FixtureDef, param)``, and sharing the ``FixtureDef`` does nothing
+  when the param differs on every file.  See :func:`collect_module`.  Pinned by
   ``conformance/corpus/fixtures/module-param-reorder``, which the gate catches on the
   **ordered** ids alone: the tally, the id set and the exit code all agree.
 * *``session`` and ``package`` scope are **per worker**, for setup and teardown alike.*  A
@@ -118,6 +126,12 @@ traceback filtering — because those distinguish one outcome from another.
   ``conformance/corpus/fixtures/session-scope`` (single-worker, now MATCH) and
   ``conformance/corpus/async/session-loop-shared`` (multi-worker, still waived) for the two
   halves of the measurement.
+
+  **"Once per worker" is a claim about *unparametrized* session and package fixtures.**  A
+  ``params=[...]`` one is still re-set-up per file, for the reason in the reordering bullet
+  above — the fix shared the ``FixtureDef``, and a parametrized fixture's cache key carries the
+  parameter as well.  Measured after the fix, unchanged from before it: 3 files x 2 params =
+  **6** setups against pytest's 2.
 * *A file is enumerated exactly as handed over.*  pytest never collects ``conftest.py``
   as a test module (it matches no ``python_files`` pattern and is loaded as a plugin),
   so the orchestrator should not send one as a collect target; doing so anyway is
@@ -3716,9 +3730,23 @@ def _content_key(path: Path) -> tuple[str, str] | None:
     case; what it cannot distinguish is the same path over different bytes.  For a cache whose
     hit means *sharing live session state*, "reuse unless provably identical" is the wrong
     default, so the rule is byte-identical or rebuild.
+
+    **``normcase``, and it is load-bearing rather than tidy.**  :data:`_conftest_modules` keys
+    on ``Path``, whose hash and equality are *case-insensitive* on Windows
+    (``PurePath._str_normcase``), while ``as_posix()`` preserves case.  Without the ``normcase``
+    the two caches disagree about identity for one file reached under two spellings -- and the
+    realistic vector is not a typo, it is **drive-letter case**: ``c:\\repo`` and ``C:\\repo``
+    both arrive from ordinary tooling.  The result was one conftest *module* (correct) behind
+    two ``FixtureDef`` blocks (wrong), which resurrects exactly the per-file duplication this
+    cache exists to remove: measured on a mixed-case argv, a session fixture ran its setup
+    **twice** where pytest runs it once.  ``normcase`` is a no-op on POSIX, where the two
+    spellings really are two files.
     """
     try:
-        return (path.as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
+        return (
+            os.path.normcase(path.as_posix()),
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
     except OSError:
         return None
 
