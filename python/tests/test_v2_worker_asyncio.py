@@ -93,7 +93,11 @@ def worker_for(rootdir: Path, config: AsyncioConfig) -> Iterator[None]:
         for name in set(sys.modules) - set(saved_modules):
             del sys.modules[name]
         sys.modules.update(saved_modules)
-        worker._conftest_modules.clear()  # pyright: ignore[reportPrivateUsage]
+        # `reset_registry_caches` also drops the per-worker chain registries and the
+        # builtins' FixtureDefs, which are pure derivations of the conftest modules and
+        # whose whole purpose is to share session values -- across two unrelated trees
+        # that sharing is exactly what must not survive.
+        worker.reset_registry_caches()
         worker._conftest_modules.update(saved_conftests)  # pyright: ignore[reportPrivateUsage]
 
 
@@ -492,6 +496,89 @@ def test_a_session_loop_survives_a_module_boundary(tmp_path: Path) -> None:
         assert runner.loop_runner("session").get_loop() is session_loop
     finally:
         runner.teardown_all()
+
+
+def test_a_session_async_fixture_survives_a_file_boundary(tmp_path: Path) -> None:
+    """One worker, two files, one **async** session fixture on one session loop.
+
+    The loop half has always worked -- `FixtureRunner._loops` keys on the scope *name*, so a
+    module boundary never took the session loop with it (the test above).  Until Phase 4c the
+    *fixture* did not: its `FixtureDef` was rebuilt per file and `FixtureRunner._cache` keys on
+    identity, so file two awaited a fresh setup on the shared loop.  The two halves are now
+    consistent, which is what real pytest + pytest-asyncio give: probed on the same tree,
+    ``['setup', 'teardown']``, one setup for two files.
+
+    The loop id is recorded alongside so a regression that shares the fixture but *not* the
+    loop -- or the reverse -- is distinguishable from one that shares neither.
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import asyncio
+
+        import pytest
+
+        EVENTS = []
+
+
+        @pytest.fixture(scope="session")
+        async def resource():
+            EVENTS.append(("setup", id(asyncio.get_running_loop())))
+            yield {"n": len(EVENTS)}
+            EVENTS.append(("teardown", id(asyncio.get_running_loop())))
+        """,
+    )
+    first = write(
+        tmp_path / "test_a.py",
+        """
+        import asyncio
+
+
+        async def test_a(resource):
+            from conftest import EVENTS
+
+            assert resource["n"] == 1
+            assert [name for name, _loop in EVENTS] == ["setup"]
+            EVENTS.append(("test_a", id(asyncio.get_running_loop())))
+        """,
+    )
+    second = write(
+        tmp_path / "test_b.py",
+        """
+        import asyncio
+
+
+        async def test_b(resource):
+            from conftest import EVENTS
+
+            # The same dict object the first file was handed, not an equal one.
+            assert resource["n"] == 1
+            assert [name for name, _loop in EVENTS] == ["setup", "test_a"]
+            EVENTS.append(("test_b", id(asyncio.get_running_loop())))
+        """,
+    )
+    config = AsyncioConfig(
+        mode="auto", default_fixture_loop_scope="session", default_test_loop_scope="session"
+    )
+    with worker_for(tmp_path, config):
+        statuses: dict[str, str] = {}
+        for target in (first, second):
+            module, registry = build_registry(target, tmp_path)
+            entries, plans = collect_module(
+                module, target, tmp_path, DEFAULT_NAMING, registry, config
+            )
+            assert entries
+            for plan in plans:
+                worker._execution_plans[plan.id] = plan  # pyright: ignore[reportPrivateUsage]
+            statuses |= {r["id"]: r["status"] for r in (execute_test(plan.id) for plan in plans)}
+        conftest_module = sys.modules["conftest"]
+        # `worker_for` drains at exit, so the teardown is asserted after the block.
+        assert [name for name, _loop in conftest_module.EVENTS] == ["setup", "test_a", "test_b"]
+
+    assert statuses == {"test_a.py::test_a": "passed", "test_b.py::test_b": "passed"}
+    events = conftest_module.EVENTS
+    assert [name for name, _loop in events] == ["setup", "test_a", "test_b", "teardown"]
+    assert len({loop for _name, loop in events}) == 1, events
 
 
 # ---------------------------------------------------------------------------

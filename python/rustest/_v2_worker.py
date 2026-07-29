@@ -108,10 +108,16 @@ traceback filtering — because those distinguish one outcome from another.
   fixture accumulates is reset twice as often.  See :func:`collect_module`.  Pinned by
   ``conformance/corpus/fixtures/module-param-reorder``, which the gate catches on the
   **ordered** ids alone: the tally, the id set and the exit code all agree.
-* *``session`` and ``package`` scope are per-worker for teardown and per **file** for
-  setup* — the latter measured, and narrower than this list claimed until Phase 1c
-  Task 2.  See :data:`_SCOPE_BUCKET` and
-  ``conformance/corpus/fixtures/session-scope``.
+* *``session`` and ``package`` scope are **per worker**, for setup and teardown alike.*  A
+  worker is handed a subset of the run's files (``src/v2/collect.rs`` routes by stem hash),
+  so a session fixture is instantiated once per worker process — pytest-xdist's contract, and
+  the same boundary the asyncio loops have.  It was narrower still until Phase 4c: per
+  **file**, because the conftest chain's ``FixtureDef`` objects were rebuilt per file and the
+  value cache keys on their identity.  See :func:`conftest_fixturedefs` for the fix,
+  :data:`_SCOPE_BUCKET` for the teardown bucket, and
+  ``conformance/corpus/fixtures/session-scope`` (single-worker, now MATCH) and
+  ``conformance/corpus/async/session-loop-shared`` (multi-worker, still waived) for the two
+  halves of the measurement.
 * *A file is enumerated exactly as handed over.*  pytest never collects ``conftest.py``
   as a test module (it matches no ``python_files`` pattern and is loaded as a plugin),
   so the orchestrator should not send one as a collect target; doing so anyway is
@@ -134,6 +140,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 import fnmatch
 import functools
+import hashlib
 import importlib
 import inspect
 import io
@@ -197,6 +204,8 @@ __all__ = [
     "collect_file",
     "collect_module",
     "conftest_chain",
+    "conftest_fixturedefs",
+    "conftest_registry",
     "encode_response",
     "drain_at_shutdown",
     "drain_boundaries",
@@ -214,8 +223,10 @@ __all__ = [
     "install_pytest_shim",
     "main",
     "matches_name_pattern",
+    "parse_fixturedefs",
     "reduce_reports",
     "report_for_phase",
+    "reset_registry_caches",
     "resolve_module_identity",
     "execution_plan",
 ]
@@ -1443,19 +1454,17 @@ _SCOPE_INDEX: Final[Mapping[str, int]] = {name: index for index, name in enumera
 #: last test of a package — or of the session — has run anywhere else.  A package fixture
 #: is therefore not torn down at the package boundary.
 #:
-#: **The setup granularity is narrower than that, and narrower than this comment used to
-#: claim.**  It said a session fixture "executes once per worker"; measured by
-#: ``conformance/corpus/fixtures/session-scope`` at ``-n 1``, a *conftest* session fixture
-#: executes once per **file**.  Two tests in one file share it correctly; two files do not.
-#: The cause is not this table and not :meth:`FixtureRunner.teardown` — which really does
-#: leave the session bucket alone at a module boundary — but :func:`build_registry`, called
-#: once per file: the conftest *module* is cached, yet ``parse_factories`` mints a fresh
-#: :class:`FixtureDef` from it each time, and :attr:`FixtureRunner._cache` is keyed on
-#: ``FixtureDef`` *identity* (``eq=False``, deliberately, so it keys the way pytest's does).
-#: Two files present two keys for one fixture and the cache misses.  A yield teardown is
-#: then queued once per file as well.  Waived in ``conformance/waivers-v2-run.toml`` with
-#: the fix shape: cache ``FixtureDef`` objects per ``(conftest path, fixture name)``, which
-#: closes the single-worker case outright and leaves only the genuine cross-worker problem.
+#: **The setup granularity used to be narrower than that, and is not any more.**  Until
+#: Phase 4c a *conftest* session fixture executed once per **file**: two tests in one file
+#: shared it, two files did not.  The cause was never this table and never
+#: :meth:`FixtureRunner.teardown` — which really does leave the session bucket alone at a
+#: module boundary — but :func:`build_registry` rebuilding the conftest chain's
+#: :class:`FixtureDef` objects per file while :attr:`FixtureRunner._cache` keys on their
+#: *identity* (``eq=False``, deliberately, so it keys the way pytest's does).  Two files
+#: presented two keys for one fixture and the cache missed; a yield teardown was queued once
+#: per file as well.  :func:`conftest_fixturedefs` now caches each conftest's fixturedefs per
+#: worker, so setup and teardown are both once per worker and only the genuine cross-worker
+#: split remains.
 #:
 #: ``class`` has its own bucket and a real boundary, but the boundary is **caller-driven**:
 #: pytest gets it from the collection tree (`SetupState.teardown_exact` unwinds every node
@@ -2002,6 +2011,14 @@ class FixtureRegistry:
     ``baseid`` is still recorded — it is what a future session-wide registry would filter
     on, and it is the only thing that says where a fixture came from.
 
+    Per file is the **container**, not the contents.  :func:`conftest_registry` builds a fresh
+    registry for each file but fills it with :class:`FixtureDef` objects cached per worker
+    (:func:`_builtin_registry`, :func:`conftest_fixturedefs`), so two files under one conftest
+    hold the *same* objects — which is what gives session scope a worker lifetime rather than a
+    file one, since :attr:`FixtureRunner._cache` keys on those objects.  The fresh container is
+    what keeps the sharing one-way: a file's own module- and class-level fixtures land on it and
+    reach nothing else.
+
     Registration order is furthest-to-nearest (builtins, rootdir conftest, ..., nearest
     conftest, module, class), which is what makes ``defs[-1]`` the *nearest* definition —
     pytest's own convention: "``fixturedefs`` is sorted from furthest to closest, so use
@@ -2074,32 +2091,52 @@ class FixtureRegistry:
 
         A fixture *imported* into a module is registered at the module's baseid, exactly as
         under pytest: ``dir()`` does not distinguish defined from imported names.
+
+        The parse itself is :func:`parse_fixturedefs`, which returns the objects instead of
+        registering them, so a caller that wants to **reuse** them — :func:`conftest_fixturedefs`,
+        which is the whole of the session-scope fix — is running the same parse rather than a
+        second one free to drift from this.
         """
-        for name in dir(holder):
-            obj = _safe_getattr(holder, name, None)
-            if not _has_fixture_marker(obj):
-                continue
-            declared = _safe_getattr(obj, "__rustest_fixture_name__", None)
-            fixture_name = declared if isinstance(declared, str) and declared else name
-            scope = _safe_getattr(obj, "__rustest_fixture_scope__", "function")
-            if not isinstance(scope, str) or scope not in _SCOPE_INDEX:
-                raise CollectionRefusal(
-                    f"fixture {fixture_name!r} has an unknown scope {scope!r}; "
-                    + f"expected one of {', '.join(SCOPE_NAMES)}"
-                )
-            self.register(
-                FixtureDef(
-                    name=fixture_name,
-                    func=cast(Callable[..., object], obj),
-                    scope=scope,
-                    params=_fixture_param_cases(obj, fixture_name),
-                    autouse=_safe_getattr(obj, "__rustest_fixture_autouse__", False) is True,
-                    baseid=baseid,
-                    argnames=tuple(_requested_argnames(obj, name, owner)),
-                    needs_instance=owner is not None
-                    and inspect.isfunction(inspect.getattr_static(owner, name, None)),
-                )
+        for fixturedef in parse_fixturedefs(holder, baseid, owner):
+            self.register(fixturedef)
+
+
+def parse_fixturedefs(holder: object, baseid: str, owner: type | None = None) -> list[FixtureDef]:
+    """The fixtures *holder* declares, in ``dir()`` order — the parse half of
+    :meth:`FixtureRegistry.parse_factories`.
+
+    Split out from the registration half so the result can be **cached and re-registered**:
+    :attr:`FixtureRunner._cache` keys on ``FixtureDef`` identity, so re-parsing a conftest for
+    the next file would mint a new key for the same fixture and lose its cached value.  See
+    :func:`conftest_fixturedefs`.
+    """
+    fixturedefs: list[FixtureDef] = []
+    for name in dir(holder):
+        obj = _safe_getattr(holder, name, None)
+        if not _has_fixture_marker(obj):
+            continue
+        declared = _safe_getattr(obj, "__rustest_fixture_name__", None)
+        fixture_name = declared if isinstance(declared, str) and declared else name
+        scope = _safe_getattr(obj, "__rustest_fixture_scope__", "function")
+        if not isinstance(scope, str) or scope not in _SCOPE_INDEX:
+            raise CollectionRefusal(
+                f"fixture {fixture_name!r} has an unknown scope {scope!r}; "
+                + f"expected one of {', '.join(SCOPE_NAMES)}"
             )
+        fixturedefs.append(
+            FixtureDef(
+                name=fixture_name,
+                func=cast(Callable[..., object], obj),
+                scope=scope,
+                params=_fixture_param_cases(obj, fixture_name),
+                autouse=_safe_getattr(obj, "__rustest_fixture_autouse__", False) is True,
+                baseid=baseid,
+                argnames=tuple(_requested_argnames(obj, name, owner)),
+                needs_instance=owner is not None
+                and inspect.isfunction(inspect.getattr_static(owner, name, None)),
+            )
+        )
+    return fixturedefs
 
 
 @dataclass(frozen=True)
@@ -3505,6 +3542,34 @@ def _fixture_not_found_message(name: str, registry: FixtureRegistry) -> str:
 #: would be re-imported once per test file, resetting its module-level state.
 _conftest_modules: dict[Path, types.ModuleType] = {}
 
+#: Builtins, parsed **once** per worker.  See :func:`_builtin_registry`.
+_builtins_registry: FixtureRegistry | None = None
+
+#: One conftest's contributed :class:`FixtureDef` objects, keyed by ``(path, sha256 of its
+#: bytes)``.  See :func:`conftest_fixturedefs` — this dict *is* the session-scope fix.
+_conftest_fixturedefs_cache: dict[tuple[str, str], tuple[FixtureDef, ...]] = {}
+
+#: One ``pytest_plugins``-declared module's :class:`FixtureDef` objects, keyed by module name
+#: — pytest's own plugin-registry key.  See :func:`_plugin_fixturedefs`.
+_plugin_fixturedefs_cache: dict[str, tuple[FixtureDef, ...]] = {}
+
+
+def reset_registry_caches() -> None:
+    """Forget every cached conftest module, plugin block and ``FixtureDef``.
+
+    Nothing in production calls this — a worker process exists for one run.  It is here so
+    that this repo's own tests, which drive :func:`build_registry` over dozens of throwaway
+    trees inside a *single* interpreter, can put the worker back into its start-of-process
+    state.  Without it a test would inherit the previous test's ``FixtureDef`` objects and
+    the session values keyed on them, which is exactly the sharing these caches exist to
+    produce and exactly the wrong thing to carry between two unrelated trees.
+    """
+    global _builtins_registry
+    _conftest_modules.clear()
+    _conftest_fixturedefs_cache.clear()
+    _plugin_fixturedefs_cache.clear()
+    _builtins_registry = None
+
 
 def conftest_chain(path: Path, rootdir: Path) -> list[Path]:
     """The ``conftest.py`` files that apply to *path*, outermost first.
@@ -3621,6 +3686,132 @@ def _register_builtin_fixtures(registry: FixtureRegistry) -> None:
         )
 
 
+def _builtin_registry() -> FixtureRegistry:
+    """The builtins' :class:`FixtureDef` objects, minted once for the whole worker.
+
+    Shared by every chain rather than per chain, because four builtins are ``scope="session"``
+    (``tmp_path_factory``, ``tmpdir_factory``, ``cache``, ``pytestconfig``) and the value cache
+    keys on the ``FixtureDef`` object: one object per worker is what makes ``tmp_path_factory``
+    a single ``mkdtemp`` for the process, as `_pytest/tmpdir.py` gives one basetemp for the
+    session.  Two chains holding two objects would give a worker two base directories and two
+    ``Cache`` instances, which is the same defect as the conftest one a level up.
+    """
+    global _builtins_registry
+    if _builtins_registry is None:
+        registry = FixtureRegistry()
+        _register_builtin_fixtures(registry)
+        _builtins_registry = registry
+    return _builtins_registry
+
+
+def _content_key(path: Path) -> tuple[str, str] | None:
+    """``(path, sha256 of its bytes)`` — a cache key that goes stale when the file changes.
+
+    ``None`` means "do not cache": a file that cannot be read (deleted or unreadable between
+    the conftest walk and here) is keyed on nothing rather than on a guess, and the import
+    that follows raises into :func:`collect_file` exactly as it did before.
+
+    Hashing the *contents* is the conservative half of the contract.  The path alone already
+    distinguishes ``pkg/conftest.py`` from ``pkg/sub/conftest.py``, which is the chain-mismatch
+    case; what it cannot distinguish is the same path over different bytes.  For a cache whose
+    hit means *sharing live session state*, "reuse unless provably identical" is the wrong
+    default, so the rule is byte-identical or rebuild.
+    """
+    try:
+        return (path.as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
+    except OSError:
+        return None
+
+
+def _plugin_fixturedefs(name: str) -> tuple[FixtureDef, ...]:
+    """One ``pytest_plugins``-named module's fixtures, parsed once per worker.
+
+    Keyed on the **module name**, which is pytest's own plugin-registry key: `import_plugin`
+    registers a plugin under its name and `FixtureManager.pytest_plugin_registered` parses it
+    exactly once for the whole session, no matter how many conftests or modules named it.
+    Re-parsing per file would mint fresh :class:`FixtureDef` objects and cost a plugin's
+    session-scoped fixture the same per-file re-instantiation this module's conftest cache
+    exists to remove.
+
+    No content digest: the module is a `sys.modules` entry, so ``import_module`` answers with
+    the same object for the rest of the process however the file on disk changes — a digest
+    would key on bytes nothing will re-read.
+    """
+    cached = _plugin_fixturedefs_cache.get(name)
+    if cached is not None:
+        return cached
+    block = tuple(parse_fixturedefs(importlib.import_module(name), ""))
+    _plugin_fixturedefs_cache[name] = block
+    return block
+
+
+def conftest_fixturedefs(conftest: Path, rootdir: Path) -> tuple[FixtureDef, ...]:
+    """One conftest's contributed :class:`FixtureDef` objects, **reused across files**.
+
+    This is the fix for the ``fixtures/session-scope`` divergence, and the whole of it is the
+    reuse of the objects:
+
+    * :attr:`FixtureRunner._cache` is ``dict[FixtureDef, _Cached]`` and :class:`FixtureDef` is
+      ``@dataclass(eq=False)`` deliberately, so it keys on **object identity**, the way pytest
+      keys off its own ``FixtureDef`` instance.
+    * :func:`parse_fixturedefs` mints a fresh object per call.  Calling it once per file —
+      which is what :func:`build_registry` used to do for the conftest chain too — presented a
+      *different key for the same fixture* on every file, so a session-scoped conftest fixture
+      missed the cache, re-ran once per file, and queued one teardown per file as well.  Two
+      tests in one file shared it; two files did not.
+    * Handing back the same objects makes the second file's lookup hit: one instance per
+      worker, torn down once at Shutdown.  That is pytest-xdist's contract for session scope,
+      and the same boundary the asyncio loops (keyed by scope *name*) have always had.
+
+    **Keyed per conftest, not per chain**, which matters for the ordinary nested layout: a
+    rootdir conftest's session fixture is one instance for the worker whether it is reached
+    from ``tests/test_a.py`` or from ``tests/sub/test_b.py``, because both chains compose the
+    *same* block for the rootdir conftest and their own for the rest.  Keying whole chains
+    would have given that fixture one instance per distinct chain — closer than per file, but
+    still not pytest's one.
+
+    **Only ``session`` and ``package`` change.**  ``module``, ``class`` and ``function`` scope
+    are unaffected because their values are evicted at a *boundary*, not by the key going
+    stale: :meth:`FixtureRunner.note_module_boundary` drains the module bucket on every file
+    change and :meth:`FixtureRunner._finish` deletes the cache entry as it drains.  A
+    module-scoped conftest fixture is therefore still set up once per file even though its
+    ``FixtureDef`` is now shared — pinned, because it is the half a reader expects this change
+    to have broken.
+
+    The import still goes through :func:`import_conftest` on every call, cache hit or miss, so
+    the ``sys.modules`` bookkeeping a test module's own ``import conftest`` depends on is
+    unchanged.
+    """
+    conftest_module = import_conftest(conftest, rootdir)
+    key = _content_key(conftest)
+    if key is not None:
+        cached = _conftest_fixturedefs_cache.get(key)
+        if cached is not None:
+            return cached
+    block = [*parse_fixturedefs(conftest_module, _conftest_baseid(conftest, rootdir))]
+    for name in _plugin_specs(_safe_getattr(conftest_module, "pytest_plugins", None)):
+        block.extend(_plugin_fixturedefs(name))
+    if key is not None:
+        _conftest_fixturedefs_cache[key] = tuple(block)
+    return tuple(block)
+
+
+def conftest_registry(path: Path, rootdir: Path) -> FixtureRegistry:
+    """Builtins plus *path*'s conftest chain — a fresh registry over **shared** fixturedefs.
+
+    The container is new every call, so a file's own module-level fixtures (registered on top
+    of it by :func:`build_registry`) cannot leak sideways into a sibling.  What is shared is
+    the :class:`FixtureDef` objects inside it: the builtins from :func:`_builtin_registry` and
+    each conftest's block from :func:`conftest_fixturedefs`.  See the latter for why that
+    sharing *is* session scope.
+    """
+    registry = _builtin_registry().child()
+    for conftest in conftest_chain(path, rootdir):
+        for fixturedef in conftest_fixturedefs(conftest, rootdir):
+            registry.register(fixturedef)
+    return registry
+
+
 def build_registry(path: Path, rootdir: Path) -> tuple[types.ModuleType, FixtureRegistry]:
     """Import one test file with its conftest chain and assemble its fixture registry.
 
@@ -3639,13 +3830,14 @@ def build_registry(path: Path, rootdir: Path) -> tuple[types.ModuleType, Fixture
 
     All of it happens during collection, not at execute time, because the closure this feeds
     is what expands parametrized fixtures into separate nodeids.
+
+    The builtin-plus-conftest half comes from :func:`conftest_registry`, whose *container* is
+    private to this file but whose :class:`FixtureDef` objects are shared with every other file
+    under the same conftests — see :func:`conftest_fixturedefs` for why that sharing is the
+    whole of the session-scope fix.  Everything registered below lands on this file's own
+    container and reaches nothing else.
     """
-    registry = FixtureRegistry()
-    _register_builtin_fixtures(registry)
-    for conftest in conftest_chain(path, rootdir):
-        conftest_module = import_conftest(conftest, rootdir)
-        registry.parse_factories(conftest_module, _conftest_baseid(conftest, rootdir))
-        _register_declared_plugins(conftest_module, registry)
+    registry = conftest_registry(path, rootdir)
     module = import_test_module(path, rootdir)
     # xunit module/function hooks, as autouse fixtures, registered **before** the module's
     # own fixtures — `Module.collect` calls `_register_setup_module_fixture` and
@@ -3698,20 +3890,20 @@ def _register_declared_plugins(module: types.ModuleType, registry: FixtureRegist
     An unimportable plugin raises out of here into :func:`collect_file`, which turns it into a
     collection error entry for the file — the same treatment a broken ``import`` in the
     conftest itself gets.
+
+    Only *test modules* reach this; a conftest's declaration is honoured inside
+    :func:`conftest_fixturedefs`, so that its plugins' fixturedefs are cached alongside the
+    conftest's own.  Both routes go through :func:`_plugin_fixturedefs`, so a plugin is parsed
+    once per worker either way.
     """
     for name in _plugin_specs(_safe_getattr(module, "pytest_plugins", None)):
-        registry.parse_factories(importlib.import_module(name), "")
+        for fixturedef in _plugin_fixturedefs(name):
+            registry.register(fixturedef)
 
 
 def _markdown_registry(path: Path, rootdir: Path) -> FixtureRegistry:
     """:func:`build_registry` minus the module import — a `.md` file has none to import."""
-    registry = FixtureRegistry()
-    _register_builtin_fixtures(registry)
-    for conftest in conftest_chain(path, rootdir):
-        conftest_module = import_conftest(conftest, rootdir)
-        registry.parse_factories(conftest_module, _conftest_baseid(conftest, rootdir))
-        _register_declared_plugins(conftest_module, registry)
-    return registry
+    return conftest_registry(path, rootdir)
 
 
 def _build_entry(

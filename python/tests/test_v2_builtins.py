@@ -320,7 +320,11 @@ def _isolated_import_state() -> Iterator[None]:
         for name in set(sys.modules) - set(saved_modules):
             del sys.modules[name]
         sys.modules.update(saved_modules)
-        worker._conftest_modules.clear()  # pyright: ignore[reportPrivateUsage]
+        # `reset_registry_caches` also drops the per-worker chain registries and the
+        # builtins' FixtureDefs, which are pure derivations of the conftest modules and
+        # whose whole purpose is to share session values -- across two unrelated trees
+        # that sharing is exactly what must not survive.
+        worker.reset_registry_caches()
         worker._conftest_modules.update(saved_conftests)  # pyright: ignore[reportPrivateUsage]
 
 

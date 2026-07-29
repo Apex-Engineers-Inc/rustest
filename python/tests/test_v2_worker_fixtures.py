@@ -84,7 +84,11 @@ def isolated_import_state() -> Iterator[None]:
         for name in set(sys.modules) - set(saved_modules):
             del sys.modules[name]
         sys.modules.update(saved_modules)
-        worker._conftest_modules.clear()  # pyright: ignore[reportPrivateUsage]
+        # `reset_registry_caches` also drops the per-worker chain registries and the
+        # builtins' FixtureDefs, which are pure derivations of the conftest modules and
+        # whose whole purpose is to share session values -- across two unrelated trees
+        # that sharing is exactly what must not survive.
+        worker.reset_registry_caches()
         worker._conftest_modules.update(saved_conftests)  # pyright: ignore[reportPrivateUsage]
 
 
@@ -1990,3 +1994,214 @@ def test_build_registry_orders_builtins_conftests_then_module(tmp_path: Path) ->
         assert [d.baseid for d in defs] == ["", ""]
         assert defs[-1].func() == "conftest-wins-over-builtin"
         assert defs[0].func is not defs[-1].func
+
+
+# ---------------------------------------------------------------------------
+# the per-worker conftest cache (Phase 4c) -- what it shares and what it must not
+# ---------------------------------------------------------------------------
+#
+# `conftest_fixturedefs` hands the *same* `FixtureDef` objects to every file under a given
+# conftest, which is what gives session scope a worker lifetime rather than a file one
+# (`FixtureRunner._cache` keys on identity).  Sharing the wrong objects would be a silent
+# visibility bug -- a subdirectory's fixture leaking upward, or a parent's registry served to
+# a chain that is not its own -- so each direction gets its own pin.
+
+
+def _nested_tree(root: Path) -> tuple[Path, Path]:
+    """A rootdir conftest plus a subdirectory one, and a test file beside each."""
+    write(
+        root / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture(scope="session")
+        def shared():
+            return "from-root"
+        """,
+    )
+    write(
+        root / "sub" / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture(scope="session")
+        def extra():
+            return "from-sub"
+
+        @pytest.fixture(scope="session")
+        def shared():
+            return "sub-override"
+        """,
+    )
+    top = write(root / "test_top.py", "def test_top(shared):\n    pass\n")
+    deep = write(root / "sub" / "test_deep.py", "def test_deep(shared, extra):\n    pass\n")
+    return top, deep
+
+
+def test_a_deeper_conftest_chain_does_not_reuse_the_shallower_registry(tmp_path: Path) -> None:
+    """Chain-mismatch safety, **parent first**: the subdirectory still gets its own conftest."""
+    top, deep = _nested_tree(tmp_path)
+    with isolated_import_state():
+        _module, shallow = build_registry(top, tmp_path)
+        _module, deeper = build_registry(deep, tmp_path)
+
+        assert shallow.getfixturedefs("extra") is None
+        deep_extra = deeper.getfixturedefs("extra")
+        assert deep_extra is not None and deep_extra[-1].func() == "from-sub"
+        # Two definitions of `shared` below `sub/`, nearest last -- the override, not the
+        # parent's value the shallower registry was built from.
+        deep_shared = deeper.getfixturedefs("shared")
+        assert deep_shared is not None
+        assert [d.func() for d in deep_shared] == ["from-root", "sub-override"]
+
+
+def test_a_shallower_conftest_chain_does_not_inherit_the_deeper_registry(tmp_path: Path) -> None:
+    """Chain-mismatch safety, **subdirectory first** -- the direction a cache gets wrong.
+
+    Building the deep chain first populates the cache with ``sub/conftest.py``'s block.  The
+    parent's chain must compose only the rootdir block, or a fixture defined in a
+    subdirectory would be visible to a file above it -- which pytest's ``baseid`` filter
+    forbids and which would make a suite pass under rustest and fail under pytest.
+    """
+    top, deep = _nested_tree(tmp_path)
+    with isolated_import_state():
+        _module, deeper = build_registry(deep, tmp_path)
+        _module, shallow = build_registry(top, tmp_path)
+
+        assert deeper.getfixturedefs("extra") is not None
+        assert shallow.getfixturedefs("extra") is None
+        top_shared = shallow.getfixturedefs("shared")
+        assert top_shared is not None
+        assert [d.func() for d in top_shared] == ["from-root"]
+
+
+def test_a_rootdir_conftest_fixture_is_one_object_for_every_chain_below_it(
+    tmp_path: Path,
+) -> None:
+    """The reason the cache is keyed per conftest and not per chain.
+
+    A session fixture in the rootdir conftest is **one** instance for the whole session under
+    pytest, whichever directory the test that asks for it lives in.  Because the value cache
+    keys on the ``FixtureDef`` object, reproducing that means the rootdir block being the same
+    objects in both chains -- which per-chain keying would not have given.
+    """
+    top, deep = _nested_tree(tmp_path)
+    with isolated_import_state():
+        _module, shallow = build_registry(top, tmp_path)
+        _module, deeper = build_registry(deep, tmp_path)
+
+        shallow_shared = shallow.getfixturedefs("shared")
+        deep_shared = deeper.getfixturedefs("shared")
+        assert shallow_shared is not None and deep_shared is not None
+        assert shallow_shared[0] is deep_shared[0]
+        # ...and the subdirectory's override is emphatically *not* the parent's object.
+        assert deep_shared[-1] is not deep_shared[0]
+
+
+def test_two_files_in_one_directory_share_their_conftest_fixturedefs(tmp_path: Path) -> None:
+    """The fix itself, at the level it is implemented: same object, hence same cache key."""
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture(scope="session")
+        def resource():
+            return object()
+        """,
+    )
+    first = write(tmp_path / "test_a.py", "def test_a(resource):\n    pass\n")
+    second = write(tmp_path / "test_b.py", "def test_b(resource):\n    pass\n")
+    with isolated_import_state():
+        _module, one = build_registry(first, tmp_path)
+        _module, two = build_registry(second, tmp_path)
+        first_defs = one.getfixturedefs("resource")
+        second_defs = two.getfixturedefs("resource")
+        assert first_defs is not None and second_defs is not None
+        assert first_defs[-1] is second_defs[-1]
+
+
+def test_a_files_own_fixtures_do_not_reach_a_sibling_sharing_the_conftest(
+    tmp_path: Path,
+) -> None:
+    """The container is per file even though its contents are shared.
+
+    ``conftest_registry`` returns a fresh :class:`FixtureRegistry` every call, so the module
+    fixtures ``build_registry`` registers on top of it cannot leak sideways.  Without that a
+    second file would see the first file's module-level fixtures and a name-not-found error
+    would turn into a silently wrong value.
+    """
+    write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        @pytest.fixture(scope="session")
+        def resource():
+            return "shared"
+        """,
+    )
+    first = write(
+        tmp_path / "test_a.py",
+        """
+        import pytest
+
+        @pytest.fixture
+        def local_to_a():
+            return 1
+
+        def test_a(resource, local_to_a):
+            pass
+        """,
+    )
+    second = write(tmp_path / "test_b.py", "def test_b(resource):\n    pass\n")
+    with isolated_import_state():
+        _module, one = build_registry(first, tmp_path)
+        _module, two = build_registry(second, tmp_path)
+        assert one.getfixturedefs("local_to_a") is not None
+        assert two.getfixturedefs("local_to_a") is None
+
+
+def test_an_edited_conftest_is_not_served_from_the_cache(tmp_path: Path) -> None:
+    """Byte-identical or rebuild -- the conservative half of the cache key.
+
+    The key carries the conftest's ``sha256``, so rewriting the file between two
+    ``build_registry`` calls produces a *different* key and therefore fresh ``FixtureDef``
+    objects.  Nothing in a run edits a conftest, which is the point: the cache must not be the
+    thing that decides what happens if something does.
+    """
+    conftest = tmp_path / "conftest.py"
+    write(
+        conftest,
+        """
+        import pytest
+
+        @pytest.fixture(scope="session")
+        def resource():
+            return "before"
+        """,
+    )
+    first = write(tmp_path / "test_a.py", "def test_a(resource):\n    pass\n")
+    second = write(tmp_path / "test_b.py", "def test_b(resource):\n    pass\n")
+    with isolated_import_state():
+        _module, one = build_registry(first, tmp_path)
+        write(
+            conftest,
+            """
+            import pytest
+
+            @pytest.fixture(scope="session")
+            def resource():
+                return "after"
+            """,
+        )
+        _module, two = build_registry(second, tmp_path)
+        first_defs = one.getfixturedefs("resource")
+        second_defs = two.getfixturedefs("resource")
+        assert first_defs is not None and second_defs is not None
+        assert first_defs[-1] is not second_defs[-1]
+        # The *module* is still the one already imported -- `import_conftest` caches by path
+        # and pytest's `_importconftest` does too -- so only the objects are new, not the
+        # code.  Stated so the next reader does not mistake this for hot reloading.
+        assert first_defs[-1].func() == "before"
+        assert second_defs[-1].func() == "before"

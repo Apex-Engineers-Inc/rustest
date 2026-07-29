@@ -23,7 +23,7 @@ disagrees is either a worker bug or a documented divergence — never a guess th
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from typing import cast
 import unittest
 
 import pytest
@@ -102,7 +103,11 @@ def isolated_worker_state() -> Iterator[None]:
         for name in set(sys.modules) - set(saved_modules):
             del sys.modules[name]
         sys.modules.update(saved_modules)
-        worker._conftest_modules.clear()  # pyright: ignore[reportPrivateUsage]
+        # `reset_registry_caches` also drops the per-worker chain registries and the
+        # builtins' FixtureDefs, which are pure derivations of the conftest modules and
+        # whose whole purpose is to share session values -- across two unrelated trees
+        # that sharing is exactly what must not survive.
+        worker.reset_registry_caches()
         worker._conftest_modules.update(saved_conftests)  # pyright: ignore[reportPrivateUsage]
         worker.reset_capture()
 
@@ -133,6 +138,54 @@ def run_module(path: Path, rootdir: Path) -> list[ResultResponse]:
     results = [execute_test(plan.id) for plan in plans]
     _ = shutdown()
     return results
+
+
+def run_files(targets: Sequence[Path], rootdir: Path) -> list[ResultResponse]:
+    """Collect and execute several files against **one** worker, then shut it down.
+
+    The cross-file twin of :func:`run_module`, and the shape every session-scope question
+    needs: a worker really is handed several files in sequence and really does keep one
+    :class:`FixtureRunner` across all of them, so a test that drives one file at a time
+    against fresh state cannot see a session fixture leak — or fail to be shared.
+    """
+    results: list[ResultResponse] = []
+    for target in targets:
+        module, registry = build_registry(target, rootdir)
+        _entries, plans = collect_module(module, target, rootdir, DEFAULT_NAMING, registry)
+        register(plans)
+        results += [execute_test(plan.id) for plan in plans]
+    _ = shutdown()
+    return results
+
+
+def pytest_events(tree: Path) -> list[str]:
+    """The ``EVENTS:`` line a tree's ``conftest.py`` prints from ``pytest_sessionfinish``.
+
+    The **ordering** oracle, next to :func:`pytest_statuses`'s outcome oracle.  Fixture setup
+    and teardown order is not visible in pytest's report, so the tree records it into a
+    module-level list and prints it once the session is over; the worker side reads the same
+    list off the same module object after :func:`shutdown`.  Both sides therefore assert
+    against one recording made by one piece of test code, not against a hand-written
+    expectation that can drift.
+
+    ``pytest_sessionfinish`` is inert under the worker (v2 has no hook system), which is why
+    the worker side reads the attribute instead.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-s", "-p", "no:cacheprovider", "-W", "ignore"],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in proc.stdout.splitlines():
+        # `-q` writes its progress dots without a newline, so the marker is the *tail* of a
+        # line rather than the whole of it; `partition` is what makes `....EVENTS:[...]`
+        # readable without also matching a line that merely mentions the word.
+        _before, marker, payload = line.partition("EVENTS:")
+        if marker:
+            return cast("list[str]", json.loads(payload))
+    raise AssertionError(f"no EVENTS line:\nstdout={proc.stdout}\nstderr={proc.stderr}")
 
 
 def shutdown() -> BaseException | None:
@@ -1927,6 +1980,335 @@ def test_leaving_a_module_tears_its_module_scoped_fixtures_down(tmp_path: Path) 
 
     assert [result["status"] for result in results] == ["passed", "passed"], results
     assert events == ["setup", "teardown", "setup", "teardown"]
+
+
+# ---------------------------------------------------------------------------
+# session scope across files -- the Phase 4c fix
+# ---------------------------------------------------------------------------
+#
+# Until Phase 4c a session-scoped *conftest* fixture was rebuilt once per FILE: the conftest
+# module was cached but its `FixtureDef` objects were not, and `FixtureRunner._cache` keys on
+# `FixtureDef` identity.  `conftest_fixturedefs` now caches the objects, so session (and
+# package) scope has the lifetime of the worker process -- pytest-xdist's contract.
+#
+# These live here rather than in the conformance corpus because the corpus cannot ask the
+# question.  A gate case is graded at the default pool size, `workers` is clamped to the file
+# count (`src/v2/collect.rs`), and files are routed by stem hash, so a two-file case is split
+# across two worker PROCESSES and no amount of fixing the worker makes it share.  That
+# cross-worker residue is what `fixtures/session-scope` and `async/session-loop-shared` still
+# measure and still waive.  What is per-worker has to be tested against one worker, which is
+# exactly what `run_files` drives.
+
+_SCOPE_TREE_CONFTEST = """
+import json
+
+import pytest
+
+events = []
+
+
+@pytest.fixture(scope="session")
+def s():
+    events.append("setup:s")
+    yield 1
+    events.append("teardown:s")
+
+
+@pytest.fixture(scope="module")
+def m():
+    events.append("setup:m")
+    yield 2
+    events.append("teardown:m")
+
+
+@pytest.fixture
+def f():
+    events.append("setup:f")
+    yield 3
+    events.append("teardown:f")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    print("EVENTS:" + json.dumps(events))
+"""
+
+_SCOPE_TREE_MODULE = """
+def test_{stem}_a(s, m, f):
+    assert (s, m, f) == (1, 2, 3)
+
+
+def test_{stem}_b(s, m, f):
+    assert (s, m, f) == (1, 2, 3)
+"""
+
+
+def test_a_conftest_session_fixture_is_built_once_for_the_whole_worker(tmp_path: Path) -> None:
+    """The headline: two files, one instance — and one teardown, at Shutdown.
+
+    This is ``conformance/corpus/fixtures/session-scope`` driven against a single worker, which
+    is the only place the contract is expressible (see the section note).  Before the fix the
+    second file got a *fresh* list and ``visits`` read ``["second"]``.
+    """
+    _ = write(
+        tmp_path / "conftest.py",
+        """
+        import pytest
+
+        events = []
+
+
+        @pytest.fixture(scope="session")
+        def visits():
+            events.append("setup")
+            yield []
+            events.append("teardown")
+        """,
+    )
+    first = write(
+        tmp_path / "test_a_first.py",
+        """
+        def test_first(visits):
+            visits.append("first")
+            assert visits == ["first"]
+        """,
+    )
+    second = write(
+        tmp_path / "test_b_second.py",
+        """
+        def test_second(visits):
+            visits.append("second")
+            assert visits == ["first", "second"]
+        """,
+    )
+
+    with isolated_worker_state():
+        results = run_files([first, second], tmp_path)
+        events = getattr(sys.modules["conftest"], "events")
+
+    assert statuses(results) == {
+        "test_a_first.py::test_first": "passed",
+        "test_b_second.py::test_second": "passed",
+    }
+    assert events == ["setup", "teardown"]
+
+
+def test_narrower_conftest_scopes_are_still_per_file_after_the_chain_cache(
+    tmp_path: Path,
+) -> None:
+    """The half a reader expects the fix to have broken, pinned against pytest itself.
+
+    ``module``, ``class`` and ``function`` values are evicted at a *boundary*
+    (:meth:`FixtureRunner.note_module_boundary` and :meth:`note_test_boundary`), not by their
+    ``FixtureDef`` key going stale, so sharing the key changes nothing for them.  The whole
+    setup/teardown sequence is compared to real pytest's, which is the only way to catch a
+    module fixture that silently acquired session lifetime.
+    """
+    _ = write(tmp_path / "pytest.ini", "")
+    _ = write(tmp_path / "conftest.py", _SCOPE_TREE_CONFTEST)
+    first = write(tmp_path / "test_one.py", _SCOPE_TREE_MODULE.format(stem="one"))
+    second = write(tmp_path / "test_two.py", _SCOPE_TREE_MODULE.format(stem="two"))
+
+    oracle = pytest_events(tmp_path)
+    with isolated_worker_state():
+        results = run_files([first, second], tmp_path)
+        events = getattr(sys.modules["conftest"], "events")
+
+    assert set(statuses(results).values()) == {"passed"}, results
+    assert events == oracle
+    # Stated as well as compared, so the pin survives an oracle that goes quiet: one session
+    # setup, two module setups, four function setups.
+    assert events.count("setup:s") == 1
+    assert events.count("setup:m") == 2
+    assert events.count("setup:f") == 4
+
+
+def test_session_finalizers_unwind_lifo_across_the_files_that_registered_them(
+    tmp_path: Path,
+) -> None:
+    """Shutdown teardown is LIFO over the worker's **whole history**, not per file.
+
+    Now that a session fixture survives a file boundary, the session bucket holds finalizers
+    contributed by different files and drains them newest-first.  Also the
+    ``request.addfinalizer`` half: a finalizer a session fixture registers runs **once**, at
+    Shutdown, in its own fixture's LIFO position — where before the fix it was registered (and
+    run) once per file.  Real pytest is the oracle for the whole sequence.
+    """
+    _ = write(tmp_path / "pytest.ini", "")
+    _ = write(
+        tmp_path / "conftest.py",
+        """
+        import json
+
+        import pytest
+
+        events = []
+
+
+        @pytest.fixture(scope="session")
+        def s_one():
+            events.append("setup:s_one")
+            yield "one"
+            events.append("teardown:s_one")
+
+
+        @pytest.fixture(scope="session")
+        def s_two():
+            events.append("setup:s_two")
+            yield "two"
+            events.append("teardown:s_two")
+
+
+        @pytest.fixture(scope="session")
+        def s_fin(request):
+            events.append("setup:s_fin")
+            request.addfinalizer(lambda: events.append("addfinalizer:s_fin"))
+            return "fin"
+
+
+        def pytest_sessionfinish(session, exitstatus):
+            print("EVENTS:" + json.dumps(events))
+        """,
+    )
+    first = write(
+        tmp_path / "test_a.py",
+        """
+        def test_a1(s_one, s_fin):
+            assert (s_one, s_fin) == ("one", "fin")
+        """,
+    )
+    second = write(
+        tmp_path / "test_b.py",
+        """
+        def test_b1(s_two, s_one):
+            assert (s_two, s_one) == ("two", "one")
+
+
+        def test_b2(s_one):
+            assert s_one == "one"
+        """,
+    )
+
+    oracle = pytest_events(tmp_path)
+    with isolated_worker_state():
+        results = run_files([first, second], tmp_path)
+        events = getattr(sys.modules["conftest"], "events")
+
+    assert set(statuses(results).values()) == {"passed"}, results
+    assert events == oracle
+    assert events == [
+        "setup:s_one",
+        "setup:s_fin",
+        "setup:s_two",
+        "teardown:s_two",
+        "addfinalizer:s_fin",
+        "teardown:s_one",
+    ]
+
+
+def test_the_4871_dependent_cascade_survives_a_file_boundary(tmp_path: Path) -> None:
+    """A parametrized *session* fixture invalidated across files tears its dependents first.
+
+    pytest #4871 (``FixtureDef.execute`` l. 1115-1121): every fixture that consumed a value
+    registers a finalizer *on the producer*, so re-parametrizing the producer finishes the
+    consumers before it finishes itself.  With session values now spanning files, the flip can
+    happen at a file boundary, where the consumer belongs to the *previous* file — the shape
+    that did not exist before this fix, because the whole registry was thrown away instead.
+
+    **The ordering oracle is an invariant, not a transcript**, and deliberately so: pytest
+    groups items by the higher-scoped parameter (``reorder_items``) and this worker does not,
+    the standing ``fixtures/module-param-reorder`` divergence, so the two sides visit the
+    parameters in different orders and cannot have the same event list.  What must agree — and
+    what #4871 is — is that ``teardown:derived(X)`` immediately precedes ``teardown:base:X``
+    every single time.  Checked on both transcripts.
+    """
+    _ = write(tmp_path / "pytest.ini", "")
+    _ = write(
+        tmp_path / "conftest.py",
+        """
+        import json
+
+        import pytest
+
+        events = []
+
+
+        @pytest.fixture(scope="session", params=["a", "b"])
+        def base(request):
+            events.append(f"setup:base:{request.param}")
+            yield request.param
+            events.append(f"teardown:base:{request.param}")
+
+
+        @pytest.fixture(scope="session")
+        def derived(base):
+            events.append(f"setup:derived({base})")
+            yield f"d-{base}"
+            events.append(f"teardown:derived({base})")
+
+
+        def pytest_sessionfinish(session, exitstatus):
+            print("EVENTS:" + json.dumps(events))
+        """,
+    )
+    first = write(
+        tmp_path / "test_a.py",
+        """
+        def test_a(derived, base):
+            assert derived == f"d-{base}"
+        """,
+    )
+    second = write(
+        tmp_path / "test_b.py",
+        """
+        def test_b(derived, base):
+            assert derived == f"d-{base}"
+        """,
+    )
+
+    def cascade_pairs(events: list[str]) -> list[tuple[str, str]]:
+        """Every ``teardown:base:X`` with the event immediately before it."""
+        return [
+            (events[index - 1], event)
+            for index, event in enumerate(events)
+            if event.startswith("teardown:base:")
+        ]
+
+    oracle = pytest_events(tmp_path)
+    with isolated_worker_state():
+        results = run_files([first, second], tmp_path)
+        events = getattr(sys.modules["conftest"], "events")
+
+    assert set(statuses(results).values()) == {"passed"}, results
+    assert cascade_pairs(oracle) == [
+        ("teardown:derived(a)", "teardown:base:a"),
+        ("teardown:derived(b)", "teardown:base:b"),
+    ]
+    assert cascade_pairs(events) == [
+        ("teardown:derived(a)", "teardown:base:a"),
+        ("teardown:derived(b)", "teardown:base:b"),
+        ("teardown:derived(a)", "teardown:base:a"),
+        ("teardown:derived(b)", "teardown:base:b"),
+    ]
+    # The boundary itself: the flip between the two FILES is the third pair above, i.e. the
+    # cascade fired for a consumer set up while a different file was running.
+    assert events == [
+        "setup:base:a",
+        "setup:derived(a)",
+        "teardown:derived(a)",
+        "teardown:base:a",
+        "setup:base:b",
+        "setup:derived(b)",
+        "teardown:derived(b)",
+        "teardown:base:b",
+        "setup:base:a",
+        "setup:derived(a)",
+        "teardown:derived(a)",
+        "teardown:base:a",
+        "setup:base:b",
+        "setup:derived(b)",
+        "teardown:derived(b)",
+        "teardown:base:b",
+    ]
 
 
 def test_shutdown_drains_every_open_scope(tmp_path: Path) -> None:
