@@ -1296,3 +1296,181 @@ def test_a_collection_error_run_says_error_not_no_tests_ran(tmp_path: Path, brok
     expected = _pytest_summary_line(oracle.stdout)
     assert expected == ("1 error" if broken == 1 else "2 errors"), _context("pytest", oracle)
     assert _v2_summary_line(ours.stderr) == expected, _context("v2", ours)
+
+
+# --------------------------------------------------------------------------------------
+# The Phase 4 final polish wave (Task 1c review findings I2 and I8)
+# --------------------------------------------------------------------------------------
+
+
+def test_a_flagless_module_level_skip_is_refused_in_pytests_own_words(tmp_path: Path) -> None:
+    """FINDING I8 -- the refusal message was ported and never pinned.
+
+    `pytest.skip()` at module scope *without* ``allow_module_level=True`` is not a skip: it
+    is a collection error, and the error text is a teaching message pytest wrote deliberately
+    (`_pytest/python.py::importtestmodule` l. 538-542). It is the only thing standing between
+    an author and a file that silently stops being collected, so a paraphrase would be worse
+    than useless -- and a ported constant with no test is one refactor away from a paraphrase.
+
+    Both runners must refuse, both must exit 2, and the *sentence* must be pytest's.
+    """
+    tree = _tree(
+        tmp_path,
+        "flagless",
+        {
+            "test_flagless.py": "import pytest\n\npytest.skip('no flag')\n\n\ndef test_x():\n    pass\n",
+        },
+    )
+
+    # NOT `_run_pytest`: that helper passes `--tb=no`, which is right for every counts-only
+    # assertion in this file and suppresses the very sentence under test here.
+    oracle = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"], tree)
+    ours = _run_v2(tree, ["-v"])
+
+    assert oracle.returncode == 2, _context("pytest", oracle)
+    assert ours.returncode == 2, _context("v2", ours)
+
+    sentence = (
+        "Using pytest.skip outside of a test will skip the entire module. "
+        "If that's your intention, pass `allow_module_level=True`. "
+        "If you want to skip a specific test or an entire class, "
+        "use the @pytest.mark.skip or @pytest.mark.skipif decorators."
+    )
+    assert sentence in oracle.stdout, _context("pytest", oracle)
+    assert sentence in (ours.stdout + ours.stderr), _context("v2", ours)
+
+
+def test_the_flagged_form_is_a_skip_not_an_error(tmp_path: Path) -> None:
+    """The control: one word of difference turns the refusal above into a clean skip."""
+    tree = _tree(
+        tmp_path,
+        "flagged",
+        {
+            "test_flagged.py": (
+                "import pytest\n\npytest.skip('with flag', allow_module_level=True)\n"
+                "\n\ndef test_x():\n    pass\n"
+            ),
+            "test_ok.py": "def test_y():\n    pass\n",
+        },
+    )
+    counts, _report = _assert_matches_pytest(tree)
+    assert counts["skipped"] == 1 and counts["passed"] == 1 and counts["error"] == 0
+
+
+_XUNIT_LOG = """\
+import pathlib
+
+LOG = pathlib.Path(__file__).with_name("events.log")
+
+
+def _note(event):
+    with LOG.open("a", encoding="utf-8") as handle:
+        print(event, file=handle)
+
+
+def setup_module(module):
+    _note("setup_module")
+
+
+def teardown_module(module):
+    _note("teardown_module")
+
+
+def setup_function(function):
+    _note("setup_function:" + function.__name__)
+
+
+def teardown_function(function):
+    _note("teardown_function:" + function.__name__)
+
+
+class TestBox:
+    @classmethod
+    def setup_class(cls):
+        _note("setup_class")
+
+    @classmethod
+    def teardown_class(cls):
+        _note("teardown_class")
+
+    def setup_method(self, method):
+        _note("setup_method:" + method.__name__)
+
+    def teardown_method(self, method):
+        _note("teardown_method:" + method.__name__)
+
+    def test_in_class(self):
+        _note("test_in_class")
+
+
+def test_at_module_level():
+    _note("test_at_module_level")
+"""
+
+
+def test_every_xunit_teardown_runs_in_pytests_order(tmp_path: Path) -> None:
+    """FINDING I8 -- ``teardown_module`` had no assertion anywhere.
+
+    The corpus case `collection/xunit-setup` asserts ``teardown_function``,
+    ``teardown_method`` and ``teardown_class`` from inside the module, which is as far as an
+    in-process event log can see: **``teardown_module`` runs after the last test in the
+    file**, so nothing in that file can ever observe it. It was recorded and never checked.
+
+    A file on disk can see it, and this compares the whole log against real pytest's --
+    order included. That also makes it a live pin on the *interleaving* (a teardown belongs
+    between two tests, not batched at the end), which is the property a naive "run all the
+    finalizers at shutdown" implementation gets wrong while still calling every hook.
+    """
+    logs: dict[str, list[str]] = {}
+    for label, runner in (("pytest", _run_pytest), ("v2", _run_v2)):
+        tree = _tree(tmp_path, f"xunit-{label}", {"test_xunit_log.py": _XUNIT_LOG})
+        proc = runner(tree, [])
+        assert proc.returncode == 0, _context(label, proc)
+        logs[label] = (tree / "test_xunit_log.py").with_name("events.log").read_text().split()
+
+    assert logs["pytest"] == [
+        "setup_module",
+        "setup_class",
+        "setup_method:test_in_class",
+        "test_in_class",
+        "teardown_method:test_in_class",
+        "teardown_class",
+        "setup_function:test_at_module_level",
+        "test_at_module_level",
+        "teardown_function:test_at_module_level",
+        "teardown_module",
+    ]
+    assert logs["v2"] == logs["pytest"]
+
+
+def test_an_approx_failure_prints_the_repr_compare_table(tmp_path: Path) -> None:
+    """FINDING I2 -- ``ApproxBase._repr_compare`` reaching the failure output, end to end.
+
+    The port of `_pytest/python_api.py` has carried ``_repr_compare`` since Phase 4 Task 1
+    (M9), but `_assertion.py`'s ``_compare_eq_any`` never called it -- and its module
+    docstring still said the method did not exist. So a failing ``assert x == approx(y)``
+    printed the generic explanation while the table pytest prints sat unreachable in the port.
+
+    This is the end-to-end shape: through the assertion **rewriter**, out of the real CLI, and
+    compared against real pytest's own rendering of the same failure. The header and the
+    ``Index | Obtained | Expected`` columns are pytest's, so they are asserted literally
+    rather than by substring-of-a-substring.
+    """
+    body = "def test_seq():\n    assert [0.1, 0.2] == __import__('pytest').approx([0.1, 0.3])\n"
+    tree = _tree(tmp_path, "approxtable", {"test_approx_table.py": body})
+
+    oracle = _run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--tb=long", "-q"], tree
+    )
+    ours = _run_v2(tree, [])
+
+    assert oracle.returncode == 1, _context("pytest", oracle)
+    assert ours.returncode == 1, _context("v2", ours)
+
+    for fragment in (
+        "comparison failed",
+        "Index | Obtained",
+        "Expected",
+    ):
+        assert fragment in oracle.stdout, _context("pytest", oracle)
+        assert fragment in (ours.stdout + ours.stderr), _context("v2", ours)
