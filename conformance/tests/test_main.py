@@ -315,7 +315,13 @@ def test_corpus_case_count_is_pinned() -> None:
     weaken the gate while every summary still read green. Pinning the count makes that
     a test failure. Bump this number in the same commit that adds or removes a case.
     """
-    assert len(discover_cases()) == 42
+    # 42 -> 50 was owed from Phase 4 Task 1c, which grew the corpus and did not bump this
+    # (the pin has been red ever since, and both the speed wave and this one recorded it as
+    # pre-existing). The final polish wave pays it and adds two: `builtins/approx-numpy`
+    # (the numpy half of `approx-numeric`, split so a missing optional dependency can only
+    # move one case's verdict -- review finding C1) and `collection/all-modules-skipped`
+    # (the exit-5 shape, review finding I8).
+    assert len(discover_cases()) == 52
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

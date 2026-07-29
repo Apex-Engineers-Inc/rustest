@@ -50,6 +50,60 @@ def test_recwarn_pop_without_a_match_raises(recwarn):
         recwarn.pop(FutureWarning)
 
 
+def test_recwarn_pop_prefers_an_exact_category_match(recwarn):
+    """`recwarn.py` l. 206-223: an EXACT category match wins immediately and stops the scan.
+
+    The subclass was raised first, so a naive "first thing that passes `issubclass`" would
+    hand back the `DeprecationWarning`. pytest hands back the exact `Warning`.
+    """
+    warnings.warn("subclass first", DeprecationWarning)
+    warnings.warn("exact second", Warning)
+    popped = recwarn.pop(Warning)
+    assert popped.category is Warning
+    assert "exact second" in str(popped.message)
+    assert len(recwarn) == 1
+
+
+def test_recwarn_pop_tie_break_among_sibling_categories(recwarn):
+    """Two OVERLAPPING inexact matches, and the answer is NOT "the first one".
+
+    `pop`'s rule (l. 206-219) is *"the first recorded warning which is an instance of `cls`,
+    but not an instance of a child class of any other match"*, implemented as a running best
+    that is replaced whenever the next candidate is **not** a subclass of the current best.
+    `DeprecationWarning` and `UserWarning` are siblings, so neither is a subclass of the
+    other, so the LAST sibling replaces the first and wins.
+
+    Written the other way round first, from the docstring alone, and the differential
+    against real pytest corrected it -- which is the reason this pair is in the graded corpus
+    rather than in a unit test.
+    """
+    warnings.warn("first", DeprecationWarning)
+    warnings.warn("second", UserWarning)
+    popped = recwarn.pop(Warning)
+    assert popped.category is UserWarning
+    assert "second" in str(popped.message)
+
+
+def test_recwarn_pop_prefers_a_base_over_its_own_subclass_either_way_round(recwarn):
+    """With a real subclass relation, the BASE wins from both orders -- that is the rule.
+
+    Sibling order is incidental (above); this is the property `pop` actually encodes, and it
+    is order-independent, which is what makes it a rule rather than an artifact.
+    """
+
+    class Derived(UserWarning):
+        pass
+
+    warnings.warn("derived first", Derived)
+    warnings.warn("base second", UserWarning)
+    assert recwarn.pop(Warning).category is UserWarning
+
+    recwarn.clear()
+    warnings.warn("base first", UserWarning)
+    warnings.warn("derived second", Derived)
+    assert recwarn.pop(Warning).category is UserWarning
+
+
 def test_recwarn_clear_empties_in_place(recwarn):
     warnings.warn("x", UserWarning)
     recwarn.clear()

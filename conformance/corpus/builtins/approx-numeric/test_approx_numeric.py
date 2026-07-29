@@ -1,4 +1,4 @@
-"""`pytest.approx` -- the numeric corpus, less the numpy half (see the sibling file).
+"""`pytest.approx` -- the numeric corpus, less the numpy half (see `builtins/approx-numpy`).
 
 Port target: `_pytest/python_api.py` l. 20-806 -- `ApproxBase`, `ApproxNumpy`,
 `ApproxMapping`, `ApproxSequenceLike`, `ApproxScalar`, `ApproxDecimal` and the `approx()`
@@ -8,7 +8,9 @@ MECHANISM M9 of the Phase 4 Task 1b sweep. What rustest shipped was a REIMPLEMEN
 not a port, and it diverged in ways that cost real tests in Apex Member Designer:
 
   (a) no `__array_ufunc__`/`__array_priority__`, so `ndarray == approx(scalar)` produced an
-      elementwise bool ARRAY and the enclosing assert raised ValueError (sibling file);
+      elementwise bool ARRAY and the enclosing assert raised ValueError (that half is the
+      `builtins/approx-numpy` case, split out so a missing optional dependency can only
+      move one case's verdict -- see its module docstring);
   (b) `rel`/`abs` defaulted to numbers instead of to None, so an explicit `abs=None` --
       which MD's own `def approx(expected, abs_tol=None)` helper passes on every call --
       became `TypeError: '>' not supported between 'NoneType' and 'float'`;

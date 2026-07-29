@@ -86,11 +86,14 @@ dropped = ["-ra", "--color=auto"]
 pytest_args = []
 rustest_args = []
 timeout_s = 1800
-# UNVERIFIED, and honestly so: no Pillow test has ever executed under rustest (see the ledger
-# below), so the draft's guess about parametrize id spelling has not been tested either way.
-# `strip_params` is left in place only because it keeps the blocker's 2150 consequences
-# readable. Re-decide this the moment the blocker is fixed.
-id_policy = "strip_params"
+# `id_policy` is DEFAULT (`exact`), and the decision this file used to defer is now made.
+# The draft carried `strip_params` with "UNVERIFIED, and honestly so: no Pillow test has ever
+# executed under rustest ... re-decide this the moment the blocker is fixed". The blocker (the
+# module-level skip, MECHANISM M7) was fixed in Phase 4 Task 1c and this target re-swept to a
+# clean MATCH of all 4 036 ids -- so the coarse policy was proved unnecessary and was doing
+# nothing but hiding resolution: `strip_params` compares a status *multiset per function* and
+# is blind to two parameter cases of one function trading statuses. Removed here rather than
+# left inert, because an id policy nobody needs is a weakened comparison nobody can see.
 
 [divergence.ids]
 # EMPTY as of Phase 4 Task 1c -- this target went from BLOCKED (0 tests collected) to a

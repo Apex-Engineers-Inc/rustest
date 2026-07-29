@@ -101,15 +101,15 @@ pytest_args = []
 rustest_args = ["-n", "1"]
 # ~6k tests against a real MongoDB, twice.
 timeout_s = 7200
-# `strip_params`, for the reason click and jinja2 declare it: this suite parametrizes over
-# dataclass scenarios, enums and numpy arrays, and rustest's parametrize ids do not
-# reproduce pytest's `IdMaker` for any non-scalar. Under `exact` those 473 spelling
-# differences arrive as 946 separate per-id problems and drown every real one. Under
-# `strip_params` the raw id difference is raised as its own graded `ids` problem -- it still
-# needs a mechanism, and it still goes stale the moment `IdMaker` is ported -- and outcomes
-# are compared per `file::function` as a status multiset. The cost is that it cannot say
-# WHICH parameter case moved, and it is blind to two cases of one function trading statuses.
-id_policy = "strip_params"
+# `id_policy` is DEFAULT (`exact`), and the entry that used to sit here documented its own
+# expiry: `strip_params` was declared because "rustest's parametrize ids do not reproduce
+# pytest's `IdMaker` for any non-scalar ... it still goes stale the moment `IdMaker` is
+# ported". `IdMaker` was ported whole in Phase 4 Task 1 (`0e6193d`), all 473 spelling
+# differences went away, and Task 1c re-swept this target to a clean MATCH of all 6 132 ids.
+# The policy is therefore removed rather than left inert: under `strip_params` outcomes are
+# compared as a per-`file::function` status multiset, which cannot say WHICH parameter case
+# moved and is blind to two cases of one function trading statuses -- a real loss of
+# resolution on the acceptance target, bought for a problem that no longer exists.
 
 
 [divergence.ids]

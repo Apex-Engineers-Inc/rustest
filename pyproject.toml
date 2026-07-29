@@ -44,6 +44,15 @@ dev = [
     # what the pytest leg of the conformance gates loads.
     "coverage>=7.6",
     "maturin>=1.4,<2",
+    # `conformance/corpus/builtins/approx-numpy` grades `ndarray == approx(...)` -- the
+    # dispatch mechanism (`__array_ufunc__ = None` / `__array_priority__ = 100`) that cost
+    # Apex Member Designer two tests before `approx` became a port. It is DECLARED rather
+    # than left to `pytest.importorskip` because an undeclared optional dependency makes
+    # that case's verdict a function of the machine: with numpy the v1 gate matched, without
+    # it pytest skipped the module while v1 turned the module-level skip into a collection
+    # error (exit 2 vs 0) and the gate went red in CI only. numpy registers no pytest plugin,
+    # so its presence changes nothing about what either leg of the gates loads.
+    "numpy>=1.26",
     "packaging>=20.0",
     "poethepoet>=0.22",
     "pre-commit>=3.5",

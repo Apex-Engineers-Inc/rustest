@@ -167,3 +167,49 @@ pytest's own 23 errors + 8 failures are environment-conditioned (this is not Fas
 container). rustest now reproduces every one of them, id for id, which is a stronger result \
 than a clean run would have been: the two runners agree about what this environment breaks, \
 not merely about what it passes."""
+
+[notes]
+# KNOWN LIMITATION, and the target's own, recorded as a NOTE rather than as a graded ledger
+# entry because it is INTERMITTENT: a ledger entry would go STALE-LEDGER on the runs where it
+# does not fire, which is most of them. Notes are printed with every verdict and grade
+# nothing, which is exactly the right weight for a hazard that may or may not appear.
+#
+# WHAT: on some pooled runs one id -- `test_tutorial/test_custom_request_and_route/
+# test_tutorial002.py::test_endpoint_works[tutorial002_py310]` -- comes back `error` where
+# pytest has `passed`, and the traceback is not from that file at all:
+#
+#   File ".../test_tutorial/test_custom_docs_ui/test_tutorial002.py", line 19, in client
+#       static_dir.rmdir()
+#   FileNotFoundError: [WinError 2] ... '...\fastapi\static'
+#
+# A module-scoped teardown from a DIFFERENT module, surfacing on the next file's first test
+# (rustest attributes boundary teardown that way, by design).
+#
+# WHY: three of fastapi's test files create and remove the SAME `<cwd>/static` directory with
+# `mkdir(exist_ok=True)` / `rmdir()` -- `test_custom_docs_ui/test_tutorial001.py`,
+# `test_custom_docs_ui/test_tutorial002.py` and `test_static_files/test_tutorial001.py`.
+# fastapi knows: all three are decorated `@workdir_lock`, and `tests/utils.py` defines
+# `workdir_lock = pytest.mark.xdist_group("workdir_lock")` -- pytest-xdist's "put these on one
+# worker" instruction, i.e. the target's own written acknowledgement that these files must not
+# run concurrently. It is an xdist marker, not core pytest; rustest implements no xdist markers
+# and routes by file STEM, and the group spans two stems (`test_tutorial001`,
+# `test_tutorial002`), so the group is split across workers by construction.
+#
+# EVIDENCE (Phase 4b Task 2 report, Sec 8.3): re-run immediately after the sweep, same wheel,
+# same machine, same `-m "not anyio"` -- `-n 1` and three consecutive `-n 4` runs all reported
+# 23 errors, id-for-id identical to pytest's 23; the sweep's own `-n 4` run reported 24. ONE
+# occurrence in four pooled runs. The hazard needs two or more workers, which was equally true
+# at the old `cpu_count` default, and the new default of four makes a two-stem collision LESS
+# likely (~1/4 at four bins against ~1/16 at sixteen). Nothing in Phase 4b created it.
+#
+# THE FIX IS A FEATURE, NOT A PATCH: honouring `xdist_group` by routing a marked group to a
+# single worker. That is a collection-time marker read with its own design and its own
+# conformance evidence, and three targets in this corpus now own a shared-external-state
+# hazard of this class (jsonschema's import-order dependency and Member Designer's shared
+# MongoDB are the other two, both handled today with an `-n 1` pin in [run]).
+xdist_group = """\
+fastapi marks three files @pytest.mark.xdist_group("workdir_lock") because they share \
+<cwd>/static; rustest implements no xdist markers and routes by file stem, so the group can \
+split across workers and race. Intermittent: 1 occurrence in 4 pooled runs (Phase 4b Task 2 \
+Sec 8.3). Target-owned hazard, not a compat defect; honouring xdist_group is a feature \
+request."""

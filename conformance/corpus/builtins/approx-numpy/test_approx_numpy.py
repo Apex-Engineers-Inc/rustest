@@ -11,9 +11,29 @@ Measured in Apex Member Designer's own venv during the Task 1b sweep:
 the same against the old `rustest.approx` -> `array([True, True, True])`.
 Two of MD's four residual failures were exactly this.
 
-This file skips itself when numpy is absent, which is also a live exercise of the
-module-level-skip machinery M7 added -- both runners skip it identically, and the case
-still grades either way.
+**Its own case directory, and numpy is a declared dev dependency, for one reason.** This
+file used to live beside `test_approx_numeric.py` in `builtins/approx-numeric`, and its
+docstring claimed the `importorskip` above meant "both runners skip it identically, and
+the case still grades either way". That was false for the **v1** gate, and it made one
+case's verdict a function of what happened to be installed:
+
+* with numpy present, both runners run all eight tests and the case MATCHES everywhere;
+* with numpy absent -- which is what `uv sync --all-extras` produced in CI, since nothing
+  declared numpy -- pytest skips the module and v1 raises the `Skipped` out of collection
+  as an unimportable file. That is a collection error, and a collection error aborts the
+  session under pytest semantics: exit 2 against pytest's 0. The v1 gate went red on a
+  machine without numpy and green on one with it.
+
+So numpy is now in the `dev` extra (`pyproject.toml`), which makes the verdict the same
+everywhere and keeps the numpy differential **graded, not waived, under all three gates**.
+A waiver would have been the wrong instrument twice over: it would be a STALE-WAIVER on
+every machine that has numpy, and the v1 module-level-skip gap it would cite is already
+pinned -- environment-independently -- by `collection/module-level-skip`, whose
+`test_importorskip_missing.py` skips on a module that is guaranteed absent
+(`rustest_no_such_module_9f3c`) rather than on one that is merely optional.
+
+The `importorskip` stays as the pytest-idiomatic guard for anyone running the corpus
+outside the dev environment; it is no longer load-bearing for the gate.
 """
 
 import pytest
