@@ -687,15 +687,49 @@ pub(crate) fn plan_with_options(
 /// Spawn and handshake the whole pool up front, so a bad interpreter or a version skew is
 /// reported before any file is collected.  A failure here drops the workers already
 /// started, and `Worker::drop` kills them.
+///
+/// **Three phases, not one loop, and that is the single largest speed property of a run.**
+/// A worker's first ~0.7 s is CPython booting and importing `rustest` — work the parent
+/// cannot help with and every worker does identically.  Interleaving `spawn` with a
+/// blocking `handshake` serialised all of it: worker *k+1*'s `CreateProcess` was not
+/// issued until worker *k* had finished booting, so pool startup cost N x per-worker
+/// startup on **every** run (measured at 0.63-0.75 s per worker on every suite and worker
+/// count in the Phase 4b Task 1 profile — 74% of the whole run on sqlparse `-n 8`).
+/// Issuing all N spawns first lets the N interpreters boot concurrently; sending all N
+/// `init`s before reading any `ready` does the same for [`handle_init`]'s work
+/// (`_assertion_rewrite`'s hook, `pythonpath`, the coverage tool).
+///
+/// **The semantics the one-loop version had are preserved exactly**, and they are the
+/// reason this function exists at all: every spawn and every handshake still completes
+/// before the first `collect_file` is sent, so a bad interpreter or a version skew is
+/// still reported before any file is collected, and the *first* failing worker — in index
+/// order — is still the one whose error the user sees.  Only the overlap changed.
+///
+/// [`handle_init`]: python/rustest/_v2_worker.py
 pub(crate) fn spawn_pool(
     dispatch: &Dispatch,
     launcher: &WorkerLauncher,
 ) -> Result<Vec<Worker>, CollectError> {
-    let mut pool = Vec::with_capacity(dispatch.assignments.len());
+    // Phase 1 — every `CreateProcess`, back to back.  `?` drops the vector, and
+    // `Worker::drop` kills whatever had already started.
+    let mut pool: Vec<Worker> = Vec::with_capacity(dispatch.assignments.len());
     for index in 0..dispatch.assignments.len() {
-        let mut worker = Worker::spawn(index, launcher)?;
-        worker.handshake(&dispatch.init)?;
-        pool.push(worker);
+        pool.push(Worker::spawn(index, launcher)?);
+    }
+
+    // Phase 2 — every `init` on the wire.  A worker still booting has not read its pipe
+    // yet; the write lands in the pipe buffer and the worker picks it up when it gets
+    // there, so this loop does not wait for anybody.
+    for worker in &mut pool {
+        if let Err(err) = worker.send(&dispatch.init) {
+            return Err(worker.handshake_error(format!("could not send init: {err}")));
+        }
+    }
+
+    // Phase 3 — collect the `ready` lines, in index order, so the diagnosis a user gets
+    // for a broken pool is the same one the serial loop gave.
+    for worker in &mut pool {
+        worker.await_ready()?;
     }
     Ok(pool)
 }
@@ -1435,12 +1469,12 @@ impl Worker {
             .unwrap_or_default()
     }
 
-    /// `init` -> `ready`.  A `ready` declares the protocol the worker *speaks*, so a
-    /// mismatch here is real skew and is fatal.
-    fn handshake(&mut self, init: &WorkerRequest) -> Result<(), CollectError> {
-        if let Err(err) = self.send(init) {
-            return Err(self.handshake_error(format!("could not send init: {err}")));
-        }
+    /// The receiving half of the handshake: read one `ready` and validate it.
+    ///
+    /// A `ready` declares the protocol the worker *speaks*, so a mismatch here is real skew
+    /// and is fatal.  Separate from the `init` write because [`spawn_pool`] puts every
+    /// worker's `init` on the wire before it waits for anybody's answer.
+    fn await_ready(&mut self) -> Result<(), CollectError> {
         let line = match self.receive() {
             Ok(Some(line)) => line,
             Ok(None) => {
@@ -2815,6 +2849,55 @@ assert True
         assert_eq!(requested.len(), 2, "{requested:?}");
         assert!(requested[0].ends_with("/test_a.py"), "{requested:?}");
         assert!(requested[1].ends_with("/test_b.py"), "{requested:?}");
+    }
+
+    /// The whole pool is **running** before any of it is handshaken.
+    ///
+    /// This is the shape [`spawn_pool`] exists in two phases for, and it is asserted
+    /// without a clock: each stand-in worker registers itself on disk at startup and then
+    /// refuses to answer `init` until it can see all four registrations.  Under a loop that
+    /// spawned-and-handshaked one worker at a time, worker 0 would wait for three siblings
+    /// that are not spawned until it answers — a deadlock, which the worker's own 30 s
+    /// bailout turns into a handshake failure rather than a hung test binary.  Passing
+    /// therefore means the four interpreters really were alive at the same time.
+    #[test]
+    fn the_whole_pool_boots_before_any_handshake() {
+        let tmp = tree(&[
+            ("test_a.py", &module("a")),
+            ("test_b.py", &module("b")),
+            ("test_c.py", &module("c")),
+            ("test_d.py", &module("d")),
+        ]);
+        let logs = TempDir::new().unwrap();
+        let script = format!(
+            "import glob, json, os, sys, time\n\
+             open('{dir}/live-%d' % os.getpid(), 'w').close()\n\
+             deadline = time.monotonic() + 30.0\n\
+             while len(glob.glob('{dir}/live-*')) < 4:\n\
+             \x20   if time.monotonic() > deadline:\n\
+             \x20       sys.exit('only %d of 4 workers were alive' % len(glob.glob('{dir}/live-*')))\n\
+             \x20   time.sleep(0.01)\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   if message['op'] == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif message['op'] == 'collect_file':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': message['path']}}) + chr(10))\n\
+             \x20   else:\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n",
+            dir = to_posix(logs.path())
+        );
+
+        let manifest = collect_default(tmp.path(), &[], &scripted_worker(&script), 4)
+            .expect("four workers must be alive at once");
+
+        assert!(manifest.tests.is_empty() && manifest.errors.is_empty());
     }
 
     /// Nothing to collect means no process is spawned at all — asserted with a launcher
