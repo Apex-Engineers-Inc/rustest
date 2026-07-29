@@ -6,7 +6,21 @@ This file provides guidance for Claude Code when working with the rustest codeba
 
 **rustest** is a Rust-powered pytest-compatible test runner focused on raw performance, with familiar pytest ergonomics.
 
-> **No speed claim here on purpose.** The "8.5x average, up to 19x faster" line this file carried was measured on the **v1** engine, which was deleted in Phase 4 Task 2 — the number describes a runner that no longer exists. Phase 4 Task 3 rewrites the README against the current engine's measured figures; do not restate the old ones anywhere in the meantime. The live numbers are in `conformance/baselines.json` and the `--real` sweep table.
+**The measured figures**, for anything that needs to state one. Do not invent a headline
+multiplier; these are what the tree can defend:
+
+- **1.1x–5.7x** wall-clock across seventeen real open-source pytest suites (13 MATCH /
+  4 EXPLAINED / 0 DIVERGE). Aggregate over all seventeen **1.23x**; over the fifteen that
+  are not body-bound, **2.74x**.
+- **~37x** on warm collection and **~8x** on marginal per-test overhead (500 files /
+  5,000 tests: 8.39s → 227.6ms, and 933.6µs → 117.9µs per test).
+- Any speedup is bounded by a suite's *framework share* — the fraction of wall clock that
+  is not the user's own test bodies. `user_guide/performance.md` carries the per-suite
+  table and every caveat, including that the marginal-overhead metric is noisy enough on a
+  loaded machine that a single reading of it must not be quoted as a gate result.
+
+The old "8.5x average, up to 19x" line was a **v1** measurement; v1 was deleted in Phase 4
+Task 2 and the number describes a runner that no longer exists. It is gone from every page.
 
 - **Languages**: Rust (core engine) + Python (user API/CLI)
 - **Build System**: Maturin (PyO3 bridge for Rust-Python integration)
@@ -47,7 +61,9 @@ python/rustest/               # Python package (user API)
 python/tests/                 # Python unit tests
 tests/                        # Integration test suite
 examples/tests/               # Example test suite
-docs/                         # MkDocs documentation
+user_guide/                   # The documentation site's content (flat, .md)
+great-docs.yml                # The documentation site's config
+docs/superpowers/             # Internal SDD artifacts -- NOT site content
 ```
 
 ## Development Commands
@@ -80,6 +96,14 @@ uv run python -m rustest tests/ examples/tests/ -v
 # Rust tests. `--test-threads=1` is required, not optional: these drive real Python
 # worker pools, and running them concurrently produces spurious subprocess timeouts.
 cargo test -- --test-threads=1
+
+# ON WINDOWS, the test binary needs the Python DLL directory on PATH or it exits
+# 0xc0000135 (STATUS_DLL_NOT_FOUND) before running anything -- it links pythonXY.dll and
+# does not find it on a bare PATH. This is not a build failure and not a regression; it
+# looks like a crash and costs ten minutes if you do not know. Prepend the uv-managed
+# interpreter's directory, e.g.:
+#   $env:PATH = "$HOME\AppData\Roaming\uv\python\cpython-3.14.2-windows-x86_64-none;$env:PATH"
+# Adjust the version to whatever `uv python list` says the project resolves.
 
 # Example tests
 uv run rustest examples/tests/
@@ -120,7 +144,24 @@ poe lint      # Check Python style
 poe typecheck # Type check Python
 poe fmt       # Format Rust
 poe tests     # Run integration and example tests
+poe docs      # Preview the docs site locally (great-docs preview)
+poe docs-build # Build the docs site into great-docs/_site
 ```
+
+### Pre-commit repair (uv-managed CPython)
+
+If `pre-commit` cannot bootstrap any hook environment — the symptom is a `virtualenv`
+failure rooted in `import ssl`, because the uv-managed interpreter is missing
+`libcrypto-3-x64.dll` — the repair is to reinstall that interpreter:
+
+```bash
+uv python install --reinstall cpython-3.14.2
+uv run pre-commit run --all-files
+```
+
+This is machine-global and rebuilds the project venv, so it is not something to do in the
+middle of another task. Do **not** paper over it by copying a DLL from a sibling
+interpreter: the freethreaded and standard builds ship different OpenSSL builds.
 
 ## Code Style and Conventions
 
@@ -201,7 +242,7 @@ Tests are run through multiple runners to ensure compatibility:
 2. **rustest** - The project's own test runner. `rustest <paths>` runs the engine with the
    pytest compatibility shim always installed. `--pytest-compat` and `--v1` were both
    removed -- passing either exits 4 with a message naming the change.
-3. **Documentation tests** - Python code blocks in README.md and docs/
+3. **Documentation tests** - Python code blocks in `README.md` and `user_guide/*.md`
 
 ### When Adding Features
 - Add unit tests in `python/tests/`
@@ -247,21 +288,42 @@ The CI workflow (`ci.yml`) runs all checks across Python 3.12-3.14. **ALL must p
 
 ## Documentation
 
-- Main docs: `docs/` (MkDocs with Material theme, Zensical compatible)
-- Build locally: `mkdocs serve`
-- API reference auto-generated from docstrings
+The site is built by **great-docs** (Quarto-based), configured in `great-docs.yml`. It
+replaced zensical/MkDocs; there is no `zensical.toml` and no `mkdocs.yml`.
+
+- Content: `user_guide/` — a **flat** directory of `.md` files. Flat is great-docs' design
+  (it globs one level and copies by basename), which is why the six beginner pages carry
+  an `intro-` prefix instead of living in a subdirectory.
+- Config + nav + API-reference discovery: `great-docs.yml`
+- Landing page: `README.md` (great-docs generates the site index from it)
+- API reference: **auto-generated** from `python/rustest` docstrings by the `reference:`
+  key. The five hand-written `docs/api/*.md` pages are gone — do not re-add them.
+- Build: `poe docs-build` · Preview: `poe docs` — both go through `scripts/docs.sh`
+- Prerequisites: the **Quarto CLI** on PATH (`winget install --id Posit.Quarto -e` on
+  Windows), plus a `.venv-docs` the script bootstraps
+- `docs/superpowers/` is internal SDD material, not site content, and is not built
+
+**The docs toolchain is deliberately not in `.venv`.** great-docs pulls jupyter, which
+pulls anyio, which registers a **pytest plugin** — and the conformance gates run real
+pytest out of `.venv` and must keep loading exactly what an unpolluted pytest loads. That
+is why it is a `[dependency-groups] docs` group rather than an extra, and why
+`scripts/docs.sh` uses a separate environment.
+
+**Why the pages are `.md` and not `.qmd`.** great-docs and Quarto render both. rustest's
+own doc-code-block collector keys on `.md` (`src/v2/collect.rs::is_markdown`), so
+authoring in `.md` is what keeps every example on the site executing as a test in CI —
+verified directly: a `.qmd` passed to rustest reports "found no collectors". The two
+systems do not collide, because Quarto's *executable* fences are spelled ```` ```{python} ````
+and this collector matches only ```` ```python ````.
 
 ### Documentation Code Blocks
 
 **CRITICAL**: All Python code blocks in documentation are tested as executable code in CI.
 
 #### Testing Documentation
-Python code blocks in the following files are automatically tested:
-- `README.md`
-- `docs/guide/writing-tests.md`
-- `docs/guide/fixtures.md`
-- `docs/guide/assertions.md`
-- `docs/guide/test-classes.md`
+CI runs `rustest README.md user_guide/*.md` — that is, **every page on the site**, not a
+subset. Each block executes in its own fresh namespace, so every block must import
+everything it uses.
 
 #### Writing Testable Code Blocks
 
@@ -305,14 +367,12 @@ assert value == expected  # These variables don't need to exist
 #### Testing Documentation Locally
 
 ```bash
-# Test all documentation code blocks
-uv run python -m rustest README.md
-uv run python -m rustest docs/guide/fixtures.md -v
+# One page, verbosely
+uv run python -m rustest user_guide/fixtures.md -v
 
-# Test whole directories of docs -- markdown must be NAMED, not walked: a directory
-# argument collects no `.md` (pytest walking the same tree collects none either).
-uv run python -m rustest docs/guide/*.md
-uv run python -m rustest README.md docs/guide/*.md docs/api/*.md
+# The exact CI line -- markdown must be NAMED, not walked: a directory argument collects
+# no `.md` (pytest walking the same tree collects none either).
+uv run python -m rustest README.md user_guide/*.md
 ```
 
 #### Common Patterns

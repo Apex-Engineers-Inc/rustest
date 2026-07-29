@@ -4,13 +4,14 @@
 
 </div>
 
-Rustest is a Rust-powered pytest-compatible test runner delivering **8.5× average speedup** with familiar pytest syntax and zero setup.
+**rustest is a Rust-powered test runner that runs your existing pytest suite unchanged.**
 
-📚 **[Full Documentation](https://apex-engineers-inc.github.io/rustest)** | [Getting Started](https://apex-engineers-inc.github.io/rustest/getting-started/quickstart/) | [Migration Guide](https://apex-engineers-inc.github.io/rustest/from-pytest/migration/)
+Point it at your tests. There is no compatibility flag, no migration step, and no plugin to
+install — `import pytest` resolves to rustest's own implementation on every run.
 
-## 🚀 Try It Now
+📚 **[Documentation](https://apex-engineers-inc.github.io/rustest)** · [Quick Start](https://apex-engineers-inc.github.io/rustest/user-guide/quickstart.html) · [Coming from pytest](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-compat.html)
 
-Run your existing pytest tests with rustest — no code changes required:
+## Try it now
 
 <!--pytest.mark.skip-->
 ```bash
@@ -18,91 +19,90 @@ pip install rustest
 rustest tests/
 ```
 
-pytest compatibility is **on by default** — `import pytest` resolves to rustest's shim, so
-existing suites just run. (The old `--pytest-compat` flag is gone; it is now the default.
-So is `--v1` — the legacy engine it selected was deleted, not frozen; both flags exit 4
-naming the change. See CHANGELOG.md.)
+That is the whole migration for most suites.
 
-See the speedup immediately, then migrate to native rustest for full features.
+## Does it actually agree with pytest?
 
-## Why Rustest?
+This is the question that matters more than speed, so it is measured rather than asserted.
+Seventeen real, unmodified open-source pytest suites are run under both runners and graded
+on **every node id and every outcome count**:
 
-- 🚀 **8.5× average speedup** over pytest (up to 19× on large suites)
-- 🧪 **pytest-compatible** — Run existing tests unchanged; no flag needed
-- ✅ **Familiar API** — Same `@fixture`, `@parametrize`, `@mark` decorators
-- 🔄 **Built-in async & mocking** — No pytest-asyncio or pytest-mock plugins needed
-- 🐛 **Clear error messages** — Vitest-style output with Expected/Received diffs
-- 📝 **Markdown testing** — Test code blocks in documentation
-- 🛠️ **Rich fixtures** — `tmp_path`, `monkeypatch`, `mocker`, `capsys`, `caplog`, `cache`, and more
+| Verdict | Count | Meaning |
+|---|---:|---|
+| **MATCH** | 13 | Every node id and every outcome count identical to pytest's |
+| **EXPLAINED** | 4 | Every remaining difference covered by a ledger entry naming its mechanism |
+| **DIVERGE** | 0 | — |
 
-## Performance
+The four EXPLAINED rows are worth naming, because none of them is rustest getting a test
+result wrong: **fastapi** deselects a different count under the `anyio` plugin;
+**marshmallow** puts a wall-clock reading inside a node id and **psutil**'s one differing
+test is a live CPU-frequency reading (which failed on *pytest's* side and passed on
+rustest's); and **rich**'s `test_suppress` introspects the *identity* of the `pytest`
+module object rather than using its API — the one class of test rustest structurally
+cannot pass.
 
-Rustest delivers consistent speedups across test suites of all sizes:
+Underneath the sweep sits a conformance corpus that diffs rustest against real pytest on
+node ids, outcome tallies and exit codes, case by case, on every commit.
 
-| Test Count | pytest | rustest | Speedup |
-|-----------:|-------:|--------:|--------:|
-|         20 | 0.45s  |  0.12s  |  3.8×   |
-|        500 | 1.21s  |  0.15s  |  8.3×   |
-|      5,000 | 7.81s  |  0.40s  | 19.4×   |
+## How fast?
 
-**Expected speedups:** 3-4× for small suites, 5-8× for medium suites, 11-19× for large suites.
+**1.1x to 5.7x** across those same seventeen suites. Aggregated over all of them it is
+**1.23x**; across the fifteen that are not dominated by their own test bodies it is
+**2.74x**.
 
-**[📊 Full Performance Analysis →](https://apex-engineers-inc.github.io/rustest/advanced/performance/)**
+Those numbers are deliberately not a single headline multiplier, because a test runner can
+only make the *framework* part of a run faster — never your code. That share is measurable
+per suite, and it is the ceiling:
 
-> **These tables are historical and cannot be reproduced.** Both were measured on the **v1**
-> engine, which was deleted in Phase 4 — there is no flag that runs it. They are left in
-> place only until this page is rewritten against the current engine's own figures; do not
-> quote them. The live numbers are in `conformance/baselines.json` and the `--real` sweep.
+| Suite | Framework share | Speedup |
+|---|---:|---:|
+| werkzeug | 1% | 1.62x |
+| member-designer (6,132 tests) | 4% | 1.10x |
+| more-itertools | 13% | 1.82x |
+| jsonschema | 24% | 2.91x |
+| jinja2 | 72% | 2.38x |
+| sqlparse | 74% | 2.23x |
+| click | 78% | 2.50x |
+| marshmallow | 90% | 2.73x |
 
-Read on for what the current engine measured at the time of that rewrite's baseline.
+**A 1.2x on a body-bound suite and a 5.7x on a framework-bound one are the same result.**
+If your suite spends 95% of its wall clock inside your own functions, no runner will give
+you more than a few percent — and the component numbers are where the difference comes
+from:
 
-## v2 Baselines (the Phase 2 gate)
+| Component (500 files / 5,000 tests) | pytest | rustest | |
+|---|---:|---:|---:|
+| Warm collection | 8.39s | 227.6ms | **~37x** |
+| Marginal per-test framework overhead | 933.6µs | 117.9µs | **~8x** |
 
-`rustest <paths>` with no flag has run the **v2** engine since the Phase 1c flip. The
-table below is the first real measurement of it, alongside pytest and the v1 numbers
-above, on the same generated all-passing suites used throughout `conformance/bench/`.
+Full table, method, machine conditions and caveats — including the suite where rustest was
+*slower* until a fix landed, and why the overhead metric above should be quoted carefully —
+in **[Performance](https://apex-engineers-inc.github.io/rustest/user-guide/performance.html)**.
 
-**Expectation management: v2 is not yet fast.** Every run today spawns a fresh worker
-pool from scratch, there is no static (import-free) collection tier, and there is no
-manifest cache — v1 already has the benefit of years of tuning around its own
-architecture, and v2 has none of that yet. The gap below is dominated by that
-**fixed** per-run cost (worker-pool spawn); the **marginal** per-test cost — what's left
-once the fixed cost is subtracted out — is already close to v1's (see the derived
-numbers).
+## The agent loop
 
-| files | tests | pytest run | rustest v1 run | rustest v2 run | rustest v2 collect |
-| ----: | ----: | ---------: | --------------: | --------------: | -------------------: |
-|    10 |   100 |      1.26s |            0.83s |            4.10s |                0.23s |
-|   100 |  1000 |      2.89s |            1.45s |            5.98s |                0.21s |
-|   500 |  5000 |      7.20s |            6.14s |            8.28s |                0.29s |
-
-Marginal per-test overhead, derived from two suites of the same file count (100 files,
-10 vs 50 tests each), medians of 5 sequential runs: pytest **933.6 us/test**, rustest v1
-**75.8 us/test**, rustest v2 **117.9 us/test**.
-
-Full methodology (suite generation, command order, the ordering-bias caveat) and the
-raw data live in the "Baselines" section of
-[`conformance/README.md`](conformance/README.md) and the tracked
-[`conformance/baselines.json`](conformance/baselines.json).
-
-**These numbers ARE the Phase 2 baseline.** Phase 2
-([`docs/superpowers/plans/2026-07-26-phase2-speed.md`](docs/superpowers/plans/2026-07-26-phase2-speed.md))
-targets warm collection **≤ 50ms** on the 5k-test suite above and per-test framework
-overhead **< 200µs**, measured against exactly this table — a static Rust collector, a
-manifest cache and parallel-dispatch tuning are what close the gap from here.
-
-## Installation
+Sub-second feedback for tools, not just for humans. `--llm` emits the run as JSONL —
+failures only, one object per line, with a published schema — and `--lf` reruns only what
+failed off a warm collection:
 
 <!--pytest.mark.skip-->
 ```bash
-pip install rustest
-# or
-uv add rustest
+rustest --llm tests/          # full run; failures as JSONL on stdout
+# ... apply a fix ...
+rustest --llm --lf tests/     # only what failed, ~230ms to collect
 ```
 
-**Python 3.12-3.14 supported.** [📖 Installation Guide →](https://apex-engineers-inc.github.io/rustest/getting-started/installation/)
+```json
+{"t":"fail","id":"test_auth.py::test_login","file":"test_auth.py","line":8,
+ "status":"failed","msg":"...\nAssertionError: assert 401 == 200",
+ "stdout":"POST /login user=admin"}
+```
 
-## Quick Start
+One line, one parse: the id, the file, the line, why it failed **with the values**, and
+what the test printed on the way there. `rustest --llm-schema` prints the contract.
+[Details](https://apex-engineers-inc.github.io/rustest/user-guide/llm-output.html).
+
+## Quick start
 
 Write a test in `test_example.py`:
 
@@ -130,30 +130,93 @@ def test_exception():
         1 / 0
 ```
 
-Run your tests:
+pytest's own spellings work too — this is the same file, and it runs identically:
+
+```python
+import pytest
+
+@pytest.fixture
+def numbers():
+    return [1, 2, 3, 4, 5]
+
+@pytest.mark.parametrize("value,expected", [(2, 4), (3, 9)])
+def test_square(value, expected):
+    assert value ** 2 == expected
+```
+
+Run them:
 
 <!--pytest.mark.skip-->
 ```bash
 rustest                      # Run all tests
-rustest tests/               # Run specific directory
+rustest tests/               # Run a specific directory
 rustest -k "test_sum"        # Filter by name
 rustest -m "slow"            # Filter by mark
+rustest -n 8                 # Set the worker pool size
 rustest --lf                 # Rerun last failed
-rustest -x                   # Exit on first failure
+rustest -x                   # Stop on first failure
+rustest --cov src            # Coverage, no plugin needed
 ```
 
-**[📖 Full Documentation →](https://apex-engineers-inc.github.io/rustest)**
+## What's built in
 
-## Learn More
+| | Replaces |
+|---|---|
+| `@mark.asyncio`, loop scopes | pytest-asyncio |
+| The `mocker` fixture | pytest-mock |
+| `--cov` / `--cov-report` (via `sys.monitoring`) | pytest-cov |
+| A worker pool, `-n` | pytest-xdist (at file granularity) |
+| `--lf` / `--ff` / `-x` / `--maxfail` | built into pytest |
+| Python fences in `.md` files run as tests | pytest-codeblocks |
+| `--llm` JSONL, `--report-json` | — |
 
-- **[Getting Started](https://apex-engineers-inc.github.io/rustest/getting-started/quickstart/)** — Complete quickstart guide
-- **[Migration from pytest](https://apex-engineers-inc.github.io/rustest/from-pytest/migration/)** — 5-minute migration guide
-- **[User Guide](https://apex-engineers-inc.github.io/rustest/guide/writing-tests/)** — Fixtures, parametrization, marks, assertions
-- **[API Reference](https://apex-engineers-inc.github.io/rustest/api/overview/)** — Complete API documentation
+## Compatibility, stated honestly
+
+Compatibility is the default behaviour, not a mode — but it is not total, and the gaps are
+documented rather than discovered. rustest does **not** have:
+
+- **A plugin system or hook system.** By design. A conftest's fixtures load; its hooks are
+  ignored. [Why, and what replaces the ten most popular plugins](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-plugins.html)
+- **Ten built-in fixtures**, including `pytester`, `recwarn`, `capfdbinary` and
+  `record_property`. Requesting one is a loud, named error — never a silent skip
+- **`xfail_strict` ini or `--runxfail`** (the `strict=` keyword does work)
+- **Item reordering** for shared higher-scoped parametrized fixtures
+- **A warnings channel** — behaviour matches pytest, the diagnostic message does not
+
+The complete, current list is
+**[pytest compatibility](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-compat.html)**.
+There is no `--v1` escape hatch behind it: the previous engine was deleted, not frozen, so
+that page is the whole statement of what rustest does.
+
+## Installation
+
+<!--pytest.mark.skip-->
+```bash
+pip install rustest
+# or
+uv add rustest
+```
+
+**Python 3.12 – 3.14.** [Installation guide](https://apex-engineers-inc.github.io/rustest/user-guide/installation.html)
+
+## Upgrading from an older rustest?
+
+`--pytest-compat` and `--v1` are removed and now exit 4; `rustest.run()` is keyword-only
+and returns an exit code rather than a `RunReport`; `indirect=` parametrization follows
+pytest's semantics; and `--llm` output is schema 2. See the
+**[upgrade guide](https://apex-engineers-inc.github.io/rustest/user-guide/migration-guide.html)**
+and [CHANGELOG.md](CHANGELOG.md).
+
+## Learn more
+
+- **[Quick Start](https://apex-engineers-inc.github.io/rustest/user-guide/quickstart.html)** — five minutes, start to finish
+- **[New to testing?](https://apex-engineers-inc.github.io/rustest/user-guide/intro-why-test.html)** — a beginner track that assumes nothing
+- **[CLI reference](https://apex-engineers-inc.github.io/rustest/user-guide/cli.html)** — every flag
+- **[API reference](https://apex-engineers-inc.github.io/rustest/reference/index.html)** — generated from the source
 
 ## Contributing
 
-Contributions welcome! See the [Development Guide](https://apex-engineers-inc.github.io/rustest/advanced/development/) for setup instructions.
+Contributions welcome. See the [development guide](https://apex-engineers-inc.github.io/rustest/user-guide/development.html) for setup.
 
 ## License
 
