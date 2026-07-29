@@ -86,6 +86,14 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   (exit 4); `--v2-collect-only` is a v2 surface and the legacy engine has no collect-only mode.
 - `-v`'s percent column is over the tests the run *selected*, so a `-x` run stops short of
   100% instead of claiming it finished — pytest's `session.testscollected` denominator.
+- **A `session`- or `package`-scoped `conftest.py` fixture is built once per worker, not once
+  per test file.** It was rebuilt for every file that requested it — even at `-n 1` — so two
+  files each got their own instance and each queued its own teardown, where pytest builds one
+  and tears it down once. The same applies to a session fixture reached through
+  `pytest_plugins`, and to the session-scoped builtins (`tmp_path_factory`, `tmpdir_factory`,
+  `cache`, `pytestconfig`), so a run now uses one temporary-directory root per worker instead
+  of one per file. Narrower scopes are unchanged: `module`, `class` and `function` values are
+  still discarded at their own boundaries.
 
 ### Known gaps on the default engine (use `--v1`, or wait for Phase 3)
 
@@ -96,9 +104,11 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - `capfd`, `capfdbinary`, `capsysbinary`, `capteesys`, `caplog`, `cache`, `mocker`,
   `pytestconfig`, `recwarn`, `tmpdir`, `tmpdir_factory`, `pytester` and friends are not
   provided; requesting one is a loud error naming the fixture.
-- `session`/`package` scope is per **worker** for teardown and per **file** for setup: a
-  session fixture declared in a `conftest.py` is rebuilt for each test file that requests
-  it, even at `-n 1`. Two tests in one file share it correctly.
+- `session`/`package` scope is per **worker**, not per run: a worker is handed a subset of the
+  files, so a suite spread over several workers gets one session-fixture instance per worker
+  process. That is pytest-xdist's contract, and `-n 1` gives pytest's exactly. (The *per-file*
+  granularity this entry used to describe is fixed — see Fixed, above.) `package` scope is
+  additionally not torn down at the package boundary.
 - No item reordering. pytest groups tests that share a higher-scoped parametrized fixture,
   so a module-scoped `params=["a", "b"]` fixture costs 2 setups there and 4 here — and the
   collected order differs, which is what a node-id comparison sees.
