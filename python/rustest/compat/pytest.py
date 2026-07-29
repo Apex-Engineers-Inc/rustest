@@ -825,21 +825,35 @@ class PytestWarning(UserWarning):
     cosmetic difference: a warning category that is not a ``Warning`` subclass cannot be used
     for anything a warning category is for.
 
+    Every reachable symptom is **in-process** — a conftest, a test body, or a fixture:
+
     * ``warnings.simplefilter("error", pytest.PytestDeprecationWarning)`` raises
       ``TypeError: category must be a Warning subclass``, so a project that promotes pytest's
       own deprecations to errors — the recommended posture — crashed on the filter itself;
-    * ``-W error::pytest.PytestUnraisableExceptionWarning`` on the command line, same;
     * ``pytest.warns(pytest.PytestWarning)`` raised ``TypeError`` from the checker's own
       type validation, and ``issubclass(record.category, ...)`` could never be true anyway;
     * ``warnings.warn(PytestWarning("..."))`` is a ``TypeError`` outright.
 
+    **Not** a symptom, and this list claimed it was until the Phase 4 convergence wave:
+    ``-W error::pytest.PytestUnraisableExceptionWarning`` "on the command line". No command
+    line reaches these classes by that name, for reasons that have nothing to do with their
+    bases. ``rustest`` has no ``-W`` option — it exits 4 naming the flag — and the
+    *interpreter's* ``-W``/``PYTHONWARNINGS`` resolve a dotted category at startup, long
+    before anything installs ``sys.modules["pytest"]``, so the filter is discarded with
+    ``Invalid -W option ignored: invalid module name: 'pytest'`` whether or not the class is
+    a ``Warning``. pytest's ``filterwarnings`` ini is not read either
+    (``_v2_worker.py::_ini_values`` refuses it by name rather than fabricating a value).
+    All four probed.
+
     The bases are pytest's exactly, and the two multiple-inheritance ones are the reason this
     is a hierarchy rather than a list: ``PytestDeprecationWarning`` is **both** a
-    ``PytestWarning`` and a ``DeprecationWarning`` (l. 47-50), so ``-W error::DeprecationWarning``
-    catches it and ``pytest.deprecated_call()`` accepts it; ``PytestExperimentalApiWarning`` is
-    a ``FutureWarning`` (l. 60-67) for the same reason. Each also sets ``__module__ = "pytest"``,
-    as pytest does, because that string is what appears in a filter spelling and in the
-    rendered warning.
+    ``PytestWarning`` and a ``DeprecationWarning`` (l. 47-50), so ``pytest.deprecated_call()``
+    accepts it and a filter naming the *builtin* category catches it —
+    ``-W error::DeprecationWarning`` is the one command-line spelling that does work here,
+    precisely because ``DeprecationWarning`` is resolvable at interpreter startup and this
+    class inherits from it (probed). ``PytestExperimentalApiWarning`` is a ``FutureWarning``
+    (l. 60-67) for the same reason. Each also sets ``__module__ = "pytest"``, as pytest does,
+    because that string is what appears in a filter spelling and in the rendered warning.
     """
 
     __module__ = "pytest"

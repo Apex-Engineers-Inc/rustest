@@ -1554,3 +1554,83 @@ def test_an_approx_failure_prints_the_repr_compare_table(tmp_path: Path) -> None
     ):
         assert fragment in oracle.stdout, _context("pytest", oracle)
         assert fragment in (ours.stdout + ours.stderr), _context("v2", ours)
+
+
+def _approx_explanation(tmp_path: Path, name: str, body: str) -> tuple[str, str]:
+    """Both runners' rendering of one failing assertion, as (pytest, v2) blobs.
+
+    ``--tb=long`` on the oracle and no ``-q`` on ours, because the explanation block under
+    the ``assert`` line is the entire subject and both helpers' defaults suppress it.
+    """
+    tree = _tree(tmp_path, name, {f"test_{name}.py": body})
+    oracle = _run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--tb=long", "-q"], tree
+    )
+    ours = _run_v2(tree, [])
+    assert oracle.returncode == 1, _context("pytest", oracle)
+    assert ours.returncode == 1, _context("v2", ours)
+    return oracle.stdout, ours.stdout + ours.stderr
+
+
+def test_the_approx_table_appears_when_approx_is_the_LEFT_operand(tmp_path: Path) -> None:
+    """FINDING I2, second branch -- ``_compare_eq_any`` picks the approx side either way.
+
+    `_assertion.py` reads *"Although the common order should be obtained == expected, this
+    ensures both ways"* -- pytest's own comment -- and then selects
+    ``left if isinstance(left, ApproxBase) else right``. Only the right-hand spelling was
+    pinned, so the selector could be simplified to ``right`` and every existing test would
+    still pass while ``assert approx(y) == x`` silently lost its table.
+    """
+    oracle, ours = _approx_explanation(
+        tmp_path,
+        "approxleft",
+        "import pytest\n\n\ndef test_left():\n"
+        "    assert pytest.approx([0.1, 0.3]) == [0.1, 0.2]\n",
+    )
+    for fragment in ("comparison failed", "Index | Obtained", "Max relative difference"):
+        assert fragment in oracle, f"--- pytest ---\n{oracle}"
+        assert fragment in ours, f"--- v2 ---\n{ours}"
+
+
+def test_the_approx_numpy_shape_mismatch_is_its_own_two_line_answer(tmp_path: Path) -> None:
+    """FINDING I2, the branch that returns *before* building a table.
+
+    ``ApproxNumpy._repr_compare`` refuses two arrays of different shapes with two lines and
+    no columns (`python_api.py` l. 171-190 in this port). It is the branch a reader is most
+    likely to drop when trimming, because it looks like an early return rather than output --
+    and dropping it does not raise, it produces the generic explanation instead. numpy is a
+    hard dev-dependency for exactly this reason (see `pyproject.toml`: a verdict that changes
+    with whether numpy happens to be installed is worse than no verdict).
+    """
+    oracle, ours = _approx_explanation(
+        tmp_path,
+        "approxshape",
+        "import numpy as np\nimport pytest\n\n\ndef test_shape():\n"
+        "    assert np.array([1.0, 2.0]) == pytest.approx(np.array([1.0, 2.0, 3.0]))\n",
+    )
+    for fragment in ("Impossible to compare arrays with different shapes.", "Shapes: (3,) and (2,)"):
+        assert fragment in oracle, f"--- pytest ---\n{oracle}"
+        assert fragment in ours, f"--- v2 ---\n{ours}"
+    # The discriminator against "it fell through to the table branch".
+    assert "Index | Obtained" not in ours, f"--- v2 ---\n{ours}"
+
+
+def test_a_plain_sequence_failure_did_not_regress_when_approx_was_wired_in(
+    tmp_path: Path,
+) -> None:
+    """The no-regression control for I2: the branch was *added* to ``_compare_eq_any``.
+
+    An ``isinstance(left, ApproxBase) or isinstance(right, ApproxBase)`` arm placed before
+    the sequence arm is one indentation slip away from swallowing the ordinary case, and the
+    symptom would be a *worse explanation*, not an error -- the kind of regression a suite
+    that only asserts exit codes never sees.
+    """
+    oracle, ours = _approx_explanation(
+        tmp_path,
+        "approxnone",
+        "def test_plain():\n    assert [1, 2, 3] == [1, 9, 3]\n",
+    )
+    for fragment in ("At index 1 diff: 2 != 9", "Use -v to get more diff"):
+        assert fragment in oracle, f"--- pytest ---\n{oracle}"
+        assert fragment in ours, f"--- v2 ---\n{ours}"
+    assert "comparison failed" not in ours, f"--- v2 ---\n{ours}"

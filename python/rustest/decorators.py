@@ -1348,8 +1348,10 @@ class ExceptionInfo:
     joins ``str(line)``, and got ``TypeError: 'traceback' object is not iterable``. So the
     three classes were built after all.  It is **settable**, because pytest's own callers
     assign a filtered traceback back onto the info object
-    (`_pytest/python.py::importtestmodule` does exactly that).  ``__repr__``'s ``tblen`` is
-    computed by walking ``tb_next``, so it agrees with pytest's number.
+    (`_pytest/python.py::importtestmodule` does exactly that) — and that setter is why
+    :meth:`__repr__`'s ``tblen`` is ``len(self.traceback)`` rather than a walk of the raw
+    ``tb_next`` chain: after a ``cut``/``filter`` the two numbers differ, and pytest reports
+    the filtered one.  See :meth:`__repr__`.
     """
 
     def __init__(
