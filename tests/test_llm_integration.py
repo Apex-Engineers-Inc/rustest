@@ -48,11 +48,23 @@ def test_llm_jsonl_end_to_end(tmp_path: Path) -> None:
     assert "test_wip" not in json.dumps(objs)  # skip not emitted by default
 
 
-def test_llm_verbose_emits_skip_and_code(tmp_path: Path) -> None:
+def test_llm_verbose_emits_skip_and_the_failing_source_line(tmp_path: Path) -> None:
+    """`-v` adds the skip lines; the failing source line rides in `msg` at every rung.
+
+    This arrived from `main` asserting `"code" in o`. Schema 1 decomposed a failure into
+    `error`/`expected`/`actual`/`code`/`frames`; schema 2 deliberately does not, and its
+    `fail` object sets `additionalProperties: False`, so a `code` key cannot ever appear.
+    The information did not go away -- it moved into the frame-filtered `msg`, which is
+    required at every verbosity, with `line` carrying the innermost frame.
+    """
     suite = _write_suite(tmp_path)
     objs = _run(["--llm", "-v", str(suite)])
     assert any(o["t"] == "skip" and o["id"].endswith("::test_wip") for o in objs)
-    assert any(o["t"] == "fail" and "code" in o for o in objs)
+
+    fails = [o for o in objs if o["t"] == "fail"]
+    assert len(fails) == 1
+    assert "assert 1 == 2" in fails[0]["msg"]
+    assert isinstance(fails[0]["line"], int)
 
 
 def test_llm_no_ansi_or_nonascii(tmp_path: Path) -> None:
