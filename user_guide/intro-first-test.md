@@ -45,9 +45,7 @@ rustest
 You should see:
 
 ```
-✓
-
-✓ 1/1 1 passing (1ms)
+1 passed in 0.40s
 ```
 
 **Congratulations!** 🎉 You just wrote and ran your first automated test!
@@ -60,7 +58,11 @@ When you ran `rustest`, it:
 2. **Found your test function** (`test_addition`)
 3. **Ran the function**
 4. **Checked the assertion** — `result == 4` was true, so the test passed!
-5. **Reported the results** — That `✓` means success!
+5. **Reported the results** — one line, because nothing went wrong
+
+A green run is deliberately boring: no ticks, no progress bar, just the count and how long
+it took. Everything rustest has to say about a run appears *above* that line, so when the
+summary is the only output, there was nothing to say.
 
 ## Step 4: See a failing test
 
@@ -75,29 +77,34 @@ def test_addition():
 Run `rustest` again:
 
 ```
-FAILURES
-test_addition (test_math.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: assert 4 == 5
+================================== FAILURES ===================================
+________________________________ test_addition ________________________________
+Traceback (most recent call last):
+  File "/path/to/test_math.py", line 3, in test_addition
+    assert result == 5  # This is wrong on purpose!
+    ^^^^^^^^^^^^^^^^^^
+AssertionError: assert 4 == 5
+=========================== short test summary info ===========================
+FAILED test_math.py::test_addition
 
-  Expected: 5
-  Received: 4
-
-    def test_addition():
-        result = 2 + 2
-      → assert result == 5
-
-✗ 1/1 1 failed (1ms)
+1 failed in 0.35s
 ```
 
 Rustest shows you:
 
-- ✗ **The test failed** (that red X)
-- 📍 **Where it failed** (`test_math.py::test_addition`)
-- 💡 **What went wrong** — Expected 5, but got 4
-- 🔍 **The exact line** — Line 3 with the failing assertion
+- 📍 **Where it failed** — the file and line, in a traceback you can click in most terminals
+- 🔍 **The exact expression** — `assert result == 5`, with `^^^` underlining what was evaluated
+- 💡 **What went wrong** — `assert 4 == 5`: rustest rewrites the assertion so you see the
+  *values*, not just that something was false
+- 📋 **A copyable list** — `short test summary info` repeats every failure's node id at the
+  bottom, so a long red run ends with the roll-call rather than making you scroll
 
 This makes debugging **super easy**.
+
+!!! tip "Re-running just the failures"
+    Use `--lf` (last-failed) to re-run only what went red. Pasting the node id back as a
+    path argument does *not* narrow the run — see [the CLI guide](cli.md) — but `--lf`
+    does, and it needs no copying.
 
 ## Step 5: Test something real
 
@@ -133,12 +140,18 @@ def test_multiply():
 Run `rustest`:
 
 ```
-✓✓✓
-
-✓ 3/3 3 passing (2ms)
+3 passed in 0.33s
 ```
 
-**Three passing tests!** Now you're testing real code.
+**Three passing tests!** Now you're testing real code. Want to see their names? Add `-v`:
+
+```
+test_calculator.py::test_add PASSED                                     [ 33%]
+test_calculator.py::test_subtract PASSED                                [ 66%]
+test_calculator.py::test_multiply PASSED                                [100%]
+
+3 passed in 0.33s
+```
 
 ## Step 6: Add more assertions
 

@@ -62,9 +62,18 @@ rustest example.md
 Output:
 
 ```
-✓✓✓
+3 passed in 0.45s
+```
 
-✓ 3/3 3 passing (3ms)
+Each fence is its own test. `-v` shows how they are named — by block index and by the line
+the fence starts on, so a failure points at the right place in the page:
+
+```
+example.md::codeblock_0_line_3 PASSED                                   [ 33%]
+example.md::codeblock_1_line_8 PASSED                                   [ 66%]
+example.md::codeblock_2_line_13 PASSED                                  [100%]
+
+3 passed in 0.45s
 ```
 
 ## Skipping Code Blocks

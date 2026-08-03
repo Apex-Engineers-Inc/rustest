@@ -180,26 +180,25 @@ When you run rustest, you'll see clean, informative output:
 
 <!--rustest.mark.skip-->
 ```
-✓✓✓⊘✗
+================================== FAILURES ===================================
+_____________________________ test_broken_feature _____________________________
+Traceback (most recent call last):
+  File "/path/to/test_example.py", line 12, in test_broken_feature
+    assert result == 5
+AssertionError: assert 4 == 5
+=========================== short test summary info ===========================
+FAILED test_example.py::test_broken_feature
 
-FAILURES
-test_broken_feature (test_example.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError
-  Expected: 5
-  Received: 4
-
-✗ 5/5 3 passing, 1 failed, 1 skipped (10ms)
+1 failed, 3 passed, 1 skipped in 0.44s
 ```
 
-**Output symbols:**
-- `✓` = Passed test
-- `✗` = Failed test
-- `⊘` = Skipped test
+The passing and skipped tests say nothing at this rung — the default output is the failure
+report plus the counts. That is pytest's shape, and it is deliberate: on a suite of a few
+thousand tests, the only lines you want are the ones about what broke.
 
 ### Verbose Output
 
-For more detailed output showing test names and timing, use the `-v` or `--verbose` flag:
+For one line per test, use `-v` or `--verbose`:
 
 <!--rustest.mark.skip-->
 ```bash
@@ -208,25 +207,31 @@ rustest -v
 
 <!--rustest.mark.skip-->
 ```
-/home/user/project/test_example.py
-  ✓ test_basic_assertion 0ms
-  ✓ test_string_operations 1ms
-  ✓ test_list_operations 0ms
-  ⊘ test_future_feature 0ms
-  ✗ test_broken_feature 2ms
+test_example.py::test_basic_assertion PASSED                            [ 20%]
+test_example.py::test_string_operations PASSED                          [ 40%]
+test_example.py::test_list_operations PASSED                            [ 60%]
+test_example.py::test_future_feature SKIPPED (not implemented yet)      [ 80%]
+test_example.py::test_broken_feature FAILED                             [100%]
+================================== FAILURES ===================================
+_____________________________ test_broken_feature _____________________________
+Traceback (most recent call last):
+  File "/path/to/test_example.py", line 12, in test_broken_feature
+    assert result == 5
+AssertionError: assert 4 == 5
+=========================== short test summary info ===========================
+FAILED test_example.py::test_broken_feature
 
-FAILURES
-test_broken_feature (test_example.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Expected 5, got 4
-
-✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
+1 failed, 3 passed, 1 skipped in 0.40s
 ```
 
-Verbose mode shows:
-- File paths being tested
-- Individual test names with indentation
-- Timing for each test in milliseconds
+Verbose mode adds:
+
+- The full node id of every test, in the form you would paste into `-k`
+- Its outcome in pytest's wording — `PASSED`, `FAILED`, `SKIPPED (reason)`, `XFAIL`,
+  `XPASS`, `ERROR`
+- A running percentage through the selected set
+
+Skip reasons only appear at this rung, which is often the reason to reach for it.
 - Inline error output for failed tests
 
 ### Viewing Print Statements

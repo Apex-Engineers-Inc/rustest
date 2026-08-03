@@ -39,7 +39,7 @@ Rustest uses **smart loop scope detection** to automatically ensure tests and fi
 
 ### Automatic Detection
 
-**You don't need to configure anything!** Rustest automatically detects what event loop scope your test needs:
+Rustest widens a test's loop scope to match the async fixtures it requests:
 
 ```python
 from rustest import fixture
@@ -49,7 +49,7 @@ from rustest import fixture
 async def database():
     return Database()
 
-# This test automatically uses the session loop!
+# Runs in the session loop -- provided the default test loop scope allows it
 async def test_query(database):
     result = await database.query("SELECT *")
     assert len(result) > 0
@@ -58,20 +58,49 @@ async def test_query(database):
 **How it works:**
 1. Rustest sees `test_query` uses `database`
 2. `database` is a session-scoped async fixture
-3. Rustest automatically runs `test_query` in the session loop
-4. Everything works seamlessly! ✅
+3. Rustest widens `test_query`'s loop scope to session
+4. Both run in the same loop ✅
+
+!!! warning "Detection widens *up to* the configured default — set it, or this does not apply"
+    Auto-detection cannot narrow past `asyncio_default_test_loop_scope`, and that key
+    **defaults to `function`** (pytest-asyncio's own default). In a project with no
+    `[tool.pytest.ini_options]` at all, a test requesting a session-scoped async fixture
+    still gets its **own function loop**, and the fixture keeps the session loop — so
+    `id(asyncio.get_event_loop())` differs between the two, and anything that ties a
+    resource to its creating loop (asyncpg, aiohttp, most connection pools) raises
+    *"attached to a different loop"*.
+
+    Measured both ways on the same one-test file: with no ini config the fixture's loop and
+    the test's loop differ; with the two keys below set to `session` they are identical.
+    Rustest's own repository sets them, which is why its async suites are green.
+
+    **If you use async fixtures above function scope, set this:**
+
+    ```toml
+    [tool.pytest.ini_options]
+    asyncio_default_test_loop_scope = "session"
+    asyncio_default_fixture_loop_scope = "session"
+    ```
 
 ### The Rules (Automatic)
 
-Rustest follows these rules automatically:
-
-1. **No async fixtures** → Each test gets its own loop (full isolation)
-2. **Has async fixtures** → Test uses the **widest** fixture scope
+1. **No async fixtures** → each test gets its own loop (full isolation)
+2. **Has async fixtures** → the test widens to the **widest** requested fixture scope,
+   **bounded by `asyncio_default_test_loop_scope`**
+3. **An explicit `@mark.asyncio(loop_scope=...)`** → wins outright, and *can* be narrower
+   than the configured default (verified: with the default set to `session`, two tests
+   marked `loop_scope="function"` still get two distinct loops)
 
 **Scope from narrowest to widest:**
 ```
 function → class → module → session
 ```
+
+!!! note "Autouse does not widen"
+    A session-scoped **autouse** async fixture does *not* widen the loop scope of tests that
+    do not name it. Measured: with such a fixture the two tests still land in different
+    loops, even though the fixture is created exactly once. Request the fixture by name if
+    you need to share its loop.
 
 ### Examples
 
@@ -159,6 +188,35 @@ async def test_with_both(db, api_client):
     response = await api_client.get(f"/users/{user.id}")
     assert response.status == 200
 ```
+
+## Configuration
+
+Rustest reads three asyncio keys from `[tool.pytest.ini_options]`, in `pyproject.toml`,
+`pytest.ini`, `tox.ini` or `setup.cfg` — the same keys and the same section pytest-asyncio
+uses, so a project already configured for pytest-asyncio needs no changes.
+
+```toml
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `asyncio_mode` | `auto` (pytest-asyncio's is `strict`) | `auto` runs every async test without a marker; `strict` requires `@mark.asyncio` on each one |
+| `asyncio_default_test_loop_scope` | `function` | The **ceiling** for a test's auto-detected loop scope |
+| `asyncio_default_fixture_loop_scope` | *unset* | The loop scope for async fixtures. **Unset is a third answer, not `"function"`** — an async fixture resolves its loop scope as `mark ?? this option ?? the fixture's own caching scope`, so while this is unset a `scope="module"` async fixture runs on a *module*-scoped loop. Setting it to `function` is therefore a real change, not a no-op |
+
+!!! warning "`asyncio_mode` is the one default that differs from pytest-asyncio"
+    Rustest defaults to `auto`; pytest-asyncio defaults to `strict`. An unmarked async test
+    **runs** under rustest and is an **error** under pytest-asyncio's default. Set
+    `asyncio_mode = "strict"` if you want the stricter behaviour, or want the two runners to
+    agree without relying on markers.
+
+**Which value should you use?** If any async fixture is above function scope, set both loop
+scope keys to `session`. If every async fixture is function-scoped, the defaults are already
+right and you need no configuration at all.
 
 ## Explicit Control (Advanced)
 

@@ -53,9 +53,7 @@ Now you can run this test anytime:
 
 ```bash
 $ rustest
-✓
-
-✓ 1/1 1 passing (1ms)
+1 passed in 0.40s
 ```
 
 **In one second, your computer verified your code works.** No clicking, no manual checking—just instant feedback.
@@ -110,19 +108,25 @@ Instead of manually testing everything, you get instant feedback:
 
 ```bash
 $ rustest
-✓✓✓✗✓
+================================== FAILURES ===================================
+______________________ test_login_with_invalid_password _______________________
+Traceback (most recent call last):
+  File "/path/to/test_login.py", line 10, in test_login_with_invalid_password
+    assert result.message == "Invalid password"
+AssertionError: assert 'User not found' == 'Invalid password'
 
-FAILURES
-test_login_with_invalid_password (test_login.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError
-  Expected: "Invalid password"
-  Received: "User not found"
+  - Invalid password
+  + User not found
+=========================== short test summary info ===========================
+FAILED test_login.py::test_login_with_invalid_password
 
-✗ 5/5 4 passing, 1 failed (15ms)
+1 failed, 4 passed in 0.33s
 ```
 
-You immediately see what broke and where.
+You immediately see what broke and where. Note the last two lines of the error: rustest
+rewrites your assertion so a string mismatch comes back as a **diff** (`-` is what you
+expected, `+` is what you got) rather than as a bare `AssertionError`. The other four tests
+still ran — one failure does not stop the suite.
 
 ### 😴 Sleep Better at Night
 

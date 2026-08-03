@@ -249,6 +249,17 @@ the worst answer a test runner can give.
 > that was fixed, and trusts the entries that are still wrong. Every bullet below was
 > re-probed against pytest 8.4.2.
 
+- **A `path::node::id` argument selects the *file*, not the node — silently.** This is the
+  gap most likely to bite, because copying a node id out of a failure report and re-running
+  it is pytest muscle memory, and `short test summary info` and `--llm`'s `id` field both
+  hand you one. Measured against pytest 8.4.2 on the same five-test file: pytest resolves
+  `test_mixed.py::test_a` to that one test, and answers a *bogus* id with
+  `collected 0 items` / `no tests ran`. rustest ignores everything after `::` in a path
+  argument and runs **all five**, including for the bogus id — so a CI line aimed at one
+  test quietly runs the file, and can go red for a neighbour or green for a test that no
+  longer exists. *Workaround:* select with `-k` instead, which does understand the
+  parametrized id — `rustest test_mixed.py -k "2-4"` deselects the other two. Node ids
+  themselves are byte-identical to pytest's; it is only *selection by* them that is missing.
 - **No plugin system and no hook system.** By design. A `conftest.py` that defines hooks
   loads fine and its *fixtures* are used; its hooks are ignored. See
   `user_guide/pytest-plugins.md` for what replaces the ten most popular plugins.

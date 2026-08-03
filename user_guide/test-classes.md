@@ -334,6 +334,73 @@ class TestEmailService:
         assert result.success is True
 ```
 
+## Setup and Teardown Methods
+
+Rustest calls `setup_method()` before, and `teardown_method()` after, **every** test method
+on a plain test class — pytest's xunit-style hooks, with pytest's semantics:
+
+```python
+class TestCounter:
+    def setup_method(self):
+        # Runs before each test method
+        self.items = []
+
+    def teardown_method(self):
+        # Runs after each test method, pass or fail
+        self.items.clear()
+
+    def test_starts_empty(self):
+        assert self.items == []
+
+    def test_append(self):
+        self.items.append("a")
+        assert self.items == ["a"]
+
+    def test_still_starts_empty(self):
+        # Not ["a"] -- each test gets a fresh instance and a fresh setup_method
+        assert self.items == []
+```
+
+Two properties are worth stating because relying on the wrong one is a common source of
+order-dependent tests:
+
+- **Each test method gets its own class instance.** State you set on `self` in one test is
+  not visible in the next; `setup_method` re-runs and rebuilds it.
+- **`teardown_method` runs in a `finally`**, so it executes even when the test raises.
+  Verified by running a class whose second test raises: the recorded sequence was
+  `setup → teardown → setup → teardown`, with the second teardown observing the value the
+  failing test had set before it blew up.
+
+`setup_class()` / `teardown_class()` are also supported, running once around the whole class.
+
+## Class-Method Fixtures Share the Instance
+
+A fixture defined as a method on a test class receives the **same instance** as the test
+that requests it, so `self` refers to one object in both:
+
+```python
+from rustest import fixture
+
+class TestService:
+    @fixture
+    def service(self):
+        # `self` here is the same object the test method sees
+        self.created = {"name": "svc"}
+        return self.created
+
+    def test_fixture_shares_self(self, service):
+        assert self.created is service
+```
+
+This is what lets a fixture stash state on the instance for the test to read, and lets two
+fixtures on the same class coordinate through `self`. It matches pytest, where a
+class-scoped fixture method is bound to the same instance as the test.
+
+!!! tip "Prefer the return value"
+    Sharing `self` is useful, but reading the fixture's **return value** is clearer than
+    reaching for an attribute it happened to set. Use the instance when two fixtures must
+    coordinate; use the parameter the rest of the time.
+
 ## Best Practices
 
 ### Keep Classes Focused

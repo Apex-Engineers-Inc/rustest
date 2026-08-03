@@ -177,16 +177,29 @@ carry across, each with the reason and what closing it would take.
 |---|---|---|---|---|
 | 1 | `tests/test_async_teardown_lifecycle.py`, an 18-test regression suite | `2f6b751` (#122) | The *fix* is moot — v2 closes every loop through `asyncio.Runner.close()`, a superset of the hand-rolled sequence. The **tests** are still worth having, and were never checked against this branch's six existing async suites. | Port the file, reconcile overlap with the existing suites, run. |
 | 2 | Five new regression test files: `test_asyncio_config.py`, `test_fixture_resolution_order.py`, `test_xfail.py`, `test_relative_imports/`, `test_async_autouse_event_loop.py` | `053fa89` (#124) | The *behaviours* are covered by ports of the pytest source; the suites are not. `test_fixture_resolution_order.py` additionally asserts the **opposite** of pytest's ordering, which v2 implements — porting it verbatim would create a false failure. | Port four; re-author the fifth against pytest's actual order (autouse first, then a widest-first scope sort). |
-| 3 | Console-output samples, 9 sites | `0e7135d` (#126) | The replacement text #126 introduced is **v1's** spinner/progress-bar rendering. v2 prints pytest-shaped output. Cherry-picking would swap one wrong sample for another. | Re-capture the samples from a real v2 run. |
-| 4 | Two new sections in `async-event-loops.md` | `053fa89` doc half | v2 *does* implement all three behaviours, so these are genuine documentation gaps — but the text must be authored against v2, not copied from a v1 page. | Write them against v2 and add to `user_guide/async-event-loops.md`. |
-| 5 | Two new sections in `test-classes.md` | `053fa89` doc half | Same reason. | Same. |
+| 3 | ~~Console-output samples~~ | `0e7135d` (#126) | **CLOSED on the RC.** The count was wrong — not 9 sites but **34**, across seven pages. Every one re-captured from a real v2 run. The samples were worse than "stale": they showed a spinner, a progress bar, `✓✓✓` ticks and a `Collected N tests from M files` banner, **none of which this engine has any code to print** — there is no `isatty`/`IsTerminal` call anywhere in either layer, so output is identical piped or on a terminal. | Done. |
+| 4 | ~~Two new sections in `async-event-loops.md`~~ | `053fa89` doc half | **CLOSED on the RC, and it was bigger than a gap.** The `Configuration` section is new. But probing to write it showed the page's *existing* central promise — "you don't need to configure anything", a session async fixture puts your test in the session loop — is **false in a project with no ini config**, because `asyncio_default_test_loop_scope` defaults to `function` and caps auto-detection. It reads as true here only because rustest's own `pyproject.toml` sets `session`/`session`. Measured both ways; the page now carries the precondition. main's autouse claim was **not** copied: it does not hold (measured). | Done. |
+| 5 | ~~Two new sections in `test-classes.md`~~ | `053fa89` doc half | **CLOSED on the RC.** `setup_method`/`teardown_method`, fresh-instance-per-test, teardown-runs-on-failure, `setup_class`/`teardown_class`, and class-method fixtures sharing `self` — each verified by running it before it was written. Written as **executable** examples rather than main's skip-marked ones, so CI now tests them. | Done. |
 | 6 | `pyproject.toml`'s `dev` extra → `[dependency-groups]` migration | `053fa89` | Functionally equivalent to this branch's `--all-extras` arrangement, and a merge-conflict candidate in the very file §1.2 flags. Note this arc **did** introduce a `[dependency-groups] docs` group, so the two mechanisms now coexist. | Move `dev` too, and update `uv sync --all-extras` to `--all-groups` in CI and `CLAUDE.md` together. |
 | 7 | `fixture_registry.py:89-96`'s dead async-rejection message | Found by triage | Cosmetic, on a path documented as dead for a rustest run (reachable only from `compat/pytest.py:453-486`). | Delete the branch, or make the path reachable and pin it. |
 | 8 | ~~Ten v1 speed claims across six pages~~ | Found by triage | **CLOSED by this wave** (`beba06d`). Listed here because the delta triage recorded it as the largest remaining docs debt, and it is now paid: every restatement of "8.5x average, up to 19x" is gone, replaced by the measured seventeen-suite figures. | Done. |
 | 9 | The version bump | `1780db3`, `d3f6d5f` | Release-wave work, and a maintainer decision. | §2. |
 
-Eight remain open. **None is a behaviour regression**; the closest to user-visible are
-items 3–5, which are documentation gaps where the feature works and the page does not say so.
+**Five remain open** (items 1, 2, 6, 7, 9 — and 1 and 2 were closed on the RC too; see
+below). **None is a behaviour regression.**
+
+**Two things the RC found that this table did not predict**, both recorded because they
+change what a reader should expect rather than what the code does:
+
+- **A `path::node::id` argument selects the file, not the node — silently.** pytest resolves
+  `test_x.py::test_a` to one test and answers a bogus id with `collected 0 items`; rustest
+  ignores everything after `::` and runs the whole file, including for a bogus id. Copying a
+  node id out of a failure report and re-running it is pytest muscle memory, and
+  `short test summary info` and `--llm`'s `id` both hand you one. Now in **Known gaps** with
+  the `-k` workaround. Not fixed here: it is a feature, not a doc change.
+- **Async auto-detection needs `asyncio_default_test_loop_scope` set** to reach past
+  function scope — see item 4. A project that follows the old page and writes a
+  session-scoped async fixture gets "attached to a different loop" and no hint why.
 
 ---
 

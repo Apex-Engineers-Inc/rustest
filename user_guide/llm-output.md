@@ -251,7 +251,9 @@ because it had to: the loop was "read the ids back out and pass them to the next
 invocation". rustest's last-failed cache does the same job with no id round-trip
 and a warm collect, so the array would be duplicated state whose only consumer is a
 worse version of `--lf`. The `fail` lines still carry every `id`, if you want to
-select a subset yourself.
+select a subset yourself — but note that an `id` is **not** accepted as a path
+argument: `rustest tests/test_x.py::test_a` runs the whole file. Narrow with `-k`,
+or let `--lf` do it.
 
 ## Composition
 

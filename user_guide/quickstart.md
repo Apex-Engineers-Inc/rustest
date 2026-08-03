@@ -28,31 +28,35 @@ rustest
 You should see output like this:
 
 ```
-✓ Collected 2 tests from 1 files (15ms)
-
-✓ test_math.py (1ms) 100% • 2/2
-
-✓ 2 passed in 1ms
+2 passed in 0.36s
 ```
 
-Rustest shows real-time feedback:
+That is the whole of a green run. Rustest's output is pytest's, so a quiet run is quiet:
+there is no spinner, no progress bar and no per-test tick at the default verbosity — just
+the summary line. Anything that went wrong prints above it.
 
-1. **Collection phase**: A spinner shows progress while discovering tests
-2. **Collection summary**: Total tests and files found
-3. **Execution phase**: Progress bars for each file
-4. **Final summary**: Pass/fail counts and duration
+The verbosity ladder has three rungs:
 
-Each `✓` represents a passing test. Failed tests show as `✗` with detailed error information.
+| Rung | You get |
+|---|---|
+| `-q` | The summary line and nothing else |
+| *default* | Plus `ERRORS` / `FAILURES` blocks and a `short test summary info` list of node ids |
+| `-v` | Plus one line per test, in pytest's wording |
 
 !!! tip "Verbose Output"
-    Use `-v` or `--verbose` to see individual test names and timing:
+    Use `-v` or `--verbose` to see one line per test with a running percentage:
     ```
-    /path/to/test_math.py
-      ✓ test_simple_addition 0ms
-      ✓ test_string_operations 1ms
+    test_math.py::test_simple_addition PASSED                               [ 50%]
+    test_math.py::test_string_operations PASSED                             [100%]
 
-    ✓ 2/2 2 passing (1ms)
+    2 passed in 0.38s
     ```
+
+!!! note "Which stream is which"
+    **stdout** carries the payload — the per-test lines and the failure blocks. **stderr**
+    carries the diagnostics — collection errors, anything the workers wrote, and the summary
+    line. So `rustest > results.txt` leaves you a grep-able file of results while the summary
+    still reaches your terminal.
 
 ## 3. Using Fixtures
 
@@ -88,12 +92,26 @@ def test_double(input: int, expected: int) -> None:
     assert input * 2 == expected
 ```
 
-This will run three separate test cases, showing three checkmarks in the output:
+This runs three separate test cases:
 
 ```
-✓✓✓
+3 passed in 0.32s
+```
 
-✓ 3/3 3 passing (1ms)
+Add `-v` to see the generated ids, which is where parametrization becomes easy to read:
+
+```
+test_math.py::test_double[1-2] PASSED                                   [ 33%]
+test_math.py::test_double[2-4] PASSED                                   [ 66%]
+test_math.py::test_double[3-6] PASSED                                   [100%]
+
+3 passed in 0.32s
+```
+
+Those bracketed ids are pytest's, byte for byte. To run just one case, select it with `-k`:
+
+```bash
+rustest test_math.py -k "2-4"      # -> 1 passed, 2 deselected
 ```
 
 ## 5. Assertion Helpers

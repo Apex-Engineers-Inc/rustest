@@ -234,21 +234,30 @@ rustest test_workflow.py
 ```
 
 ```
-✓✓✗✓✗
+================================== FAILURES ===================================
+_______________________________ test_failing_1 ________________________________
+Traceback (most recent call last):
+  File "/path/to/test_workflow.py", line 8, in test_failing_1
+    assert 2 + 2 == 5, "Math is broken"
+AssertionError: Math is broken
+assert (2 + 2) == 5
+_______________________________ test_failing_2 ________________________________
+Traceback (most recent call last):
+  File "/path/to/test_workflow.py", line 14, in test_failing_2
+    assert "world".startswith("x"), "String doesn't start with x"
+AssertionError: String doesn't start with x
+assert False
+ +  where False = <built-in method startswith of str object at 0x...>('x')
+ +    where <built-in method startswith of str object at 0x...> = 'world'.startswith
+=========================== short test summary info ===========================
+FAILED test_workflow.py::test_failing_1
+FAILED test_workflow.py::test_failing_2
 
-FAILURES
-test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
-
-test_failing_2 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: String doesn't start with x
-  → assert "world".startswith("x"), "String doesn't start with x"
-
-✗ 5/5 3 passing, 2 failed (1ms)
+2 failed, 3 passed in 0.39s
 ```
+
+Your own message and the rewritten expression both survive: `AssertionError: Math is broken`
+is what you wrote, and `assert (2 + 2) == 5` underneath is rustest showing its work.
 
 ```bash
 # Run only the 2 failed tests
@@ -256,21 +265,17 @@ rustest test_workflow.py --lf
 ```
 
 ```
-✗✗
+... the same two FAILURES blocks ...
+=========================== short test summary info ===========================
+FAILED test_workflow.py::test_failing_1
+FAILED test_workflow.py::test_failing_2
 
-FAILURES
-test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
-
-test_failing_2 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: String doesn't start with x
-  → assert "world".startswith("x"), "String doesn't start with x"
-
-✗ 2/2 2 failed (1ms)
+2 failed, 3 deselected in 0.30s
 ```
+
+The word to watch is **deselected**: the other three were not run, not skipped. The summary
+line always accounts for every collected test, so `2 + 3` still adds up to the 5 that were
+found.
 
 !!! tip "Cache Location"
     Failed test information is stored in `.rustest_cache/lastfailed`. This file is automatically created and updated after each test run.
@@ -284,24 +289,23 @@ Run previously failed tests first, then continue with all other tests. This help
 rustest test_workflow.py --ff
 ```
 
+Everything runs, but the previously-failing tests go first. Add `-v` to see the reordering,
+since at the default rung the order is not visible:
+
 ```
-✗✗✓✓✓
+test_workflow.py::test_failing_1 FAILED                                 [ 20%]
+test_workflow.py::test_failing_2 FAILED                                 [ 40%]
+test_workflow.py::test_passing_1 PASSED                                 [ 60%]
+test_workflow.py::test_passing_2 PASSED                                 [ 80%]
+test_workflow.py::test_passing_3 PASSED                                 [100%]
+... FAILURES blocks ...
 
-FAILURES
-test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
-
-test_failing_2 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: String doesn't start with x
-  → assert "world".startswith("x"), "String doesn't start with x"
-
-✗ 5/5 3 passing, 2 failed (1ms)
+2 failed, 3 passed in 0.47s
 ```
 
-Notice the output shows `✗✗✓✓✓` - failed tests run first!
+`test_failing_1` and `test_failing_2` are declared third and fifth in the file, but ran
+first and second — that is `--ff`. Nothing is deselected here, so the counts match a plain
+run; only the order changed.
 
 ### Fail Fast (-x)
 
@@ -313,18 +317,16 @@ rustest test_workflow.py -x
 ```
 
 ```
-✓✓✗
+... the test_failing_1 FAILURES block ...
+=========================== short test summary info ===========================
+FAILED test_workflow.py::test_failing_1
+stopping after 1 failures (-x)
 
-FAILURES
-test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
-
-✗ 3/3 2 passing, 1 failed (1ms)
+1 failed, 2 passed in 0.31s
 ```
 
-Only 3 tests ran instead of all 5 - execution stopped after the first failure!
+Three tests ran instead of five, and `stopping after 1 failures (-x)` says why. The counts
+only ever describe what actually ran.
 
 ### Combining Workflow Options
 
@@ -336,18 +338,17 @@ rustest test_workflow.py --ff -x
 ```
 
 ```
-✗
+... the test_failing_1 FAILURES block ...
+=========================== short test summary info ===========================
+FAILED test_workflow.py::test_failing_1
+stopping after 1 failures (-x)
 
-FAILURES
-test_failing_1 (test_workflow.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Math is broken
-  → assert 2 + 2 == 5, "Math is broken"
-
-✗ 1/1 1 failed (1ms)
+1 failed in 0.33s
 ```
 
-Only the first failed test ran! This is extremely fast for iterative development.
+One test ran: `--ff` put a known failure first and `-x` stopped there. This is the tightest
+loop available for iterating on a fix — and unlike pasting a node id back as a path
+argument, it actually narrows the run.
 
 ### Workflow Use Cases
 
@@ -376,62 +377,71 @@ rustest -k "integration" -x     # Stop on first integration test failure
 
 ### Collection Feedback
 
-When rustest starts, it shows real-time progress during test collection:
+There isn't any, and that is deliberate. Rustest prints no spinner and no collection banner
+— collection is fast enough (a warm collect over 5,000 tests is roughly 230 ms) that a
+progress indicator would flash past. The first thing you see is the result.
+
+If nothing is found, you get pytest's line and pytest's exit code:
 
 ```
-⠋ Collecting tests • 52 files, 893 tests 0:00:00
-✓ Collected 893 tests from 52 files (531ms)
+no tests ran in 0.02s
 ```
 
-The spinner animates while scanning your codebase, with live updates showing the number of files and tests discovered. After collection completes, a summary shows the total count and duration. This helps you know rustest is working when scanning large codebases.
-
-If no tests are found, you'll see:
-
+```bash
+echo $?    # 5 -- pytest's EXIT_NOTESTSCOLLECTED
 ```
-No tests collected (45ms)
-```
+
+!!! note "The output does not change when piped"
+    There is no TTY detection anywhere in rustest. What you see in a terminal is exactly
+    what lands in a file or a CI log — no colour codes to strip, no progress frames to
+    filter, no `--no-progress` flag needed.
 
 ### Verbose Mode
 
-Show detailed test information with names and timing:
+Rustest has pytest's verbosity ladder, narrowed to three rungs:
 
 ```bash
-# Default: compact output (✓✗⊘ symbols only)
-rustest
-
-# Verbose: show test names and timing
-rustest -v
-rustest --verbose
+rustest -q          # summary line only
+rustest             # + ERRORS/FAILURES blocks + short test summary info
+rustest -v          # + one line per test
+rustest --verbose   # same as -v
 ```
 
-**Compact output:**
+**Quiet (`-q`):**
 ```
-✓✓✓⊘✗
-
-✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
+1 failed, 3 passed, 1 skipped in 0.44s
 ```
 
-**Verbose output:**
+**Default:**
 ```
-/home/user/project/tests/test_math.py
-  ✓ test_addition 0ms
-  ✓ test_subtraction 1ms
-  ✓ test_multiplication 0ms
-  ⊘ test_future_feature 0ms
-  ✗ test_division_error 2ms
+================================== FAILURES ===================================
+_____________________________ test_broken_feature _____________________________
+Traceback (most recent call last):
+  File "/path/to/test_example.py", line 12, in test_broken_feature
+    assert result == 5
+AssertionError: assert 4 == 5
+=========================== short test summary info ===========================
+FAILED test_example.py::test_broken_feature
 
-FAILURES
-test_division_error (test_math.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError: Expected 5, got 4
-
-✗ 5/5 3 passing, 1 failed, 1 skipped (3ms)
+1 failed, 3 passed, 1 skipped in 0.44s
 ```
 
-!!! tip "Output Symbols"
-    - `✓` = Passed test
-    - `✗` = Failed test
-    - `⊘` = Skipped test
+**Verbose (`-v`):**
+```
+test_example.py::test_basic_assertion PASSED                            [ 20%]
+test_example.py::test_string_operations PASSED                          [ 40%]
+test_example.py::test_list_operations PASSED                            [ 60%]
+test_example.py::test_future_feature SKIPPED (not implemented yet)      [ 80%]
+test_example.py::test_broken_feature FAILED                             [100%]
+================================== FAILURES ===================================
+... as above ...
+
+1 failed, 3 passed, 1 skipped in 0.40s
+```
+
+!!! tip "Outcome words"
+    `PASSED`, `FAILED`, `SKIPPED (reason)`, `XFAIL`, `XPASS`, `ERROR` — pytest's wording,
+    so anything that greps your CI logs keeps working. Skip *reasons* appear only at `-v`.
 
 ### Capture Mode
 

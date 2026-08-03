@@ -74,12 +74,20 @@ For each tuple, rustest:
 When you run this:
 
 ```
-✓✓
-
-✓ 2/2 2 passing (1ms)
+2 passed in 0.32s
 ```
 
-Each `✓` represents one parameter set!
+Two tests, not one — each parameter set is counted, run and reported separately. Add `-v`
+to see the ids rustest generated from the values:
+
+```
+test_add.py::test_add[1-2-3] PASSED                                     [ 50%]
+test_add.py::test_add[10-20-30] PASSED                                  [100%]
+
+2 passed in 0.32s
+```
+
+If one set fails, only that set goes red — the others still run and still report.
 
 ## Real-World Examples
 
@@ -287,20 +295,27 @@ def test_sum_iterables(data):
 When a parametrized test fails, rustest shows you which case failed:
 
 ```
-✓✓✗✓
+================================== FAILURES ===================================
+_______________________________ test_add[5-3-7] _______________________________
+Traceback (most recent call last):
+  File "/path/to/test_math.py", line 5, in test_add
+    assert a + b == expected
+AssertionError: assert (5 + 3) == 7
+=========================== short test summary info ===========================
+FAILED test_math.py::test_add[5-3-7]
 
-FAILURES
-test_add[case_2] (test_math.py)
-──────────────────────────────────────────────────────────────────────
-✗ AssertionError
-  Parameters: a=5, b=3, expected=7
-  Expected: 7
-  Received: 8
-
-✗ 4/4 3 passing, 1 failed (2ms)
+1 failed, 3 passed in 0.43s
 ```
 
-This makes it easy to identify and fix the specific failing case.
+The failing case names itself: `test_add[5-3-7]` carries the parameter values right in the
+id, in the heading, and again in the `short test summary info` line. You do not have to
+count which case was the third one.
+
+To re-run just that case while you fix it, select it with `-k`:
+
+```bash
+rustest test_math.py -k "5-3-7"
+```
 
 ## What's Next?
 
