@@ -413,6 +413,16 @@ def build_parser() -> _Parser:
             "Runs nothing; every other option is ignored."
         ),
     )
+    # Deliberately `store_true` and not argparse's `action="version"`. The stock action wants
+    # the version *string* at parser-construction time, which would put an
+    # `importlib.metadata` scan on every single rustest invocation -- the same cost
+    # `_LazyHelpFormatter` exists to keep off this path. Answered from `raw` in `main`.
+    _ = parser.add_argument(
+        "--version",
+        action="store_true",
+        dest="version",
+        help="Print the rustest version on stdout and exit 0. Runs nothing.",
+    )
     _ = parser.add_argument(
         "--v2-collect-only",
         action="store_true",
@@ -446,6 +456,7 @@ def build_parser() -> _Parser:
         llm=False,
         llm_full=False,
         llm_schema=False,
+        version=False,
     )
     return parser
 
@@ -675,6 +686,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         from ._llm_schema import schema_json
 
         print(schema_json())
+        return 0
+
+    # `--version` is the same kind of thing as `--llm-schema` -- a query answered without a
+    # run -- so it is answered in the same place and for the same three reasons: it must work
+    # from a directory holding nothing this runner can collect, it must survive an `addopts`
+    # carrying a flag this CLI refuses (which would exit 4 inside `parse_args` before any
+    # `args.version` branch could fire), and it is registered on the parser above so `--help`
+    # lists it and `nargs="*"` does not read it as a path.
+    #
+    # Shaped after `pytest --version`, measured on pytest 8.4.2: `pytest 8.4.2` on stdout,
+    # exit 0.
+    if "--version" in raw:
+        from ._version import package_version
+
+        print(f"rustest {package_version()}")
         return 0
 
     args = parser.parse_args(raw)

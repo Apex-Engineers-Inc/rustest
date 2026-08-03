@@ -27,7 +27,7 @@ usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [-s] [-v] [-q]
                [-o OPTION=VALUE] [--maxfail NUM] [--no-codeblocks] [--lf]
                [--ff] [-x] [--report-json PATH] [--cov [SOURCE]]
                [--cov-report TYPE] [--cov-branch] [--llm] [--llm-full]
-               [--llm-schema] [--v2-collect-only] [--v2]
+               [--llm-schema] [--version] [--v2-collect-only] [--v2]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -83,6 +83,8 @@ options:
                         would be inert.
   --llm-schema          Print the JSON Schema for --llm output on stdout and
                         exit 0. Runs nothing; every other option is ignored.
+  --version             Print the rustest version on stdout and exit 0. Runs
+                        nothing.
   --v2-collect-only     Collect tests and print their node ids one per line,
                         without running anything. Honours -k, -m and -n. Exits
                         0 with tests, 5 with none, 2 on collection errors.
@@ -528,9 +530,24 @@ rustest [OPTIONS] [PATHS...]
 | `--llm` | Emit the run as JSONL on stdout for LLM tooling. See [LLM output](llm-output.md) |
 | `--llm-full` | With `--llm`: attach captured output whole instead of the last 50 lines. Refused on its own |
 | `--llm-schema` | Print the JSON Schema for `--llm` output and exit 0 |
+| `--version` | Print the installed version (`rustest 1.0.0rc1`) and exit 0. Runs nothing |
 | `--v2-collect-only` | Collect and print node ids, one per line, without running anything |
 | `--v2` | Deprecated no-op: there is one engine. Accepted so old scripts keep working |
 | `-h, --help` | Show help message and exit |
+
+## Checking the Version
+
+```bash
+rustest --version    # -> rustest 1.0.0rc1
+```
+
+Prints the installed version on `stdout` and exits 0, running nothing. Like `--llm-schema`,
+it is a question rather than a run, so it is answered without collecting anything — it works
+from a directory with no tests in it, and from a project whose `addopts` this runner would
+otherwise refuse.
+
+The string is read from the installed distribution's metadata, which is the same source the
+`meta` line of [`--llm`](llm-output.md) reports, so the two cannot disagree.
 
 ## Exit Codes
 

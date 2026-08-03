@@ -282,5 +282,8 @@ Neither blocks anything; both are recorded so they are not rediscovered as surpr
   from message text, and it is absent for any failure whose message is not a traceback. The
   schema marks it optional. Making it authoritative means a `line` on the worker wire, which
   is a protocol version and a Rust change this arc deliberately did not make.
-- **`rustest --version` does not exist and never has.** Worth adding before calling anything
-  1.0.
+- ~~**`rustest --version` does not exist and never has.**~~ **CLOSED.** Added on the release
+  candidate: `rustest <version>` on stdout, exit 0, answered before collection the way
+  `--llm-schema` is. The version is read from installed metadata through one shared
+  `_version.package_version()`, which `--llm`'s `meta` line now also calls — there is no
+  second literal that could disagree.

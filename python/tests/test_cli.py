@@ -238,3 +238,42 @@ class TestCliEdgeCases:
         assert args.fail_fast is True
         assert args.capture_output is False
         assert args.paths == ["tests/"]
+
+
+class TestVersionFlag:
+    """``rustest --version``.
+
+    It had never existed; ``RELEASE-CHECKLIST.md`` §7 recorded that as the one gap worth
+    closing before calling anything 1.0. Shaped after ``pytest --version``, which is the
+    oracle this project uses everywhere else: ``pytest 8.4.2`` on **stdout**, exit **0**.
+    """
+
+    def test_prints_name_and_version_on_stdout_and_exits_zero(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from importlib.metadata import version
+
+        assert cli.main(["--version"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out.strip() == f"rustest {version('rustest')}"
+        assert captured.err == ""
+
+    def test_is_answered_without_needing_a_runnable_tree(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A path that cannot be collected must not stop the query being answered.
+
+        Same property ``--llm-schema`` has and for the same reason: a tool asking what
+        version it is talking to should not have to be standing in a project this runner
+        can actually run.
+        """
+        assert cli.main(["--version", "/no/such/directory"]) == 0
+        assert capsys.readouterr().out.startswith("rustest ")
+
+    def test_the_parser_knows_the_flag(self) -> None:
+        """Registered, not just intercepted -- that is what puts it in ``--help`` and what
+        keeps ``nargs="*"`` from collecting it as a path."""
+        parser = cli.build_parser()
+        args = parser.parse_args(["--version"])
+        assert args.version is True
+        assert args.paths == (".",)

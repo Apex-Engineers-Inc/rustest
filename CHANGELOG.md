@@ -91,6 +91,14 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
+- **`rustest --version`.** It had never existed, in any release. Prints `rustest <version>`
+  on stdout and exits 0, running nothing — shaped after `pytest --version` (measured on
+  pytest 8.4.2), which is the oracle used everywhere else. Like `--llm-schema` it is a
+  *query* rather than a run, so it is answered before collection: it works from a directory
+  holding nothing collectable, and from a project whose `addopts` carries a flag this CLI
+  refuses. The string comes from the installed distribution's metadata — the same source
+  `--llm`'s `meta` line reports, so the two cannot drift apart.
+
 - **`--llm`: the run as JSONL, for coding agents.** One JSON object per line on stdout — a
   `meta` header, an `error` line per collection or unattributable-teardown failure, a `fail`
   line per failed/errored test, `skip` lines under `-v`, and a `summary` sentinel last.

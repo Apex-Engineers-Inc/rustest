@@ -134,16 +134,15 @@ def _file_of(node_id: str) -> str:
 def _package_version() -> str:
     """The installed ``rustest`` version, or ``0.0.0`` from a source tree with no dist-info.
 
-    ``importlib.metadata`` is imported here rather than at module scope for the reason
-    everything else in this package defers its imports: this module is itself only imported
-    when ``--llm`` is passed, and the metadata scan is the expensive half of it.
+    Thin alias for :func:`rustest._version.package_version`, kept under its old name because
+    that is what this module's callers and goldens spell. The body moved out when
+    ``--version`` became a second caller: the ``meta`` line's version and the one
+    ``rustest --version`` prints have to be the same string, and the only way to guarantee
+    that is for there to be one function.
     """
-    from importlib.metadata import PackageNotFoundError, version
+    from ._version import package_version
 
-    try:
-        return version("rustest")
-    except PackageNotFoundError:  # pragma: no cover - a source checkout with no install
-        return "0.0.0"
+    return package_version()
 
 
 class _Emitter:
