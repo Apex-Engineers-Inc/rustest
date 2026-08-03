@@ -248,8 +248,19 @@ def test_unencodable_nodeids_are_escaped_exactly_as_pytest_escapes_them(tmp_path
             break
         expected.append(line)
     assert ours.stdout.splitlines() == expected, where
-    # ...and the escape really is present, so the test cannot pass by both sides skipping it.
-    assert any(b"\\u6e2c" in line for line in expected), where
+    # ...and the name really reached the output, so the test cannot pass by both sides
+    # dropping or truncating it.
+    #
+    # **Which form is a property of the platform, not of either runner.** The escape happens
+    # only when the child's redirected stdout cannot encode the characters -- cp1252 on
+    # Windows, where pytest emits `test_測試`. On a UTF-8 stdout (Linux, macOS) there
+    # is nothing to escape and both runners print the id raw, which is why pinning only the
+    # escaped spelling failed on the first Linux CI run this project ever had. Accepting
+    # either keeps the guard's teeth -- an id that vanished matches neither -- while the
+    # byte-for-byte agreement above remains the actual contract.
+    escaped = b"\\u6e2c\\u8a66"
+    raw = "測試".encode()
+    assert any(escaped in line or raw in line for line in expected), where
 
 
 # --------------------------------------------------------------------------------------

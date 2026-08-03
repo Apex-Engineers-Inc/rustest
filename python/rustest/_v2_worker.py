@@ -1521,6 +1521,37 @@ _BUCKET_ORDER: Final = ("function", "class", "module", "session")
 # too-late close, which is the already-documented package-scope divergence; sharing the *loop*
 # would have made `id(get_running_loop())` compare equal across two scopes pytest keeps apart.
 
+
+def _as_coroutine(awaitable: Any) -> Any:
+    """A true coroutine for *awaitable*, wrapping it if it is merely awaitable.
+
+    **``asyncio.Runner.run`` only accepts a coroutine before Python 3.14.** 3.12 and 3.13
+    open with ``if not coroutines.iscoroutine(coro): raise ValueError("a coroutine was
+    expected, got ...")`` (`Lib/asyncio/runners.py` l. 86-89). 3.14 added a shim that wraps
+    any awaitable instead (l. 96-104), and this reproduces it on the versions that lack it.
+
+    Without it, everything this worker does to support a *non-coroutine* awaitable stops at
+    the last step. :func:`_consume_test_result` duck-types on ``__await__`` precisely because
+    pytest does -- a ``Future``, an anyio task wrapper, any object with ``__await__`` -- and
+    then handed the object straight to a ``Runner`` that rejects it. The symptom is not a
+    false green but a false **red**: on 3.12/3.13 such a test failed with
+    ``ValueError: a coroutine was expected``, naming asyncio internals rather than anything
+    the user wrote. It passed on 3.14 only because CPython had grown the wrapper.
+
+    Found when the project's first Linux CI run turned out to be running 3.12 for every
+    matrix entry; the ``3.12``-vs-``3.14`` split, not the platform, was the discriminator.
+    """
+    import asyncio
+
+    if asyncio.iscoroutine(awaitable):
+        return awaitable
+
+    async def _wrap() -> Any:
+        return await awaitable
+
+    return _wrap()
+
+
 #: pytest-asyncio's default `asyncio_default_test_loop_scope` (plugin.py l. 123-128).
 DEFAULT_ASYNCIO_TEST_LOOP_SCOPE: Final = "function"
 
@@ -3112,6 +3143,7 @@ class FixtureRunner:
         """
         import asyncio
 
+        coro = _as_coroutine(coro)
         runner = self.loop_runner(scope)
         if timeout is not None:
             coro = asyncio.wait_for(coro, timeout)

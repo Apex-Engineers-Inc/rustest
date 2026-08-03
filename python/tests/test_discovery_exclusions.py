@@ -19,6 +19,7 @@ directories on a real filesystem, through the real boundary.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 import sys
 
@@ -62,6 +63,29 @@ def {test_name}():
         errors = manifest.get("errors", [])
         assert not errors, errors
         return [test["id"] for test in manifest["tests"]]
+
+    def _collect_with_pytest(self, temp_dir: Path) -> list[str]:
+        """The same question put to **real pytest**, for tests that assert a differential.
+
+        ``--collect-only -q`` prints one node id per line and then a blank line and a count,
+        which is why the parse stops at the first empty line. Node ids come back with the
+        platform's separator; they are normalised to ``/`` so the two sides are comparable on
+        Windows as well.
+        """
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=str(temp_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, f"pytest rc={proc.returncode}\n{proc.stdout}\n{proc.stderr}"
+        ids: list[str] = []
+        for line in proc.stdout.splitlines():
+            if not line.strip():
+                break
+            ids.append(line.strip().replace("\\", "/"))
+        return ids
 
     def test_discovers_tests_in_normal_directories(self, tmp_path: Path) -> None:
         """Test that regular directories are included in discovery."""
@@ -291,22 +315,41 @@ def {test_name}():
         assert len(ids) == 1, ids
 
     def test_symlinks_to_excluded_directories(self, tmp_path: Path) -> None:
-        """Test behavior with symlinks to excluded directories."""
+        """A symlink whose *name* is not excluded is walked — and pytest says so too.
+
+        **This test used to assert a guess.** It hardcoded ``len(ids) == 1`` under a comment
+        admitting "symlink might be followed or not", and that count only holds if the link
+        is *not* followed. It passed everywhere it ran because it never ran: creating a
+        symlink on Windows needs a privilege CI does not grant, so it took the
+        ``pytest.skip`` above. The first Linux run collected **2** and failed it.
+
+        Two is correct, and it is pytest's answer as well. Exclusion is by directory
+        **name** — pytest's ``norecursedirs`` default contains ``venv``, and ``venv_link``
+        does not match it — while the walk itself follows symlinks: pytest's ``Dir.collect``
+        is ``for direntry in scandir(self.path): if direntry.is_dir()``
+        (`_pytest/main.py` l. 528-529), and ``os.DirEntry.is_dir()`` defaults to
+        ``follow_symlinks=True``. So the link is descended, and the directory it lands in is
+        not one of the excluded names.
+
+        Asserted as a **differential** rather than as a number, because that is the contract
+        this whole module exists for, and because a number is what got it wrong last time.
+        """
         self._write_test_file(tmp_path, "test_root.py")
 
-        # Create a venv directory with tests
         venv_dir = tmp_path / "venv"
         venv_dir.mkdir()
         self._write_test_file(tmp_path, "venv/test_venv.py")
 
-        # Create a symlink to venv (if system supports it)
         try:
-            symlink_dir = tmp_path / "venv_link"
-            symlink_dir.symlink_to(venv_dir)
+            (tmp_path / "venv_link").symlink_to(venv_dir, target_is_directory=True)
         except (OSError, NotImplementedError):
             pytest.skip("Symlinks not supported on this system")
 
-        ids = self._collect(tmp_path)
-        # Both venv and venv_link paths should be excluded
-        # (symlink might be followed or not, but venv itself is excluded)
-        assert len(ids) == 1, ids
+        ours = sorted(self._collect(tmp_path))
+        theirs = sorted(self._collect_with_pytest(tmp_path))
+        assert ours == theirs
+
+        # And the shape of that agreement, so a future change that made *both* wrong in the
+        # same way would still be visible: the excluded name is pruned, the link is not.
+        assert not any(nid.startswith("venv/") for nid in ours), ours
+        assert any("venv_link" in nid for nid in ours), ours

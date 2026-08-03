@@ -57,9 +57,32 @@ def _write(path: Path, text: str) -> None:
 
 
 def _clean_env() -> dict[str, str]:
-    """A child environment with the ambient pytest/rustest session stripped out."""
+    """A child environment with the ambient pytest/rustest session stripped out.
+
+    ``CI`` and ``BUILD_NUMBER`` go with them, and they are the subtle ones. pytest's
+    ``running_on_ci()`` sniffs exactly those two names and switches its comparison
+    explanation from ``Use -v to get more diff`` to a **full diff**
+    (`_pytest/assertion/util.py`); `rustest._assertion` ports that sniff verbatim, so both
+    runners flip together. Leaving them set makes every explanation-comparing test in this
+    module read one message on a developer machine and a different one on GitHub Actions,
+    which sets ``CI=true`` for every job.
+
+    Stripping them pins these tests to the **default** rendering, which is what a developer
+    sees and what the corpus was written against. The full-diff branch is a real and
+    currently *divergent* path -- rustest formats it with stdlib ``pprint`` where pytest uses
+    its vendored ``PrettyPrinter`` -- and it is pinned deliberately and separately by
+    ``test_the_full_diff_branch_diverges_from_pytest`` in ``test_assertion_rewrite.py``
+    rather than left to leak in through the environment.
+    """
     env = dict(os.environ)
-    for leak in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST", "RUSTEST_RUNNING"):
+    for leak in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS",
+        "PYTEST_CURRENT_TEST",
+        "RUSTEST_RUNNING",
+        "CI",
+        "BUILD_NUMBER",
+    ):
         _ = env.pop(leak, None)
     return env
 

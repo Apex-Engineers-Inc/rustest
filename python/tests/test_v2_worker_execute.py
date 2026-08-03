@@ -232,6 +232,23 @@ def statuses(results: list[ResultResponse]) -> dict[str, str]:
     return {result["id"]: result["status"] for result in results}
 
 
+def why(results: list[ResultResponse]) -> str:
+    """Every result with its failure message, for use as an ``assert`` message.
+
+    A bare ``statuses(...) == {...}`` comparison reports *that* an outcome differed and
+    never *why*, which is the difference between a five-minute diagnosis and a push-and-wait
+    cycle when the disagreement only reproduces on another platform. Attach this to any
+    status assertion whose failure would otherwise be a bare dict diff.
+    """
+    lines: list[str] = []
+    for result in results:
+        message = str(result.get("message") or "").strip()
+        lines.append(f"  {result['id']}: {result['status']}")
+        if message:
+            lines.extend(f"      {line}" for line in message.splitlines())
+    return "\n".join(lines)
+
+
 _VERBOSE_LINE = re.compile(
     r"^(?P<nodeid>\S+::\S+)\s+(?P<word>PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\b"
 )
@@ -2831,10 +2848,11 @@ def test_a_non_coroutine_awaitable_body_is_awaited(tmp_path: Path) -> None:
     )
 
     with isolated_worker_state():
-        assert statuses(run_module(target, tmp_path)) == {
+        results = run_module(target, tmp_path)
+        assert statuses(results) == {
             "test_awaitable.py::test_awaitable_fails": "failed",
             "test_awaitable.py::test_awaitable_passes": "passed",
-        }
+        }, why(results)
 
 
 def test_a_returned_async_generator_fails_with_pytests_message(tmp_path: Path) -> None:

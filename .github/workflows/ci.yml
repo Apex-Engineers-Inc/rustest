@@ -18,6 +18,14 @@ jobs:
       matrix:
         python-version: ['3.12', '3.13', '3.14']
 
+    # `setup-uv@v3`'s `python-version` input did not take: every job resolved the runner's
+    # system CPython (3.12.3) and this matrix silently tested 3.12 three times. Discovered
+    # the first time the v2 branch was pushed -- the 3.14-only tests failed in all three
+    # jobs, which is what gave it away. `UV_PYTHON` is the setting `uv sync` and `uv run`
+    # both honour, and the guard step below makes the matrix falsifiable.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +39,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies and build package
-        run: uv sync --all-extras
+        run: |
+          uv python install "${{ matrix.python-version }}"
+          uv sync --all-extras
+
+      # A matrix that silently collapses to one interpreter is worse than no matrix: it
+      # reports three green checks for one configuration. Fail loudly instead.
+      - name: Verify the interpreter really is ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          ACTUAL="$(uv run python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          echo "matrix asks for ${{ matrix.python-version }}; uv run gives $ACTUAL"
+          test "$ACTUAL" = "${{ matrix.python-version }}"
 
       # Added in Phase 4 Task 2, and only possible because of it: half of `cargo test` was
       # the v1 engine's, and #133 recorded those tests as dead weight that could not be made

@@ -192,8 +192,23 @@ def test_a_line_in_a_loop_is_recorded_once_and_then_disabled(tmp_path: Path) -> 
     assert sorted(monitor.lines[str(module)]) == [1, 2, 3, 4, 5]
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 14),
+    reason=(
+        "PEP 649 deferred annotations are 3.14+. Before that a bare `x: int` in a class body "
+        "is evaluated at class-definition time, so its line legitimately *is* executed and "
+        "measured -- there is no `__annotate__` code object to skip and nothing to assert."
+    ),
+)
 def test_annotation_code_objects_are_not_measured(tmp_path: Path) -> None:
     """PEP 649 `__annotate__` bodies are skipped, as coverage.py's sysmon core skips them.
+
+    **3.14 and up only** (see the marker). Verified across interpreters rather than assumed:
+    on 3.12 and 3.13 ``Point.__annotations__`` is populated eagerly at class creation and
+    ``__annotate__`` does not exist; on 3.14 the annotations are deferred and the class body's
+    annotation lines never run unless something asks for them. This test was ungated, so it
+    failed on every CI job the moment the project first had one -- all three of which were
+    running 3.12.
 
     Without the skip rustest would match coverage.py's **C tracer** and diverge from its
     `sysmon` core -- measured both ways in the Task 3 report. Since `sysmon` is coverage.py's

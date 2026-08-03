@@ -120,6 +120,28 @@ def _module_source(body: str) -> str:
     return "def _t():\n" + textwrap.indent(body, "    ") + "\n"
 
 
+#: The two names pytest's ``running_on_ci()`` sniffs (`_pytest/assertion/util.py`), ported
+#: verbatim into :func:`rustest._assertion.running_on_ci`.
+_CI_MARKERS = ("CI", "BUILD_NUMBER")
+
+
+@pytest.fixture(autouse=True)
+def _off_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin every comparison in this module to the **default** explanation.
+
+    ``running_on_ci()`` switches the comparison explanation from ``Use -v to get more diff``
+    to a full diff, and GitHub Actions sets ``CI=true`` on every job. Both sides of the
+    differential read the live ``os.environ`` in-process, so without this the corpus compares
+    one rendering locally and a different one in CI — which is exactly how the full-diff
+    divergence below went unnoticed until this branch was first pushed.
+
+    Autouse rather than opt-in: a new shape added to the corpus should inherit the pinned
+    environment without its author having to know any of this.
+    """
+    for marker in _CI_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
+
+
 def _normalise(text: str) -> str:
     """Erase memory addresses — they differ between two runs of the same rewriter."""
     return re.sub(r"0x[0-9a-fA-F]+", "0xADDR", text)
@@ -198,9 +220,59 @@ def _pytest_message(name: str, body: str) -> str:
 
 @pytest.mark.parametrize("name", sorted(SHAPES))
 def test_message_is_byte_identical_to_pytest(name: str) -> None:
-    """rustest's ``AssertionError`` message equals pytest's, for every shape in the corpus."""
+    """rustest's ``AssertionError`` message equals pytest's, for every shape in the corpus.
+
+    Compared as **line lists**, not as one blob. The messages run to a dozen lines, and a
+    string comparison of two of them makes pytest repr the whole thing inline — every newline
+    an escaped ``\\n``, wrapped across the terminal — which is unreadable at exactly the
+    moment you need to read it. Line lists get a line-oriented diff instead.
+    """
     body = SHAPES[name]
-    assert _normalise(_rustest_message(name, body)) == _normalise(_pytest_message(name, body))
+    ours = _normalise(_rustest_message(name, body)).splitlines()
+    theirs = _normalise(_pytest_message(name, body)).splitlines()
+    assert ours == theirs
+
+
+def test_the_full_diff_branch_diverges_from_pytest() -> None:
+    """The known divergence, pinned rather than hidden by :func:`_off_ci`.
+
+    When ``CI`` or ``BUILD_NUMBER`` is set, ``running_on_ci()`` replaces
+    ``Use -v to get more diff`` with a full diff — and on **that** branch the two runners do
+    not agree. `_assertion.py` says so in as many words (l. 487-490: "pytest uses its own
+    vendored ``PrettyPrinter`` here; ``pprint.pformat`` is the stdlib one pytest's is derived
+    from ... this branch is unreachable at the pinned verbosity except on CI"). It stopped
+    being unreachable the moment this project got a CI run, because GitHub Actions sets
+    ``CI=true``.
+
+    The difference is expansion: stdlib ``pprint.pformat([1, 3, 3])`` is ``'[1, 3, 3]'``,
+    while pytest's vendored printer always breaks a collection one element per line, so its
+    diff is element-wise and ours is whole-list. Closing it means porting
+    ``_pytest/_io/pprint.py`` (673 lines) the way ``approx`` was ported.
+
+    **This test asserts the divergence, so it fails the day someone fixes it** — at which
+    point delete it, drop :func:`_off_ci`, and let the corpus above cover both branches.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setenv("CI", "true")
+        body = SHAPES["eq_list"]
+        ours = _normalise(_rustest_message("eq_list", body))
+        theirs = _normalise(_pytest_message("eq_list", body))
+    finally:
+        monkeypatch.undo()
+
+    # Both take the full-diff branch: neither says "Use -v".
+    assert "Use -v to get more diff" not in ours
+    assert "Use -v to get more diff" not in theirs
+    assert "Full diff:" in ours and "Full diff:" in theirs
+
+    # And there they part company, in the one way documented above.
+    assert ours != theirs, (
+        "the full-diff branch now matches pytest -- port complete? "
+        "delete this test and the _off_ci fixture"
+    )
+    assert "[1, 3, 3]" in ours, "ours should keep the list on one line (stdlib pprint)"
+    assert "    3,\n" in theirs, "pytest's should be expanded one element per line"
 
 
 def test_the_corpus_covers_every_shape_the_plan_names() -> None:

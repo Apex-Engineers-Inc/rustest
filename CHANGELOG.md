@@ -184,6 +184,16 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 Several of these were real, shipped defects that reported **green** on a broken test —
 the worst answer a test runner can give.
 
+- **A test returning a non-coroutine awaitable no longer fails on Python 3.12 and 3.13.**
+  rustest duck-types on `__await__` exactly as pytest does, so a `Future`, an anyio task
+  wrapper, or any object with `__await__` is awaited rather than dropped unrun — but the
+  awaited object was then handed straight to `asyncio.Runner.run()`, which accepts *only* a
+  true coroutine before 3.14 (`Lib/asyncio/runners.py`: `raise ValueError("a coroutine was
+  expected, got ...")`). Python 3.14 added a wrapper for arbitrary awaitables, so the
+  feature worked there and nowhere else. The symptom was a false **red** — the test failed
+  citing asyncio internals rather than anything the user wrote. rustest now reproduces
+  3.14's wrapper on the versions that lack it.
+
 - **`unittest.TestCase` failures, errors and skips are no longer reported as PASSED.**
   (#129) Any `unittest`-style test that failed, errored or was skipped showed green. Fixed
   by routing through `unittest.TestResult`'s callbacks the way pytest does, instead of

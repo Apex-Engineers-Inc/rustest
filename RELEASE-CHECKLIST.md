@@ -306,13 +306,13 @@ trigger on `user_guide/**` and `great-docs.yml` changes — is a maintainer call
 
 ---
 
-## 6.5 The first Linux CI run — 12 failures, all newly exposed
+## 6.5 The first CI run the v2 arc ever had
 
-**This branch had never been pushed, so PR #141 is the first CI run in the whole v2 arc.**
-Three problems surfaced that no local run could have caught, two of them fixed here and one
-left for a decision. Lint, Type Check and the Conformance gate are **green**; the three
-`Test Python 3.x` jobs are **red** on 12 unit tests. None of the 12 is a regression from this
-work — each is a test or behaviour that has simply never executed on Linux.
+**This branch had never been pushed, so PR #141 is the first CI run in the whole arc** — the
+first time any of this code was built or tested anywhere but one Windows machine. Four
+problems surfaced that no local run could have caught. None of the 12 test failures is a
+regression from this work; each is a test or a behaviour that had simply never executed
+under Linux, or under the interpreter CI was really using.
 
 **Fixed on the RC:**
 
@@ -321,19 +321,37 @@ work — each is a test or behaviour that has simply never executed on Linux.
   for the wheel, impossible for a test *executable*. Windows links `pythonXY.lib` regardless,
   which is why `CLAUDE.md`'s command passed locally forever. Now a default feature, with CI
   running `cargo test --no-default-features`.
-- `cli.py`'s `_colorize` import could not type-check at the 3.12 floor. Now dynamic.
+- `cli.py`'s `_colorize` import could not type-check at the 3.12 floor, and could not be
+  suppressed either — `reportUnnecessaryTypeIgnoreComment` is an error too, so an ignore
+  fails wherever the bare import would have passed. Now a dynamic import.
+- **The Python matrix was not testing three Pythons.** `setup-uv@v3`'s `python-version`
+  input did not take, and every job resolved the runner's system CPython 3.12.3, so `3.13`
+  and `3.14` were never exercised. Fixed with `UV_PYTHON` plus an explicit
+  `uv python install`, and a guard step that fails the job when the running interpreter is
+  not the one the matrix asked for — so this cannot regress quietly.
 
-**Open — 12 unit-test failures on Linux, in four clusters:**
+### The 12 failures, resolved — and why they all appeared at once
 
-| Cluster | Tests | Cause | Product bug? |
+> **The first triage's framing was wrong, and that is worth recording.** It read the 12 as
+> *Linux* failures, because Linux was the visible new variable. They are not. **All three
+> matrix jobs were running CPython 3.12.3** — the runner's system interpreter — so `3.13`
+> and `3.14` were never tested at all, and the discriminator was the *version*. The giveaway
+> was that all three jobs failed on exactly the same 12 tests, including tests whose subject
+> only exists on 3.14. A version matrix that silently collapses to one interpreter is worse
+> than no matrix: it reports three green checks for one configuration. Fixed, with a guard
+> step that fails the job if the interpreter is not the one the matrix asked for.
+
+| Cluster | Tests | What it actually was | Product bug? |
 |---|---|---|---|
-| **A** | 8 (7 × `test_message_is_byte_identical_to_pytest`, 1 × `test_a_plain_sequence_failure…`) | GitHub Actions sets `CI=true`, which flips pytest's `running_on_ci()` from `Use -v to get more diff` to a **full diff** — and on that path rustest's stdlib `pprint.pformat` renders differently from pytest's vendored `PrettyPrinter`. **Already known**: `_assertion.py` l. 487-490 documents the difference and says the branch is "unreachable at the pinned verbosity except on CI". CI is now that exception. | A **real divergence**, but only on the CI/full-diff path, and already documented. Closing it means porting pytest's vendored pretty-printer. |
-| **B** | `test_symlinks_to_excluded_directories` | Collects **2** node ids where it expects 1: `venv_link/test_venv.py::test_example` is picked up through a symlink into an excluded directory. Windows never exercised this (the symlink is not created there). | **Likely yes, and the most consequential of the four** — on Linux/macOS a `venv` reached by symlink can be walked into. Worth confirming before anyone points rustest at a large tree. |
-| **C** | `test_unencodable_nodeids_are_escaped_exactly_as_pytest_escapes_them` | pytest emits `測試` as raw UTF-8 on a Linux stdout and escapes it on Windows. The test hardcodes the Windows expectation. | No — a **test-portability** issue. |
-| **D** | `test_annotation_code_objects_are_not_measured`, `test_a_non_coroutine_awaitable_body_is_awaited` | Line 2 is measured when it should not be; a custom (non-coroutine) awaitable body reports `failed` where Windows reports `passed`. | **Unknown — needs investigation.** Neither has an obvious environment explanation, so these are the two most likely to be real. |
+| **A** | 8 | GitHub sets `CI=true`, flipping pytest's `running_on_ci()` to a **full diff**, where rustest's stdlib `pprint.pformat` renders differently from pytest's vendored `PrettyPrinter`. **Already known** — `_assertion.py` l. 487-490 called that branch "unreachable at the pinned verbosity except on CI". | A real divergence, on that branch only. The tests now pin the default rendering (`CI`/`BUILD_NUMBER` stripped) and the divergence is asserted outright by `test_the_full_diff_branch_diverges_from_pytest`, so it fails the day it is closed. **Closing it means porting `_pytest/_io/pprint.py` — 673 lines.** A decision, not an oversight. |
+| **B** | `test_symlinks_to_excluded_directories` | **Not a bug — the test asserted a guess.** It hardcoded `len(ids) == 1` under a comment admitting "symlink might be followed or not". Measured: pytest collects **2** on that tree too. Exclusion is by directory *name* (`venv_link` does not match `venv`) while the walk follows symlinks — pytest's `Dir.collect` is `scandir` + `direntry.is_dir()`, which defaults to `follow_symlinks=True` (`_pytest/main.py` l. 528-529). It never failed before because creating a symlink on Windows needs a privilege CI does not grant, so it always skipped. | **No.** rustest matches pytest exactly. Rewritten as a differential. |
+| **C** | `test_unencodable_nodeids_are_escaped…` | The escape happens only when the child's stdout **encoding** cannot represent the name — cp1252 on Windows. On a UTF-8 stdout both runners print the id raw. The test pinned only the escaped spelling. | **No** — test portability. The byte-for-byte agreement between the two runners, which is the actual contract, held throughout. |
+| **D1** | `test_annotation_code_objects_are_not_measured` | PEP 649 deferred annotations are **3.14+**. Before that a bare `x: int` in a class body is evaluated at class-definition time, so its line legitimately *is* executed and measured — there is no `__annotate__` code object to skip. The test was ungated. | **No.** Now `skipif(sys.version_info < (3, 14))`. |
+| **D2** | `test_a_non_coroutine_awaitable_body_is_awaited` | **A real bug, and the one worth having found.** `asyncio.Runner.run()` accepts only a true coroutine before 3.14 — `Lib/asyncio/runners.py` l. 86-89 raises `ValueError: a coroutine was expected` — and **3.14 added** a wrapper for arbitrary awaitables (l. 96-104). So everything `_consume_test_result` does to duck-type on `__await__` the way pytest does (a `Future`, an anyio task wrapper, any object with `__await__`) stopped at the last step on 3.12 and 3.13. | **Yes.** The symptom was a false **red**: such a test failed citing asyncio internals rather than anything the user wrote. Fixed by `_as_coroutine`, which reproduces 3.14's wrapper where CPython lacks it. Verified failing, then passing, on a real 3.12. |
 
-Cluster B and cluster D are the ones to look at first: they are the only ones that could
-mean rustest behaves differently on the platform most users are on.
+**Net: one real product bug (D2), one documented-divergence decision (A), three bad tests.**
+D2 would have shipped in a 1.0 claiming 3.12 support, and could only have been caught by
+actually running on 3.12 — which, until this branch was pushed, nothing ever did.
 
 ## 7. Known-open, accepted for this release
 
