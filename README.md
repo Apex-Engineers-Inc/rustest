@@ -205,7 +205,7 @@ uv add rustest
 and returns an exit code rather than a `RunReport`; `indirect=` parametrization follows
 pytest's semantics; and `--llm` output is schema 2. See the
 **[upgrade guide](https://apex-engineers-inc.github.io/rustest/user-guide/migration-guide.html)**
-and [CHANGELOG.md](CHANGELOG.md).
+and the **[changelog](https://apex-engineers-inc.github.io/rustest/user-guide/changelog.html)**.
 
 ## Learn more
 
