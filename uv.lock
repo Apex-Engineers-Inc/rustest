@@ -1960,7 +1960,7 @@ wheels = [
 
 [[package]]
 name = "rustest"
-version = "0.16.2"
+version = "1.0.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "rich" },
