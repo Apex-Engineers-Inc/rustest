@@ -237,3 +237,39 @@ def test_terminal_columns_matches_shutil() -> None:
     )
     out = _in_fresh_interpreter(script)
     assert out.startswith("True"), out
+
+
+def test_the_formatter_degrades_instead_of_raising_without_colorize() -> None:
+    """The fallback's actual value when ``_colorize`` cannot be imported.
+
+    ``_colorize`` is version-gated stdlib private API: absent on 3.12, present on 3.13
+    *without* ``decolor``/``get_theme``, complete only on 3.14 — all three measured. The
+    ``_theme``/``_decolor`` properties that reach for it are read only by **3.14's**
+    argparse, so the branch is unreachable on the versions where the import would fail.
+    `_colorization` is reached through `importlib.import_module` for that reason: at the
+    3.12 floor CI type-checks against, a plain `import` is unresolvable.
+
+    This pins the fallback — ``(None, _identity)``: no theme object, and a decolor that
+    leaves text alone, which is what argparse's own pre-3.14 formatter effectively carries.
+
+    **Why this does not also assert that `format_help()` renders.** That combination does not
+    exist. Blocking `_colorize` on a 3.14 interpreter leaves 3.14's argparse still reaching
+    for `self._theme`, and no fallback short of a fabricated theme object would satisfy it —
+    while a real 3.12, where the import genuinely fails, has an argparse that never reads the
+    property at all. Full `--help`, `--help --color always`, a usage error and a complete run
+    were verified against a real 3.12 build instead; simulating the shape cross-version would
+    only pin a configuration no user can be in.
+
+    Regression test: CI's Type Check job caught the unresolvable import, and nothing covered
+    the runtime side of the same question.
+    """
+    script = (
+        "import sys\n"
+        "sys.modules['_colorize'] = None\n"
+        "from rustest.cli import _LazyHelpFormatter, _identity\n"
+        "theme, decolor = _LazyHelpFormatter('rustest', width=80)._colorization()\n"
+        "print(theme is None)\n"
+        "print(decolor is _identity)\n"
+        "print(decolor('plain text'))\n"
+    )
+    assert _in_fresh_interpreter(script) == "True\nTrue\nplain text"

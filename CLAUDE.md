@@ -93,9 +93,17 @@ uv run pytest tests/ examples/tests/ -v
 # Run with rustest itself -- there is one engine
 uv run python -m rustest tests/ examples/tests/ -v
 
-# Rust tests. `--test-threads=1` is required, not optional: these drive real Python
-# worker pools, and running them concurrently produces spurious subprocess timeouts.
-cargo test -- --test-threads=1
+# Rust tests. TWO flags, both required.
+#
+# `--no-default-features` turns OFF `extension-module`. That feature is correct for the
+# wheel -- it leaves the CPython symbols undefined for the host interpreter to supply -- but
+# a test binary is an ordinary executable with no host, so on Linux it fails to LINK, with a
+# wall of `undefined symbol: PyObject_GetAttr`-style errors. Windows links `pythonXY.lib`
+# either way, so omitting the flag appears to work locally and breaks CI.
+#
+# `--test-threads=1` is required, not optional: these drive real Python worker pools, and
+# running them concurrently produces spurious subprocess timeouts.
+cargo test --no-default-features -- --test-threads=1
 
 # ON WINDOWS, the test binary needs the Python DLL directory on PATH or it exits
 # 0xc0000135 (STATUS_DLL_NOT_FOUND) before running anything -- it links pythonXY.dll and
@@ -219,7 +227,7 @@ interpreter: the freethreaded and standard builds ship different OpenSSL builds.
 - `uv run pre-commit run --all-files` - Run complete check suite
 
 ### Tests (ALL must pass)
-- `cargo test -- --test-threads=1` - Rust unit tests (single-threaded; see above)
+- `cargo test --no-default-features -- --test-threads=1` - Rust unit tests (both flags required; see above)
 - `uv run pytest python/tests -v` - Python unit tests (via pytest)
 - `uv run pytest tests/ examples/tests/ -v` - Integration tests (via pytest)
 - `uv run python -m rustest tests/ examples/tests/ -v` - Integration tests (via rustest)
@@ -266,7 +274,7 @@ Tests are run through multiple runners to ensure compatibility:
 
 ### Modifying Rust core
 1. Make changes in `src/`
-2. Run `cargo test` for Rust tests
+2. Run `cargo test --no-default-features -- --test-threads=1` for Rust tests
 3. Run `uv run maturin develop` to rebuild
 4. Run Python tests to verify integration
 

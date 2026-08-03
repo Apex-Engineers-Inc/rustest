@@ -12,13 +12,31 @@ repository = "https://example.com/rustest"
 name = "_rust"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# On by default so `maturin build`/`develop`, which use default features, are unchanged.
+# `cargo test --no-default-features` turns it off so the test executable links libpython --
+# see the note on the `pyo3` dependency below.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
 # Content addressing for the Tier S manifest cache (`src/v2/manifest_cache.rs`).  blake3
 # rather than a general-purpose hasher because the cache key is the *only* thing standing
 # between a user and a silently stale manifest: it is collision resistant, and it is fast
 # enough that hashing every collected file's bytes costs less than the parse it replaces.
 blake3 = "1"
-pyo3 = { version = "0.27", features = ["extension-module", "anyhow"] }
+# `extension-module` is behind a *default* feature rather than being unconditional, and the
+# reason is `cargo test`.  That feature tells pyo3 to leave the CPython symbols undefined,
+# because an extension module is dlopened by an interpreter that already provides them.  A
+# test binary is an ordinary executable with no such host, so on Linux every one of those
+# symbols is an undefined-reference link error (`PyObject_GetAttr`, `PyErr_Print`, ...).  It
+# links on Windows either way -- the platform has no undefined-symbol shared objects, so pyo3
+# links `pythonXY.lib` regardless -- which is exactly why this was invisible until CI ran the
+# suite on Linux for the first time.
+#
+# `default` keeps maturin's path unchanged (it builds with default features); `cargo test
+# --no-default-features` links libpython and gets a working interpreter.
+pyo3 = { version = "0.27", features = ["anyhow"] }
 # Tier S parses files in parallel (`src/v2/static_collect.rs`); nothing else in the engine
 # uses a thread pool -- the run itself is parallelised by the process pool, not by rayon.
 rayon = "1.8"

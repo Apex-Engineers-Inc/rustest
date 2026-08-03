@@ -171,7 +171,9 @@ Run in order. Nothing here has side effects beyond the working tree.
       those first.
 - [ ] `uv sync --all-extras && uv run maturin develop`
 - [ ] `cargo fmt --check` · `cargo clippy --lib -- -D warnings`
-- [ ] `cargo test -- --test-threads=1` — **on Windows, put the Python DLL directory on PATH
+- [ ] `cargo test --no-default-features -- --test-threads=1` — the `--no-default-features`
+      half turns off `extension-module`, without which the test *executable* does not link
+      on Linux. **On Windows, put the Python DLL directory on PATH
       first** or the binary exits `0xc0000135` before running anything. See `CLAUDE.md`.
 - [ ] `uv run python -m conformance --v2-collect` and `--v2-run`
 - [ ] `uv run pytest python/tests` · `uv run pytest conformance/tests`
