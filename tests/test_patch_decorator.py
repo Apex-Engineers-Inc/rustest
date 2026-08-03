@@ -1,55 +1,42 @@
-"""Test that @patch decorator is auto-skipped with helpful message.
+"""Tests for @patch decorator support in pytest-compat mode."""
+from unittest.mock import MagicMock, patch
 
-These tests are designed to verify rustest's auto-skip behavior for @patch.
-In pytest-compat mode (--pytest-compat flag), tests with @patch decorators
-are automatically skipped with a helpful message suggesting monkeypatch instead.
-When running with pure pytest, the @patch decorators work normally.
-"""
-
-import sys
-import pytest
-from unittest.mock import patch, MagicMock
+from rustest import fixture
 
 
-def some_function():
-    """Function to be patched."""
-    return "original"
+@fixture
+def base_value():
+    return 42
 
 
-def test_normal_pass():
-    """A normal test that should pass."""
-    assert True
+# Simple @patch on a function
+@patch("os.path.exists", return_value=True)
+def test_single_patch(mock_exists: MagicMock):
+    import os
+    assert os.path.exists("/fake/path") is True
+    mock_exists.assert_called_once_with("/fake/path")
 
 
-@patch(__name__ + ".some_function")
-def test_with_patch_decorator(mock_func):
-    """Test using @patch decorator - should be auto-skipped."""
-    mock_func.return_value = "mocked"
-    assert some_function() == "mocked"
+# Multiple @patch decorators
+@patch("os.path.isfile", return_value=False)
+@patch("os.path.exists", return_value=True)
+def test_multiple_patches(mock_exists: MagicMock, mock_isfile: MagicMock):
+    import os
+    assert os.path.exists("/fake") is True
+    assert os.path.isfile("/fake") is False
 
 
-@patch(__name__ + ".some_function")
-@patch("builtins.open")
-def test_with_multiple_patches(mock_open, mock_func):
-    """Test using multiple @patch decorators - should be auto-skipped."""
-    mock_func.return_value = "mocked"
-    assert some_function() == "mocked"
+# @patch with fixture dependency
+@patch("os.path.exists", return_value=True)
+def test_patch_with_fixture(mock_exists: MagicMock, base_value):
+    assert base_value == 42
+    import os
+    assert os.path.exists("/fake") is True
 
 
-class TestPatchInClass:
-    """Test class with @patch decorators."""
-
-    def test_normal_in_class(self):
-        """Normal test in class - should pass."""
-        assert True
-
-    @patch(__name__ + ".some_function")
-    def test_with_patch_in_class(self, mock_func):
-        """Test with @patch in class - should be auto-skipped."""
-        mock_func.return_value = "mocked"
-        assert some_function() == "mocked"
-
-
-def test_another_normal_pass():
-    """Another normal test - should pass."""
-    assert 1 + 1 == 2
+# Class with @patch
+class TestWithPatch:
+    @patch("os.path.exists", return_value=True)
+    def test_class_patch(self, mock_exists: MagicMock):
+        import os
+        assert os.path.exists("/fake") is True

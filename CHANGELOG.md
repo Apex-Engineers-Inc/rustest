@@ -371,6 +371,61 @@ items: **19 moot under v2, 8 ported, 9 deferred**. The full evidence table is in
 across are enumerated, with their reasons, in the "Deferred from the 0.17/0.18 delta" table
 in `RELEASE-CHECKLIST.md`.
 
+## [0.18.0] - 2026-07-24
+
+### Added
+
+- **`--llm` JSONL output mode**: `--llm` now emits machine-readable JSONL (one JSON object per line) optimized for LLM coding agents, replacing the earlier plain-text format
+  - Signal-only: a `meta` header, one line per failure/collection error, and a `summary` sentinel line last; passing and skipped tests are counted in `summary` to keep output minimal
+  - Deterministic (buffered and sorted) for stable prompt caching and diffs; no ANSI, no Unicode, ASCII-only
+  - Canonical re-runnable node IDs, first-class `expected`/`actual`, and a `rerun` list of failures to reproduce
+  - `-v` adds the failing code line and per-skip lines; `-vv` adds the traceback frame chain
+  - Captured stdout/stderr attached per failure, tail-truncated to 50 lines (`stdout_omitted`/`stderr_omitted`); `--llm-full` disables truncation
+  - `--llm-schema` prints the versioned JSON Schema for the output and exits
+
+## [0.17.0] - 2026-04-06
+
+### Fixed
+
+- **Pytest Compatibility - Indirect Parametrize**: Fixed `indirect=True` in `@pytest.mark.parametrize` to pass values via `request.param` instead of treating them as fixture names
+  - Also fixed class-level `@parametrize(indirect=[...])` not propagating to test methods
+
+- **Pytest Compatibility - Async Event Loop Management**: Fixed multiple event loop issues causing "attached to a different loop" errors
+  - Session-scoped async fixtures now use the session event loop instead of the test's function loop
+  - Function-scoped async fixture teardowns now use the test's effective event loop scope
+  - Added support for reading `asyncio_default_test_loop_scope` and `asyncio_default_fixture_loop_scope` from `pyproject.toml` `[tool.pytest.ini_options]`
+  - Autouse fixtures are now included in loop scope auto-detection
+
+- **Pytest Compatibility - Test Class Support**: Fixed several class-based test issues
+  - `setup_method()` and `teardown_method()` are now auto-called for plain test classes
+  - Class-method fixtures (`@pytest.fixture` on methods) now share the same instance as test methods
+  - `teardown_method()` runs in a `finally` block to ensure cleanup on failure
+
+- **Pytest Compatibility - Fixture Resolution**: Fixed fixture resolution ordering and async support
+  - Test parameter fixtures now resolve before autouse fixtures, matching pytest's scope-ordered resolution
+  - Autouse fixtures are sorted by scope (session first) before resolution
+  - `request.getfixturevalue()` now supports async and async generator fixtures
+
+- **Async Event Loop Lifecycle**: Fixed improper event loop shutdown causing resource leaks and performance regression in `--pytest-compat` mode (#122)
+  - `close_event_loop` now awaits pending task cancellation before closing, ensuring async resources (DB connections, sockets) are properly released
+  - `close_event_loop` now calls `shutdown_asyncgens()` so async generator fixture `finally` blocks execute
+  - Function-scoped event loops are now explicitly closed after each test instead of leaking until GC
+
+- **Pytest Compatibility - Decorator Support**: Added support for `unittest.mock.patch` and `@mark.xfail`
+  - `@patch` decorated tests now run correctly in `--pytest-compat` mode instead of being skipped
+  - `@mark.xfail` failures are treated as expected, with `strict` and `condition` support
+
+- **Pytest Compatibility - Module Loading**: Fixed relative import resolution in test packages
+  - Corrected `__package__` assignment in `ensure_parent_packages_loaded` for nested `__init__.py` modules
+
+### Changed
+
+- **Code Deduplication**: Surgical refactoring to eliminate redundant code across Rust and Python layers (#123)
+
+### Docs
+
+- **Documentation Accuracy**: Fixed outdated console output examples and inaccurate feature status indicators (#126)
+
 ## [0.16.2] - 2026-03-30
 
 ### Fixed

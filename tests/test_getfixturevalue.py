@@ -86,38 +86,10 @@ async def async_generator_fixture():
 
 @_skip_if_native_mode
 def test_getfixturevalue_async_generator(request):
-    """Test that async generator fixtures raise NotImplementedError with helpful message.
-
-    This test verifies that getfixturevalue() raises a clear, helpful error when trying
-    to use async fixtures, explaining why it doesn't work and how to fix it.
-
-    Note: Async fixtures work perfectly when injected as test parameters - the error
-    only occurs when trying to use getfixturevalue() with them.
-    """
-    import os
-    # Skip if running with pure pytest (detected via PYTEST_CURRENT_TEST env var)
-    if "PYTEST_CURRENT_TEST" in os.environ:
-        pytest.skip(
-            "Skipping: This test verifies rustest's getfixturevalue() error handling "
-            "for async fixtures. Pure pytest handles async fixtures natively, so this "
-            "behavior only applies when running with rustest --pytest-compat mode."
-        )
-
-    # Attempt to use getfixturevalue() with an async fixture
-    # This should raise NotImplementedError with a helpful, detailed message
-    with pytest.raises(NotImplementedError) as exc_info:
-        request.getfixturevalue("async_generator_fixture")
-
-    # Verify the error message is comprehensive and helpful
-    error_msg = str(exc_info.value)
-    assert "async_generator_fixture" in error_msg
-    assert "async" in error_msg.lower()
-    assert "getfixturevalue()" in error_msg
-    # Check it explains WHY it fails
-    assert "synchronous function" in error_msg.lower() or "sync context" in error_msg.lower()
-    # Check it shows HOW to fix
-    assert "def test_" in error_msg or "normal injection" in error_msg.lower()
-    assert "✅" in error_msg or "instead use" in error_msg.lower()
+    """Test that getfixturevalue works with async generator fixtures."""
+    # Async fixtures should be resolvable via getfixturevalue
+    value = request.getfixturevalue("async_generator_fixture")
+    assert value == "async_value"
 
 
 # Parametrized tests using getfixturevalue

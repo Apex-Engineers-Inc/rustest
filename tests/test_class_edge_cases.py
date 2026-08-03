@@ -11,6 +11,12 @@ This test file covers edge cases and special scenarios:
 
 from rustest import fixture, parametrize, skip_decorator as skip, mark
 
+# Try to import pytest fixture for compat mode testing; fall back to rustest
+try:
+    from pytest import fixture as pytest_fixture
+except ImportError:
+    pytest_fixture = fixture
+
 
 # ============================================================================
 # FIXTURES
@@ -70,15 +76,9 @@ class TestClassWithSetupPattern:
         assert self.setup_called is True
 
     def test_without_manual_setup(self):
-        """Test behavior varies by runner."""
-        # Note: pytest auto-calls setup_method, rustest does not
-        # This test works with both behaviors
-        if hasattr(self, "setup_called"):
-            # pytest behavior - setup_method was auto-called
-            assert self.setup_called is True
-        else:
-            # rustest behavior - setup_method not auto-called
-            assert True
+        """setup_method should be auto-called by both pytest and rustest."""
+        assert hasattr(self, "setup_called"), "setup_method was not called automatically"
+        assert self.setup_called is True
 
 
 # ============================================================================
@@ -466,3 +466,54 @@ class TestNoDocstring:
 
     def test_another_no_docstring(self):
         assert 1 == 1
+
+
+# ============================================================================
+# CLASS WITH TEARDOWN_METHOD
+# ============================================================================
+
+
+class TestClassWithTeardown:
+    """Test class verifying teardown_method is called."""
+
+    _teardown_tracker: list[str] = []
+
+    def setup_method(self):
+        self.value = "initialized"
+
+    def teardown_method(self):
+        TestClassWithTeardown._teardown_tracker.append(self.value)
+
+    def test_first(self):
+        self.value = "first"
+        assert self.value == "first"
+
+    def test_second(self):
+        # setup_method should give us a fresh instance with "initialized"
+        assert self.value == "initialized"
+
+
+# ============================================================================
+# CLASS-METHOD AUTOUSE FIXTURE SHARING INSTANCE WITH TESTS
+# ============================================================================
+
+
+class TestClassMethodFixture:
+    """Test that class method fixtures share instance with tests."""
+
+    @fixture(autouse=True)
+    def setup_data(self):
+        self.data = {"key": "value"}
+
+    def test_data_available(self):
+        assert hasattr(self, "data"), "Class-method fixture should set self.data"
+        assert self.data == {"key": "value"}
+
+    def test_data_fresh_each_test(self):
+        # Each test gets its own instance, so data should be fresh
+        assert self.data == {"key": "value"}
+        self.data["extra"] = True
+
+    def test_no_leakage(self):
+        # Previous test's modifications should not leak
+        assert "extra" not in self.data
