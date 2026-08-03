@@ -91,6 +91,17 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
+- **The 0.17/0.18 regression suites, carried across.** `test_async_teardown_lifecycle.py`
+  (18 tests, asserting that a *previous* test's async fixture teardown completed — an angle
+  none of the six existing async suites covered), plus `test_asyncio_config.py`,
+  `test_xfail.py`, `test_relative_imports/`, `test_async_autouse_event_loop.py`.
+  `test_fixture_resolution_order.py` was **re-authored**: as written its autouse fixture
+  depended on its session fixture, so the dependency edge forced the order and its
+  assertions would have passed against an implementation ordering fixtures exactly
+  backwards. It now pins the order measured on pytest 8.4.2 — `s_auto, s_req, f_auto,
+  f_req`, i.e. scope first and autouse second *within* a scope — and pins that a test's
+  parameter order does not override scope. rustest produces that list identically.
+
 - **`rustest --version`.** It had never existed, in any release. Prints `rustest <version>`
   on stdout and exits 0, running nothing — shaped after `pytest --version` (measured on
   pytest 8.4.2), which is the oracle used everywhere else. Like `--llm-schema` it is a
