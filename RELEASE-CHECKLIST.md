@@ -306,6 +306,35 @@ trigger on `user_guide/**` and `great-docs.yml` changes — is a maintainer call
 
 ---
 
+## 6.5 The first Linux CI run — 12 failures, all newly exposed
+
+**This branch had never been pushed, so PR #141 is the first CI run in the whole v2 arc.**
+Three problems surfaced that no local run could have caught, two of them fixed here and one
+left for a decision. Lint, Type Check and the Conformance gate are **green**; the three
+`Test Python 3.x` jobs are **red** on 12 unit tests. None of the 12 is a regression from this
+work — each is a test or behaviour that has simply never executed on Linux.
+
+**Fixed on the RC:**
+
+- `cargo test` could never have linked on Linux. `extension-module` was an unconditional
+  pyo3 feature, which leaves the CPython symbols undefined for a host interpreter — correct
+  for the wheel, impossible for a test *executable*. Windows links `pythonXY.lib` regardless,
+  which is why `CLAUDE.md`'s command passed locally forever. Now a default feature, with CI
+  running `cargo test --no-default-features`.
+- `cli.py`'s `_colorize` import could not type-check at the 3.12 floor. Now dynamic.
+
+**Open — 12 unit-test failures on Linux, in four clusters:**
+
+| Cluster | Tests | Cause | Product bug? |
+|---|---|---|---|
+| **A** | 8 (7 × `test_message_is_byte_identical_to_pytest`, 1 × `test_a_plain_sequence_failure…`) | GitHub Actions sets `CI=true`, which flips pytest's `running_on_ci()` from `Use -v to get more diff` to a **full diff** — and on that path rustest's stdlib `pprint.pformat` renders differently from pytest's vendored `PrettyPrinter`. **Already known**: `_assertion.py` l. 487-490 documents the difference and says the branch is "unreachable at the pinned verbosity except on CI". CI is now that exception. | A **real divergence**, but only on the CI/full-diff path, and already documented. Closing it means porting pytest's vendored pretty-printer. |
+| **B** | `test_symlinks_to_excluded_directories` | Collects **2** node ids where it expects 1: `venv_link/test_venv.py::test_example` is picked up through a symlink into an excluded directory. Windows never exercised this (the symlink is not created there). | **Likely yes, and the most consequential of the four** — on Linux/macOS a `venv` reached by symlink can be walked into. Worth confirming before anyone points rustest at a large tree. |
+| **C** | `test_unencodable_nodeids_are_escaped_exactly_as_pytest_escapes_them` | pytest emits `測試` as raw UTF-8 on a Linux stdout and escapes it on Windows. The test hardcodes the Windows expectation. | No — a **test-portability** issue. |
+| **D** | `test_annotation_code_objects_are_not_measured`, `test_a_non_coroutine_awaitable_body_is_awaited` | Line 2 is measured when it should not be; a custom (non-coroutine) awaitable body reports `failed` where Windows reports `passed`. | **Unknown — needs investigation.** Neither has an obvious environment explanation, so these are the two most likely to be real. |
+
+Cluster B and cluster D are the ones to look at first: they are the only ones that could
+mean rustest behaves differently on the platform most users are on.
+
 ## 7. Known-open, accepted for this release
 
 Neither blocks anything; both are recorded so they are not rediscovered as surprises.
