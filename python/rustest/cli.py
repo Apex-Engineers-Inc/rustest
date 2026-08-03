@@ -92,9 +92,43 @@ class _LazyHelpFormatter(argparse.HelpFormatter):
         self._resolved = None
 
     def _colorization(self) -> tuple[Any, Any]:
-        """The theme and decolor function, importing ``_colorize`` on first use only."""
+        """The theme and decolor function, importing ``_colorize`` on first use only.
+
+        **``_colorize`` is version-gated stdlib private API**, which is why it is reached
+        through :func:`importlib.import_module` rather than an ``import`` statement. Measured
+        across the supported floor: it does not exist at all on 3.12, and on 3.13 it exists
+        *without* ``decolor`` or ``get_theme``. Only 3.14 has all three.
+
+        The branch is nevertheless unreachable below 3.14, because the ``_theme``/``_decolor``
+        properties that call it are read only by 3.14's ``argparse`` formatting methods —
+        3.12 and 3.13 ship a ``HelpFormatter`` that has never heard of them. Verified end to
+        end on a real 3.12 install: ``--help``, ``--help --color always``, a usage error and
+        a full run all behave.
+
+        **A plain ``import`` cannot be made to type-check in both places.** `ci.yml`'s Type
+        Check job runs on 3.12, where the module is missing and the import is an error; a
+        developer machine on 3.14 resolves it fine, which makes a
+        ``# pyright: ignore[reportMissingImports]`` *unnecessary* — and
+        ``reportUnnecessaryTypeIgnoreComment`` is an error too, so the suppression fails
+        wherever the bare import would have passed. A dynamic import is honest about what is
+        actually happening and is stable in both environments.
+
+        ``AttributeError`` joins ``ImportError`` in the guard because 3.13's failure mode is
+        the *names*, not the module.
+        """
         if self._resolved is None:
-            from _colorize import can_colorize, decolor, get_theme
+            try:
+                import importlib
+
+                colorize = importlib.import_module("_colorize")
+                can_colorize = colorize.can_colorize
+                decolor = colorize.decolor
+                get_theme = colorize.get_theme
+            except (ImportError, AttributeError):
+                # No theme object to hand back; `None` is what argparse's own pre-3.14
+                # formatter effectively has, and `_identity` leaves the text alone.
+                self._resolved = (None, _identity)
+                return self._resolved
 
             if self._color and can_colorize():
                 self._resolved = (get_theme(force_color=True).argparse, decolor)

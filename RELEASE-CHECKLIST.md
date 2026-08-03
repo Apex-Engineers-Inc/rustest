@@ -1,12 +1,11 @@
 # Release checklist — the v2 arc
 
-Everything below was verified against the tree and against GitHub, not inferred from
-notes. Nothing in it has been executed: **no version was bumped, no tag was created, no
-publish was triggered.** The release is the maintainer's to run.
+Everything below was verified against the tree and against GitHub, not inferred from notes.
 
-Read section 1 before anything else. The merge is **not** a fast-forward and **not**
-conflict-free, and resolving it the obvious way in a few places would silently undo work
-this arc did on purpose.
+> **§1's merge has been performed** on `v2/release-candidate` (PR #141), and §§3–5 have
+> moved on accordingly — read §0 for what is left. **No tag was created and no publish was
+> triggered**, and none can be from that branch: `publish.yml` fires only on a push to
+> `main`. The release itself is still the maintainer's to run.
 
 ---
 
@@ -14,17 +13,41 @@ this arc did on purpose.
 
 | | |
 |---|---|
-| Release branch | `v2/phase0-conformance` |
-| Merge base with `origin/main` | `c127556` |
-| Commits ahead of `origin/main` | **169** |
-| Commits `origin/main` has that this branch does not | **9** (the 0.17.0 + 0.18.0 line — all triaged, see §4) |
-| Version on this branch | `0.16.2` — **deliberately not bumped** |
+| Release branch | `v2/release-candidate` — **PR [#141](https://github.com/Apex-Engineers-Inc/rustest/pull/141)** |
+| Superseded branch | `v2/phase0-conformance` (unchanged; the RC branched from its tip) |
+| Merge with `origin/main` | **Done.** All 37 conflicting paths resolved per §1.2, plus three deviations §1.2 did not predict — see the merge commit |
+| Version | `1.0.0rc1` (`pyproject.toml`) / `1.0.0-rc.1` (`Cargo.toml`) — an RC number for unambiguous git installs, **not** a decision to ship 1.0.0. See §2 |
 | Version on `origin/main` | `0.18.0` |
 | `publish.yml` 3.14 wheel fix (#132) | **applied** (`812b279`), not triggered |
+| Deferred items closed on the RC | 1, 2, 3, 4, 5, 8 — see §4 |
+| Deferred items still open | **3**: items 6, 7 and 9 (the version). None is a behaviour regression |
+
+### What is left for you
+
+1. **Review the docs.** `bash scripts/docs.sh build` → `great-docs/_site/index.html`. Builds
+   with zero warnings. The seven beginner/CLI pages changed most: every console sample was
+   re-captured from a real run.
+2. **Try it on other projects** — install from the branch:
+   ```bash
+   uv pip install "rustest @ git+https://github.com/Apex-Engineers-Inc/rustest.git@v2/release-candidate"
+   ```
+3. **Decide the version** (§2) and run the release (§6). Close issues only once it is live (§5).
 
 ---
 
-## 1. Merge: `v2/phase0-conformance` → `main`
+## 1. Merge: `v2/phase0-conformance` → `main` — **DONE, kept as the record**
+
+> **This section describes work already performed.** The merge was taken the other way
+> round — `origin/main` merged **into** a `v2/release-candidate` branch cut from
+> `v2/phase0-conformance` — which keeps "ours" meaning the v2 side throughout, exactly as
+> §1.2's table assumes, while leaving `main` untouched until you merge PR #141. The section
+> is kept because §1.2's resolution table is the reasoning behind the merge commit, and
+> because §1.3's lesson turned out to apply again (three paths merged *cleanly* and wrongly;
+> see the merge commit message).
+>
+> **Merging the PR is now a fast-forward** — the RC already contains `origin/main`. To keep
+> §1.1's addressable-merge-commit property, use a **merge commit** on the PR rather than
+> squash or rebase.
 
 ### 1.1 Strategy: one merge commit, `--no-ff`. Not a rebase, not a squash.
 
@@ -135,21 +158,17 @@ and re-run the changelog sync.
 
 Run in order. Nothing here has side effects beyond the working tree.
 
-- [ ] **Repair pre-commit, then run it.** Every commit in the reconciliation and docs waves
-      used `--no-verify`, because pre-commit could not bootstrap *any* hook environment on
-      the development machine: the uv-managed CPython 3.14.2 is missing
-      `libcrypto-3-x64.dll`, so `import ssl` fails, so `python -mvirtualenv` fails. This is
-      not specific to a hook or to these changes. Every check the hooks would have run was
-      run by hand at the pinned versions — but that is not the same as the hooks passing.
+- [x] **~~Repair pre-commit, then run it.~~ DONE.** `uv python install --reinstall
+      cpython-3.14.2` fixed it — the uv-managed interpreter was missing
+      `libcrypto-3-x64.dll`, so `import ssl` failed, so `python -mvirtualenv` failed, so no
+      hook environment could bootstrap and every commit in the previous two waves used
+      `--no-verify`. **`uv run pre-commit run --all-files` is now fully green**, and every
+      commit on the RC branch was made with the hooks running.
 
-      ```bash
-      uv python install --reinstall cpython-3.14.2
-      uv run pre-commit run --all-files
-      ```
-
-      The reinstall is machine-global and rebuilds the project venv, which is why it was
-      not done unilaterally mid-wave. Do **not** shortcut it by copying the DLL from the
-      freethreaded 3.14.2 install: the two ship different OpenSSL builds.
+      One wrinkle worth knowing if it recurs: the reinstall first failed with
+      `Access is denied` because two live processes were running out of that interpreter
+      directory. Windows will not let uv replace it while anything holds it open — stop
+      those first.
 - [ ] `uv sync --all-extras && uv run maturin develop`
 - [ ] `cargo fmt --check` · `cargo clippy --lib -- -D warnings`
 - [ ] `cargo test -- --test-threads=1` — **on Windows, put the Python DLL directory on PATH
