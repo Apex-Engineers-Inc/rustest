@@ -54,10 +54,16 @@ jobs:
       - name: Run Rust tests
         run: |
           set -euo pipefail
-          PY="$(uv python find ${{ matrix.python-version }})"
-          echo "Using interpreter: $PY"
+          # Ask the interpreter about itself rather than guessing paths: `uv python find`
+          # does not see the environment `uv sync` just built, and the library directory is
+          # not derivable from the executable's path on a uv standalone build. `sysconfig`
+          # is authoritative for both.
+          PY="$(uv run python -c 'import sys; print(sys.executable)')"
+          LIBDIR="$(uv run python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") or "")')"
+          echo "Interpreter: $PY"
+          echo "LIBDIR: $LIBDIR"
           export PYO3_PYTHON="$PY"
-          export LD_LIBRARY_PATH="$(dirname "$(dirname "$PY")")/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export LD_LIBRARY_PATH="${LIBDIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           cargo test --no-default-features -- --test-threads=1
 
       - name: Run Python unit tests with pytest
