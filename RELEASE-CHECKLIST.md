@@ -310,9 +310,13 @@ trigger on `user_guide/**` and `great-docs.yml` changes — is a maintainer call
 
 **This branch had never been pushed, so PR #141 is the first CI run in the whole arc** — the
 first time any of this code was built or tested anywhere but one Windows machine. Four
-problems surfaced that no local run could have caught. None of the 12 test failures is a
-regression from this work; each is a test or a behaviour that had simply never executed
+problems surfaced that no local run could have caught. None of the 12 test failures was a
+regression from this work; each was a test or a behaviour that had simply never executed
 under Linux, or under the interpreter CI was really using.
+
+> **All resolved — every check is green**, and the matrix now genuinely runs three
+> interpreters: **3.12.13, 3.13.14 and 3.14.6**. That is the first time 3.13 and 3.14 have
+> been tested in this project at all.
 
 **Fixed on the RC:**
 
