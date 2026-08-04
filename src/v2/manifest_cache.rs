@@ -256,6 +256,7 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
         asyncio_mode,
         asyncio_default_fixture_loop_scope,
         asyncio_default_test_loop_scope,
+        codeblocks,
     } = config;
 
     let mut hasher = blake3::Hasher::new();
@@ -307,6 +308,14 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
     field(
         "asyncio_default_test_loop_scope",
         std::slice::from_ref(asyncio_default_test_loop_scope),
+    );
+    // Hashed as zero-or-one values, same trick as the fixture loop scope above: `None`
+    // ("no config opinion") must not collide with `Some(false)` ("config said off").
+    field(
+        "codeblocks",
+        codeblocks
+            .map(|b| if b { "true" } else { "false" }.to_string())
+            .as_slice(),
     );
     *hasher.finalize().as_bytes()
 }
@@ -781,6 +790,7 @@ mod tests {
             asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
             asyncio_default_fixture_loop_scope: None,
             asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
+            codeblocks: None,
         }
     }
 

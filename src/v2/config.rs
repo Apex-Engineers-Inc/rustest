@@ -151,6 +151,10 @@ pub struct ResolvedConfig {
     /// Defaults to `function` (`plugin.py` l. 123-128) — unlike the fixture option above,
     /// this one has a real default in the oracle, so `None` never reaches the worker.
     pub asyncio_default_test_loop_scope: String,
+    /// `[tool.rustest] codeblocks`, or the pytest-ini-section spelling, or `None` when
+    /// neither is set.  `None` is not `false`: it means "no config opinion", so the CLI
+    /// flag and then the built-in default decide.
+    pub codeblocks: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +216,8 @@ pub fn resolve_config(
     let err_path = inipath
         .clone()
         .unwrap_or_else(|| invocation_dir.to_path_buf());
+    let codeblocks =
+        read_tool_rustest_codeblocks(&rootdir).or_else(|| getini_bool(&inicfg, "codeblocks"));
 
     Ok(ResolvedConfig {
         rootdir,
@@ -256,6 +262,7 @@ pub fn resolve_config(
             &err_path,
         )?
         .unwrap_or_else(|| DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string()),
+        codeblocks,
         config_file: inipath,
     })
 }
@@ -810,6 +817,24 @@ fn load_config_dict_from_file(path: &Path) -> Result<Option<ConfigDict>, ConfigE
     }
 }
 
+/// Read `[tool.rustest] codeblocks` from **exactly** `<rootdir>/pyproject.toml`.
+///
+/// Deliberately outside config-file discovery.  `load_config_dict_from_file` answers
+/// `None` for a `pyproject.toml` with no `[tool.pytest.ini_options]` table, and
+/// `pytest.ini` outranks `pyproject.toml` in the same directory, so a project keeping its
+/// settings in `pytest.ini` would never have this table read if it went through
+/// `locate_config`.  No walk in either direction: an upward walk would read an unrelated
+/// `pyproject.toml` above the repository.
+fn read_tool_rustest_codeblocks(rootdir: &Path) -> Option<bool> {
+    let text = std::fs::read_to_string(rootdir.join("pyproject.toml")).ok()?;
+    let value: toml::Value = text.parse().ok()?;
+    value
+        .get("tool")?
+        .get("rustest")?
+        .get("codeblocks")?
+        .as_bool()
+}
+
 /// Port of `load_config_dict_from_file`'s inner `make_scalar`:
 /// `return v if isinstance(v, list) else str(v)`.
 ///
@@ -966,6 +991,25 @@ fn getini_linelist(cfg: &ConfigDict, name: &str) -> Vec<String> {
             .map(str::to_string)
             .collect(),
         Some(IniValue::List(items)) => items.clone(),
+    }
+}
+
+/// pytest's ini boolean parsing, for the one rustest-only key that uses it.
+///
+/// Source: `_pytest/config/__init__.py::Config._getini`, `type="bool"` branch, which
+/// defers to `_strtobool`.  An unrecognised value answers `None` rather than raising:
+/// this key is rustest-only, so a project that also runs real pytest may legitimately
+/// have a value pytest itself would reject, and refusing the whole run over it would be
+/// harsher than the feature warrants.
+fn getini_bool(cfg: &ConfigDict, name: &str) -> Option<bool> {
+    let raw = match lookup(cfg, name)? {
+        IniValue::Str(s) => s.trim().to_ascii_lowercase(),
+        IniValue::List(_) => return None,
+    };
+    match raw.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -1848,6 +1892,87 @@ mod tests {
 
         let cfg = resolve_config(root, &[root.to_path_buf()]).unwrap();
         assert_eq!(cfg.addopts, pats(&["-k", "not slow", "--basetemp=my dir"]));
+    }
+
+    // -- codeblocks: getini_bool + `[tool.rustest]` --------------------------
+
+    #[test]
+    fn getini_bool_accepts_pytest_ini_spellings() {
+        let cfg: ConfigDict = vec![
+            ("a".to_string(), IniValue::Str("true".to_string())),
+            ("b".to_string(), IniValue::Str("False".to_string())),
+            ("c".to_string(), IniValue::Str("1".to_string())),
+            ("d".to_string(), IniValue::Str("no".to_string())),
+            ("e".to_string(), IniValue::Str("banana".to_string())),
+        ];
+        assert_eq!(getini_bool(&cfg, "a"), Some(true));
+        assert_eq!(getini_bool(&cfg, "b"), Some(false));
+        assert_eq!(getini_bool(&cfg, "c"), Some(true));
+        assert_eq!(getini_bool(&cfg, "d"), Some(false));
+        assert_eq!(getini_bool(&cfg, "e"), None);
+        assert_eq!(getini_bool(&cfg, "missing"), None);
+    }
+
+    /// `[tool.rustest]` is read from EXACTLY `<rootdir>/pyproject.toml`, with no walk in
+    /// either direction, so a table in a subdirectory is invisible.  Spec: "Exactly at
+    /// rootdir is literal".
+    #[test]
+    fn tool_rustest_is_read_only_at_the_rootdir() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pyproject.toml",
+            "[tool.rustest]\ncodeblocks = true\n",
+        );
+        assert_eq!(read_tool_rustest_codeblocks(root), Some(true));
+
+        let sub = mkdirs(root, "sub");
+        write(
+            &sub,
+            "pyproject.toml",
+            "[tool.rustest]\ncodeblocks = true\n",
+        );
+        // rootdir is still `root`; the subdirectory table must not be consulted.
+        assert_eq!(read_tool_rustest_codeblocks(root), Some(true));
+        // And a rootdir with no table at all answers None rather than a default.
+        let empty = TempDir::new().unwrap();
+        assert_eq!(read_tool_rustest_codeblocks(empty.path()), None);
+    }
+
+    /// The case that was silently broken before the spec was amended: a project whose
+    /// config file is `pytest.ini` must still have its `[tool.rustest]` table honoured,
+    /// even though `pyproject.toml` never becomes the config file.
+    #[test]
+    fn tool_rustest_is_honoured_when_pytest_ini_is_the_config_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "pytest.ini", "[pytest]\n");
+        write(
+            root,
+            "pyproject.toml",
+            "[tool.rustest]\ncodeblocks = true\n",
+        );
+        let resolved = resolve_config(root, &[]).unwrap();
+        assert_eq!(resolved.config_file, Some(root.join("pytest.ini")));
+        assert_eq!(resolved.codeblocks, Some(true));
+    }
+
+    /// Adding `[tool.rustest]` must not move rootdir.  If it did, every node id in the
+    /// suite could change from adding one key.
+    #[test]
+    fn tool_rustest_does_not_move_rootdir() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, "pytest.ini", "[pytest]\n");
+        let before = resolve_config(root, &[]).unwrap().rootdir;
+        write(
+            root,
+            "pyproject.toml",
+            "[tool.rustest]\ncodeblocks = true\n",
+        );
+        let after = resolve_config(root, &[]).unwrap().rootdir;
+        assert_eq!(before, after);
     }
 
     // -- name matching -------------------------------------------------------
