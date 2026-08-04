@@ -298,3 +298,45 @@ def test_codeblock_mark_on_the_fallback_shape_still_works(tmp_path: Path) -> Non
     included = _run(str(page), "-m", "codeblock", "-q", cwd=tmp_path)
     combined = included.stdout + included.stderr
     assert "1 passed" in combined and "deselected" not in combined, combined
+
+
+def test_xunit_setup_function_runs_inside_a_block(tmp_path: Path) -> None:
+    """`_xunit_fixturedefs` is registered before `parse_factories`, so a documented
+    `setup_function` example actually runs. Nothing exercised this before; dropping those
+    two registration lines would make the example silently never run rather than fail loudly.
+    """
+    page = _md(
+        tmp_path,
+        "```python\n"
+        "CALLS = []\n\n"
+        "def setup_function(function):\n"
+        "    CALLS.append('setup')\n\n"
+        "def test_xunit_hook_ran():\n"
+        "    assert CALLS == ['setup'], f'setup_function did not run: {CALLS}'\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "1 passed" in combined, combined
+
+
+def test_blocks_do_not_share_a_namespace(tmp_path: Path) -> None:
+    """Each block gets its own fresh module, so a name one block defines is invisible to the
+    next -- the isolation both the design doc and this file's own docstring require.
+
+    The first block defines no test function, so it keeps the single-node fallback shape
+    (its own passing node) alongside the second block's real test -- "2 passed", not "1".
+    """
+    page = _md(
+        tmp_path,
+        "```python\nCALLS = []\n```\n\n"
+        "```python\n"
+        "def test_cannot_see_other_block_names():\n"
+        "    assert 'CALLS' not in globals(), 'block namespaces leaked'\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "2 passed" in combined, combined
