@@ -389,16 +389,45 @@ def test_verbose_prints_one_line_per_test_in_pytests_wording(tmp_path: Path) -> 
     assert progress[-1].endswith("[100%]"), progress
 
 
-def test_quiet_prints_only_the_summary(tmp_path: Path) -> None:
+def test_quiet_keeps_the_failure_report_and_matches_the_default_rung(tmp_path: Path) -> None:
+    """``-q`` suppresses the progress lines, and rustest's default rung has none to suppress.
+
+    This test used to assert ``quiet.stdout == ""`` under the name
+    ``test_quiet_prints_only_the_summary``. That was the behaviour ``e0dc4a8`` deliberately
+    removed: ``_print_failure_sections`` was gated on ``verbosity >= 0``, so ``rustest -q``
+    on a red run named nothing that failed and carried no traceback. pytest's ``-q`` drops
+    the session banner and condenses progress but **keeps the failure report**, so the gate
+    went and the report now prints at every rung.
+
+    What is left of ``-q`` is the progress lines — and rustest's *default* rung does not
+    print any. It has no session banner, no ``collected N items`` line and no ``.F.s.x``
+    column, because there is no ``isatty`` call in either layer and the output is the same
+    piped or on a terminal. Only ``-v`` adds the per-test lines. So ``-q`` and the default
+    rung agree on stdout, and asserting that is the honest pin: it fails if the report is
+    ever re-gated, and it fails if the default rung ever grows a preamble that ``-q``
+    should have dropped.
+
+    The cross-runner half — that these section titles match a real ``pytest -q`` — is
+    ``test_v2_run_cli.py::test_quiet_still_reports_failures_like_pytest``.
+    """
     tree = _tree(tmp_path, "quiet", {"test_m.py": MIXED})
 
     quiet = _rustest(tree, ["-q", "-n", "1"])
     default = _rustest(tree, ["-n", "1"])
 
-    assert quiet.stdout == "", f"-q must not write to stdout: {quiet.stdout!r}"
+    # The diagnosis survives -q. This is the assertion e0dc4a8's fix exists for.
+    assert "FAILED test_m.py::test_fail" in quiet.stdout, quiet.stdout
+    assert "AssertionError: assert 0" in quiet.stdout, quiet.stdout
     assert _summary_line(quiet.stderr) == "1 failed, 1 passed, 1 skipped, 1 xfailed"
-    # ...and the default rung really does say more, or the assertion above proves nothing.
-    assert "FAILED test_m.py::test_fail" in default.stdout, default.stdout
+
+    # -q and the default rung are indistinguishable on stdout: there is no preamble and no
+    # progress column at verbosity 0 for -q to take away.
+    assert quiet.stdout == default.stdout, f"-q: {quiet.stdout!r}\ndefault: {default.stdout!r}"
+
+    # ...and the rung that *does* differ is -v, or the equality above proves nothing.
+    verbose = _rustest(tree, ["-v", "-n", "1"])
+    assert "test_m.py::test_pass PASSED" in verbose.stdout, verbose.stdout
+    assert "PASSED" not in quiet.stdout, quiet.stdout
 
 
 def test_verbose_and_quiet_cancel_out_as_they_do_under_pytest(tmp_path: Path) -> None:
