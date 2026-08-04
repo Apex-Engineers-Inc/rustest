@@ -1171,7 +1171,7 @@ Fix broken examples by defining the helpers they reference so a reader can paste
 
 `CLAUDE.md` L329, L338 and L412: these become accurate rather than a walk-back. L329 and L338 may now say code blocks are executed as tests. **L331-333, the fresh-namespace rule, is already correct and stays.**
 
-`CHANGELOG.md` gets all six breaking changes: the default flip, the node-id shape change, previously-hidden failures surfacing, the `run()` API default, the exit code moving 2 to 1 for a broken page, and stale `--lf` entries. Pre-commit syncs it to `user_guide/changelog.md`; verify with `git diff --no-index CHANGELOG.md user_guide/changelog.md` returning empty.
+`CHANGELOG.md` gets all **seven** breaking changes: the default flip, the node-id shape change, previously-hidden failures surfacing, the `run()` API default, the exit code moving 2 to 1 for a broken page, stale `--lf` entries, and **autouse fixtures no longer reaching a block's top-level statements** (they still reach the tests inside a block). The seventh was found during Task 5's review and confirmed empirically: a conftest autouse fixture setting an environment variable, asserted at block top level, now fails, while the same assertion inside a `def test_*` in the same block passes. It is consistent with `.py` semantics, where module-level code never had autouse either, but it is user-visible. See the spec's breaking-changes section, item 7. Pre-commit syncs it to `user_guide/changelog.md`; verify with `git diff --no-index CHANGELOG.md user_guide/changelog.md` returning empty.
 
 - [ ] **Step 5: Full verification**
 
