@@ -185,11 +185,14 @@ pytest tests/
 rustest tests/
 ```
 
-Markdown is the one argument shape that differs: rustest collects code blocks from a `.md`
-file **named** as an argument, and a directory walk collects none.
+Markdown is the one argument shape that differs: rustest can collect code blocks from a
+`.md` file **named** as an argument, and a directory walk collects none either way. The tier
+itself is **off by default** -- `--codeblocks`, or `[tool.rustest] codeblocks = true`, has to
+turn it on, or naming a `.md` file is a usage error, matching `pytest`'s own answer for the
+same argument.
 
 ```bash
-rustest README.md user_guide/*.md
+rustest README.md user_guide/*.md --codeblocks
 ```
 
 #### Configuration

@@ -335,22 +335,31 @@ than walked:
 uv run python -m rustest README.md user_guide/*.md
 ```
 
-**Know what this gate does and does not catch.** Each `python` block runs as one test, and
-that test executes the block **at module level**. Imports run, class and function bodies
-are compiled, top-level statements execute. A `def test_*` inside the block is *defined and
-never called*, so nothing inside it is checked:
+**Know what this gate does and does not catch.** This tier is off by default (`--codeblocks`,
+or `[tool.rustest] codeblocks = true` -- this repository sets the latter, which is the only
+reason the command above works with no flag). Each `python` block executes **at module
+level, at collect time**, and is then handed to the same enumerator a `.py` file goes
+through: a `def test_*` inside the block is no longer defined-and-discarded, it collects and
+runs as its own node, with real fixture resolution, `@parametrize` and `Test*` classes if the
+block uses them. A wrong assertion inside one is caught exactly as it would be in a test
+file -- this used to be false, and it is why the gate previously reported 109 broken
+examples as green:
 
-<!--rustest.mark.skip-->
+````markdown
 ```python
-# This block PASSES. The body never runs.
-def test_never_runs():
-    assert False
+def test_actually_checked():
+    assert False   # fails the docs gate now; it did not, before this change
 ```
+````
 
-So the gate catches import errors, syntax errors, bad signatures and anything asserted at
-top level. It does not catch a wrong assertion inside a `def test_*`, which is where most
-examples put theirs. When an example's behaviour matters, verify it by copying the block
-into a real test file and running that file, rather than trusting a green docs run.
+So the gate catches nearly everything a `.py` file's gate would: import errors, syntax
+errors, bad signatures, and a wrong assertion whether it sits at a block's top level or
+inside a `def test_*`. Two differences remain, both by design: assertion rewriting does not
+apply to a block, so a failure is a bare `AssertionError` with no rewritten
+`assert 41 == 42`-style comparison; and an autouse fixture from a `conftest.py` reaches the
+tests inside a block but never the block's own top-level statements, because the body runs
+before any fixture closure exists. See [Markdown testing](markdown-testing.md) for the full
+mechanism.
 
 ### Rust Tests
 
