@@ -70,3 +70,45 @@ def test_block_segment_is_in_the_id_but_not_the_class_name(tmp_path: Path) -> No
     assert beta["class_name"] == "TestBox", (
         "a real class keeps its own name, with no block segment mixed in"
     )
+
+
+def test_unittest_case_in_a_block_carries_the_block_segment_too(tmp_path: Path) -> None:
+    """`_collect_unittest_class.record` builds its `CollectedTest`/`ExecutionPlan` directly,
+    never going through `_collect_function` -- so it needs `block_segment` threaded to it
+    explicitly. Without that, two blocks each defining an identically-named `TestCase`
+    subclass and method produce IDENTICAL wire ids, a genuine id collision.
+    """
+    from rustest._v2_worker import collect_module
+    import types
+
+    source = (
+        "import unittest\n\n"
+        "class Legacy(unittest.TestCase):\n"
+        "    def test_it(self):\n"
+        "        assert True\n"
+    )
+
+    def collect(block_segment: str) -> dict[str, dict[str, object]]:
+        module = types.ModuleType("block_probe_unittest")
+        module.__file__ = str(tmp_path / "page.md")
+        exec(source, module.__dict__)
+        entries, _plans = collect_module(
+            module,
+            tmp_path / "page.md",
+            tmp_path,
+            naming=_default_naming(),
+            block_segment=block_segment,
+        )
+        return {e["qualname"]: e for e in entries}
+
+    first = collect("codeblock_0_line_3")
+    second = collect("codeblock_1_line_10")
+
+    first_case = first["codeblock_0_line_3.Legacy.test_it"]
+    second_case = second["codeblock_1_line_10.Legacy.test_it"]
+
+    assert first_case["id"].endswith("page.md::codeblock_0_line_3::Legacy::test_it")
+    assert second_case["id"].endswith("page.md::codeblock_1_line_10::Legacy::test_it")
+    assert first_case["id"] != second_case["id"], (
+        "two blocks defining the same-named TestCase and method must not collide on the wire id"
+    )

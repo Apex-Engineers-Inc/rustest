@@ -4353,7 +4353,14 @@ def _collect_unittest_class(
     entries: list[CollectedTestDict] = []
 
     def record(method_name: str, marks: list[MarkSpec]) -> None:
-        entry = _build_entry(context.rel_path, (*child_parts, method_name), None, marks, [])
+        entry = _build_entry(
+            context.rel_path,
+            (*child_parts, method_name),
+            None,
+            marks,
+            [],
+            block_segment=context.block_segment,
+        )
         entries.append(entry)
         context.plans.append(
             ExecutionPlan(
@@ -4370,6 +4377,7 @@ def _collect_unittest_class(
                 marks=tuple(marks),
                 unittest_case=cls,
                 unittest_method=method_name,
+                block_segment=context.block_segment,
             )
         )
 
