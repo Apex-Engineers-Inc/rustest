@@ -387,6 +387,29 @@ Each of these needs a `CHANGELOG.md` entry.
    it is listed here rather than left for someone to discover. A doc example that depended
    on an autouse fixture at block top level must move that dependency into a test function.
 
+### Two requirements found by the first real gate run
+
+Both were missed at design time and surfaced only when the shipped collector ran against
+this repository's own documentation. Both are implementation requirements, not choices.
+
+**Indented fences must be dedented before compiling.** A fence nested inside a
+`=== "tab"` block or a `!!!` admonition is indented, and module-level `exec` of indented
+source raises `IndentationError: unexpected indent`. The old wrapper hid this by accident:
+it prefixed every line with four spaces to build the `def run_codeblock():` body, so an
+already-indented block became uniformly eight-indented and compiled fine. Removing the
+wrapper removes that accidental normalisation. Dedent by the fence's own indent before
+compiling. Measured cost of missing this: **8 of 10 failures** in the first gate run, all
+in `user_guide/pytest-plugins.md`, which uses tabbed fences heavily.
+
+**Block modules must be registered in `sys.modules`.** An earlier draft of this spec said
+to keep them unregistered "consistent with today", and named only pickling as the cost.
+The real blast radius is wider: `dataclasses._is_type` does
+`sys.modules.get(cls.__module__).__dict__`, so **any `@dataclass` defined in a
+documentation block** raises `AttributeError: 'NoneType' object has no attribute
+'__dict__'`. A dataclass in an example is ordinary; broken pickling is niche. Register the
+module under its generated name, and remove it after the file is collected so the entry
+does not leak across files.
+
 ### Mechanical notes for the implementation
 
 - **The CLI pair needs a tri-state default.** `enable_codeblocks` defaults to `True` at
