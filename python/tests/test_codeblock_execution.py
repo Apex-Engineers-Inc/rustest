@@ -528,3 +528,100 @@ def test_block_modules_do_not_leak_into_sys_modules_across_files(tmp_path: Path)
 
     leaked = after - before
     assert not leaked, f"block modules leaked into sys.modules after collection: {leaked}"
+
+
+def _outcome_sibling_page(tmp_path: Path, block_source: str) -> Path:
+    return _md(
+        tmp_path,
+        f"```python\n{block_source}\n```\n\n"
+        "```python\ndef test_sibling_survives():\n    assert True\n```\n",
+    )
+
+
+def test_pytest_skip_at_block_level_skips_only_that_block(tmp_path: Path) -> None:
+    """pytest's outcome signals (`Skipped`, `Failed`, `XFailed`) are `BaseException`
+    subclasses on purpose, not `Exception` -- so a test body's `except Exception:` cannot
+    swallow the runner's own control flow. A block-boundary catch narrowed to `Exception`
+    misses them entirely: a top-level `pytest.skip()` walks straight past the per-block
+    try/except into `collect_file`'s module-level arms, which -- for a *bare*
+    `pytest.skip()` with no `allow_module_level=True` -- file the **whole page** as a
+    collection error (pytest's "Using pytest.skip outside of a test will skip the entire
+    module" rule). Either way, `test_sibling_survives` is erased, which is exactly the
+    failure mode the per-block boundary exists to prevent.
+    """
+    page = _outcome_sibling_page(tmp_path, "import pytest\npytest.skip('nope')")
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "ERROR collecting" not in combined, combined
+    assert proc.returncode not in (2, 5), (
+        f"the page collapsed instead of isolating the block, exit {proc.returncode}\n" + combined
+    )
+    assert "test_sibling_survives" in combined and "1 passed" in combined, combined
+    assert "1 skipped" in combined, "the block itself should report skipped\n" + combined
+
+
+def test_pytest_skip_allow_module_level_at_block_level_skips_only_that_block(
+    tmp_path: Path,
+) -> None:
+    """The `allow_module_level=True` variant raises the identical `Skipped` type, so it hits
+    `collect_file`'s *other* module-level arm (the one that actually is a skip, not an
+    error) -- but that arm still skips the whole page, erasing the sibling just the same.
+    """
+    page = _outcome_sibling_page(
+        tmp_path, "import pytest\npytest.skip('nope', allow_module_level=True)"
+    )
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode not in (2, 5), (
+        f"the page collapsed instead of isolating the block, exit {proc.returncode}\n" + combined
+    )
+    assert "test_sibling_survives" in combined and "1 passed" in combined, combined
+    assert "1 skipped" in combined, "the block itself should report skipped\n" + combined
+
+
+def test_pytest_importorskip_at_block_level_skips_only_that_block(tmp_path: Path) -> None:
+    """`pytest.importorskip` is *the* standard idiom for an optional dependency at module
+    top level -- `comparison.md:52` advertises it as supported -- so this is not exotic.
+    """
+    page = _outcome_sibling_page(
+        tmp_path, "import pytest\npytest.importorskip('no_such_pkg_at_all')"
+    )
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode not in (2, 5), (
+        f"the page collapsed instead of isolating the block, exit {proc.returncode}\n" + combined
+    )
+    assert "test_sibling_survives" in combined and "1 passed" in combined, combined
+    assert "1 skipped" in combined, "the block itself should report skipped\n" + combined
+
+
+def test_pytest_fail_at_block_level_fails_only_that_block(tmp_path: Path) -> None:
+    """`Failed` (and `XFailed`, which subclasses it) hit `collect_file`'s
+    `MODULE_ERROR_EXCEPTIONS` arm, which files the whole page as a collection ERROR at exit
+    2 -- reintroducing the exact behaviour `CHANGELOG.md` breaking change #5 announced as
+    gone.
+    """
+    page = _outcome_sibling_page(tmp_path, "import pytest\npytest.fail('boom')")
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "ERROR collecting" not in combined, combined
+    assert proc.returncode == 1, (
+        f"expected 1 (a failing block, not a collection error), got {proc.returncode}\n" + combined
+    )
+    assert "test_sibling_survives" in combined and "1 passed" in combined, combined
+    assert "1 failed" in combined, "the block itself should report failed\n" + combined
+
+
+def test_pytest_xfail_at_block_level_xfails_only_that_block(tmp_path: Path) -> None:
+    """`XFailed` is a `Failed` subclass, so it takes the same `collect_file` arm as
+    `pytest.fail()` unless the block boundary catches it first.
+    """
+    page = _outcome_sibling_page(tmp_path, "import pytest\npytest.xfail('nope')")
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "ERROR collecting" not in combined, combined
+    assert proc.returncode == 0, (
+        f"a non-strict xfail must not fail the run, got {proc.returncode}\n" + combined
+    )
+    assert "test_sibling_survives" in combined and "1 passed" in combined, combined
+    assert "1 xfailed" in combined, "the block itself should report xfailed\n" + combined

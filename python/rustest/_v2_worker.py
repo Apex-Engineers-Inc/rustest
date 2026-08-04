@@ -4676,7 +4676,7 @@ def extract_python_code_blocks(content: str) -> list[tuple[str, int, bool]]:
     return blocks
 
 
-def _replay(exc: Exception) -> Callable[[], None]:
+def _replay(exc: BaseException) -> Callable[[], None]:
     """A failed doc block's ``ExecutionPlan.func``: raise the exception already caught at
     collection, rather than re-running the block's body.
 
@@ -4777,7 +4777,7 @@ def collect_markdown(
 
             block_entries: list[CollectedTestDict] = []
             block_plans: list[ExecutionPlan] = []
-            block_error: Exception | None = None
+            block_error: BaseException | None = None
             if not skipped:
                 # A skipped block is **not compiled**.  v1 compiled every block up front, so a
                 # `<!--rustest.mark.skip-->` fence containing pseudo-code turned the whole file
@@ -4799,15 +4799,38 @@ def collect_markdown(
                 # whatever it defined *before* the raise bound in `module.__dict__` (`exec`
                 # does not roll a partial run back), and the registration/`collect_module` step
                 # below must still see those -- that is how `test_reached` survives a sibling
-                # `raise` in the same block. `SystemExit` / `KeyboardInterrupt` are not
-                # `Exception` subclasses, so they pass straight through uncaught, ending the
-                # worker exactly as a `.py` module's module-level `sys.exit()` would.
+                # `raise` in the same block.
+                #
+                # The catch is `Exception` widened by `MODULE_SKIP_EXCEPTIONS` and
+                # `MODULE_ERROR_EXCEPTIONS`, not `Exception` alone: pytest's outcome signals
+                # (`Skipped`, `Failed`, `XFailed`) are `BaseException` subclasses on purpose,
+                # precisely so a test body's own `except Exception:` cannot swallow the
+                # runner's control flow -- which means a bare `except Exception` here does
+                # not catch them either. A top-level `pytest.skip()` / `pytest.fail()` /
+                # `pytest.xfail()` (or `pytest.importorskip()`, which raises `Skipped`
+                # underneath) would otherwise walk straight past this boundary into
+                # `collect_file`'s module-level arms, which file the **whole page** as
+                # skipped or as a collection error -- erasing every sibling block's tests,
+                # the exact failure mode this per-block boundary exists to prevent.
+                # `pytest.importorskip` at module scope is not a rare shape either; it is
+                # the standard idiom for an optional dependency. `_replay` re-raises the
+                # stored exception with its traceback intact, and the execute path already
+                # classifies these three by type (`report_for_phase`), so the block's own
+                # node comes out skipped / failed / xfailed with no new machinery here.
+                #
+                # `SystemExit` / `KeyboardInterrupt` (and `pytest.exit()`'s `Exit`) are
+                # deliberately still absent, so they pass straight through uncaught, ending
+                # the worker exactly as a `.py` module's module-level `sys.exit()` would.
                 try:
                     exec(  # noqa: S102
                         compile(textwrap.dedent(code), f"{path}:L{line_number}", "exec"),
                         module.__dict__,
                     )
-                except Exception as exc:  # noqa: BLE001 - replayed as a failing test below
+                except (
+                    Exception,  # noqa: BLE001 - replayed as a failing test below
+                    *MODULE_SKIP_EXCEPTIONS,
+                    *MODULE_ERROR_EXCEPTIONS,
+                ) as exc:
                     block_error = exc
 
                 # `build_registry` minus the import, in its order. The xunit hooks must be
@@ -4820,7 +4843,10 @@ def collect_markdown(
                 # still collected. It can also fail on its own (a bad decorator surfacing at
                 # collection rather than exec time); if the exec already failed, that
                 # earlier exception is the one kept -- it is the one a reader would call
-                # "the" failure.
+                # "the" failure. Widened the same way as the exec's own catch above, and for
+                # the same reason: `_register_declared_plugins` can raise a module-level
+                # `pytest.skip()`/`Failed`/`XFailed` just as easily as the block's own top
+                # level can.
                 try:
                     for kind in ("module", "function"):
                         for fixturedef in _xunit_fixturedefs(module, rel_path, kind=kind):
@@ -4837,7 +4863,11 @@ def collect_markdown(
                         asyncio_config=asyncio_config,
                         block_segment=segment,
                     )
-                except Exception as exc:  # noqa: BLE001 - replayed as a failing test below
+                except (
+                    Exception,  # noqa: BLE001 - replayed as a failing test below
+                    *MODULE_SKIP_EXCEPTIONS,
+                    *MODULE_ERROR_EXCEPTIONS,
+                ) as exc:
                     if block_error is None:
                         block_error = exc
 
