@@ -263,7 +263,11 @@ pub fn v2_collect(
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let options = CollectOptions {
-        codeblocks,
+        // This boundary's `codeblocks` is already a resolved bool — the pyo3 signature
+        // defaults it to `true` — so it always overrides config here. Letting the CLI omit
+        // it (`None`, so `[tool.rustest] codeblocks` decides) is a Python-layer change, not
+        // this one.
+        codeblocks: Some(codeblocks),
         tier: TierMode::from_wire(collect_tier),
         cache: CacheMode::from_wire(cache_mode),
         keyword,

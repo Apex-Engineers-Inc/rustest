@@ -98,6 +98,12 @@ Homepage = "https://github.com/Apex-Engineers-Inc/rustest"
 Repository = "https://github.com/Apex-Engineers-Inc/rustest"
 Documentation = "https://apex-engineers-inc.github.io/rustest"
 
+# rustest's own settings.  `codeblocks` is off by default; this repository's CI gate is
+# `rustest README.md user_guide/*.md`, so it must ask for the feature explicitly or the
+# gate passes vacuously.
+[tool.rustest]
+codeblocks = true
+
 [tool.maturin]
 module-name = "rustest.rust"
 python-source = "python"

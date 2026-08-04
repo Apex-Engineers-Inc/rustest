@@ -372,13 +372,16 @@ impl WorkerLauncher {
 /// is which.
 #[derive(Debug, Clone, Default)]
 pub struct CollectOptions {
-    /// Collect python fences out of a `.md` file **named as an argument** —
-    /// `--no-codeblocks` turns even that off.
+    /// Collect python fences out of a `.md` file **named as an argument**.
     ///
-    /// It has never applied to a *directory walk* since Phase 4 Task 1's review: pytest
-    /// collects no markdown at all, so walking one in meant `rustest tests/` found tests
-    /// `pytest tests/` never sees, in any repo with python in its docs.
-    pub codeblocks: bool,
+    /// `None` means the CLI said nothing, so `[tool.rustest] codeblocks` or the pytest
+    /// ini spelling decides, and the built-in default is **off**.  Off is pytest's
+    /// answer: pytest collects no markdown at all, so a project that has not asked for
+    /// this feature sees pytest's collection exactly.
+    ///
+    /// It has never applied to a *directory walk*: pytest collects no markdown, so
+    /// walking one in meant `rustest tests/` found tests `pytest tests/` never sees.
+    pub codeblocks: Option<bool>,
     pub tier: TierMode,
     pub cache: CacheMode,
     /// The raw `-k` expression.
@@ -408,10 +411,11 @@ pub struct CollectOptions {
 }
 
 impl CollectOptions {
-    /// The production default: codeblocks on, both tiers, cache on, no selection.
+    /// The production default: codeblocks **off** unless config or the CLI asks, both
+    /// tiers, cache on, no selection.
     pub fn new() -> Self {
         Self {
-            codeblocks: true,
+            codeblocks: None,
             ..Self::default()
         }
     }
@@ -485,6 +489,7 @@ pub(crate) struct FileOutcome {
 /// free to drift, and the one property that must not drift is the file→worker mapping:
 /// execution dispatches each test to the worker that collected its file, which is only
 /// sound while both halves compute it identically.
+#[derive(Debug)]
 pub(crate) struct Dispatch {
     pub(crate) rootdir: String,
     /// Per target, in walk order: `Some(tests)` when Tier S answered, `None` when the file is
@@ -548,7 +553,10 @@ pub(crate) fn plan(
         args,
         workers,
         &CollectOptions {
-            codeblocks,
+            // The run path's `codeblocks` is already a resolved bool by the time it
+            // reaches here (`RunOptions::defaults`); config's tri-state fallback in
+            // `plan_with_options` is for the `--v2-collect-only` / doc-gate surface.
+            codeblocks: Some(codeblocks),
             coverage,
             tier: TierMode::DynamicOnly,
             // Belt and braces: `TierMode::DynamicOnly` never reaches the static pass, so the
@@ -573,7 +581,16 @@ pub(crate) fn plan_with_options(
     workers: usize,
     options: &CollectOptions,
 ) -> Result<Dispatch, CollectError> {
-    let (config, targets) = discover(invocation_dir, args, options.codeblocks)?;
+    // `os.getcwd()` — what pytest's `invocation_params.dir` always is — is absolute and
+    // free of `.`/`..`; normalising here gives everything below the same guarantee.
+    let invocation_dir = normpath(invocation_dir);
+    let config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
+    // `options.codeblocks` is the CLI's opinion, if it has one; `config.codeblocks` is
+    // `[tool.rustest] codeblocks` or the pytest ini spelling; `false` is the built-in
+    // default, pytest's own answer.  Resolved here — after the one config resolution this
+    // function does, before the walk decides what a markdown argument means.
+    let codeblocks = options.codeblocks.or(config.codeblocks).unwrap_or(false);
+    let targets = discover_targets(&config, &invocation_dir, args, codeblocks)?;
     let rootdir = to_posix(&config.rootdir);
 
     // The Tier S pass, before a single process is spawned.  It is pure computation over files
@@ -642,10 +659,10 @@ pub(crate) fn plan_with_options(
     let init = WorkerRequest::Init {
         protocol_version: PROTOCOL_VERSION,
         rootdir: rootdir.clone(),
-        // Normalised for the same reason `discover` normalises it before resolving config:
-        // a `.`/`..` segment would otherwise reach the worker verbatim, and an
-        // invocation-relative path would resolve differently there than here.
-        invocation_dir: to_posix(&normpath(invocation_dir)),
+        // Already normalised above, before config was resolved: a `.`/`..` segment would
+        // otherwise reach the worker verbatim, and an invocation-relative path would
+        // resolve differently there than here.
+        invocation_dir: to_posix(&invocation_dir),
         python_files: config.python_files.clone(),
         python_classes: config.python_classes.clone(),
         python_functions: config.python_functions.clone(),
@@ -902,6 +919,12 @@ fn collect_with_launcher(
 // ---------------------------------------------------------------------------
 
 /// Resolve config and produce the files to collect, in walk order.
+///
+/// Test-only.  Production ([`plan_with_options`]) resolves config and calls
+/// [`discover_targets`] itself, with the tri-state `codeblocks` decision made in between —
+/// see that function for why the two steps are split.  This composes the same two steps
+/// for tests that only care about an already-decided `codeblocks: bool`.
+#[cfg(test)]
 fn discover(
     invocation_dir: &Path,
     args: &[PathBuf],
@@ -911,18 +934,35 @@ fn discover(
     // free of `.`/`..`; normalising here gives callers the same guarantee for free.
     let invocation_dir = normpath(invocation_dir);
     let config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
-    let roots = initial_paths(&invocation_dir, args, &config)?;
+    let targets = discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    Ok((config, targets))
+}
+
+/// The target half of [`discover`]: walk (or accept) the roots against an already-resolved
+/// config.
+///
+/// Split out from `discover` so [`plan_with_options`] can resolve config exactly once,
+/// decide the tri-state `codeblocks` value from CLI-or-config, and only then walk — a
+/// second config resolution here would risk drifting from the one that decision was made
+/// against.
+fn discover_targets(
+    config: &ResolvedConfig,
+    invocation_dir: &Path,
+    args: &[PathBuf],
+    codeblocks: bool,
+) -> Result<Vec<PathBuf>, CollectError> {
+    let roots = initial_paths(invocation_dir, args, config)?;
 
     let mut targets = Vec::new();
     let mut seen = Seen::default();
     for root in &roots {
         if root.is_dir() {
-            walk(root, &config, &mut targets, &mut seen);
+            walk(root, config, &mut targets, &mut seen);
         } else if initial_file_target(root, codeblocks)? {
             seen.push_file_arg(root, &mut targets);
         }
     }
-    Ok((config, targets))
+    Ok(targets)
 }
 
 /// What to do with an initial path that is a **file**, and the one place pytest's exit-4
@@ -2275,7 +2315,7 @@ mod tests {
             launcher,
             workers,
             &CollectOptions {
-                codeblocks: true,
+                codeblocks: Some(true),
                 tier: TierMode::DynamicOnly,
                 cache: CacheMode::Off,
                 ..CollectOptions::default()
@@ -2767,6 +2807,79 @@ mod tests {
         assert_eq!(targets, vec![tmp.path().join("guide.md")]);
     }
 
+    /// The default inverts: a markdown argument is a usage error unless codeblocks are
+    /// explicitly enabled.  This is pytest's answer, which is why it is now the default.
+    #[test]
+    fn a_markdown_argument_is_a_usage_error_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let md = tmp.path().join("notes.md");
+        std::fs::write(&md, "```python\nassert True\n```\n").unwrap();
+        let options = CollectOptions::new();
+        let err = plan_with_options(tmp.path(), &[md], 1, &options).unwrap_err();
+        // `CollectError` only derives `Debug` -- the message lives in `Display`, same as
+        // the neighbouring `found no collectors for` assertion below uses.
+        assert!(
+            err.to_string().contains("found no collectors"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `[tool.rustest] codeblocks = true` enables it with no CLI flag.
+    #[test]
+    fn config_alone_enables_codeblocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("pyproject.toml"),
+            "[tool.rustest]\ncodeblocks = true\n",
+        )
+        .unwrap();
+        let md = tmp.path().join("notes.md");
+        std::fs::write(&md, "```python\nassert True\n```\n").unwrap();
+        let options = CollectOptions::new(); // codeblocks: None
+        let dispatch = plan_with_options(tmp.path(), &[md], 1, &options).unwrap();
+        assert!(
+            !dispatch.targets.is_empty(),
+            "config should have enabled markdown"
+        );
+    }
+
+    /// `--no-codeblocks` beats a config that turns them on.  This is the override the flag
+    /// exists for now that the default is off.
+    #[test]
+    fn cli_off_beats_config_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("pyproject.toml"),
+            "[tool.rustest]\ncodeblocks = true\n",
+        )
+        .unwrap();
+        let md = tmp.path().join("notes.md");
+        std::fs::write(&md, "```python\nassert True\n```\n").unwrap();
+        let options = CollectOptions {
+            codeblocks: Some(false),
+            ..CollectOptions::new()
+        };
+        let err = plan_with_options(tmp.path(), &[md], 1, &options).unwrap_err();
+        assert!(err.to_string().contains("found no collectors"));
+    }
+
+    /// A directory walk still finds no markdown, whatever the setting says.  Unchanged
+    /// behaviour, pinned so the flip does not accidentally widen the walk.
+    #[test]
+    fn a_directory_walk_finds_no_markdown_even_when_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("pyproject.toml"),
+            "[tool.rustest]\ncodeblocks = true\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("notes.md"), "```python\nassert True\n```\n").unwrap();
+        let options = CollectOptions::new();
+        let dispatch = plan_with_options(tmp.path(), &[tmp.path().to_path_buf()], 1, &options);
+        // No `.py` and no walked `.md` means nothing to collect.
+        assert!(dispatch.is_err() || dispatch.unwrap().targets.is_empty());
+    }
+
     /// ...and with `--no-codeblocks` the pytest answer is restored exactly, which is what
     /// makes the extension opt-out rather than unavoidable.
     #[test]
@@ -2904,7 +3017,7 @@ assert True
             &[],
             workers,
             &CollectOptions {
-                codeblocks: true,
+                codeblocks: Some(true),
                 tier: TierMode::DynamicOnly,
                 cache: CacheMode::Off,
                 ..CollectOptions::default()
@@ -3116,7 +3229,7 @@ assert True
             &init_recording_worker(&measured),
             1,
             &CollectOptions {
-                codeblocks: true,
+                codeblocks: Some(true),
                 tier: TierMode::DynamicOnly,
                 cache: CacheMode::Off,
                 coverage: Some(wire.clone()),
