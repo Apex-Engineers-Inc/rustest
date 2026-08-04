@@ -151,7 +151,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
 import contextlib
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import fnmatch
 import functools
 import hashlib
@@ -4716,10 +4716,11 @@ def collect_markdown(
       ``skip_reason``, so it travels on the wire and is evaluated by the same
       :func:`evaluate_skip_marks` every other skip goes through.
 
-    A single-node block (skipped, or one with no test functions) carries the ``codeblock``
-    mark v1 attaches, so ``-m codeblock`` and ``-m "not codeblock"`` still select it; a test
-    found *inside* a block is an ordinary collected test and carries only the marks its own
-    decorators and its block's fixtures give it, same as a ``.py`` test would.
+    The ``codeblock`` mark v1 attaches follows every node down to inner-test granularity —
+    a test found *inside* a block carries it too, appended after its own marks (the same
+    "own marks, then outer" order :func:`_collect_function` gives a module's ``pytestmark``)
+    — so ``-m codeblock`` and ``-m "not codeblock"`` keep meaning "the documentation
+    examples" no matter how many real tests one block turns out to define.
 
     *registry* seeds the fallback single-node closure and defaults to builtins only; the
     conftest chain is loaded for it in :func:`collect_file`.  Each block gets its own,
@@ -4781,6 +4782,17 @@ def collect_markdown(
             )
 
         if block_entries:
+            # The `codeblock` mark follows tests down to inner-test granularity: it is
+            # additive to whatever marks `collect_module` already gave each entry (its own
+            # decorators, any module-level `pytestmark` inside the block), appended last so
+            # it reads as the outermost mark, same as `_collect_function`'s
+            # `_mark_specs(func) + outer_marks` ordering treats a module's `pytestmark`.
+            # Without this, `-m codeblock` / `-m "not codeblock"` silently invert for any
+            # block that defines tests -- `-m "not codeblock"` would run them and `-m
+            # codeblock` would select nothing.
+            for block_entry in block_entries:
+                block_entry.setdefault("marks", []).append(marks[0].to_wire())
+            block_plans = [replace(plan, marks=(*plan.marks, marks[0])) for plan in block_plans]
             entries.extend(block_entries)
             plans.extend(block_plans)
         else:

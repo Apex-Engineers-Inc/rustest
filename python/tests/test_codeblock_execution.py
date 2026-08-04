@@ -237,3 +237,64 @@ def test_skip_marked_blocks_are_not_executed(tmp_path: Path) -> None:
     proc = _run(str(page), "-q", cwd=tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "1 skipped" in proc.stdout + proc.stderr
+
+
+def test_codeblock_mark_reaches_an_inner_test(tmp_path: Path) -> None:
+    """The `codeblock` mark must follow tests down to inner-test granularity.
+
+    Design doc `2026-08-04-doc-block-execution-design.md:345`: "The codeblock mark
+    continues to be attached to every collected node ... now at inner-test granularity."
+    Checked in both directions, since a one-directional test would miss half of a mark
+    that is simply absent: `-m codeblock` selecting nothing looks identical to `-m
+    codeblock` never having been wired up, and `-m "not codeblock"` deselecting nothing
+    looks identical to the same gap from the other side.
+    """
+    page = _md(
+        tmp_path,
+        "```python\ndef test_inner():\n    assert True\n```\n",
+    )
+
+    excluded = _run(str(page), "-m", "not codeblock", "-q", cwd=tmp_path)
+    combined = excluded.stdout + excluded.stderr
+    assert "1 deselected" in combined and "1 passed" not in combined, combined
+
+    included = _run(str(page), "-m", "codeblock", "-q", cwd=tmp_path)
+    combined = included.stdout + included.stderr
+    assert "1 passed" in combined and "deselected" not in combined, combined
+
+
+def test_codeblock_mark_reaches_the_execution_plan_too(tmp_path: Path) -> None:
+    """The runtime half of the previous test, pinned separately.
+
+    `-m` selection reads only the wire manifest, so a test that only runs the CLI and
+    checks `-m codeblock` output cannot see whether `ExecutionPlan.marks` -- the copy the
+    *execute* half reads, e.g. for `request.node.get_closest_marker` -- was also given the
+    mark. A dropped `marks=(*plan.marks, marks[0])` there is invisible to the wire-only
+    test above, the same class of gap the plan-half of `block_segment` had.
+    """
+    from rustest._v2_worker import collect_markdown
+
+    page = tmp_path / "page.md"
+    page.write_text("```python\ndef test_inner():\n    assert True\n```\n", encoding="utf-8")
+
+    _entries, plans = collect_markdown(page, tmp_path, _default_naming())
+
+    assert len(plans) == 1
+    assert any(mark.name == "codeblock" for mark in plans[0].marks), (
+        "the inner test's ExecutionPlan must carry the codeblock mark, not just its wire entry"
+    )
+
+
+def test_codeblock_mark_on_the_fallback_shape_still_works(tmp_path: Path) -> None:
+    """The no-test-functions shape must keep the mark too, so the two shapes cannot drift
+    apart from each other now that inner tests carry it as well.
+    """
+    page = _md(tmp_path, "```python\nx = 1\nassert x == 1\n```\n")
+
+    excluded = _run(str(page), "-m", "not codeblock", "-q", cwd=tmp_path)
+    combined = excluded.stdout + excluded.stderr
+    assert "1 deselected" in combined and "1 passed" not in combined, combined
+
+    included = _run(str(page), "-m", "codeblock", "-q", cwd=tmp_path)
+    combined = included.stdout + included.stderr
+    assert "1 passed" in combined and "deselected" not in combined, combined
