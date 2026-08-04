@@ -2329,6 +2329,11 @@ class ExecutionPlan:
     marks: tuple[MarkSpec, ...]
     unittest_case: type | None = None
     unittest_method: str | None = None
+    #: The enclosing documentation code block's segment, or ``None`` for an ordinary
+    #: `.py` test. Carried for parity with the wire entry's id/qualname; deliberately
+    #: excluded from :attr:`class_name` below, for the same reason `_build_entry` excludes
+    #: it from the wire ``class_name``.
+    block_segment: str | None = None
 
     @property
     def class_name(self) -> str | None:
@@ -3972,6 +3977,7 @@ def _build_entry(
     param_id: str | None,
     marks: list[MarkSpec],
     fixtures: list[str],
+    block_segment: str | None = None,
 ) -> CollectedTestDict:
     """Assemble one ``CollectedTest``, omitting every empty optional field.
 
@@ -3979,14 +3985,23 @@ def _build_entry(
     identical to the innermost class name for every non-nested case; ``qualname``
     already carries the same chain plus the function name.
 
+    For a documentation code block the qualname carries a leading block segment that
+    `class_name` deliberately does not, so the two are not derivable from each other.
+
     This is the **only** place a :class:`MarkSpec` is projected onto the wire, so the
     lossy ``_json_safe`` step cannot leak into the copy the execute half evaluates.
     """
+    id_parts = (block_segment, *parts) if block_segment else parts
     entry: CollectedTestDict = {
-        "id": build_nodeid(rel_path, parts, param_id),
+        "id": build_nodeid(rel_path, id_parts, param_id),
         "path": rel_path,
-        "qualname": ".".join(parts),
+        "qualname": ".".join(id_parts),
     }
+    # `class_name` is derived from `parts` ALONE, never from `id_parts`. A block segment
+    # here would give every module-level test in a block a phantom class, and
+    # `FixtureRunner.note_test_boundary` uses `class_name` as the class-scope teardown
+    # boundary -- so a class-scoped fixture would be reused across tests that must each
+    # get their own. This asymmetry is deliberate; see the doc-block execution spec.
     if len(parts) > 1:
         entry["class_name"] = ".".join(parts[:-1])
     if param_id is not None:
@@ -4012,6 +4027,10 @@ class _CollectContext:
     #: Carried on the context rather than passed down the four call levels that separate
     #: :func:`collect_module` from :func:`_collect_function`.
     asyncio: AsyncioConfig = _DEFAULT_ASYNCIO
+    #: Set only when the module under collection is a documentation code block. Reaches
+    #: `_build_entry`'s id/qualname and `ExecutionPlan.block_segment`, and deliberately
+    #: never `class_name` -- see `_build_entry`'s docstring.
+    block_segment: str | None = None
 
 
 def _collect_function(
@@ -4135,6 +4154,7 @@ def _collect_function(
                 param_id,
                 case_all_marks,
                 _fixture_names(func, name, owner, frozenset(case_values) - indirect),
+                block_segment=context.block_segment,
             )
             entries.append(entry)
             context.plans.append(
@@ -4146,6 +4166,7 @@ def _collect_function(
                     func=cast(Callable[..., object], func),
                     owner=owner,
                     closure=closure,
+                    block_segment=context.block_segment,
                     # An indirect name's value rides here, keyed by the fixture it is routed
                     # to, which is exactly where `SubRequest.__init__` looks for
                     # `request.param` and where `_resolve_active` reads its per-parameter
@@ -4486,6 +4507,7 @@ def collect_module(
     naming: Naming,
     registry: FixtureRegistry | None = None,
     asyncio_config: AsyncioConfig = _DEFAULT_ASYNCIO,
+    block_segment: str | None = None,
 ) -> tuple[list[CollectedTestDict], list[ExecutionPlan]]:
     """Enumerate *module* into ``CollectedTest`` dicts **and** their execution plans.
 
@@ -4556,6 +4578,7 @@ def collect_module(
         naming=naming,
         plans=[],
         asyncio=asyncio_config,
+        block_segment=block_segment,
     )
     module_marks = _mark_specs(module)
     entries: list[CollectedTestDict] = []
