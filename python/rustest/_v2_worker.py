@@ -4680,34 +4680,32 @@ def extract_python_code_blocks(content: str) -> list[tuple[str, int, bool]]:
     return blocks
 
 
-def _codeblock_callable(code: str, path: Path, line_number: int) -> Callable[[], object]:
-    """Compile one block into a zero-argument callable, as v1 does.
-
-    Port of `src/discovery.rs::create_codeblock_callable`: the block is indented into a
-    ``def`` and compiled with the filename ``<file>:L<line>``, so a traceback points at the
-    markdown source rather than at a nameless ``<string>``.  Each block gets its **own**
-    namespace — v1 execs into a fresh dict per block — so one block cannot see another's
-    names, and a doc example is therefore forced to be self-contained exactly as the
-    documentation guidelines say it must be.
-    """
-    body = "\n".join(f"    {line}" for line in code.splitlines()) or "    pass"
-    source = f"# Code block from {path} (line {line_number})\ndef run_codeblock():\n{body}\n"
-    namespace: dict[str, object] = {}
-    exec(compile(source, f"{path}:L{line_number}", "exec"), namespace)  # noqa: S102
-    return cast(Callable[[], object], namespace["run_codeblock"])
-
-
 def collect_markdown(
     path: Path,
     rootdir: Path,
+    naming: Naming,
+    asyncio_config: AsyncioConfig = _DEFAULT_ASYNCIO,
     registry: FixtureRegistry | None = None,
 ) -> tuple[list[CollectedTestDict], list[ExecutionPlan]]:
-    """Enumerate a ``.md`` file's python fences as tests.
+    """Enumerate a ``.md`` file's python fences, executing each at module level.
 
     **This tier has no pytest counterpart** — it is rustest's, shipped since v1
     (`src/discovery.rs::collect_from_markdown`) and switched off by ``--no-codeblocks``.  It
     is here rather than left behind at the flip because rustest's own README and guide are
     tested this way, and so are its users'.
+
+    **A block is executed, not wrapped.**  v1 (and v2 before this) compiled a block into
+    ``def run_codeblock(): <indented body>`` and called that.  A ``def test_*`` written
+    inside a block was therefore a function nested inside that wrapper — defined when the
+    wrapper ran, then discarded, never called, its assertions never executing.  This runs
+    the block's source directly in a fresh module namespace and then feeds that module
+    through :func:`collect_module`, exactly as an ordinary ``.py`` file is, so a ``def
+    test_*`` in a block is found and run the same way one at the top of a file is.
+
+    A block that defines no tests keeps the old single-node shape — one entry named for the
+    block itself, whose "execution" is a no-op replay, because the block already ran (and
+    its own bare ``assert`` statements, if any, already raised or didn't) during the
+    ``exec`` above.
 
     Two shapes differ from v1 and both are cosmetic, recorded rather than discovered later:
 
@@ -4718,56 +4716,94 @@ def collect_markdown(
       ``skip_reason``, so it travels on the wire and is evaluated by the same
       :func:`evaluate_skip_marks` every other skip goes through.
 
-    Every block also carries the ``codeblock`` mark v1 attaches, so ``-m codeblock`` and
-    ``-m "not codeblock"`` keep working.
+    A single-node block (skipped, or one with no test functions) carries the ``codeblock``
+    mark v1 attaches, so ``-m codeblock`` and ``-m "not codeblock"`` still select it; a test
+    found *inside* a block is an ordinary collected test and carries only the marks its own
+    decorators and its block's fixtures give it, same as a ``.py`` test would.
 
-    A code block requests no fixtures, so the closure is the registry's autouse set and
-    nothing else; *registry* is accepted (and the conftest chain is loaded for it in
-    :func:`collect_file`) so an autouse conftest fixture still applies to a doc example,
-    which is what v1's ``merge_conftest_fixtures`` did for markdown too.
+    *registry* seeds the fallback single-node closure and defaults to builtins only; the
+    conftest chain is loaded for it in :func:`collect_file`.  Each block gets its own,
+    separate registry built fresh in the loop below — conftests plus that block's own xunit
+    hooks and fixtures — so one block's fixtures cannot leak into a sibling block.
     """
     if registry is None:
         registry = FixtureRegistry()
         _register_builtin_fixtures(registry)
 
     rel_path = _relative_posix(path, rootdir)
-    # A synthetic module, never imported and never in `sys.modules`: `ExecutionPlan` needs a
-    # module object for the string-condition namespace, and a markdown file has none.
-    module = types.ModuleType(f"rustest_codeblocks_{abs(hash(rel_path))}")
-    module.__file__ = str(path)
-
     content = path.read_text(encoding="utf-8")
-    closure = build_closure(registry, ())
     entries: list[CollectedTestDict] = []
     plans: list[ExecutionPlan] = []
     for index, (code, line_number, skipped) in enumerate(extract_python_code_blocks(content)):
         marks = [MarkSpec(name="codeblock")]
         if skipped:
             marks.append(MarkSpec(name="skip", kwargs={"reason": MARKDOWN_SKIP_REASON}))
-        parts = (f"codeblock_{index}_line_{line_number}",)
-        entry = _build_entry(rel_path, parts, None, marks, [])
-        entries.append(entry)
-        plans.append(
-            ExecutionPlan(
-                id=entry["id"],
-                path=path,
-                module=module,
-                parts=parts,
-                # A skipped block is **not compiled**.  v1 compiled every block up front, so
-                # a `<!--rustest.mark.skip-->` fence containing pseudo-code turned the whole
-                # file into a collection error — which defeats the purpose of the marker, and
-                # the project's own documentation guidelines tell authors to use it for
-                # "pseudo-code or incomplete snippets".  A skip mark short-circuits before
-                # the body under any engine, so there is nothing to compile it *for*.
-                func=(lambda: None) if skipped else _codeblock_callable(code, path, line_number),
-                owner=None,
-                closure=closure,
-                fixture_params={},
-                direct_params={},
-                argnames=(),
-                marks=tuple(marks),
+
+        segment = f"codeblock_{index}_line_{line_number}"
+        module = types.ModuleType(f"rustest_codeblock_{index}_{abs(hash(rel_path))}")
+        # Not registered in `sys.modules`, matching the previous synthetic module. A class
+        # defined inside a block therefore will not pickle; a doc example needing that is
+        # out of scope.
+        module.__file__ = str(path)
+        block_registry = conftest_registry(path, rootdir)
+
+        block_entries: list[CollectedTestDict] = []
+        block_plans: list[ExecutionPlan] = []
+        if not skipped:
+            # A skipped block is **not compiled**.  v1 compiled every block up front, so a
+            # `<!--rustest.mark.skip-->` fence containing pseudo-code turned the whole file
+            # into a collection error — which defeats the purpose of the marker, and the
+            # project's own documentation guidelines tell authors to use it for
+            # "pseudo-code or incomplete snippets".  A skip mark short-circuits before the
+            # body under any engine, so there is nothing to compile it *for*.
+            exec(  # noqa: S102
+                compile(code, f"{path}:L{line_number}", "exec"),
+                module.__dict__,
             )
-        )
+            # `build_registry` minus the import, in its order. The xunit hooks must be
+            # registered BEFORE the block's own fixtures: autouse order is registration
+            # order, so the reverse makes `setup_function` run after a user's autouse
+            # fixture.
+            for kind in ("module", "function"):
+                for fixturedef in _xunit_fixturedefs(module, rel_path, kind=kind):
+                    block_registry.register(fixturedef)
+            block_registry.parse_factories(module, rel_path)
+            _register_declared_plugins(module, block_registry)
+
+            block_entries, block_plans = collect_module(
+                module,
+                path,
+                rootdir,
+                naming=naming,
+                registry=block_registry,
+                asyncio_config=asyncio_config,
+                block_segment=segment,
+            )
+
+        if block_entries:
+            entries.extend(block_entries)
+            plans.extend(block_plans)
+        else:
+            parts = (segment,)
+            entry = _build_entry(rel_path, parts, None, marks, [])
+            entries.append(entry)
+            plans.append(
+                ExecutionPlan(
+                    id=entry["id"],
+                    path=path,
+                    module=module,
+                    parts=parts,
+                    # Skipped: never ran. Non-skipped-but-empty: already ran, above, as part
+                    # of collection -- there is nothing left for execution to do.
+                    func=lambda: None,
+                    owner=None,
+                    closure=build_closure(block_registry, ()),
+                    fixture_params={},
+                    direct_params={},
+                    argnames=(),
+                    marks=tuple(marks),
+                )
+            )
     return entries, plans
 
 
@@ -6411,7 +6447,11 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
             # `merge_conftest_fixtures` made it.  The orchestrator only ever sends a `.md`
             # path when code blocks are enabled (`src/v2/collect.rs::is_markdown`).
             tests, plans = collect_markdown(
-                file_path, state.rootdir, _markdown_registry(file_path, state.rootdir)
+                file_path,
+                state.rootdir,
+                state.naming,
+                state.asyncio,
+                _markdown_registry(file_path, state.rootdir),
             )
         else:
             module, registry = build_registry(file_path, state.rootdir)

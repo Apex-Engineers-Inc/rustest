@@ -137,3 +137,103 @@ def test_unittest_case_in_a_block_carries_the_block_segment_too(tmp_path: Path) 
     assert first_plan.block_segment != second_plan.block_segment, (
         "the two blocks' ExecutionPlans must carry their own distinct segments"
     )
+
+
+def test_inner_tests_become_their_own_nodes(tmp_path: Path) -> None:
+    page = _md(
+        tmp_path,
+        "```python\ndef test_one():\n    assert True\ndef test_two():\n    assert False\n```\n",
+    )
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "1 failed" in combined and "1 passed" in combined, combined
+    assert "::test_one" in combined and "::test_two" in combined
+
+
+def test_a_block_with_no_test_functions_keeps_one_node(tmp_path: Path) -> None:
+    page = _md(tmp_path, "```python\nx = 1\nassert x == 1\n```\n")
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "1 passed" in combined, combined
+    assert "codeblock_0_line_1" in combined
+
+
+def test_an_inner_test_resolves_a_conftest_fixture(tmp_path: Path) -> None:
+    """The 'a code block requests no fixtures' limitation is gone."""
+    (tmp_path / "conftest.py").write_text(
+        "from rustest import fixture\n\n@fixture\ndef supplied():\n    return 7\n",
+        encoding="utf-8",
+    )
+    page = _md(
+        tmp_path,
+        "```python\ndef test_uses(supplied):\n    assert supplied == 7\n```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_class_scope_is_torn_down_per_test(tmp_path: Path) -> None:
+    """The pinning test for the phantom-class hazard.
+
+    Two module-level tests in one block must each get their own class-scoped fixture
+    value. If the block segment leaked into class_name they would share one.
+    """
+    (tmp_path / "conftest.py").write_text(
+        "from rustest import fixture\n"
+        "_n = [0]\n\n"
+        "@fixture(scope='class')\n"
+        "def counter():\n"
+        "    _n[0] += 1\n"
+        "    return _n[0]\n",
+        encoding="utf-8",
+    )
+    page = _md(
+        tmp_path,
+        "```python\n"
+        "def test_first(counter):\n    assert counter == 1\n"
+        "def test_second(counter):\n    assert counter == 2\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 0, (
+        "class scope was not torn down per test; the block segment probably reached "
+        "class_name\n" + proc.stdout + proc.stderr
+    )
+
+
+def test_parametrize_and_classes_work_inside_a_block(tmp_path: Path) -> None:
+    page = _md(
+        tmp_path,
+        "```python\n"
+        "from rustest import parametrize\n\n"
+        "@parametrize('n', [1, 2, 3])\n"
+        "def test_p(n):\n    assert n > 0\n\n"
+        "class TestBox:\n    def test_m(self):\n        assert True\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "4 passed" in combined, combined
+
+
+def test_two_blocks_defining_the_same_name_get_distinct_ids(tmp_path: Path) -> None:
+    page = _md(
+        tmp_path,
+        "```python\ndef test_dup():\n    assert True\n```\n\n"
+        "```python\ndef test_dup():\n    assert True\n```\n",
+    )
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "2 passed" in combined, combined
+    assert "codeblock_0_" in combined and "codeblock_1_" in combined
+
+
+def test_skip_marked_blocks_are_not_executed(tmp_path: Path) -> None:
+    page = _md(
+        tmp_path,
+        "<!--rustest.mark.skip-->\n```python\nraise RuntimeError('must not run')\n```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "1 skipped" in proc.stdout + proc.stderr
