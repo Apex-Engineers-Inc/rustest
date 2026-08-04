@@ -3966,11 +3966,6 @@ def _register_declared_plugins(module: types.ModuleType, registry: FixtureRegist
             registry.register(fixturedef)
 
 
-def _markdown_registry(path: Path, rootdir: Path) -> FixtureRegistry:
-    """:func:`build_registry` minus the module import — a `.md` file has none to import."""
-    return conftest_registry(path, rootdir)
-
-
 def _build_entry(
     rel_path: str,
     parts: tuple[str, ...],
@@ -4685,7 +4680,6 @@ def collect_markdown(
     rootdir: Path,
     naming: Naming,
     asyncio_config: AsyncioConfig = _DEFAULT_ASYNCIO,
-    registry: FixtureRegistry | None = None,
 ) -> tuple[list[CollectedTestDict], list[ExecutionPlan]]:
     """Enumerate a ``.md`` file's python fences, executing each at module level.
 
@@ -4722,15 +4716,18 @@ def collect_markdown(
     — so ``-m codeblock`` and ``-m "not codeblock"`` keep meaning "the documentation
     examples" no matter how many real tests one block turns out to define.
 
-    *registry* seeds the fallback single-node closure and defaults to builtins only; the
-    conftest chain is loaded for it in :func:`collect_file`.  Each block gets its own,
-    separate registry built fresh in the loop below — conftests plus that block's own xunit
-    hooks and fixtures — so one block's fixtures cannot leak into a sibling block.
-    """
-    if registry is None:
-        registry = FixtureRegistry()
-        _register_builtin_fixtures(registry)
+    Each block gets its own, separate registry built fresh in the loop below — conftests
+    plus that block's own xunit hooks and fixtures — so one block's fixtures cannot leak
+    into a sibling block; there is no file-wide registry to accept from a caller.
 
+    **Autouse reaches the tests inside a block, not the block's own top-level statements.**
+    The body runs via ``exec`` at *collect*, before any fixture closure exists — the same
+    position a `.py` module's top level runs in, which never had autouse applied either.
+    Only the ``def test_*`` functions the block goes on to define run inside a closure
+    (built per test, same as an ordinary collected test), so a conftest autouse fixture
+    setting state a block asserts on **at top level** will not have run yet; the same
+    assertion moved inside a test function sees it.
+    """
     rel_path = _relative_posix(path, rootdir)
     content = path.read_text(encoding="utf-8")
     entries: list[CollectedTestDict] = []
@@ -6454,16 +6451,17 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
     response: CollectedResponse = {"op": "collected", "path": path}
     try:
         if file_path.suffix == ".md":
-            # The markdown tier: no module to import, but the conftest chain is still loaded
-            # so an autouse fixture reaches a doc example exactly as v1's
-            # `merge_conftest_fixtures` made it.  The orchestrator only ever sends a `.md`
-            # path when code blocks are enabled (`src/v2/collect.rs::is_markdown`).
+            # The markdown tier: each block gets its own module, exec'd and collected in
+            # `collect_markdown` itself, so the conftest chain is loaded per block rather
+            # than once here. An autouse fixture reaches the tests a block defines but not
+            # the block's own top-level statements -- see `collect_markdown`'s docstring.
+            # The orchestrator only ever sends a `.md` path when code blocks are enabled
+            # (`src/v2/collect.rs::is_markdown`).
             tests, plans = collect_markdown(
                 file_path,
                 state.rootdir,
                 state.naming,
                 state.asyncio,
-                _markdown_registry(file_path, state.rootdir),
             )
         else:
             module, registry = build_registry(file_path, state.rootdir)
