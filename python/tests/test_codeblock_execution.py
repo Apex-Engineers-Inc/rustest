@@ -459,3 +459,72 @@ def test_a_failing_block_body_runs_once_not_twice(tmp_path: Path) -> None:
         "the body ran more than once; the failing block node must replay its recorded "
         "outcome, not re-execute the body"
     )
+
+
+def test_a_fence_indented_inside_an_admonition_is_dedented(tmp_path: Path) -> None:
+    """A fence nested inside a `!!!` admonition (or a `===` tab block) is itself indented,
+    and its content lines carry that indent verbatim -- `extract_python_code_blocks` only
+    strips whitespace to *recognise* the fence markers, not from the lines between them. The
+    old wrapper hid this by accident: it indented every block uniformly by four spaces to
+    build `def run_codeblock(): <body>`, so an already-indented block became evenly
+    eight-indented and still compiled. Executing the block directly, with no wrapper, means
+    an indented body is unindented Python at module level -- `IndentationError` -- unless
+    it is dedented first.
+    """
+    page = _md(
+        tmp_path,
+        '!!! note "Example"\n'
+        "    ```python\n"
+        "    def test_indented():\n"
+        "        assert True\n"
+        "    ```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_dataclass_defined_in_a_block_does_not_crash(tmp_path: Path) -> None:
+    """`dataclasses._process_class` looks its own class's defining module up in
+    `sys.modules` (`ns = sys.modules.get(cls.__module__).__dict__`) while checking fields
+    for `ClassVar`/`InitVar` -- and a block's synthetic module was deliberately never
+    registered there, so that lookup returns `None` and `AttributeError`s on `.__dict__`.
+    An ordinary `@dataclass` in a doc example is not a niche case; broken pickling (the cost
+    the design doc named) is.
+    """
+    page = _md(
+        tmp_path,
+        "```python\n"
+        "from dataclasses import dataclass\n\n"
+        "@dataclass\n"
+        "class Point:\n"
+        "    x: int\n"
+        "    y: int\n\n"
+        "def test_point():\n"
+        "    assert Point(1, 2).x == 1\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_block_modules_do_not_leak_into_sys_modules_across_files(tmp_path: Path) -> None:
+    """The other half of the `sys.modules` registration: a block's module is registered so
+    `dataclasses` (and anything else that resolves `cls.__module__` through `sys.modules`)
+    can find it, but it must be **removed** once the file's collection finishes -- otherwise
+    every doc-block-heavy page leaves synthetic modules behind for the life of the worker
+    process, and a hash collision between two files' `rel_path`s would let one file's block
+    module silently satisfy a lookup meant for another's.
+    """
+    import sys
+
+    from rustest._v2_worker import DEFAULT_NAMING, collect_markdown
+
+    page = tmp_path / "page.md"
+    page.write_text("```python\ndef test_one():\n    assert True\n```\n", encoding="utf-8")
+
+    before = set(sys.modules)
+    collect_markdown(page, tmp_path, DEFAULT_NAMING)
+    after = set(sys.modules)
+
+    leaked = after - before
+    assert not leaked, f"block modules leaked into sys.modules after collection: {leaked}"

@@ -165,6 +165,7 @@ import os
 from pathlib import Path
 import platform
 import sys
+import textwrap
 import time
 import traceback
 import types
@@ -4750,118 +4751,143 @@ def collect_markdown(
     content = path.read_text(encoding="utf-8")
     entries: list[CollectedTestDict] = []
     plans: list[ExecutionPlan] = []
-    for index, (code, line_number, skipped) in enumerate(extract_python_code_blocks(content)):
-        marks = [MarkSpec(name="codeblock")]
-        if skipped:
-            marks.append(MarkSpec(name="skip", kwargs={"reason": MARKDOWN_SKIP_REASON}))
+    #: Names registered into `sys.modules` below, popped in the `finally` once this file's
+    #: blocks are all collected -- see the registration comment for why they go in at all.
+    registered_module_names: list[str] = []
+    try:
+        for index, (code, line_number, skipped) in enumerate(extract_python_code_blocks(content)):
+            marks = [MarkSpec(name="codeblock")]
+            if skipped:
+                marks.append(MarkSpec(name="skip", kwargs={"reason": MARKDOWN_SKIP_REASON}))
 
-        segment = f"codeblock_{index}_line_{line_number}"
-        module = types.ModuleType(f"rustest_codeblock_{index}_{abs(hash(rel_path))}")
-        # Not registered in `sys.modules`, matching the previous synthetic module. A class
-        # defined inside a block therefore will not pickle; a doc example needing that is
-        # out of scope.
-        module.__file__ = str(path)
-        block_registry = conftest_registry(path, rootdir)
+            segment = f"codeblock_{index}_line_{line_number}"
+            module = types.ModuleType(f"rustest_codeblock_{index}_{abs(hash(rel_path))}")
+            module.__file__ = str(path)
+            # Registered in `sys.modules` under its own generated name -- unlike the old
+            # synthetic module, which deliberately wasn't. `dataclasses._process_class`
+            # resolves `ClassVar`/`InitVar` field types through
+            # `sys.modules[cls.__module__].__dict__`, so an unregistered module makes an
+            # ordinary `@dataclass` in a block raise `AttributeError` on `None.__dict__` --
+            # not the niche cost (broken pickling) the design doc named. Removed in the
+            # `finally` below once this file is done, so entries don't leak into the next
+            # file's collection or accumulate for the life of the worker.
+            sys.modules[module.__name__] = module
+            registered_module_names.append(module.__name__)
+            block_registry = conftest_registry(path, rootdir)
 
-        block_entries: list[CollectedTestDict] = []
-        block_plans: list[ExecutionPlan] = []
-        block_error: Exception | None = None
-        if not skipped:
-            # A skipped block is **not compiled**.  v1 compiled every block up front, so a
-            # `<!--rustest.mark.skip-->` fence containing pseudo-code turned the whole file
-            # into a collection error — which defeats the purpose of the marker, and the
-            # project's own documentation guidelines tell authors to use it for
-            # "pseudo-code or incomplete snippets".  A skip mark short-circuits before the
-            # body under any engine, so there is nothing to compile it *for*.
-            #
-            # The exec runs in its own try: a block that raises partway still leaves
-            # whatever it defined *before* the raise bound in `module.__dict__` (`exec`
-            # does not roll a partial run back), and the registration/`collect_module` step
-            # below must still see those -- that is how `test_reached` survives a sibling
-            # `raise` in the same block. `SystemExit` / `KeyboardInterrupt` are not
-            # `Exception` subclasses, so they pass straight through uncaught, ending the
-            # worker exactly as a `.py` module's module-level `sys.exit()` would.
-            try:
-                exec(  # noqa: S102
-                    compile(code, f"{path}:L{line_number}", "exec"),
-                    module.__dict__,
-                )
-            except Exception as exc:  # noqa: BLE001 - replayed as a failing test below
-                block_error = exc
-
-            # `build_registry` minus the import, in its order. The xunit hooks must be
-            # registered BEFORE the block's own fixtures: autouse order is registration
-            # order, so the reverse makes `setup_function` run after a user's autouse
-            # fixture.
-            #
-            # This enumeration step is wrapped separately from the exec above, and always
-            # attempted, so that tests reached before an exec-time raise are still
-            # collected. It can also fail on its own (a bad decorator surfacing at
-            # collection rather than exec time); if the exec already failed, that earlier
-            # exception is the one kept -- it is the one a reader would call "the" failure.
-            try:
-                for kind in ("module", "function"):
-                    for fixturedef in _xunit_fixturedefs(module, rel_path, kind=kind):
-                        block_registry.register(fixturedef)
-                block_registry.parse_factories(module, rel_path)
-                _register_declared_plugins(module, block_registry)
-
-                block_entries, block_plans = collect_module(
-                    module,
-                    path,
-                    rootdir,
-                    naming=naming,
-                    registry=block_registry,
-                    asyncio_config=asyncio_config,
-                    block_segment=segment,
-                )
-            except Exception as exc:  # noqa: BLE001 - replayed as a failing test below
-                if block_error is None:
+            block_entries: list[CollectedTestDict] = []
+            block_plans: list[ExecutionPlan] = []
+            block_error: Exception | None = None
+            if not skipped:
+                # A skipped block is **not compiled**.  v1 compiled every block up front, so a
+                # `<!--rustest.mark.skip-->` fence containing pseudo-code turned the whole file
+                # into a collection error — which defeats the purpose of the marker, and the
+                # project's own documentation guidelines tell authors to use it for
+                # "pseudo-code or incomplete snippets".  A skip mark short-circuits before the
+                # body under any engine, so there is nothing to compile it *for*.
+                #
+                # `textwrap.dedent` first: a fence nested inside a `!!!` admonition or a
+                # `===` tab block is itself indented, and `extract_python_code_blocks` only
+                # strips whitespace to *recognise* the fence markers -- the lines between
+                # them keep their raw indent. The old wrapper hid this by accident, indenting
+                # every block uniformly by four spaces to build `def run_codeblock():
+                # <body>`, so an already-indented block became evenly eight-indented and
+                # still compiled. Executing the block directly has no such wrapper, so an
+                # indented body is invalid Python at module level unless dedented first.
+                #
+                # The exec runs in its own try: a block that raises partway still leaves
+                # whatever it defined *before* the raise bound in `module.__dict__` (`exec`
+                # does not roll a partial run back), and the registration/`collect_module` step
+                # below must still see those -- that is how `test_reached` survives a sibling
+                # `raise` in the same block. `SystemExit` / `KeyboardInterrupt` are not
+                # `Exception` subclasses, so they pass straight through uncaught, ending the
+                # worker exactly as a `.py` module's module-level `sys.exit()` would.
+                try:
+                    exec(  # noqa: S102
+                        compile(textwrap.dedent(code), f"{path}:L{line_number}", "exec"),
+                        module.__dict__,
+                    )
+                except Exception as exc:  # noqa: BLE001 - replayed as a failing test below
                     block_error = exc
 
-        if block_entries:
-            # The `codeblock` mark follows tests down to inner-test granularity: it is
-            # additive to whatever marks `collect_module` already gave each entry (its own
-            # decorators, any module-level `pytestmark` inside the block), appended last so
-            # it reads as the outermost mark, same as `_collect_function`'s
-            # `_mark_specs(func) + outer_marks` ordering treats a module's `pytestmark`.
-            # Without this, `-m codeblock` / `-m "not codeblock"` silently invert for any
-            # block that defines tests -- `-m "not codeblock"` would run them and `-m
-            # codeblock` would select nothing.
-            for block_entry in block_entries:
-                block_entry.setdefault("marks", []).append(marks[0].to_wire())
-            block_plans = [replace(plan, marks=(*plan.marks, marks[0])) for plan in block_plans]
-            entries.extend(block_entries)
-            plans.extend(block_plans)
+                # `build_registry` minus the import, in its order. The xunit hooks must be
+                # registered BEFORE the block's own fixtures: autouse order is registration
+                # order, so the reverse makes `setup_function` run after a user's autouse
+                # fixture.
+                #
+                # This enumeration step is wrapped separately from the exec above, and
+                # always attempted, so that tests reached before an exec-time raise are
+                # still collected. It can also fail on its own (a bad decorator surfacing at
+                # collection rather than exec time); if the exec already failed, that
+                # earlier exception is the one kept -- it is the one a reader would call
+                # "the" failure.
+                try:
+                    for kind in ("module", "function"):
+                        for fixturedef in _xunit_fixturedefs(module, rel_path, kind=kind):
+                            block_registry.register(fixturedef)
+                    block_registry.parse_factories(module, rel_path)
+                    _register_declared_plugins(module, block_registry)
 
-        if not block_entries or block_error is not None:
-            # A block node is built when there were no reachable tests (the old
-            # single-node fallback, unchanged) OR the block raised -- the latter is
-            # deliberately additive to any tests already appended just above: this is the
-            # one place "tests means no block node" does not hold, because otherwise the
-            # failure itself would have nowhere to be reported.
-            parts = (segment,)
-            entry = _build_entry(rel_path, parts, None, marks, [])
-            entries.append(entry)
-            plans.append(
-                ExecutionPlan(
-                    id=entry["id"],
-                    path=path,
-                    module=module,
-                    parts=parts,
-                    # Skipped: never ran. Non-skipped-but-empty, no error: already ran,
-                    # above, as part of collection -- there is nothing left for execution
-                    # to do. Errored: replay the recorded exception rather than
-                    # re-executing the body, which would repeat any side effect it had.
-                    func=(lambda: None) if block_error is None else _replay(block_error),
-                    owner=None,
-                    closure=build_closure(block_registry, ()),
-                    fixture_params={},
-                    direct_params={},
-                    argnames=(),
-                    marks=tuple(marks),
+                    block_entries, block_plans = collect_module(
+                        module,
+                        path,
+                        rootdir,
+                        naming=naming,
+                        registry=block_registry,
+                        asyncio_config=asyncio_config,
+                        block_segment=segment,
+                    )
+                except Exception as exc:  # noqa: BLE001 - replayed as a failing test below
+                    if block_error is None:
+                        block_error = exc
+
+            if block_entries:
+                # The `codeblock` mark follows tests down to inner-test granularity: it is
+                # additive to whatever marks `collect_module` already gave each entry (its
+                # own decorators, any module-level `pytestmark` inside the block), appended
+                # last so it reads as the outermost mark, same as `_collect_function`'s
+                # `_mark_specs(func) + outer_marks` ordering treats a module's `pytestmark`.
+                # Without this, `-m codeblock` / `-m "not codeblock"` silently invert for any
+                # block that defines tests -- `-m "not codeblock"` would run them and `-m
+                # codeblock` would select nothing.
+                for block_entry in block_entries:
+                    block_entry.setdefault("marks", []).append(marks[0].to_wire())
+                block_plans = [replace(plan, marks=(*plan.marks, marks[0])) for plan in block_plans]
+                entries.extend(block_entries)
+                plans.extend(block_plans)
+
+            if not block_entries or block_error is not None:
+                # A block node is built when there were no reachable tests (the old
+                # single-node fallback, unchanged) OR the block raised -- the latter is
+                # deliberately additive to any tests already appended just above: this is
+                # the one place "tests means no block node" does not hold, because otherwise
+                # the failure itself would have nowhere to be reported.
+                parts = (segment,)
+                entry = _build_entry(rel_path, parts, None, marks, [])
+                entries.append(entry)
+                plans.append(
+                    ExecutionPlan(
+                        id=entry["id"],
+                        path=path,
+                        module=module,
+                        parts=parts,
+                        # Skipped: never ran. Non-skipped-but-empty, no error: already ran,
+                        # above, as part of collection -- there is nothing left for
+                        # execution to do. Errored: replay the recorded exception rather
+                        # than re-executing the body, which would repeat any side effect it
+                        # had.
+                        func=(lambda: None) if block_error is None else _replay(block_error),
+                        owner=None,
+                        closure=build_closure(block_registry, ()),
+                        fixture_params={},
+                        direct_params={},
+                        argnames=(),
+                        marks=tuple(marks),
+                    )
                 )
-            )
+    finally:
+        for name in registered_module_names:
+            sys.modules.pop(name, None)
     return entries, plans
 
 

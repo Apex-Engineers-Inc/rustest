@@ -17,6 +17,7 @@ A `pytest_plugins` declaration names Python modules whose `@fixture` functions g
 globally. rustest honours it in a `conftest.py` and in a test module, the same two places
 pytest reads it:
 
+<!--rustest.mark.skip-->
 ```python
 # conftest.py -- a list of module names
 pytest_plugins = ["fixtures.database", "fixtures.api"]
@@ -731,6 +732,7 @@ def db():
 the operation yourself.
 
 === "With pytest-benchmark"
+    <!--rustest.mark.skip-->
     ```python
     def expensive_function(a, b):
         return a + b
