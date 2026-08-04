@@ -37,9 +37,26 @@ Within a chain the order is strict. Chain P's tests pass both before and after C
 default flip, because they write `[tool.rustest] codeblocks = true` into their own
 `tmp_path` project and the pre-flip default is on anyway.
 
-Two rules for concurrent execution: an agent commits **only the files its task names**, and
-if `git commit` fails on `.git/index.lock`, wait a moment and retry rather than clearing the
-lock.
+Rules for concurrent execution:
+
+1. **Commit what your change forces to compile, but never the other chain's files.** Chain R
+   must not touch `python/rustest/_v2_worker.py` or `python/tests/test_codeblock_execution.py`;
+   Chain P must not touch any Rust file. Everything else a change legitimately requires is
+   fair game. Name the files; never `git add -A`.
+2. If `git commit` fails on `.git/index.lock`, wait a moment and retry rather than clearing
+   the lock.
+3. **Integration-level verification belongs at wave boundaries, run by the controller, not
+   inside a concurrently-running task.** The chains share no file but they do share the
+   *built artifact*: while Chain R is mid-edit on `src/v2/`, `maturin develop` cannot
+   succeed, so any full-suite or docs-gate result Chain P collects is measuring Chain R's
+   half-finished state. The reverse is equally true, since Chain R's docs gate imports Chain
+   P's worker. Inside a task, run only the targeted tests that exercise that task's change.
+   The controller runs `uv run pytest python/tests -q`, `uv run pytest tests/ examples/tests/ -q`
+   and the docs gate once both chains are between tasks and the tree is consistent.
+
+   This applies to Task 2 Step 5 and Task 5 Step 5 in particular: both call for a full
+   `maturin develop` plus gate run. Under concurrent execution, do the build, confirm the
+   task's own targeted tests, and leave the gate to the wave boundary.
 
 ## File Structure
 
