@@ -74,16 +74,39 @@ should **refuse** rather than half-read, and the published schema marks `schema_
 `const: 2` so it can. Run `rustest --llm-schema` for the current contract, and see
 [LLM output](llm-output.md).
 
-### Markdown testing is unchanged, with one thing worth re-reading
+### Markdown code blocks are off by default, and now execute for real
 
-Python fences in `.md` files are still collected, but **only when the file is named as an
-argument**. A directory argument collects no markdown, because pytest walking the same tree
-collects none either. See [Markdown testing](markdown-testing.md).
+This is not the same feature it used to be. Two changes, both breaking:
+
+**It is off by default.** Naming a `.md` file used to collect its python fences
+unconditionally; now nothing collects until `--codeblocks`, `[tool.rustest] codeblocks =
+true`, or the pytest ini section's `codeblocks = true` turns it on. Without one of those,
+naming a `.md` file is a usage error, exit 4, `found no collectors for <path>` — pytest's
+own answer for the same argument.
 
 ```bash
-rustest README.md user_guide/*.md   # tests the docs
-rustest tests/                      # does not pick up stray .md files
+rustest README.md user_guide/*.md               # exit 4 unless something enables it
+rustest README.md user_guide/*.md --codeblocks   # tests the docs
+rustest tests/                                   # a directory never picks up .md, either way
 ```
+
+**A block's `def test_*` functions really run now, each as its own node.** The old mechanism
+indented a block into `def run_codeblock(): <body>` and called the wrapper, so any test
+function the block defined was a local of that wrapper — defined, never called, its
+assertions never checked. A block now execs at module level, at collect time, and is
+enumerated the same way a `.py` file is: a `def test_*` inside it collects and runs as its
+own node, `page.md::codeblock_N_line_M::test_name`, and fixtures, `@parametrize`, `Test*`
+classes and xunit hooks all work inside it. This surfaced 109 previously invisible failures
+on this repository's own docs — the feature doing its job, not a regression, but real work
+if your own markdown relies on the tier.
+
+Everything that follows from real execution is a further breaking change in its own right:
+node ids for a block with tests gain a segment, a broken block is now a failing *test*
+rather than a file-level collection error (exit 1, not 2), a stale `--lf` entry for the old
+single-node id will not match, and an autouse fixture no longer reaches a block's top-level
+statements (only the tests inside it) because the body now runs before any fixture closure
+exists. See the Changelog's "documentation code block execution" entry for the full
+seven-item list, and [Markdown testing](markdown-testing.md) for the mechanism itself.
 
 ## Migrating from pytest
 

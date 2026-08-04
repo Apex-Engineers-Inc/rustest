@@ -444,7 +444,7 @@ per-suite table and caveats in `user_guide/performance.md`.
 - **The gate itself was rebuilt to execute for real** (see "Breaking changes: documentation
   code block execution" above). The old mechanism wrapped each block in a function and called
   it, so a `def test_*` inside a block was defined and never invoked; 303 tests passed under
-  that mechanism on this repository's own docs, 587 pass under the real one — nearly double,
+  that mechanism on this repository's own docs, 596 pass under the real one — nearly double,
   because previously invisible test bodies now run, and 109 of them turned out to be broken.
   `user_guide/markdown-testing.md` was rewritten to match.
 - `pytest-plugins.md` no longer tells readers that rustest cannot run tests in parallel and
