@@ -996,9 +996,20 @@ fn getini_linelist(cfg: &ConfigDict, name: &str) -> Vec<String> {
 
 /// pytest's ini boolean parsing, for the one rustest-only key that uses it.
 ///
-/// Source: `_pytest/config/__init__.py::Config._getini`, `type="bool"` branch, which
-/// defers to `_strtobool`.  An unrecognised value answers `None` rather than raising:
-/// this key is rustest-only, so a project that also runs real pytest may legitimately
+/// Source: `_pytest/config/__init__.py::Config._getini`, `type="bool"` branch —
+/// `_strtobool(str(value).strip())` — and `_strtobool` itself:
+///
+/// ```text
+/// True values are 'y', 'yes', 't', 'true', 'on', and '1'; false values
+/// are 'n', 'no', 'f', 'false', 'off', and '0'.  Raises ValueError if
+/// 'val' is anything else.
+/// ```
+///
+/// (`_strtobool` lowercases before comparing, which is why this trims then
+/// lowercases rather than matching case-sensitively.)
+///
+/// **Deliberate departure:** an unrecognised value answers `None` rather than raising.
+/// This key is rustest-only, so a project that also runs real pytest may legitimately
 /// have a value pytest itself would reject, and refusing the whole run over it would be
 /// harsher than the feature warrants.
 fn getini_bool(cfg: &ConfigDict, name: &str) -> Option<bool> {
@@ -1007,8 +1018,8 @@ fn getini_bool(cfg: &ConfigDict, name: &str) -> Option<bool> {
         IniValue::List(_) => return None,
     };
     match raw.as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
+        "y" | "yes" | "t" | "true" | "on" | "1" => Some(true),
+        "n" | "no" | "f" | "false" | "off" | "0" => Some(false),
         _ => None,
     }
 }
@@ -1913,6 +1924,22 @@ mod tests {
         assert_eq!(getini_bool(&cfg, "missing"), None);
     }
 
+    /// `_strtobool` (`distutils.util`, copied into `_pytest/config/__init__.py`) accepts
+    /// the single-letter forms too, not just the words tested above.
+    #[test]
+    fn getini_bool_accepts_the_single_letter_strtobool_spellings() {
+        let cfg: ConfigDict = vec![
+            ("y".to_string(), IniValue::Str("Y".to_string())),
+            ("t".to_string(), IniValue::Str("t".to_string())),
+            ("n".to_string(), IniValue::Str("N".to_string())),
+            ("f".to_string(), IniValue::Str("f".to_string())),
+        ];
+        assert_eq!(getini_bool(&cfg, "y"), Some(true));
+        assert_eq!(getini_bool(&cfg, "t"), Some(true));
+        assert_eq!(getini_bool(&cfg, "n"), Some(false));
+        assert_eq!(getini_bool(&cfg, "f"), Some(false));
+    }
+
     /// `[tool.rustest]` is read from EXACTLY `<rootdir>/pyproject.toml`, with no walk in
     /// either direction, so a table in a subdirectory is invisible.  Spec: "Exactly at
     /// rootdir is literal".
@@ -1931,9 +1958,9 @@ mod tests {
         write(
             &sub,
             "pyproject.toml",
-            "[tool.rustest]\ncodeblocks = true\n",
+            "[tool.rustest]\ncodeblocks = false\n",
         );
-        // rootdir is still `root`; the subdirectory table must not be consulted.
+        // Root's `true` must win: a downward walk would answer Some(false) here.
         assert_eq!(read_tool_rustest_codeblocks(root), Some(true));
         // And a rootdir with no table at all answers None rather than a default.
         let empty = TempDir::new().unwrap();
