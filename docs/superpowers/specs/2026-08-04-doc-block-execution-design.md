@@ -254,8 +254,21 @@ does not cover, so it is specified here rather than left to the implementation.
   recorded outcome, traceback included**. It does not re-run the body. This is the same
   mechanism the no-test block's success node needs, and stating it prevents an
   implementation that re-executes and doubles side effects.
-- **Captured output.** A `print()` in a block body now happens at collect. Its captured
-  output attaches to the block node's result; it is not discarded.
+- **Captured output: this spec was wrong, and the shipped behaviour is the opposite.** The
+  draft above claimed a `print()` in a block body attaches to the block node's result. It
+  does not. `_Capture` wraps the **execute** phase, and a block body now runs at **collect**,
+  outside it. Measured: the text goes live to the orchestrator's stderr, unattributed and
+  ahead of the summary line, and `--report-json` gives the block node no `stdout` key while
+  an ordinary failing `.py` test in the same run gets one. It leaks on passing blocks too,
+  which a passing test's output never does.
+
+  A `print()` inside a `def test_*` in a block is captured normally, because that runs in
+  the execute phase like any other test.
+
+  Recorded rather than fixed: adding collect-phase capture is a feature, and this was found
+  by the final whole-branch review after implementation was complete. `user_guide/
+  markdown-testing.md` states the real behaviour and `CHANGELOG.md` carries it as breaking
+  change 9.
 
 #### Exit code changes
 
