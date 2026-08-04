@@ -66,7 +66,22 @@ pub struct CollectedTest {
     /// Rootdir-relative posix file path (the nodeid's first segment).
     pub path: String,
     /// Dotted qualname within the module, e.g. "TestBox.test_method" or "test_top".
+    ///
+    /// For a documentation code block, `qualname` carries a leading block segment
+    /// (`codeblock_N_line_M`) that `class_name` deliberately does not — see the note on
+    /// `class_name` below. Outside that case, `class_name` is `qualname` minus its last
+    /// dotted segment whenever `qualname` has more than one.
     pub qualname: String,
+    /// The enclosing class chain (`"TestBox.TestInner"`), or absent for a module-level test.
+    ///
+    /// This is **not** always derivable from `qualname` by trimming its last segment: a
+    /// block segment reaches `qualname` and never reaches `class_name`, by design. Folding
+    /// the two together would give every module-level test inside a documentation block a
+    /// phantom class, and `class_name` is the class-scope teardown boundary
+    /// (`_v2_worker.py::FixtureRunner.note_test_boundary`), so that phantom class would
+    /// share a class-scoped fixture across tests that must each get their own instead. See
+    /// `docs/superpowers/specs/2026-08-04-doc-block-execution-design.md` for the full
+    /// argument; `_v2_worker.py::_build_entry` carries the matching note on the Python side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_name: Option<String>,
     /// Bracket content for parametrized cases, without brackets (e.g. "x-1").

@@ -167,13 +167,16 @@ rustest -k "user"  # Runs test_user_login, test_user_data, etc.
 # Show print statements during execution
 rustest --no-capture
 
-# Run the python fences in a markdown file as tests
-rustest README.md
+# Run the python fences in a markdown file as tests -- --codeblocks turns the tier on
+rustest README.md --codeblocks
 ```
 
-Markdown has to be **named**. A directory argument collects no `.md` at all, which is what
-pytest walking the same tree does too. `--no-codeblocks` turns the feature off, and a named
-`.md` file then becomes a usage error rather than a silently empty run.
+Markdown has to be **named**, and the tier itself is **off by default**. A directory
+argument collects no `.md` at all even when the tier is on, which is what pytest walking the
+same tree does too. Naming a `.md` file with nothing enabling the tier -- no `--codeblocks`,
+no `[tool.rustest] codeblocks = true` -- is a usage error, matching `pytest README.md`
+exactly. See [Markdown Testing](markdown-testing.md) for the config spellings and what a
+block actually runs.
 
 ### From Python
 

@@ -22,10 +22,11 @@ rustest --help
 ```
 usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [-s] [-v] [-q]
                [--ascii] [--color {auto,always,never,yes,no}]
-               [-o OPTION=VALUE] [--maxfail NUM] [--no-codeblocks] [--lf]
-               [--ff] [-x] [--report-json PATH] [--cov [SOURCE]]
-               [--cov-report TYPE] [--cov-branch] [--llm] [--llm-full]
-               [--llm-schema] [--version] [--v2-collect-only] [--v2]
+               [-o OPTION=VALUE] [--maxfail NUM] [--codeblocks]
+               [--no-codeblocks] [--lf] [--ff] [-x] [--report-json PATH]
+               [--cov [SOURCE]] [--cov-report TYPE] [--cov-branch] [--llm]
+               [--llm-full] [--llm-schema] [--version] [--v2-collect-only]
+               [--v2]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -60,7 +61,10 @@ options:
                         assembled.
   --maxfail NUM         Exit after the first NUM failures or errors (0 means
                         no limit).
-  --no-codeblocks       Disable code block tests from markdown files.
+  --codeblocks          Collect and run python code blocks in markdown files
+                        named as arguments.
+  --no-codeblocks       Do not collect code blocks, overriding any config
+                        setting.
   --lf, --last-failed   Rerun only the tests that failed in the last run.
   --ff, --failed-first  Run previously failed tests first, then all other
                         tests.
@@ -173,8 +177,9 @@ rustest tests/test_math.py
 # Run multiple files
 rustest tests/test_math.py tests/test_strings.py
 
-# Run markdown files
-rustest README.md user_guide/*.md
+# Run markdown files (needs --codeblocks, or [tool.rustest] codeblocks = true in config --
+# this repository sets the config key, which is why the plain form works from its own root)
+rustest README.md user_guide/*.md --codeblocks
 ```
 
 Markdown has to be **named**, as it is above. A directory argument collects no `.md` at
@@ -532,29 +537,37 @@ the `--lf` agent loop.
 
 ### Enable/Disable
 
-Markdown is collected when you **name** it. A directory argument never collects `.md`,
-which is what pytest does with the same tree, so `--no-codeblocks` only has anything to
-suppress once a `.md` file is on the command line:
+Markdown code blocks are **off by default**. Naming a `.md` file with nothing enabling the
+tier is a usage error, exit 4 with `found no collectors for <path>` — pytest's own answer
+for the same argument, since pytest collects nothing from a `.md` file either. `--codeblocks`
+and `--no-codeblocks` are a tri-state pair: pass one to force it on or off for a single run,
+or leave both unset and `[tool.rustest] codeblocks` (or the pytest ini section's own
+`codeblocks` key) decides:
 
 ```bash
-# Named markdown: python fences run as tests
+# Nothing enables the tier: a usage error, exit 4
 rustest README.md user_guide/*.md
 
-# The same command with the fences suppressed
+# --codeblocks turns it on for this run, no config needed
+rustest README.md user_guide/*.md --codeblocks
+
+# --no-codeblocks turns it off for this run, even if config turned it on
 rustest README.md user_guide/*.md --no-codeblocks
 
-# A directory argument collects no markdown, with or without the flag
+# A directory argument collects no markdown either way -- a directory walk never
+# picks up .md, which is what pytest does with the same tree
 rustest tests/
 
-# Markdown alongside a normal test tree
-rustest tests/ README.md
+# Markdown alongside a normal test tree, both named
+rustest tests/ README.md --codeblocks
 ```
 
-What `--no-codeblocks` buys you is pytest's exact answer for a set of arguments. Naming a
-`.md` file with the flag on is a **usage error**, exit 4 with
-`found no collectors for <path>`, and that is precisely what `pytest README.md` does. The
-second command above therefore exits 4 rather than running zero tests. Reach for the flag
-when a command line is shared between the two runners and their answers have to agree.
+Naming a `.md` file with `--codeblocks` off (explicitly, or by leaving everything unset) is
+a **usage error**, exit 4 with `found no collectors for <path>`, matching `pytest
+README.md` exactly. Reach for `--no-codeblocks` when a command line is shared between the
+two runners and their answers have to agree, or when config has turned the tier on and one
+run needs it off. See [Markdown Testing](markdown-testing.md) for the config spellings, the
+node-id shape a block with inner tests produces, and the full execution model.
 
 ## Command-Line Reference
 
@@ -579,7 +592,8 @@ rustest [OPTIONS] [PATHS...]
 | `--maxfail NUM` | Exit after the first `NUM` failures or errors (`0` means no limit) |
 | `--ascii` | Accepted and ignored: the output is already plain ASCII |
 | `--color {auto,always,never,yes,no}` | Accepted and ignored: the output is not colored |
-| `--no-codeblocks` | Disable markdown code block testing |
+| `--codeblocks` | Collect and run python code blocks in markdown files named as arguments. Off by default; see [Markdown Testing](markdown-testing.md) |
+| `--no-codeblocks` | Do not collect code blocks, overriding any config setting that turned them on |
 | `--lf, --last-failed` | Rerun only tests that failed in the last run |
 | `--ff, --failed-first` | Run failed tests first, then all other tests |
 | `-x, --exitfirst` | Exit instantly on first error or failed test (`--maxfail=1`) |
@@ -740,12 +754,13 @@ rustest $(git diff --name-only '*.py' | grep test_)
 
 ```bash
 # Test README examples
-rustest README.md --no-capture
+rustest README.md --codeblocks --no-capture
 
 # Test one page, verbosely
-rustest user_guide/fixtures.md -v
+rustest user_guide/fixtures.md -v --codeblocks
 
-# Test every page on the site: this is the line CI runs
+# Test every page on the site: this is the line CI runs. No --codeblocks needed here
+# because this repository's own pyproject.toml sets [tool.rustest] codeblocks = true.
 rustest README.md user_guide/*.md
 ```
 

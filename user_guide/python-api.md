@@ -68,7 +68,7 @@ All keyword-only.
 | `max_fail` | `int` | `0` (no limit) | `--maxfail` |
 | `last_failed_mode` | `"none"` / `"only"` / `"first"` | `"none"` | `--lf` / `--ff` |
 | `capture` | `bool` | `True` | `-s` clears it |
-| `codeblocks` | `bool` | `True` | `--no-codeblocks` clears it |
+| `codeblocks` | `bool \| None` | `None` (config decides, off by default) | `--codeblocks` / `--no-codeblocks` |
 | `verbosity` | `int` | `0` | `-q` is `-1`, `-v` is `1` |
 | `cov` | `Sequence[str] \| None` | `None` | `--cov` |
 | `cov_report` | `Sequence[str] \| None` | `None` | `--cov-report` |

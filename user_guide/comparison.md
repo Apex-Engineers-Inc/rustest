@@ -15,7 +15,7 @@ and how much faster rustest is in practice, including the suites where the answe
 | Test class detection (`Test*`) | ✅ | ✅ | Including fixtures defined as class methods |
 | Pattern-based filtering | ✅ | ✅ | `-k`, matching pytest's keyword expression grammar against path segments, class names, the function name with its `[param]` suffix, and mark names |
 | `unittest.TestCase` | ✅ | ✅ | `setUp` / `tearDown` / `setUpClass` and unittest's own skip decorators |
-| Markdown code block testing | ✅ (`pytest-codeblocks`) | ✅ | Python fences in `.md` files, when the file is named as an argument rather than reached by a directory walk. Each block runs at module level, so a `def test_*` inside one is defined and not called |
+| Markdown code block testing | ✅ (`pytest-codeblocks`) | ✅ (off by default; `--codeblocks`) | Python fences in `.md` files, when the file is named as an argument rather than reached by a directory walk. Each block executes at module level, so a `def test_*` inside one collects and runs as its own node |
 | **Fixtures** |
 | `@fixture` decorator | ✅ | ✅ | |
 | Fixture dependency injection | ✅ | ✅ | Resolved in the Python worker, as pytest does |
@@ -109,8 +109,9 @@ hook dispatch, and no collection tree to walk.
   [Performance](performance.md) shows you how to estimate yours before you migrate.
 - You want faster collection in particular. Collection is where the gap is widest.
 - You use standard pytest features: fixtures, parametrization, marks, `conftest.py`.
-- You want the Python examples in your markdown documentation to at least import and
-  execute, without adding `pytest-codeblocks`.
+- You want the Python examples in your markdown documentation to genuinely execute as
+  tests, `def test_*` functions included, with no `pytest-codeblocks` to add. Off by
+  default; see [Markdown Testing](markdown-testing.md).
 
 ### When to Use pytest
 

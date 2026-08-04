@@ -326,7 +326,20 @@ and this collector matches only ```` ```python ````.
 
 ### Documentation Code Blocks
 
-**CRITICAL**: All Python code blocks in documentation are tested as executable code in CI.
+**CRITICAL**: All Python code blocks in documentation are executed as tests in CI, and a
+`def test_*` inside one really runs, as its own node — not defined and silently discarded.
+The mechanism is the same collector a `.py` test file goes through: a block's source execs
+into a fresh module at collect time and that module is enumerated exactly as a file would
+be, so fixtures, `@parametrize`, `Test*` classes and xunit-style `setup_function` all work
+inside a block with no special-casing.
+
+**This tier is off by default.** Nothing named `.md` collects unless something turns it on:
+`--codeblocks` on the command line, or `codeblocks = true` in `[tool.rustest]` (or the
+pytest ini section) in `pyproject.toml`. **This repository turns it on** — see
+`pyproject.toml`'s `[tool.rustest]` table — which is exactly why every command below in this
+section works with no flag: run it from a clone that has not set the key and the same
+command is a usage error, exit 4, `found no collectors for README.md`. See
+`user_guide/markdown-testing.md` for the full config precedence and the CLI flag pair.
 
 #### Testing Documentation
 CI runs `rustest README.md user_guide/*.md` — that is, **every page on the site**, not a
@@ -335,7 +348,11 @@ everything it uses.
 
 #### Writing Testable Code Blocks
 
-**Default Behavior**: All Python code blocks are executed as tests unless marked otherwise.
+**Default Behavior**: every Python code block is collected and executed as a test unless
+marked otherwise. A block with no `def test_*` in it is one node, passing if its top-level
+statements — including a bare `assert` — run cleanly. A block that defines one or more
+`def test_*` functions produces **one node per function**, and those functions are called
+for real:
 
 ```python
 # This will be executed and must work
@@ -348,6 +365,13 @@ def sample():
 def test_example(sample):
     assert sample == "test"
 ```
+
+One consequence worth knowing before it surprises you: a block's own top-level code (outside
+any `def`) runs at **collect** time, the same moment a `.py` file's module-level code runs.
+`-m`/`-k` deselection and `--lf` decide which *tests* execute, not whether a block's
+top-level statements already ran — and a conftest's autouse fixture reaches the `def test_*`
+functions inside a block but never the block's own top-level statements, consistent with
+`.py` semantics where module-level code has never had autouse applied either.
 
 #### Skipping Code Blocks
 

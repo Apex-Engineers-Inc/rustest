@@ -86,6 +86,62 @@ Seven, in rough order of how likely they are to reach you.
 > current contract and is answered before argument parsing, so it works from a directory
 > whose `addopts` would make the run itself exit 4.
 
+### Breaking changes: documentation code block execution
+
+A `def test_*` inside a documentation code block used to be defined and never called: the
+old mechanism indented the whole block into `def run_codeblock(): <body>` and ran that
+wrapper, so any test function the block defined was a local of the wrapper, created and
+discarded. Measured on this repository before the fix: 109 test functions across
+`README.md` and `user_guide/*.md` had assertions that had never once executed, behind a
+green CI gate. The block now execs at module level, at collect time, and is handed to the
+same enumerator a `.py` file goes through — a `def test_*` inside it collects and runs as
+its own node, exactly as it would in a file. See `user_guide/markdown-testing.md` for the
+full mechanism. Seven breaking changes fall out of that fix:
+
+1. **The markdown tier is off by default.** It used to run whenever a `.md` file was named;
+   now nothing collects until `--codeblocks`, `[tool.rustest] codeblocks = true`, or the
+   pytest ini section's `codeblocks = true` turns it on. *Action:* add one of the three to
+   any command line, `pyproject.toml`, `pytest.ini`, `tox.ini` or `setup.cfg` that relies on
+   markdown collection. **This repository sets `[tool.rustest] codeblocks = true`**, which is
+   the only reason its own CI line, `rustest README.md user_guide/*.md`, still collects
+   anything — without it the gate this feature exists to fix would pass vacuously, on zero
+   tests, which is a worse failure than the one being corrected.
+2. **Node ids gain a segment for a block that defines tests.** `page.md::codeblock_3_line_88`
+   was one node; it is now zero or more, each shaped
+   `page.md::codeblock_3_line_88::test_name`. A `-k`/`-m` selection or an `--lf` cache entry
+   built against the old single-node id will not match the new ones. A block defining no
+   test keeps the old single-node shape unchanged.
+3. **Enabling the tier surfaces failures that were always present.** This repository went
+   from reporting zero broken examples to 109, under real execution, the moment the setting
+   was turned on. That is the feature working as intended, not a regression — every one of
+   those 109 was already broken; nothing had ever run its assertions to say so.
+4. **`rustest.run()`'s `codeblocks` default flips from `True` to `None`.** `None` means
+   "config decides," matching the CLI's own tri-state. `run(paths=["README.md"])` with no
+   `[tool.rustest]`/pytest-ini setting now collects nothing, where it used to run every
+   fence; `run(paths=[...], codeblocks=False)` is a no-op unless something else had turned
+   the tier on. *Action:* pass `codeblocks=True` explicitly wherever a script relied on the
+   old default.
+5. **A page with a broken block now exits 1, not 2.** The old mechanism reported a broken
+   block as a file-level collection error (pytest's `USAGE`-adjacent exit 2); a broken block
+   is now a failing *test*, so siblings on the same page still collect and run, and the run's
+   exit code is 1 (failing tests), matching every other kind of test failure. A CI step
+   gating on exit code 2 specifically for a broken doc page needs to gate on 1 instead.
+6. **A `--lf` cache built before this change goes stale once.** Old
+   `page.md::codeblock_N_line_M` entries never match the new inner-test ids a block with
+   tests now produces, so the first `--lf` after upgrading selects nothing extra for those
+   pages. Harmless — the next full run repopulates the cache — but worth knowing rather than
+   mistaking for a broken `--lf`.
+7. **Autouse fixtures no longer reach a block's top-level statements.** They still reach the
+   tests *inside* a block. Under the old mechanism the whole block body ran at *execute* time
+   inside a fixture closure, so a conftest's `@fixture(autouse=True)` applied to bare,
+   non-`def` code in the block. The body now execs at *collect* time, before any fixture
+   closure exists, so it no longer does. Measured directly: a conftest autouse fixture
+   setting an environment variable, asserted at a block's top level, now fails; the identical
+   assertion inside a `def test_*` in the same block passes. This is consistent with `.py`
+   semantics, where module-level code has never had autouse fixtures applied — but it is a
+   user-visible change from the old markdown tier. *Action:* move a block's dependency on an
+   autouse fixture into a `def test_*`.
+
 ### Changed: the v2 engine is the default (the flip)
 
 `rustest <paths>` with no mode flag runs the **v2 engine**: a Rust orchestrator, process
@@ -168,9 +224,16 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   byte-identical to pytest's own summary line.
 - `-s` / `--no-capture` on the default engine. Uncaptured output reaches you on **stderr**
   (a worker's stdout is the protocol channel), interleaved across a pool.
-- Markdown code-block tests on the default engine. `.md` files must be named rather than
-  walked (see breaking change 7), and `--no-codeblocks` restores pytest's answer for a
-  `.md` argument.
+- **Markdown code-block tests on the default engine, executed for real.** `.md` files must
+  be named rather than walked (see breaking change 7 in the first list above), and the tier
+  itself is off unless `--codeblocks`, `[tool.rustest] codeblocks`, or the pytest ini
+  section's `codeblocks` key turns it on (see "Breaking changes: documentation code block
+  execution"). A block's source execs at collect time into a fresh module handed to the same
+  enumerator a `.py` file uses, so a `def test_*` inside a block collects and runs as its own
+  node — fixtures, `@parametrize`, `Test*` classes and xunit `setup_function`/`setup_module`
+  all work inside a block with no special-casing, and a block that raises is a failing test
+  rather than a file-level collection error, so a broken block no longer erases its siblings'
+  results. `--no-codeblocks` overrides config to force the tier off for one run.
 - `RUSTEST_ENGINE=v2` in the worker environment (alongside the long-standing
   `RUSTEST_RUNNING=1`), for suites that need to branch during the transition.
 - **A worker's whole process tree is torn down with it** (job-object containment on
@@ -378,6 +441,12 @@ per-suite table and caveats in `user_guide/performance.md`.
   pages and the README hero.
 - CI's documentation-code-block gate widened from four subdirectories to the whole site.
   That immediately caught 36 broken examples on pages that had never been tested.
+- **The gate itself was rebuilt to execute for real** (see "Breaking changes: documentation
+  code block execution" above). The old mechanism wrapped each block in a function and called
+  it, so a `def test_*` inside a block was defined and never invoked; 303 tests passed under
+  that mechanism on this repository's own docs, 587 pass under the real one — nearly double,
+  because previously invisible test bodies now run, and 109 of them turned out to be broken.
+  `user_guide/markdown-testing.md` was rewritten to match.
 - `pytest-plugins.md` no longer tells readers that rustest cannot run tests in parallel and
   that they should keep using pytest-xdist. `-n` has shipped for the whole of this arc.
 
