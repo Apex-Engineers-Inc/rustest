@@ -445,9 +445,26 @@ git commit -m "feat(collect): codeblocks off by default, enabled by config or fl
 ### Task 3: CLI and Python API tri-state
 
 **Files:**
+- Modify: `src/v2/py.rs:249` and `:362` (the two pyo3 signatures that hard-default `codeblocks=true`)
 - Modify: `python/rustest/cli.py:355-361` (the `--no-codeblocks` argument)
 - Modify: `python/rustest/core.py:322,736` (the `run()` signature and its forwarding)
 - Test: `python/tests/test_codeblock_switch.py` (create)
+
+**The pyo3 boundary is the load-bearing part of this task, and it is easy to miss.**
+
+Task 2 flipped the Rust-side default, but the flip is **not reachable from Python** until this
+task changes `src/v2/py.rs`. Both `v2_collect` and the `plan` entry point declare
+`codeblocks=true` in their `#[pyo3(signature = ...)]` and type the parameter `codeblocks: bool`,
+so the boundary coerces to a concrete bool and the `Option<bool>` tri-state never survives the
+crossing. Verified empirically after Task 2 landed: in a scratch project with **no config at
+all**, `rustest page.md` still collected and passed.
+
+Change both to `Option<bool>` with a `None` default, and forward `None` through rather than
+coercing it. Until that happens the feature is unreachable and, worse, this repository's own
+docs gate is green because of the hard default rather than because `pyproject.toml` is read,
+which is the exact vacuously-green condition this plan's ordering was written to prevent.
+
+`v2_run` never builds a `CollectOptions` and does not need the change.
 
 **Interfaces:**
 - Consumes: the tri-state `CollectOptions.codeblocks` from Task 2.
