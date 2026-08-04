@@ -18,6 +18,7 @@ Everything below was verified against the tree and against GitHub, not inferred 
 | Merge with `origin/main` | **Done.** All 37 conflicting paths resolved per §1.2, plus three deviations §1.2 did not predict — see the merge commit |
 | Version | `1.0.0rc1` (`pyproject.toml`) / `1.0.0-rc.1` (`Cargo.toml`) — an RC number for unambiguous git installs, **not** a decision to ship 1.0.0. See §2 |
 | Version on `origin/main` | `0.18.0` |
+| **Does merging publish?** | **Yes — this changed.** `1.0.0rc1` is not on PyPI, so `check-version` resolves `publish=true` and the merge push itself releases and deploys docs. The reviewable gap §6 step 1 used to promise is gone. **Decide the version before merging**, not after — see §6 step 1 |
 | `publish.yml` 3.14 wheel fix (#132) | **applied** (`812b279`), not triggered |
 | Deferred items closed on the RC | 1, 2, 3, 4, 5, 8 — see §4 |
 | Deferred items still open | **3**: items 6, 7 and 9 (the version). None is a behaviour regression |
@@ -31,7 +32,8 @@ Everything below was verified against the tree and against GitHub, not inferred 
    ```bash
    uv pip install "rustest @ git+https://github.com/Apex-Engineers-Inc/rustest.git@v2/release-candidate"
    ```
-3. **Decide the version** (§2) and run the release (§6). Close issues only once it is live (§5).
+3. **Decide the version** (§2) — **before** merging PR #141, because at `1.0.0rc1` the merge
+   push publishes on its own. Then run the release (§6). Close issues only once it is live (§5).
 
 ---
 
@@ -272,10 +274,30 @@ action.
 `pyproject.toml`'s `version =` against PyPI. So the merge push and the version bump should
 be separate, deliberate acts.
 
-1. [ ] §1's merge has landed on `main` and CI is green on `main` HEAD. (Pushing the merge
-       alone does **not** publish: `0.16.2` already exists on PyPI, so `check-version`
-       resolves `publish=false`. That is a useful property — it gives a reviewable gap
-       between merge and release.)
+1. [ ] §1's merge has landed on `main` and CI is green on `main` HEAD.
+
+   > **⚠ The gap this step used to promise no longer exists. Read before merging.**
+   >
+   > This step read: "Pushing the merge alone does **not** publish: `0.16.2` already exists
+   > on PyPI, so `check-version` resolves `publish=false`. That is a useful property — it
+   > gives a reviewable gap between merge and release." **That was true only while the
+   > version was `0.16.2`.** The version is now `1.0.0rc1`, and `1.0.0rc1` is **not** on
+   > PyPI — verified against `https://pypi.org/pypi/rustest/json`, whose `releases` map runs
+   > `0.1.0` … `0.18.0` and contains no `1.0.0rc1`.
+   >
+   > So `check-version` resolves **`publish=true`**, and merging PR #141 runs
+   > `build-wheels` → `build-sdist` → `publish` → `deploy-docs` on the merge push itself.
+   > **Merging is the release**, and a published PyPI version can be yanked but never
+   > replaced.
+   >
+   > It also splits the story if allowed to fire: pip skips pre-releases by default, so
+   > `pip install rustest` would still resolve `0.18.0` while the docs site had already
+   > redeployed describing v2 — users reading 1.0 docs against a 0.18 install.
+   >
+   > **Therefore: settle §2's version decision *before* the merge, not after.** The
+   > merge-then-bump sequence in steps 2–4 below assumes a gap this tree does not have.
+   > Either set the intended final version first and accept that the merge publishes it, or
+   > park the version at something already on PyPI to restore the gap deliberately.
 2. [ ] Decide the version (§2) and set it in `pyproject.toml`.
 3. [ ] Rename `CHANGELOG.md`'s `## [Unreleased]` to `## [<version>] - <date>`, and
        `cp CHANGELOG.md user_guide/changelog.md`.
@@ -314,9 +336,27 @@ problems surfaced that no local run could have caught. None of the 12 test failu
 regression from this work; each was a test or a behaviour that had simply never executed
 under Linux, or under the interpreter CI was really using.
 
-> **All resolved — every check is green**, and the matrix now genuinely runs three
+> **The four CI problems below are resolved**, and the matrix now genuinely runs three
 > interpreters: **3.12.13, 3.13.14 and 3.14.6**. That is the first time 3.13 and 3.14 have
 > been tested in this project at all.
+>
+> **This section used to read "every check is green". That was true when written and went
+> stale**, which is worth recording because it is the second time this document has
+> asserted a green state that a later commit invalidated (§1.2's conflict claim was the
+> first). A *later* commit on this branch, `e0dc4a8`, ungated the failure report under `-q`
+> and left `test_quiet_prints_only_the_summary` asserting the behaviour it had just
+> removed — so all three matrix jobs failed on that one test. Fixed by rewriting the test
+> to pin what the ladder now does. **The lesson is the same one as §1.3: a green run is
+> evidence about the commit it ran on, not about the branch.** Re-read the PR's checks
+> before trusting any "green" in this file.
+>
+> Found while probing that fix, and not fixed here: **`-q` is now indistinguishable from
+> the default rung.** rustest's default output has no session banner, no `collected N
+> items` line and no progress column, so once the failure report stopped being gated there
+> was nothing left for `-q` to suppress. Only `-v` differs. Under pytest the two rungs
+> genuinely differ. This follows from the deliberate no-`isatty` stance rather than being a
+> bug, and the rewritten test pins the equality either way — but it is a fair question for
+> a release claiming pytest ergonomics.
 
 **Fixed on the RC:**
 
