@@ -751,7 +751,10 @@ def v2_run(
 
     Output is a three-rung ladder -- pytest's own verbosity ladder, narrowed to three rungs:
 
-    * ``verbosity < 0`` (``-q``) -- the summary line and nothing else.
+    * ``verbosity < 0`` (``-q``) -- the failure report and the summary line, with the
+      per-test progress lines dropped.  **Not** "the summary line and nothing else":
+      pytest's ``-q`` keeps ``FAILURES`` and ``short test summary info``, and a quiet
+      run that names no failing node is undiagnosable.
     * ``verbosity == 0`` (default) -- plus pytest's failure report: an ``ERRORS`` section, a
       ``FAILURES`` section, and a ``short test summary info`` list of node ids
       (:func:`_print_failure_sections`), which is what makes a red run diagnosable from a
@@ -874,8 +877,15 @@ def v2_run(
                 for index, test in enumerate(tests):
                     print(_progress_line(test, index, total))
 
-            if verbosity >= 0:
-                _print_failure_sections(tests)
+            # Printed at **every** rung, including ``-q``.  pytest's ``-q`` drops the
+            # session banner and condenses progress; it does not drop the failure report
+            # (probed against pytest 8.4.2: `pytest -q` on a red run still emits FAILURES
+            # and short test summary info).  Gating this on ``verbosity >= 0`` made
+            # ``rustest -q`` print a bare summary line and nothing else, so a quiet red run
+            # named no node and carried no traceback -- undiagnosable without re-running at
+            # a different verbosity, and a divergence from the oracle on the one rung a CI
+            # pipeline is most likely to use.
+            _print_failure_sections(tests)
 
             for error in report["collection_errors"]:
                 print(f"ERROR collecting {error['path']}", file=sys.stderr)

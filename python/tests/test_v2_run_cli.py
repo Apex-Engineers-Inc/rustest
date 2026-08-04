@@ -1659,3 +1659,38 @@ def test_a_plain_sequence_failure_did_not_regress_when_approx_was_wired_in(
         assert fragment in oracle, f"--- pytest ---\n{oracle}"
         assert fragment in ours, f"--- v2 ---\n{ours}"
     assert "comparison failed" not in ours, f"--- v2 ---\n{ours}"
+
+
+def test_quiet_still_reports_failures_like_pytest(tmp_path: Path) -> None:
+    """``-q`` suppresses the preamble, not the diagnosis -- diffed against real pytest.
+
+    rustest's ladder used to gate :func:`_print_failure_sections` on ``verbosity >= 0``, so
+    ``rustest -q`` on a red run printed the summary line and nothing else: no ``FAILURES``
+    section, no ``short test summary info``, no node ids.  pytest's ``-q`` drops the session
+    banner and condenses progress but **keeps the failure report**, which is what makes a
+    quiet run diagnosable at all.
+
+    Only section titles and order are compared, for the same reason as
+    :func:`test_the_failure_report_has_pytests_section_structure`: the traceback body comes
+    from the worker's ``traceback`` module rather than pytest's ``ExceptionInfo``, and
+    pinning its wording would make every upstream reword a red gate for no parity gained.
+    """
+    tree = _tree(tmp_path, "quietreport", {"test_f.py": FAILING_TREE})
+
+    oracle = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"], tree)
+    ours = _run_v2(tree, ["-q"])
+
+    assert ours.returncode == oracle.returncode == 1, _context("v2", ours)
+
+    # pytest under -q: no session banner, but the failure report survives.
+    assert _rules(oracle.stdout, "=") == [
+        "ERRORS",
+        "FAILURES",
+        "short test summary info",
+    ], _context("pytest", oracle)
+
+    assert _rules(ours.stdout, "=") == [
+        "ERRORS",
+        "FAILURES",
+        "short test summary info",
+    ], _context("v2", ours)

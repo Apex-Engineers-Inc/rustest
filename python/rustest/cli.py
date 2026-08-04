@@ -308,7 +308,7 @@ def build_parser() -> _Parser:
         "-q",
         "--quiet",
         action="store_true",
-        help="Print only the summary line.",
+        help="Drop the per-test progress lines. Failures are still reported.",
     )
     # `--ascii` and `--color` are **accepted and inert**, and that is deliberate rather than
     # lazy. Both were v1 renderer options; v2's output is not coloured and uses no box-drawing

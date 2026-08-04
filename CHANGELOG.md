@@ -271,6 +271,16 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 Several of these were real, shipped defects that reported **green** on a broken test,
 which is the worst answer a test runner can give.
 
+- **`-q` no longer swallows the failure report.** `rustest -q` on a red run printed the
+  summary line and nothing else: no `FAILURES` section, no `short test summary info`, no
+  node ids. A quiet run therefore named nothing that failed and carried no traceback, so it
+  could not be diagnosed without re-running at a different verbosity. pytest's `-q` drops
+  the session banner and condenses progress but keeps the failure report; probed against
+  pytest 8.4.2. `-q` now means "drop the per-test progress lines", which is what it always
+  should have meant, and the divergence is pinned against real pytest by
+  `test_quiet_still_reports_failures_like_pytest`. This is the rung a CI pipeline is most
+  likely to use.
+
 - **A test returning a non-coroutine awaitable no longer fails on Python 3.12 and 3.13.**
   rustest duck-types on `__await__` exactly as pytest does, so a `Future`, an anyio task
   wrapper, or any object with `__await__` is awaited rather than dropped unrun. But the

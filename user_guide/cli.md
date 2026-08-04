@@ -46,7 +46,8 @@ options:
                         by CPU count).
   -s, --no-capture      Do not capture stdout/stderr during test execution.
   -v, --verbose         Print one PASSED/FAILED line per test.
-  -q, --quiet           Print only the summary line.
+  -q, --quiet           Drop the per-test progress lines. Failures are still
+                        reported.
   --ascii               Accepted and ignored: the default engine's output is
                         already plain ASCII.
   --color {auto,always,never,yes,no}
@@ -93,6 +94,7 @@ options:
                         None of the other options apply.
   --v2                  Deprecated no-op: there is one engine. Accepted so old
                         scripts keep working.
+
 ```
 
 ## Basic Commands
@@ -587,7 +589,7 @@ rustest [OPTIONS] [PATHS...]
 | `-n WORKERS, --workers WORKERS` | Number of worker processes (default 4, capped by CPU count) |
 | `-s, --no-capture` | Don't capture stdout/stderr during test execution. Output reaches **stderr**, because a worker's stdout is the orchestrator protocol channel |
 | `-v, --verbose` | One `PASSED`/`FAILED` line per test, with pytest's wording and percent column |
-| `-q, --quiet` | Only the summary line. `-v` and `-q` cancel out, as they do under pytest |
+| `-q, --quiet` | Drop the per-test progress lines. The failure report is still printed, as it is under pytest's own `-q`. `-v` and `-q` cancel out, as they do under pytest |
 | `-o, --override-ini OPTION=VALUE` | Override an ini option, e.g. `-o addopts=`. Supported key: `addopts` |
 | `--maxfail NUM` | Exit after the first `NUM` failures or errors (`0` means no limit) |
 | `--ascii` | Accepted and ignored: the output is already plain ASCII |
