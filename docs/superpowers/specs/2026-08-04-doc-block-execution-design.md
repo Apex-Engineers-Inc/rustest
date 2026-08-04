@@ -372,6 +372,21 @@ Each of these needs a `CHANGELOG.md` entry.
    cached doc failures gets one empty `--lf` selection. Harmless, but it belongs in the
    changelog. `cache.rs:95-106` matches exact id strings, so there is no crash.
 
+7. **Autouse fixtures no longer reach a block's top-level statements.** They still reach
+   the tests *inside* a block. Under the old model the whole block body ran at execute time
+   inside `build_closure(registry, ())`, so a conftest's `@fixture(autouse=True)` applied to
+   the body itself. Now the body executes at collect, outside any fixture closure.
+
+   Measured after the rewrite: a conftest autouse fixture setting an environment variable,
+   with a block asserting on that variable at top level, fails; the same assertion inside a
+   `def test_*` in the same block passes.
+
+   This is **consistent with `.py` semantics**, where module-level code has never had
+   autouse fixtures applied, and that consistency is the whole argument of "When a block
+   executes" above. It is nonetheless a user-visible change from today's markdown tier, so
+   it is listed here rather than left for someone to discover. A doc example that depended
+   on an autouse fixture at block top level must move that dependency into a test function.
+
 ### Mechanical notes for the implementation
 
 - **The CLI pair needs a tri-state default.** `enable_codeblocks` defaults to `True` at
