@@ -340,3 +340,122 @@ def test_blocks_do_not_share_a_namespace(tmp_path: Path) -> None:
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined
     assert "2 passed" in combined, combined
+
+
+def test_a_broken_block_does_not_erase_its_siblings(tmp_path: Path) -> None:
+    """The pinning test for the per-file error shape."""
+    page = _md(
+        tmp_path,
+        "```python\nimport no_such_module_at_all\n```\n\n"
+        "```python\ndef test_sibling():\n    assert True\n```\n",
+    )
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "test_sibling" in combined, (
+        "the healthy block was erased by its broken sibling\n" + combined
+    )
+    assert "1 failed" in combined and "1 passed" in combined, combined
+
+
+def test_a_broken_page_exits_one_not_two(tmp_path: Path) -> None:
+    """Failing tests, not a collection error, so the exit code is 1."""
+    page = _md(tmp_path, "```python\nraise RuntimeError('boom')\n```\n")
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 1, (
+        f"expected 1 (failed tests), got {proc.returncode}\n" + proc.stdout + proc.stderr
+    )
+
+
+def test_the_traceback_names_the_markdown_source(tmp_path: Path) -> None:
+    """Default verbosity, not `-q`: `-q` is documented ("the summary line and nothing
+    else", `core.py:754`) to suppress the FAILURES section entirely, deliberately and
+    pre-existing -- probed against an ordinary failing `.py` test too, not just this
+    engine's own doc blocks. Asserting the traceback there would be pinning a suppression
+    bug, not the markdown source.
+    """
+    page = _md(tmp_path, "```python\nraise RuntimeError('boom')\n```\n")
+    proc = _run(str(page), cwd=tmp_path)
+    assert proc.returncode == 1, (
+        f"expected 1 (failed tests), got {proc.returncode}\n" + proc.stdout + proc.stderr
+    )
+    combined = proc.stdout + proc.stderr
+    assert "page.md:L1" in combined, (
+        "traceback should point at the markdown source, not <string>\n" + combined
+    )
+
+
+def test_partial_failure_keeps_reached_tests_and_adds_a_block_node(
+    tmp_path: Path,
+) -> None:
+    """A block that raises after defining tests produces both shapes.
+
+    This is the deliberate exception to 'tests means no block node'.
+    """
+    page = _md(
+        tmp_path,
+        "```python\n"
+        "def test_reached():\n    assert True\n"
+        "raise RuntimeError('boom')\n"
+        "def test_never_defined():\n    assert True\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-v", cwd=tmp_path)
+    combined = proc.stdout + proc.stderr
+    assert "test_reached" in combined, combined
+    # "codeblock_0_line_1" alone is too weak a check on its own: it is also a substring of
+    # `test_reached`'s own id (`codeblock_0_line_1::test_reached`), so it would still be
+    # `True` even if the block's own failing node were silently dropped. "1 failed, 1
+    # passed" is what actually distinguishes "two nodes" from "one node whose id happens to
+    # contain the segment name" -- probed by reverting the block-node condition to the old
+    # `else` and confirming this exact assertion is the one that then fails.
+    assert "codeblock_0_line_1" in combined, "the exec failure needs a node of its own\n" + combined
+    assert "1 failed" in combined and "1 passed" in combined, (
+        "the exec failure needs a node of its own, distinct from test_reached\n" + combined
+    )
+    assert "test_never_defined" not in combined, (
+        "a test whose definition was never reached must not exist\n" + combined
+    )
+
+
+def test_a_block_body_runs_once_not_twice(tmp_path: Path) -> None:
+    """Outcome transport is replay, not re-execution."""
+    page = _md(
+        tmp_path,
+        "```python\n"
+        "from pathlib import Path\n"
+        "p = Path('side_effect.txt')\n"
+        "p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (tmp_path / "side_effect.txt").read_text() == "x", (
+        "the body ran more than once; the block node must replay its recorded outcome"
+    )
+
+
+def test_a_failing_block_body_runs_once_not_twice(tmp_path: Path) -> None:
+    """The error-path twin of the test above.
+
+    `test_a_block_body_runs_once_not_twice`'s block never raises, so `block_error` stays
+    `None` there and `_replay` is never actually reached -- that test alone cannot tell a
+    correct replay from an accidental re-run of the failing branch (probed: swapping
+    `_replay(block_error)` for an inline re-exec of the block's code left all of this
+    file's other tests green). A block whose side effect happens *before* its `raise` is
+    what closes that gap.
+    """
+    page = _md(
+        tmp_path,
+        "```python\n"
+        "from pathlib import Path\n"
+        "p = Path('side_effect.txt')\n"
+        "p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n"
+        "raise RuntimeError('boom')\n"
+        "```\n",
+    )
+    proc = _run(str(page), "-q", cwd=tmp_path)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert (tmp_path / "side_effect.txt").read_text() == "x", (
+        "the body ran more than once; the failing block node must replay its recorded "
+        "outcome, not re-execute the body"
+    )
