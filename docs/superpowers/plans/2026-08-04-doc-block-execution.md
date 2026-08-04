@@ -21,6 +21,26 @@
 
 ---
 
+## Execution: two independent chains
+
+These tasks form two chains that share no file, so they can run concurrently:
+
+- **Chain R (Rust + CLI):** Task 1 -> Task 2 -> Task 3. Touches `src/v2/config.rs`,
+  `src/v2/collect.rs`, `pyproject.toml`, `python/rustest/cli.py`, `python/rustest/core.py`,
+  `python/tests/test_codeblock_switch.py`.
+- **Chain P (Python worker):** Task 4 -> Task 5 -> Task 6. Touches
+  `python/rustest/_v2_worker.py` and `python/tests/test_codeblock_execution.py`. Deliberately
+  no Rust, so it never contends with Chain R's cargo builds.
+- **Task 7 converges** and requires both chains complete.
+
+Within a chain the order is strict. Chain P's tests pass both before and after Chain R's
+default flip, because they write `[tool.rustest] codeblocks = true` into their own
+`tmp_path` project and the pre-flip default is on anyway.
+
+Two rules for concurrent execution: an agent commits **only the files its task names**, and
+if `git commit` fails on `.git/index.lock`, wait a moment and retry rather than clearing the
+lock.
+
 ## File Structure
 
 **Rust**
@@ -37,7 +57,8 @@
 | `python/rustest/_v2_worker.py` | collection + execution | The whole execution-model change: `block_segment` plumbing, module-level exec, four-step registration, the failure model |
 | `python/rustest/cli.py` | CLI surface | `--codeblocks` / `--no-codeblocks` as a tri-state pair |
 | `python/rustest/core.py` | `run()` wrapper | `codeblocks: bool \| None = None` |
-| `python/tests/test_codeblock_execution.py` | new | Every Python-side pinning test |
+| `python/tests/test_codeblock_switch.py` | new | Switch tests (Chain R) |
+| `python/tests/test_codeblock_execution.py` | new | Execution + failure-model tests (Chain P) |
 | `tests/test_codeblocks_integration.py` | new | End-to-end over a fixture `.md` |
 
 **Docs**
@@ -409,7 +430,7 @@ git commit -m "feat(collect): codeblocks off by default, enabled by config or fl
 **Files:**
 - Modify: `python/rustest/cli.py:355-361` (the `--no-codeblocks` argument)
 - Modify: `python/rustest/core.py:322,736` (the `run()` signature and its forwarding)
-- Test: `python/tests/test_codeblock_execution.py` (create)
+- Test: `python/tests/test_codeblock_switch.py` (create)
 
 **Interfaces:**
 - Consumes: the tri-state `CollectOptions.codeblocks` from Task 2.
@@ -417,10 +438,10 @@ git commit -m "feat(collect): codeblocks off by default, enabled by config or fl
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `python/tests/test_codeblock_execution.py`:
+Create `python/tests/test_codeblock_switch.py`:
 
 ```python
-"""Documentation code block execution: the switch, the shapes, the failure model."""
+"""The codeblocks switch: CLI flag, config key, and their precedence."""
 
 from __future__ import annotations
 
@@ -478,7 +499,7 @@ def test_cli_flag_enables_without_config(tmp_path: Path) -> None:
 - [ ] **Step 2: Run to verify they fail**
 
 ```bash
-uv run pytest python/tests/test_codeblock_execution.py -v
+uv run pytest python/tests/test_codeblock_switch.py -v
 ```
 
 Expected: FAIL. `--codeblocks` is an unrecognised argument, and the no-flag case collects the page because the default has not reached the Python layer.
@@ -517,7 +538,7 @@ and its docstring line to state that `None` means the config decides. Forward `N
 
 ```bash
 uv run ruff format python && uv run ruff check python && uv run basedpyright python
-uv run pytest python/tests/test_codeblock_execution.py -v
+uv run pytest python/tests/test_codeblock_switch.py -v
 ```
 
 Expected: PASS, and basedpyright clean.
@@ -525,7 +546,7 @@ Expected: PASS, and basedpyright clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add python/rustest/cli.py python/rustest/core.py python/tests/test_codeblock_execution.py
+git add python/rustest/cli.py python/rustest/core.py python/tests/test_codeblock_switch.py
 git commit -m "feat(cli): --codeblocks/--no-codeblocks as a tri-state pair"
 ```
 
@@ -535,7 +556,7 @@ git commit -m "feat(cli): --codeblocks/--no-codeblocks as a tri-state pair"
 
 **Files:**
 - Modify: `python/rustest/_v2_worker.py`: `_build_entry`, `ExecutionPlan`, `_CollectContext`, `collect_module`, `_make_items`, `_collect_function`
-- Modify: `src/v2/manifest.rs:68` and `python/rustest/_v2_worker.py:3978-3980` (docstrings the change falsifies)
+- Modify: `python/rustest/_v2_worker.py:3978-3980` (the `_build_entry` docstring the change falsifies). **`src/v2/manifest.rs:68` is deliberately NOT touched here** so this chain stays pure Python and never contends with the Rust chain's cargo builds; Task 7 updates it.
 - Test: `python/tests/test_codeblock_execution.py`
 
 **Interfaces:**
@@ -553,7 +574,41 @@ The full consumer set of the `parts[:-1]` rule, all of which must see the block-
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `python/tests/test_codeblock_execution.py`:
+Create `python/tests/test_codeblock_execution.py`. It owns its helpers so this chain shares no file with the switch tests:
+
+```python
+"""Doc block execution: node shapes, fixtures, and the failure model."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _md(tmp_path: Path, body: str, *, enable: bool = True) -> Path:
+    if enable:
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.rustest]
+codeblocks = true
+", encoding="utf-8"
+        )
+    page = tmp_path / "page.md"
+    page.write_text(body, encoding="utf-8")
+    return page
+
+
+def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    # rustest writes its summary to stderr so stdout stays clean for --llm JSONL.
+    return subprocess.run(
+        [sys.executable, "-m", "rustest", *args],
+        capture_output=True,
+        text=True,
+        cwd=str(cwd),
+    )
+```
+
+Then add the pinning test:
 
 ```python
 def test_block_segment_is_in_the_id_but_not_the_class_name(tmp_path: Path) -> None:
@@ -595,7 +650,7 @@ def test_block_segment_is_in_the_id_but_not_the_class_name(tmp_path: Path) -> No
     )
 ```
 
-Add a `_default_naming()` helper next to `_md` in the same file, building whatever `Naming` value the existing worker tests use; do not invent a new constructor.
+Add a `_default_naming()` helper to this same file, building whatever `Naming` value the existing worker tests use; do not invent a new constructor.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -641,7 +696,7 @@ def _build_entry(
 
 Add `block_segment` to `ExecutionPlan` as a plain field defaulting to `None`, and leave its `class_name` property reading `self.parts` untouched. Pass `context.block_segment` from `_collect_function` into both `_build_entry` and the `ExecutionPlan` it constructs.
 
-Update the two docstrings the change falsifies. In `src/v2/manifest.rs` at the `qualname` field, and in `_build_entry`'s own docstring, replace the claim that `class_name` is `qualname` minus its last segment with:
+Update `_build_entry`'s own docstring, replacing the claim that `class_name` is `qualname` minus its last segment with:
 
 ```
 For a documentation code block the qualname carries a leading block segment that
@@ -661,7 +716,7 @@ Expected: the new test PASSES and the existing suite is unchanged, because `bloc
 - [ ] **Step 5: Commit**
 
 ```bash
-git add python/rustest/_v2_worker.py src/v2/manifest.rs python/tests/test_codeblock_execution.py
+git add python/rustest/_v2_worker.py python/tests/test_codeblock_execution.py
 git commit -m "feat(worker): carry a block segment in node ids without touching class_name"
 ```
 
