@@ -319,7 +319,7 @@ def v2_collect_only(
     workers: int | None = None,
     keyword: str | None = None,
     mark_expr: str | None = None,
-    codeblocks: bool = True,
+    codeblocks: bool | None = None,
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
@@ -356,6 +356,9 @@ def v2_collect_only(
             however aggressively the expression deselects, which is why a file the dynamic
             tier owns is never pruned before its worker has run.
         mark_expr: The raw ``-m`` expression, or ``None``.
+        codeblocks: Collect python fences from ``.md`` files named as arguments. Tri-state:
+            ``None`` means neither ``--codeblocks`` nor ``--no-codeblocks`` was passed, so
+            ``[tool.rustest] codeblocks`` decides, off by default.
 
     Returns:
         0 with tests, 5 with none (including "everything was deselected"), 2 when any file
@@ -733,7 +736,7 @@ def v2_run(
     max_fail: int = 0,
     last_failed_mode: str = "none",
     capture: bool = True,
-    codeblocks: bool = True,
+    codeblocks: bool | None = None,
     verbosity: int = 0,
     cov: Sequence[str] | None = None,
     cov_report: Sequence[str] | None = None,
@@ -780,7 +783,9 @@ def v2_run(
         max_fail: ``--maxfail=N`` -- stop dispatching after N failures; 0 is no limit.
         last_failed_mode: ``"none"``, ``"only"`` (``--lf``) or ``"first"`` (``--ff``).
         capture: ``False`` for ``-s``; the workers stop redirecting a test's streams.
-        codeblocks: Collect python fences from ``.md`` files (``--no-codeblocks`` clears it).
+        codeblocks: Collect python fences from ``.md`` files named as arguments. Tri-state:
+            ``None`` means neither ``--codeblocks`` nor ``--no-codeblocks`` was passed, so
+            ``[tool.rustest] codeblocks`` decides, off by default.
         verbosity: ``-1`` for ``-q``, ``0`` default, ``1`` for ``-v``.
         cov: ``--cov`` values -- source directories, with ``""`` for a bare ``--cov`` (the
             rootdir).  ``None`` means no coverage at all, which is the only value that leaves

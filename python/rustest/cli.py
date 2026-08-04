@@ -354,10 +354,17 @@ def build_parser() -> _Parser:
         help="Exit after the first NUM failures or errors (0 means no limit).",
     )
     _ = parser.add_argument(
+        "--codeblocks",
+        dest="enable_codeblocks",
+        action="store_true",
+        default=None,
+        help="Collect and run python code blocks in markdown files named as arguments.",
+    )
+    _ = parser.add_argument(
         "--no-codeblocks",
         dest="enable_codeblocks",
         action="store_false",
-        help="Disable code block tests from markdown files.",
+        help="Do not collect code blocks, overriding any config setting.",
     )
     _ = parser.add_argument(
         "--lf",
@@ -475,7 +482,6 @@ def build_parser() -> _Parser:
     )
     parser.set_defaults(
         capture_output=True,
-        enable_codeblocks=True,
         last_failed=False,
         failed_first=False,
         fail_fast=False,

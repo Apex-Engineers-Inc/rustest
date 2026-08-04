@@ -28,7 +28,7 @@ def v2_collect(
     workers: int,
     keyword: str | None = ...,
     mark_expr: str | None = ...,
-    codeblocks: bool = ...,
+    codeblocks: bool | None = ...,
     collect_tier: str = ...,
     cache_mode: str = ...,
 ) -> str:
@@ -38,7 +38,9 @@ def v2_collect(
     must be absolute; ``args`` are raw CLI path arguments, and an empty list lets
     ``testpaths`` decide the roots. ``python_executable`` is the interpreter the collection
     workers run under (``sys.executable``) -- the Rust side never guesses one.
-    ``workers`` is the pool size, clamped to ``[1, number of files]``. ``keyword`` and
+    ``workers`` is the pool size, clamped to ``[1, number of files]``. ``codeblocks`` is
+    tri-state: ``None`` means neither ``--codeblocks`` nor ``--no-codeblocks`` was passed, so
+    ``[tool.rustest] codeblocks`` decides, off by default. ``keyword`` and
     ``mark_expr`` are the raw ``-k`` / ``-m`` option values, applied *inside* collection
     exactly as pytest's ``pytest_collection_modifyitems`` applies them -- and, for files the
     static tier answered, before any worker is spawned, so a fully static tree whose every
@@ -78,7 +80,7 @@ def v2_run(
     max_fail: int = ...,
     last_failed_mode: str = ...,
     no_capture: bool = ...,
-    codeblocks: bool = ...,
+    codeblocks: bool | None = ...,
     assert_rewrite: str = ...,
     coverage: str | None = ...,
 ) -> str:

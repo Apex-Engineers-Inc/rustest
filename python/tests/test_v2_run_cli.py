@@ -893,7 +893,7 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         max_fail: int,
         last_failed_mode: str,
         no_capture: bool,
-        codeblocks: bool,
+        codeblocks: bool | None,
         assert_rewrite: str,
         coverage: str | None,
     ) -> str:
@@ -943,7 +943,7 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         max_fail: int,
         last_failed_mode: str,
         no_capture: bool,
-        codeblocks: bool,
+        codeblocks: bool | None,
         assert_rewrite: str,
         coverage: str | None,
     ) -> str:
@@ -995,7 +995,7 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         max_fail: int,
         last_failed_mode: str,
         no_capture: bool,
-        codeblocks: bool,
+        codeblocks: bool | None,
         assert_rewrite: str,
         coverage: str | None,
     ) -> str:

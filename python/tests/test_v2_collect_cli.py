@@ -357,7 +357,7 @@ def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> No
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
-        codeblocks: bool,
+        codeblocks: bool | None,
         collect_tier: str,
         cache_mode: str,
     ) -> str:
@@ -435,7 +435,7 @@ def test_absent_path_arguments_are_passed_through_as_none_given() -> None:
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
-        codeblocks: bool,
+        codeblocks: bool | None,
         collect_tier: str,
         cache_mode: str,
     ) -> str:
@@ -462,7 +462,7 @@ def test_core_passes_sys_executable_to_the_worker_pool() -> None:
         workers: int,
         keyword: str | None,
         mark_expr: str | None,
-        codeblocks: bool,
+        codeblocks: bool | None,
         collect_tier: str,
         cache_mode: str,
     ) -> str:

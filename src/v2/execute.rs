@@ -118,7 +118,12 @@ pub struct RunOptions {
     pub no_capture: bool,
     /// Collect python fences out of `.md` files (rustest's own extension; `--no-codeblocks`
     /// turns it off).
-    pub codeblocks: bool,
+    ///
+    /// `None` means the CLI said nothing, so `[tool.rustest] codeblocks` (or the pytest ini
+    /// spelling) decides, and the built-in default is **off** — [`collect::plan_with_options`]
+    /// resolves it with `options.codeblocks.or(config.codeblocks).unwrap_or(false)`, the same
+    /// tri-state [`super::collect::CollectOptions::codeblocks`] uses for `--v2-collect-only`.
+    pub codeblocks: Option<bool>,
     /// Rewrite the assertions of statically analysable files
     /// (`crate::v2::static_collect::rewrite_plan`, `python/rustest/_assertion_rewrite.py`).
     ///
@@ -138,18 +143,17 @@ pub struct RunOptions {
 }
 
 impl RunOptions {
-    /// The defaults a plain `rustest <paths>` uses: capture on, codeblocks on, assertion
-    /// rewriting on, no `-x`, no `--lf`.  `Default::default()` cannot be it, because
-    /// `codeblocks` and `assert_rewrite` both default to *true* and `bool::default()` is
-    /// false — a silent feature removal for anyone who built a `RunOptions` with
-    /// `..Default::default()`.
+    /// The defaults a plain `rustest <paths>` uses: capture on, codeblocks left to config
+    /// (`None`), assertion rewriting on, no `-x`, no `--lf`.  `Default::default()` cannot be
+    /// it, because `assert_rewrite` defaults to *true* and `bool::default()` is false — a
+    /// silent feature removal for anyone who built a `RunOptions` with `..Default::default()`.
     pub fn defaults() -> Self {
         Self {
             fail_fast: false,
             max_fail: 0,
             last_failed: LastFailedMode::None,
             no_capture: false,
-            codeblocks: true,
+            codeblocks: None,
             assert_rewrite: true,
             coverage: None,
         }

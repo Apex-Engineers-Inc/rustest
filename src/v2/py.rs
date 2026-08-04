@@ -246,7 +246,7 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// nothing, which is how a user (or a test) asks "is this answer stale?". Read from
 /// `RUSTEST_V2_MANIFEST_CACHE`; see [`CacheMode`].
 #[pyfunction]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=true, collect_tier="auto", cache_mode="auto"))]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto"))]
 #[allow(clippy::too_many_arguments)]
 pub fn v2_collect(
     py: Python<'_>,
@@ -256,18 +256,16 @@ pub fn v2_collect(
     workers: usize,
     keyword: Option<String>,
     mark_expr: Option<String>,
-    codeblocks: bool,
+    codeblocks: Option<bool>,
     collect_tier: &str,
     cache_mode: &str,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let options = CollectOptions {
-        // This boundary's `codeblocks` is already a resolved bool — the pyo3 signature
-        // defaults it to `true` — so it always overrides config here. Letting the CLI omit
-        // it (`None`, so `[tool.rustest] codeblocks` decides) is a Python-layer change, not
-        // this one.
-        codeblocks: Some(codeblocks),
+        // `None` (neither `--codeblocks` nor `--no-codeblocks` on the CLI) is forwarded
+        // verbatim, so `[tool.rustest] codeblocks` decides exactly as it does for a run.
+        codeblocks,
         tier: TierMode::from_wire(collect_tier),
         cache: CacheMode::from_wire(cache_mode),
         keyword,
@@ -359,7 +357,7 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
     max_fail=0,
     last_failed_mode="none",
     no_capture=false,
-    codeblocks=true,
+    codeblocks=None,
     assert_rewrite="auto",
     coverage=None,
 ))]
@@ -376,7 +374,7 @@ pub fn v2_run(
     max_fail: usize,
     last_failed_mode: &str,
     no_capture: bool,
-    codeblocks: bool,
+    codeblocks: Option<bool>,
     assert_rewrite: &str,
     coverage: Option<&str>,
 ) -> PyResult<String> {
@@ -660,7 +658,7 @@ mod tests {
                 2,
                 None,
                 None,
-                true,
+                Some(true),
                 "auto",
                 "off",
             )
@@ -750,7 +748,7 @@ mod tests {
                 1,
                 None,
                 None,
-                true,
+                Some(true),
                 "auto",
                 "off",
             )
@@ -788,7 +786,7 @@ mod tests {
                 1,
                 None,
                 None,
-                true,
+                Some(true),
                 "d",
                 "off",
             )
@@ -820,7 +818,7 @@ mod tests {
                 1,
                 None,
                 None,
-                true,
+                Some(true),
                 "auto",
                 "off",
             )
@@ -851,7 +849,7 @@ mod tests {
                 0,
                 None,
                 None,
-                true,
+                Some(true),
                 "auto",
                 "off",
             )

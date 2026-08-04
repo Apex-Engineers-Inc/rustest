@@ -544,7 +544,7 @@ pub(crate) fn plan(
     invocation_dir: &Path,
     args: &[PathBuf],
     workers: usize,
-    codeblocks: bool,
+    codeblocks: Option<bool>,
     assert_rewrite: bool,
     coverage: Option<CoverageWire>,
 ) -> Result<Dispatch, CollectError> {
@@ -553,10 +553,10 @@ pub(crate) fn plan(
         args,
         workers,
         &CollectOptions {
-            // The run path's `codeblocks` is already a resolved bool by the time it
-            // reaches here (`RunOptions::defaults`); config's tri-state fallback in
-            // `plan_with_options` is for the `--v2-collect-only` / doc-gate surface.
-            codeblocks: Some(codeblocks),
+            // `codeblocks` is the run path's own tri-state (`RunOptions::codeblocks`),
+            // forwarded verbatim: `None` means the CLI said nothing, so `plan_with_options`
+            // falls back to `[tool.rustest] codeblocks` exactly as `--v2-collect-only` does.
+            codeblocks,
             coverage,
             tier: TierMode::DynamicOnly,
             // Belt and braces: `TierMode::DynamicOnly` never reaches the static pass, so the

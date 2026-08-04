@@ -463,13 +463,15 @@ not a python fence
 """
 
 
-def test_markdown_code_blocks_are_collected_by_default(tmp_path: Path) -> None:
+def test_markdown_code_blocks_are_collected_with_the_flag(tmp_path: Path) -> None:
     """rustest's own tier, carried over from v1 — the project's README and guide are tested
     this way, and so are its users'.  pytest answers **4** (``found no collectors``) for a
-    ``.md`` argument; this is a deliberate superset, switched off by ``--no-codeblocks``."""
+    ``.md`` argument; ``--codeblocks`` is the deliberate superset, and with neither flag nor
+    ``[tool.rustest] codeblocks`` config the tier stays off (pytest's own answer) -- see
+    ``test_no_codeblocks_restores_pytests_answer`` for the un-opted-in case."""
     tree = _tree(tmp_path, "md", {"guide.md": MARKDOWN})
 
-    result = _rustest(tree, ["guide.md", "-n", "1"])
+    result = _rustest(tree, ["--codeblocks", "guide.md", "-n", "1"])
 
     assert result.returncode == 0, result.stdout + result.stderr
     # Two python fences: one runs, one is skipped by the HTML comment.  The ```text``` fence
@@ -496,17 +498,21 @@ def test_markdown_files_are_not_found_by_walking_a_directory(tmp_path: Path) -> 
 def test_a_named_markdown_file_is_still_collected(tmp_path: Path) -> None:
     tree = _tree(tmp_path, "mdnamed", {"docs/guide.md": MARKDOWN})
 
-    result = _rustest(tree, ["docs/guide.md", "-n", "1"])
+    result = _rustest(tree, ["--codeblocks", "docs/guide.md", "-n", "1"])
 
     assert _summary_line(result.stderr) == "1 passed, 1 skipped", result.stderr
 
 
 def test_no_codeblocks_restores_pytests_answer(tmp_path: Path) -> None:
-    """With the tier off, a ``.md`` argument is pytest's usage error (exit 4) again."""
+    """With neither the flag nor config asking for it, a ``.md`` argument is pytest's usage
+    error (exit 4) -- the built-in default -- and ``--no-codeblocks`` keeps it that way even
+    when it must override a config that turned the tier on."""
     tree = _tree(tmp_path, "mdoff", {"guide.md": MARKDOWN})
 
-    result = _rustest(tree, ["--no-codeblocks", "guide.md"])
+    result = _rustest(tree, ["guide.md", "-n", "1"])
+    assert result.returncode == 4, result.stdout + result.stderr
 
+    result = _rustest(tree, ["--no-codeblocks", "guide.md"])
     assert result.returncode == 4, result.stdout + result.stderr
 
 
@@ -514,7 +520,7 @@ def test_a_failing_code_block_fails_the_run(tmp_path: Path) -> None:
     """The tier would be worthless if a broken example were silently green."""
     tree = _tree(tmp_path, "mdbad", {"bad.md": "```python\nassert 1 == 2\n```\n"})
 
-    result = _rustest(tree, ["bad.md", "-n", "1"])
+    result = _rustest(tree, ["--codeblocks", "bad.md", "-n", "1"])
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "codeblock_0_line_1" in result.stdout, result.stdout
