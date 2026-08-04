@@ -3,113 +3,127 @@
 !!! warning "Pytest plugins are not supported"
     rustest **does not support pytest plugins** and this is an intentional design decision. This page explains why and provides concrete migration strategies for the most popular pytest plugins.
 
+Several of the plugins below have no migration to do, because rustest ports their behaviour
+into the engine. `--cov`, the worker pool, the `mocker` fixture and async support are all
+built in.
+
 ## Important Distinction: Fixture Modules vs Plugins
 
-Before diving into plugins, it's important to understand the difference:
+Two different things share the name "plugin", and only one of them works.
 
-### ✅ Fixture Modules (SUPPORTED)
+### Fixture Modules (SUPPORTED)
 
-rustest **DOES support** loading fixtures from external Python modules:
+A `pytest_plugins` declaration names Python modules whose `@fixture` functions get registered
+globally. rustest honours it in a `conftest.py` and in a test module, the same two places
+pytest reads it:
 
 ```python
-# conftest.py
-rustest_fixtures = "my_fixtures"  # Preferred: clear naming
-# or
-pytest_plugins = "my_fixtures"    # Compatibility: confusing name but works
+# conftest.py -- a list of module names
+pytest_plugins = ["fixtures.database", "fixtures.api"]
+
+# ...or a single module, as a bare string
+pytest_plugins = "my_fixtures"
 ```
 
-This feature:
-- ✅ Imports Python modules
-- ✅ Extracts `@fixture` decorated functions
-- ✅ Registers them globally
-- ✅ **NOT** a plugin system - just module imports
+The named module is imported and its fixtures are registered with an empty base id, so they
+are visible to the whole run rather than only below the conftest that named them. That is all
+that happens: it is a module import, not a plugin registration. Hooks defined in the named
+module are not called.
 
-See the [Fixtures guide](intro-fixtures.md#loading-fixtures-from-external-modules) for details.
+See [Loading fixtures from external modules](fixtures.md#loading-fixtures-from-external-modules)
+for details.
 
-### ❌ Pytest Plugins (NOT SUPPORTED)
+### Pytest Plugins (NOT SUPPORTED)
 
-rustest **DOES NOT support** actual pytest plugins:
+rustest does not implement any of the machinery a real pytest plugin needs:
 
-- ❌ pluggy hook system (pytest_configure, pytest_collection_modifyitems, etc.)
-- ❌ setuptools entry points (`pytest11`)
-- ❌ Plugin packages from PyPI (pytest-django, etc.) -- but see `--cov` below, which replaces pytest-cov's core surface
-- ❌ Hook wrappers and hook ordering (tryfirst, trylast)
+- the pluggy hook system (`pytest_configure`, `pytest_collection_modifyitems`, and the rest)
+- setuptools entry points (`pytest11`)
+- plugin packages from PyPI, except where the behaviour has been reimplemented in the engine
+- hook wrappers and hook ordering (`tryfirst`, `trylast`)
 
-**The distinction:**
-- **`pytest_plugins` in conftest.py**: Just imports fixture modules (misleading name!)
-- **Actual pytest plugins**: Full hook-based plugins (not supported)
+A conftest that defines `pytest_collection_modifyitems` is silently inert rather than an error.
+`pytest_generate_tests` is not called either; decorator metadata and fixture `params=` are the
+only sources of parametrization.
 
-This page covers the latter - actual pytest plugins from PyPI.
+This page covers plugins from PyPI. For the `pytest_plugins` fixture-module mechanism, see
+above.
 
 ## Why rustest Doesn't Support Plugins
 
 ### The Technical Reasons
 
-Pytest's plugin system is built on **pluggy**, a sophisticated hook-based framework with approximately 60 hooks across 9 different categories (initialization, collection, execution, reporting, fixtures, etc.). Supporting this system in rustest would require:
+pytest's plugin system is built on pluggy. `_pytest/hookspec.py` in pytest 8.4.2 declares 52
+hooks, covering initialization, collection, execution, reporting and fixtures. Implementing
+them in rustest would mean:
 
 **1. Architectural Mismatch**
 
-rustest's core value proposition is its **Rust-powered performance**. The Rust engine owns test discovery, execution, and reporting. Plugins would require frequent Rust↔Python FFI (Foreign Function Interface) boundary crossings:
+The Rust engine owns test discovery, execution and reporting. Every hook call would cross the
+Rust/Python FFI boundary, several times per file during collection and several times per test
+during execution, which for a thousand tests is thousands of crossings that do not exist today.
 
-- **Collection phase**: 10+ hook calls per test file
-- **Execution phase**: 5+ hook calls per test
-- **For 1,000 tests**: Potentially 15,000+ FFI calls
-
-Each FFI call has overhead that would **significantly negate rustest's performance benefits**. The margin being defended is not enormous: rustest ran seventeen real pytest suites between [1.1x and 5.7x](performance.md) faster, and what a runner can win at all is bounded by how much of a suite is framework rather than test body. Re-entering Python on every hook, for every item, is exactly the cost that margin is made of.
+The margin being defended is not enormous. rustest ran seventeen real pytest suites between
+[1.1x and 5.7x](performance.md) faster, and what a runner can win at all is bounded by how much
+of a suite is framework rather than test body. Re-entering Python on every hook, for every
+item, is exactly the cost that margin is made of.
 
 **2. Implementation Complexity**
 
 Full plugin support would require:
 
 - Integrating the `pluggy` library into rustest
-- Implementing ~60 hook specifications
+- Implementing the hook specifications
 - Exposing Rust internal state (Config, Session, Items, Reports) to Python
 - Bidirectional state synchronization across the FFI boundary
 - Hook execution ordering (tryfirst, trylast, wrappers)
 - Dynamic argument injection and pruning
 
-**Estimated effort**: 14-19 weeks of full-time development.
-
 **3. Maintenance Burden**
 
-- Must track pytest's hook API changes across versions
-- Need to maintain compatibility matrix with pytest versions
-- Debug interactions between multiple plugins
-- Support overhead for plugin-related issues
-- Some plugins use private pytest APIs that may not be replicable
+pytest's hook API changes between versions, so a compatibility matrix would have to be tracked
+and tested. Plugins interact with each other in ways that are hard to reproduce, and some reach
+into private pytest APIs that have no stable equivalent to port.
 
 ### The Philosophical Reasons
 
-rustest follows the **80/20 principle**: implement the 20% of pytest features that cover 80% of real-world use cases, with a focus on performance and simplicity.
+rustest implements the parts of pytest that most suites actually use, and leaves the rest to
+pytest. The goal is a fast runner with a faithful core, not a pytest clone.
 
-**Core philosophy**:
-
-- ✅ **Speed**: Dramatically faster test execution for most projects
-- ✅ **Simplicity**: Clean codebase without complex plugin infrastructure
-- ✅ **Focused**: Core testing features done extremely well
-- ❌ **Not everything**: Deliberately excludes niche features
-
-**Design goal**: Be the best fast test runner for 90% of Python projects, not a perfect pytest clone for 100% of projects.
+What that buys: a codebase without plugin infrastructure, and a collection and execution path
+that stays in Rust. What it costs: niche features, and any plugin whose behaviour has not been
+ported.
 
 ### What About Migration?
 
-The good news: **Most projects don't need plugins** to migrate! rustest already provides:
+Most suites need no plugins to migrate. rustest already provides:
 
-- ✅ Full fixture support (all scopes, teardown, dependency injection)
-- ✅ Parametrization with custom IDs
-- ✅ Marks and filtering
-- ✅ Built-in fixtures (tmp_path, tmpdir, monkeypatch, capsys, capfd)
-- ✅ Exception testing (raises, match patterns)
-- ✅ Async testing support (@mark.asyncio)
-- ✅ Warning capture (warns, deprecated_call)
+- Full fixture support (all scopes, teardown, dependency injection)
+- Parametrization with custom IDs
+- Marks and filtering
+- Exception testing (raises, match patterns)
+- Async testing, with no marker required by default
+- Warning capture (warns, deprecated_call)
+- These built-in fixtures: `tmp_path`, `tmp_path_factory`, `tmpdir`, `tmpdir_factory`,
+  `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `mocker`, `pytestconfig`, `recwarn`
 
-For projects using popular plugins, we provide **built-in alternatives** or **migration strategies** below.
+Requesting one of pytest's remaining built-in fixtures is an error naming the gap rather than a
+"fixture not found": `capsysbinary`, `capfdbinary`, `capteesys`, `doctest_namespace`,
+`pytester`, `testdir`, `record_property`, `record_testsuite_property` and
+`record_xml_attribute`.
+
+Cosmetic pytest flags are accepted and ignored rather than rejected, so an `addopts` line that
+carries them still runs. Each one prints a line on stderr naming what was dropped: `--tb`,
+`--durations`, `--durations-min`, `--import-mode`, `--strict`, `--strict-markers`,
+`--strict-config`, `-p`, `--showlocals`, `-l`, `--full-trace` and the `-r` report characters.
+Anything not on that list is still an error, because a flag that changes what runs must never
+be silently ignored.
 
 ---
 
 ## Top 10 Pytest Plugins: Migration Guide
 
-Based on download statistics (October 2025), here's how to migrate from the most popular pytest plugins.
+Download figures are from October 2025.
 
 ### 1. pytest-cov (87.7M downloads/month)
 
@@ -136,7 +150,7 @@ format. See [Coverage](coverage.md) for the whole surface.
     coverage html
     ```
 
-    Branch coverage is not implemented yet -- `--cov-branch` is refused rather than
+    Branch coverage is not implemented yet. `--cov-branch` is refused rather than
     silently downgraded to lines. For branches, run rustest under coverage.py instead:
 
     ```bash
@@ -171,16 +185,13 @@ exclude_lines = [
     coverage xml  # For codecov.io, coveralls.io, etc.
 ```
 
-!!! tip "Performance"
-    Using coverage.py directly with rustest still provides significant speedup over pytest due to rustest's faster test execution.
-
 ---
 
 ### 2. pytest-xdist (60.3M downloads/month)
 
 **What it does**: Parallel and distributed test execution
 
-**Migration strategy**: **built in** — rustest runs a worker pool by default
+**Migration strategy**: built in. rustest runs a worker pool by default.
 
 **With pytest-xdist:**
 
@@ -198,17 +209,19 @@ rustest -n 8 tests/     # Pick the pool size
 rustest -n 1 tests/     # Force sequential
 ```
 
-**Current status**: rustest spawns a **pool of worker processes** and always has under the
-current engine — `-n` / `--workers` sets its size, defaulting to 4 and capped by the CPU
-count. (The flag has never been spelled `-j`, whatever older versions of this page said.)
+`-n` / `--workers` sets the pool size, defaulting to 4 and capped by the CPU count.
 
 Two differences from pytest-xdist worth knowing:
 
 - **Distribution is at file granularity**, comparable to xdist's `--dist=loadscope`. A
   suite whose tests are concentrated in one enormous file cannot be parallelised past that
-  file — splitting it is a real speedup.
+  file, so splitting it is a real speedup.
 - **There is no `--dist` choice and no `-n auto`.** The default is already CPU-aware, and
-  the other distribution strategies are not implemented.
+  the other distribution strategies are not implemented. `-n` takes an integer, so `-n auto`
+  is a usage error.
+
+Session- and package-scoped fixtures are instantiated once per worker process, which is
+pytest-xdist's contract for them too.
 
 !!! warning "Shared external state"
     Parallel workers are separate processes. A suite that shares a database, a port, or a
@@ -221,11 +234,22 @@ Two differences from pytest-xdist worth knowing:
 
 **What it does**: Support for testing asyncio code
 
-**Migration strategy**: rustest has **built-in async support**
+**Migration strategy**: built in. rustest ports pytest-asyncio's model directly.
+
+Loop scopes, the three `asyncio_*` ini options, `@mark.asyncio(loop_scope=...)`, async
+fixtures and the `event_loop_policy` fixture all work. `import pytest_asyncio` resolves to
+rustest's compatibility module, so `@pytest_asyncio.fixture` keeps working unchanged.
 
 === "With pytest-asyncio"
     ```python
+    import asyncio
     import pytest
+
+    async def some_async_operation():
+        await asyncio.sleep(0)
+        return "expected"
+
+    expected = "expected"
 
     @pytest.mark.asyncio
     async def test_async_function():
@@ -235,7 +259,14 @@ Two differences from pytest-xdist worth knowing:
 
 === "With rustest"
     ```python
+    import asyncio
     from rustest import mark
+
+    async def some_async_operation():
+        await asyncio.sleep(0)
+        return "expected"
+
+    expected = "expected"
 
     @mark.asyncio
     async def test_async_function():
@@ -243,10 +274,30 @@ Two differences from pytest-xdist worth knowing:
         assert result == expected
     ```
 
+rustest's default `asyncio_mode` is `auto`, where pytest-asyncio's is `strict`, so the marker
+is optional:
+
+```python
+import asyncio
+
+async def some_async_operation():
+    await asyncio.sleep(0)
+    return "ok"
+
+async def test_no_marker_needed():
+    result = await some_async_operation()
+    assert result == "ok"
+```
+
 **Advanced features**:
 
 ```python
+import asyncio
 from rustest import mark
+
+async def process(value):
+    await asyncio.sleep(0)
+    return value
 
 # Specify event loop scope
 @mark.asyncio(loop_scope="function")  # New loop per test (default)
@@ -267,19 +318,34 @@ async def test_parametrized_async(value):
     assert result > 0
 ```
 
-!!! success "Fully supported"
-    rustest has full built-in support for async tests with `@mark.asyncio`. No plugin needed!
+rustest adds a `timeout` keyword that pytest-asyncio has no equivalent for. See
+[Async testing](async-testing.md) for that and for the loop-scope rules.
 
-**Limitations**:
+**Differences from pytest-asyncio**:
 
-- Event loop fixture (`event_loop`) is not available
-- Cannot use `pytest_asyncio.fixture` for async fixtures (use regular fixtures with async functions)
-- Auto mode (`asyncio_mode = "auto"`) is not supported
+- The `event_loop` fixture is not available. It was removed from pytest-asyncio itself in 1.0;
+  override `event_loop_policy` instead.
+- `asyncio_debug` is not read, so loops always run with debug mode off.
+- Tests sharing a loop scope run one at a time, as they do under pytest-asyncio. Parallelism
+  comes from the worker pool distributing files.
+- A session-scoped loop lives once per worker process, not once per run.
 
 **Async fixtures**:
 
 ```python
+import asyncio
 from rustest import fixture, mark
+
+class Database:
+    async def query(self, sql):
+        await asyncio.sleep(0)
+        return 1
+    async def close(self):
+        await asyncio.sleep(0)
+
+async def setup_database():
+    await asyncio.sleep(0)
+    return Database()
 
 @fixture
 async def async_database():
@@ -300,92 +366,76 @@ async def test_with_async_fixture(async_database):
 
 **What it does**: Thin wrapper around `unittest.mock` providing a `mocker` fixture
 
-**Migration strategy**: Use `unittest.mock` directly or create a simple fixture
+**Migration strategy**: built in. `mocker` is a rustest fixture, ported from pytest-mock
+3.15.1. Existing tests need no changes.
 
-=== "With pytest-mock"
-    ```python
-    def test_function(mocker):
-        mock_obj = mocker.patch('module.ClassName')
-        mock_obj.return_value = 42
-        assert module.ClassName() == 42
-    ```
-
-=== "With rustest (Option 1: Direct)"
-    ```python
-    from unittest.mock import patch, MagicMock
-
-    def test_function():
-        with patch('module.ClassName') as mock_obj:
-            mock_obj.return_value = 42
-            assert module.ClassName() == 42
-    ```
-
-=== "With rustest (Option 2: Fixture)"
-    ```python
-    # In conftest.py
-    from rustest import fixture
-    from unittest.mock import Mock, patch, MagicMock
-
-    @fixture
-    def mocker():
-        """pytest-mock compatible mocker fixture"""
-        class Mocker:
-            Mock = Mock
-            MagicMock = MagicMock
-            patch = patch
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
-        return Mocker()
-
-    # In test file
-    def test_function(mocker):
-        mock_obj = mocker.patch('module.ClassName')
-        mock_obj.return_value = 42
-        assert module.ClassName() == 42
-    ```
-
-**Common patterns**:
-
-<!--rustest.mark.skip-->
 ```python
-from unittest.mock import patch, MagicMock, call
+class Service:
+    def fetch(self):
+        return "real"
 
-# Patching
-def test_patch():
-    with patch('requests.get') as mock_get:
-        mock_get.return_value.status_code = 200
-        pass  # Test code here
+def test_mocker_patches(mocker):
+    mocker.patch.object(Service, "fetch", return_value="mocked")
+    assert Service().fetch() == "mocked"
 
-# Multiple patches
-def test_multiple_patches():
-    with patch('module.func1') as mock1, \
-         patch('module.func2') as mock2:
-        pass  # Test code here
+def test_patch_is_undone_afterwards(mocker):
+    assert Service().fetch() == "real"
 ```
 
+The string-target form works the same way, so a suite written against pytest-mock runs
+unchanged:
+
 <!--rustest.mark.skip-->
 ```python
-# Spy on methods
-def test_spy():
+def test_function(mocker):
+    mock_obj = mocker.patch('mypackage.mymodule.ClassName')
+    mock_obj.return_value = 42
+    assert mypackage.mymodule.ClassName() == 42
+```
+
+The fixture carries `patch` (with `.object`, `.multiple` and `.dict`), `spy`, `stub`,
+`async_stub`, `create_autospec`, `resetall`, `stop`, `stopall`, and the usual aliases:
+`Mock`, `MagicMock`, `AsyncMock`, `PropertyMock`, `NonCallableMock`, `NonCallableMagicMock`,
+`call`, `ANY`, `DEFAULT`, `sentinel`, `mock_open` and `seal`. Patches are undone in reverse
+registration order after every test, so two patches of the same attribute nest correctly.
+
+<!--rustest.mark.skip-->
+```python
+def test_spy(mocker):
     obj = MyClass()
-    with patch.object(obj, 'method', wraps=obj.method) as spy:
-        obj.method(42)
-        spy.assert_called_once_with(42)
+    spy = mocker.spy(obj, 'method')
+    obj.method(42)
+    spy.assert_called_once_with(42)
 
-# Mock attributes
-def test_mock_attributes():
-    mock = MagicMock()
-    mock.attribute.return_value = 'value'
-    assert mock.attribute() == 'value'
+def test_patch_object(mocker):
+    mocker.patch.object(MyClass, 'method', return_value='patched')
+    assert MyClass().method() == 'patched'
 ```
 
-!!! tip "No plugin needed"
-    Python's `unittest.mock` is powerful enough for most use cases. The pytest-mock plugin is just a thin convenience wrapper.
+Four pieces of pytest-mock are not ported:
+
+- `mocker.patch.context_manager`, whose only difference from `patch.object` is suppressing a
+  warning, and rustest has no warnings channel to suppress on
+- `class_mocker`, `module_mocker`, `package_mocker` and `session_mocker`, the same fixture at
+  wider scopes
+- the `mock_use_standalone_module` ini option; the module is always `unittest.mock`
+- the `assert_called_with` failure-message introspection, which pytest-mock installs by
+  monkey-patching `unittest.mock` process-wide
+
+`unittest.mock` also works directly, with no fixture involved:
+
+```python
+from unittest.mock import patch
+
+class Gateway:
+    def send(self):
+        return "real"
+
+def test_function_without_mocker():
+    with patch.object(Gateway, "send", return_value="mocked"):
+        assert Gateway().send() == "mocked"
+    assert Gateway().send() == "real"
+```
 
 ---
 
@@ -393,9 +443,9 @@ def test_mock_attributes():
 
 **What it does**: Access to test session metadata
 
-**Migration strategy**: Not needed for most use cases
-
-pytest-metadata primarily serves other plugins (like pytest-html). If you need metadata:
+**Migration strategy**: Not supported. pytest-metadata mostly exists to feed other plugins such
+as pytest-html, so there is usually nothing to replace. If you need the values, a
+session-scoped fixture holds them:
 
 ```python
 # Store metadata in a fixture
@@ -424,11 +474,32 @@ def test_something(test_metadata):
 
 **What it does**: Abort tests that run longer than a specified timeout
 
-**Migration strategy**: Use Python's built-in `signal` module or a fixture
+**Migration strategy**: async tests have `@mark.asyncio(timeout=...)`. Synchronous tests have
+no built-in timeout; use the `signal` module or a thread.
+
+For an async test, the timeout is applied inside the loop with `asyncio.wait_for`, so an
+overrunning test is cancelled:
+
+```python
+import asyncio
+from rustest import mark
+
+async def slow_operation():
+    await asyncio.sleep(0.01)
+
+@mark.asyncio(timeout=5.0)
+async def test_slow_async_operation():
+    await slow_operation()
+```
+
+For a synchronous test:
 
 === "With pytest-timeout"
     ```python
     import pytest
+
+    def slow_operation():
+        return "done"
 
     @pytest.mark.timeout(5)  # 5 second timeout
     def test_slow_function():
@@ -441,6 +512,9 @@ def test_something(test_metadata):
     from rustest import fixture
     import signal
     from contextlib import contextmanager
+
+    def slow_operation():
+        return "done"
 
     class TimeoutError(Exception):
         pass
@@ -470,6 +544,9 @@ def test_something(test_metadata):
     # In conftest.py
     from rustest import fixture
     import threading
+
+    def slow_operation():
+        return "done"
 
     class TimeoutError(Exception):
         pass
@@ -507,7 +584,8 @@ def test_something(test_metadata):
 !!! warning "Platform differences"
     The `signal` module approach only works on Unix/Linux. For Windows compatibility, use the threading approach or a third-party library like `timeout-decorator`.
 
-**Planned feature**: Built-in timeout support is planned for a future rustest release.
+`@mark.timeout(...)` is accepted as an ordinary mark, so it can be selected with `-m`, but it
+has no effect on how long a test may run.
 
 ---
 
@@ -515,7 +593,7 @@ def test_something(test_metadata):
 
 **What it does**: Re-run failed tests to detect flaky tests
 
-**Migration strategy**: Not currently supported, use external retry logic
+**Migration strategy**: Not supported. Retry outside the runner, or inside the test.
 
 === "With pytest-rerunfailures"
     ```bash
@@ -531,9 +609,12 @@ def test_something(test_metadata):
         sleep 1
     done
 
-    # Option 2: Use a retry script
-    ./scripts/retry.sh 3 rustest tests/
+    # Option 2: rerun only what failed, using rustest's own cache
+    rustest tests/ || rustest --lf tests/
     ```
+
+`--lf` / `--last-failed` and `--ff` / `--failed-first` are built in, which covers the common
+case of re-running only what broke without re-running the whole suite.
 
 **Test-level retries** (workaround with fixtures):
 
@@ -557,14 +638,17 @@ def retry(times=3, exceptions=(AssertionError,)):
     return decorator
 
 # Usage
+class Response:
+    status = 200
+
+def unreliable_api_call():
+    return Response()
+
 @retry(times=3)
 def test_flaky_api():
     result = unreliable_api_call()
     assert result.status == 200
 ```
-
-!!! info "Planned feature"
-    Test retry functionality is being considered for a future rustest release.
 
 ---
 
@@ -572,17 +656,12 @@ def test_flaky_api():
 
 **What it does**: Prettier pytest output with progress bar
 
-**Migration strategy**: Use rustest's output (already clean and fast)
+**Migration strategy**: Not supported. rustest has its own output, which does not match
+pytest-sugar's styling but does provide pass/fail markers, per-test progress percentages,
+colour, and failure detail with filtered tracebacks.
 
-rustest provides clean, fast output by default. While it doesn't have pytest-sugar's specific styling:
-
-- ✅ Clear pass/fail indicators
-- ✅ Real-time progress
-- ✅ Detailed failure information
-- ✅ Color-coded output
-- ✅ Duration reporting
-
-**If you miss pytest-sugar**: Consider that rustest's speed means you'll spend less time watching test output anyway!
+Colour is controlled by `--color` and `--ascii`; `-v` and `-q` set verbosity, and `--tb` is
+accepted and ignored because traceback style is rustest's own.
 
 ---
 
@@ -590,7 +669,7 @@ rustest provides clean, fast output by default. While it doesn't have pytest-sug
 
 **What it does**: Django integration and fixtures
 
-**Migration strategy**: Not currently supported
+**Migration strategy**: Not supported. rustest has no Django-specific code at all.
 
 For Django projects:
 
@@ -648,10 +727,17 @@ def db():
 
 **What it does**: Benchmark testing with statistical analysis
 
-**Migration strategy**: Use Python's `timeit` module or simple timing
+**Migration strategy**: Not supported. There is no `benchmark` fixture. Use `timeit` or time
+the operation yourself.
 
 === "With pytest-benchmark"
     ```python
+    def expensive_function(a, b):
+        return a + b
+
+    arg1, arg2 = 1, 2
+    expected = 3
+
     def test_benchmark(benchmark):
         result = benchmark(expensive_function, arg1, arg2)
         assert result == expected
@@ -660,6 +746,12 @@ def db():
 === "With rustest"
     ```python
     import time
+
+    def expensive_function(a, b):
+        return a + b
+
+    arg1, arg2 = 1, 2
+    expected = 3
 
     def test_performance():
         start = time.perf_counter()
@@ -681,11 +773,9 @@ def db():
         assert average < 0.01  # Average under 10ms
     ```
 
-**For more sophisticated benchmarking**, consider:
-
-- **pytest-benchmark** with pytest (for detailed statistical analysis)
-- **py-spy** or **pyinstrument** (for profiling)
-- **asv** (Airspeed Velocity - for tracking performance over time)
+Neither approach gives you the statistical analysis pytest-benchmark does. For that, run those
+benchmarks under pytest with the plugin, or use `py-spy` / `pyinstrument` for profiling and
+`asv` for tracking performance over time.
 
 ---
 
@@ -700,7 +790,16 @@ Beyond the top 10, here are categories of plugins that rustest doesn't support:
 - **pytest-fastapi**: Use fastapi.testclient directly
 - **pytest-tornado**: Use tornado testing utilities
 
-**Recommendation**: For framework-specific testing, use the framework's built-in test utilities or pytest with the appropriate plugin.
+None of these frameworks have rustest-specific handling. Their own test utilities work inside
+ordinary rustest fixtures.
+
+### Async Frameworks Other Than asyncio
+
+- **anyio**, **pytest-trio**, **pytest-tornasync**, **pytest-twisted**: not supported
+
+rustest's async support is asyncio only. In `asyncio_mode = "strict"`, an unmarked `async def`
+test fails with pytest's own message, which lists these plugins as things you might install
+under pytest; that is a reproduction of pytest's wording, not a statement that they work here.
 
 ### Advanced Test Manipulation
 
@@ -708,13 +807,17 @@ Beyond the top 10, here are categories of plugins that rustest doesn't support:
 - **pytest-repeat**: Repeat tests N times (use bash loop or test-level retry decorator)
 - **pytest-ordering**: Control test execution order (not supported by design)
 
+`-p no:randomly` and similar `-p` arguments are accepted and ignored, so an `addopts` line
+carrying one does not break the run.
+
 ### Specialized Output Formats
 
-- **pytest-html**: HTML reports (planned for rustest)
-- **pytest-json-report**: JSON output (not planned)
-- **pytest-junit**: JUnit XML (planned for rustest)
-
-**Workaround**: Parse rustest's text output or wait for built-in support.
+- **pytest-html**: HTML reports (not implemented)
+- **pytest-json-report**: use `--report-json PATH`, which writes a schema-2 JSON report of the
+  run, or `--llm` for JSONL aimed at LLM tooling
+- **pytest-junit**: JUnit XML (not implemented). The `record_property`,
+  `record_testsuite_property` and `record_xml_attribute` fixtures are unavailable for the same
+  reason.
 
 ### IDE/Tool Integration
 
@@ -736,7 +839,9 @@ For projects with complex pytest plugin dependencies, you can use both tools:
 rustest tests/unit/
 
 # Integration tests requiring plugins with pytest
-pytest --cov=myapp --django tests/integration/
+# (pytest-django activates on install; point it at your settings with --ds or
+# DJANGO_SETTINGS_MODULE)
+pytest --cov=myapp tests/integration/
 ```
 
 ### Strategy 2: Gradual Migration
@@ -747,6 +852,7 @@ try:
     from rustest import fixture, parametrize, mark
     TEST_RUNNER = "rustest"
 except ImportError:
+    import pytest
     from pytest import fixture, mark
     parametrize = pytest.mark.parametrize
     TEST_RUNNER = "pytest"
@@ -769,10 +875,11 @@ jobs:
   full-tests:
     name: Full test suite (pytest)
     steps:
-      - run: pytest --cov --django tests/
+      - run: pytest --cov=myapp tests/
 ```
 
-**Use rustest for fast feedback during development, pytest for comprehensive CI testing.**
+rustest gives faster feedback during development; pytest with its plugins covers whatever
+rustest does not implement.
 
 ---
 
@@ -785,6 +892,18 @@ For plugins not covered above, you can often replicate functionality with fixtur
 ```python
 # conftest.py
 from rustest import fixture
+
+class Resource:
+    def do_something(self):
+        return "result"
+
+expected = "result"
+
+def setup_resource():
+    return Resource()
+
+def cleanup_resource(resource):
+    pass
 
 @fixture
 def my_custom_fixture():
@@ -806,22 +925,19 @@ def test_something(my_custom_fixture):
 
 ### Sharing Fixtures Across Projects
 
-Create a shared conftest.py or package:
+Package the fixtures and name the module in `pytest_plugins`, or import them into a conftest:
 
 <!--rustest.mark.skip-->
 ```python
-# my_test_utils/conftest.py
+# my_test_utils/fixtures.py
 from rustest import fixture
 
 @fixture
 def common_fixture():
     return setup_common_resource()
 
-# Install as package
-# pip install -e ./my_test_utils
-
-# Import in your project's conftest.py
-from my_test_utils.conftest import common_fixture
+# In your project's conftest.py, after `pip install -e ./my_test_utils`
+pytest_plugins = "my_test_utils.fixtures"
 ```
 
 ---
@@ -830,39 +946,42 @@ from my_test_utils.conftest import common_fixture
 
 ```
 Do you use pytest plugins?
-├─ No → ✅ Use rustest! Easy migration, huge speedup
+├─ No → Use rustest. Easy migration.
 └─ Yes → Which plugins?
-    ├─ Only top 5 (cov, xdist, asyncio, mock, timeout)
-    │   └─ ✅ Use rustest with built-in alternatives
+    ├─ cov, xdist, asyncio, mock
+    │   └─ Use rustest; all four are built in
     ├─ Framework plugins (django, flask, etc.)
-    │   └─ ⚠️  Use pytest or hybrid approach
+    │   └─ Use pytest or a hybrid approach
     ├─ Custom conftest.py hooks
-    │   └─ ⚠️  Evaluate complexity, may need pytest
+    │   └─ Hooks do not run; evaluate what depends on them
     └─ Many niche plugins
-        └─ ❌ Stick with pytest for now
+        └─ Stick with pytest for now
 ```
 
 ## Future Plans
 
-While full plugin support is not planned, rustest aims to provide built-in alternatives for the most popular plugin use cases:
+Full plugin support is not planned. Built-in equivalents for common plugin use cases are.
 
 **Shipped**:
 
-- ✅ **Coverage integration**: `--cov`, `--cov-report` (needs the `cov` extra)
-- ✅ **Parallel control**: `-n` / `--workers`
+- Coverage: `--cov`, `--cov-report` (needs the `cov` extra)
+- Parallel execution: `-n` / `--workers`
+- Mocking: the `mocker` fixture
+- Async: `@mark.asyncio`, loop scopes, async fixtures, the `pytest_asyncio` shim
+- JSON reporting: `--report-json`, `--llm`
 
 **Planned**:
 
-- 🚧 **Timeout support**: Built-in test timeouts with `@mark.timeout(seconds)`
-- 🚧 **HTML reports**: Generate HTML test reports
-- 🚧 **JUnit XML**: JUnit-compatible XML output
-- 🚧 **Retry logic**: Built-in test retry for flaky tests
+- Timeouts for synchronous tests
+- Branch coverage, once PEP 669's branch events are available across supported versions
+- HTML reports
+- JUnit XML
 
 **Not planned**:
 
-- ❌ Full plugin system (hooks, pluggy integration)
-- ❌ Custom collectors
-- ❌ Advanced plugin hooks
+- Full plugin system (hooks, pluggy integration)
+- Custom collectors
+- Advanced plugin hooks
 
 ---
 
@@ -882,22 +1001,18 @@ Include:
 - What you've tried
 - Specific error messages
 
-The rustest community is here to help you migrate successfully!
-
 ---
 
 ## Conclusion
 
-While rustest doesn't support pytest plugins, it provides:
+rustest does not run pytest plugins. It does implement the behaviour of the four most-installed
+ones: coverage, parallel execution, mocking and asyncio support are all part of the engine, and
+a suite using only those needs no migration work beyond changing the command.
 
-✅ **Built-in alternatives** for the most popular plugins
-✅ **Excellent pytest API compatibility** for standard features
-✅ **1.1x–5.7x faster** across seventeen real open-source suites ([the measurement](performance.md))
-✅ **Simple architecture** without plugin complexity
-
-**For 90% of Python projects**, the speed gains and simplicity of rustest far outweigh the lack of plugin support.
-
-**For plugin-heavy projects**, pytest remains an excellent choice, or consider a hybrid approach during migration.
+What is left unimplemented is real: Django and other framework integrations, benchmarking,
+HTML and JUnit reporting, test reordering and reruns, and any conftest that relies on pytest
+hooks. For those, pytest remains the right tool, either outright or alongside rustest during a
+migration.
 
 ---
 
@@ -907,3 +1022,5 @@ While rustest doesn't support pytest plugins, it provides:
 - [Migration Guide](migration-guide.md) - General pytest to rustest migration
 - [Performance](performance.md) - Detailed performance benchmarks
 - [Fixtures](intro-fixtures.md) - rustest fixture documentation
+- [Async testing](async-testing.md) - The asyncio surface in full
+- [Coverage](coverage.md) - `--cov` and coverage.py integration

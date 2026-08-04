@@ -24,12 +24,12 @@ my_project/
 
 ### Why a `tests/` Directory?
 
-Keeping tests separate from code:
+Keeping tests separate from code gives you:
 
-- ✅ **Cleaner structure** — Code and tests don't mix
-- ✅ **Easy to find** — All tests in one place
-- ✅ **Better packaging** — Tests don't ship with your app
-- ✅ **Flexible testing** — Run all tests with one command
+- **Cleaner structure.** Code and tests don't mix
+- **Easy to find.** All tests in one place
+- **Better packaging.** Tests don't ship with your app
+- **Flexible testing.** Run all tests with one command
 
 ### Alternative Structure
 
@@ -62,19 +62,22 @@ Rustest automatically finds tests using these patterns:
 
 ### Test Files
 
-- ✅ `test_*.py` — Example: `test_auth.py`
-- ✅ `*_test.py` — Example: `auth_test.py`
-- ❌ `tests.py` — Won't be discovered (doesn't match pattern)
+- `test_*.py` is collected, for example `test_auth.py`
+- `*_test.py` is collected, for example `auth_test.py`
+- `tests.py` is not collected, because it matches neither pattern
 
 ### Test Functions
 
-- ✅ `test_*()` — Example: `test_login()`
-- ❌ `check_login()` — Won't be discovered (doesn't start with `test_`)
+- `test_*()` is collected, for example `test_login()`
+- `check_login()` is not collected, because it doesn't start with `test_`
 
 ### Test Classes
 
-- ✅ `Test*` — Example: `TestUserAuth`
-- ❌ `AuthTests` — Won't be discovered (doesn't start with `Test`)
+- `Test*` is collected, for example `TestUserAuth`
+- `AuthTests` is not collected, because it doesn't start with `Test`
+
+These are pytest's defaults, and rustest reads the same `python_files`, `python_classes`
+and `python_functions` ini settings if your project overrides them.
 
 !!! tip "Be Consistent"
     Pick one style (`test_*.py` or `*_test.py`) and stick with it across your project.
@@ -83,6 +86,7 @@ Rustest automatically finds tests using these patterns:
 
 **Marks** let you categorize and filter tests:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import mark
 
@@ -130,6 +134,20 @@ rustest -m "integration or slow"
 Group related tests in classes:
 
 ```python
+from rustest import raises
+from types import SimpleNamespace
+
+class AuthError(Exception):
+    pass
+
+def login(email, password):
+    if password != "password":
+        raise AuthError("wrong password")
+    return SimpleNamespace(email=email, is_logged_in=True)
+
+def logout(user):
+    user.is_logged_in = False
+
 class TestUserAuth:
     def test_login_success(self):
         user = login("alice@example.com", "password")
@@ -147,15 +165,29 @@ class TestUserAuth:
 
 ### Benefits of Test Classes
 
-- ✅ **Logical grouping** — Related tests stay together
-- ✅ **Shared setup** — Use class-level fixtures
-- ✅ **Clearer output** — Tests are grouped in output
-- ✅ **Better organization** — Easy to navigate
+- **Logical grouping.** Related tests stay together
+- **Shared setup.** A fixture defined in the class is available to every test in it
+- **Clearer output.** The class name is part of every node id
+- **Easier navigation.** One place to look for one area of behavior
 
 ### Sharing Setup in Classes
 
 ```python
 from rustest import fixture
+
+class ShoppingCart:
+    def __init__(self):
+        self.lines = []
+
+    def add_item(self, name, price):
+        self.lines.append((name, price))
+
+    def remove_item(self, name):
+        self.lines = [line for line in self.lines if line[0] != name]
+
+    @property
+    def total(self):
+        return sum(price for _, price in self.lines)
 
 class TestShoppingCart:
     @fixture
@@ -187,6 +219,7 @@ tests/
 
 **`conftest.py`:**
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import fixture
 
@@ -205,6 +238,7 @@ def api_client():
 
 **`test_users.py`:**
 
+<!--rustest.mark.skip-->
 ```python
 # No imports needed! Fixtures from conftest.py are automatically available
 def test_create_user(database):
@@ -291,9 +325,14 @@ rustest -k "login"
 # Run tests with "user" or "auth" in the name
 rustest -k "user or auth"
 
-# Exclude slow tests by name
+# Exclude anything matching "slow"
 rustest -k "not slow"
 ```
+
+`-k` matches a case-insensitive substring against the test's file name, class name and
+function name (parameter id included), and also against the names of any marks it carries.
+So `-k "not slow"` drops both a test called `test_slow_import` and a test carrying
+`@mark.slow`. When you mean the mark and only the mark, use `-m "not slow"`.
 
 ### Stop on First Failure
 
@@ -355,10 +394,12 @@ rustest -v
 
 ## Best Practices
 
-### ✅ Keep Tests Fast
+### Keep tests fast
 
-Fast tests = happy developers. Keep unit tests under 100ms each:
+Fast tests get run. Slow ones get skipped, then ignored, then deleted. Aim to keep unit
+tests under 100ms each:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import mark
 
@@ -375,7 +416,7 @@ def test_api_integration():
     assert result.status == 200
 ```
 
-### ✅ Name Tests Descriptively
+### Name tests descriptively
 
 ```python
 # ❌ BAD
@@ -387,11 +428,18 @@ def test_login_fails_with_invalid_password():
     ...
 ```
 
-### ✅ One Assert Per Test (Usually)
+### One assert per test (usually)
 
 Focus each test on one behavior:
 
 ```python
+from types import SimpleNamespace
+
+def signup(email, password):
+    if "@" not in email:
+        raise ValueError("Invalid email format")
+    return SimpleNamespace(email=email, name="Alice", is_active=True)
+
 # ✅ GOOD
 def test_user_signup_creates_user():
     user = signup("alice@example.com", "password")
@@ -411,11 +459,16 @@ def test_user_signup():
 
 Use multiple asserts if they're all checking the same behavior.
 
-### ✅ Test Edge Cases
+### Test edge cases
 
 Don't just test the happy path:
 
 ```python
+from rustest import approx, raises
+
+def divide(a, b):
+    return a / b
+
 def test_divide_normal_case():
     assert divide(10, 2) == 5
 
@@ -432,30 +485,18 @@ def test_divide_floats():
 
 ## What's Next?
 
-You now know how to organize tests for real projects! Ready to dive deeper?
+That is the end of the beginner track. Across the six pages you have seen why automated
+testing pays for itself, how to write and run a test, the fundamentals (arrange-act-assert,
+assertions, edge cases), fixtures, parametrization, and how to lay out a suite that has
+outgrown one file.
 
-### For Complete Reference
+The reference documentation picks up where this leaves off:
 
-[:octicons-arrow-right-24: Core Testing Guide](writing-tests.md){ .md-button .md-button--primary }
+[Core Testing Guide](writing-tests.md)
 
-Explore the complete reference documentation for all testing features.
+Or go straight to a topic:
 
-### Learn More About
-
-- [Marks & Filtering](marks.md) — Advanced mark usage
-- [Test Classes](test-classes.md) — Class-based testing patterns
-- [CLI Usage](cli.md) — All command-line options
-- [Fixtures](intro-fixtures.md) — Advanced fixture patterns
-
-### Continue Your Learning
-
-You've completed the beginner's guide to testing! You now know:
-
-- ✅ Why automated testing matters
-- ✅ How to write and run tests
-- ✅ Testing fundamentals (AAA, assertions, edge cases)
-- ✅ Making tests reusable with fixtures
-- ✅ Testing multiple cases with parametrization
-- ✅ Organizing tests for real projects
-
-**Congratulations!** You're ready to write comprehensive, maintainable tests. 🎉
+- [Marks & Filtering](marks.md), for advanced mark usage
+- [Test Classes](test-classes.md), for class-based testing patterns
+- [CLI Usage](cli.md), for every command-line option
+- [Fixtures](fixtures.md), for scopes, autouse and the rest

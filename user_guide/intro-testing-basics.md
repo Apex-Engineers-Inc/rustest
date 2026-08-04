@@ -1,12 +1,20 @@
 # Testing Basics
 
-Now that you've written your first test, let's explore the fundamental concepts that make testing powerful.
+You have a passing test. These are the ideas underneath it: how a test is shaped, what you
+can assert, and what separates a test you'll thank yourself for from one you'll delete.
 
 ## The Anatomy of a Test
 
 Every test follows a simple pattern called **Arrange-Act-Assert** (AAA):
 
 ```python
+from types import SimpleNamespace
+
+def signup(email, password):
+    if "@" not in email:
+        raise ValueError("Invalid email format")
+    return SimpleNamespace(email=email, name="Alice", is_active=True)
+
 def test_user_signup():
     # ARRANGE: Set up the test data
     email = "alice@example.com"
@@ -20,7 +28,7 @@ def test_user_signup():
     assert user.is_active is True
 ```
 
-Let's break this down:
+Three steps, in order:
 
 ### 1. Arrange (Setup)
 
@@ -48,7 +56,7 @@ Run the code you're testing:
 user = signup(email, password)
 ```
 
-This is usually **one line**—the specific function or method you're testing.
+This is usually **one line**: the specific function or method you're testing.
 
 ### 3. Assert (Verify)
 
@@ -82,7 +90,12 @@ def test_calculations():
 ### Boolean checks
 
 ```python
+from types import SimpleNamespace
+
 def test_boolean_conditions():
+    user = SimpleNamespace(is_admin=True)
+    result = "something"
+
     assert True
     assert not False
     assert user.is_admin is True
@@ -93,6 +106,8 @@ def test_boolean_conditions():
 
 ```python
 def test_membership():
+    user_dict = {"name": "Alice", "email": "alice@example.com"}
+
     assert "hello" in "hello world"
     assert 5 in [1, 2, 3, 4, 5]
     assert "name" in user_dict
@@ -102,6 +117,10 @@ def test_membership():
 
 ```python
 def test_comparisons():
+    age = 21
+    price = 49.99
+    items = ["apple", "banana"]
+
     assert age >= 18
     assert price < 100
     assert len(items) > 0
@@ -110,7 +129,14 @@ def test_comparisons():
 ### Type checks
 
 ```python
+class User:
+    pass
+
 def test_types():
+    result = 42
+    user = User()
+    data = {"name": "Alice"}
+
     assert isinstance(result, int)
     assert isinstance(user, User)
     assert type(data) is dict
@@ -121,18 +147,32 @@ def test_types():
 Sometimes you *want* your code to raise an error. Use `raises()`:
 
 ```python
+from types import SimpleNamespace
 from rustest import raises
+
+def signup(email, password):
+    if "@" not in email:
+        raise ValueError("Invalid email format")
+    return SimpleNamespace(email=email, name="Alice", is_active=True)
 
 def test_invalid_email():
     with raises(ValueError):
         signup("not-an-email", "password")
 ```
 
-This test **passes** if `ValueError` is raised. If no error occurs (or a different error occurs), the test fails.
+This test **passes** if `ValueError` is raised. If no error occurs, or a different error occurs, the test fails.
 
 You can also check the error message:
 
 ```python
+from types import SimpleNamespace
+from rustest import raises
+
+def signup(email, password):
+    if "@" not in email:
+        raise ValueError("Invalid email format")
+    return SimpleNamespace(email=email, name="Alice", is_active=True)
+
 def test_error_message():
     with raises(ValueError, match="Invalid email format"):
         signup("not-an-email", "password")
@@ -157,6 +197,8 @@ def test_floating_point():
 You can specify the tolerance:
 
 ```python
+from rustest import approx
+
 def test_with_tolerance():
     result = 10.1
     assert result == approx(10, abs=0.2)  # Within ±0.2
@@ -170,11 +212,21 @@ This works with:
 
 ## What Makes a Good Test?
 
-### ✅ Independent
+### Independent
 
 Each test should run independently. One test shouldn't depend on another:
 
 ```python
+from types import SimpleNamespace
+
+def signup(email, password):
+    if "@" not in email:
+        raise ValueError("Invalid email format")
+    return SimpleNamespace(email=email, name="Alice", is_active=True)
+
+def login(user):
+    return SimpleNamespace(success=user is not None)
+
 # ❌ BAD: Tests depend on each other
 user = None
 
@@ -190,6 +242,16 @@ def test_user_login():
 ```
 
 ```python
+from types import SimpleNamespace
+
+def signup(email, password):
+    if "@" not in email:
+        raise ValueError("Invalid email format")
+    return SimpleNamespace(email=email, name="Alice", is_active=True)
+
+def login(user):
+    return SimpleNamespace(success=user is not None)
+
 # ✅ GOOD: Each test is independent
 def test_create_user():
     user = signup("alice@example.com", "password")
@@ -202,10 +264,11 @@ def test_user_login():
     assert result.success
 ```
 
-### ✅ Fast
+### Fast
 
 Tests should run quickly so you can run them often:
 
+<!--rustest.mark.skip-->
 ```python
 # ❌ BAD: Slow test
 def test_slow_operation():
@@ -220,6 +283,7 @@ def test_fast_operation():
 
 If you must have slow tests (like API calls), mark them so you can skip them:
 
+<!--rustest.mark.skip-->
 ```python
 from rustest import mark
 
@@ -235,11 +299,19 @@ Then run fast tests only:
 rustest -m "not slow"
 ```
 
-### ✅ Readable
+Marks get a fuller treatment in [Organizing Your Tests](intro-organizing.md).
 
-Someone else (or future you) should understand what the test does:
+### Readable
+
+Someone else, or you in six months, should understand what the test does:
 
 ```python
+def f(a, b):
+    return a + b
+
+def add(a, b):
+    return a + b
+
 # ❌ BAD: Unclear test
 def test_x():
     a = f(1, 2)
@@ -253,11 +325,24 @@ def test_add_function_sums_two_numbers():
 
 Good test names answer: **"What does this test verify?"**
 
-### ✅ Focused
+### Focused
 
 Test one thing at a time:
 
 ```python
+from types import SimpleNamespace
+
+def signup(email, password):
+    if "@" not in email:
+        raise ValueError("Invalid email format")
+    return SimpleNamespace(email=email, name="Alice", is_active=True)
+
+def login(user):
+    return SimpleNamespace(success=user is not None)
+
+def get_profile(user):
+    return user
+
 # ❌ BAD: Testing too much
 def test_user_operations():
     user = signup("alice@example.com", "password")
@@ -322,6 +407,9 @@ tests/
 Don't just test the happy path:
 
 ```python
+def add(a, b):
+    return a + b
+
 def test_add_positive_numbers():
     assert add(2, 3) == 5
 
@@ -372,22 +460,20 @@ rustest -v  # Verbose mode shows each test name
 
 ## What's Next?
 
-You now understand the fundamentals of testing! Ready to level up?
+### Make tests reusable
 
-### Make Tests Reusable
-
-[:octicons-arrow-right-24: Learn About Fixtures](intro-fixtures.md){ .md-button .md-button--primary }
+[Learn About Fixtures](intro-fixtures.md)
 
 Fixtures let you reuse setup code across multiple tests. Instead of copying the same setup everywhere, define it once and use it everywhere.
 
-### Test Multiple Cases Efficiently
+### Test multiple cases efficiently
 
-[:octicons-arrow-right-24: Learn About Parametrization](intro-parametrization.md){ .md-button }
+[Learn About Parametrization](intro-parametrization.md)
 
 Test the same logic with different inputs without writing repetitive tests.
 
-### Organize Larger Test Suites
+### Organize larger test suites
 
-[:octicons-arrow-right-24: Organizing Your Tests](intro-organizing.md){ .md-button }
+[Organizing Your Tests](intro-organizing.md)
 
-Learn how to structure tests for real projects with marks, test classes, and more.
+Structure tests for real projects with marks, test classes, and shared `conftest.py` fixtures.

@@ -1,6 +1,6 @@
-# LLM Output Mode (`--llm`)
+# LLM output mode (`--llm`)
 
-`--llm` makes rustest emit **JSONL** — one JSON object per line — instead of the
+`--llm` makes rustest emit **JSONL**, one JSON object per line, instead of the
 human-oriented terminal output. It is built for LLM coding agents (Claude Code,
 Cursor, Copilot, and similar tools) that *parse* test output rather than read it.
 
@@ -9,19 +9,19 @@ rustest tests/ --llm
 ```
 
 ```json
-{"t":"meta","schema_version":2,"tool":"rustest","version":"0.16.2","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 {"t":"fail","id":"tests/test_auth.py::test_login","file":"tests/test_auth.py","line":42,"status":"failed","msg":"Traceback (most recent call last):\n  File \"/repo/tests/test_auth.py\", line 42, in test_login\n    assert response.status == 200\nAssertionError: assert 401 == 200","stdout":"POST /login user=admin"}
 {"t":"summary","total":412,"passed":411,"failed":1,"skipped":0,"xfailed":0,"xpassed":0,"error":0,"deselected":0,"collection_errors":0,"duration":1.24,"exit_code":1}
 ```
 
-**stdout is JSONL and nothing else.** Every diagnostic that has no line type — the
-workers' own stderr, a `pytest.exit()` banner, a `--cov` table — goes to stderr, so
+**stdout is JSONL and nothing else.** Every diagnostic that has no line type (the
+workers' own stderr, a `pytest.exit()` banner, a `--cov` table) goes to stderr, so
 `rustest --llm > results.jsonl` is a valid document with nothing to strip. `--ascii`
-and `--color` are accepted and inert (rustest's output is already plain ASCII), so
-there is nothing to override.
+and `--color` are accepted and inert, because rustest's output is already plain ASCII,
+so there is nothing to override.
 
 `--llm` **never changes the exit code**. 0 clean, 1 failures, 2 collection errors,
-5 nothing collected — the same codes the human renderer returns for the same run.
+5 nothing collected, the same codes the human renderer returns for the same run.
 
 ## Why JSONL
 
@@ -30,7 +30,7 @@ and *did everything else stay green*, as one confirmation number. JSONL delivers
 both with three properties that matter for machine consumption:
 
 - **Unambiguous.** JSON string escaping removes the parsing ambiguity of
-  space-delimited text — test names, paths and messages all contain spaces and
+  space-delimited text. Test names, paths and messages all contain spaces and
   colons.
 - **Deterministic.** Lines are emitted in manifest order (pytest's collection
   order), which the engine reassembles independently of which worker finished
@@ -44,11 +44,11 @@ both with three properties that matter for machine consumption:
 
 Lines are emitted once, at completion, in this fixed order:
 
-1. `meta` — first line, the wire header.
-2. `error` — one per collection error, then one per unattributable teardown failure.
-3. `fail` — one per failed or errored test, in manifest order.
-4. `skip` — one per skipped/xfailed/xpassed test, **only** under `-v`.
-5. `summary` — last line.
+1. `meta`, first line, the wire header.
+2. `error`, one per collection error, then one per unattributable teardown failure.
+3. `fail`, one per failed or errored test, in manifest order.
+4. `skip`, one per skipped/xfailed/xpassed test, **only** under `-v`.
+5. `summary`, last line.
 
 Errors come before failures deliberately: a file that did not import is a larger
 problem than an assertion that did not hold, because none of its tests were even
@@ -56,14 +56,14 @@ attempted.
 
 !!! note "Completion sentinel"
     The `summary` line is always the final line of a completed run. If it is
-    absent, the run was interrupted — a signal your tooling can rely on.
+    absent, the run was interrupted, a signal your tooling can rely on.
 
 ## Line types
 
 ### `meta`
 
 ```json
-{"t":"meta","schema_version":2,"tool":"rustest","version":"0.16.2","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 ```
 
 | Field | Meaning |
@@ -72,7 +72,7 @@ attempted.
 | `tool` | Always `"rustest"`. |
 | `version` | The rustest package version. |
 | `rootdir` | Absolute rootdir, forward slashes. Every `id` and `file` below is relative to it. |
-| `total` | Tests selected for this run, after `-k`/`-m` deselection — so a consumer knows the scale of the run from the first line. |
+| `total` | Tests selected for this run, after `-k`/`-m` deselection, so a consumer knows the scale of the run from the first line. |
 
 ### `fail`
 
@@ -86,7 +86,7 @@ attempted.
 | `file` | The `id` up to the first `::`, split out so you never have to parse it. |
 | `line` | Line of the innermost traceback frame. **Omitted** when the message is not a traceback. |
 | `status` | `failed` (the body raised) or `error` (setup or teardown raised, so the body never ran). |
-| `msg` | The whole failure message — see [The message is the payload](#the-message-is-the-payload). |
+| `msg` | The whole failure message. See [The message is the payload](#the-message-is-the-payload). |
 | `stdout` / `stderr` | Captured output, present only when non-empty. See [Captured output](#captured-output). |
 | `stdout_omitted` / `stderr_omitted` | Lines dropped by truncation, when it occurred. |
 
@@ -101,15 +101,15 @@ A failure with no node ID to hang it on.
 
 | Field | Meaning |
 |-------|---------|
-| `scope` | `collection` — the file never imported, so none of its tests ran. `teardown` — a module- or session-scoped fixture raised at shutdown, after the last test it owned had already been reported. |
+| `scope` | `collection` means the file never imported, so none of its tests ran. `teardown` means a module- or session-scoped fixture raised at shutdown, after the last test it owned had already been reported. |
 | `file` | Present for `scope: "collection"` only. A teardown failure the engine could not attribute has no path, and inventing one would be a guess. |
 | `msg` | The engine's message, verbatim. |
 
 !!! warning "A collection error interrupts the run"
     Exactly as under pytest: one unimportable file exits 2 even when other files
-    collected, and the tests in them were never attempted. The sentinel says so —
-    `total` will be 0 — which is what stops an agent reading "no failures" off an
-    aborted run.
+    collected, and the tests in them were never attempted. The sentinel says so,
+    because `total` will be 0, which is what stops an agent reading "no failures"
+    off an aborted run.
 
 ### `skip` (with `-v`)
 
@@ -138,7 +138,7 @@ line.)
 | `exit_code` | The code the process will return. `--llm` never changes it. |
 | `stopped_early` | `true`, and **present only**, when `-x`/`--maxfail` cut the run short. |
 
-The counts are the engine's own, not a re-tally of the lines above — so they are
+The counts are the engine's own, not a re-tally of the lines above, so they are
 correct at `-q`, where no `skip` line was emitted, and under `--maxfail`, where
 `total` is the selection rather than what ran.
 
@@ -173,7 +173,7 @@ AssertionError: assert 401 == 200
 ```
 
 That last line is the point. rustest rewrites assertions, so the message reports
-the **values**, not just the source text — `assert 401 == 200`, not
+the **values**, not just the source text: `assert 401 == 200`, not
 `assert response.status == 200`. It is the single highest-value string in the whole
 run for a coding agent, and it arrives without any parsing.
 
@@ -186,14 +186,14 @@ run for a coding agent, and it arrives without any parsing.
 
     The one thing still derived from the text is `line`, because the runner's
     internal wire carries no line number. It is read off the last frame and
-    **omitted** — never `0`, which schema 1 emitted — when there is no frame.
+    **omitted**, never `0` as schema 1 emitted, when there is no frame.
 
 ## Verbosity
 
 `-q` and `-v` shift what each failure costs, without changing the line order:
 
 ```bash
-rustest tests/ --llm -q     # failures, no captured output — the cheapest useful mode
+rustest tests/ --llm -q     # failures, no captured output: the cheapest useful mode
 rustest tests/ --llm        # + captured stdout/stderr, last 50 lines
 rustest tests/ --llm -v     # + one skip line per skipped/xfailed/xpassed test
 ```
@@ -203,10 +203,11 @@ rustest tests/ --llm -v     # + one skip line per skipped/xfailed/xpassed test
 ## Captured output
 
 Captured `stdout`/`stderr` is attached to the failure that produced it, truncated
-to the **last 50 lines** — the output right before a failure is the part worth
-spending tokens on. The number of dropped lines is reported in `stdout_omitted` /
-`stderr_omitted`, so you can tell an empty prologue from a discarded one, and
-decide whether re-running is worth it. `--llm-full` keeps everything:
+to the **last 50 lines**, because the output right before a failure is the part
+worth spending tokens on. The number of dropped lines is reported in
+`stdout_omitted` / `stderr_omitted`, so you can tell an empty prologue from a
+discarded one, and decide whether re-running is worth it. `--llm-full` keeps
+everything:
 
 ```bash
 rustest tests/ --llm --llm-full
@@ -225,7 +226,7 @@ rustest --llm-schema
 ```
 
 It is a *query*, not a run: it answers before any collection happens, and it works
-from a directory whose configuration would make the run itself fail — you should
+from a directory whose configuration would make the run itself fail. You should
 not have to be standing in a working project to discover an output format. The
 document's `version` matches the `schema_version` field on the `meta` line.
 
@@ -251,7 +252,7 @@ because it had to: the loop was "read the ids back out and pass them to the next
 invocation". rustest's last-failed cache does the same job with no id round-trip
 and a warm collect, so the array would be duplicated state whose only consumer is a
 worse version of `--lf`. The `fail` lines still carry every `id`, if you want to
-select a subset yourself — but note that an `id` is **not** accepted as a path
+select a subset yourself. Note that an `id` is **not** accepted as a path
 argument: `rustest tests/test_x.py::test_a` runs the whole file. Narrow with `-k`,
 or let `--lf` do it.
 
@@ -265,13 +266,13 @@ or let `--lf` do it.
 | `-x` / `--maxfail` | Cut the run short and set `stopped_early` on the summary. |
 | `--cov` | Works. The coverage table goes to **stderr** so stdout stays JSONL. |
 | `--report-json` | Works. Independent of `--llm`; write both if you want the full report on disk. |
-| `-s` | Works, but captures are then empty — the tests wrote straight through to the terminal. |
+| `-s` | Works, but captures are then empty, because the tests wrote straight through to the terminal. |
 | `--v2-collect-only` | **Refused** (exit 4). It runs no test, so a `summary` line would be a well-formed lie; its stdout is already machine-readable, one node ID per line. |
 
 ## Edge cases
 
 - **No tests collected:** `meta` and an all-zero `summary` (`exit_code: 5`). Still a
-  complete document — your parse should not need to special-case it.
+  complete document, so your parse should not need to special-case it.
 - **All skipped (default verbosity):** counted in `summary`; individual `skip`
   lines appear only under `-v`.
 - **Non-ASCII node IDs:** escaped (`\uXXXX`) rather than emitted raw, so the

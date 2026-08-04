@@ -1,8 +1,8 @@
-# Quick Start
+# Quick start
 
-This guide will walk you through writing and running your first tests with rustest.
+Writing and running your first tests with rustest, start to finish.
 
-## 1. Write Your First Test
+## 1. Write your first test
 
 Create a file called `test_math.py`:
 
@@ -16,7 +16,7 @@ def test_string_operations() -> None:
     assert "world" in text
 ```
 
-## 2. Run Your Tests
+## 2. Run your tests
 
 Run your tests with the `rustest` command:
 
@@ -32,8 +32,8 @@ You should see output like this:
 ```
 
 That is the whole of a green run. Rustest's output is pytest's, so a quiet run is quiet:
-there is no spinner, no progress bar and no per-test tick at the default verbosity — just
-the summary line. Anything that went wrong prints above it.
+there is no spinner, no progress bar and no per-test tick at the default verbosity, just the
+summary line. Anything that went wrong prints above it.
 
 The verbosity ladder has three rungs:
 
@@ -43,7 +43,7 @@ The verbosity ladder has three rungs:
 | *default* | Plus `ERRORS` / `FAILURES` blocks and a `short test summary info` list of node ids |
 | `-v` | Plus one line per test, in pytest's wording |
 
-!!! tip "Verbose Output"
+!!! tip "Verbose output"
     Use `-v` or `--verbose` to see one line per test with a running percentage:
     ```
     test_math.py::test_simple_addition PASSED                               [ 50%]
@@ -53,12 +53,12 @@ The verbosity ladder has three rungs:
     ```
 
 !!! note "Which stream is which"
-    **stdout** carries the payload — the per-test lines and the failure blocks. **stderr**
-    carries the diagnostics — collection errors, anything the workers wrote, and the summary
+    **stdout** carries the payload: the per-test lines and the failure blocks. **stderr**
+    carries the diagnostics: collection errors, anything the workers wrote, and the summary
     line. So `rustest > results.txt` leaves you a grep-able file of results while the summary
     still reaches your terminal.
 
-## 3. Using Fixtures
+## 3. Using fixtures
 
 Fixtures provide reusable test data and setup. Add this to your test file:
 
@@ -74,9 +74,9 @@ def test_user_data(sample_data: dict) -> None:
     assert sample_data["age"] == 30
 ```
 
-Rustest automatically detects that `test_user_data` needs the `sample_data` fixture and injects it.
+Rustest detects that `test_user_data` needs the `sample_data` fixture and injects it.
 
-## 4. Parametrized Tests
+## 4. Parametrized tests
 
 Run the same test with different inputs using `@parametrize`:
 
@@ -114,9 +114,9 @@ Those bracketed ids are pytest's, byte for byte. To run just one case, select it
 rustest test_math.py -k "2-4"      # -> 1 passed, 2 deselected
 ```
 
-## 5. Assertion Helpers
+## 5. Assertion helpers
 
-Rustest provides helpful utilities for common assertions:
+Rustest provides helpers for two assertions that are awkward to write by hand:
 
 ```python
 from rustest import approx, raises
@@ -131,7 +131,7 @@ def test_exceptions() -> None:
         raise ValueError("invalid input")
 ```
 
-## 6. Organizing Tests with Marks
+## 6. Organizing tests with marks
 
 Use marks to organize and categorize your tests:
 
@@ -149,9 +149,9 @@ def test_database_integration() -> None:
     pass
 ```
 
-## Running Tests
+## Running tests
 
-### Basic Usage
+### Basic usage
 
 <!--rustest.mark.skip-->
 ```bash
@@ -167,35 +167,37 @@ rustest -k "user"  # Runs test_user_login, test_user_data, etc.
 # Show print statements during execution
 rustest --no-capture
 
-# Disable markdown code block tests
-rustest --no-codeblocks
+# Run the python fences in a markdown file as tests
+rustest README.md
 ```
+
+Markdown has to be **named**. A directory argument collects no `.md` at all, which is what
+pytest walking the same tree does too. `--no-codeblocks` turns the feature off, and a named
+`.md` file then becomes a usage error rather than a silently empty run.
 
 ### From Python
 
-You can also run rustest programmatically:
+You can also run rustest programmatically. `run()` is keyword-only and returns pytest's exit
+code as an `int`:
 
 <!--rustest.mark.skip-->
 ```python
 from rustest import run
 
-report = run(paths=["tests"])
-print(f"Passed: {report.passed}, Failed: {report.failed}")
+exit_code = run(paths=["tests"])
 
 # With filtering
-report = run(paths=["tests"], pattern="user")
+exit_code = run(paths=["tests"], keyword="user")
 
-# Access individual results
-for result in report.results:
-    if result.status == "failed":
-        print(f"{result.name}: {result.message}")
+# For per-test detail, write a JSON report and read it back
+run(paths=["tests"], report_json="report.json")
 ```
 
-## What's Next?
+[Python API](python-api.md) documents every argument and the shape of the report file.
 
-You now know the basics of rustest! Continue learning:
+## What's next?
 
-- [Writing Tests](writing-tests.md) - Learn more about test functions and structure
-- [Fixtures](intro-fixtures.md) - Deep dive into fixture scopes and dependencies
-- [Parametrization](intro-parametrization.md) - Advanced parametrization techniques
-- [CLI Usage](cli.md) - Complete CLI reference
+- [Writing Tests](writing-tests.md), more on test functions and structure
+- [Fixtures](fixtures.md), fixture scopes and dependencies
+- [Parametrization](parametrization.md), the full parametrization surface
+- [CLI Usage](cli.md), the complete CLI reference

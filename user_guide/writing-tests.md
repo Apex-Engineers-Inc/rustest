@@ -1,14 +1,19 @@
 # Writing Tests
 
-Rustest follows pytest conventions for test discovery and organization.
+Rustest follows pytest's conventions for test discovery and organization.
 
 ## Test Discovery
 
-Rustest automatically discovers tests by looking for:
+Rustest discovers tests by looking for:
 
 - Files named `test_*.py` or `*_test.py`
 - Functions named `test_*` within those files
 - Classes named `Test*` containing test methods
+
+These are the defaults. All three come from ini options rustest reads out of your
+`pytest.ini` or `pyproject.toml` (`python_files`, `python_classes`, `python_functions`), so
+a project that has already customized them for pytest keeps the same discovery under
+rustest.
 
 ### Example Directory Structure
 
@@ -46,12 +51,15 @@ def test_list_operations() -> None:
     assert 4 in items
 ```
 
-!!! tip "Type Hints"
-    While not required, adding type hints to your tests helps with code clarity and IDE support.
+!!! tip "Type hints"
+    Type hints are not required on tests. They help your editor and your type checker, and
+    rustest ignores them either way.
 
 ## Assertions
 
-Rustest uses Python's built-in `assert` statement:
+Rustest uses Python's built-in `assert` statement. Assertions are rewritten before the
+module is imported, so a failure reports the values involved rather than just the source
+line: `assert 41 == 42`, not `AssertionError`.
 
 ```python
 def test_comparisons() -> None:
@@ -80,7 +88,8 @@ def test_comparisons() -> None:
 
 ### Custom Assertion Messages
 
-You can provide custom messages for assertions:
+An assertion can carry its own message. It is printed above the rewritten comparison, so
+you get both:
 
 ```python
 def calculate_something() -> int:
@@ -95,7 +104,7 @@ def test_with_message() -> None:
 
 ### Grouping Related Tests
 
-For better organization, group related tests in the same file:
+Related tests belong in the same file:
 
 ```python
 # test_math_operations.py
@@ -115,7 +124,7 @@ def test_division() -> None:
 
 ### Using Test Classes
 
-Group related tests using classes:
+Classes give you a second level of grouping, and a place to hang class-scoped fixtures:
 
 ```python
 class TestMathOperations:
@@ -141,7 +150,8 @@ See [Test Classes](test-classes.md) for more details.
 
 ## Setup and Teardown
 
-For setup and teardown logic, use fixtures instead of traditional setup/teardown methods:
+Use a fixture rather than a setup/teardown method. A fixture that yields runs its setup
+before the test and everything after the `yield` once the test finishes, pass or fail:
 
 ```python
 from rustest import fixture
@@ -176,7 +186,7 @@ See [Fixtures](intro-fixtures.md) for more information.
 
 ## Test Output
 
-When you run rustest, you'll see clean, informative output:
+The default output is the failure report plus the counts:
 
 <!--rustest.mark.skip-->
 ```
@@ -192,9 +202,9 @@ FAILED test_example.py::test_broken_feature
 1 failed, 3 passed, 1 skipped in 0.44s
 ```
 
-The passing and skipped tests say nothing at this rung — the default output is the failure
-report plus the counts. That is pytest's shape, and it is deliberate: on a suite of a few
-thousand tests, the only lines you want are the ones about what broke.
+The tests that passed and the one that skipped print nothing of their own. That is pytest's
+shape and it is deliberate: on a suite of a few thousand tests, the lines worth reading are
+the ones about what broke.
 
 ### Verbose Output
 
@@ -226,17 +236,22 @@ FAILED test_example.py::test_broken_feature
 
 Verbose mode adds:
 
-- The full node id of every test, in the form you would paste into `-k`
-- Its outcome in pytest's wording — `PASSED`, `FAILED`, `SKIPPED (reason)`, `XFAIL`,
+- The full node id of every test, byte-identical to the one pytest would print, which is
+  the form `--lf` keys on and the form to paste into a CI failure list
+- Its outcome in pytest's wording: `PASSED`, `FAILED`, `SKIPPED (reason)`, `XFAIL`,
   `XPASS`, `ERROR`
 - A running percentage through the selected set
 
-Skip reasons only appear at this rung, which is often the reason to reach for it.
-- Inline error output for failed tests
+Skip reasons appear only at this rung, which is often the reason to reach for it.
+
+`-k` matches against the parts of a node id rather than the whole string: the path
+segments, the class names, the function name with its `[param]` suffix, and the names of
+any marks. `-k test_list_operations` works; a whole node id with `::` in it matches
+nothing.
 
 ### Viewing Print Statements
 
-By default, rustest captures stdout/stderr. To see print statements during test execution:
+Rustest captures stdout and stderr by default. To see print statements as a test runs:
 
 <!--rustest.mark.skip-->
 ```bash
@@ -253,7 +268,8 @@ def test_with_output() -> None:
 
 ### Keep Tests Simple and Focused
 
-Each test should verify one specific behavior:
+Each test should verify one behavior. When a test that checks four things fails, the report
+tells you the first one that broke and nothing about the rest:
 
 ```python
 class User:
@@ -288,7 +304,8 @@ def test_user_operations() -> None:
 
 ### Use Descriptive Test Names
 
-Test names should clearly describe what they test:
+The test name is what a failure prints, so it should say what broke without your having to
+open the file:
 
 ```python
 class ShoppingCart:
@@ -312,7 +329,7 @@ def test_cart() -> None:
 
 ### Arrange-Act-Assert Pattern
 
-Organize test code into three sections:
+Set up the data, perform the action, then check the result:
 
 ```python
 class Product:

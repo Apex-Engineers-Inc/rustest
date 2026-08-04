@@ -1,12 +1,15 @@
 # Marks & Skipping
 
-Marks allow you to categorize and organize your tests. You can use marks to skip tests, mark slow tests, or create custom categories.
+A mark is a label attached to a test. Rustest uses marks for the behaviours pytest uses them
+for (skipping, expected failures, async execution) and lets you invent your own to categorise
+tests for `-m` filtering.
 
 ## Skipping Tests
 
-### Using skip() Function
+### The skip() Function
 
-Skip tests dynamically at runtime:
+`skip()` raises immediately, so anything after it in the test body never runs. Use it when the
+decision depends on something only known at run time.
 
 ```python
 from rustest import skip
@@ -22,9 +25,17 @@ def test_platform_specific() -> None:
     # Test code here
 ```
 
-### Using @mark.skip
+`skip()` raises a `BaseException` subclass, so an `except Exception:` in your own test helper
+cannot swallow it and turn the skip into a pass.
 
-Alternative syntax using marks:
+At module level, `skip()` needs `allow_module_level=True`. Without it, a module-scope call is a
+collection error carrying pytest's "pass `allow_module_level=True`" message. With it, the whole
+module is skipped and nothing in it is collected.
+
+### @mark.skip
+
+The decorator form takes the decision at import time. Both the bare and the called spelling
+work.
 
 ```python
 from rustest import mark
@@ -38,9 +49,10 @@ def test_also_skipped() -> None:
     assert False
 ```
 
-### Conditional Skipping with Decorator
+### Conditional Skipping
 
-Use `@mark.skip` for conditional skipping at decoration time:
+For a condition you can evaluate at import time, `@mark.skipif` below is the direct tool. An
+inline conditional decorator also works, since a decorator may be any expression:
 
 ```python
 import os
@@ -54,7 +66,8 @@ def test_expensive_operation() -> None:
     pass
 ```
 
-Or use the `skip()` function for runtime conditional skipping:
+`skip()` inside the body is the readable version of the same thing, and the one to prefer when
+the condition involves anything expensive to compute at import:
 
 ```python
 import os
@@ -69,11 +82,7 @@ def test_expensive_operation() -> None:
 
 ## Standard Pytest Marks
 
-Rustest supports standard pytest marks for advanced test control:
-
-### @mark.skipif - Conditional Skipping
-
-Skip tests based on runtime conditions:
+### @mark.skipif
 
 ```python
 import sys
@@ -90,9 +99,15 @@ def test_modern_python() -> None:
     pass
 ```
 
-### @mark.xfail - Expected Failures
+The condition may also be a **string**, which is evaluated against the decorated function's
+module globals: `@mark.skipif("sys.platform == 'win32'", reason=...)`. Several `skipif` marks
+on one test are a disjunction, so any one of them holding skips the test. A bare `@mark.skipif`
+with no condition at all skips unconditionally, which is what pytest does with it.
 
-Mark tests that are expected to fail:
+Every `skipif` is considered before any `skip`, so a test carrying both is skipped for the
+condition's reason when the condition holds.
+
+### @mark.xfail
 
 ```python
 import sys
@@ -120,18 +135,35 @@ def test_strict_xfail() -> None:
 ```
 
 **Parameters:**
-- `condition`: Optional boolean condition - if False, mark is ignored
-- `reason`: Explanation for why the test is expected to fail
-- `raises`: Expected exception type(s)
-- `run`: Whether to run the test (False means skip it)
-- `strict`: If True, passing test will fail the suite
 
-### @mark.asyncio - Async Test Support
+- `condition`: Optional boolean or string condition. When it evaluates false, the mark is
+  ignored and the test is reported normally.
+- `reason`: Explanation for why the test is expected to fail.
+- `raises`: Expected exception type, or a tuple of them. An exception that does not match
+  reports as a plain failure rather than an xfail.
+- `run`: When `False`, the body is not executed. The test reports as **xfailed** with a
+  `[NOTRUN]` prefix on the reason, not as skipped.
+- `strict`: When `True`, a test that unexpectedly passes fails the suite, with pytest's
+  `[XPASS(strict)]` prefix.
 
-Mark async test functions to be executed with asyncio:
+`strict` defaults to `False`. The `xfail_strict` ini option is not read, so a project that sets
+it still gets non-strict behaviour here unless each mark says otherwise.
+
+A `skip` mark beats an `xfail` mark on the same test. An `xfail` also applies during setup and
+teardown, so a test with a broken fixture and an `xfail` mark reports XFAIL rather than ERROR.
+
+### @mark.asyncio
 
 ```python
 from rustest import mark
+
+expected_value = 42
+
+async def some_async_function():
+    return expected_value
+
+async def another_async_operation():
+    return None
 
 @mark.asyncio
 async def test_async_operation() -> None:
@@ -146,13 +178,19 @@ async def test_with_module_loop() -> None:
 ```
 
 **Parameters:**
-- `loop_scope`: The scope of the event loop. One of:
-  - `"function"`: New loop for each test function (default)
-  - `"class"`: Shared loop across all test methods in a class
-  - `"module"`: Shared loop across all tests in a module
-  - `"session"`: Shared loop across all tests in the session
 
-**Usage with classes:**
+- `loop_scope`: The scope of the event loop, one of `"function"`, `"class"`, `"module"`,
+  `"package"` or `"session"`. Omitted, it falls back to the `asyncio_default_test_loop_scope`
+  ini option, whose own default is `"function"`.
+- `scope`: pytest-asyncio's deprecated spelling of `loop_scope`, accepted so a suite written
+  against pytest-asyncio before 1.0 keeps working. Passing both is an error.
+- `timeout`: Seconds after which the test is cancelled. Must be positive.
+
+Rustest's `asyncio_mode` defaults to `auto`, so an unmarked `async def test_*` runs without
+this mark. You need it to pin a `loop_scope` or a `timeout`, or when the project sets
+`asyncio_mode = "strict"`.
+
+Applied to a class, the mark reaches every coroutine method on it:
 
 ```python
 import asyncio
@@ -179,14 +217,33 @@ class TestAsyncOperations:
         assert result is not None
 ```
 
-For more details, see the [Async Testing Guide](async-testing.md).
+A test's loop scope does not widen to match the async fixtures it requests. See the
+[Async Event Loops](async-event-loops.md) page for what does decide it, and the
+[Async Testing Guide](async-testing.md) for writing async tests generally.
 
-### @mark.usefixtures - Implicit Fixture Usage
+### @mark.usefixtures
 
-Use fixtures without explicitly requesting them as parameters:
+Fixtures named here are set up for the test without appearing in its signature.
 
 ```python
 from rustest import fixture, mark
+
+_ROWS = []
+
+def create_test_db():
+    class DB:
+        def cleanup(self):
+            _ROWS.clear()
+    _ROWS.append("ready")
+    return DB()
+
+def query_database():
+    return _ROWS
+
+@fixture
+def setup_cache():
+    """A second side-effect-only fixture, for the class example below."""
+    yield
 
 @fixture
 def setup_database():
@@ -212,14 +269,14 @@ class TestDatabaseOperations:
         pass
 ```
 
-This is useful when:
-- A fixture has side effects but no return value
-- You want to apply fixtures to an entire test class
-- The fixture name would conflict with a parameter name
+This is what you want when a fixture has side effects but no return value, when a whole class
+needs the same setup, or when the fixture's name would collide with a parameter name.
 
 ## Custom Marks
 
-Create custom marks to categorize tests:
+Any attribute on `mark` becomes a mark. Nothing needs registering first: rustest does not read
+the `markers` ini option and emits no unknown-mark warning, and `--strict-markers` is accepted
+and ignored with a note on stderr.
 
 ```python
 from rustest import mark
@@ -241,8 +298,6 @@ def test_long_running_process() -> None:
 
 ### Multiple Marks
 
-Apply multiple marks to a single test:
-
 ```python
 from rustest import mark
 
@@ -256,7 +311,7 @@ def test_full_workflow() -> None:
 
 ## Marks with Arguments
 
-Marks can accept arguments and keyword arguments:
+A mark called with arguments carries them, and `-m` can filter on the keyword ones.
 
 ```python
 from rustest import mark
@@ -274,6 +329,10 @@ def test_critical_feature() -> None:
 def test_with_dependencies() -> None:
     pass
 ```
+
+Rustest records these arguments and matches on them. It does not act on them: `@mark.timeout`
+above is a label, not an enforced limit. For a real per-test timeout on an async test, use
+`@mark.asyncio(timeout=...)`.
 
 ## Common Mark Patterns
 
@@ -354,7 +413,7 @@ def test_bug_fix() -> None:
 
 ## Marks on Test Classes
 
-Apply marks to all tests in a class:
+A mark on a class applies to every test in it.
 
 ```python
 from rustest import mark
@@ -373,7 +432,7 @@ class TestDatabaseOperations:
         pass
 ```
 
-You can also add marks to individual methods:
+Methods can add their own on top:
 
 ```python
 from rustest import mark
@@ -392,8 +451,6 @@ class TestAPI:
 
 ## Marks with Parametrization
 
-Combine marks with parametrized tests:
-
 ```python
 from rustest import parametrize, mark
 
@@ -407,9 +464,17 @@ def test_square(value: int, expected: int) -> None:
     assert value ** 2 == expected
 ```
 
+`param(..., marks=...)` marks a single case rather than the whole function, so one
+parametrized case can be xfailed while its siblings run normally.
+
 ## Filtering Tests by Marks
 
-Use the `-m` flag to run only tests matching a mark expression:
+`-m` takes a boolean expression over mark names. Rustest ports pytest's expression grammar,
+including its error messages and their 1-based column numbers, so a bad expression exits 4 with
+the wording you would grep for under pytest.
+
+Deselection happens after collection and before anything runs. A file that fails to import is
+still a collection error and still exits 2, however aggressively `-m` deselects.
 
 ### Basic Mark Filtering
 
@@ -425,6 +490,8 @@ rustest -m "integration"
 rustest -m "unit"
 ```
 
+Mark names match exactly, and case matters: `-m slo` selects nothing when the mark is `slow`.
+
 ### Negation
 
 <!--rustest.mark.skip-->
@@ -438,7 +505,7 @@ rustest -m "not integration"
 
 ### Boolean Expressions
 
-Combine multiple mark filters with `and` and `or`:
+`and` binds tighter than `or`, and `not` tighter than both.
 
 <!--rustest.mark.skip-->
 ```bash
@@ -454,8 +521,6 @@ rustest -m "slow and not integration"
 
 ### Complex Expressions
 
-Use parentheses for complex boolean logic:
-
 <!--rustest.mark.skip-->
 ```bash
 # Run tests that are either (slow or fast) but not integration
@@ -465,9 +530,26 @@ rustest -m "(slow or fast) and not integration"
 rustest -m "(critical or smoke) and not slow"
 ```
 
+### Matching a Mark's Arguments
+
+A name followed by parentheses constrains the mark's keyword arguments. At least one mark of
+that name has to satisfy every constraint given. Values may be quoted strings, integers,
+`True`, `False` or `None`, and a keyword the mark does not carry never matches.
+
+<!--rustest.mark.skip-->
+```bash
+# Only tests marked @mark.net(scope="wide")
+rustest -m "net(scope='wide')"
+
+# Two constraints, both of which one mark must satisfy
+rustest -m "net(scope='wide', retries=3)"
+```
+
 ### Combining with Pattern Matching
 
-You can combine mark filtering with test name pattern matching:
+`-k` matches a case-insensitive substring against the test's node names: each directory in its
+path, the file name (with the `.py`), each enclosing class, the function name plus any
+`[param_id]`, and the names of its marks. `-m` and `-k` compose, `-k` first.
 
 <!--rustest.mark.skip-->
 ```bash
@@ -477,6 +559,13 @@ rustest -m "slow" -k "database"
 # Run integration tests matching "api" in the name
 rustest -m "integration" -k "api"
 ```
+
+Because mark names are among the node names, `-k slow` selects marked tests too. `-k` is the
+loose one and `-m` the exact one.
+
+Two emptiness rules differ, which is pytest's asymmetry and worth knowing before it surprises
+you: `-k "   "` filters nothing and selects everything, while `-m "   "` compiles to the empty
+expression and deselects everything. Only `-m ""` skips mark filtering.
 
 ### Common Filtering Patterns
 
@@ -498,9 +587,10 @@ rustest -m "critical or smoke"
 rustest -m "slow or integration"
 ```
 
-## Creating a Mark Registry
+## Keeping a Mark Registry
 
-Document your marks in a central location:
+Since rustest requires no registration, a module docstring is a decent place to record what
+each mark in the project is supposed to mean.
 
 ```python
 # marks.py
@@ -532,7 +622,11 @@ def test_calculation():
 
 ### Use Consistent Mark Names
 
-Good - consistent naming:
+Since `-m` matches exactly, a typo is a mark nobody will ever select, and rustest will not warn
+you about it. Pick one spelling convention.
+
+Good, consistent naming:
+
 ```python
 from rustest import mark
 
@@ -549,9 +643,10 @@ def test_full_workflow():
     assert True
 ```
 
-Less ideal - inconsistent naming:
+Less ideal:
+
 ```text
-❌ Avoid these inconsistent styles:
+Avoid these inconsistent styles:
 @mark.unit_test     # Inconsistent - uses underscore
 @mark.Integration   # Inconsistent - uses Pascal case
 @mark.end2end       # Inconsistent - abbreviated differently
@@ -559,7 +654,8 @@ Less ideal - inconsistent naming:
 
 ### Document Custom Marks
 
-If you create custom marks with special meaning, document them:
+A custom mark carries no behaviour of its own, so its meaning has to live in prose or in
+whatever runs your CI.
 
 ```python
 from rustest import mark
@@ -573,6 +669,9 @@ def test_external_api():
     """
     pass
 ```
+
+Rustest does not retry anything on its own. The mark above records an intent for a wrapper
+script or a CI job to act on.
 
 ### Don't Overuse Marks
 
@@ -598,7 +697,8 @@ def test_database_migration():
 
 ### Combine with Test Organization
 
-Use both marks and file organization:
+Directory layout and marks answer different questions. The directory says where a test lives;
+the mark says what a CI job should do with it.
 
 ```
 tests/
@@ -612,9 +712,9 @@ tests/
     └── test_workflows.py
 ```
 
-## Skip Function vs @mark.skip Decorator
+## skip() Versus @mark.skip
 
-Use `skip()` for dynamic runtime skipping and `@mark.skip` for decorator-based skipping:
+`skip()` decides at run time and `@mark.skip` at import time. That is the whole distinction.
 
 ```python
 from rustest import skip, mark
@@ -632,7 +732,8 @@ def test_b() -> None:
     pass
 ```
 
-Use `skip()` when you need to check runtime conditions, and use `@mark.skip` when you know at decoration time that a test should be skipped.
+Use `skip()` when the answer depends on the machine the tests are running on, and `@mark.skip`
+when you already know at import that the test should not run.
 
 ## Next Steps
 

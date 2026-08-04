@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 > **Release-candidate builds report `1.0.0rc1`.** The number is set so that a build
-> installed from git is unambiguous in `pip list` next to a PyPI `0.18.0` — it is **not** a
+> installed from git is unambiguous in `pip list` next to a PyPI `0.18.0`. It is **not** a
 > decision that this ships as 1.0.0. The final version is the maintainer's call at release
 > time (see `RELEASE-CHECKLIST.md` §2), and nothing publishes from the release-candidate
 > branch: `publish.yml` triggers only on a push to `main`.
@@ -16,10 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This entry covers the **v2 arc**: a ground-up rewrite of rustest's engine, validated
 against a conformance corpus that diffs rustest against real pytest case by case, and
 against seventeen real open-source pytest suites graded on every node id and every outcome
-count (13 MATCH / 4 EXPLAINED / 0 DIVERGE). Read **Breaking changes** first — several of
+count (13 MATCH / 4 EXPLAINED / 0 DIVERGE). Read **Breaking changes** first. Several of
 them will stop a working command line.
 
-### ⚠ Breaking changes
+### Breaking changes
 
 Seven, in rough order of how likely they are to reach you.
 
@@ -29,7 +29,7 @@ Seven, in rough order of how likely they are to reach you.
    pre-commit hook, `addopts` and script.
 
 2. **`--v1` is removed, and so is the engine it selected.** The legacy Rust and Python
-   engines were **deleted** — about 15,000 lines and six Rust dependencies — rather than
+   engines were **deleted**, about 15,000 lines and six Rust dependencies, rather than
    left to rot behind a flag nobody could test. Passing `--v1` exits **4**. There is no
    fallback engine, which means the "Known gaps" list below is the complete statement of
    what rustest does, with no escape hatch behind it.
@@ -50,8 +50,8 @@ Seven, in rough order of how likely they are to reach you.
    | Old keyword | Now |
    |---|---|
    | `capture_output=` | `capture=` |
-   | `pytest_compat=` | gone — the shim is unconditional |
-   | `ascii=`, `no_color=` | gone — the output is plain and uncolored |
+   | `pytest_compat=` | gone; the shim is unconditional |
+   | `ascii=`, `no_color=` | gone; the output is plain and uncolored |
    | `verbose=` (bool) | `verbosity=` (`-1`/`0`/`1`) |
    | `enable_codeblocks=` | `codeblocks=` |
    | `pattern=` | `keyword=` |
@@ -62,7 +62,7 @@ Seven, in rough order of how likely they are to reach you.
 
 6. **`indirect=` parametrization now means what it means in pytest.** A routed parameter's
    value reaches the fixture as `request.param` and the test receives the fixture's return
-   value. It used to be read as *the name of a fixture to resolve* — a rustest-only reading
+   value. It used to be read as *the name of a fixture to resolve*, a rustest-only reading
    no pytest suite could use, and one that accounted for 120 of the 129 failures in one
    real target's `tests/test_startup` subtree. Ids still come from the parameter, so making
    a name indirect does not move a node id. Note that a **string is a Sequence**:
@@ -72,21 +72,21 @@ Seven, in rough order of how likely they are to reach you.
 7. **A directory argument no longer collects markdown.** `rustest docs/` used to pick up
    `.md` files and run their python fences; it no longer does, because pytest walking the
    same tree collects none either and a repo with fences in its docs was silently getting
-   tests under `rustest tests/` that `pytest tests/` never sees — measured on a real suite,
+   tests under `rustest tests/` that `pytest tests/` never sees. Measured on a real suite,
    where a fixtures directory contributed 13 ids pytest never sees, 4 of them failing.
    Markdown must be **named**: `rustest README.md user_guide/*.md`.
 
 > ### Release note for tooling authors: `--llm` schema 2
 >
-> The flag *surface* is 0.18's — `--llm`, `--llm-full`, `--llm-schema`, JSONL on stdout, a
-> `meta` header, a `summary` sentinel last — so a script that runs `rustest --llm` keeps
+> The flag *surface* is 0.18's (`--llm`, `--llm-full`, `--llm-schema`, JSONL on stdout, a
+> `meta` header, a `summary` sentinel last), so a script that runs `rustest --llm` keeps
 > running. **The payload is not compatible.** A tool pinned to schema 1 sees a `meta` line
 > with no `v` key at all; it should **refuse** rather than half-read, and the published
 > schema marks `schema_version` as `const: 2` so it can. `rustest --llm-schema` prints the
 > current contract and is answered before argument parsing, so it works from a directory
 > whose `addopts` would make the run itself exit 4.
 
-### Changed — the flip: the v2 engine is the default
+### Changed: the v2 engine is the default (the flip)
 
 `rustest <paths>` with no mode flag runs the **v2 engine**: a Rust orchestrator, process
 workers, pytest's config resolution and node ids, pytest's exit codes, and the pytest
@@ -98,25 +98,25 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 ### Added
 
 - **The 0.17/0.18 regression suites, carried across.** `test_async_teardown_lifecycle.py`
-  (18 tests, asserting that a *previous* test's async fixture teardown completed — an angle
+  (18 tests, asserting that a *previous* test's async fixture teardown completed, an angle
   none of the six existing async suites covered), plus `test_asyncio_config.py`,
   `test_xfail.py`, `test_relative_imports/`, `test_async_autouse_event_loop.py`.
   `test_fixture_resolution_order.py` was **re-authored**: as written its autouse fixture
   depended on its session fixture, so the dependency edge forced the order and its
   assertions would have passed against an implementation ordering fixtures exactly
-  backwards. It now pins the order measured on pytest 8.4.2 — `s_auto, s_req, f_auto,
-  f_req`, i.e. scope first and autouse second *within* a scope — and pins that a test's
+  backwards. It now pins the order measured on pytest 8.4.2 (`s_auto, s_req, f_auto,
+  f_req`, i.e. scope first and autouse second *within* a scope) and pins that a test's
   parameter order does not override scope. rustest produces that list identically.
 
 - **`rustest --version`.** It had never existed, in any release. Prints `rustest <version>`
-  on stdout and exits 0, running nothing — shaped after `pytest --version` (measured on
+  on stdout and exits 0, running nothing, shaped after `pytest --version` (measured on
   pytest 8.4.2), which is the oracle used everywhere else. Like `--llm-schema` it is a
   *query* rather than a run, so it is answered before collection: it works from a directory
   holding nothing collectable, and from a project whose `addopts` carries a flag this CLI
-  refuses. The string comes from the installed distribution's metadata — the same source
+  refuses. The string comes from the installed distribution's metadata, the same source
   `--llm`'s `meta` line reports, so the two cannot drift apart.
 
-- **`--llm`: the run as JSONL, for coding agents.** One JSON object per line on stdout — a
+- **`--llm`: the run as JSONL, for coding agents.** One JSON object per line on stdout: a
   `meta` header, an `error` line per collection or unattributable-teardown failure, a `fail`
   line per failed/errored test, `skip` lines under `-v`, and a `summary` sentinel last.
   Lines are in manifest order at any `-n`, so identical failures produce identical bytes.
@@ -129,10 +129,10 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   **What schema 2 changed, field by field:**
 
   - `summary` carries all six status buckets (`passed`/`failed`/`skipped`/`xfailed`/
-    `xpassed`/`error`) plus `deselected`, `collection_errors`, `exit_code` and — when `-x` or
-    `--maxfail` cut the run short — `stopped_early`. Schema 1 had three buckets and no exit
+    `xpassed`/`error`) plus `deselected`, `collection_errors`, `exit_code` and, when `-x` or
+    `--maxfail` cut the run short, `stopped_early`. Schema 1 had three buckets and no exit
     code, and folded xfails into skips.
-  - `fail` lines carry the failure message **whole** in `msg` — the frame-filtered traceback
+  - `fail` lines carry the failure message **whole** in `msg`: the frame-filtered traceback
     whose last line is the assertion-rewritten comparison (`AssertionError: assert 41 == 42`).
     Schema 1 split the same string into `error`/`msg`/`expected`/`actual`/`code`/`frames`
     with six regexes, which lost the rewriting and only produced `expected`/`actual` for the
@@ -142,18 +142,22 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   - `summary.rerun` is gone. `--lf` does the same job with no id round-trip and a warm
     collect, which is the loop the guide documents.
 - `-x` / `--exitfirst` on the default engine: dispatch stops after the first failure, the
-  report contains only the tests that ran, and the exit code is 1 — pytest's `--maxfail=1`
-  semantics. Sequential-exact at `-n 1`; with a worker pool, tests already in flight finish.
-- `--lf` / `--ff` on the default engine, backed by a cache at `.rustest_cache/v2/lastfailed`.
-  The path is nested because the removed v1 engine kept its own store at
-  `.rustest_cache/lastfailed` keyed on different id strings, and the two had to not overwrite
-  each other. The document shape is pytest's own `{nodeid: true}`.
+  report contains only the tests that ran, and the exit code is 1, which is pytest's
+  `--maxfail=1` semantics. Sequential-exact at `-n 1`; with a worker pool, tests already in
+  flight finish.
+- `--lf` / `--ff` on the default engine, backed by a cache at
+  `.rustest_cache/v2/v/cache/lastfailed`. The `v2/` component is there because the removed
+  v1 engine kept its own store at `.rustest_cache/lastfailed` keyed on different id strings,
+  and the two had to not overwrite each other. Everything below it is pytest's own cache
+  layout (`v/` is its value prefix, `cache/lastfailed` its key), so the `cache` fixture
+  resolves `cache.get("cache/lastfailed", {})` to this very file. The document shape is
+  pytest's own `{nodeid: true}`.
 - `-v` prints one line per test in pytest's verbose wording (`PASSED` / `FAILED` /
   `SKIPPED (reason)` / `XFAIL` / `XPASS` / `ERROR`) with pytest's percent column; `-q` prints
   only the summary. `-v -q` cancel out, as under pytest.
 - **A pytest-shaped failure report.** A red run now prints an `ERRORS` section, a `FAILURES`
   section and a `short test summary info` list of node ids, with pytest's `=` and `_`
-  separator rules — so a failure is found the same way it is under pytest. The traceback
+  separator rules, so a failure is found the same way it is under pytest. The traceback
   inside each block is still the worker's own; only the structure is pytest's. Two
   deliberate differences: an error block heads `ERROR <test>` rather than
   `ERROR at setup of <test>`, because the wire carries one reduced status per test and not
@@ -165,32 +169,33 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - `-s` / `--no-capture` on the default engine. Uncaptured output reaches you on **stderr**
   (a worker's stdout is the protocol channel), interleaved across a pool.
 - Markdown code-block tests on the default engine. `.md` files must be named rather than
-  walked — see breaking change 7 — and `--no-codeblocks` restores pytest's answer for a
+  walked (see breaking change 7), and `--no-codeblocks` restores pytest's answer for a
   `.md` argument.
 - `RUSTEST_ENGINE=v2` in the worker environment (alongside the long-standing
   `RUSTEST_RUNNING=1`), for suites that need to branch during the transition.
 - **A worker's whole process tree is torn down with it** (job-object containment on
-  Windows), closing #140 — a real leak that could leave orphaned grandchildren of a
-  subprocess-spawning test running indefinitely after a crashed or killed run. Measured on
+  Windows), closing #140. That was a real leak: orphaned grandchildren of a
+  subprocess-spawning test could keep running indefinitely after a crashed or killed
+  run. Measured on
   the werkzeug suite: rustest leaks 0 processes where pytest leaks 6.
 - `pythonpath` ini support (`type="paths"`, applied to the worker's `sys.path` before
   anything is imported), so a `src/` layout works with no editable install.
-- Coverage through `sys.monitoring` — `--cov`, `--cov-report`, opt-in behind the `cov`
+- Coverage through `sys.monitoring`: `--cov`, `--cov-report`, opt-in behind the `cov`
   extra, and structurally free when off (a run that does not ask for it registers no
   monitoring tool at all).
 
 ### Fixed
 
-Several of these were real, shipped defects that reported **green** on a broken test —
-the worst answer a test runner can give.
+Several of these were real, shipped defects that reported **green** on a broken test,
+which is the worst answer a test runner can give.
 
 - **A test returning a non-coroutine awaitable no longer fails on Python 3.12 and 3.13.**
   rustest duck-types on `__await__` exactly as pytest does, so a `Future`, an anyio task
-  wrapper, or any object with `__await__` is awaited rather than dropped unrun — but the
+  wrapper, or any object with `__await__` is awaited rather than dropped unrun. But the
   awaited object was then handed straight to `asyncio.Runner.run()`, which accepts *only* a
   true coroutine before 3.14 (`Lib/asyncio/runners.py`: `raise ValueError("a coroutine was
   expected, got ...")`). Python 3.14 added a wrapper for arbitrary awaitables, so the
-  feature worked there and nowhere else. The symptom was a false **red** — the test failed
+  feature worked there and nowhere else. The symptom was a false **red**: the test failed
   citing asyncio internals rather than anything the user wrote. rustest now reproduces
   3.14's wrapper on the versions that lack it.
 
@@ -234,7 +239,7 @@ the worst answer a test runner can give.
   does it (`SubRequest.node` falls back to the function item when there is no class). It was
   being cached for the whole file.
 - **A `session`- or `package`-scoped `conftest.py` fixture is built once per worker, not once
-  per test file.** It was rebuilt for every file that requested it — even at `-n 1` — so two
+  per test file.** It was rebuilt for every file that requested it, even at `-n 1`, so two
   files each got their own instance and each queued its own teardown, where pytest builds one
   and tears it down once. The same applies to a session fixture reached through
   `pytest_plugins`, and to the session-scoped builtins (`tmp_path_factory`, `tmpdir_factory`,
@@ -242,7 +247,7 @@ the worst answer a test runner can give.
   difference between 0.72x and 1.10x against pytest. Narrower scopes are unchanged.
 - **A conftest reached under two path spellings is one module again on Windows.** The
   content-cache key was case-preserving while the module cache was case-insensitive, so a
-  single conftest could produce two fixture blocks — silently reintroducing the per-file
+  single conftest could produce two fixture blocks, silently reintroducing the per-file
   duplication the fix above exists to remove.
 - **`approx`'s comparison table reaches the assertion output.** A failing
   `assert x == approx(y)` printed the generic explanation while the
@@ -258,11 +263,11 @@ the worst answer a test runner can give.
   `request.function`, `request.module` and `request.path` exist.
 - `@mark.usefixtures` is honoured by the fixture closure.
 - **Non-coroutine awaitables are awaited.** The guard is now pytest's duck-typed
-  `hasattr(result, "__await__")` rather than `inspect.iscoroutine`, so a test — or a fixture —
+  `hasattr(result, "__await__")` rather than `inspect.iscoroutine`, so a test (or a fixture)
   handing back a `Future`, a task wrapper or any custom awaitable is run instead of silently
   dropped. A returned *async generator* is a failure, with pytest's own message.
 - `-v`'s percent column is over the tests the run *selected*, so a `-x` run stops short of
-  100% instead of claiming it finished — pytest's `session.testscollected` denominator.
+  100% instead of claiming it finished. That is pytest's `session.testscollected` denominator.
 - `deprecated_call()` accepts `FutureWarning`, pytest's third deprecation category, which
   numpy and pandas both use heavily.
 
@@ -276,16 +281,16 @@ the worst answer a test runner can give.
 > that was fixed, and trusts the entries that are still wrong. Every bullet below was
 > re-probed against pytest 8.4.2.
 
-- **A `path::node::id` argument selects the *file*, not the node — silently.** This is the
+- **A `path::node::id` argument selects the *file*, not the node, and does so silently.** This is the
   gap most likely to bite, because copying a node id out of a failure report and re-running
   it is pytest muscle memory, and `short test summary info` and `--llm`'s `id` field both
   hand you one. Measured against pytest 8.4.2 on the same five-test file: pytest resolves
   `test_mixed.py::test_a` to that one test, and answers a *bogus* id with
   `collected 0 items` / `no tests ran`. rustest ignores everything after `::` in a path
-  argument and runs **all five**, including for the bogus id — so a CI line aimed at one
+  argument and runs **all five**, including for the bogus id, so a CI line aimed at one
   test quietly runs the file, and can go red for a neighbour or green for a test that no
   longer exists. *Workaround:* select with `-k` instead, which does understand the
-  parametrized id — `rustest test_mixed.py -k "2-4"` deselects the other two. Node ids
+  parametrized id: `rustest test_mixed.py -k "2-4"` deselects the other two. Node ids
   themselves are byte-identical to pytest's; it is only *selection by* them that is missing.
 - **No plugin system and no hook system.** By design. A `conftest.py` that defines hooks
   loads fine and its *fixtures* are used; its hooks are ignored. See
@@ -295,7 +300,7 @@ the worst answer a test runner can give.
   (`_pytest/fixtures.py::reorder_items`); that pass needs the whole session's item list,
   which a per-file worker does not have. Two tests sharing a module-scoped
   `params=["a", "b"]` fixture cost **2** setups under pytest (grouped) and **4** here
-  (interleaved) — both measured — so anything the fixture accumulates is reset twice as
+  (interleaved), both measured, so anything the fixture accumulates is reset twice as
   often. Node ids stay correct; the collected *order* differs, which is what an id
   comparison sees.
 - `session`/`package` scope is per **worker**, not per run: a worker is handed a subset of the
@@ -307,15 +312,15 @@ the worst answer a test runner can give.
 - **Nine fixtures are still not provided**: `capsysbinary`, `capfdbinary`, `capteesys`,
   `doctest_namespace`, `pytester`, `testdir`, `record_property`, `record_testsuite_property`
   and `record_xml_attribute`. Requesting one is a loud error naming the fixture, never a
-  silent skip. Everything else pytest ships is here — `capsys`, `capfd`, `caplog`, `cache`,
+  silent skip. Everything else pytest ships is here: `capsys`, `capfd`, `caplog`, `cache`,
   `mocker`, `monkeypatch`, `pytestconfig`, `recwarn`, `request`, `tmp_path`,
   `tmp_path_factory`, `tmpdir` and `tmpdir_factory`.
 - **No `pytest_generate_tests` hook.** Decorator metadata (function *and* class level) and
   fixture `params=` are the only sources of parametrization.
 - **No `xfail_strict` ini and no `--runxfail`.** The `strict=` *keyword* on the mark works,
   including strict xpass; only the ini and the flag are missing.
-- **No warnings channel.** pytest's own diagnostics — the `PytestCollectionWarning` for a
-  class with `__init__`, the "usefixtures() without arguments has no effect" note — are not
+- **No warnings channel.** pytest's own diagnostics (the `PytestCollectionWarning` for a
+  class with `__init__`, the "usefixtures() without arguments has no effect" note) are not
   printed, and neither `-W` nor the `filterwarnings` ini is honoured. The *behaviour* in each
   case matches pytest; only the message is missing.
 - **`PYTEST_ADDOPTS` is not read.** The `addopts` *ini* is applied (pytest's
@@ -326,7 +331,7 @@ the worst answer a test runner can give.
   seventeen-suite sweep does this.
 - **No `xdist_group` equivalent**, and worker distribution is at **file** granularity. A
   suite sharing a database, a port or a filesystem path across files needs `-n 1`.
-- **Async tests sharing a loop scope run sequentially** — but so do pytest's. pytest-asyncio
+- **Async tests sharing a loop scope run sequentially**, but so do pytest's. pytest-asyncio
   drives each coroutine through `asyncio.Runner.run`, which cannot be re-entered; probed on
   pytest-asyncio 1.2.0 with two tests each awaiting `asyncio.sleep(0.30)` on one
   session-scoped loop, the second started 3 ms *after* the first finished. This is listed so
@@ -340,7 +345,7 @@ the worst answer a test runner can give.
 Two entries this list used to carry are gone, and both were sharp: **`pythonpath`** is now
 read (`type="paths"` and all) and applied to the worker's `sys.path` before anything is
 imported, so a `src/` layout works with no editable install; and **capture is no longer
-uniformly stream-level** — `capsys` redirects `sys.stdout`/`sys.stderr` exactly as pytest's
+uniformly stream-level**: `capsys` redirects `sys.stdout`/`sys.stderr` exactly as pytest's
 does, while `capfd` redirects the file descriptors and does catch a subprocess or a C
 extension (probed both ways against pytest).
 
@@ -349,14 +354,14 @@ extension (probed both ways against pytest).
 Measured, and stated with its bounds rather than as a headline multiplier. Full method,
 per-suite table and caveats in `user_guide/performance.md`.
 
-- **1.1x – 5.7x** wall-clock across seventeen real open-source pytest suites, run
+- **1.1x to 5.7x** wall-clock across seventeen real open-source pytest suites, run
   sequentially on one machine, each target's two runners one after the other.
-- **1.23x** aggregated over all seventeen — a figure dominated by two suites that are
+- **1.23x** aggregated over all seventeen, a figure dominated by two suites that are
   almost entirely their own test bodies. **2.74x** across the other fifteen.
 - **~37x** on warm collection and **~8x** on marginal per-test framework overhead
   (500 files / 5,000 tests: 8.39s → 227.6ms, and 933.6µs → 117.9µs per test).
 - **4.0x** on the 5,000-test synthetic baseline (pytest 8.30s, rustest 2.07s).
-- Any speedup is bounded by a suite's *framework share* — the fraction of wall clock that
+- Any speedup is bounded by a suite's *framework share*, the fraction of wall clock that
   is not the user's own code. That fraction is measured per suite in the performance guide,
   and it is why a 1.2x on one suite and a 5.7x on another can be the same result.
 - **The marginal-overhead figure is noisy on a loaded machine** and should not be quoted
@@ -380,7 +385,7 @@ per-suite table and caveats in `user_guide/performance.md`.
 
 This branch forked before 0.17.0 and does **not** carry those tags, so this section exists so
 that nothing shipped on the release line looks dropped when the two histories meet. Every
-user-facing fix in 0.17.0 and 0.18.0 was checked against this engine, one at a time — 36
+user-facing fix in 0.17.0 and 0.18.0 was checked against this engine, one at a time. 36
 items: **19 moot under v2, 8 ported, 9 deferred**. The full evidence table is in
 `RELEASE-CHECKLIST.md`.
 
@@ -403,13 +408,13 @@ items: **19 moot under v2, 8 ported, 9 deferred**. The full evidence table is in
   hand-rolled cancel-all-tasks, `gather(..., return_exceptions=True)` and `shutdown_asyncgens`
   around `loop.close()`. This engine closes every loop through `asyncio.Runner.close()`, whose
   stdlib implementation does all of that *and* `shutdown_default_executor()`, and registers the
-  close on the scope's teardown bucket at loop creation — so it happens by construction rather
+  close on the scope's teardown bucket at loop creation, so it happens by construction rather
   than at two hand-placed call sites.
 - **0.17.0's deduplication refactor (#123) is already here**, commit for commit: this branch
   carries the eleven original commits that 0.17.0 shipped as one squash.
 - **0.17.0's documentation-accuracy pass (#126) is partly re-authored rather than taken.** The
-  feature-status half is applied — `-m` is no longer described as planned, and the worker-count
-  flag is no longer spelled `-j` (it is `-n`) — but its console-output half could not be: the
+  feature-status half is applied (`-m` is no longer described as planned, and the worker-count
+  flag is no longer spelled `-j`, it is `-n`), but its console-output half could not be: the
   replacement text it introduced is v1's spinner-and-progress-bar rendering, which this engine
   does not produce either.
 
@@ -478,7 +483,7 @@ in `RELEASE-CHECKLIST.md`.
 
 - **Pytest Compatibility**: Fixed three critical compatibility issues discovered during testing of popular Python projects
   - **Underscore-Prefixed Fixtures**: Fixed fixture discovery to properly detect underscore-prefixed fixtures (e.g., `_patch_for_completion` in click)
-  - **_pytest Stub Modules**: Added comprehensive stub modules for `_pytest` internal API compatibility (10 stub modules, only active with `--pytest-compat`)
+  - **_pytest Stub Modules**: Added stub modules for `_pytest` internal API compatibility (10 stub modules, only active with `--pytest-compat`)
   - **Config Fixtures**: Added `rustestconfig` and `pytestconfig` fixtures for configuration access
 
 ### Added
@@ -525,14 +530,14 @@ in `RELEASE-CHECKLIST.md`.
 
 ### Added
 
-- **Parallel Async Test Execution**: Revolutionary performance improvement for async tests with shared event loop scopes
+- **Parallel Async Test Execution**: Performance improvement for async tests with shared event loop scopes
   - Tests that share the same event loop scope (class, module, or session) now run concurrently using `asyncio.gather()`
-  - Provides significant speedups for I/O-bound async tests (10x+ in many cases)
+  - Speeds up I/O-bound async tests (10x+ in many cases)
   - Automatic batching of tests by loop scope for optimal parallelization
   - Respects fixture scopes and boundaries (shared fixtures resolved once, function fixtures per-test)
   - Graceful error handling with `return_exceptions=True` for fault tolerance
   - Falls back to sequential execution in fail-fast mode
-  - Comprehensive test suite with 40+ tests covering edge cases, error isolation, and concurrent fixture access
+  - A test suite of 40+ tests covering edge cases, error isolation, and concurrent fixture access
 
 - **Per-Test Timeout Support**: Built-in timeout functionality for async tests without external plugins
   - New `timeout` parameter for `@mark.asyncio()` decorator: `@mark.asyncio(timeout=5.0)`
@@ -540,10 +545,10 @@ in `RELEASE-CHECKLIST.md`.
   - Implemented via `asyncio.wait_for()` for clean cancellation handling
   - Works with both sequential and parallel async execution
   - Supports integer and float timeout values
-  - Comprehensive validation with clear error messages for invalid values (negative, zero, non-numeric)
-  - Combines seamlessly with loop_scope parameter: `@mark.asyncio(loop_scope="module", timeout=10.0)`
+  - Validation with clear error messages for invalid values (negative, zero, non-numeric)
+  - Combines with the loop_scope parameter: `@mark.asyncio(loop_scope="module", timeout=10.0)`
 
-- **Enhanced Test Coverage**: Expanded test suite for critical functionality
+- **Test Coverage**: Expanded test suite
   - New `tests/test_regression_bugs.py` for tracking and preventing bug regressions
   - New `tests/test_fixture_dependency_chains.py` for complex fixture dependency testing
   - New `tests/test_parametrize_data_types.py` for parametrization edge cases
@@ -551,7 +556,7 @@ in `RELEASE-CHECKLIST.md`.
   - Expanded `python/tests/test_cli.py` with return code and edge case tests
   - Total test count increased to 850+ tests
 
-- **Comprehensive Async Testing Documentation**: Major documentation overhaul for async testing
+- **Async Testing Documentation**: Documentation overhaul for async testing
   - New "What is Async?" section for beginners with clear explanations
   - Detailed "Built-in Timeout Support" section highlighting feature advantages
   - Timeout best practices and common pitfalls documentation
@@ -567,7 +572,7 @@ in `RELEASE-CHECKLIST.md`.
 
 - **Parametrized Fixture Bounds Checking**: Added bounds checking for parametrized fixture resolution
   - Prevents panics when accessing fixture parameters out of range
-  - More robust error handling for edge cases in fixture parametrization
+  - Better error handling for edge cases in fixture parametrization
 
 - **Class Cache Management**: Clear class cache on package boundary changes
   - Ensures proper cache invalidation when moving between test packages
@@ -591,32 +596,32 @@ in `RELEASE-CHECKLIST.md`.
 
 ### Added
 
-- **Event Stream Architecture with Rich Terminal Rendering**: Complete redesign of test output system for beautiful, real-time feedback
+- **Event Stream Architecture with Rich Terminal Rendering**: Complete redesign of the test output system for real-time feedback
   - Event-based architecture enabling multiple output consumers (terminal, VS Code, JSON, etc.)
-  - Beautiful terminal output using the rich library with progress bars
+  - Terminal output using the rich library, with progress bars
   - Real-time file-level progress indicators showing test execution status
   - Compact progress display with green checkmarks (✓) for passing files, red (✗) for failures
   - Live progress percentage and test counts with duration tracking
   - Automatic terminal width adaptation for responsive display
   - Foundation for parallel test execution and IDE integrations
 
-- **Smart Async Event Loop Detection**: Intelligent automatic event loop management for async tests and fixtures
+- **Async Event Loop Detection**: Automatic event loop management for async tests and fixtures
   - Automatic loop scope detection based on fixture dependency analysis
   - Tests automatically use the widest async fixture scope (function → class → module → session)
   - Eliminates "Task got Future attached to a different loop" errors
-  - Session-scoped async fixtures seamlessly work with function-scoped tests
+  - Session-scoped async fixtures work with function-scoped tests
   - Explicit control available via `@mark.asyncio(loop_scope="...")` when needed
   - Pytest-asyncio compatible with better automatic defaults
-  - Comprehensive beginner-friendly documentation in `docs/async-event-loops.md`
+  - Beginner-friendly documentation in `docs/async-event-loops.md`
 
-- **Native Fixture Resolution Enhancements**: Deep integration of fixture resolution into Rust execution engine
+- **Native Fixture Resolution**: Fixture resolution integrated into the Rust execution engine
   - `request.getfixturevalue()` now calls directly into Rust backend for improved performance
   - `@mark.usefixtures` eagerly resolves specified fixtures in Rust execution layer
   - Generator fixtures fetched via `getfixturevalue` correctly trigger teardown logic
-  - Enhanced fixture request with nodeid and marks support
+  - Fixture request gained nodeid and marks support
   - Thread-safe fixture resolver activation for concurrent access
 
-- **Nested Conftest Discovery**: Robust fixture discovery for complex project structures
+- **Nested Conftest Discovery**: Fixture discovery for nested project structures
   - Automatically loads ancestor conftest.py files for nested test directories
   - Async autouse fixture support in nested conftest files
   - Proper fixture scope resolution across directory hierarchies
@@ -632,7 +637,7 @@ in `RELEASE-CHECKLIST.md`.
   - Clean, readable logs in CI without manual configuration
 
 - **VHS Demo Recording Infrastructure**: Automated terminal demo generation for documentation
-  - VHS tape files for generating beautiful terminal recordings
+  - VHS tape files for generating terminal recordings
   - Automated regeneration in CI when output code changes
   - Multiple output formats (GIF, PNG, WebM)
   - Task runner integration (`poe demos`)
@@ -705,7 +710,7 @@ in `RELEASE-CHECKLIST.md`.
   - Cartesian product expansion when combined with method-level parametrization
   - Matches pytest behavior for class and method parameter combinations
 
-- **Documentation Enhancements**: Comprehensive fixture organization guides
+- **Documentation**: Fixture organization guides
   - New section on loading fixtures from external modules
   - Clear comparison between rustest_fixtures (preferred) and pytest_plugins (compat)
   - Clarification that this is NOT about pytest's plugin ecosystem
@@ -745,7 +750,7 @@ in `RELEASE-CHECKLIST.md`.
 
 ### Added
 
-- **pytest-mock Compatible Mocker Fixture**: Comprehensive mocking support built-in, no pytest-mock dependency needed
+- **pytest-mock Compatible Mocker Fixture**: Mocking support built in, with no pytest-mock dependency
   - `mocker.patch()` - Patch objects and modules
   - `mocker.patch.object()` - Patch object attributes
   - `mocker.patch.multiple()` - Patch multiple attributes
@@ -767,10 +772,10 @@ in `RELEASE-CHECKLIST.md`.
   - Access fixture as "client" in tests instead of "client_fixture"
   - Full pytest compatibility for fixture naming patterns
 
-- **Comprehensive Documentation Restructure**: Dual-audience documentation for beginners and pytest users
+- **Documentation Restructure**: Dual-audience documentation for beginners and pytest users
   - **New to Testing** section: Beginner-friendly progressive guides (why test, first test, basics, fixtures, parametrization, organizing)
   - **Coming from pytest** section: Migration guides, feature comparison, plugin replacements, coverage integration, limitations
-  - Enhanced home page with split-column Material Design cards for each audience
+  - Home page rebuilt with split-column Material Design cards for each audience
   - Coverage.py integration guide with CI/CD examples
   - Plugin replacement guide showing built-in alternatives
   - Honest assessment of unsupported features and trade-offs
@@ -783,7 +788,7 @@ in `RELEASE-CHECKLIST.md`.
   - Streamlined Quick Start section with focused examples
   - Replaced detailed learning path lists with 4 key documentation links
   - Reduced overall README length by ~60% while maintaining all essential information
-  - All detailed content remains available in comprehensive documentation site
+  - All detailed content remains available on the documentation site
 
 ## [0.12.0] - 2025-11-21
 
@@ -798,15 +803,15 @@ in `RELEASE-CHECKLIST.md`.
   - Works with yield fixtures and fixture dependency chains
   - `request.param` attribute for accessing current parameter value
 
-- **Enhanced pytest Compatibility**: Comprehensive compatibility improvements achieving 91.5% pass rate on real-world pytest test suites
+- **pytest Compatibility**: Compatibility improvements reaching a 91.5% pass rate on real-world pytest test suites
   - `pytest.skip()` function for dynamic test skipping at runtime
   - `pytest.xfail()` function for marking expected failures
   - `pytest.fail()` function for explicit test failures
   - Fixed `pytest.mark.skipif()` signature to accept both positional and keyword `reason` argument
-  - Enhanced `@mark.asyncio` to accept non-async functions for pytest compatibility
+  - `@mark.asyncio` now accepts non-async functions, for pytest compatibility
   - Support for `argvalues` parameter name in `parametrize()` (pytest standard)
 
-- **Built-in Fixtures**: Essential pytest fixtures for comprehensive test support
+- **Built-in Fixtures**: Essential pytest fixtures
   - `caplog` fixture for capturing and asserting on logging output
     - Access to `records`, `messages`, `text`, and `record_tuples` properties
     - `set_level()` and `at_level()` methods for log level control
@@ -816,7 +821,7 @@ in `RELEASE-CHECKLIST.md`.
     - Dict-style access with `get()` and `set()` methods
     - `mkdir()` for creating cache directories
 
-- **Request Object Enhancements**: Advanced fixture metadata and configuration access
+- **Request Object**: Fixture metadata and configuration access
   - `request.node` object for test metadata and marker access
     - `node.name` and `node.nodeid` for test identification
     - `node.get_closest_marker(name)` for marker retrieval
@@ -828,18 +833,18 @@ in `RELEASE-CHECKLIST.md`.
     - `config.option` namespace for attribute-style option access
     - `config.rootpath` for project root directory path
 
-- **Markdown Testing Improvements**: Enhanced documentation testing with better error messages
+- **Markdown Testing Improvements**: Documentation testing with better error messages
   - Line numbers in codeblock test names (e.g., `codeblock_0_line_14`)
   - pytest-style display names for markdown tests (e.g., `file.md::codeblock_0::line_14`)
   - Clear error location display (e.g., "at file.md:L14:7")
   - Improved traceback formatting with descriptive filenames
   - HTML comment skip markers: `<!--rustest.mark.skip-->` (primary), `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` (compatibility)
-  - Comprehensive documentation testing guide in CLAUDE.md
+  - Documentation testing guide in CLAUDE.md
 
 ### Changed
 
 - Improved pytest compatibility from ~70% to ~85% based on real-world testing
-- Enhanced error messages for markdown code block failures with precise location information
+- Better error messages for markdown code block failures, with precise location information
 - Simplified CI markdown testing configuration using bash brace expansion
 
 ### Fixed
@@ -852,13 +857,13 @@ in `RELEASE-CHECKLIST.md`.
 
 ### Added
 
-- **Rust-Based Output Formatting**: Complete rewrite of output formatting system using Rust for enhanced performance and responsiveness
+- **Rust-Based Output Formatting**: Complete rewrite of the output formatting system in Rust, for performance and responsiveness
   - Real-time file spinner output with progress indicators during test execution
   - All output formatting now implemented in Rust for faster rendering
   - Phase 1: Real-time spinner output for file processing feedback
   - Phase 2 & 3: Complete error formatting pipeline in Rust with Python cleanup
 
-- **Pytest Compatibility Mode**: Enhanced pytest compatibility for running tests
+- **Pytest Compatibility Mode**: Better pytest compatibility for running tests
   - Improved compatibility with pytest's test discovery and execution patterns
 
 ### Changed
@@ -875,7 +880,7 @@ in `RELEASE-CHECKLIST.md`.
 
 ### Added
 
-- **Enhanced Error Message Formatting**: Dramatically improved test failure output with human-readable error presentation
+- **Error Message Formatting**: Improved test failure output, with human-readable error presentation
   - Clear error headers showing exception type and message with visual indicators (red arrows)
   - vitest-style Expected/Received output with color coding for better clarity
   - pytest-style error formatting with code context showing 3 lines of surrounding code
@@ -884,7 +889,7 @@ in `RELEASE-CHECKLIST.md`.
   - Support for multiple error message patterns and comparison operators
   - Clickable file links in error messages (path:line format)
 
-- **Improved Test Failure Reporting**: New verbose mode enhancements
+- **Improved Test Failure Reporting**: New verbose mode options
   - FAILURES summary section at the end of verbose output showing all failures together
   - Inline failure display during test execution for immediate feedback
   - Better visual hierarchy with color-coded output
@@ -900,12 +905,12 @@ in `RELEASE-CHECKLIST.md`.
 
 - **Pytest-Compatible Directory Exclusion**: Test discovery now exactly mimics pytest's behavior for excluding directories, preventing tests from being discovered in virtual environments and build artifacts.
   - Implements pytest's default `norecursedirs` patterns: `*.egg`, `.*`, `_darcs`, `build`, `CVS`, `dist`, `node_modules`, `venv`, `{arch}`
-  - Intelligent virtualenv detection via marker files:
+  - Virtualenv detection via marker files:
     - `pyvenv.cfg` for standard Python virtual environments (PEP 405)
     - `conda-meta/history` for conda environments
   - Pattern matching compatible with pytest's fnmatch-style behavior
   - Excludes hidden directories (starting with `.`) automatically
-  - Comprehensive test suite with 21 tests covering all exclusion scenarios
+  - A test suite of 21 tests covering all exclusion scenarios
 
 ### Fixed
 
@@ -919,7 +924,7 @@ in `RELEASE-CHECKLIST.md`.
 - **Autouse Fixtures**: Implement pytest-compatible autouse fixture support, allowing fixtures to automatically execute for all tests in their scope without explicit request.
   - Autouse fixtures work across all scopes (function, class, module, session)
   - Support fixture dependencies for autouse fixtures
-  - Comprehensive documentation with examples for common use cases
+  - Documentation with examples for common use cases
   - Fully compatible with yield (setup/teardown) fixtures
 
 ### Changed
@@ -956,7 +961,7 @@ in `RELEASE-CHECKLIST.md`.
 ### Changed
 
 - Import path discovery now prioritizes pyproject.toml configuration over auto-detection
-- Enhanced project root detection to locate pyproject.toml files accurately
+- Project root detection now locates pyproject.toml files accurately
 
 ### Fixed
 
@@ -972,12 +977,12 @@ in `RELEASE-CHECKLIST.md`.
   - `monkeypatch` fixture for patching attributes, environment variables, and sys.path
   - Full fixture scope support (function, session)
 
-- **Enhanced Benchmark Suites**: Generate richer benchmark suites with support for advanced pytest features and more comprehensive performance testing
+- **Benchmark Suites**: Generate richer benchmark suites, with support for more pytest features and wider performance testing
 
 ### Changed
 
 - Improved documentation with project logo and branding
-- Enhanced test fixtures infrastructure for better pytest compatibility
+- Test fixture infrastructure improved for pytest compatibility
 
 ## [0.7.0] - 2025-11-10
 
@@ -993,12 +998,12 @@ in `RELEASE-CHECKLIST.md`.
   - `--lf` / `--last-failed`: Rerun only tests that failed in the last run
   - `--ff` / `--failed-first`: Run failed tests first, then all other tests
   - `-x` / `--exitfirst`: Exit instantly on first error or failed test
-  - These pytest-compatible options maintain full API compatibility while leveraging Rust-based caching
+  - These pytest-compatible options keep full API compatibility and use Rust-based caching
 
 ### Changed
 
 - Integrated Rust-based caching system (`.rustest_cache/`) for fast test result tracking
-- Enhanced test discovery pipeline to support filtering and reordering based on cache data
+- Test discovery pipeline extended to support filtering and reordering based on cache data
 - Improved CLI argument parsing to support new workflow options
 
 ### Fixed

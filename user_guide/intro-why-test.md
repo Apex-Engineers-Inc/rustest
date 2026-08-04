@@ -1,10 +1,11 @@
 # Why Automated Testing?
 
-Welcome! If you're new to testing, you're in the right place. Let's talk about why automated testing exists and why it's worth your time.
+If you have never written a test before, start here. This page is about what automated
+testing buys you and why it is worth the effort.
 
 ## The Problem: Bugs Happen
 
-When you write code, bugs will happen. It's not a matter of "if"—it's "when" and "how many."
+When you write code, bugs will happen. The question is not whether, but when and how many.
 
 Maybe you:
 - Added a new feature and accidentally broke an existing one
@@ -26,17 +27,16 @@ The traditional approach is manual testing:
 
 This works, but it has problems:
 
-- ⏰ **It's slow** — Testing takes time, and you have to do it over and over
-- 😴 **It's boring** — Clicking the same buttons gets tedious fast
-- 🧠 **It's error-prone** — You might forget to test something important
-- 📈 **It doesn't scale** — As your code grows, manual testing becomes impossible
-- 🚫 **It's not repeatable** — Six months later, will you remember all the edge cases?
+- **It's slow.** Testing takes time, and you have to do it over and over
+- **It's boring.** Clicking the same buttons gets tedious fast
+- **It's error-prone.** You might forget to test something important
+- **It doesn't scale.** As your code grows, manual testing becomes impossible
+- **It's not repeatable.** Six months later, will you remember all the edge cases?
 
 ## The Better Way: Automated Testing
 
-What if your computer could test your code for you?
-
-That's what automated testing does. You write **test code** that checks your **real code** automatically.
+Your computer can do the checking for you. You write **test code** that exercises your
+**real code** and reports whether it behaved.
 
 ```python
 # Your real code
@@ -56,40 +56,53 @@ $ rustest
 1 passed in 0.40s
 ```
 
-**In one second, your computer verified your code works.** No clicking, no manual checking—just instant feedback.
+That took less than half a second, with no clicking and no manual checking.
 
 ## What Automated Tests Give You
 
-### 🛡️ Confidence to Change Code
+### Confidence to change code
 
 With tests, you can refactor code and immediately know if you broke something:
 
 ```python
+from types import SimpleNamespace
+
+def register_user(email, password):
+    return SimpleNamespace(email=email, is_active=True)
+
 def test_user_registration():
     user = register_user("alice@example.com", "password123")
     assert user.email == "alice@example.com"
     assert user.is_active is True
 ```
 
-Now you can safely change your registration logic. If the test still passes, you didn't break anything!
+Now you can safely change your registration logic. If the test still passes, you didn't break anything.
 
-### 🐛 Catch Bugs Before Your Users Do
+### Bugs caught before your users see them
 
 Tests catch bugs during development, not in production:
 
 ```python
+from rustest import raises
+
 def test_divide_by_zero():
     with raises(ZeroDivisionError):
         result = 10 / 0
 ```
 
-This test *expects* an error. If your code handles it properly, great! If not, the test fails and you fix it before shipping.
+This test *expects* an error. If your code handles it properly, the test passes. If not, the
+test fails and you fix it before shipping.
 
-### 📚 Documentation That Never Lies
+### Documentation that never lies
 
 Tests show exactly how your code should be used:
 
 ```python
+from types import SimpleNamespace
+
+def send_email(to, subject, body):
+    return SimpleNamespace(success=True)
+
 def test_send_email():
     # This test shows how to use send_email()
     result = send_email(
@@ -100,11 +113,11 @@ def test_send_email():
     assert result.success is True
 ```
 
-Comments can become outdated. Tests are **executable documentation**—if they pass, they're accurate.
+Comments can become outdated. Tests are **executable documentation**: if they pass, they're accurate.
 
-### 🏃 Fast Feedback Loop
+### A fast feedback loop
 
-Instead of manually testing everything, you get instant feedback:
+Instead of manually testing everything, you get feedback in a second or two:
 
 ```bash
 $ rustest
@@ -126,9 +139,9 @@ FAILED test_login.py::test_login_with_invalid_password
 You immediately see what broke and where. Note the last two lines of the error: rustest
 rewrites your assertion so a string mismatch comes back as a **diff** (`-` is what you
 expected, `+` is what you got) rather than as a bare `AssertionError`. The other four tests
-still ran — one failure does not stop the suite.
+still ran, because one failure does not stop the suite.
 
-### 😴 Sleep Better at Night
+### Fewer late-night surprises
 
 Knowing your code is tested means:
 - Fewer production bugs
@@ -141,17 +154,17 @@ Knowing your code is tested means:
 Here's how testing fits into your development:
 
 1. **Write a test** that describes what you want your code to do
-2. **Run the test** — it fails (your code doesn't exist yet!)
+2. **Run the test.** It fails, because your code doesn't exist yet
 3. **Write the code** to make the test pass
-4. **Run the test again** — it passes! ✓
-5. **Refactor** if needed — the test ensures you don't break anything
+4. **Run the test again.** It passes
+5. **Refactor** if needed, with the test there to catch mistakes
 
-This is called **Test-Driven Development (TDD)**, and many developers love it because:
+This is called **Test-Driven Development (TDD)**, and many developers like it because:
 - You write better code (more modular, easier to test)
 - You think about edge cases upfront
 - You get instant feedback
 
-But you don't have to use TDD. Even writing tests *after* your code is incredibly valuable.
+You don't have to use TDD. Writing tests *after* your code is still worth doing.
 
 ## Real-World Example
 
@@ -159,6 +172,25 @@ Imagine you're building a shopping cart:
 
 ```python
 from rustest import fixture
+
+class ShoppingCart:
+    def __init__(self):
+        self.lines = []
+        self.discount = 0.0
+
+    def add_item(self, name, price, quantity=1):
+        self.lines.append((name, price, quantity))
+
+    def remove_item(self, name):
+        self.lines = [line for line in self.lines if line[0] != name]
+
+    def apply_discount(self, fraction):
+        self.discount = fraction
+
+    @property
+    def total(self):
+        subtotal = sum(price * quantity for _, price, quantity in self.lines)
+        return subtotal * (1 - self.discount)
 
 @fixture
 def cart():
@@ -188,7 +220,7 @@ Now:
 
 ### "Writing tests takes too long"
 
-At first, yes. But you'll get faster. And consider the alternative:
+At first, yes. You will get faster. And weigh it against the alternative:
 - How long does manual testing take?
 - How long does fixing production bugs take?
 - How long does it take to track down a bug you introduced 2 weeks ago?
@@ -205,10 +237,10 @@ We all say this. It rarely happens. The best time to write tests is **now**, whe
 
 ## What's Next?
 
-Ready to write your first test? Let's do it!
+Write one:
 
-[:octicons-arrow-right-24: Write Your First Test](intro-first-test.md){ .md-button .md-button--primary }
+[Write Your First Test](intro-first-test.md)
 
-Or if you want to understand the fundamentals first:
+Or read the fundamentals first:
 
-[:octicons-arrow-right-24: Testing Basics](intro-testing-basics.md)
+[Testing Basics](intro-testing-basics.md)

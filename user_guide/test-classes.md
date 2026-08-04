@@ -1,10 +1,11 @@
 # Test Classes
 
-Test classes allow you to group related tests together and share fixtures across test methods. Rustest supports pytest-style test classes.
+A test class groups related tests and lets them share fixtures, setup, and class
+attributes. rustest collects classes the same way pytest does.
 
 ## Basic Test Classes
 
-Create a test class by naming it with a `Test` prefix:
+A class is collected when its name starts with `Test`:
 
 ```python
 class TestMathOperations:
@@ -20,8 +21,25 @@ class TestMathOperations:
         assert 3 * 4 == 12
 ```
 
-!!! note "No __init__ Required"
-    Test classes don't need an `__init__` method. Rustest creates fresh instances automatically.
+`Test` is the default value of pytest's `python_classes` ini option, and rustest reads the
+same setting from the same files. A project that names its classes `Check...` configures it
+once:
+
+```toml
+[tool.pytest.ini_options]
+python_classes = ["Test", "Check"]
+```
+
+Each entry is a prefix, or an fnmatch pattern when it contains `*`, `?`, or `[`. The prefix
+test is case-sensitive and unanchored at the end, so `Test` also collects `TestingHarness`
+but not `testCase`. A `unittest.TestCase` subclass is collected whatever `python_classes`
+says, as it is under pytest.
+
+!!! warning "A test class must not define `__init__`"
+    rustest builds a fresh instance for every test method, so the class needs no constructor.
+    A class that defines `__init__` or `__new__` is skipped entirely, and nothing is printed
+    about it: pytest reports the same case through `PytestCollectionWarning`, and the
+    orchestrator has no channel to carry warnings on yet.
 
 ## Using Fixtures in Test Classes
 
@@ -69,7 +87,8 @@ class TestDatabase:
 ```
 
 !!! warning "Shared State"
-    Class-scoped fixtures maintain state across tests in the class. Be careful with mutable data!
+    A class-scoped fixture is built once and handed to every test in the class. When the
+    value is mutable, whatever one test does to it is what the next test sees.
 
 ## Fixture Methods Within Classes
 
@@ -77,6 +96,25 @@ Define fixtures as methods inside the test class:
 
 ```python
 from rustest import fixture
+
+class User:
+    def __init__(self, name: str):
+        self.name = name
+
+class UserService:
+    def __init__(self):
+        self.users: list[User] = []
+
+    def create_user(self, name: str) -> User:
+        user = User(name)
+        self.users.append(user)
+        return user
+
+    def count(self) -> int:
+        return len(self.users)
+
+    def cleanup(self) -> None:
+        self.users.clear()
 
 class TestUserService:
     @fixture(scope="class")
@@ -225,7 +263,9 @@ class TestIntegrationAPI:
 
 ## Nested Test Classes
 
-While rustest supports nested classes, it's generally better to use flat structures:
+Nested classes are collected, and each level adds a segment to the node id, so the inner
+test below runs as `test_file.py::TestOuter::TestInner::test_something`. A flat structure is
+usually easier to select on the command line:
 
 ```python
 # Supported but not recommended
@@ -244,8 +284,34 @@ class TestOuterInner:
 
 ### API Testing
 
+Stand in for your real client with whatever you already use. The shape is what matters: a
+class-scoped fixture builds it once and closes it after the last test in the class.
+
 ```python
 from rustest import fixture, mark
+
+class Response:
+    def __init__(self, status: int):
+        self.status = status
+
+class APIClient:
+    """Minimal stand-in so this example runs; swap in your own client."""
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+        self.closed = False
+
+    def get(self, path: str) -> Response:
+        return Response(200)
+
+    def post(self, path: str, json: dict) -> Response:
+        return Response(201)
+
+    def put(self, path: str, json: dict) -> Response:
+        return Response(200)
+
+    def close(self) -> None:
+        self.closed = True
 
 @fixture(scope="class")
 def api_client():
@@ -274,6 +340,43 @@ class TestUserAPI:
 
 ```python
 from rustest import fixture
+
+class Connection:
+    """Minimal stand-in for a real database connection."""
+
+    def __init__(self):
+        self.rows: dict[str, str] = {}
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+def connect_to_database() -> Connection:
+    return Connection()
+
+def setup_test_schema(conn: Connection) -> None:
+    conn.rows.clear()
+
+def teardown_test_schema(conn: Connection) -> None:
+    conn.rows.clear()
+
+class Row:
+    def __init__(self, name: str):
+        self.name = name
+
+class UserRepository:
+    def __init__(self, conn: Connection):
+        self.conn = conn
+
+    def create(self, name: str) -> Row:
+        self.conn.rows[name] = name
+        return Row(name)
+
+    def find_by_name(self, name: str) -> Row | None:
+        return Row(name) if name in self.conn.rows else None
+
+    def delete(self, name: str) -> None:
+        self.conn.rows.pop(name, None)
 
 @fixture(scope="class")
 def db_connection():
@@ -307,6 +410,29 @@ class TestUserRepository:
 ```python
 from rustest import fixture, parametrize
 
+class SendResult:
+    def __init__(self, success: bool):
+        self.success = success
+
+class EmailService:
+    """Minimal stand-in so this example runs; swap in your own service."""
+
+    def __init__(self):
+        self.connected = False
+
+    def connect(self) -> None:
+        self.connected = True
+
+    def disconnect(self) -> None:
+        self.connected = False
+
+    def validate(self, email: str) -> bool:
+        name, sep, domain = email.partition("@")
+        return bool(name) and bool(sep) and "." in domain
+
+    def send(self, to: str, subject: str, body: str) -> SendResult:
+        return SendResult(self.validate(to))
+
 class TestEmailService:
     @fixture(scope="class")
     def email_service(self):
@@ -336,8 +462,8 @@ class TestEmailService:
 
 ## Setup and Teardown Methods
 
-Rustest calls `setup_method()` before, and `teardown_method()` after, **every** test method
-on a plain test class — pytest's xunit-style hooks, with pytest's semantics:
+rustest calls `setup_method()` before, and `teardown_method()` after, **every** test method
+on a plain test class. These are pytest's xunit-style hooks, with pytest's semantics:
 
 ```python
 class TestCounter:
@@ -357,21 +483,22 @@ class TestCounter:
         assert self.items == ["a"]
 
     def test_still_starts_empty(self):
-        # Not ["a"] -- each test gets a fresh instance and a fresh setup_method
+        # Not ["a"]: each test gets a fresh instance and a fresh setup_method
         assert self.items == []
 ```
 
-Two properties are worth stating because relying on the wrong one is a common source of
-order-dependent tests:
+Two properties decide whether a suite ends up order-dependent, so they are worth stating
+outright:
 
 - **Each test method gets its own class instance.** State you set on `self` in one test is
   not visible in the next; `setup_method` re-runs and rebuilds it.
-- **`teardown_method` runs in a `finally`**, so it executes even when the test raises.
-  Verified by running a class whose second test raises: the recorded sequence was
-  `setup → teardown → setup → teardown`, with the second teardown observing the value the
-  failing test had set before it blew up.
+- **`teardown_method` runs in a `finally`**, so it executes even when the test raises. Run a
+  class whose second test raises and the recorded sequence is `setup`, `teardown`, `setup`,
+  `teardown`, with the second teardown observing the value the failing test had set before
+  it blew up.
 
-`setup_class()` / `teardown_class()` are also supported, running once around the whole class.
+`setup_class()` and `teardown_class()` are also supported, running once around the whole
+class.
 
 ## Class-Method Fixtures Share the Instance
 
@@ -451,7 +578,9 @@ class TestStuff:
 
 ### Don't Overuse Class Scope
 
-Use class-scoped fixtures only when necessary:
+A class-scoped fixture is built once and torn down after the last method in the class, which
+pays for itself when the setup is slow. For a constant, function scope costs nothing and
+keeps the tests independent of each other:
 
 ```python
 from rustest import fixture
@@ -478,11 +607,18 @@ def test_with_number(sample_number):
 
 ### Combine with conftest.py
 
-Use conftest.py for fixtures shared across multiple classes:
+A fixture that several classes need belongs in a `conftest.py` beside them, where every test
+file in that directory and below can request it without importing anything:
 
 ```python
 # conftest.py
 from rustest import fixture
+
+class APIClient:
+    """Minimal stand-in; swap in your own client."""
+
+    def __init__(self, base_url: str = "https://api.example.com"):
+        self.base_url = base_url
 
 @fixture
 def api_client():
@@ -501,19 +637,12 @@ class TestPosts:
 
 ## When to Use Test Classes
 
-**Use test classes when:**
+A class earns its keep when several tests share setup, when a class-scoped fixture or
+`setup_method` would otherwise be duplicated across functions, or when the grouping makes
+`-k TestUserAuth` a useful selector. A single test, or a set of tests with nothing in common
+beyond the file they live in, reads better as plain functions.
 
-- You have multiple related tests
-- You want to share fixtures across several tests
-- You want to group tests logically
-
-**Use standalone functions when:**
-
-- You have a single test
-- Tests are independent and don't share setup
-- You prefer simplicity
-
-Both approaches are valid and can be mixed in the same project!
+Classes and functions can sit in the same file, and rustest collects both.
 
 ## Next Steps
 

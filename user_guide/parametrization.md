@@ -1,6 +1,8 @@
 # Parametrization
 
-Parametrization allows you to run the same test with different input values, reducing code duplication and making your tests more comprehensive.
+Parametrization runs one test body against many inputs. Each input becomes a separate test
+with its own node id, so a failure names the case that failed instead of the loop that
+contained it.
 
 ## Basic Parametrization
 
@@ -18,19 +20,33 @@ def test_double(input: int, expected: int) -> None:
     assert input * 2 == expected
 ```
 
-This creates three separate test cases:
+This collects three tests. Under `-v`:
 
 ```
-  PASSED   0.001s test_double[case_0]
-  PASSED   0.001s test_double[case_1]
-  PASSED   0.001s test_double[case_2]
+test_double.py::test_double[1-2] PASSED                                 [ 33%]
+test_double.py::test_double[2-4] PASSED                                 [ 66%]
+test_double.py::test_double[3-6] PASSED                                 [100%]
 ```
+
+## How IDs Are Generated
+
+The part in brackets is pytest's, generated the same way and byte-identical to what pytest
+produces for the same values. One component per argument name, joined with `-`:
+
+- Strings, numbers, booleans, `None`, complex numbers, regex patterns, and enums are spelled
+  by their own value. Non-printable characters in a string are escaped.
+- Anything with a `__name__`, such as a class, a function, or a module, uses that name.
+- Everything else, including lists, dicts, and instances of your own classes, has no id of
+  its own and falls back to `<argname><index>`. That is why
+  `@parametrize("numbers", [[1, 2, 3], [10, 20, 30]])` collects `numbers0` and `numbers1`.
+
+Pass `ids=` when the generated form is unreadable; see [Custom Test IDs](#custom-test-ids).
 
 ## Parameter Formats
 
 ### Comma-Separated String
 
-You can specify parameter names as a comma-separated string:
+Names in one string, split on commas. This is the form most pytest suites use:
 
 ```python
 from rustest import parametrize
@@ -46,7 +62,8 @@ def test_addition(x: int, y: int, expected: int) -> None:
 
 ### List of Strings
 
-Or as a list of strings:
+One name per element. For two or more names this is equivalent to the string form; for
+exactly one name the two forms differ, as the next section describes:
 
 ```python
 from rustest import parametrize
@@ -62,7 +79,7 @@ def test_addition(x: int, y: int, expected: int) -> None:
 
 ## Single Parameter
 
-For a single parameter, pass values directly:
+With one name, values are passed through as they are:
 
 ```python
 from rustest import parametrize
@@ -72,19 +89,25 @@ def test_is_positive(value: int) -> None:
     assert value > 0
 ```
 
-Or as tuples if you prefer consistency:
+Wrapping each value in a one-tuple does **not** unpack it here.
+`@parametrize("value", [(1,), (2,)])` binds `value` to the tuple `(1,)`, with the ids
+`value0` and `value1`. That is pytest's rule: a `str` `argnames` naming a single parameter
+makes each argvalue the whole value, however it is written.
+
+A **sequence** `argnames` does unpack, so the same tuples are read as one-column rows:
 
 ```python
 from rustest import parametrize
 
-@parametrize("value", [(1,), (2,), (3,)])
-def test_is_positive(value: int) -> None:
+@parametrize(["value"], [(1,), (2,), (3,)])
+def test_is_positive_unpacked(value: int) -> None:
     assert value > 0
 ```
 
 ## Custom Test IDs
 
-Provide custom IDs to make test output more readable:
+`ids=` takes one string per case and replaces the generated id entirely. The list must be
+the same length as the value list:
 
 ```python
 from rustest import parametrize
@@ -98,17 +121,31 @@ def test_square(value: int, expected: int) -> None:
     assert value ** 2 == expected
 ```
 
-Output:
+Under `-v`:
 
 ```
-  PASSED   0.001s test_square[two]
-  PASSED   0.001s test_square[three]
-  PASSED   0.001s test_square[four]
+test_square.py::test_square[two] PASSED                                 [ 33%]
+test_square.py::test_square[three] PASSED                               [ 66%]
+test_square.py::test_square[four] PASSED                                [100%]
 ```
+
+`ids=` also accepts a callable. It is called once per *individual value*, not once per row,
+and the results are joined with `-`; a value the callable answers `None` for falls back to
+that component's generated id.
+
+```python
+from rustest import parametrize
+
+@parametrize("value,expected", [(2, 4), (3, 9)], ids=lambda v: f"n{v}")
+def test_square_callable_ids(value: int, expected: int) -> None:
+    assert value ** 2 == expected
+```
+
+That collects `test_square_callable_ids[n2-n4]` and `[n3-n9]`.
 
 ### Descriptive IDs
 
-Use descriptive IDs for complex test cases:
+Names carry further than positions once a case list gets long:
 
 ```python
 from rustest import parametrize
@@ -132,7 +169,8 @@ def test_calculator(operation: str, a: int, b: int, expected: int) -> None:
 
 ## Parametrizing with Fixtures
 
-Combine parametrized tests with fixtures:
+Parameters and fixtures are resolved independently, so a test can request both. Names that
+are not parametrized are looked up in the fixture registry as usual:
 
 ```python
 from rustest import fixture, parametrize
@@ -160,13 +198,13 @@ making a name indirect never changes a test id.
 This is pytest's meaning, ported in full
 (`_pytest/python.py::Metafunc._resolve_args_directness`).
 
-!!! warning "Changed in 0.18"
-    Before 0.18, rustest read an indirect value as *the name of a fixture to resolve*. That
-    was a rustest-only feature that happened to borrow pytest's keyword, and a suite written
-    for pytest got the wrong value. Rewrite `@parametrize("data", ["fixture_a"],
-    indirect=True)` as a fixture that reads `request.param` — the recipes below show how,
-    including the `request.getfixturevalue(request.param)` form that reproduces the old
-    behaviour exactly when you really do want to select a fixture by name.
+!!! warning "This changed in 1.0"
+    rustest used to read an indirect value as *the name of a fixture to resolve*. That was a
+    rustest-only reading that borrowed pytest's keyword, so a suite written for pytest got
+    the wrong value. Rewrite `@parametrize("data", ["fixture_a"], indirect=True)` as a
+    fixture that reads `request.param`. The recipes below show how, including the
+    `request.getfixturevalue(request.param)` form that reproduces the old behaviour when you
+    really do want to select a fixture by name.
 
 ### Using `indirect` with a List
 
@@ -206,8 +244,8 @@ def test_all_positive(dataset: list) -> None:
 
 ### Selecting a Fixture by Name
 
-The pre-0.18 behaviour, written the way pytest writes it — one fixture that resolves the
-name it is handed:
+The old behaviour, written the way pytest writes it: one fixture that resolves the name it
+is handed.
 
 ```python
 from rustest import fixture, parametrize
@@ -236,15 +274,17 @@ def test_all_positive(chosen: list) -> None:
 
 ### Why Use Indirect Parametrization?
 
-- **Complex setup per parameter**: the fixture can do work — and teardown — for each value
+- **Complex setup per parameter**: the fixture can do work, and teardown, for each value
 - **Wider scopes**: a module-scoped fixture parametrized indirectly is built once per value
 - **Reuse**: the same fixture serves tests that do not parametrize it at all
 
 ## Complex Parameter Values
 
-### Using Dictionaries
+Any Python object can be a parameter value. Containers and instances have no id of their
+own, so the generated ids for the three sections below are `user0`, `user1`, `numbers0` and
+so on; that is why the first two pass `ids=`.
 
-Pass dictionaries as parameter values:
+### Using Dictionaries
 
 ```python
 from rustest import parametrize
@@ -294,7 +334,7 @@ def test_sum_positive(numbers: list) -> None:
 
 ## Multiple Parametrize Decorators
 
-You can stack `@parametrize` decorators to test all combinations:
+Stacked decorators produce the cross product of their value lists:
 
 ```python
 from rustest import parametrize
@@ -305,15 +345,18 @@ def test_combinations(x: int, y: int) -> None:
     assert x < y
 ```
 
-This creates 4 test cases:
-- `test_combinations[case_0-case_0]` (x=1, y=3)
-- `test_combinations[case_0-case_1]` (x=1, y=4)
-- `test_combinations[case_1-case_0]` (x=2, y=3)
-- `test_combinations[case_1-case_1]` (x=2, y=4)
+This collects 4 tests. Decorators apply bottom-up, so the `y` values vary slowest and lead
+the id:
+
+- `test_combinations[3-1]` (x=1, y=3)
+- `test_combinations[3-2]` (x=2, y=3)
+- `test_combinations[4-1]` (x=1, y=4)
+- `test_combinations[4-2]` (x=2, y=4)
 
 ## Parametrizing Test Classes
 
-Apply parametrization to all methods in a test class:
+A `@parametrize` on the class applies to every test method it contains, and each method
+takes the parameter as an argument:
 
 ```python
 from rustest import parametrize
@@ -327,7 +370,8 @@ class TestNumber:
         assert value < 10
 ```
 
-This runs both tests for each value (6 total tests).
+That is six tests: `TestNumber::test_positive[1]` through `TestNumber::test_less_than_ten[3]`.
+A method that carries its own `@parametrize` gets the cross product of the two.
 
 ## Real-World Examples
 
@@ -407,6 +451,9 @@ def test_api_endpoints(endpoint: str, expected_status: int):
 ## Best Practices
 
 ### Use Meaningful IDs
+
+Without `ids=`, the cases below collect as `17-False`, `18-True`, and `65-True`. Those say
+what the values are but not what each one is testing:
 
 ```python
 from rustest import parametrize

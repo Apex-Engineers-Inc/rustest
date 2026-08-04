@@ -1,37 +1,37 @@
-# Upgrade Guide
+# Upgrade guide
 
 This page covers upgrading **rustest itself**. If you are coming from pytest rather than
-from an older rustest, start at [pytest compatibility](pytest-compat.md) — you probably do
-not need to change any code at all.
+from an older rustest, start at [pytest compatibility](pytest-compat.md). You probably do not
+need to change any code at all.
 
 For the full record of every change, see the [Changelog](changelog.md).
 
 ## Upgrading to the v2 engine
 
-This release replaces rustest's engine. The old one ("v1") is deleted, not frozen — there
+This release replaces rustest's engine. The old one ("v1") is deleted, not frozen, and there
 is no flag that runs it. Everything below is a change you may have to act on.
 
 ### `--pytest-compat` is gone
 
 It used to opt into a compatibility *mode*. That mode is now the only behaviour: every run
 installs the shim, so `import pytest` resolves to rustest's own implementation whether you
-ask for it or not. A flag that can only ever be a no-op is worse than no flag, so passing
-it now **exits 4** with a message naming the change.
+ask for it or not. A flag that can only ever be a no-op is worse than no flag, so passing it
+now **exits 4** with a message naming the change.
 
 ```bash
 rustest --pytest-compat tests/   # exit 4
 rustest tests/                   # what you want
 ```
 
-**Action:** delete `--pytest-compat` from any CI command line, pre-commit hook, `addopts`
-or script.
+**Action:** delete `--pytest-compat` from any CI command line, pre-commit hook, `addopts` or
+script.
 
 ### `--v1` is gone
 
-Same exit code, different reason: the engine it selected no longer exists. There is
-nothing to fall back to, which means the gap list in
-[pytest compatibility](pytest-compat.md) is now the *complete* statement of what rustest
-does and does not do — no "use `--v1` for this" escape hatch remains.
+Same exit code, different reason: the engine it selected no longer exists. There is nothing
+to fall back to, which means the gap list in [pytest compatibility](pytest-compat.md) is now
+the *complete* statement of what rustest does and does not do. No "use `--v1` for this"
+escape hatch remains.
 
 ### Python 3.12 is the floor
 
@@ -46,40 +46,39 @@ both the arguments and the return type:
 
 | | Before | Now |
 |---|---|---|
-| Arguments | positional and keyword, including `capture_output`, `pytest_compat`, `ascii`, `no_color`, `verbose` | **keyword-only**, and a different set — see [the Python API page](python-api.md) |
+| Arguments | positional and keyword, including `capture_output`, `pytest_compat`, `ascii`, `no_color`, `verbose` | **keyword-only**, and a different set. See [the Python API page](python-api.md) |
 | Returns | a `rustest.reporting.RunReport` object | an **`int`**: pytest's exit code |
 
-`run` is now a plain alias for the v2 entry point rather than a translating wrapper, and
-that is deliberate. A compatibility shim would have accepted `pytest_compat=False` and
-silently done the opposite, and would have returned an integer where the old type hint
-promised a `RunReport`. Instead an old call raises `TypeError` immediately, naming the
-keyword it does not recognise.
+`run` is now a plain alias for the v2 entry point rather than a translating wrapper, and that
+is deliberate. A compatibility shim would have accepted `pytest_compat=False` and silently
+done the opposite, and would have returned an integer where the old type hint promised a
+`RunReport`. Instead an old call raises `TypeError` immediately, naming the keyword it does
+not recognise.
 
 If you were reading counts off the returned report, pass `report_json=` and read the JSON
 file, or use [`--llm`](llm-output.md) if a machine is consuming it.
 
 ### `indirect=` parametrization now means what pytest means
 
-`@parametrize(..., indirect=["thing"])` routes the value through the fixture named
-`thing` via `request.param`, which is pytest's rule. It used to be rustest-specific: the
-parameter *value* was read directly as a fixture name. See
-[Parametrization](parametrization.md).
+`@parametrize(..., indirect=["thing"])` routes the value through the fixture named `thing`
+via `request.param`, which is pytest's rule. It used to be rustest-specific: the parameter
+*value* was read directly as a fixture name. See [Parametrization](parametrization.md).
 
 ### `--llm` output is schema 2
 
-If you have tooling pinned to rustest 0.18's `--llm` JSONL, it will not read this output.
-The `meta` line now carries `"schema_version": 2` and the failure objects changed shape —
-one whole `msg` instead of six shredded fields, all six status buckets in the summary, and
-`line` omitted rather than reported as `0` when there is no frame. A consumer pinned to
-version 1 should **refuse** rather than half-read; the published schema marks
-`schema_version` as `const: 2` so it can. Run `rustest --llm-schema` for the current
-contract, and see [LLM output](llm-output.md).
+If you have tooling pinned to rustest 0.18's `--llm` JSONL, it will not read this output. The
+`meta` line now carries `"schema_version": 2` and the failure objects changed shape: one
+whole `msg` instead of six shredded fields, all six status buckets in the summary, and `line`
+omitted rather than reported as `0` when there is no frame. A consumer pinned to version 1
+should **refuse** rather than half-read, and the published schema marks `schema_version` as
+`const: 2` so it can. Run `rustest --llm-schema` for the current contract, and see
+[LLM output](llm-output.md).
 
 ### Markdown testing is unchanged, with one thing worth re-reading
 
 Python fences in `.md` files are still collected, but **only when the file is named as an
-argument** — a directory argument collects no markdown, because pytest walking the same
-tree collects none either. See [Markdown testing](markdown-testing.md).
+argument**. A directory argument collects no markdown, because pytest walking the same tree
+collects none either. See [Markdown testing](markdown-testing.md).
 
 ```bash
 rustest README.md user_guide/*.md   # tests the docs
@@ -88,9 +87,8 @@ rustest tests/                      # does not pick up stray .md files
 
 ## Migrating from pytest
 
-Most pytest suites need no changes at all: run `rustest tests/` and the shim does the
-rest. If you want to write against rustest's own API instead, the decorators have the same
-names:
+Most pytest suites need no changes at all: run `rustest tests/` and the shim does the rest.
+If you want to write against rustest's own API instead, the decorators have the same names:
 
 ```python
 from rustest import fixture, parametrize, mark, approx, raises
@@ -112,7 +110,7 @@ def test_overdraft(account):
         account["overdraft"]
 ```
 
-**Using pytest plugins?** rustest supports none by design — see the
+**Using pytest plugins?** rustest supports none by design. See the
 [plugin migration guide](pytest-plugins.md) for what replaces the ten most popular ones,
 several of which are built in (`--cov` for pytest-cov, `@mark.asyncio` for pytest-asyncio,
 the `mocker` fixture for pytest-mock).
@@ -123,13 +121,15 @@ See [Comparison with pytest](comparison.md) for the feature-by-feature table.
 
 Not yet implemented, and tracked rather than promised:
 
-- **JUnit XML output** — `--report-json` exists today; JUnit does not.
-- **HTML reports**.
-- **Test timeouts** — `@mark.timeout()` is accepted as a mark but enforces nothing.
+- **JUnit XML output.** `--report-json` exists today; JUnit does not.
+- **HTML reports.**
+- **General test timeouts.** `@mark.timeout()` is accepted as a mark but enforces nothing.
+  Async tests are the exception: `@mark.asyncio(timeout=N)` is rustest's own extension and is
+  enforced with `asyncio.wait_for`.
 
-Three entries that used to sit on this list have shipped: **parallel execution control**
-is `-n` / `--workers` (never `-j`, which this page once listed and rustest has never had);
-**coverage integration** is `--cov` / `--cov-report`, which needs the `cov` extra; and
+Three entries that used to sit on this list have shipped. **Parallel execution control** is
+`-n` / `--workers` (never `-j`, which this page once listed and rustest has never had).
+**Coverage integration** is `--cov` / `--cov-report`, which needs the `cov` extra. And
 **better error messages** arrived as assertion rewriting, so a failed `assert` now reports
 the values (`AssertionError: assert 41 == 42`).
 
@@ -138,7 +138,7 @@ roadmap.
 
 ## Older releases
 
-The 0.3 → 0.4 → 0.5 upgrade notes that used to live here have been removed. They described
+The 0.3 to 0.4 to 0.5 upgrade notes that used to live here have been removed. They described
 a runner that predates the current engine by a dozen releases, and
 [`CHANGELOG.md`](changelog.md) is the actual historical record.
 

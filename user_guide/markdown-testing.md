@@ -1,25 +1,33 @@
 # Markdown Code Block Testing
 
-Rustest can automatically discover and test Python code blocks in your markdown files, ensuring your documentation examples stay up-to-date and functional.
+rustest runs the Python code blocks in your markdown files as tests, so a documentation
+example that stops working fails the build instead of sitting there misleading people. This
+is rustest's own extension: pytest collects nothing from a `.md` file.
 
-## Overview
+The feature covers the same ground as pytest-codeblocks, including its skip markers, and
+needs no plugin.
 
-This feature is similar to pytest-codeblocks but built into rustest with better performance. It's perfect for:
+## Naming the Files
 
-- Testing documentation examples
-- Ensuring README code samples work
-- Validating tutorial code
-- Keeping guides in sync with your codebase
-
-## Automatic Discovery
-
-By default, rustest automatically discovers and tests Python code blocks in `.md` files:
+**Markdown files must be named as arguments.** A directory argument collects none. Run from
+this repository, the two lines below do very different things:
 
 ```bash
-rustest  # Tests both .py files and .md files
+rustest README.md user_guide/fixtures.md   # runs the python fences in both files
+rustest user_guide/                        # "no tests ran": a walk never collects .md
 ```
 
-Each Python code block is treated as a separate test case.
+This matches what pytest does with the same tree. A directory walk that picked up `.md`
+would mean `rustest tests/` running tests `pytest tests/` never sees, which is how a repo
+with fences in its docs ends up with a green pytest run and a red rustest one.
+
+Shell globs are the usual way to name a whole directory of pages. rustest's own CI line is:
+
+```bash
+rustest README.md user_guide/*.md
+```
+
+Each Python code block is collected as its own test.
 
 ## Markdown File Example
 
@@ -65,8 +73,8 @@ Output:
 3 passed in 0.45s
 ```
 
-Each fence is its own test. `-v` shows how they are named — by block index and by the line
-the fence starts on, so a failure points at the right place in the page:
+Each fence is its own test. `-v` shows how they are named, by block index and by the line the
+opening fence sits on, so a failure points at the right place in the page:
 
 ```
 example.md::codeblock_0_line_3 PASSED                                   [ 33%]
@@ -76,9 +84,20 @@ example.md::codeblock_2_line_13 PASSED                                  [100%]
 3 passed in 0.45s
 ```
 
+Every block is compiled with the markdown file as its filename, so a traceback names the
+page and the line rather than an anonymous `<string>`.
+
+Every block also carries a `codeblock` mark, so `-m` can select or exclude doc examples:
+
+```bash
+rustest README.md user_guide/*.md -m codeblock       # only doc examples
+rustest README.md tests/ -m "not codeblock"          # everything except them
+```
+
 ## Skipping Code Blocks
 
-Sometimes you want to include example code that shouldn't be executed. Use HTML comments to skip specific blocks:
+An HTML comment above a fence stops that block from being executed. Use it for pseudo-code,
+and for examples that call into something your test environment does not have:
 
 ```markdown
 <!--rustest.mark.skip-->
@@ -88,26 +107,49 @@ result = some_external_api()
 ```
 ```
 
-The skip marker must appear **directly before** the code block (no blank lines in between).
+Keep the marker on the line directly above the opening fence. One line may sit between them
+and the marker still applies, but anything more and it is forgotten, so a marker separated
+from its fence by a paragraph does nothing. A skipped block is never compiled either, which
+is what lets you mark pseudo-code that would not parse.
+
+The skipped block reports as `SKIPPED (Skipped via HTML comment marker)`.
+
+!!! warning "A skip marker is permanent, and it is silent"
+    Skipping does not just exempt a block from this run. It exempts it from every future run,
+    so nothing will ever tell you when the code in it stops being correct. A skipped example
+    that calls an API you later rename, or passes an argument you later reject, keeps sitting
+    on the page looking authoritative while CI stays green.
+
+    Reach for the marker when a block genuinely cannot execute: it needs a service, a package
+    you will not depend on, or it is deliberately incomplete. When a block is skipped only
+    because it needs a little setup, write the setup instead. A stub of five lines is cheaper
+    than an example that quietly goes stale.
+
+    Skipped blocks are worth re-reading by hand whenever the API around them changes, because
+    no tool is going to do it for you.
 
 !!! note "pytest compatibility"
     For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
 
 ## Disabling Markdown Testing
 
-If you don't want to test markdown files, disable it with `--no-codeblocks`:
+`--no-codeblocks` removes the markdown tier entirely. Because a directory walk never
+collects `.md` anyway, the flag has no effect on `rustest tests/`; what it does is turn a
+named markdown file back into pytest's answer for one, which is the usage error `found no
+collectors for ...` and exit code 4:
 
 ```bash
-# Only test Python files, skip markdown
-rustest --no-codeblocks
-
-# Test specific directory without markdown
-rustest tests/ --no-codeblocks
+rustest README.md --no-codeblocks   # ERROR: found no collectors for README.md
 ```
+
+Reach for it when something in your toolchain passes `*.md` and you want the pytest
+behaviour back.
 
 ## Language Filtering
 
-Only Python code blocks are tested. Other languages are ignored:
+Only Python code blocks are tested. The language is the text after the opening fence,
+lowercased, so ```` ```Python ```` counts and ```` ```pycon ```` does not. Other languages
+are ignored:
 
 ````markdown
 # Documentation
@@ -274,10 +316,67 @@ assert user.email == "newemail@example.com"
 ```
 ````
 
+## How a Block Executes
+
+Each block is indented into a generated `def run_codeblock():`, compiled on its own, and
+called. Two consequences follow from that, and the second one catches almost everybody.
+
+### Each block gets a fresh namespace
+
+Names defined in one block do not exist in the next, imports included. There is no way to
+continue a block.
+
+### Only module-level code runs
+
+The block body *is* the test. A `def` inside it is defined and never called, so its
+assertions are never checked:
+
+<!--rustest.mark.skip-->
+```python
+def test_never_runs():
+    assert False        # This block PASSES. Nothing calls test_never_runs.
+```
+
+The same applies to fixtures. `@fixture` inside a block registers nothing the block will
+use, because the runner has already decided what this test is: the block itself, requesting
+no fixtures.
+
+Write documentation examples as **statements that assert directly**:
+
+```python
+def double(x: int) -> int:
+    return x * 2
+
+# The assertion is at block level, so it is actually checked.
+assert double(21) == 42
+```
+
+If the example must show the shape of a test function, because that is what you are
+documenting, keep the `def` for the reader and add a block-level call or assertion so
+something is genuinely verified:
+
+```python
+from rustest import fixture
+
+@fixture
+def sample():
+    return "test"
+
+def test_example(sample):
+    assert sample == "test"
+
+# Doc blocks run at module level, so exercise the body directly.
+test_example("test")
+```
+
+This page's own limitation applies to every page in a documentation suite: a block whose
+assertions all sit inside a `def test_*` is checked for syntax and imports, and for nothing
+else.
+
 ## Code Block Sharing State
 
-!!! warning "Each Block is Isolated"
-    Each Python code block runs in its own isolated environment. Variables from one block are NOT available in the next block.
+The fresh namespace above is what this looks like in practice. The second block here fails,
+because `x` belongs to the first block's namespace and nothing carries it over:
 
 ````markdown
 # Example
@@ -410,17 +509,22 @@ rustest README.md --no-capture
 
 ### In CI/CD
 
-Include markdown tests in your CI pipeline:
+Name the pages, and let the shell expand a glob over the directory holding them. This is
+rustest's own workflow step, testing its landing page and every page of this guide:
 
 ```yaml
-# .github/workflows/test.yml
+# .github/workflows/ci.yml
 - name: Test documentation examples
-  run: rustest **.md
+  run: python -m rustest README.md user_guide/*.md
 ```
+
+Point the glob at whatever directory holds your pages. A bare directory argument in that
+position silently tests nothing, and the step still goes green.
 
 ### Pre-commit Hook
 
-Test documentation before committing:
+pre-commit passes the changed filenames to the hook by default, which is exactly the naming
+the collector needs. Restrict it to markdown with `files`:
 
 ```yaml
 # .pre-commit-config.yaml
@@ -429,37 +533,42 @@ Test documentation before committing:
     - id: test-docs
       name: Test documentation examples
       entry: rustest
-      args: ["README.md", "docs/"]
       language: system
-      pass_filenames: false
+      files: \.md$
 ```
 
 ## Programmatic Usage
 
-Test markdown files from Python:
+`rustest.run()` is keyword-only and returns pytest's exit code as an `int`. Pass
+`report_json=` when you want counts:
 
 <!--rustest.mark.skip-->
 ```python
+import json
+from pathlib import Path
+
 from rustest import run
 
-# Test specific markdown file
-report = run(paths=["README.md"])
-print(f"Documentation tests: {report.passed} passed, {report.failed} failed")
+# One page. Returns 0 on success, 1 on failure.
+exit_code = run(paths=["README.md"])
 
-# Test all markdown in docs/
-report = run(paths=["docs/"])
+# Several pages, with a machine-readable report written alongside.
+run(paths=["README.md", "user_guide/fixtures.md"], report_json="docs-report.json")
+summary = json.loads(Path("docs-report.json").read_text())["summary"]
+print(f"{summary['passed']} passed, {summary['failed']} failed")
 
-# Disable markdown testing
-report = run(paths=["docs/"], enable_codeblocks=False)
+# Turn the markdown tier off. A named .md then becomes a usage error.
+run(paths=["tests/"], codeblocks=False)
 ```
 
 ## Limitations
 
-- Each code block runs in isolation (no shared state)
-- Only Python code blocks are tested
-- Code blocks must be valid, complete Python code
-- No support for continuation across blocks
-- No support for interactive console examples (use doctest format as text if needed)
+- Blocks do not share state, and there is no continuation syntax across them
+- Only Python fences are collected
+- A block must be a complete, compilable Python fragment unless it is marked skipped
+- Interactive console transcripts are not recognised; render them as `text` if you need them
+- A code block requests no fixtures. Autouse fixtures from a `conftest.py` above the file
+  still apply, but a block cannot ask for one by name
 
 ## Next Steps
 
