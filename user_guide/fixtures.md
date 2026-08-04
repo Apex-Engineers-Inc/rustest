@@ -660,6 +660,26 @@ A module named this way is registered with no nodeid, which is what pytest does 
     A plugin that only supplies fixtures works; one that implements
     `pytest_collection_modifyitems` is silently inert.
 
+!!! warning "pytest requires this declaration at the rootdir. rustest does not."
+    The layout above puts `pytest_plugins` in `tests/conftest.py`, below a rootdir at
+    `project/`. rustest accepts that. **pytest refuses it**, and the reason is the run-wide
+    registration described just above:
+
+    ```text
+    Defining 'pytest_plugins' in a non-top-level conftest is no longer supported:
+    It affects the entire test suite instead of just below the conftest as expected.
+    ```
+
+    The refusal depends on how pytest is invoked, which is what makes it easy to miss.
+    Naming the directory works (`pytest tests/` loads that conftest as an initial one);
+    collecting from the project root (`pytest` or `pytest .`) is a collection error that
+    stops the run. A suite can therefore pass locally and fail in CI on the same tree.
+
+    If your suite must run under both, put the declaration in the **rootdir**
+    `conftest.py`. If it only ever runs under rustest, either placement works. Either way
+    the fixtures are registered run-wide, so moving the declaration up does not change
+    which tests can see them.
+
 ## Fixture Methods in Test Classes
 
 Fixtures can be defined as methods on a test class, where they are visible to that class and to nothing else:

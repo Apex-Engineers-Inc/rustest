@@ -236,6 +236,34 @@ older versions may still be working around them:
   [parametrization guide](parametrization.md#indirect-parametrization) for the
   rewrite, including the one-liner that reproduces the old behaviour.
 
+### Where rustest is more permissive than pytest
+
+The gaps above all run one way: pytest does something rustest does not. This one runs the
+other way, which makes it a migration hazard in the opposite direction. It is **not yet a
+conformance corpus case**, unlike everything in the table above, so it is recorded here
+rather than pinned.
+
+**`pytest_plugins` below the rootdir.** rustest honours a `pytest_plugins` declaration in
+any `conftest.py`. pytest only accepts it in the **rootdir** `conftest.py`, and refuses it
+anywhere else:
+
+```text
+Defining 'pytest_plugins' in a non-top-level conftest is no longer supported:
+It affects the entire test suite instead of just below the conftest as expected.
+```
+
+pytest's stated reason is the run-wide registration itself, which is the same behaviour
+rustest implements deliberately: a declared module's fixtures are visible to the whole run,
+not only below the conftest that named it.
+
+The refusal is invocation-dependent, which is what makes it easy to ship. `pytest tests/`
+loads that conftest as an initial one and passes; `pytest` or `pytest .` from the project
+root is a collection error that stops the run. So a suite can pass locally and fail in CI
+on an unchanged tree.
+
+If a suite must run under both runners, keep the declaration in the rootdir `conftest.py`.
+Moving it up costs nothing, because the fixtures were already registered run-wide.
+
 ## Migration
 
 ### Step 1: just run it
