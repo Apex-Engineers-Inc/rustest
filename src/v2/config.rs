@@ -216,8 +216,10 @@ pub fn resolve_config(
     let err_path = inipath
         .clone()
         .unwrap_or_else(|| invocation_dir.to_path_buf());
-    let codeblocks =
-        read_tool_rustest_codeblocks(&rootdir).or_else(|| getini_bool(&inicfg, "codeblocks"));
+    let codeblocks = match read_tool_rustest_codeblocks(&rootdir)? {
+        Some(enabled) => Some(enabled),
+        None => getini_bool(&inicfg, "codeblocks"),
+    };
 
     Ok(ResolvedConfig {
         rootdir,
@@ -825,14 +827,47 @@ fn load_config_dict_from_file(path: &Path) -> Result<Option<ConfigDict>, ConfigE
 /// settings in `pytest.ini` would never have this table read if it went through
 /// `locate_config`.  No walk in either direction: an upward walk would read an unrelated
 /// `pyproject.toml` above the repository.
-fn read_tool_rustest_codeblocks(rootdir: &Path) -> Option<bool> {
-    let text = std::fs::read_to_string(rootdir.join("pyproject.toml")).ok()?;
-    let value: toml::Value = text.parse().ok()?;
-    value
-        .get("tool")?
-        .get("rustest")?
-        .get("codeblocks")?
-        .as_bool()
+fn read_tool_rustest_codeblocks(rootdir: &Path) -> Result<Option<bool>, ConfigError> {
+    let path = rootdir.join("pyproject.toml");
+    // No `pyproject.toml` at the rootdir is ordinary, not an error: most projects that
+    // configure rustest through pytest's ini section have none.
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    // A syntax error here is **loud**, and that is the whole point of this arm. When
+    // `pyproject.toml` is itself the discovered config file, `load_config_dict_from_file`
+    // reports its parse errors. When `pytest.ini` outranks it, nothing else parses the file,
+    // so swallowing the error left the user's `codeblocks = true` silently ineffective:
+    // `found no collectors`, no diagnostic, in exactly the layout `[tool.rustest]` exists to
+    // serve.
+    let value: toml::Value = text
+        .parse()
+        .map_err(|e: toml::de::Error| ConfigError::Parse {
+            path: path.clone(),
+            message: e.to_string(),
+        })?;
+    let Some(raw) = value
+        .get("tool")
+        .and_then(|tool| tool.get("rustest"))
+        .and_then(|rustest| rustest.get("codeblocks"))
+    else {
+        return Ok(None);
+    };
+    // A non-bool is **loud** too. `codeblocks = "true"` is the natural TOML typo, and
+    // treating it as "no opinion" fell through to the ini section and then to the built-in
+    // default: the user asked for the feature, spelled it very nearly right, and got it
+    // switched off without being told.
+    match raw.as_bool() {
+        Some(enabled) => Ok(Some(enabled)),
+        None => Err(ConfigError::Usage {
+            path: path.clone(),
+            message: format!(
+                "{}: [tool.rustest] codeblocks must be a boolean (true or false), not {}",
+                path.display(),
+                raw.type_str(),
+            ),
+        }),
+    }
 }
 
 /// Port of `load_config_dict_from_file`'s inner `make_scalar`:
@@ -1940,6 +1975,67 @@ mod tests {
         assert_eq!(getini_bool(&cfg, "f"), Some(false));
     }
 
+    /// A malformed `<rootdir>/pyproject.toml` is a **loud** error, not a silent "no
+    /// opinion".
+    ///
+    /// This is the case the out-of-band lookup exists for and the case it used to fail
+    /// worst. When `pyproject.toml` *is* the discovered config file its syntax errors are
+    /// reported by `load_config_dict_from_file`. When `pytest.ini` outranks it, nothing else
+    /// parses the file, so `.parse().ok()?` swallowed the error and the user's
+    /// `codeblocks = true` silently never took effect: `found no collectors`, no diagnostic,
+    /// in exactly the project layout `[tool.rustest]` was added to serve.
+    #[test]
+    fn a_malformed_pyproject_is_an_error_not_a_silent_default() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.ini",
+            "[pytest]
+",
+        );
+        write(
+            root,
+            "pyproject.toml",
+            "[tool.rustest]
+this is not valid toml
+",
+        );
+
+        let err = read_tool_rustest_codeblocks(root).unwrap_err();
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("pyproject.toml"),
+            "the error must name the file: {rendered}"
+        );
+    }
+
+    /// A non-bool `codeblocks` is a **loud** error, not a fall-through to off.
+    ///
+    /// `codeblocks = "true"` is the natural TOML typo, and `as_bool()` returning `None` for
+    /// it used to mean "no opinion", so the lookup fell through to the ini section and then
+    /// to the built-in default. The user asked for the feature, spelled it very nearly
+    /// right, and got it silently switched off.
+    #[test]
+    fn a_non_bool_codeblocks_is_an_error_not_a_fall_through() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pyproject.toml",
+            "[tool.rustest]
+codeblocks = \"true\"
+",
+        );
+
+        let err = read_tool_rustest_codeblocks(root).unwrap_err();
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("codeblocks"),
+            "the error must name the key: {rendered}"
+        );
+    }
+
     /// `[tool.rustest]` is read from EXACTLY `<rootdir>/pyproject.toml`, with no walk in
     /// either direction, so a table in a subdirectory is invisible.  Spec: "Exactly at
     /// rootdir is literal".
@@ -1952,7 +2048,7 @@ mod tests {
             "pyproject.toml",
             "[tool.rustest]\ncodeblocks = true\n",
         );
-        assert_eq!(read_tool_rustest_codeblocks(root), Some(true));
+        assert_eq!(read_tool_rustest_codeblocks(root).unwrap(), Some(true));
 
         let sub = mkdirs(root, "sub");
         write(
@@ -1961,10 +2057,10 @@ mod tests {
             "[tool.rustest]\ncodeblocks = false\n",
         );
         // Root's `true` must win: a downward walk would answer Some(false) here.
-        assert_eq!(read_tool_rustest_codeblocks(root), Some(true));
+        assert_eq!(read_tool_rustest_codeblocks(root).unwrap(), Some(true));
         // And a rootdir with no table at all answers None rather than a default.
         let empty = TempDir::new().unwrap();
-        assert_eq!(read_tool_rustest_codeblocks(empty.path()), None);
+        assert_eq!(read_tool_rustest_codeblocks(empty.path()).unwrap(), None);
     }
 
     /// The case that was silently broken before the spec was amended: a project whose

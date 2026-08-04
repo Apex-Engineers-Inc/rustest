@@ -271,6 +271,15 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 Several of these were real, shipped defects that reported **green** on a broken test,
 which is the worst answer a test runner can give.
 
+- **A broken `[tool.rustest]` no longer fails silently.** A malformed `pyproject.toml`, or
+  a `codeblocks` value that is not a boolean, used to mean "no opinion": the lookup fell
+  through to pytest's ini section and then to the built-in default, so a user who asked for
+  code blocks and mistyped got `found no collectors` with no hint why. Both are now errors
+  naming the file, and the non-boolean case names the key and the type it actually found.
+  The malformed case mattered most in exactly the layout `[tool.rustest]` exists to serve:
+  when `pytest.ini` outranks `pyproject.toml`, nothing else parses the file, so the syntax
+  error had nowhere else to surface.
+
 - **`-q` no longer swallows the failure report.** `rustest -q` on a red run printed the
   summary line and nothing else: no `FAILURES` section, no `short test summary info`, no
   node ids. A quiet run therefore named nothing that failed and carried no traceback, so it
