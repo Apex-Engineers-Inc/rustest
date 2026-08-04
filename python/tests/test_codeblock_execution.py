@@ -39,7 +39,7 @@ def test_block_segment_is_in_the_id_but_not_the_class_name(tmp_path: Path) -> No
     A module-level test inside a block must carry NO class_name. If it acquires one,
     class-scope teardown breaks silently; see test_class_scope_is_torn_down_per_test.
     """
-    from rustest._v2_worker import collect_module
+    from rustest._v2_worker import ExecutionPlan, collect_module
     import types
 
     module = types.ModuleType("block_probe")
@@ -50,7 +50,7 @@ def test_block_segment_is_in_the_id_but_not_the_class_name(tmp_path: Path) -> No
         module.__dict__,
     )
 
-    entries, _plans = collect_module(
+    entries, plans = collect_module(
         module,
         tmp_path / "page.md",
         tmp_path,
@@ -71,6 +71,14 @@ def test_block_segment_is_in_the_id_but_not_the_class_name(tmp_path: Path) -> No
         "a real class keeps its own name, with no block segment mixed in"
     )
 
+    # The runtime half: `ExecutionPlan.block_segment` is a separate field from the wire
+    # `id` (see the unittest test below for why the id alone does not pin this), so it needs
+    # its own assertion or a dropped `block_segment=` kwarg on the `ExecutionPlan(...)`
+    # construction ships invisibly -- the wire entries would still look right.
+    plans_by_id: dict[str, ExecutionPlan] = {plan.id: plan for plan in plans}
+    assert plans_by_id[alpha["id"]].block_segment == "codeblock_0_line_3"
+    assert plans_by_id[beta["id"]].block_segment == "codeblock_0_line_3"
+
 
 def test_unittest_case_in_a_block_carries_the_block_segment_too(tmp_path: Path) -> None:
     """`_collect_unittest_class.record` builds its `CollectedTest`/`ExecutionPlan` directly,
@@ -78,7 +86,7 @@ def test_unittest_case_in_a_block_carries_the_block_segment_too(tmp_path: Path) 
     explicitly. Without that, two blocks each defining an identically-named `TestCase`
     subclass and method produce IDENTICAL wire ids, a genuine id collision.
     """
-    from rustest._v2_worker import collect_module
+    from rustest._v2_worker import ExecutionPlan, collect_module
     import types
 
     source = (
@@ -88,27 +96,44 @@ def test_unittest_case_in_a_block_carries_the_block_segment_too(tmp_path: Path) 
         "        assert True\n"
     )
 
-    def collect(block_segment: str) -> dict[str, dict[str, object]]:
+    def collect(
+        block_segment: str,
+    ) -> tuple[dict[str, dict[str, object]], dict[str, ExecutionPlan]]:
         module = types.ModuleType("block_probe_unittest")
         module.__file__ = str(tmp_path / "page.md")
         exec(source, module.__dict__)
-        entries, _plans = collect_module(
+        entries, plans = collect_module(
             module,
             tmp_path / "page.md",
             tmp_path,
             naming=_default_naming(),
             block_segment=block_segment,
         )
-        return {e["qualname"]: e for e in entries}
+        by_name = {e["qualname"]: e for e in entries}
+        plans_by_id: dict[str, ExecutionPlan] = {plan.id: plan for plan in plans}
+        return by_name, plans_by_id
 
-    first = collect("codeblock_0_line_3")
-    second = collect("codeblock_1_line_10")
+    first_entries, first_plans = collect("codeblock_0_line_3")
+    second_entries, second_plans = collect("codeblock_1_line_10")
 
-    first_case = first["codeblock_0_line_3.Legacy.test_it"]
-    second_case = second["codeblock_1_line_10.Legacy.test_it"]
+    first_case = first_entries["codeblock_0_line_3.Legacy.test_it"]
+    second_case = second_entries["codeblock_1_line_10.Legacy.test_it"]
 
     assert first_case["id"].endswith("page.md::codeblock_0_line_3::Legacy::test_it")
     assert second_case["id"].endswith("page.md::codeblock_1_line_10::Legacy::test_it")
     assert first_case["id"] != second_case["id"], (
         "two blocks defining the same-named TestCase and method must not collide on the wire id"
+    )
+
+    # The runtime half, pinned separately from the wire id: `record()` constructs
+    # `ExecutionPlan` directly (never through `_collect_function`), and `ExecutionPlan.id` is
+    # copied from the wire entry's id regardless of whether the `ExecutionPlan(...)` call
+    # itself was given `block_segment=`. So a dropped kwarg there leaves `plan.id` correct
+    # and only `plan.block_segment` wrong -- silent unless asserted on directly.
+    first_plan = first_plans[first_case["id"]]
+    second_plan = second_plans[second_case["id"]]
+    assert first_plan.block_segment == "codeblock_0_line_3"
+    assert second_plan.block_segment == "codeblock_1_line_10"
+    assert first_plan.block_segment != second_plan.block_segment, (
+        "the two blocks' ExecutionPlans must carry their own distinct segments"
     )
