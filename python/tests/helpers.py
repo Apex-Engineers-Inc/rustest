@@ -142,7 +142,10 @@ def run_tree(
     keyword: str | None = None,
     mark_expr: str | None = None,
     capture: bool = True,
-    codeblocks: bool = True,
+    # `None` means "not passed, let config decide", matching the production default and
+    # the CLI's tri-state. A plain `bool` here forced the tier ON for every run_tree
+    # test, so none of them could observe the off-by-default flip at all.
+    codeblocks: bool | None = None,
     invocation_dir: str | os.PathLike[str] | None = None,
 ) -> RunTally:
     """Run *paths* through the real engine in this process and return the tally.
