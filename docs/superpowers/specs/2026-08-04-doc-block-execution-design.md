@@ -65,8 +65,13 @@ Precedence, highest first:
 | rustest config | `[tool.rustest]` `codeblocks = true` | `pyproject.toml` |
 | pytest config | `codeblocks = true` in pytest's ini section | `pyproject.toml`, `pytest.ini`, `.pytest.ini`, `tox.ini`, `setup.cfg` |
 
-Within a single file, `[tool.rustest]` beats the pytest section. Across files, the existing
-`CONFIG_NAMES` precedence in `src/v2/config.rs` is unchanged.
+Within a single file, `[tool.rustest]` beats the pytest section.
+
+The **pytest-section** lookup follows the existing `CONFIG_NAMES` precedence in
+`src/v2/config.rs`, unchanged. **`[tool.rustest]` is outside that system entirely** and does
+not participate in cross-file precedence, which is why in a project with both a `pytest.ini`
+and a `[tool.rustest]` table the rustest table wins across files. That is the opposite of
+`CONFIG_NAMES` order and it is deliberate; see below.
 
 ### `[tool.rustest]` is read out-of-band
 
@@ -80,9 +85,20 @@ directory** (`config.rs:19-25`). A project that keeps its settings in `pytest.in
 `[tool.rustest]` to `pyproject.toml` would therefore never have that table read, because
 `pyproject.toml` never becomes the config file.
 
-The resolution: `[tool.rustest]` is a **separate lookup against the `pyproject.toml`
-nearest the rootdir**. It does not participate in config-file discovery and it does not
-affect rootdir resolution.
+The resolution: `[tool.rustest]` is a **separate lookup against exactly
+`<rootdir>/pyproject.toml`**. It does not participate in config-file discovery and it does
+not affect rootdir resolution.
+
+**"Exactly at rootdir" is literal: no walk in either direction.** An upward walk would read
+an unrelated `pyproject.toml` above the repository. The definition is total without one:
+when `pyproject.toml` is itself the discovered config file, rootdir is its directory, so
+the lookup finds it; when no config file is found at all, rootdir still resolves and the
+lookup still works. A `[tool.rustest]` table in a subdirectory `pyproject.toml` is **not**
+honoured, and there is a pinning test for that.
+
+Ordering note for the implementation: `discover` (`collect.rs:576`) currently takes the
+codeblocks flag as an argument, so config must resolve before the markdown-target decision
+rather than after. That restructuring is mechanical but it is a real edit, not a detail.
 
 The rejected alternative was letting `[tool.rustest]` make `pyproject.toml` authoritative
 for discovery. That would change **rootdir** for the whole run, so adding the key could
@@ -161,9 +177,21 @@ existing semantics rather than a new hazard, and the same consequences already a
   from the execute path
 
 Skip-marked blocks are not executed at all, so a block that must not run has an existing
-mechanism. For the record, all six `run(paths=...)` blocks in `user_guide/python-api.md`
-are skip-marked today, so the "collect-only spawns a nested run" scenario does not arise on
-this repository.
+mechanism. For the record, every fence containing `run(paths=...)` anywhere in
+`README.md` or `user_guide/` is skip-marked today, six fences across
+`markdown-testing.md`, `python-api.md` and `quickstart.md`, so the "collect-only spawns a
+nested run" scenario does not arise on this repository.
+
+**Accepted consequence: deselection no longer gates body execution.** Today a block
+deselected by `-k`, `-m "not codeblock"` or `--lf` never runs its body. After this change,
+naming an `.md` with codeblocks enabled executes every non-skip-marked body at collect,
+whatever the selection expression says. This is identical to `.py` semantics and defensible
+for the same reason, but it is an observable change from today's markdown tier and is
+chosen here rather than discovered later. There is a pinning test for it.
+
+A further note on why the phase move is smaller than it looks: under the **old** model the
+whole block body already executed wholesale as the test body. Doc code running was never
+conditional on this design. Only the phase in which it runs moves.
 
 **The no-test block's node reports the real outcome of that collect-time execution.** It
 does not re-execute the body at run time, which would double side effects, and it does not
@@ -204,8 +232,37 @@ node or nodes it owns, leaving sibling blocks collected and reported normally. N
 change, siblings survive, and a broken example reports as what it is.
 
 A block that raises before any test function is defined yields a single failing node for
-the block. A block that raises partway through, after defining some tests, reports the
-failure and does not invent results for tests whose definitions were never reached.
+the block.
+
+#### The partial-failure case, in full
+
+A block that raises **after** defining some tests is the case the node-id dichotomy below
+does not cover, so it is specified here rather than left to the implementation.
+
+- **A `codeblock_N_line_M` node appears alongside the test nodes, and it carries the
+  failure.** This is the one situation where a test-defining block also has a block node.
+  It is a deliberate exception to "tests means no block node", because the exec failure
+  belongs to the block, not to any test.
+- **Tests defined before the raise are collected and execute normally.** They may still
+  fail on their own merits. In particular a test defined before the raise can fail with
+  `NameError` if it references a name the block would have bound after the raise point.
+  That is correct and expected, not a defect to engineer around.
+- **Tests whose definitions were never reached do not exist.** No node, no synthesised
+  result.
+- **Outcome transport is replay, not re-execution.** The block's outcome is decided at
+  collect but reported at execute, so the block node's `ExecutionPlan` **replays the
+  recorded outcome, traceback included**. It does not re-run the body. This is the same
+  mechanism the no-test block's success node needs, and stating it prevents an
+  implementation that re-executes and doubles side effects.
+- **Captured output.** A `print()` in a block body now happens at collect. Its captured
+  output attaches to the block node's result; it is not discarded.
+
+#### Exit code changes
+
+Today a page with a broken block is a file-level collection error, so the run exits **2**.
+Under this design it is failing tests, so the run exits **1**. That is an observable change
+for anyone gating CI on the specific code, and it belongs in the changelog alongside the
+other breaking changes.
 
 ## Node ids
 
@@ -257,6 +314,29 @@ There is also no existing mechanism to prefix parts: `_make_items` starts from `
 `collect_module` to `_make_items` to `_collect_function`, which is the natural place to
 keep it out of `class_name`.
 
+**The full consumer set of the `parts[:-1]` rule**, enumerated so the implementation can
+check each one rather than trusting this list to be short:
+
+1. `_build_entry:3991`, the wire `class_name`
+2. `ExecutionPlan.class_name:2341`
+3. `note_test_boundary`, called from **two** sites, `_v2_worker.py:2719` and `:5851`
+4. `_ItemNode.keywords:2416-2418`, which splits `plan.class_name` on `.` into the
+   keywords chain-map
+
+All four see the block-less value once the segment is out of `parts`, so the fix is
+consistent across them. Item 4 produces a deliberate asymmetry worth stating rather than
+leaving for someone to trip over: **`-k codeblock_3_line_88` matches** (the `-k` matcher
+reads `qualname`, `selection.rs:596-601`, which carries the segment) while
+`"codeblock_3_line_88" in item.keywords` is **False** (keywords derives from `class_name`,
+which does not). pytest has no analogous node, so there is no oracle to diverge from.
+
+**Two docstrings become false and must be updated in the same change**, or the next reader
+will "fix" the inconsistency and reintroduce the phantom class: `CollectedTest.qualname`
+(`manifest.rs:68`) and `_build_entry` (`_v2_worker.py:3978-3980`) both state that
+`class_name` is `qualname` minus its last segment when there is more than one. For a block
+test that is no longer true, by design. No Rust consumer breaks, because `selection.rs:600`
+reads `qualname` only.
+
 The existing `collect_markdown` docstring objects that a second `::` "would claim the block
 is a class member". Read as a display concern that objection is minor; read as a statement
 about `class_name` it was right, and this section is what it was pointing at. Update the
@@ -270,7 +350,7 @@ current meaning: the block is not executed.
 
 ## Breaking changes
 
-All three need a `CHANGELOG.md` entry.
+Each of these needs a `CHANGELOG.md` entry.
 
 1. **`rustest README.md` collects nothing unless enabled.** Every project relying on the
    old default must set the config key or pass the flag.
@@ -331,6 +411,8 @@ Rust (`src/v2/collect.rs`, `src/v2/config.rs`):
 - **pinning:** `pytest.ini` present as the config file **and** `[tool.rustest]` in
   `pyproject.toml`, with the table honoured. This is the case that was silently broken
 - **pinning:** rootdir is identical with and without `[tool.rustest]` present
+- **pinning:** a `[tool.rustest]` table in a **subdirectory** `pyproject.toml` is **not**
+  honoured, which pins "exactly at rootdir, no walk"
 - boolean coercion for both spellings, since `config.rs` has no boolean getter today
 
 Python (`python/tests/`):
@@ -345,20 +427,30 @@ Python (`python/tests/`):
   the same block is torn down per test. This catches the phantom-class hazard; the generic
   "resolves a fixture from a conftest" case does not
 - **pinning:** one broken block does **not** erase sibling blocks' tests in the same file
+- **pinning:** the **wire shape**, not just the runtime effect: a module-level test in a
+  block carries **no** `class_name` on the wire, and a `Test*` class in a block carries
+  `class_name` exactly `"TestFoo"` with no block segment. This survives refactors that the
+  behavioural teardown test above would not localise
+- **pinning:** the partial-failure case: a block defining two tests that then raises
+  produces both test nodes **and** a failing `codeblock_N_line_M` node, the reached tests
+  execute on their own merits, and the unreached ones do not exist
 - **pinning:** a mixed block, both passing module-level code with a failing inner test, and
   failing module-level code with inner tests defined after the failure
+- **pinning:** a page with a broken block exits **1**, not **2**
+- **pinning:** the failing block's traceback names `{path}:L{line}`, not `<string>`
 - **pinning:** two blocks in one file defining a same-named test produce distinct ids
+- **pinning:** `-m "not codeblock"` against a named `.md` still executes the bodies at
+  collect. This asserts the accepted deselection consequence rather than discovering it
 - a block calling `sys.exit()`: outcome classification, and the worker's fate, asserted
   rather than discovered
-- `--v2-collect-only` on a `.md` whose block has a visible side effect
+- `--v2-collect-only` on a `.md` whose block has a visible side effect: the side effect
+  **does** occur, asserted explicitly
 - `-k codeblock_3_line_88` selects that block's tests; `-k` by inner test name works
 - `run()` default behaviour after the flip
 
 Integration (`tests/`): a fixture `.md` exercising each shape above, run under both
 runners where meaningful.
 
-Integration (`tests/`): a fixture `.md` exercising each shape above, run under both
-runners where meaningful.
 
 Dogfooding: this repository enables the setting, so `rustest README.md user_guide/*.md`
 becomes a real gate.
