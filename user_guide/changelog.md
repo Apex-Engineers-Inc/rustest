@@ -96,7 +96,7 @@ discarded. Measured on this repository before the fix: 109 test functions across
 green CI gate. The block now execs at module level, at collect time, and is handed to the
 same enumerator a `.py` file goes through — a `def test_*` inside it collects and runs as
 its own node, exactly as it would in a file. See `user_guide/markdown-testing.md` for the
-full mechanism. Seven breaking changes fall out of that fix:
+full mechanism. Nine breaking changes fall out of that fix:
 
 1. **The markdown tier is off by default.** It used to run whenever a `.md` file was named;
    now nothing collects until `--codeblocks`, `[tool.rustest] codeblocks = true`, or the
@@ -141,6 +141,25 @@ full mechanism. Seven breaking changes fall out of that fix:
    semantics, where module-level code has never had autouse fixtures applied — but it is a
    user-visible change from the old markdown tier. *Action:* move a block's dependency on an
    autouse fixture into a `def test_*`.
+8. **Deselecting a block no longer stops its body from running.** A block's top-level
+   statements now execute at *collect*, the same moment a `.py` module's top-level code
+   does, so `-k`, `-m "not codeblock"` and `--lf` decide which *tests* run, not whether a
+   block's own statements already ran — and `--v2-collect-only` executes them too. This is
+   the change most likely to bite a real user, because it inverts the intent of a
+   deselecting command line: someone who runs `-m "not codeblock"` specifically to avoid
+   executing documentation examples now executes their bodies anyway. Consistent with `.py`
+   semantics (a deselected test file's imports and module-level assignments have always run
+   regardless of `-k`/`-m`), and deliberate rather than discovered — see the design spec's
+   "Accepted consequence" note — but user-visible and worth knowing before it surprises you.
+   `tests/test_codeblocks_integration.py` pins it.
+9. **A block's own top-level output is not captured.** The old mechanism ran the whole block
+   body at execute time, inside the same capture machinery an ordinary test runs under, so a
+   `print()` in the block was captured and attached to its result. The body now runs at
+   collect, outside that machinery, so its output reaches the orchestrator's stderr live and
+   unattributed instead, on both a passing and a failing block; `--report-json` records no
+   `stdout` for that node, where an ordinary `.py` test gets one. Output printed inside a
+   `def test_*` a block defines is unaffected — that function still runs at execute, under
+   capture, like any other test.
 
 ### Changed: the v2 engine is the default (the flip)
 

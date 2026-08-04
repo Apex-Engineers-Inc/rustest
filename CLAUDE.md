@@ -326,8 +326,9 @@ and this collector matches only ```` ```python ````.
 
 ### Documentation Code Blocks
 
-**CRITICAL**: All Python code blocks in documentation are executed as tests in CI, and a
-`def test_*` inside one really runs, as its own node — not defined and silently discarded.
+**CRITICAL**: Every Python code block in documentation is executed as a test in CI unless
+explicitly skip-marked, and a `def test_*` inside one really runs, as its own node — not
+defined and silently discarded.
 The mechanism is the same collector a `.py` test file goes through: a block's source execs
 into a fresh module at collect time and that module is enumerated exactly as a file would
 be, so fixtures, `@parametrize`, `Test*` classes and xunit-style `setup_function` all work

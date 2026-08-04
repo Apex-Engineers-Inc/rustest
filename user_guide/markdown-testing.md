@@ -281,8 +281,11 @@ def test_never_defined():
   the one situation where a test-defining block still gets a block-level node.
 - `test_never_defined` never came into being — its `def` was never reached — so no node for
   it exists at all; it does not appear as failing, skipped, or anything else.
-- Output the block printed before raising is captured on the block node's result, not
-  discarded.
+- Output the block printed before raising is **not** captured or attributed to the block's
+  node. Capture wraps the execute phase, and a block's body now runs at collect, outside it,
+  so a `print()` reaches the orchestrator's stderr live and unattributed instead — the same
+  is true of a block that never raises at all. `--report-json` gives the block node no
+  `stdout` key, where an ordinary failing `.py` test in the same run gets one.
 - The block node **replays** the outcome decided at collect; it does not re-run the body a
   second time at execute, which would double any side effect.
 
@@ -589,6 +592,10 @@ run(paths=["tests/"], codeblocks=False)
   `assert 41 == 42`-style comparison
 - `-n` distributes work by **file**, so a page with many blocks serializes on one worker
   while separate pages parallelize across workers
+- A block's own top-level output is not captured or attributed to its node, whether the
+  block passes or fails — it reaches the orchestrator's stderr live instead, and
+  `--report-json` records no `stdout` for that node. Output printed inside a `def test_*`
+  the block defines is captured normally, since that runs at execute like any other test
 
 ## Next Steps
 

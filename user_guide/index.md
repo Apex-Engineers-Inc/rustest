@@ -88,7 +88,7 @@ mocking, or coverage.
 | **Async built in** | `@mark.asyncio` with pytest-asyncio's loop-scope model. No plugin |
 | **Mocking built in** | The `mocker` fixture. No pytest-mock |
 | **Coverage built in** | `--cov` through `sys.monitoring`. No pytest-cov |
-| **Markdown testing** | Python fences in `.md` files run as tests. This site's examples are tested that way |
+| **Markdown testing** | Python fences in `.md` files run as tests (off by default; `--codeblocks`). This site's examples are tested that way |
 | **Machine-readable** | `--llm` JSONL, `--report-json`, and pytest's exit codes |
 | **Honest failures** | pytest-shaped `FAILURES` and `short test summary info` sections, with assertion rewriting |
 

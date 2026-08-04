@@ -103,10 +103,13 @@ if your own markdown relies on the tier.
 Everything that follows from real execution is a further breaking change in its own right:
 node ids for a block with tests gain a segment, a broken block is now a failing *test*
 rather than a file-level collection error (exit 1, not 2), a stale `--lf` entry for the old
-single-node id will not match, and an autouse fixture no longer reaches a block's top-level
+single-node id will not match, an autouse fixture no longer reaches a block's top-level
 statements (only the tests inside it) because the body now runs before any fixture closure
-exists. See the Changelog's "documentation code block execution" entry for the full
-seven-item list, and [Markdown testing](markdown-testing.md) for the mechanism itself.
+exists, deselecting a block with `-k`/`-m`/`--lf` no longer stops its body from running
+(collect-time execution again — the same as a `.py` module's top-level code), and a block's
+own top-level output is no longer captured or attached to its node. See the Changelog's
+"documentation code block execution" entry for the full nine-item list, and
+[Markdown testing](markdown-testing.md) for the mechanism itself.
 
 ## Migrating from pytest
 

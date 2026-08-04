@@ -165,7 +165,7 @@ rustest --cov=src            # Coverage, no plugin needed
 | `--cov` / `--cov-report` (via `sys.monitoring`) | pytest-cov |
 | A worker pool, `-n` | pytest-xdist (at file granularity) |
 | `--lf` / `--ff` / `-x` / `--maxfail` | built into pytest |
-| Python fences in `.md` files run as tests | pytest-codeblocks |
+| Python fences in `.md` files run as tests (off by default; `--codeblocks`) | pytest-codeblocks |
 | `--llm` JSONL, `--report-json` | no pytest equivalent |
 
 ## Compatibility, stated honestly

@@ -83,7 +83,11 @@ def test_k_selects_by_block_and_by_inner_test(tmp_path: Path) -> None:
         "```python\ndef test_beta():\n    assert True\n```\n",
     )
     by_block = _run(str(page), "-k", "codeblock_0", "-v", cwd=tmp_path)
-    assert "test_alpha" in by_block.stdout + by_block.stderr
+    combined = by_block.stdout + by_block.stderr
+    assert "test_alpha" in combined, combined
+    assert "test_beta" not in combined, (
+        "codeblock_0 should select only that block's test, not every test\n" + combined
+    )
     by_test = _run(str(page), "-k", "test_beta", "-v", cwd=tmp_path)
     combined = by_test.stdout + by_test.stderr
     assert "1 passed" in combined and "1 deselected" in combined, combined
