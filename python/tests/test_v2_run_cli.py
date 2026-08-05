@@ -1322,6 +1322,204 @@ def test_a_collection_error_run_says_error_not_no_tests_ran(tmp_path: Path, brok
 
 
 # --------------------------------------------------------------------------------------
+# Output ordering on a merged stream
+# --------------------------------------------------------------------------------------
+#
+# The reporting path in ``core.py`` writes the failure sections and the coverage table to
+# **stdout**, and every diagnostic -- collection errors, worker stderr, teardown errors, the
+# ``Exit:`` banner, the ``-x`` banner and the summary line -- to **stderr**.  When stdout is
+# not a terminal it is block-buffered and stderr is not, so absent an explicit flush at each
+# hand-off the stderr writes reach the shared descriptor *first* and the stdout blocks land on
+# top of them at interpreter exit.  A red run then states its verdict in the middle of its own
+# output.  These tests pin the flushes that prevent that; they are the only tests in the suite
+# that can see it at all (see :func:`_run_merged`).
+
+
+def _run_merged(argv: list[str], tree: Path) -> subprocess.CompletedProcess[str]:
+    """Run *argv* with stdout and stderr sharing **one** pipe.
+
+    Every other subprocess helper here passes ``capture_output=True``, which gives the two
+    streams separate pipes.  Each pipe is individually well-ordered, so the interleaving --
+    the only thing this section is about -- is precisely what gets discarded: a test built on
+    that helper passes whether or not the ordering is right.
+
+    ``PYTHONUNBUFFERED`` is stripped on top of the names :func:`_clean_env` removes.  It makes
+    stdout unbuffered and so hides the very defect these tests pin -- it is absent from a
+    normal developer environment, but CI images do set it, and a test that quietly stops
+    testing anything on CI is worse than no test.
+    """
+    env = _clean_env()
+    _ = env.pop("PYTHONUNBUFFERED", None)
+    return subprocess.run(
+        argv,
+        cwd=str(tree),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _v2_merged(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return _run_merged([sys.executable, "-m", "rustest", *args], tree)
+
+
+def _pytest_merged(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return _run_merged(
+        [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider", *args], tree
+    )
+
+
+def _merged_context(proc: subprocess.CompletedProcess[str]) -> str:
+    """``_context`` reads ``proc.stderr``, which a merged run leaves as ``None``."""
+    return f"--- merged rc={proc.returncode} ---\n{proc.stdout}"
+
+
+def _index_of(text: str, needle: str) -> int:
+    """The index of the first line containing *needle*, for stating relative order."""
+    for index, line in enumerate(text.splitlines()):
+        if needle in line:
+            return index
+    raise AssertionError(f"{needle!r} appears nowhere in:\n{text}")
+
+
+#: Three failing and two passing -- enough stdout to bury a stderr line, and a shape pytest
+#: summarises as a plain ``3 failed, 2 passed``.
+THREE_RED_TWO_GREEN = """\
+def test_a():
+    assert False
+
+
+def test_b():
+    assert False
+
+
+def test_c():
+    assert False
+
+
+def test_d():
+    assert True
+
+
+def test_e():
+    assert True
+"""
+
+
+def test_the_summary_line_is_last_when_stdout_is_redirected(tmp_path: Path) -> None:
+    """The verdict must be the *last* line of a red run, not one somewhere in the middle.
+
+    Anything that reads the tail of a log to get the outcome depends on this.  Before the
+    flush the line landed inside the ``FAILURES`` block, and through a pipe rather than a file
+    the position was buffer-size dependent -- right on a small suite and buried on a large
+    one, which is the worst available failure mode.
+
+    Diffed against pytest, which puts its whole terminal report on stdout and therefore has
+    no such hazard; its tail is asserted too, so a change there shows up here rather than
+    silently weakening the claim.
+    """
+    tree = _tree(tmp_path, "ordering", {"test_a.py": THREE_RED_TWO_GREEN})
+
+    oracle = _pytest_merged(tree, [])
+    ours = _v2_merged(tree, [])
+
+    assert oracle.returncode == 1, _merged_context(oracle)
+    assert ours.returncode == 1, _merged_context(ours)
+    assert _last_line(oracle.stdout).startswith("3 failed, 2 passed in "), _merged_context(oracle)
+    assert _last_line(ours.stdout).startswith("3 failed, 2 passed in "), _merged_context(ours)
+
+
+def test_the_failure_sections_precede_the_summary_on_a_merged_stream(tmp_path: Path) -> None:
+    """The whole stdout report sits above the verdict, not just the final line below it.
+
+    ``FAILURES`` and ``short test summary info`` are the two stdout blocks a red run emits;
+    pinning both positions catches a flush that is merely *late* rather than missing, which
+    the last-line assertion above would not.
+    """
+    tree = _tree(tmp_path, "ordering2", {"test_a.py": THREE_RED_TWO_GREEN})
+
+    ours = _v2_merged(tree, [])
+
+    merged = ours.stdout
+    failures = _index_of(merged, "FAILURES")
+    short = _index_of(merged, "short test summary info")
+    summary = _index_of(merged, "3 failed, 2 passed in ")
+    assert failures < short < summary, _merged_context(ours)
+
+
+def test_the_stopped_early_banner_is_not_buried_by_the_failure_block(tmp_path: Path) -> None:
+    """``stopping after N failures (-x)`` is on stderr and moved with the summary line.
+
+    It is a separate write from the summary and needs the hand-off flushed before it, so the
+    summary's fix does not imply this one.  pytest puts its ``!!!! stopping after 1 failures
+    !!!!`` banner between the short test summary and the counts line (probed against pytest
+    8.4.2), which is the position claimed here.
+    """
+    tree = _tree(tmp_path, "ordering3", {"test_a.py": THREE_RED_TWO_GREEN})
+
+    ours = _v2_merged(tree, ["-x"])
+
+    merged = ours.stdout
+    assert ours.returncode == 1, _merged_context(ours)
+    banner = _index_of(merged, "stopping after")
+    assert _index_of(merged, "short test summary info") < banner, _merged_context(ours)
+    assert banner < _index_of(merged, " failed in "), _merged_context(ours)
+
+
+def test_teardown_diagnostics_precede_the_summary_on_a_merged_stream(tmp_path: Path) -> None:
+    """``worker_stderr`` and ``teardown_errors`` are two more stderr writes on the same path.
+
+    A module-scoped teardown that raises after the last test produces both, and a failing test
+    alongside it produces the stdout ``FAILURES`` block they were landing on top of.
+    """
+    tree = _tree(
+        tmp_path,
+        "ordering4",
+        {
+            "test_a.py": "import pytest\n\n\n@pytest.fixture(scope='module')\n"
+            "def broken():\n    yield 1\n    raise ValueError('teardown boom')\n\n\n"
+            "def test_one(broken):\n    assert broken == 1\n\n\n"
+            "def test_two(broken):\n    assert False\n"
+        },
+    )
+
+    ours = _v2_merged(tree, [])
+
+    merged = ours.stdout
+    assert ours.returncode == 1, _merged_context(ours)
+    assert _index_of(merged, "FAILURES") < _index_of(merged, "teardown boom"), _merged_context(ours)
+    # Asserted by *shape* -- "the last line is a summary line" -- rather than by bucket text.
+    # This tree also trips a separate, **known and deliberate** divergence: an unattributable
+    # teardown failure reddens the exit code but is not folded into the counts, where pytest
+    # adds ``1 error`` (``_run_summary`` takes only ``collection_errors``; the reasoning is in
+    # ``conformance/harness/grade.py``). Restating that wording here would silently pin a
+    # decision owned elsewhere -- ordering is what this test is for.
+    last = _last_line(merged)
+    assert _SUMMARY_RE.search(last) and re.search(r" in \d+\.\d\ds$", last), _merged_context(ours)
+
+
+def test_collect_only_ids_precede_their_own_summary_on_a_merged_stream(tmp_path: Path) -> None:
+    """``--v2-collect-only`` splits the streams the same way and had the same defect.
+
+    Node ids go to stdout so the list can be piped; the ``N tests collected`` line goes to
+    stderr to keep that list clean. Redirected together, the summary was landing *above* the
+    ids it counts -- the same missing flush as the run path, in the sibling function.
+    """
+    tree = _tree(tmp_path, "ordering5", {"test_a.py": THREE_RED_TWO_GREEN})
+
+    ours = _v2_merged(tree, ["--v2-collect-only"])
+
+    merged = ours.stdout
+    assert ours.returncode == 0, _merged_context(ours)
+    assert _index_of(merged, "test_a.py::test_a") < _index_of(merged, "5 tests collected"), (
+        _merged_context(ours)
+    )
+    assert _last_line(merged) == "5 tests collected", _merged_context(ours)
+
+
+# --------------------------------------------------------------------------------------
 # The Phase 4 final polish wave (Task 1c review findings I2 and I8)
 # --------------------------------------------------------------------------------------
 

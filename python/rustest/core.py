@@ -261,6 +261,29 @@ def _escaping_unencodable_output() -> Iterator[None]:
 _DEFAULT_POOL = 4
 
 
+def _flush_stdout() -> None:
+    """Drain stdout so the next write, which goes to **stderr**, lands after it.
+
+    Both command surfaces below split the two streams deliberately -- ids or failure sections
+    on stdout, every human diagnostic on stderr -- and that split is only safe if each
+    hand-off between them is flushed. When stdout is a terminal it is line-buffered and the
+    order comes out right by accident; redirected to a file or a pipe it is *block*-buffered
+    while stderr stays unbuffered, so every stderr write reaches the shared descriptor
+    immediately and the buffered stdout blocks land on top of them at interpreter exit.
+
+    A red run redirected with ``2>&1`` therefore printed its verdict inside its own
+    ``FAILURES`` block, and through a pipe the position was buffer-size dependent -- correct
+    on a small suite and buried on a large one, so a consumer reading the tail of a log for
+    the outcome worked until it silently did not.
+
+    Called at *every* stdout-to-stderr transition rather than once at the end, because the
+    summary line is not the only stderr write on the path: ``worker_stderr``, the teardown
+    errors, the ``Exit:`` banner, the ``stopping after N failures (-x)`` banner and
+    ``--v2-collect-only``'s ``N tests collected`` were all misplaced by the same mechanism.
+    """
+    sys.stdout.flush()
+
+
 def _pool_size(workers: int | None) -> int:
     """The pool size: the caller's ``-n`` if they gave one, else :data:`_DEFAULT_POOL`.
 
@@ -407,6 +430,11 @@ def v2_collect_only(
         # nothing at all instead of an empty string.
         if tests:
             _ = sys.stdout.write("".join(f"{test['id']}\n" for test in tests))
+        # The same stdout/stderr hand-off the run path has, and the same hazard: without this
+        # a redirected `--v2-collect-only` printed `N tests collected` *above* the ids it
+        # counts. Unconditional -- an empty tree writes no ids but still has the flush, which
+        # costs nothing and keeps the invariant from depending on `if tests`.
+        _flush_stdout()
         for error in errors:
             print(f"ERROR collecting {error['path']}", file=sys.stderr)
             for line in error["message"].splitlines():
@@ -865,6 +893,8 @@ def v2_run(
             # failures` banner and the summary line are all *inside* the report, so the
             # renderer emits them as lines rather than this function printing them twice.
             _render_llm(report, verbosity=verbosity, full=llm_full)
+            # The JSONL document is stdout's; everything below this point is stderr's.
+            _flush_stdout()
         else:
             if verbosity > 0:
                 # The denominator is what the run **selected**, not what it managed to run:
@@ -886,6 +916,10 @@ def v2_run(
             # a different verbosity, and a divergence from the oracle on the one rung a CI
             # pipeline is most likely to use.
             _print_failure_sections(tests)
+
+            # Last stdout write of the human renderer; the collection errors immediately
+            # below, and every diagnostic after them, are stderr's.
+            _flush_stdout()
 
             for error in report["collection_errors"]:
                 print(f"ERROR collecting {error['path']}", file=sys.stderr)
@@ -932,11 +966,32 @@ def v2_run(
         # with no JSONL line, and writing it to stdout would put non-JSON in the middle of the
         # document. `--cov --llm` is therefore a legal, useful combination rather than a
         # refused one -- the table lands where the rest of the diagnostics do.
+        #
+        # That "before the summary line" ordering is a claim about two *different* streams,
+        # and what makes it true is the `_flush_stdout()` below, not the order of the calls.
+        # Redirected stdout is block-buffered and stderr is not, so without the flush the
+        # summary reaches the descriptor first and the table lands after it -- see
+        # :func:`_flush_stdout` for the full mechanism.
         coverage.render(sys.stderr if llm else sys.stdout)
+        _flush_stdout()
 
         if not llm:
             # The sentinel's job under ``--llm``; there is exactly one summary per run and it
             # is the JSONL one.
+            #
+            # **stderr is deliberate, and it is kept.** pytest puts its entire terminal report
+            # on stdout and so has no ordering hazard here at all; rustest's summary is on
+            # stderr because that is this surface's convention for every human diagnostic --
+            # `--v2-collect-only` is the load-bearing case, where node ids go to stdout and
+            # its summary goes to stderr so `rustest --v2-collect-only | xargs` gets a clean
+            # list. Worth being exact about what the split does *not* buy, since it invites
+            # the wrong justification: `--report-json` writes a file and never touches stdout,
+            # and on a red run stdout already carries the human `FAILURES` block, so this is
+            # not what keeps stdout machine-readable. `--llm` is, and it suppresses this line
+            # outright rather than moving it.
+            #
+            # What the choice costs is that the ordering has to be maintained by hand, which
+            # is the `_flush_stdout()` calls above.
             summary_line = _run_summary(report["summary"], len(report["collection_errors"]))
             tail = _format_duration(report["summary"]["duration"])
             print(f"{summary_line} in {tail}", file=sys.stderr)

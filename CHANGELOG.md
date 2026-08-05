@@ -290,6 +290,24 @@ which is the worst answer a test runner can give.
   `test_quiet_still_reports_failures_like_pytest`. This is the rung a CI pipeline is most
   likely to use.
 
+- **The summary line no longer lands in the middle of a redirected run.** With stdout sent
+  to a file or a pipe, `3 failed, 2 passed in 0.62s` came out *inside* the `FAILURES` block
+  instead of last. The summary goes to stderr while the failure sections go to stdout, and
+  nothing flushed stdout between them: redirected stdout is block-buffered and stderr is not,
+  so the stderr writes reached the descriptor first and the buffered failure blocks landed on
+  top of them at interpreter exit. Through a pipe the position was buffer-size dependent
+  rather than consistently wrong -- correct on a small suite and buried on a large one -- so
+  anything reading the tail of a log for the verdict worked until it silently did not. Only
+  red runs were affected, since a green run has no stdout blocks to be reordered against.
+  The same missing flush displaced `worker_stderr`, the teardown errors, the `Exit:` banner,
+  the `stopping after N failures (-x)` banner, and `--v2-collect-only`'s `N tests collected`,
+  which printed *above* the ids it counts. pytest has no such hazard because its whole
+  terminal report is on stdout; rustest keeps the stderr split -- it is what lets
+  `rustest --v2-collect-only | xargs` see a clean id list -- and now flushes at every
+  stdout-to-stderr hand-off. Pinned by five tests that run a tree with
+  `stderr=subprocess.STDOUT`: separate pipes are each individually well-ordered, so a test
+  that reads the two streams apart cannot see this at all.
+
 - **A test returning a non-coroutine awaitable no longer fails on Python 3.12 and 3.13.**
   rustest duck-types on `__await__` exactly as pytest does, so a `Future`, an anyio task
   wrapper, or any object with `__await__` is awaited rather than dropped unrun. But the
