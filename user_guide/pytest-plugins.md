@@ -510,7 +510,7 @@ For a synchronous test:
 === "With rustest (Unix/Linux)"
     ```python
     # In conftest.py
-    from rustest import fixture
+    from rustest import mark
     import signal
     from contextlib import contextmanager
 
@@ -534,7 +534,9 @@ For a synchronous test:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old_handler)
 
-    # In test file
+    # In test file. `signal.SIGALRM` and `signal.alarm` do not exist on Windows, which is
+    # what this tab's title means -- the guard states it in code rather than only in prose.
+    @mark.skipif(not hasattr(signal, "SIGALRM"), reason="signal.SIGALRM is Unix-only")
     def test_slow_function():
         with timeout(5):
             slow_operation()
