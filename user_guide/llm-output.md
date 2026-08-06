@@ -9,7 +9,7 @@ rustest tests/ --llm
 ```
 
 ```json
-{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 {"t":"fail","id":"tests/test_auth.py::test_login","file":"tests/test_auth.py","line":42,"status":"failed","msg":"Traceback (most recent call last):\n  File \"/repo/tests/test_auth.py\", line 42, in test_login\n    assert response.status == 200\nAssertionError: assert 401 == 200","stdout":"POST /login user=admin"}
 {"t":"summary","total":412,"passed":411,"failed":1,"skipped":0,"xfailed":0,"xpassed":0,"error":0,"deselected":0,"collection_errors":0,"duration":1.24,"exit_code":1}
 ```
@@ -63,7 +63,7 @@ attempted.
 ### `meta`
 
 ```json
-{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 ```
 
 | Field | Meaning |

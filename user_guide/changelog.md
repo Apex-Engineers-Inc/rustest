@@ -5,12 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-08-06
+## [1.0.0rc1] - 2026-08-06
 
-> **This is the first release the project calls stable.** It supersedes `0.18.0`, the last
-> version published from the v1 engine. The seven breaking changes below are the one-time
-> cleanup taken before committing to semver discipline; from here, a breaking change means
-> a major bump.
+> **This is a release candidate, not the 1.0.0 release.** It is published to PyPI so the v2
+> engine can be tried against real suites, and it is deliberately not what a plain install
+> gives you: pip and uv both skip pre-releases by default, so `pip install rustest` and
+> `uv add rustest` keep resolving `0.18.0`. To get this one, name it:
+>
+> ```bash
+> uv pip install "rustest==1.0.0rc1"     # or: uv pip install --prerelease allow rustest
+> pip install "rustest==1.0.0rc1"        # or: pip install --pre rustest
+> ```
+>
+> The seven breaking changes below are the one-time cleanup taken before committing to
+> semver discipline. They are what this candidate exists to get wrong in public, before
+> 1.0.0 makes them permanent.
 
 This entry covers the **v2 arc**: a ground-up rewrite of rustest's engine, validated
 against a conformance corpus that diffs rustest against real pytest case by case, and
