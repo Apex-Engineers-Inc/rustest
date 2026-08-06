@@ -24,7 +24,7 @@ go install github.com/charmbracelet/vhs@latest
 Run the automated script:
 
 ```bash
-./scripts/generate-demos.sh
+python scripts/demos.py
 ```
 
 Or use the poe task:

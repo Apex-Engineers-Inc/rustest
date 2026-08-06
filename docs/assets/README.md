@@ -13,7 +13,7 @@ Demo recordings are generated from VHS tape files in `demos/`:
 
 These files are automatically regenerated when output rendering code changes via:
 
-1. **Locally**: Run `./scripts/generate-demos.sh` or `poe demos`
+1. **Locally**: Run `poe demos` (or `python scripts/demos.py`)
 2. **CI**: GitHub Actions workflow `.github/workflows/update-demos.yml`
 
 ## Usage

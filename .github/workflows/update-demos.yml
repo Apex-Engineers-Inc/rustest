@@ -62,7 +62,7 @@ jobs:
         run: uv run maturin develop
 
       - name: Generate demo recordings
-        run: bash scripts/generate-demos.sh
+        run: python scripts/demos.py
 
       - name: Check for changes
         id: check_changes
