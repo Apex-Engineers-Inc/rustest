@@ -1,4 +1,4 @@
-"""Conformance CLI: python -m conformance [--only PREFIX] [--v2-collect | --v2-run | --real NAME]"""
+"""Conformance CLI: python -m conformance [--only PREFIX] [--collect | --run | --real NAME]"""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from .harness.runners import (
     FullRunResult,
     run_pytest_collect,
     run_pytest_full,
-    run_rustest_v2_collect,
-    run_rustest_v2_run,
+    run_rustest_collect,
+    run_rustest_run,
 )
 
 ROOT = Path(__file__).parent
@@ -41,8 +41,8 @@ ROOT = Path(__file__).parent
 # discarded -- it lived at `docs/superpowers/history/2026-07-29-v1-conformance-ledger/`
 # until the SDD artifacts were removed from the tree before 1.0.0, and remains in git
 # history, because it is the record of what the rewrite was *for*.
-V2_COLLECT_WAIVERS = ROOT / "waivers-v2-collect.toml"
-V2_RUN_WAIVERS = ROOT / "waivers-v2-run.toml"
+COLLECT_WAIVERS = ROOT / "waivers-collect.toml"
+RUN_WAIVERS = ROOT / "waivers-run.toml"
 CORPUS = ROOT / "corpus"
 
 #: The two-character flag printed for each case status. ``EE`` is deliberately not a
@@ -128,7 +128,7 @@ def _grade_one_collect(
     name: str,
     waivers: dict[str, str],
     run_pytest_fn: Callable[[Path, list[str]], CollectResult] = run_pytest_collect,
-    run_v2_fn: Callable[[Path, list[str]], CollectResult] = run_rustest_v2_collect,
+    run_rustest_fn: Callable[[Path, list[str]], CollectResult] = run_rustest_collect,
 ) -> CaseResult:
     """Grade a single case on collection only, pytest vs ``rustest --collect-only``.
 
@@ -141,7 +141,7 @@ def _grade_one_collect(
     def grade() -> CaseResult:
         case_args = load_case_args(case_dir)
         pytest_result = run_pytest_fn(case_dir, case_args)
-        v2_result = run_v2_fn(case_dir, case_args)
+        v2_result = run_rustest_fn(case_dir, case_args)
         return grade_collect_case(name, pytest_result, v2_result, waivers)
 
     return _contained(name, waivers, grade)
@@ -152,7 +152,7 @@ def _grade_one_run(
     name: str,
     waivers: dict[str, str],
     run_pytest_fn: Callable[[Path, list[str]], FullRunResult] = run_pytest_full,
-    run_v2_fn: Callable[[Path, list[str]], FullRunResult] = run_rustest_v2_run,
+    run_rustest_fn: Callable[[Path, list[str]], FullRunResult] = run_rustest_run,
 ) -> CaseResult:
     """Grade a single case on a full run, pytest vs a flagless ``rustest``.
 
@@ -164,7 +164,7 @@ def _grade_one_run(
     def grade() -> CaseResult:
         case_args = load_case_args(case_dir)
         pytest_result = run_pytest_fn(case_dir, case_args)
-        v2_result = run_v2_fn(case_dir, case_args)
+        v2_result = run_rustest_fn(case_dir, case_args)
         return grade_run_case(name, pytest_result, v2_result, waivers)
 
     return _contained(name, waivers, grade)
@@ -208,19 +208,19 @@ def main() -> int:
     # the caller has to memorize.
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
-        "--v2-collect",
+        "--collect",
         action="store_true",
         help=(
             "Grade collection only -- pytest's collected node ids and exit code against "
-            "`rustest --collect-only` -- using waivers-v2-collect.toml"
+            "`rustest --collect-only` -- using waivers-collect.toml"
         ),
     )
     mode.add_argument(
-        "--v2-run",
+        "--run",
         action="store_true",
         help=(
             "Grade a full run -- pytest's ordered node ids, six-value outcome tally and "
-            "exit code against `rustest --report-json` -- using waivers-v2-run.toml"
+            "exit code against `rustest --report-json` -- using waivers-run.toml"
         ),
     )
     mode.add_argument(
@@ -252,11 +252,11 @@ def main() -> int:
             rebuild_env=args.real_rebuild_env,
         )
 
-    if args.v2_run:
-        ledger: Path = V2_RUN_WAIVERS
+    if args.run:
+        ledger: Path = RUN_WAIVERS
         grade_one: Callable[[Path, str, dict[str, str]], CaseResult] = _grade_one_run
-    elif args.v2_collect:
-        ledger, grade_one = V2_COLLECT_WAIVERS, _grade_one_collect
+    elif args.collect:
+        ledger, grade_one = COLLECT_WAIVERS, _grade_one_collect
     else:
         # A bare `python -m conformance` used to be the **v1 end-to-end gate**. That gate is
         # gone with the engine it measured, and the one thing this must not do is quietly
@@ -264,9 +264,9 @@ def main() -> int:
         # green from a gate it never asked for. Naming both surviving gates costs one line
         # and cannot be misread.
         print(
-            "conformance: choose a gate -- --v2-collect (collection) or --v2-run (a full"
-            + " run). A bare invocation was the v1 end-to-end gate, which was retired with"
-            + " the v1 engine in Phase 4 Task 2; its ledger is archived in git history.",
+            "conformance: choose a gate -- --collect (collection) or --run (a full"
+            + " run). A bare invocation was the end-to-end gate for the previous engine,"
+            + " retired with it; its ledger is archived in git history.",
             file=sys.stderr,
         )
         return 4

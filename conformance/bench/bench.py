@@ -73,9 +73,9 @@ class BenchRow(TypedDict):
     #: ``rustest <suite>`` with no mode flag -- the only engine there is. A
     #: ``rustest_run_s`` column sat beside this one until Phase 4 Task 2 and timed
     #: ``rustest --v1``; it went with the engine it measured.
-    rustest_v2_run_s: float
+    rustest_run_s: float
     #: ``rustest --collect-only <suite>`` with the Tier S manifest cache **cold** --
-    #: ``.rustest_cache/v2-manifest`` is deleted immediately before the measurement, so
+    #: ``.rustest_cache/manifest`` is deleted immediately before the measurement, so
     #: every file is read and parsed. Reserved through Phase 1c Task 2; filled in by Task 3.
     rustest_collect_s: float
     #: The same command run again, with the cache the cold run just wrote. This is the number
@@ -88,17 +88,17 @@ class BenchRow(TypedDict):
 
 class Derived(TypedDict):
     pytest_overhead_us_per_test: float | None
-    rustest_v2_overhead_us_per_test: float | None
+    rustest_overhead_us_per_test: float | None
     #: Marginal milliseconds per **file** at a fixed test count -- see :data:`PER_FILE_SIZES`.
     #: The axis ``OVERHEAD_SIZES`` differences out by construction.
     pytest_per_file_ms: float | None
-    rustest_v2_per_file_ms: float | None
-    #: How much of ``rustest_v2_per_file_ms`` a ``--collect-only`` already pays. The
+    rustest_per_file_ms: float | None
+    #: How much of ``rustest_per_file_ms`` a ``--collect-only`` already pays. The
     #: remainder is what the *execute* half spends per file: the worker's import of the
     #: module, plus the module/class fixture boundaries around its tests. Splitting the term
     #: is the difference between "make collection faster" and "make per-file dispatch
     #: cheaper", which are different fixes.
-    rustest_v2_per_file_collect_ms: float | None
+    rustest_per_file_collect_ms: float | None
 
 
 class OverheadRow(TypedDict):
@@ -110,7 +110,7 @@ class OverheadRow(TypedDict):
     repetitions: int
     pytest_run_s: float
     #: ``rustest . -n 1 -q`` -- sequential on purpose; see :func:`measure_overhead`.
-    rustest_v2_run_s: float
+    rustest_run_s: float
 
 
 class PerFileRow(TypedDict):
@@ -122,10 +122,10 @@ class PerFileRow(TypedDict):
     pytest_run_s: float
     #: ``rustest . -n 1 -q`` -- sequential for the same reason the overhead cells are: a
     #: pool whose size varies with the machine would put spawn cost in the delta.
-    rustest_v2_run_s: float
+    rustest_run_s: float
     #: ``rustest --collect-only .`` warm, so the pair also answers *where* the per-file
     #: cost lands rather than only how big it is.
-    rustest_v2_collect_s: float
+    rustest_collect_only_s: float
 
 
 class BenchReport(TypedDict):
@@ -165,7 +165,7 @@ def _time_cold_collect(rustest_base: list[str], suite: Path) -> float:
     published cold number should rest on, and one added call site would silently turn this
     column into a second warm one.
     """
-    shutil.rmtree(suite / ".rustest_cache" / "v2-manifest", ignore_errors=True)
+    shutil.rmtree(suite / ".rustest_cache" / "manifest", ignore_errors=True)
     return _time_cmd([*rustest_base, "--collect-only", "."], suite)
 
 
@@ -205,14 +205,14 @@ def measure_overhead(quick: bool = False) -> tuple[Derived, list[OverheadRow]]:
             rustest_base = [sys.executable, "-m", "rustest"]
             commands = {
                 "pytest_run_s": [*pytest_base, "--tb=no", "-p", "no:randomly"],
-                "rustest_v2_run_s": [*rustest_base, ".", "-n", "1", "-q"],
+                "rustest_run_s": [*rustest_base, ".", "-n", "1", "-q"],
             }
             row: OverheadRow = {
                 "files": files,
                 "tests": files * tests_per_file,
                 "repetitions": OVERHEAD_REPETITIONS,
                 "pytest_run_s": 0.0,
-                "rustest_v2_run_s": 0.0,
+                "rustest_run_s": 0.0,
             }
             for key, cmd in commands.items():
                 # One discarded run per command, so the timed samples all see the same warm
@@ -247,7 +247,7 @@ def derive_overhead(rows: list[OverheadRow]) -> Derived:
     return {
         **empty,
         "pytest_overhead_us_per_test": (big["pytest_run_s"] - small["pytest_run_s"]) / delta * 1e6,
-        "rustest_v2_overhead_us_per_test": (big["rustest_v2_run_s"] - small["rustest_v2_run_s"])
+        "rustest_overhead_us_per_test": (big["rustest_run_s"] - small["rustest_run_s"])
         / delta
         * 1e6,
     }
@@ -256,10 +256,10 @@ def derive_overhead(rows: list[OverheadRow]) -> Derived:
 def _empty_derived() -> Derived:
     return {
         "pytest_overhead_us_per_test": None,
-        "rustest_v2_overhead_us_per_test": None,
+        "rustest_overhead_us_per_test": None,
         "pytest_per_file_ms": None,
-        "rustest_v2_per_file_ms": None,
-        "rustest_v2_per_file_collect_ms": None,
+        "rustest_per_file_ms": None,
+        "rustest_per_file_collect_ms": None,
     }
 
 
@@ -297,16 +297,16 @@ def measure_per_file(quick: bool = False) -> tuple[Derived, list[PerFileRow]]:
             rustest_base = [sys.executable, "-m", "rustest"]
             commands = {
                 "pytest_run_s": [*pytest_base, "--tb=no", "-p", "no:randomly"],
-                "rustest_v2_run_s": [*rustest_base, ".", "-n", "1", "-q"],
-                "rustest_v2_collect_s": [*rustest_base, "--collect-only", "."],
+                "rustest_run_s": [*rustest_base, ".", "-n", "1", "-q"],
+                "rustest_collect_only_s": [*rustest_base, "--collect-only", "."],
             }
             row: PerFileRow = {
                 "files": files,
                 "tests": files * tests_per_file,
                 "repetitions": PER_FILE_REPETITIONS,
                 "pytest_run_s": 0.0,
-                "rustest_v2_run_s": 0.0,
-                "rustest_v2_collect_s": 0.0,
+                "rustest_run_s": 0.0,
+                "rustest_collect_only_s": 0.0,
             }
             for key, cmd in commands.items():
                 _ = _time_cmd(cmd, suite)
@@ -338,11 +338,9 @@ def derive_per_file(rows: list[PerFileRow]) -> Derived:
     return {
         **empty,
         "pytest_per_file_ms": (wide["pytest_run_s"] - narrow["pytest_run_s"]) / delta * 1e3,
-        "rustest_v2_per_file_ms": (wide["rustest_v2_run_s"] - narrow["rustest_v2_run_s"])
-        / delta
-        * 1e3,
-        "rustest_v2_per_file_collect_ms": (
-            wide["rustest_v2_collect_s"] - narrow["rustest_v2_collect_s"]
+        "rustest_per_file_ms": (wide["rustest_run_s"] - narrow["rustest_run_s"]) / delta * 1e3,
+        "rustest_per_file_collect_ms": (
+            wide["rustest_collect_only_s"] - narrow["rustest_collect_only_s"]
         )
         / delta
         * 1e3,
@@ -364,7 +362,7 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
                 "pytest_run_s": _time_cmd([*pytest_base, "--tb=no"], suite),
                 # the only way left to measure the legacy engine's timing.
                 # No mode flag: the v2 default path.
-                "rustest_v2_run_s": _time_cmd([*rustest_base, "."], suite),
+                "rustest_run_s": _time_cmd([*rustest_base, "."], suite),
                 # Cold: the cache directory is removed first, so this is a full parse of
                 # every file however many benchmark commands ran before it.
                 "rustest_collect_s": _time_cold_collect(rustest_base, suite),
@@ -379,8 +377,8 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
     # The two derivations fill disjoint halves of the same mapping, so they are merged
     # key by key rather than one clobbering the other's `None`s.
     derived["pytest_per_file_ms"] = per_file_derived["pytest_per_file_ms"]
-    derived["rustest_v2_per_file_ms"] = per_file_derived["rustest_v2_per_file_ms"]
-    derived["rustest_v2_per_file_collect_ms"] = per_file_derived["rustest_v2_per_file_collect_ms"]
+    derived["rustest_per_file_ms"] = per_file_derived["rustest_per_file_ms"]
+    derived["rustest_per_file_collect_ms"] = per_file_derived["rustest_per_file_collect_ms"]
     return {
         "results": results,
         "derived": derived,
@@ -415,7 +413,7 @@ def main() -> int:
         print(
             f"| {row['files']} | {row['tests']} | {row['pytest_collect_s']:.2f}s "
             + f"| {row['pytest_run_s']:.2f}s "
-            + f"| {row['rustest_v2_run_s']:.2f}s | {row['rustest_collect_s']:.2f}s "
+            + f"| {row['rustest_run_s']:.2f}s | {row['rustest_collect_s']:.2f}s "
             + f"| {row['rustest_collect_warm_s']:.3f}s |"
         )
     print()
@@ -427,13 +425,13 @@ def main() -> int:
         print(
             f"| {cell['files']} files | {cell['tests']} tests "
             + f"| pytest {cell['pytest_run_s']:.2f}s "
-            + f"| rustest {cell['rustest_v2_run_s']:.2f}s |"
+            + f"| rustest {cell['rustest_run_s']:.2f}s |"
         )
     derived = report["derived"]
     print(f"pytest marginal overhead: {_fmt_overhead(derived['pytest_overhead_us_per_test'])}")
     print(
         "rustest v2 marginal overhead: "
-        + f"{_fmt_overhead(derived['rustest_v2_overhead_us_per_test'])}"
+        + f"{_fmt_overhead(derived['rustest_overhead_us_per_test'])}"
     )
     print()
     print(
@@ -443,14 +441,14 @@ def main() -> int:
     for cell in report["per_file"]:
         print(
             f"| {cell['files']} files | {cell['tests']} tests "
-            + f"| pytest {cell['pytest_run_s']:.2f}s | v2 {cell['rustest_v2_run_s']:.2f}s "
-            + f"| v2 collect {cell['rustest_v2_collect_s']:.2f}s |"
+            + f"| pytest {cell['pytest_run_s']:.2f}s | v2 {cell['rustest_run_s']:.2f}s "
+            + f"| v2 collect {cell['rustest_collect_only_s']:.2f}s |"
         )
     print(f"pytest marginal per-file: {_fmt_per_file(derived['pytest_per_file_ms'])}")
-    print(f"rustest v2 marginal per-file: {_fmt_per_file(derived['rustest_v2_per_file_ms'])}")
+    print(f"rustest v2 marginal per-file: {_fmt_per_file(derived['rustest_per_file_ms'])}")
     print(
         "rustest v2 marginal per-file, collection only: "
-        + f"{_fmt_per_file(derived['rustest_v2_per_file_collect_ms'])}"
+        + f"{_fmt_per_file(derived['rustest_per_file_collect_ms'])}"
     )
     return 0
 

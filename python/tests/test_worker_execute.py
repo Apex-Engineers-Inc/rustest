@@ -1,4 +1,4 @@
-"""Tests for the v2 worker's execute half (`rustest._v2_worker`).
+"""Tests for the worker's execute half (`rustest._worker`).
 
 Five things are under test, and **real pytest is the oracle for every outcome**: the tables
 below do not hold hand-written expectations, they run pytest in a subprocess over the same
@@ -37,7 +37,7 @@ import unittest
 
 import pytest
 
-from rustest._v2_worker import (
+from rustest._worker import (
     PROTOCOL_VERSION,
     STATUSES,
     DEFAULT_NAMING,
@@ -57,7 +57,7 @@ from rustest._v2_worker import (
     reduce_reports,
     report_for_phase,
 )
-import rustest._v2_worker as worker
+import rustest._worker as worker
 
 
 def _stub_outcome(name: str, reason: str) -> BaseException:
@@ -100,7 +100,7 @@ CORPUS = REPO_ROOT / "conformance" / "corpus"
 def isolated_worker_state() -> Iterator[None]:
     """The worker's import and execution state, installed then fully undone.
 
-    Same contract as ``test_v2_worker_fixtures.isolated_import_state`` (the compat shim must
+    Same contract as ``test_worker_fixtures.isolated_import_state`` (the compat shim must
     be live or a generated module's ``import pytest`` would bind *real* pytest and leave none
     of the ``__rustest_*`` metadata), plus the two globals the execute half owns: the plan
     index and the process-wide :class:`FixtureRunner`.  Leaking either would let one test's
@@ -110,7 +110,7 @@ def isolated_worker_state() -> Iterator[None]:
     The worker's per-test **capture** is reset for the same class of reason and one extra:
     it is built once per worker and caches the ``sys.stderr`` it must restore, which is right
     in a worker and wrong under a runner that swaps that stream per test.  See
-    ``_v2_worker.reset_capture``.
+    ``_worker.reset_capture``.
     """
     saved_path = list(sys.path)
     saved_modules = dict(sys.modules)
@@ -358,7 +358,7 @@ def corpus_differential(tmp_path: Path, case: str) -> dict[str, str]:
 
 def _run_worker(lines: list[Mapping[str, object]]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "rustest._v2_worker"],
+        [sys.executable, "-m", "rustest._worker"],
         input="".join(json.dumps(line) + "\n" for line in lines),
         capture_output=True,
         text=True,
@@ -1259,7 +1259,7 @@ def test_a_skip_is_never_promoted_by_an_xfail_mark() -> None:
 def test_every_status_the_switch_can_produce_is_on_the_wire_contract() -> None:
     """No branch may invent a seventh status — the decoder accepts one, the report does not.
 
-    ``src/v2/protocol.rs`` leaves ``status`` an unvalidated ``String`` on purpose, so an
+    ``src/engine/protocol.rs`` leaves ``status`` an unvalidated ``String`` on purpose, so an
     undocumented value would travel all the way to the orchestrator before anything noticed.
     This closes that loop on the producing side.
     """
@@ -1480,7 +1480,7 @@ def test_a_falsy_non_builtin_condition_survives_as_an_object() -> None:
 
 
 def test_a_passing_result_matches_the_golden_line(tmp_path: Path) -> None:
-    """`src/v2/protocol.rs::test_result_omits_the_optional_fields_it_does_not_carry`.
+    """`src/engine/protocol.rs::test_result_omits_the_optional_fields_it_does_not_carry`.
 
     ``message``/``stdout``/``stderr`` are absent **keys**, not nulls and not empty strings, so
     the common case stays a short line.
@@ -1966,10 +1966,10 @@ def test_a_failure_message_names_the_test_not_the_runner(tmp_path: Path) -> None
     with isolated_worker_state():
         plain, case = run_module(target, tmp_path)
 
-    assert "_v2_worker.py" not in plain["message"]
+    assert "_worker.py" not in plain["message"]
     assert "test_msg.py" in plain["message"]
 
-    assert "_v2_worker.py" not in case["message"]
+    assert "_worker.py" not in case["message"]
     assert "unittest" not in case["message"].split("AssertionError")[0]
     assert "test_msg.py" in case["message"]
     assert case["message"].endswith("AssertionError: 1 != 2")
@@ -2042,7 +2042,7 @@ def test_leaving_a_module_tears_its_module_scoped_fixtures_down(tmp_path: Path) 
 #
 # These live here rather than in the conformance corpus because the corpus cannot ask the
 # question.  A gate case is graded at the default pool size, `workers` is clamped to the file
-# count (`src/v2/collect.rs`), and files are routed by stem hash, so a two-file case is split
+# count (`src/engine/collect.rs`), and files are routed by stem hash, so a two-file case is split
 # across two worker PROCESSES and no amount of fixing the worker makes it share.  That
 # cross-worker residue is what `fixtures/session-scope` and `async/session-loop-shared` still
 # measure and still waive.  What is per-worker has to be tested against one worker, which is
@@ -2444,7 +2444,7 @@ def test_a_shutdown_drain_failure_exits_nonzero_after_bye(tmp_path: Path) -> Non
     The fix uses the loud channel that already exists: ``bye`` is still written (the stream
     is well-formed) and the process exits :data:`SHUTDOWN_TEARDOWN_EXIT`, which the
     orchestrator already treats as a failed run —
-    ``src/v2/collect.rs::a_nonzero_exit_after_bye_is_still_a_failure``. Distinct from 2 so
+    ``src/engine/collect.rs::a_nonzero_exit_after_bye_is_still_a_failure``. Distinct from 2 so
     "your teardown is broken" is never confused with "the protocol drifted".
     """
     target = write(
@@ -2679,7 +2679,7 @@ def test_a_print_at_execution_never_reaches_the_protocol_stream(tmp_path: Path) 
 # asyncio — the false-green family, pinned at the worker level
 # --------------------------------------------------------------------------------------
 #
-# `test_v2_flip_cli.py` covers these end to end through the CLI. These pin the *worker*
+# `test_flip_cli.py` covers these end to end through the CLI. These pin the *worker*
 # path, which is where the bug was and where a regression would land first: the CLI tests
 # would still pass if the orchestrator learned to fail such a run for some other reason.
 

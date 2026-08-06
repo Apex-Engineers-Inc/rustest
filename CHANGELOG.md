@@ -21,11 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > semver discipline. They are what this candidate exists to get wrong in public, before
 > 1.0.0 makes them permanent.
 
-This entry covers the **v2 arc**: a ground-up rewrite of rustest's engine, validated
-against a conformance corpus that diffs rustest against real pytest case by case, and
-against seventeen real open-source pytest suites graded on every node id and every outcome
-count (13 MATCH / 4 EXPLAINED / 0 DIVERGE). Read **Breaking changes** first. Several of
-them will stop a working command line.
+This entry covers a **ground-up rewrite of rustest's engine**, and it is worth being clear
+about what the rewrite was for: **compatibility, stability and reliability** — being a
+genuine drop-in replacement for pytest rather than a fast thing that mostly agrees with it.
+That is what the evidence measures. The engine is validated against a conformance corpus
+that diffs rustest against real pytest case by case, and against seventeen real open-source
+pytest suites graded on every node id and every outcome count
+(13 MATCH / 4 EXPLAINED / 0 DIVERGE).
+
+**Speed is not this release's headline, and it is not where the work went.** rustest is
+still measurably faster than pytest (see Performance), but the large multipliers earlier
+versions advertised described the previous engine, which is deleted — they are gone from
+every page rather than carried forward. Performance is the next body of work.
+
+Read **Breaking changes** first. Several of them will stop a working command line.
 
 ### Breaking changes
 
@@ -232,12 +241,9 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   report contains only the tests that ran, and the exit code is 1, which is pytest's
   `--maxfail=1` semantics. Sequential-exact at `-n 1`; with a worker pool, tests already in
   flight finish.
-- `--lf` / `--ff` on the default engine, backed by a cache at
-  `.rustest_cache/v2/v/cache/lastfailed`. The `v2/` component is there because the removed
-  v1 engine kept its own store at `.rustest_cache/lastfailed` keyed on different id strings,
-  and the two had to not overwrite each other. Everything below it is pytest's own cache
-  layout (`v/` is its value prefix, `cache/lastfailed` its key), so the `cache` fixture
-  resolves `cache.get("cache/lastfailed", {})` to this very file. The document shape is
+- `--lf` / `--ff`, backed by a cache at `.rustest_cache/v/cache/lastfailed`. The layout is
+  pytest's own (`v/` is its value prefix, `cache/lastfailed` its key), so the `cache`
+  fixture resolves `cache.get("cache/lastfailed", {})` to this very file. The document shape is
   pytest's own `{nodeid: true}`.
 - `-v` prints one line per test in pytest's verbose wording (`PASSED` / `FAILED` /
   `SKIPPED (reason)` / `XFAIL` / `XPASS` / `ERROR`) with pytest's percent column; `-q` prints
@@ -265,8 +271,6 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   all work inside a block with no special-casing, and a block that raises is a failing test
   rather than a file-level collection error, so a broken block no longer erases its siblings'
   results. `--no-codeblocks` overrides config to force the tier off for one run.
-- `RUSTEST_ENGINE=v2` in the worker environment (alongside the long-standing
-  `RUSTEST_RUNNING=1`), for suites that need to branch during the transition.
 - **A worker's whole process tree is torn down with it** (job-object containment on
   Windows), closing #140. That was a real leak: orphaned grandchildren of a
   subprocess-spawning test could keep running indefinitely after a crashed or killed
@@ -482,8 +486,11 @@ extension (probed both ways against pytest).
 
 ### Performance
 
-Measured, and stated with its bounds rather than as a headline multiplier. Full method,
-per-suite table and caveats in `user_guide/performance.md`.
+**Not what this release was about**, and reported here rather than advertised. The rewrite
+bought compatibility; the numbers below are where speed happens to stand as a result, stated
+with their bounds rather than as a headline multiplier. Deeper performance work is planned
+for a later release. Full method, per-suite table and caveats in
+`user_guide/performance.md`.
 
 - **1.1x to 5.7x** wall-clock across seventeen real open-source pytest suites, run
   sequentially on one machine, each target's two runners one after the other.

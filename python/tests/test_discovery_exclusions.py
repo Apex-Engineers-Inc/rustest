@@ -4,13 +4,13 @@ Ensures rustest matches pytest's behaviour for excluding directories while walki
 pytest's ``norecursedirs`` defaults (`_pytest/main.py`) and its virtualenv detection
 (``_in_venv``: a directory carrying ``pyvenv.cfg`` or ``conda-meta/history``).
 
-**Driven through the v2 collection boundary**, ``rustest.rust.v2_collect``. It used to drive
+**Driven through the v2 collection boundary**, ``rustest.rust.collect``. It used to drive
 ``rustest.run`` -- the v1 engine's Python API -- and count outcomes off a ``RunReport``;
 both went in Phase 4 Task 2. Collection is also the more precise instrument for the question
 this file asks: which directories are *walked* is a property of discovery, and executing the
 files it finds only adds a way for the answer to be right and the test to fail.
 
-The Rust side has its own unit tests for the same rules (`src/v2/collect.rs`:
+The Rust side has its own unit tests for the same rules (`src/engine/collect.rs`:
 ``default_norecursedirs_and_pytest_prunes_are_honoured``,
 ``custom_norecursedirs_replaces_the_defaults``). These are the end-to-end half: real
 directories on a real filesystem, through the real boundary.
@@ -58,7 +58,7 @@ def {test_name}():
         lives rather than of the exclusion rules.
         """
         _ = (temp_dir / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
-        payload = rust.v2_collect(str(temp_dir), [], sys.executable, 1)
+        payload = rust.collect(str(temp_dir), [], sys.executable, 1)
         manifest = json.loads(payload)
         errors = manifest.get("errors", [])
         assert not errors, errors

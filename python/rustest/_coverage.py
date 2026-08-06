@@ -55,13 +55,13 @@ coverage.py supplies the file semantics and the format.
 What is measured, and when
 --------------------------
 
-Measurement starts in :func:`rustest._v2_worker.handle_init`, i.e. **before the first
+Measurement starts in :func:`rustest._worker.handle_init`, i.e. **before the first
 ``collect_file``**, because a module's import-time lines are lines coverage.py counts:
 ``coverage run -m pytest`` starts before pytest imports anything, and pytest-cov starts in
 ``pytest_load_initial_conftests``. A worker that started measuring at execution time would miss
 every module-level line in the suite.
 
-It stops in :func:`rustest._v2_worker.main`'s ``finally``, which is after
+It stops in :func:`rustest._worker.main`'s ``finally``, which is after
 ``drain_at_shutdown`` -- so session- and module-scoped fixture *teardowns* are measured, as
 they are under pytest.
 
@@ -119,7 +119,7 @@ _ANNOTATE: Final = "__annotate__"
 class CoverageUnavailableError(ValueError):
     """``--cov`` was asked for and ``coverage`` is not installed.
 
-    A **`ValueError`**, which is not decoration: `rustest.core.v2_run` classifies every
+    A **`ValueError`**, which is not decoration: `rustest.core.run` classifies every
     `ValueError` out of the coverage set-up as pytest's usage error (exit 4), and that is
     exactly what a missing optional extra is. A bare `Exception` here would escape that arm
     and reach the user as a traceback out of the CLI.
@@ -427,7 +427,7 @@ _monitor: LineMonitor | None = None
 def start(wire: Mapping[str, object]) -> LineMonitor:
     """Start measuring, from the ``coverage`` object on the ``init`` line.
 
-    The wire shape is ``src/v2/protocol.rs::CoverageWire`` and both fields are required there,
+    The wire shape is ``src/engine/protocol.rs::CoverageWire`` and both fields are required there,
     so a missing one is protocol drift rather than a mode: it raises.
     """
     global _monitor
@@ -447,10 +447,10 @@ def start(wire: Mapping[str, object]) -> LineMonitor:
 def stop_and_write() -> str | None:
     """Stop measuring and write this worker's data file.  A no-op when never started.
 
-    Idempotent, and called from :func:`rustest._v2_worker.main`'s ``finally`` so that **every**
+    Idempotent, and called from :func:`rustest._worker.main`'s ``finally`` so that **every**
     exit path writes -- including ``pytest.exit()`` and a ``KeyboardInterrupt`` that propagates
     out of the loop. The orchestrator waits for each worker to exit before it combines
-    (`src/v2/collect.rs::shutdown_and_reap` calls ``child.wait()``), so a file written here is
+    (`src/engine/collect.rs::shutdown_and_reap` calls ``child.wait()``), so a file written here is
     always on disk in time.
     """
     global _monitor

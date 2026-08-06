@@ -1,6 +1,6 @@
 """Command line interface helpers.
 
-**There is one engine.**  ``rustest <paths>`` runs the v2 spine end to end — config
+**There is one engine.**  ``rustest <paths>`` runs the engine end to end — config
 resolution, the file walk, a worker pool that collects and then executes, pytest's exit
 codes — with the pytest compatibility shim installed unconditionally.  ``--v2`` and
 ``--v2-collect-only`` were scaffolding from the rewrite, when naming the engine still
@@ -20,7 +20,7 @@ import sys
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from .core import terminal_columns, v2_collect_only, v2_run
+from .core import terminal_columns, collect_only, run
 
 if TYPE_CHECKING:
     # Annotation-only; see the note in `core.py` about keeping `typing` off the run-time
@@ -313,7 +313,7 @@ def build_parser() -> _Parser:
         help="Drop the per-test progress lines. Failures are still reported.",
     )
     # `--ascii` and `--color` are **accepted and inert**, and that is deliberate rather than
-    # lazy. Both were v1 renderer options; v2's output is not coloured and uses no box-drawing
+    # lazy. Both were v1 renderer options; the engine's output is not coloured and uses no box-drawing
     # characters, so neither can change what a run does. They stay on the parser because they
     # are exactly the kind of flag that lives in a project's `addopts` or a Makefile forever
     # (`--color=never` in CI is near-universal), and erroring on a *cosmetic* option would
@@ -548,7 +548,7 @@ def _config_for_addopts(raw: list[str], parser: _Parser) -> "dict[str, Any]":
         probe.extend(str(path) for path in known.paths)
     probe.extend(arg for arg in unknown if not arg.startswith("-"))
     try:
-        return json.loads(rust.v2_resolve_config(os.getcwd(), probe))
+        return json.loads(rust.resolve_config(os.getcwd(), probe))
     except Exception:  # noqa: BLE001 - re-raised by the engine, with its own message
         return {}
 
@@ -758,10 +758,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # `--cov-branch` must be refused even when it is the *only* coverage flag given: a
     # `--cov-branch` with no `--cov` is still a request rustest cannot honour, and answering
-    # it with a silent nothing is the failure mode `_v2_coverage.branch_refusal` exists to
+    # it with a silent nothing is the failure mode `_coverage.branch_refusal` exists to
     # name.
     if args.cov_branch:
-        from ._v2_coverage import branch_refusal
+        from ._coverage import branch_refusal
 
         print(f"ERROR: {branch_refusal()}", file=sys.stderr)
         return 4
@@ -802,7 +802,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 4
-        return v2_collect_only(
+        return collect_only(
             paths=paths,
             workers=args.workers,
             keyword=args.pattern,
@@ -810,7 +810,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             codeblocks=args.enable_codeblocks,
         )
 
-    return v2_run(
+    return run(
         paths=paths,
         workers=args.workers,
         keyword=args.pattern,

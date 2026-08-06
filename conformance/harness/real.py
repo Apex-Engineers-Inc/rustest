@@ -473,7 +473,7 @@ def _installed_rustest_path(target: RealTarget) -> Path | None:
 _ABI_PROBE: Final = (
     "import sysconfig,rustest.rust as r;"
     "print('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else '',"
-    "hasattr(r,'v2_run'), r.__file__)"
+    "hasattr(r,'run'), r.__file__)"
 )
 
 
@@ -485,7 +485,7 @@ def verify_env(target: RealTarget) -> None:
     ``sys.version_info`` -- which reports ``3.14`` for both ABIs -- and force-installed the
     GIL wheel over it. The ``.pyd`` cannot load under free-threading, so ``import
     rustest.rust`` fell back to the pure-Python ``rust.py`` shim and the run died several
-    minutes later with ``AttributeError: module 'rustest.rust' has no attribute 'v2_run'``.
+    minutes later with ``AttributeError: module 'rustest.rust' has no attribute 'run'``.
     The target's own config had pinned the right wheel all along.
 
     So the check is not "did the config name the right wheel" -- it did -- but "is what is
@@ -567,7 +567,7 @@ def _env_for(target: RealTarget, extra_paths: Iterable[Path]) -> dict[str, str]:
     It existed for Member Designer's ``pythonpath = ["src"]``, which pytest honoured and v2
     did not implement, so without it every one of that suite's ~285 files failed to import
     and the sweep measured one missing ini option instead of a suite. v2 implements the ini
-    now (``_v2_worker::_apply_pythonpath``), so the key is empty everywhere; it is kept
+    now (``_worker::_apply_pythonpath``), so the key is empty everywhere; it is kept
     because a future target may need the same kind of scaffolding, and an empty list is a
     visible "nothing is being compensated here".
     """

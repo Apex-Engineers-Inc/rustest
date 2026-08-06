@@ -162,7 +162,7 @@ class CollectResult:
 
 
 # The config filenames pytest's rootdir search recognizes, in its own precedence order
-# (`_pytest/config/findpaths.py::locate_config`), mirrored by `src/v2/config.rs`. Used
+# (`_pytest/config/findpaths.py::locate_config`), mirrored by `src/engine/config.rs`. Used
 # only to decide whether an isolated case already carries config of its own -- see
 # `_qualifies_as_config`, which decides that on *content*, the way both runners do.
 _CASE_CONFIG_NAMES = ("pytest.ini", ".pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
@@ -188,7 +188,7 @@ def _qualifies_as_config(path: Path) -> bool:
 
     Existence is not the question -- **content** is, and both runners already agree on
     the rules. Port of ``_pytest/config/findpaths.py::load_config_dict_from_file``,
-    mirrored by ``src/v2/config.rs::load_config_dict_from_file`` (lines 673-730):
+    mirrored by ``src/engine/config.rs::load_config_dict_from_file`` (lines 673-730):
 
     * ``.ini`` qualifies with a ``[pytest]`` section; ``pytest.ini`` qualifies by
       *name* even when empty ("pytest.ini files are always the source of
@@ -380,7 +380,7 @@ def _isolate_case(case_dir: Path, dest_parent: Path) -> Path:
     resolve the same rootdir by their own unmodified rules, and both emit case-relative
     ids. pytest treats a ``pytest.ini`` as authoritative even when empty
     (``findpaths.py::load_config_dict_from_file``) and so does v2
-    (``src/v2/config.rs:684``), so no flags are needed on either side -- which matters,
+    (``src/engine/config.rs:684``), so no flags are needed on either side -- which matters,
     because the v2 side has none to offer.
 
     Two details:
@@ -411,7 +411,7 @@ def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
     """Collect *case_dir* with real pytest in an isolated copy -- the gate's oracle.
 
     Invoked with no config flags at all: the isolated copy's own ``pytest.ini`` is the
-    authority, exactly as it is for ``run_rustest_v2_collect``. That symmetry is the
+    authority, exactly as it is for ``run_rustest_collect``. That symmetry is the
     point -- any flag used here and unavailable there would make the comparison a
     comparison of harness invocations rather than of runners.
 
@@ -439,7 +439,7 @@ def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
     return CollectResult(ids=parse_pytest_collect(proc.stdout), exit_code=proc.returncode)
 
 
-def run_rustest_v2_collect(case_dir: Path, args: list[str]) -> CollectResult:
+def run_rustest_collect(case_dir: Path, args: list[str]) -> CollectResult:
     """Collect *case_dir* with ``rustest --collect-only`` in an isolated copy.
 
     stdout carries node ids and *only* node ids, one per line, in manifest order, so
@@ -478,7 +478,7 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
     * ``-q --tb=no`` -> the summary line (the seven graded counts) and the exit code.
 
     **The double invocation is an asymmetry with the v2 side, and it is not free.**
-    ``run_rustest_v2_run`` runs the case **once**; this runs it twice, and the second
+    ``run_rustest_run`` runs the case **once**; this runs it twice, and the second
     invocation sees a tree the first one has already touched (``.pyc`` files written
     during collection). Both are pytest, so neither pass is influenced by the other's
     *results*, and ``-p no:cacheprovider`` keeps pytest's own cache out of it -- but a
@@ -498,7 +498,7 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
     **The one rule keyed on an exit code**, and it is pytest's own: a collection error
     means *nothing runs at all* -- ``pytest_runtestloop`` raises ``Interrupted`` before
     the first item -- so the executed-id list is empty however many ids the collect pass
-    listed. v2 encodes the identical rule (``src/v2/execute.rs::stage`` returns empty
+    listed. v2 encodes the identical rule (``src/engine/execute.rs::stage`` returns empty
     dispatch lists when ``errors`` is non-empty; Task 4 report §2.1, correction 2), so
     applying it here compares like with like instead of pitting pytest's *collected* set
     against v2's *executed* one. It is pinned against real pytest from a side effect --
@@ -550,7 +550,7 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
     )
 
 
-def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
+def run_rustest_run(case_dir: Path, args: list[str]) -> FullRunResult:
     """Run *case_dir* with ``rustest --report-json`` in an isolated copy.
 
     The report is the whole read surface. stdout (``FAILED <id>`` plus the message) and
@@ -567,7 +567,7 @@ def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
     hide the defect the gate exists to catch.
 
     The graded exit code is the **process** exit code, not ``report["exit_code"]``. The
-    two are pinned to agree by ``python/tests/test_v2_run_cli.py``; if they ever stop
+    two are pinned to agree by ``python/tests/test_run_cli.py``; if they ever stop
     agreeing, the gate must side with the number CI and users observe rather than with
     v2's claim about it.
 

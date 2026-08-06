@@ -1,6 +1,6 @@
 """``pytest_asyncio`` for rustest — the decorator half of the plugin.
 
-rustest *is* the async plugin: ``_v2_worker.py`` ports pytest-asyncio's loop-scope model
+rustest *is* the async plugin: ``_worker.py`` ports pytest-asyncio's loop-scope model
 (``asyncio_mode``, ``asyncio_default_fixture_loop_scope``,
 ``asyncio_default_test_loop_scope``, ``@mark.asyncio(loop_scope=...)``) directly, so a suite
 importing ``pytest_asyncio`` needs no plugin — it needs this module's *markers*, because the

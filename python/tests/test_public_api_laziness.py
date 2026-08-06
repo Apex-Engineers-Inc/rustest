@@ -137,8 +137,8 @@ def test_approx_is_the_class_even_after_its_module_is_imported() -> None:
         ("import rustest.cli", "rich"),
         # The worker pays its import graph N times per run; `asyncio` is ~240 ms of it and is
         # needed only by a suite that actually contains an async test.
-        ("import rustest._v2_worker", "rich"),
-        ("import rustest._v2_worker", "asyncio"),
+        ("import rustest._worker", "rich"),
+        ("import rustest._worker", "asyncio"),
     ],
 )
 def test_the_hot_paths_do_not_import_the_expensive_modules(entry: str, forbidden: str) -> None:

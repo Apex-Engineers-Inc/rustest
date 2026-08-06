@@ -13,10 +13,10 @@ session.
 
 **The caveat came true, and the ledger entry is where this file said it would go.** rustest
 used to match because both files drew the *same* worker (stem-hash routing,
-`src/v2/collect.rs::worker_for`). Phase 4 Task 1 stopped collecting markdown on a directory
+`src/engine/collect.rs::worker_for`). Phase 4 Task 1 stopped collecting markdown on a directory
 walk, which removed this directory's own `README.md` from the target list and so changed the
 pool size the stems are hashed against — the two files now split, and each worker builds its
-own session loop. Waived in `waivers-v2-run.toml`, alongside the session-*fixture* boundary
+own session loop. Waived in `waivers-run.toml`, alongside the session-*fixture* boundary
 at `conformance/corpus/fixtures/session-scope`, which is the same limitation.
 
 Verified either way: `-n 1` is 3 passed (one loop, three tests); `-n 2` is 1 failed, and the

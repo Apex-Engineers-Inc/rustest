@@ -19,17 +19,8 @@ decoration and pytest at collection — the same collection error and the same e
 not at a moment one file can assert in both runners.
 """
 
-import os
 
 from rustest import fixture, parametrize
-
-#: True only under the **legacy** engine, which still reads an indirect value as the name of
-#: a fixture to resolve and is deleted in Phase 4 Task 2 rather than re-taught.
-#: ``RUSTEST_RUNNING`` is set by both engines; only the v2 worker also sets
-#: ``RUSTEST_ENGINE=v2`` (`src/v2/collect.rs` l. 306-315). Plain pytest sets neither, so it
-#: runs everything below.
-_UNDER_V1 = bool(os.environ.get("RUSTEST_RUNNING")) and os.environ.get("RUSTEST_ENGINE") != "v2"
-
 
 @fixture
 def doubled(request):
@@ -89,13 +80,3 @@ def test_stacked_decorators(labelled, plain):
     """Stacking crosses the two, and only the inner name is routed."""
     assert labelled in ("<1>", "<2>")
     assert plain in ("x", "y")
-
-
-# Skipped rather than marked: v1 honours neither a module-level ``pytestmark`` nor an
-# ``@mark.skipif`` decorator (probed -- both run the body anyway), but it does read
-# ``__rustest_skip__``, which is what ``rustest.skip`` sets. Under pytest and under v2 the
-# condition is False and nothing here executes.
-if _UNDER_V1:  # pragma: no cover - legacy engine only, deleted with v1
-    for _name, _obj in list(globals().items()):
-        if _name.startswith("test_"):
-            _obj.__rustest_skip__ = "the legacy engine has rustest's pre-0.18 indirect="

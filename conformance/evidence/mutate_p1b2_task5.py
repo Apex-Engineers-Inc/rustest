@@ -30,7 +30,7 @@ TIMEOUT = 180
 RUN = "conformance/harness/runners.py"
 GRD = "conformance/harness/grade.py"
 MAIN = "conformance/__main__.py"
-LEDGER = "conformance/waivers-v2-run.toml"
+LEDGER = "conformance/waivers-run.toml"
 
 T_RUN = "conformance/tests/test_runners.py"
 T_GRD = "conformance/tests/test_grade.py"
@@ -163,8 +163,8 @@ ROWS: list[Row] = [
         '        ids=[str(test["id"]) for test in tests],',
         '        ids=sorted(str(test["id"]) for test in tests),',
         [
-            f"{T_RUN}::test_full_run_runners_agree_on_all_six_outcomes[run_rustest_v2_run]",
-            f"{T_RUN}::test_full_run_runners_agree_on_the_mini_suite[run_rustest_v2_run]",
+            f"{T_RUN}::test_full_run_runners_agree_on_all_six_outcomes[run_rustest_run]",
+            f"{T_RUN}::test_full_run_runners_agree_on_the_mini_suite[run_rustest_run]",
         ],
         "report ids sorted -- execution order becomes ungradeable",
     ),
@@ -176,7 +176,7 @@ ROWS: list[Row] = [
         '            errors=summary["error"],',
         [
             f"{T_RUN}::test_full_run_runners_report_no_executed_ids_when_collection"
-            + "_is_interrupted[run_rustest_v2_run]"
+            + "_is_interrupted[run_rustest_run]"
         ],
         "collection errors no longer folded into the error bucket",
     ),
@@ -186,7 +186,7 @@ ROWS: list[Row] = [
         RUN,
         "        exit_code=proc.returncode,\n    )\n\n\ndef run_rustest(",
         '        exit_code=int(data["exit_code"]),\n    )\n\n\ndef run_rustest(',
-        [f"{T_RUN}::test_run_rustest_v2_run_grades_the_process_exit_code_not_the_reports_claim"],
+        [f"{T_RUN}::test_run_rustest_run_grades_the_process_exit_code_not_the_reports_claim"],
         "grades v2's claim about its exit code instead of the observed one",
     ),
     Row(
@@ -197,7 +197,7 @@ ROWS: list[Row] = [
         + '                f"rustest wrote no report',
         "        if False:\n            raise RuntimeError(\n"
         + '                f"rustest wrote no report',
-        [f"{T_RUN}::test_run_rustest_v2_run_raises_when_no_report_is_written"],
+        [f"{T_RUN}::test_run_rustest_run_raises_when_no_report_is_written"],
         "missing-report guard removed -- a dead run grades as data",
     ),
     Row(
@@ -206,7 +206,7 @@ ROWS: list[Row] = [
         RUN,
         '            xfailed=summary["xfailed"],',
         "            xfailed=0,",
-        [f"{T_RUN}::test_full_run_runners_agree_on_all_six_outcomes[run_rustest_v2_run]"],
+        [f"{T_RUN}::test_full_run_runners_agree_on_all_six_outcomes[run_rustest_run]"],
         "xfailed bucket never read off the report",
     ),
     Row(
@@ -215,7 +215,7 @@ ROWS: list[Row] = [
         RUN,
         '            xpassed=summary["xpassed"],',
         "            xpassed=0,",
-        [f"{T_RUN}::test_full_run_runners_agree_on_all_six_outcomes[run_rustest_v2_run]"],
+        [f"{T_RUN}::test_full_run_runners_agree_on_all_six_outcomes[run_rustest_run]"],
         "xpassed bucket never read off the report",
     ),
     Row(
@@ -225,7 +225,7 @@ ROWS: list[Row] = [
         '            [sys.executable, "-m", "rustest", "--report-json", '
         + "str(report_path), *args],",
         '            [sys.executable, "-m", "rustest", "--report-json", str(report_path)],',
-        [f"{T_RUN}::test_full_run_runners_pass_case_args_through[run_rustest_v2_run]"],
+        [f"{T_RUN}::test_full_run_runners_pass_case_args_through[run_rustest_run]"],
         "case args dropped on the v2 side",
     ),
     Row(
@@ -235,7 +235,7 @@ ROWS: list[Row] = [
         "        work = _isolate_case(case_dir.resolve(), Path(tmp))\n"
         + "        # Beside the copy, never inside it",
         "        work = case_dir.resolve()\n        # Beside the copy, never inside it",
-        [f"{T_RUN}::test_full_run_runners_ignore_a_surrounding_project_config[run_rustest_v2_run]"],
+        [f"{T_RUN}::test_full_run_runners_ignore_a_surrounding_project_config[run_rustest_run]"],
         "isolation dropped on the v2 side",
     ),
     # ------------------------------------------------------------------------- the grader
@@ -352,10 +352,10 @@ ROWS: list[Row] = [
         "cli",
         MAIN,
         "        pytest_result = run_pytest_fn(case_dir, case_args)\n"
-        + "        v2_result = run_v2_fn(case_dir, case_args)\n"
+        + "        v2_result = run_rustest_fn(case_dir, case_args)\n"
         + "        return grade_run_case(",
         "        pytest_result = run_pytest_fn(case_dir, case_args)\n"
-        + "        v2_result = run_v2_fn(case_dir, [])\n"
+        + "        v2_result = run_rustest_fn(case_dir, [])\n"
         + "        return grade_run_case(",
         [f"{T_MAIN}::test_grade_one_run_passes_case_args_to_both_runners"],
         "case args dropped for the v2 side -- two different questions compared",
@@ -364,10 +364,10 @@ ROWS: list[Row] = [
         27,
         "cli",
         MAIN,
-        "        ledger: Path = V2_RUN_WAIVERS",
+        "        ledger: Path = RUN_WAIVERS",
         "        ledger: Path = WAIVERS",
-        [f"{T_MAIN}::test_main_v2_run_mode_grades_the_case_v1_silently_passes"],
-        "--v2-run graded against the V1 ledger",
+        [f"{T_MAIN}::test_main_run_mode_grades_the_case_the_old_engine_silently_passed"],
+        "--run graded against the V1 ledger",
     ),
     Row(
         28,
@@ -375,8 +375,8 @@ ROWS: list[Row] = [
         MAIN,
         "        grade_one: Callable[[Path, str, dict[str, str]], CaseResult] = _grade_one_run",
         "        grade_one: Callable[[Path, str, dict[str, str]], CaseResult] = _grade_one",
-        [f"{T_MAIN}::test_main_v2_run_mode_grades_the_case_v1_silently_passes"],
-        "--v2-run dispatches the V1 runners",
+        [f"{T_MAIN}::test_main_run_mode_grades_the_case_the_old_engine_silently_passed"],
+        "--run dispatches the V1 runners",
     ),
     Row(
         29,
@@ -415,7 +415,7 @@ ROWS: list[Row] = [
         RUN,
         '            deselected=summary["deselected"],',
         "            deselected=0,",
-        [f"{T_RUN}::test_full_run_runners_pass_case_args_through[run_rustest_v2_run]"],
+        [f"{T_RUN}::test_full_run_runners_pass_case_args_through[run_rustest_run]"],
         "deselected never read off the v2 report -- count reads 0",
     ),
     Row(
@@ -485,8 +485,8 @@ ROWS: list[Row] = [
         "[cases]\n",
         '[cases]\n"marks/xfail" = "a waiver nobody adjudicated"\n',
         [
-            f"{T_MAIN}::test_v2_run_ledger_is_empty",
-            f"{T_MAIN}::test_main_v2_run_mode_grades_the_case_v1_silently_passes",
+            f"{T_MAIN}::test_run_ledger_is_empty",
+            f"{T_MAIN}::test_main_run_mode_grades_the_case_the_old_engine_silently_passed",
         ],
         "an unadjudicated entry appears in the empty run ledger",
     ),

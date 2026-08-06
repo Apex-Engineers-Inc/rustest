@@ -307,8 +307,8 @@ line always accounts for every collected test, so `2 + 3` still adds up to the 5
 found.
 
 !!! tip "Cache Location"
-    Failed test information is stored in `.rustest_cache/v2/v/cache/lastfailed`, created
-    and updated after every run. The path inside `.rustest_cache/v2/` is pytest's own
+    Failed test information is stored in `.rustest_cache/v/cache/lastfailed`, created
+    and updated after every run. The path inside `.rustest_cache/` is pytest's own
     cache-value layout, and the document is pytest's `{nodeid: true}` map, so the `cache`
     fixture reads the same file: `cache.get("cache/lastfailed", {})`.
 
@@ -876,13 +876,16 @@ project, see [Project Structure](project-structure.md).
 **`PYTEST_ADDOPTS` is not read.** The `addopts` *ini* is applied and prepended to your
 arguments, as pytest does it, but options exported into the environment are ignored.
 
-Two variables are set *by* rustest in each worker's environment, for suites that need to
-know which runner they are under:
+One variable is set *by* rustest in each worker's environment, for suites that need to know
+which runner they are under:
 
 | Variable | Value |
 |---|---|
 | `RUSTEST_RUNNING` | `1` on every rustest run |
-| `RUSTEST_ENGINE` | `v2` |
+
+A second variable, `RUSTEST_ENGINE`, existed while rustest shipped two engines and a suite
+might need to tell them apart. There is one engine, so it named nothing and was removed
+before 1.0.0. Use `RUSTEST_RUNNING` for "am I under rustest?".
 
 ## Troubleshooting
 

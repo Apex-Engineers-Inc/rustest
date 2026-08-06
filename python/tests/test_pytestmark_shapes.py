@@ -38,7 +38,7 @@ from rustest.decorators import BareOrFactoryMark, MarkDecorator
 
 
 def _spec(entry: Any) -> tuple[str, tuple[Any, ...], dict[str, Any]]:
-    """What ``_v2_worker::_spec_from_pytestmark`` reads off one entry."""
+    """What ``_worker::_spec_from_pytestmark`` reads off one entry."""
     return (entry.name, tuple(entry.args), dict(entry.kwargs))
 
 

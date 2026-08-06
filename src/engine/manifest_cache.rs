@@ -1,6 +1,6 @@
 //! The **Tier S manifest cache**: Tier S's answers, remembered on disk.
 //!
-//! [`crate::v2::static_collect`] can answer "what tests are in this file?" without importing
+//! [`crate::engine::static_collect`] can answer "what tests are in this file?" without importing
 //! it.  This module remembers those answers, keyed on every input they depend on, so a second
 //! run over an unchanged tree skips the parse entirely.  Combined with the orchestrator's
 //! "a fully static tree spawns no worker" property, a warm `--collect-only` over a fully
@@ -41,7 +41,7 @@
 //!
 //! # Tier S results only — and that is a correctness rule, not a scoping decision
 //!
-//! Only [`crate::v2::manifest::Tier::Static`] entries are ever written here.  A **Tier D**
+//! Only [`crate::engine::manifest::Tier::Static`] entries are ever written here.  A **Tier D**
 //! result is what a Python worker reported after *importing* the module, and an import reads
 //! the interpreter, the installed packages, the environment, every conftest in the chain and
 //! whatever those conftests did when they ran.  None of that is in this key, and no practical
@@ -50,7 +50,7 @@
 //! conftest read a file).  Caching one would be a stale answer with exit 0.
 //!
 //! The rule is enforced structurally rather than by review: this module is only ever reached
-//! from [`crate::v2::static_collect::static_pass_cached`], which handles nothing but Tier S,
+//! from [`crate::engine::static_collect::static_pass_cached`], which handles nothing but Tier S,
 //! and `collect.rs` hands worker outcomes straight to `assemble` without passing this way.
 //! `a_dynamic_only_run_writes_nothing` in `collect.rs` is the assertion.
 //!
@@ -67,7 +67,7 @@
 //! # Layout
 //!
 //! ```text
-//! <rootdir>/.rustest_cache/v2-manifest/<blake3(rel dir)>.json
+//! <rootdir>/.rustest_cache/manifest/<blake3(rel dir)>.json
 //! ```
 //!
 //! One **shard per directory**, not per file.  Per-file entries would mean one file open per
@@ -77,7 +77,7 @@
 //! chain already works at, and keeps a run over a subdirectory from reading (or rewriting)
 //! the rest of the tree's entries.
 //!
-//! `.rustest_cache` is the directory v1 and the v2 last-failed cache already use, so it is
+//! `.rustest_cache` is the directory the last-failed cache already uses, so it is
 //! already in `.gitignore` and already the one directory a user deletes to reset everything.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -86,16 +86,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::v2::config::ResolvedConfig;
-use crate::v2::manifest::{CollectedTest, Tier};
+use crate::engine::config::ResolvedConfig;
+use crate::engine::manifest::{CollectedTest, Tier};
 
 /// Shared with v1 and with the last-failed cache: one directory to gitignore, one to delete.
 const CACHE_DIR: &str = ".rustest_cache";
 
 /// The manifest cache's own sub-directory, named for the artifact it holds.  A *directory*
-/// per artifact rather than a file per artifact, for the same reason `v2/lastfailed` is a
+/// per artifact rather than a file per artifact, for the same reason the last-failed store is a
 /// directory: a build that does not understand this format must not be able to read it.
-const MANIFEST_CACHE_DIR: &str = "v2-manifest";
+const MANIFEST_CACHE_DIR: &str = "manifest";
 
 /// On-disk shape version.  A shard whose `schema` is not this is discarded on sight, which is
 /// what lets the shape change without a migration.
@@ -103,7 +103,7 @@ const STORE_SCHEMA_VERSION: u32 = 1;
 
 /// Domain separator, so a digest computed here can never be confused with one computed
 /// anywhere else that happens to hash the same bytes.
-const DOMAIN: &[u8] = b"rustest/v2-manifest-cache\x00";
+const DOMAIN: &[u8] = b"rustest/manifest-cache\x00";
 
 /// The cache **epoch** — bump this whenever Tier S's extraction rules change.
 ///
@@ -293,7 +293,7 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
     field("markers", markers);
     // `asyncio_mode` is a **collection** input, not only an execution one: in `auto` mode an
     // `async def` + `yield` test acquires a synthesised `xfail(run=False)` mark
-    // (`_v2_worker.py::_async_generator_xfail`) that it does not get in `strict` mode, and the
+    // (`_worker.py::_async_generator_xfail`) that it does not get in `strict` mode, and the
     // mark travels in the cached manifest entry.  A run that flips the mode and reuses a
     // manifest built under the other one would serve the wrong mark set.
     field("asyncio_mode", std::slice::from_ref(asyncio_mode));
@@ -535,7 +535,7 @@ impl ManifestCache {
     /// A missing, unreadable, truncated, mis-schema'd or otherwise unparsable shard loads as
     /// **empty**, never as an error: a cache is an optimisation, and a corrupt one is a cache
     /// to rebuild rather than a reason to refuse to collect.  Same position pytest takes in
-    /// `_pytest/cacheprovider.py::Cache.get`, and the same one `v2::cache` takes for
+    /// `_pytest/cacheprovider.py::Cache.get`, and the same one `engine::cache` takes for
     /// `lastfailed`.
     pub fn load_dir(&self, dir_rel: &str, chain: Digest) -> DirCache {
         let shard_path = self
@@ -577,7 +577,7 @@ impl ManifestCache {
     /// [`Self::key`] with the conftest-chain digest passed directly instead of read off a
     /// loaded shard.
     ///
-    /// The seam exists for [`crate::v2::static_collect::rewrite_plan`], which needs a key for
+    /// The seam exists for [`crate::engine::static_collect::rewrite_plan`], which needs a key for
     /// every target but must not touch the store: it runs on the **run** path, where the
     /// manifest cache is off by construction, and loading a shard there would both cost a
     /// file open per directory and blur the "the run path reads and writes nothing" rule the
@@ -671,7 +671,7 @@ impl ManifestCache {
         // Only *carried-over* entries are stat'd.  A file this run just cached was read
         // moments ago by the pass that produced it, so asking the filesystem again would be
         // one syscall per collected file for an answer already known — the same cost that
-        // dominated the walk before [`crate::v2::collect::is_dir`] existed.
+        // dominated the walk before [`crate::engine::collect::is_dir`] existed.
         entries.retain(|name, _| refreshed.contains(name) || dir_abs.join(name).is_file());
         if entries == dir_cache.loaded {
             return false;
@@ -765,7 +765,7 @@ pub type FreshByDir = HashMap<PathBuf, BTreeMap<String, (Digest, Vec<CollectedTe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::config::{
+    use crate::engine::config::{
         DEFAULT_ASYNCIO_MODE, DEFAULT_ASYNCIO_TEST_LOOP_SCOPE, DEFAULT_PYTHON_CLASSES,
         DEFAULT_PYTHON_FILES, DEFAULT_PYTHON_FUNCTIONS,
     };
@@ -1142,7 +1142,7 @@ mod tests {
         let _ = fresh.insert("test_a.py".to_string(), (key, Vec::new()));
         assert!(cache.store_dir(&dir, tmp.path(), fresh));
 
-        let store = tmp.path().join(".rustest_cache").join("v2-manifest");
+        let store = tmp.path().join(".rustest_cache").join("manifest");
         assert!(store.is_dir(), "{store:?}");
         assert_eq!(std::fs::read_dir(&store).unwrap().count(), 1);
     }

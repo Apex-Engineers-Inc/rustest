@@ -4,9 +4,9 @@ Phase 1c Task 1 moved the default from v1 to v2 and filled in the option surface
 engine has to have: ``-x``, ``--lf``/``--ff``, ``-v``, ``-q``, ``-s``, ``--no-codeblocks``.
 This module pins the *observable* half of all of it — what the process does, not what the
 code looks like — and diffs the semantic claims against **real pytest** in a subprocess, the
-same discipline ``test_v2_run_cli.py`` uses.
+same discipline ``test_run_cli.py`` uses.
 
-Everything here drives the real binary end to end. A mocked ``v2_run`` would have proved the
+Everything here drives the real binary end to end. A mocked ``run`` would have proved the
 router forwards a flag and nothing about whether the flag works.
 """
 
@@ -260,7 +260,7 @@ def test_last_failed_reruns_only_the_failures_and_deselects_the_rest(tmp_path: P
     assert first.returncode == 1, first.stderr
     # Hoisted out of the assert so that both the repo's ruff and pre-commit's pinned one
     # format this identically -- they disagree about multi-line assert messages.
-    lastfailed = tree / ".rustest_cache" / "v2" / "v" / "cache" / "lastfailed"
+    lastfailed = tree / ".rustest_cache" / "v" / "cache" / "lastfailed"
     assert lastfailed.is_file(), "no cache was written"
 
     second = _rustest(tree, ["--lf"])
@@ -292,7 +292,7 @@ def test_the_v2_cache_is_not_v1s(tmp_path: Path) -> None:
     """Separate files, because the two engines' node ids are different strings.
 
     v1 writes ``.rustest_cache/lastfailed`` keyed on native-separator display names; v2
-    writes ``.rustest_cache/v2/v/cache/lastfailed`` keyed on rootdir-relative posix ids --
+    writes ``.rustest_cache/v/cache/lastfailed`` keyed on rootdir-relative posix ids --
     pytest's own ``<cachedir>/v/<key>`` value layout, so the ``cache`` fixture reaches the
     same file through ``cache.get("cache/lastfailed", {})``.  One shared
     file would mean every ``--lf`` after an engine switch matched nothing — silently, and
@@ -301,7 +301,7 @@ def test_the_v2_cache_is_not_v1s(tmp_path: Path) -> None:
     tree = _tree(tmp_path, "cachesplit", {"test_x.py": FOUR_WITH_FAILURES})
 
     _ = _rustest(tree, [])
-    v2_cache = tree / ".rustest_cache" / "v2" / "v" / "cache" / "lastfailed"
+    v2_cache = tree / ".rustest_cache" / "v" / "cache" / "lastfailed"
     assert v2_cache.is_file()
     assert not (tree / ".rustest_cache" / "lastfailed").exists()
 
@@ -313,7 +313,7 @@ def test_the_cache_fixture_reads_the_last_failed_set(tmp_path: Path) -> None:
     """``cache.get("cache/lastfailed", {})`` answers with what ``--lf`` just wrote.
 
     This is the whole reason the last-failed file moved into pytest's ``v/<key>`` value
-    layout at Phase 3 Task 2 (``src/v2/cache.rs``): under pytest the last-failed set is not a
+    layout at Phase 3 Task 2 (``src/engine/cache.rs``): under pytest the last-failed set is not a
     private file, it is an ordinary cache value, and ``config.cache`` is the documented way to
     read it. Asserted **through the fixture**, in a second run, so it exercises the path
     composition on both sides rather than a constant copied into two places — a rename on
@@ -413,7 +413,7 @@ def test_quiet_keeps_the_failure_report_and_matches_the_default_rung(tmp_path: P
     should have dropped.
 
     The cross-runner half — that these section titles match a real ``pytest -q`` — is
-    ``test_v2_run_cli.py::test_quiet_still_reports_failures_like_pytest``.
+    ``test_run_cli.py::test_quiet_still_reports_failures_like_pytest``.
     """
     tree = _tree(tmp_path, "quiet", {"test_m.py": MIXED})
 
@@ -461,7 +461,7 @@ def test_no_capture_lets_test_output_through(tmp_path: Path) -> None:
     it reaches the user through the worker's stderr.
 
     The stderr landing is the documented divergence from pytest (which writes to the
-    terminal): a v2 worker's *stdout* is the protocol channel, so "not captured" cannot mean
+    terminal): a worker's *stdout* is the protocol channel, so "not captured" cannot mean
     "this process's stdout".
     """
     tree = _tree(tmp_path, "nocapture", {"test_p.py": PRINTING})
@@ -568,7 +568,7 @@ def test_a_failing_code_block_fails_the_run(tmp_path: Path) -> None:
 def test_a_failing_async_test_fails(tmp_path: Path) -> None:
     """**Regression pin for a silent-green defect found by the flip.**
 
-    Before Phase 1c the v2 worker called an ``async def`` test like a sync one, got a
+    Before Phase 1c the worker called an ``async def`` test like a sync one, got a
     coroutine back, raised nothing and reported PASSED — measured: ``async def test():
     assert 1 == 2`` printed ``1 passed`` under v2 while both pytest and rustest v1 printed
     ``1 failed``.  An engine that cannot fail an async test is worse than one that cannot run

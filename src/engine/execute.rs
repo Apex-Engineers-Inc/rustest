@@ -1,9 +1,9 @@
-//! The v2 **run** orchestrator: collect, select, dispatch, reassemble, and decide the exit
+//! The **run** orchestrator: collect, select, dispatch, reassemble, and decide the exit
 //! code.
 //!
-//! [`run`] is the whole of a v2 test run seen from outside. It reuses collection's walk,
-//! routing and worker pool verbatim ([`crate::v2::collect::plan`] /
-//! [`crate::v2::collect::spawn_pool`]) and adds the three things execution needs:
+//! [`run`] is the whole of a test run seen from outside. It reuses collection's walk,
+//! routing and worker pool verbatim ([`crate::engine::collect::plan`] /
+//! [`crate::engine::collect::spawn_pool`]) and adds the three things execution needs:
 //!
 //! 1. a **barrier** between collection and dispatch, because selection needs the complete
 //!    manifest before any test may be dispatched;
@@ -29,7 +29,7 @@
 //!
 //! Within a worker, tests are dispatched **grouped by file**, groups in first-appearance
 //! order and manifest order inside each group. This is not a performance tweak, it is a
-//! correctness one: `_v2_worker.py` detects module and class boundaries by comparing the
+//! correctness one: `_worker.py` detects module and class boundaries by comparing the
 //! incoming test's file against the previous one, so interleaving files across a worker
 //! would tear down and rebuild module-scoped fixtures at every switch. Grouping reproduces
 //! pytest's setup counts for a same-file run. (The report is reassembled by manifest index,
@@ -40,7 +40,7 @@
 //! The worker owns the three-phase reduction — `setup`/`call`/`teardown` collapse to one
 //! status before the result ever reaches the wire. This module *validates* that status
 //! against the documented six and treats anything else as protocol drift, which is the
-//! division of labour `src/v2/protocol.rs` states in `TestResult`'s field docs.
+//! division of labour `src/engine/protocol.rs` states in `TestResult`'s field docs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,25 +50,27 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::v2::cache::LastFailedMode;
-use crate::v2::cache::{last_failed_order, merge_last_failed, read_last_failed, write_last_failed};
-use crate::v2::collect::{
+pub use crate::engine::cache::LastFailedMode;
+use crate::engine::cache::{
+    last_failed_order, merge_last_failed, read_last_failed, write_last_failed,
+};
+use crate::engine::collect::{
     assemble, plan, spawn_pool, CollectError, Dispatch, FileOutcome, Worker, WorkerLauncher,
 };
-use crate::v2::manifest::{CollectedTest, CollectionErrorEntry};
-use crate::v2::protocol::CoverageWire;
-use crate::v2::selection::{select_mask, SelectionError};
+use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
+use crate::engine::protocol::CoverageWire;
+use crate::engine::selection::{select_mask, SelectionError};
 
-/// `_v2_worker.py::SHUTDOWN_TEARDOWN_EXIT`.
+/// `_worker.py::SHUTDOWN_TEARDOWN_EXIT`.
 ///
 /// The worker answers `bye`, then exits 3 because unwinding its still-open scopes raised.
 /// The response stream is complete and the process is not confused — a user's fixture
 /// teardown broke. Kept distinct from 2 (protocol drift) so "your fixture is broken" and
 /// "the protocol drifted" stay tellable apart; see
-/// [`crate::v2::collect::Worker::shutdown_run`].
+/// [`crate::engine::collect::Worker::shutdown_run`].
 pub const SHUTDOWN_TEARDOWN_EXIT: i32 = 3;
 
-/// `_v2_worker.py::SESSION_EXIT_EXIT`.
+/// `_worker.py::SESSION_EXIT_EXIT`.
 ///
 /// A test called `pytest.exit()`. The worker wrote pytest's `Exit: <reason>` banner to its
 /// stderr and stopped without answering the request in flight. Distinct from
@@ -78,7 +80,7 @@ pub const SHUTDOWN_TEARDOWN_EXIT: i32 = 3;
 ///
 /// The code is the entire channel — it carries the *fact* and no payload — which is why
 /// `pytest.exit(returncode=N)`'s N is not honoured. A payload would need a wire op, and the
-/// point of routing this through the exit status is that [`crate::v2::protocol`] does not
+/// point of routing this through the exit status is that [`crate::engine::protocol`] does not
 /// change.
 pub const SESSION_EXIT_EXIT: i32 = 4;
 
@@ -125,10 +127,10 @@ pub struct RunOptions {
     /// tri-state [`super::collect::CollectOptions::codeblocks`] uses for `--collect-only`.
     pub codeblocks: Option<bool>,
     /// Rewrite the assertions of statically analysable files
-    /// (`crate::v2::static_collect::rewrite_plan`, `python/rustest/_assertion_rewrite.py`).
+    /// (`crate::engine::static_collect::rewrite_plan`, `python/rustest/_assertion_rewrite.py`).
     ///
     /// **On in production**; the `false` leg is the escape hatch
-    /// (`RUSTEST_V2_ASSERT_REWRITE=off`) and the control leg of the differential. Rewriting
+    /// (`RUSTEST_ASSERT_REWRITE=off`) and the control leg of the differential. Rewriting
     /// changes the *bytecode a user's tests run as*, which is a larger claim than the
     /// manifest cache's, so "recompute the answer without it" has to be askable from a
     /// subprocess without editing anything.
@@ -138,7 +140,7 @@ pub struct RunOptions {
     ///
     /// `None` is not "measure everything and report nothing": it means **no worker registers a
     /// `sys.monitoring` tool at all**, which is what keeps a plain run's per-test cost exactly
-    /// what it was before this option existed (`python/rustest/_v2_coverage.py`).
+    /// what it was before this option existed (`python/rustest/_coverage.py`).
     pub coverage: Option<CoverageWire>,
 }
 
@@ -303,7 +305,7 @@ impl RunSummary {
     }
 }
 
-/// The complete output of a v2 run — and the `--report-json` document verbatim.
+/// The complete output of a run — and the `--report-json` document verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunReport {
     pub version: u32,
@@ -384,7 +386,7 @@ fn is_false(value: &bool) -> bool {
 /// completed run: **4** (usage error — a bad path argument, an unusable config file, a
 /// malformed `-k`/`-m` expression) and **3** (internal error — the pool itself failed).
 /// Both are raised as exceptions and classified by kind at the Python boundary
-/// (`src/v2/py.rs`), exactly as `wrap_session` classifies `UsageError` versus any other
+/// (`src/engine/py.rs`), exactly as `wrap_session` classifies `UsageError` versus any other
 /// `BaseException`.
 pub fn exit_code(
     collected: usize,
@@ -805,7 +807,7 @@ struct Staged {
     errors: Vec<CollectionErrorEntry>,
     deselected: usize,
     /// Modules that skipped themselves at import, straight through from
-    /// [`crate::v2::collect::Assembled::module_skipped`]. Never selected against — a skip
+    /// [`crate::engine::collect::Assembled::module_skipped`]. Never selected against — a skip
     /// with no id cannot match `-k` or `-m`, and pytest does not try either.
     module_skipped: usize,
     /// Indexed by worker, then by **file**: `(report slot, test id)`.
@@ -1123,8 +1125,8 @@ fn worker_life(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::protocol::PROTOCOL_VERSION;
-    use crate::v2::test_python;
+    use crate::engine::protocol::PROTOCOL_VERSION;
+    use crate::engine::test_python;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1421,7 +1423,7 @@ mod tests {
 
     // --- the report wire form ---------------------------------------------
 
-    /// The `--report-json` document under `--v2`, pinned as bytes: the conformance harness
+    /// The `--report-json` document, pinned as bytes: the conformance harness
     /// reads `summary`, `tests[*].id`, `tests[*].status` and `collection_errors` out of it.
     #[test]
     fn the_report_json_matches_its_golden_contract() {
@@ -2012,7 +2014,7 @@ def test_bails():
         let _ = run_tree(&tmp, 1);
 
         assert_eq!(
-            crate::v2::cache::read_last_failed(tmp.path()),
+            crate::engine::cache::read_last_failed(tmp.path()),
             [
                 "test_x.py::test_b".to_string(),
                 "test_x.py::test_c".to_string()
@@ -2092,7 +2094,7 @@ def test_bails():
         let _ = run_tree(&tmp, 1);
 
         assert_eq!(
-            crate::v2::cache::read_last_failed(tmp.path()),
+            crate::engine::cache::read_last_failed(tmp.path()),
             ["test_x.py::test_c".to_string()].into_iter().collect()
         );
     }
@@ -2137,7 +2139,7 @@ def test_bails():
         let tmp = tree(&[("test_broken.py", "import nope_does_not_exist\n")]);
         let _ = run_tree(&tmp, 1);
         assert_eq!(
-            crate::v2::cache::read_last_failed(tmp.path()),
+            crate::engine::cache::read_last_failed(tmp.path()),
             ["test_broken.py".to_string()].into_iter().collect()
         );
     }
@@ -2194,7 +2196,7 @@ def test_bails():
              \x20       sys.stdout.flush()\n\
              \x20       break\n\
              \x20   sys.stdout.flush()\n",
-            log = crate::v2::to_posix(log),
+            log = crate::engine::to_posix(log),
         );
         scripted(&script)
     }
@@ -2303,7 +2305,7 @@ def test_bails():
     }
 
     /// A `test_result` carrying a status outside the documented six is **protocol drift**,
-    /// and the error names the offending value.  `src/v2/protocol.rs` leaves `status` an
+    /// and the error names the offending value.  `src/engine/protocol.rs` leaves `status` an
     /// unvalidated `String` precisely so this check can live here, with the id in hand.
     #[test]
     fn an_unknown_status_is_protocol_fatal_and_names_the_value() {
@@ -2682,7 +2684,7 @@ def test_bails():
     /// The bounded wait is **not implemented**: it needs a second timeout mechanism on the
     /// read path, and the failure it catches (a worker that answers every test and then
     /// declines to say so) has never been observed and is not reachable through
-    /// `_v2_worker.py`, whose batch arm writes the terminator unconditionally. It is recorded
+    /// `_worker.py`, whose batch arm writes the terminator unconditionally. It is recorded
     /// as the tractable half rather than described as impossible.
     #[test]
     fn a_batch_whose_stream_ends_without_a_terminator_is_fatal() {

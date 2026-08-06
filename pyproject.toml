@@ -29,7 +29,7 @@ scripts = { rustest = "rustest.__main__:main" }
 
 [project.optional-dependencies]
 # `--cov` is opt-in packaging, not a hard dependency: see
-# `python/rustest/_v2_coverage.py`'s module docstring for the decision (coverage.py's data
+# `python/rustest/_coverage.py`'s module docstring for the decision (coverage.py's data
 # API over a hand-rolled lcov writer) and `user_guide/coverage.md` for the user-facing
 # half. A run without `--cov` never imports `coverage`, so the extra costs a user who does
 # not ask for coverage exactly nothing.

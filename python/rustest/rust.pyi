@@ -1,6 +1,6 @@
 """Type stubs for the rustest Rust extension module.
 
-The extension exposes exactly four functions -- the v2 engine's boundary. The event classes,
+The extension exposes exactly four functions -- the engine's boundary. The event classes,
 ``PyRunReport``/``PyTestResult``/``CollectionError`` and ``run``/``getfixturevalue`` that used
 to be declared here belonged to the v1 engine, deleted in Phase 4 Task 2.
 """
@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Sequence
 
-def v2_resolve_config(invocation_dir: str, args: Sequence[str]) -> str:
+def resolve_config(invocation_dir: str, args: Sequence[str]) -> str:
     """Resolve the v2 rootdir + ini configuration, returned as a JSON object string.
 
-    Internal debug surface for the v2 core (see ``src/v2/py.rs``). ``invocation_dir`` must
+    Internal debug surface for the engine core (see ``src/engine/py.rs``). ``invocation_dir`` must
     be absolute. The JSON object has the keys ``rootdir`` (absolute posix path),
     ``config_file`` (absolute posix path or ``null``), ``testpaths``, ``python_files``,
     ``python_classes``, ``python_functions``, ``norecursedirs``, ``addopts``,
@@ -21,7 +21,7 @@ def v2_resolve_config(invocation_dir: str, args: Sequence[str]) -> str:
     """
     ...
 
-def v2_collect(
+def collect(
     invocation_dir: str,
     args: Sequence[str],
     python_executable: str,
@@ -32,7 +32,7 @@ def v2_collect(
     collect_tier: str = ...,
     cache_mode: str = ...,
 ) -> str:
-    """Collect tests with the v2 engine; returns a ``CollectionManifest`` JSON string.
+    """Collect tests with the engine; returns a ``CollectionManifest`` JSON string.
 
     Backs ``rustest --collect-only`` (see ``python/rustest/core.py``). ``invocation_dir``
     must be absolute; ``args`` are raw CLI path arguments, and an empty list lets
@@ -49,15 +49,15 @@ def v2_collect(
     ``collect_tier`` is the differential's control knob, not a user feature: ``"d"`` forbids
     the Rust static tier and sends every file to a worker, so a caller can collect the same
     tree twice and diff the two manifests. Anything else means the default. The CLI reads it
-    from ``RUSTEST_V2_COLLECT_TIER`` and does not advertise it.
+    from ``RUSTEST_COLLECT_TIER`` and does not advertise it.
 
     ``cache_mode`` is its twin for the Tier S manifest cache
-    (``.rustest_cache/v2-manifest``): ``"off"`` parses every file and writes nothing, which is
-    how a caller asks "is this answer stale?". Read from ``RUSTEST_V2_MANIFEST_CACHE``, also
+    (``.rustest_cache/manifest``): ``"off"`` parses every file and writes nothing, which is
+    how a caller asks "is this answer stale?". Read from ``RUSTEST_MANIFEST_CACHE``, also
     unadvertised. Only *static* results are ever cached -- a Tier D result depends on what
     importing the module did, which no key can capture.
 
-    The JSON object is the manifest frozen in ``src/v2/manifest.rs``: ``schema_version``,
+    The JSON object is the manifest frozen in ``src/engine/manifest.rs``: ``schema_version``,
     ``rootdir`` (absolute posix), ``tests`` (each with ``id``, ``path``, ``qualname`` and
     optional ``class_name``/``param_id``/``marks``/``fixtures``/``tier``), ``errors`` (omitted when
     empty; each with ``path`` and ``message``) and ``deselected`` (omitted when zero).
@@ -69,7 +69,7 @@ def v2_collect(
     """
     ...
 
-def v2_run(
+def run(
     invocation_dir: str,
     args: Sequence[str],
     python_executable: str,
@@ -84,13 +84,13 @@ def v2_run(
     assert_rewrite: str = ...,
     coverage: str | None = ...,
 ) -> str:
-    """Run tests with the v2 engine; returns a schema-v2 ``RunReport`` JSON string.
+    """Run tests with the engine; returns a schema-v2 ``RunReport`` JSON string.
 
-    Backs ``rustest`` (see ``python/rustest/core.py``). Arguments are ``v2_collect``'s;
+    Backs ``rustest`` (see ``python/rustest/core.py``). Arguments are ``collect``'s;
     the difference is that the worker pool stays alive after collection and executes the
     selected tests, each on the worker that already imported its file.
 
-    The JSON object is frozen in ``src/v2/execute.rs``: ``version`` (2), ``rootdir``,
+    The JSON object is frozen in ``src/engine/execute.rs``: ``version`` (2), ``rootdir``,
     ``exit_code``, ``summary`` (``total``/``passed``/``failed``/``skipped``/``xfailed``/
     ``xpassed``/``error``/``deselected``/``duration``), ``tests`` (each with ``id``,
     ``status`` -- one of the six -- ``duration`` and optional ``message``/``stdout``/
@@ -103,7 +103,7 @@ def v2_run(
     completed.
 
     ``coverage`` is ``--cov``'s whole footprint on this boundary: a JSON
-    ``src/v2/protocol.rs::CoverageWire`` object (``sources``, ``data_dir``), forwarded onto
+    ``src/engine/protocol.rs::CoverageWire`` object (``sources``, ``data_dir``), forwarded onto
     every worker's ``init`` line unchanged, or ``None``. ``None`` is not "measure and discard":
     it means no worker registers a ``sys.monitoring`` tool at all. A malformed value, or one
     with an empty ``sources``, is a ``ValueError``.

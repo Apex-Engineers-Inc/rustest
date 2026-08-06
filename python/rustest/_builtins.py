@@ -1,4 +1,4 @@
-"""The builtin fixtures the v2 worker provides, ported from pytest's own plugins.
+"""The builtin fixtures the worker provides, ported from pytest's own plugins.
 
 Separate from :mod:`rustest.builtin_fixtures` — which was the deleted v1 engine's set, and
 survives only as **public API** (its fixture *types* and :class:`MonkeyPatch` are exported
@@ -19,17 +19,17 @@ and importable) — because three of the fixtures here had to change shape rathe
 Provenance is per class and cited there.  Everything in this module is a port of pytest
 8.4.2 except :class:`MockerFixture`, which is pytest-mock 3.15.1's.
 
-**Import cost.** ``_v2_worker`` imports this module at *its* module level, so everything at
+**Import cost.** ``_worker`` imports this module at *its* module level, so everything at
 this one's top level is on every worker's start-up path.  ``tempfile``, ``shutil``, ``py``
 and ``unittest.mock`` are therefore imported *inside* the objects that need them:
 ``unittest.mock`` is ~10 ms and only a suite using ``mocker`` should pay it, ``shutil``
 drags ``bz2``/``lzma``/``zlib`` behind it and only a suite using a temporary directory
 should.  It is also why this module does not import :mod:`rustest.builtin_fixtures` — the
 one class it borrows from there (``MonkeyPatch``) is imported inside the ``monkeypatch``
-fixture, so the v2 worker's import graph no longer contains v1's fixture module at all.
+fixture, so the worker's import graph no longer contains v1's fixture module at all.
 
 ``logging`` **is** eager, and that is a measured exception rather than an oversight: 4.9 /
-4.5 / 5.6 / 5.0 / 12.3 ms marginal over five runs with ``rustest._v2_worker`` already
+4.5 / 5.6 / 5.0 / 12.3 ms marginal over five runs with ``rustest._worker`` already
 imported, against a ~300 ms worker boot that already pays ``unittest`` unconditionally — and
 against a real suite, which imports ``logging`` itself.  Deferring it would buy those
 milliseconds back only for suites that never log, at the cost of building
@@ -103,7 +103,7 @@ __all__ = [
 class _WorkerContext(NamedTuple):
     """What ``init`` told the worker, in the shape the fixtures here need.
 
-    Passed in rather than imported from :mod:`rustest._v2_worker`, so this module has no
+    Passed in rather than imported from :mod:`rustest._worker`, so this module has no
     import edge back into the worker and can be unit-tested on its own.
     """
 
@@ -135,7 +135,7 @@ def _worker_context() -> _WorkerContext:
     if _context is None:  # pragma: no cover - the worker always configures before collecting
         raise RuntimeError(
             "rustest builtin fixtures were used before the worker was initialised "
-            + "(rustest._v2_builtins.configure has not been called)"
+            + "(rustest._builtins.configure has not been called)"
         )
     return _context
 
@@ -263,7 +263,7 @@ class SysCapture:
 
     @property
     def broken(self) -> bool:
-        """The test closed the stream out from under us — see ``_v2_worker._Capture``."""
+        """The test closed the stream out from under us — see ``_worker._Capture``."""
         return bool(self.tmpfile.closed)
 
 
@@ -367,7 +367,7 @@ class FdCapture:
         pytest asks the same question through ``MultiCapture.is_started``; it is exposed per
         capture here because the worker suspends and resumes the two halves directly.  It
         exists so a *nested* suspend cannot resume a capture that was already off — which is
-        what ``_v2_worker._Capture.disabled`` would otherwise do outside a test.
+        what ``_worker._Capture.disabled`` would otherwise do outside a test.
         """
         return self._state == "started"
 
@@ -378,7 +378,7 @@ class FdCapture:
         The fd itself survives — it is a dup, so ``os.write(1, ...)`` still works and
         ``done()`` can still restore — but every later ``snap()`` would raise
         ``ValueError: I/O operation on closed file``.  The worker turns this into the same
-        FAILED/ERROR pair pytest reports; see ``_v2_worker._Capture.broken``.
+        FAILED/ERROR pair pytest reports; see ``_worker._Capture.broken``.
         """
         return bool(self.tmpfile.closed)
 
@@ -507,7 +507,7 @@ class CaptureFixture:
         "terminal" is its stderr, which the orchestrator forwards under
         ``RunReport::worker_stderr`` rather than interleaving live.  Same visibility, a
         different place in the output; the same divergence ``-s`` already carries
-        (``_v2_worker._capture_window``).
+        (``_worker._capture_window``).
         """
         suspend_global = _global_capture_control()
         do_fixture = self._is_started()
@@ -683,11 +683,11 @@ class LogCapture:
 
     * **it installs unconditionally**, for every item, because it also feeds the
       ``add_report_section(when, "log", ...)`` output that the terminal prints under a
-      failure.  The v2 wire has no report sections, so the worker installs this only when
+      failure.  The worker wire has no report sections, so the worker installs this only when
       ``caplog`` is in the test's fixture closure and a suite that never asks for it pays
       nothing but the (measured, ~5 ms) module import;
     * **it sets a level** when the ``log_level`` ini is configured.  That ini is not on the
-      v2 wire, so ``level`` is always ``None`` here, which is also pytest's default.  It is
+      worker wire, so ``level`` is always ``None`` here, which is also pytest's default.  It is
       the reason the root logger keeps its ``WARNING`` level and an unqualified
       ``logging.info(...)`` is **not** captured until a test calls
       :meth:`LogCaptureFixture.set_level` — v1's ``caplog`` forced ``DEBUG`` and captured it.
@@ -849,7 +849,7 @@ def caplog() -> Generator[LogCaptureFixture, None, None]:
     if capture is None:  # pragma: no cover - the worker installs one whenever caplog is asked
         raise RuntimeError(
             "the caplog fixture requires the worker's per-test logging capture; "
-            + "rustest._v2_builtins.set_log_capture was never called"
+            + "rustest._builtins.set_log_capture was never called"
         )
     result = LogCaptureFixture(capture)
     try:
@@ -868,8 +868,8 @@ class Cache:
 
     **The store is the one ``--lf`` uses.**  pytest keeps its last-failed set under the
     ordinary cache key ``cache/lastfailed``, i.e. at ``.pytest_cache/v/cache/lastfailed``, so
-    a plugin can read it through this very API.  ``src/v2/cache.rs`` writes rustest's at
-    ``.rustest_cache/v2/v/cache/lastfailed`` for exactly that reason, and in pytest's own
+    a plugin can read it through this very API.  ``src/engine/cache.rs`` writes rustest's at
+    ``.rustest_cache/v/cache/lastfailed`` for exactly that reason, and in pytest's own
     ``{node_id: true}`` shape — so ``cache.get("cache/lastfailed", {})`` answers here with
     what it answers under pytest.  A second private store would have made this fixture a
     plausible-looking dead end.
@@ -940,8 +940,8 @@ class Cache:
 
 
 def _cache_dir(rootdir: Path) -> Path:
-    """``<rootdir>/.rustest_cache/v2`` — mirrors ``src/v2/cache.rs``'s two constants."""
-    return rootdir / ".rustest_cache" / "v2"
+    """``<rootdir>/.rustest_cache`` — mirrors ``src/engine/cache.rs``'s two constants."""
+    return rootdir / ".rustest_cache"
 
 
 @fixture(scope="session")
@@ -949,7 +949,7 @@ def cache() -> Cache:
     """Return a cache object that can persist state between test runs.
 
     Port of `_pytest/cacheprovider.py::cache` (l. 555-570).  Values live under
-    ``.rustest_cache/v2/v/<key>`` and directories under ``.rustest_cache/v2/d/<name>`` —
+    ``.rustest_cache/v/<key>`` and directories under ``.rustest_cache/d/<name>`` —
     pytest's layout, in rustest's cache directory, sharing the store ``--lf`` writes.
     """
     return Cache(_cache_dir(_worker_context().rootdir))
@@ -966,7 +966,7 @@ class TempPathFactory:
     The base directory is one ``mkdtemp`` per worker rather than pytest's
     ``<temproot>/pytest-of-<user>/pytest-<n>`` with its retention policy: keeping the last
     three runs' trees is a *debugging* affordance tied to pytest's ``--basetemp`` and
-    ``tmp_path_retention_policy`` options, neither of which is on the v2 wire, and a worker
+    ``tmp_path_retention_policy`` options, neither of which is on the worker wire, and a worker
     pool would race on the ``pytest-<n>`` counter.  Recorded rather than silently different:
     ``getbasetemp()`` answers with a real directory and everything below it behaves.
     """
@@ -1130,7 +1130,7 @@ class MockerFixture:
 
     pytest-mock is **not** installed in this repository's environment, so the port is against
     the released source rather than against a live oracle, and the differential in
-    ``python/tests/test_v2_builtins_mocker.py`` is written against ``unittest.mock``'s own
+    ``python/tests/test_builtins_mocker.py`` is written against ``unittest.mock``'s own
     semantics — which is what pytest-mock itself delegates every patch to.
 
     The one thing this fixture adds over calling ``unittest.mock`` directly is **undo
@@ -1478,7 +1478,7 @@ class Config:
         super().__init__()
         self.rootpath: Final = rootdir
         self.invocation_params: Final = _InvocationParams(dir=invocation_dir)
-        #: pytest's ``Config.inipath`` is the config file it found.  The v2 wire does not
+        #: pytest's ``Config.inipath`` is the config file it found.  The worker wire does not
         #: carry it, and ``None`` is a legal pytest answer (a run with no ini at all), so a
         #: reader that handles pytest's ``None`` handles this.
         self.inipath: Final[Path | None] = None
@@ -1506,7 +1506,7 @@ class Config:
         if name in _UNCARRIED_INI:
             carried = ", ".join(sorted(self._ini))
             raise ValueError(
-                f"the ini value {name!r} is not available to a rustest v2 worker "
+                f"the ini value {name!r} is not available to a rustest worker "
                 + f"(it carries: {carried})"
             )
         raise ValueError(f"unknown configuration value: {name!r}")
@@ -1514,7 +1514,7 @@ class Config:
     def getoption(self, name: str, default: object = _NOTSET, skip: bool = False) -> object:
         """A command-line option (`Config.getoption` l. 1747-1774).
 
-        **No option is carried on the v2 wire**, so this always takes the failure path: with
+        **No option is carried on the worker wire**, so this always takes the failure path: with
         a *default* it returns the default, which is what the overwhelming majority of real
         call sites pass, and without one it raises pytest's own ``no option named`` error.
         Reporting the flags this run was actually invoked with needs them on the wire; a
@@ -1570,7 +1570,7 @@ def recwarn() -> Generator[WarningsRecorder, None, None]:
     raised twice from the same line records once.
 
     MECHANISM M5 of the Task 1b sweep: this was listed as unimplementable on the grounds
-    that it "needs a warnings channel the v2 wire does not have". It does not — nothing
+    that it "needs a warnings channel the worker wire does not have". It does not — nothing
     leaves the process. attrs' ``tests/test_packaging.py`` reads ``recwarn.list`` and the
     gap cost 4 tests.
     """
@@ -1581,7 +1581,7 @@ def recwarn() -> Generator[WarningsRecorder, None, None]:
 
 
 #: The fixtures this module contributes, in the order
-#: ``_v2_worker._register_builtin_fixtures`` registers them.  Dependencies first, so the
+#: ``_worker._register_builtin_fixtures`` registers them.  Dependencies first, so the
 #: registration order reads like the dependency order even though the registry does not care.
 V2_BUILTIN_FIXTURES: Final[Sequence[str]] = (
     "tmp_path_factory",

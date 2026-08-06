@@ -20,8 +20,8 @@ from conformance.harness.runners import (
     parse_pytest_summary,
     run_pytest_collect,
     run_pytest_full,
-    run_rustest_v2_collect,
-    run_rustest_v2_run,
+    run_rustest_collect,
+    run_rustest_run,
 )
 
 COLLECT_OUTPUT = textwrap.dedent(
@@ -272,7 +272,7 @@ def test_isolate_case_copies_and_adds_a_bare_ini(tmp_path: Path) -> None:
 
     The bare ini is what pins rootdir to the copy for *both* runners: pytest treats a
     ``pytest.ini`` as authoritative even when empty, and so does v2's config search
-    (``src/v2/config.rs``: ``pytest.ini files are always the source of configuration,
+    (``src/engine/config.rs``: ``pytest.ini files are always the source of configuration,
     even if empty``). That is the whole comparison protocol in one file.
     """
     case_dir = tmp_path / "case"
@@ -328,7 +328,7 @@ def test_isolate_case_drops_caches(cache_dir: str, tmp_path: Path) -> None:
 
 # (filename, contents, qualifies) -- the content rules both runners apply, per
 # `_pytest/config/findpaths.py::load_config_dict_from_file` and its port in
-# `src/v2/config.rs`. A file that does NOT qualify must still get the bare ini.
+# `src/engine/config.rs`. A file that does NOT qualify must still get the bare ini.
 CONFIG_QUALIFICATION_CASES = [
     ("pyproject.toml", '[project]\nname = "x"\n', False),
     ("pyproject.toml", '[tool.pytest.ini_options]\nminversion = "7"\n', True),
@@ -399,7 +399,7 @@ def test_non_qualifying_case_config_still_isolates_from_a_poisoned_parent(
     MATCH that proves nothing.
 
     **Why this drives ``_isolate_case`` and raw subprocesses rather than
-    ``run_pytest_collect`` / ``run_rustest_v2_collect``.** Those functions isolate into
+    ``run_pytest_collect`` / ``run_rustest_collect``.** Those functions isolate into
     a fresh ``tempfile.TemporaryDirectory()`` under the system temp root, which is not
     beneath ``tmp_path`` -- so a poisoned ini written in ``tmp_path`` is never an
     ancestor of the tree they actually run in, and the test passes no matter how
@@ -430,8 +430,8 @@ def test_run_pytest_collect_integration(tmp_path: Path) -> None:
     assert result.exit_code == 0
 
 
-def test_run_rustest_v2_collect_integration(tmp_path: Path) -> None:
-    result = run_rustest_v2_collect(_case_with_mini_suite(tmp_path), [])
+def test_run_rustest_collect_integration(tmp_path: Path) -> None:
+    result = run_rustest_collect(_case_with_mini_suite(tmp_path), [])
     assert result.ids == MINI_IDS_ORDERED
     assert result.exit_code == 0
 
@@ -443,7 +443,7 @@ def _case_with_mini_suite(tmp_path: Path) -> Path:
     return case_dir
 
 
-@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_collect])
 def test_collect_runners_ignore_a_surrounding_project_config(
     runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
 ) -> None:
@@ -465,7 +465,7 @@ def test_collect_runners_ignore_a_surrounding_project_config(
     assert result.exit_code == 0
 
 
-@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_collect])
 def test_collect_runners_agree_on_an_empty_tree(
     runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
 ) -> None:
@@ -480,7 +480,7 @@ def test_collect_runners_agree_on_an_empty_tree(
     assert result.exit_code == 5
 
 
-@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_collect])
 def test_collect_runners_agree_on_a_collection_error(
     runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
 ) -> None:
@@ -524,7 +524,7 @@ INTERLEAVED_IDS_ORDERED = [
 ]
 
 
-@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_v2_collect])
+@pytest.mark.parametrize("runner", [run_pytest_collect, run_rustest_collect])
 def test_collect_runners_agree_on_interleaved_walk_order(
     runner: Callable[[Path, list[str]], CollectResult], tmp_path: Path
 ) -> None:
@@ -559,7 +559,7 @@ def test_parse_pytest_collect_preserves_duplicate_ids() -> None:
     ]
 
 
-def test_run_rustest_v2_collect_never_deduplicates_stdout(
+def test_run_rustest_collect_never_deduplicates_stdout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The runner reports exactly the lines v2 printed, duplicates included.
@@ -585,12 +585,12 @@ def test_run_rustest_v2_collect_never_deduplicates_stdout(
 
     monkeypatch.setattr("conformance.harness.runners._run", _fake_run)
 
-    result = run_rustest_v2_collect(case_dir, [])
+    result = run_rustest_collect(case_dir, [])
 
     assert result.ids == ["test_mini.py::test_one", "test_mini.py::test_one"]
 
 
-def test_run_rustest_v2_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
+def test_run_rustest_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
     """v2's stderr (summary, ``ERROR collecting ...``) must never leak into the id set.
 
     v2 deliberately puts its summary and error prose on stderr where pytest puts them
@@ -602,14 +602,14 @@ def test_run_rustest_v2_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
     (case_dir / "test_broken.py").write_text("def test_x(:\n", encoding="utf-8")
     (case_dir / "test_good.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
-    result = run_rustest_v2_collect(case_dir, [])
+    result = run_rustest_collect(case_dir, [])
 
     assert result.ids == ["test_good.py::test_ok"]
     assert not any("collected" in nodeid for nodeid in result.ids)
 
 
 # --------------------------------------------------------------------------------------
-# The full-run (`--v2-run`) gate: real pytest execution vs `rustest --report-json`.
+# The full-run (`--run`) gate: real pytest execution vs `rustest --report-json`.
 # --------------------------------------------------------------------------------------
 
 
@@ -742,7 +742,7 @@ def test_parse_pytest_summary_matches_real_pytest_on_every_bucket(tmp_path: Path
     )
 
 
-@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_run])
 def test_full_run_runners_agree_on_all_six_outcomes(
     runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
 ) -> None:
@@ -762,7 +762,7 @@ def test_full_run_runners_agree_on_all_six_outcomes(
     assert result.exit_code == 1
 
 
-@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_run])
 def test_full_run_runners_agree_on_the_mini_suite(
     runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
 ) -> None:
@@ -780,7 +780,7 @@ def test_full_run_runners_agree_on_the_mini_suite(
     assert result.exit_code == 1
 
 
-@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_run])
 def test_full_run_runners_ignore_a_surrounding_project_config(
     runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
 ) -> None:
@@ -803,7 +803,7 @@ def test_full_run_runners_ignore_a_surrounding_project_config(
     assert result.exit_code == 1
 
 
-@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_run])
 def test_full_run_runners_pass_case_args_through(
     runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
 ) -> None:
@@ -866,7 +866,7 @@ def _case_with_a_broken_import(tmp_path: Path) -> Path:
     return case_dir
 
 
-@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_v2_run])
+@pytest.mark.parametrize("runner", [run_pytest_full, run_rustest_run])
 def test_full_run_runners_report_no_executed_ids_when_collection_is_interrupted(
     runner: Callable[[Path, list[str]], FullRunResult], tmp_path: Path
 ) -> None:
@@ -877,7 +877,7 @@ def test_full_run_runners_report_no_executed_ids_when_collection_is_interrupted(
     ``--collect-only`` pass still lists ``test_zzz_good.py::test_ok``, so taking those
     ids verbatim would pit pytest's *collected* set against v2's *executed* one and
     manufacture a divergence out of a rule both engines implement identically
-    (``src/v2/execute.rs::stage`` returns empty dispatch lists when ``errors`` is
+    (``src/engine/execute.rs::stage`` returns empty dispatch lists when ``errors`` is
     non-empty -- Task 4 report §2.1, correction 2).
 
     Asserted from a **side effect**, not from the exit code: if the healthy test had
@@ -885,7 +885,7 @@ def test_full_run_runners_report_no_executed_ids_when_collection_is_interrupted(
     observation rather than a restatement of the branch under test.
 
     ``errors == 1`` is the *broken file*, not a test: pytest reports a failed import as
-    ``1 error``, and ``run_rustest_v2_run`` folds ``collection_errors`` into the same
+    ``1 error``, and ``run_rustest_run`` folds ``collection_errors`` into the same
     bucket so the two tallies are comparable. This expectation is the reason the fold
     exists -- the first version of this test asserted ``errors=0`` for both runners and
     the differential parametrization proved it wrong on the pytest side.
@@ -956,7 +956,7 @@ def test_run_pytest_full_keeps_its_ids_when_a_test_calls_pytest_exit(tmp_path: P
     assert result.outcomes.passed == 1
 
 
-def test_run_rustest_v2_run_raises_when_no_report_is_written(tmp_path: Path) -> None:
+def test_run_rustest_run_raises_when_no_report_is_written(tmp_path: Path) -> None:
     """``rustest`` dying before it writes a report is a loud failure, never zeros.
 
     Fabricating an all-zeros ``FullRunResult`` here would grade as a divergence with no
@@ -968,15 +968,15 @@ def test_run_rustest_v2_run_raises_when_no_report_is_written(tmp_path: Path) -> 
     _write_mini_suite(case_dir)
 
     with pytest.raises(RuntimeError, match="rustest wrote no report"):
-        run_rustest_v2_run(case_dir, ["--definitely-not-a-real-flag"])
+        run_rustest_run(case_dir, ["--definitely-not-a-real-flag"])
 
 
-def test_run_rustest_v2_run_grades_the_process_exit_code_not_the_reports_claim(
+def test_run_rustest_run_grades_the_process_exit_code_not_the_reports_claim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The graded exit code is what the process returned, not what the report says.
 
-    They are pinned to agree by ``python/tests/test_v2_run_cli.py``; if they ever stop
+    They are pinned to agree by ``python/tests/test_run_cli.py``; if they ever stop
     agreeing, the gate must side with the number CI and users actually observe.
     Stubbing the process boundary is the only way to drive them apart on purpose.
     """
@@ -993,6 +993,6 @@ def test_run_rustest_v2_run_grades_the_process_exit_code_not_the_reports_claim(
 
     monkeypatch.setattr("conformance.harness.runners._run", _fake_run)
 
-    result = run_rustest_v2_run(case_dir, [])
+    result = run_rustest_run(case_dir, [])
 
     assert result.exit_code == 99

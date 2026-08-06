@@ -19,12 +19,12 @@ import json
 
 #: The wire's major version, carried on every ``meta`` line as ``schema_version``.
 #:
-#: **2, and the jump from ``main``'s 1 is deliberate rather than incidental.**  The v2 engine
+#: **2, and the jump from ``main``'s 1 is deliberate rather than incidental.**  The engine
 #: reports *six* status buckets (``passed``/``failed``/``skipped``/``xfailed``/``xpassed``/
 #: ``error``) where v1 had three, and its failure ``message`` is an assertion-rewritten string
 #: the worker already composed -- so the v1 shape (``error``/``msg``/``expected``/``actual``
 #: split out of a traceback by regex, a three-bucket summary, no ``exit_code``) cannot be
-#: produced from v2's data without inventing fields.  A consumer pinned to ``schema_version: 1``
+#: produced from the engine's data without inventing fields.  A consumer pinned to ``schema_version: 1``
 #: should refuse a ``2`` stream rather than half-read it, which is exactly what a major bump is
 #: for.  See ``docs/guide/llm-output.md`` for the field-by-field mapping.
 SCHEMA_VERSION = 2

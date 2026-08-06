@@ -87,7 +87,7 @@ def grade_collect_case(
     Those two *are* the whole ``--collect-only`` contract. There are no outcome
     counts to compare (nothing is executed) and no separate collection-error flag to
     compare (pytest signals that as exit 2, and so does v2). Stderr is not read on
-    either side -- see ``run_rustest_v2_collect``.
+    either side -- see ``run_rustest_collect``.
 
     The id comparison is **ordered**. pytest's collection order is observable
     behaviour that v2 reproduces deliberately -- Task 3's name-sorted interleaved walk
@@ -142,7 +142,7 @@ def grade_run_case(
       stderr legitimately carries boundary teardown output on a green run.
     * **durations** -- not a claim about behaviour.
     * **``teardown_errors``** -- not compared as a list, but it cannot hide: each entry
-      counts as a failure for ``exit_code`` (``src/v2/execute.rs`` ``finish``), and the
+      counts as a failure for ``exit_code`` (``src/engine/execute.rs`` ``finish``), and the
       exit code *is* graded. It is deliberately **not** folded into ``errors`` the way
       collection errors are, because v2's own summary line does not fold it either
       (``core.py::_run_summary`` takes only ``collection_errors``). pytest does count

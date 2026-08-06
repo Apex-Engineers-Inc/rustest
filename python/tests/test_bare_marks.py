@@ -79,7 +79,7 @@ def test_bare_compat_skip_records_skip_metadata_not_a_function_reason() -> None:
 
     Before the fix it was never set at all (the method *was* the decorator); the closest
     the bug came to metadata was handing ``skip_decorator`` the test function as ``reason``
-    one call later, which is why ``_v2_worker::_skip_kwargs`` still coerces to ``str``.
+    one call later, which is why ``_worker::_skip_kwargs`` still coerces to ``str``.
     """
 
     def victim() -> None:
@@ -122,7 +122,7 @@ def test_compat_skip_accepts_a_positional_reason() -> None:
 
 
 def test_bare_xfail_returns_the_function_and_records_an_unconditional_xfail() -> None:
-    """Empty ``args`` is what makes it unconditional — ``_v2_worker::_conditions``."""
+    """Empty ``args`` is what makes it unconditional — ``_worker::_conditions``."""
 
     def victim() -> None:
         pass
@@ -375,7 +375,7 @@ def test_bare_parametrize_is_still_a_loud_typeerror() -> None:
 def test_an_uncalled_mark_duck_types_as_a_mark_for_module_level_pytestmark() -> None:
     """``pytestmark = pytest.mark.xfail`` puts the *uncalled* object in the list.
 
-    ``_v2_worker::_spec_from_pytestmark`` reads ``name``/``args``/``kwargs`` off it. A bound
+    ``_worker::_spec_from_pytestmark`` reads ``name``/``args``/``kwargs`` off it. A bound
     method (the old shape) has none of those and refused the whole file.
     """
     bare = compat_pytest.mark.xfail

@@ -111,13 +111,13 @@ Rustest is a hybrid Python/Rust project:
 rustest/
 ├── src/                          # Rust core (the rustest-core crate)
 │   ├── lib.rs                    # The PyO3 boundary: four functions, nothing else
-│   └── v2/                       # The engine
+│   └── engine/                   # The engine
 │       ├── config.rs             # rootdir + ini resolution, following pytest's rules
 │       ├── collect.rs            # The file walk and the worker pool
 │       ├── static_collect.rs     # Tier S: AST collection without importing
 │       ├── manifest.rs           # Collection output as data
 │       ├── manifest_cache.rs     # Tier S's content-addressed cache
-│       ├── execute.rs            # Run orchestration and the schema-v2 report
+│       ├── execute.rs            # Run orchestration and the run report
 │       ├── selection.rs          # The -k / -m expression engine
 │       ├── nodeid.rs             # pytest-byte-identical node ids
 │       ├── protocol.rs           # The orchestrator/worker wire
@@ -128,8 +128,8 @@ rustest/
 │   ├── __init__.py               # Public API, exported lazily
 │   ├── __main__.py               # CLI entry point
 │   ├── decorators.py             # @fixture, @parametrize, @mark, outcome exceptions
-│   ├── _v2_worker.py             # The worker: collection and execution inside Python
-│   ├── _v2_builtins.py           # The engine's builtin fixtures, ported from pytest
+│   ├── _worker.py             # The worker: collection and execution inside Python
+│   ├── _builtins.py           # The engine's builtin fixtures, ported from pytest
 │   ├── builtin_fixtures.py       # Public fixture types and MonkeyPatch
 │   ├── cli.py                    # Command-line interface
 │   ├── core.py                   # Wrapper around the Rust layer; run() lives here
@@ -290,7 +290,7 @@ poe lint
 
 ```bash
 # 1. Edit a Rust file
-vim src/v2/collect.rs
+vim src/engine/collect.rs
 
 # 2. Rebuild the extension
 poe dev
@@ -394,9 +394,10 @@ a real interpreter rather than trusted.
 **Example:**
 
 ```rust
-// In src/v2/py.rs - this Rust function...
+// In src/engine/py.rs - this Rust function...
 #[pyfunction]
-pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<String> {
+#[pyo3(name = "resolve_config")]
+pub fn py_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<String> {
     // Fast Rust code here
 }
 ```
@@ -405,10 +406,10 @@ pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<St
 # ...can be called from Python:
 from pathlib import Path
 
-from rustest.rust import v2_resolve_config
+from rustest.rust import resolve_config
 
 # invocation_dir must be absolute; a relative path raises ValueError.
-config_json = v2_resolve_config(str(Path.cwd()), ["tests"])
+config_json = resolve_config(str(Path.cwd()), ["tests"])
 ```
 
 ## Troubleshooting
@@ -520,7 +521,7 @@ hand-written API pages to update. Improve a docstring and the page follows.
 
 Pages are authored in `.md`, not `.qmd`, and that is load-bearing. great-docs and Quarto
 render both, but rustest's own code-block collector only claims `.md`
-(`src/v2/collect.rs::is_markdown`), so keeping the extension is what keeps every example on
+(`src/engine/collect.rs::is_markdown`), so keeping the extension is what keeps every example on
 the site reaching the CI gate at all (with the limits on that gate described under
 [Python Tests](#python-tests)). Quarto's executable fences are spelled ```` ```{python} ````,
 which the collector deliberately does not match.

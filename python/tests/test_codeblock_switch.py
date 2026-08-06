@@ -63,7 +63,7 @@ def test_run_tree_can_observe_the_off_by_default(tmp_path: Path) -> None:
     ``helpers.run_tree`` used to hardcode ``codeblocks: bool = True`` and forward it, so no
     ``run_tree``-based test could observe the off-by-default flip at all: every such test
     ran with the tier forced on regardless of config. That is the same shape as the
-    ``test_v2_flip_cli.py`` fixtures which encoded the old always-on assumption, and it
+    ``test_flip_cli.py`` fixtures which encoded the old always-on assumption, and it
     survived the sweep that fixed those.
 
     With the parameter widened to ``bool | None = None``, "not passed" means "let config

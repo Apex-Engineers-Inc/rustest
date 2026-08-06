@@ -12,7 +12,7 @@ was a second, independent description of a string the runner had already compose
 change to the traceback format could silently degrade the JSON without failing a test that
 looked at the traceback.
 
-v2 does not need any of it.  :func:`rustest.core.v2_run` already holds the finished
+the engine does not need any of it.  :func:`rustest.core.run` already holds the finished
 ``RunReport``: a list of tests in manifest order, each with its status, its message, and its
 captures, plus the six-bucket summary and the exit code.  This module walks that structure and
 writes it out.  The **one** thing still read out of message text is the failing line number
@@ -22,7 +22,7 @@ rather than to a wrong one.
 
 **Determinism** is inherited rather than manufactured.  ``main`` sorted its buffered failures
 by ``(file, line)`` because events arrived in worker-completion order.  ``report["tests"]`` is
-already in manifest order however the pool interleaved -- ``src/v2/execute.rs``
+already in manifest order however the pool interleaved -- ``src/engine/execute.rs``
 (``report_order_is_manifest_order_however_many_workers_run_it``) reassembles by report slot --
 so this module sorts nothing, and identical failures produce identical bytes at any ``-n``.
 """
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from typing import IO, Any
 
     # The report shapes are `core`'s private `TypedDict`s and are *deliberately* re-used here
-    # rather than re-declared: they describe the schema-v2 wire (`src/v2/execute.rs`), and a
+    # rather than re-declared: they describe the schema-v2 wire (`src/engine/execute.rs`), and a
     # second copy would be a second thing to keep in step with the Rust struct. The underscore
     # means "not public API", which this module is not either -- both are private to the
     # package, and `reportPrivateUsage` cannot express "private to the package".
@@ -70,7 +70,7 @@ def failing_line(message: str) -> int | None:
 
     The one field ``--llm`` derives from message text rather than from the report, because the
     worker->orchestrator wire carries a formatted message and no line number
-    (``src/v2/execute.rs::TestOutcome``).  Adding one would mean a protocol version, a schema
+    (``src/engine/execute.rs::TestOutcome``).  Adding one would mean a protocol version, a schema
     change and a Rust round trip for a field that is *already in the string*; reading it back
     out costs a reversed walk over at most a few dozen lines.
 
@@ -321,7 +321,7 @@ def render(
     Args:
         report: The parsed schema-v2 run report.
         verbosity: ``-1`` for ``-q``, ``0`` default, ``1`` for ``-v`` -- the same ladder
-            :func:`rustest.core.v2_run` uses for the human output.
+            :func:`rustest.core.run` uses for the human output.
         full: ``--llm-full``; keep captures whole instead of tail-truncating them.
         output: Where to write.  Defaults to ``sys.stdout``, which is the contract: stdout is
             pure JSONL under ``--llm`` and every diagnostic goes to stderr.

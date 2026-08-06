@@ -10,4 +10,4 @@ than one rustest chose.
 Note what is deliberately here: a bare async generator *test*. In strict mode it is
 not converted into pytest-asyncio's item class, so it acquires no `xfail(run=False)`
 and fails like any other unrunnable async body -- the mode-dependence of
-`_v2_worker.py::_async_generator_xfail`.
+`_worker.py::_async_generator_xfail`.

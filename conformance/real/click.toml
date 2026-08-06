@@ -52,7 +52,7 @@ timeout_s = 1800
 # parametrizes over dicts, tuples, enums and long strings, all four of which rustest used to
 # name differently from pytest, so through Phase 4 Task 1 this said `strip_params` and the
 # ~1800 spelling differences were raised as one graded `ids` problem. With `IdMaker` ported
-# (`decorators.py::_idval_from_value` + `src/v2/static_collect.rs::generate_param_id`) the raw
+# (`decorators.py::_idval_from_value` + `src/engine/static_collect.rs::generate_param_id`) the raw
 # ids are byte-identical, so the relaxation is no longer buying anything and is removed:
 # the gate now proves per-node-id parity across all 1686 selected tests, and compares
 # statuses id by id rather than as a per-function multiset. Measured green under `exact`.
@@ -66,5 +66,5 @@ id_policy = "exact"
 # EMPTY as of Phase 4 Task 1's review. The last entry here was PARAMETRIZE ID GENERATION --
 # rustest did not reproduce `_pytest/python.py::IdMaker` for containers, enums, bytes,
 # functions or long strings, and this suite's ids differed from pytest's by spelling alone.
-# `decorators.py::_idval_from_value` and `src/v2/static_collect.rs::generate_param_id` are
+# `decorators.py::_idval_from_value` and `src/engine/static_collect.rs::generate_param_id` are
 # now ports of it, both halves of the tier pair moving together, and the suite MATCHES.

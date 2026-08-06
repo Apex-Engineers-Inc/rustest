@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 
 from rustest import parametrize
-from rustest._v2_worker import _indirect_names
+from rustest._worker import _indirect_names
 
 
 def _cases(func: object) -> list[dict[str, Any]]:
@@ -160,7 +160,7 @@ def test_an_indirect_fixture_receives_request_param(tmp_path: Any) -> None:
 def test_the_manifest_reports_an_indirect_name_as_a_fixture() -> None:
     """`_fixture_names` subtracts only the *direct* parametrized names, because an indirect
     one really is resolved through a fixture — that is pytest's ``fixturenames``."""
-    from rustest._v2_worker import _fixture_names
+    from rustest._worker import _fixture_names
 
     @parametrize("routed,plain", [(1, 2)], indirect=["routed"])
     def test_x(routed: int, plain: int, tmp_path: Any) -> None:
@@ -198,7 +198,7 @@ def test_a_parametrized_name_the_function_does_not_take_is_a_collection_error() 
     parameter was never delivered. Measured on pytest 8.4.2: each is one collection error,
     exit 2, with the message asserted here.
     """
-    from rustest._v2_worker import _validate_if_using_arg_names, CollectionRefusal
+    from rustest._worker import _validate_if_using_arg_names, CollectionRefusal
 
     def test_x(other: int = 0) -> None:
         pass
@@ -211,7 +211,7 @@ def test_a_parametrized_name_the_function_does_not_take_is_a_collection_error() 
 
 
 def test_the_word_changes_for_an_indirect_name() -> None:
-    from rustest._v2_worker import _validate_if_using_arg_names, CollectionRefusal
+    from rustest._worker import _validate_if_using_arg_names, CollectionRefusal
 
     def test_x() -> None:
         pass
@@ -224,7 +224,7 @@ def test_the_word_changes_for_an_indirect_name() -> None:
 
 
 def test_a_parameter_with_a_default_gets_its_own_message() -> None:
-    from rustest._v2_worker import _validate_if_using_arg_names, CollectionRefusal
+    from rustest._worker import _validate_if_using_arg_names, CollectionRefusal
 
     def test_x(val: int = 7) -> None:
         pass
@@ -239,7 +239,7 @@ def test_a_parameter_with_a_default_gets_its_own_message() -> None:
 
 
 def test_a_name_in_the_closure_is_accepted() -> None:
-    from rustest._v2_worker import _validate_if_using_arg_names
+    from rustest._worker import _validate_if_using_arg_names
 
     def test_x(used: int) -> None:
         pass

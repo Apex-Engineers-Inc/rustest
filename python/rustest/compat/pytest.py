@@ -453,11 +453,11 @@ class FixtureRequest:
     def getfixturevalue(self, name: str) -> Any:
         """Get the value of another fixture by name, resolving dependencies recursively.
 
-        **This is not the path a rustest run takes.** The v2 worker builds its own
+        **This is not the path a rustest run takes.** The worker builds its own
         ``FixtureRequest`` with its own ``getfixturevalue``
-        (``python/rustest/_v2_worker.py``), backed by the real fixture graph it assembled for
+        (``python/rustest/_worker.py``), backed by the real fixture graph it assembled for
         the file. This class is the compat shim's ``pytest.FixtureRequest``, reached when the
-        shim is imported *outside* a v2 worker -- under real pytest, or from library code --
+        shim is imported *outside* a worker -- under real pytest, or from library code --
         so the Python-side registry is the whole resolver here.
 
         It used to try ``rustest.rust.getfixturevalue`` first, a PyO3 function backed by v1's
@@ -671,7 +671,7 @@ class Exit(Exception):
     difference is observable: a test body wrapping its work in ``except Exception`` swallows
     a ``pytest.exit()`` under pytest too. Reproducing the base class reproduces that.
 
-    The rustest v2 worker therefore lists this in ``_v2_worker.ABORT_EXCEPTIONS`` and
+    The rustest worker therefore lists this in ``_worker.ABORT_EXCEPTIONS`` and
     re-raises it ahead of its own ``except Exception`` handlers, which is exactly how pytest
     gets the same result with a plain ``Exception``: nothing between the test body and
     ``wrap_session`` catches it.
@@ -697,7 +697,7 @@ def exit(reason: str = "", returncode: int | None = None) -> NoReturn:  # noqa: 
     every other unknown attribute, and turning it into a trap would change behaviour for
     imports that are legitimately harmless.
 
-    ``returncode`` is accepted and carried on the exception. Under the v2 engine it is not
+    ``returncode`` is accepted and carried on the exception. Under the engine it is not
     yet honoured — the session-stop signal reaches the orchestrator as a worker exit code,
     which cannot carry a payload — so the run exits **2** (pytest's ``INTERRUPTED``, and
     pytest's own answer when ``returncode`` is omitted). Recorded in the
@@ -738,7 +738,7 @@ class _PytestMarkCompat:
         # `skip` cannot simply be delegated to `_rustest_mark`: the native `mark.skip` only
         # records a mark dict in `__rustest_marks__`, and the v1 Rust collector read skips
         # from the `__rustest_skip__` attribute alone (the deleted
-        # src/discovery.rs::collect_tests). `_v2_worker::_mark_specs` reads both, so the
+        # src/discovery.rs::collect_tests). `_worker::_mark_specs` reads both, so the
         # routing survives the engine that required it -- see `SkipMarkDecorator`.
         # The compat surface therefore keeps its own routing to `skip_decorator`, wrapped in
         # the same bare-or-factory discrimination as the rest -- being a plain *method* is
@@ -844,7 +844,7 @@ class PytestWarning(UserWarning):
     before anything installs ``sys.modules["pytest"]``, so the filter is discarded with
     ``Invalid -W option ignored: invalid module name: 'pytest'`` whether or not the class is
     a ``Warning``. pytest's ``filterwarnings`` ini is not read either
-    (``_v2_worker.py::_ini_values`` refuses it by name rather than fabricating a value).
+    (``_worker.py::_ini_values`` refuses it by name rather than fabricating a value).
     All four probed.
 
     The bases are pytest's exactly, and the two multiple-inheritance ones are the reason this

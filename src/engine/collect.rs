@@ -1,13 +1,13 @@
-//! The v2 orchestrator: walk files, drive a pool of spawn workers, assemble the manifest.
+//! The collection orchestrator: walk files, drive a pool of spawn workers, assemble the manifest.
 //!
-//! [`collect`] is the whole of v2 collection seen from outside: it resolves config,
+//! [`collect`] is the whole of collection seen from outside: it resolves config,
 //! decides which files pytest would look at, hands each one to a Python worker process
-//! (`python -m rustest._v2_worker`, [`crate::v2::protocol`]), and returns a
+//! (`python -m rustest._worker`, [`crate::engine::protocol`]), and returns a
 //! [`CollectionManifest`].  No live Python object crosses the boundary — that is the
-//! organising rule of the v2 spine, and it is what makes the pool possible at all.
+//! organising rule of the engine, and it is what makes the pool possible at all.
 //!
 //! **pytest is the oracle for the walk.**  Every traversal rule below cites the installed
-//! pytest source (`.venv/Lib/site-packages/_pytest/`, pytest 8.4.2) it ports.  The v2 walk
+//! pytest source (`.venv/Lib/site-packages/_pytest/`, pytest 8.4.2) it ports.  The walk
 //! deliberately reads **no `.gitignore`** — that is a v1-ism; pytest prunes with
 //! `norecursedirs` plus two hard-coded rules (`__pycache__`, virtualenv roots) and nothing
 //! else.
@@ -32,7 +32,7 @@
 //! * an undecodable line is fatal, and the error **quotes the raw line** (the op name is
 //!   the only clue to what a skewed peer was saying);
 //! * a `collected` carrying both `tests` and `error` — the one malformed shape serde
-//!   cannot reject, documented in [`crate::v2::protocol`] — is treated exactly like a
+//!   cannot reject, documented in [`crate::engine::protocol`] — is treated exactly like a
 //!   decode error;
 //! * a response naming a file other than the one requested is fatal (accepting it would
 //!   attribute one file's tests to another);
@@ -45,19 +45,19 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
-use crate::v2::config::{
+use crate::engine::config::{
     matches_file_pattern, normpath, resolve_config, ConfigError, ResolvedConfig,
 };
-use crate::v2::execute::{TestOutcome, TestStatus, SESSION_EXIT_EXIT, SHUTDOWN_TEARDOWN_EXIT};
-use crate::v2::manifest::{
+use crate::engine::execute::{TestOutcome, TestStatus, SESSION_EXIT_EXIT, SHUTDOWN_TEARDOWN_EXIT};
+use crate::engine::manifest::{
     CollectedTest, CollectionErrorEntry, CollectionManifest, MANIFEST_SCHEMA_VERSION,
 };
 #[cfg(test)]
-use crate::v2::manifest_cache::ManifestCache;
-use crate::v2::protocol::{CoverageWire, WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
-use crate::v2::selection::{select_mask, SelectionError};
-use crate::v2::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
-use crate::v2::to_posix;
+use crate::engine::manifest_cache::ManifestCache;
+use crate::engine::protocol::{CoverageWire, WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
+use crate::engine::selection::{select_mask, SelectionError};
+use crate::engine::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
+use crate::engine::to_posix;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -134,7 +134,7 @@ pub enum CollectError {
     /// A test called `pytest.exit()`: the **session** is over by request, not broken.
     ///
     /// Carried as a `CollectError` variant so it travels the same channel every other
-    /// mid-execute outcome does, and intercepted by [`crate::v2::execute::worker_life`]
+    /// mid-execute outcome does, and intercepted by [`crate::engine::execute::worker_life`]
     /// before it can be reported as a failure — the results already produced are kept, which
     /// is what pytest does (probed: `1 passed`, exit 2, the exiting test unreported).
     SessionExit {
@@ -157,7 +157,7 @@ pub enum CollectError {
     /// (and cached) half of the manifest **before** a worker is spawned, so the expression has
     /// to be compiled before there is a manifest to hand back to the caller.  pytest agrees
     /// on the classification — `_pytest/mark/__init__.py::_parse_expression` raises
-    /// `UsageError` — and [`crate::v2::py::collect_error_to_py`] maps it to exit 4.
+    /// `UsageError` — and [`crate::engine::py::collect_error_to_py`] maps it to exit 4.
     Selection(SelectionError),
 }
 
@@ -286,44 +286,32 @@ pub struct WorkerLauncher {
     /// The one thing that travels this way rather than on the wire is **capture**
     /// ([`Self::without_capture`]).  It is spawn configuration, constant for a worker's whole
     /// life and identical for every worker in the pool — exactly like `program` and `args` —
-    /// so putting it here keeps [`crate::v2::protocol::PROTOCOL_VERSION`] where it is.  A
+    /// so putting it here keeps [`crate::engine::protocol::PROTOCOL_VERSION`] where it is.  A
     /// per-message option would have to be re-sent with every request it cannot vary across.
     envs: Vec<(String, String)>,
 }
 
 /// Set in a worker's environment by [`WorkerLauncher::without_capture`]; read by
-/// `python/rustest/_v2_worker.py`.  Mirrored there and **must be renamed in the same
+/// `python/rustest/_worker.py`.  Mirrored there and **must be renamed in the same
 /// commit**.
-pub const CAPTURE_ENV: &str = "RUSTEST_V2_CAPTURE";
+pub const CAPTURE_ENV: &str = "RUSTEST_CAPTURE";
 
 /// v1's "a rustest run is in progress" flag, set for every worker.
 ///
 /// v1 sets it around `rust.run` (`python/rustest/core.py`), and real suites branch on it —
 /// rustest's own `tests/integration/*` skip themselves under it, and
-/// `tests/test_conftest_nested/*` *enable* themselves with it.  The v2 worker is where user
+/// `tests/test_conftest_nested/*` *enable* themselves with it.  The worker is where user
 /// code runs, so the worker process is where it has to be set; leaving it unset made every
 /// one of those files take the wrong branch the moment v2 became the default.
 pub const RUNNING_ENV: &str = "RUSTEST_RUNNING";
 
-/// Which engine a test body is running under: `"v2"` in every v2 worker, unset under v1.
-///
-/// A transition-period affordance, and a deliberate one.  The two engines are not feature
-/// identical yet (see the Phase 3 list in `.superpowers/sdd/p1c-task-1-report.md`), and a
-/// suite that needs to branch — rustest's own does, for the async-batching gap — otherwise
-/// has to sniff behaviour.  Reading an environment variable is what `RUSTEST_RUNNING` already
-/// taught every rustest suite to do.
-pub const ENGINE_ENV: &str = "RUSTEST_ENGINE";
-
 impl WorkerLauncher {
-    /// `python_executable -m rustest._v2_worker` — the real worker.
+    /// `python_executable -m rustest._worker` — the real worker.
     pub fn module(python_executable: &str) -> Self {
         Self {
             program: python_executable.to_string(),
-            args: vec!["-m".to_string(), "rustest._v2_worker".to_string()],
-            envs: vec![
-                (RUNNING_ENV.to_string(), "1".to_string()),
-                (ENGINE_ENV.to_string(), "v2".to_string()),
-            ],
+            args: vec!["-m".to_string(), "rustest._worker".to_string()],
+            envs: vec![(RUNNING_ENV.to_string(), "1".to_string())],
         }
     }
 
@@ -388,7 +376,7 @@ pub struct CollectOptions {
     pub keyword: Option<String>,
     /// The raw `-m` expression.
     pub mark: Option<String>,
-    /// Compute the assertion-rewrite plan ([`crate::v2::static_collect::rewrite_plan`]).
+    /// Compute the assertion-rewrite plan ([`crate::engine::static_collect::rewrite_plan`]).
     ///
     /// **Off by default**, and the default is the interesting half: only a *run* imports the
     /// modules, so only a run can benefit from rewritten assertions. `--collect-only`
@@ -459,8 +447,8 @@ pub enum TierMode {
 }
 
 impl TierMode {
-    /// Parse the wire spelling used by the `v2_collect` boundary and the
-    /// `RUSTEST_V2_COLLECT_TIER` escape hatch.  An unknown value is **not** an error: this is
+    /// Parse the wire spelling used by the `collect` boundary and the
+    /// `RUSTEST_COLLECT_TIER` escape hatch.  An unknown value is **not** an error: this is
     /// a debug knob, and a typo must not turn a user's run into a usage error.  Anything but
     /// the dynamic spellings means the default.
     pub fn from_wire(value: &str) -> Self {
@@ -484,7 +472,7 @@ pub(crate) struct FileOutcome {
 /// Everything a run needs before a single process is spawned: the files, the pool size,
 /// which worker owns which file, and the handshake payload.
 ///
-/// Extracted so [`crate::v2::execute`] drives the *same* walk, the *same* routing and the
+/// Extracted so [`crate::engine::execute`] drives the *same* walk, the *same* routing and the
 /// *same* `init` as collection does.  A second copy of this in the execute path would be
 /// free to drift, and the one property that must not drift is the file→worker mapping:
 /// execution dispatches each test to the worker that collected its file, which is only
@@ -507,7 +495,7 @@ pub(crate) struct Dispatch {
     /// The manifest cache this run used, when one was enabled.
     ///
     /// `#[cfg(test)]`: production has no use for it — the pass has already read and written
-    /// everything by the time it returns — but its [`crate::v2::manifest_cache::CacheStats`]
+    /// everything by the time it returns — but its [`crate::engine::manifest_cache::CacheStats`]
     /// are the instrument for the claim that a warm collection *parses nothing*, and that
     /// claim has to be checkable through the same `collect` entry point a user calls.
     #[cfg(test)]
@@ -539,7 +527,7 @@ pub(crate) struct Dispatch {
 /// module*; a file Tier S answered was never imported anywhere, so no worker holds a plan for
 /// its tests and every one of them would come back `unknown test`.  Tier S therefore belongs
 /// to [`collect`] — the `--collect-only` surface, and from Task 2 the manifest cache — and
-/// [`crate::v2::execute`] keeps calling this.
+/// [`crate::engine::execute`] keeps calling this.
 pub(crate) fn plan(
     invocation_dir: &Path,
     args: &[PathBuf],
@@ -718,7 +706,7 @@ pub(crate) fn plan_with_options(
 /// still reported before any file is collected, and the *first* failing worker — in index
 /// order — is still the one whose error the user sees.  Only the overlap changed.
 ///
-/// [`handle_init`]: python/rustest/_v2_worker.py
+/// [`handle_init`]: python/rustest/_worker.py
 pub(crate) fn spawn_pool(
     dispatch: &Dispatch,
     launcher: &WorkerLauncher,
@@ -984,7 +972,7 @@ fn discover_targets(
 /// The `.txt`/`.rst` row is the one that would be got wrong by intuition: those are *not*
 /// usage errors, because pytest's doctest tier claims them unconditionally for an initial
 /// path (the `--doctest-glob` default of `test*.txt` governs only files found by *walking*).
-/// v2 has no doctest tier, so it produces no tests for them — the same observable answer,
+/// the engine has no doctest tier, so it produces no tests for them — the same observable answer,
 /// reached a different way, and recorded here rather than left to coincidence.
 ///
 /// Returns `Ok(true)` when the file is a collection target, `Ok(false)` when it is
@@ -1166,7 +1154,7 @@ fn should_prune(name: &str, path: &Path, config: &ResolvedConfig) -> bool {
         return true;
     }
     // `if not allow_in_venv and _in_venv(collection_path): return True` — pytest never
-    // descends into a virtualenv unless `--collect-in-virtualenv` is given (not a v2 flag
+    // descends into a virtualenv unless `--collect-in-virtualenv` is given (not a rustest flag
     // yet), however the environment is named.
     if is_virtualenv(path) {
         return true;
@@ -1192,7 +1180,7 @@ fn is_python_source(path: &Path) -> bool {
 
 /// A markdown file, i.e. a **code-block** target.
 ///
-/// This is the one place v2 collects something pytest would not: rustest has tested the
+/// This is the one place rustest collects something pytest would not: rustest has tested the
 /// python fences in `.md` files since v1 (`src/discovery.rs::collect_from_markdown`, reached
 /// through `build_markdown_glob` whenever `enable_codeblocks` is on — which is the default),
 /// and the project's own docs suite depends on it.  Dropping the feature at the flip would
@@ -1256,7 +1244,7 @@ fn matches_python_files(path: &Path, config: &ResolvedConfig) -> bool {
 /// leaks: re-collecting `Dir(.)` for the file argument overwrites the cache entry, so when
 /// `genitems` later walks the `Dir(.)` node it sees a cache *hit*, treats it as a duplicate
 /// and yields **nothing** — silently dropping `pkg/test_b.py::test_three`, a test the user
-/// asked for by naming `.`.  v2 keeps that test.  Reproducing the drop would mean porting
+/// asked for by naming `.`.  the engine keeps that test.  Reproducing the drop would mean porting
 /// the node cache, and the behaviour being ported is a bug.
 #[derive(Default)]
 struct Seen {
@@ -1891,7 +1879,7 @@ impl Worker {
     ///   checked, because they fail differently: a wrong name is a worker answering the wrong
     ///   test, while matching names in the wrong *order* would be a reordering the report
     ///   absorbs without trace;
-    /// * the `status` must be one of the documented six. `src/v2/protocol.rs` leaves the
+    /// * the `status` must be one of the documented six. `src/engine/protocol.rs` leaves the
     ///   field an unvalidated `String` **on purpose** and says so: an enum would reject the
     ///   line inside serde with no test id in hand, so the check belongs here, where the
     ///   request that caused it and the worker's stderr are both available;
@@ -2100,7 +2088,7 @@ impl Worker {
     ///
     /// The `wait()` here is deliberately **unbounded**, unlike the stderr drain's bounded
     /// wait, and the asymmetry is the point: the exit status *is* the diagnosis here — the
-    /// real worker exits 2 exactly on protocol drift and 0 otherwise (`_v2_worker.py::main`)
+    /// real worker exits 2 exactly on protocol drift and 0 otherwise (`_worker.py::main`)
     /// — so killing it after a timeout would replace the one informative byte with our own
     /// signal.  It is also safe against the real worker: this path is reached only from EOF
     /// on stdout or a broken stdin pipe, and EOF means every handle to the write end is
@@ -2179,7 +2167,7 @@ impl Worker {
 
     /// The **execute** phase's shutdown, where exit 3 is data rather than a fault.
     ///
-    /// `_v2_worker.py::SHUTDOWN_TEARDOWN_EXIT = 3` means: every response was written, `bye`
+    /// `_worker.py::SHUTDOWN_TEARDOWN_EXIT = 3` means: every response was written, `bye`
     /// was sent, and *then* a module- or session-scoped fixture teardown raised.  The
     /// stream is complete; a user's teardown is broken.  That is not orchestration drift
     /// (exit 2) and collapsing the two destroys the diagnosis — so this returns the failure
@@ -2283,8 +2271,8 @@ mod tests {
     use tempfile::TempDir;
 
     // The interpreter that runs the **real** worker in the end-to-end tests.  It lives in
-    // `v2::mod` rather than here because `v2::py`'s tests need the same one.
-    use crate::v2::test_python as worker_python;
+    // `engine::mod` rather than here because `engine::py`'s tests need the same one.
+    use crate::engine::test_python as worker_python;
 
     // --- fixtures ---------------------------------------------------------
 
@@ -2761,7 +2749,7 @@ mod tests {
 
     /// A `.txt` or `.rst` argument collects **nothing and is not an error**: pytest's
     /// doctest tier claims it unconditionally for an initial path
-    /// (`_pytest/doctest.py::_is_doctest`), finds no doctests, and exits 5.  v2 has no
+    /// (`_pytest/doctest.py::_is_doctest`), finds no doctests, and exits 5.  the engine has no
     /// doctest tier and reaches the same observable answer by producing no target.
     #[test]
     fn a_text_or_rst_argument_collects_nothing_without_failing() {
@@ -3281,7 +3269,7 @@ assert True
         );
         assert_eq!(
             manifest.schema_version,
-            crate::v2::manifest::MANIFEST_SCHEMA_VERSION
+            crate::engine::manifest::MANIFEST_SCHEMA_VERSION
         );
         assert!(!manifest.rootdir.contains('\\'), "{}", manifest.rootdir);
         assert!(manifest.errors.is_empty(), "{:?}", manifest.errors);
@@ -3535,7 +3523,7 @@ assert True
         let message = err.to_string();
         assert!(message.contains("999"), "unexpected message: {message}");
         assert!(
-            message.contains(&crate::v2::protocol::PROTOCOL_VERSION.to_string()),
+            message.contains(&crate::engine::protocol::PROTOCOL_VERSION.to_string()),
             "unexpected message: {message}"
         );
     }
@@ -3677,7 +3665,7 @@ assert True
 
     /// ...and a worker that says `bye` politely and *then* exits non-zero has still
     /// failed.  The real worker exits 2 exactly when it hit protocol drift
-    /// (`_v2_worker.py::main`), so swallowing the status would turn a bug into a quietly
+    /// (`_worker.py::main`), so swallowing the status would turn a bug into a quietly
     /// short manifest.
     #[test]
     fn a_nonzero_exit_after_bye_is_still_a_failure() {
@@ -3711,8 +3699,8 @@ assert True
     // Tier D is the oracle, so the question these tests ask is always the same: **does
     // enabling Tier S change the manifest?**  Every one of them collects the identical tree
     // twice — once at `TierMode::Auto`, once at `TierMode::DynamicOnly` — and diffs the two.
-    // The third leg (pytest itself) is the conformance harness's `--v2-collect` gate and
-    // `python/tests/test_v2_static_tier.py`, which cannot run from here because it needs
+    // The third leg (pytest itself) is the conformance harness's `--collect` gate and
+    // `python/tests/test_static_tier.py`, which cannot run from here because it needs
     // pytest in a subprocess.
     //
     // Tier attribution is asserted alongside, because a differential on its own is satisfied
@@ -3724,7 +3712,7 @@ assert True
         let hybrid = collect(
             tmp.path(),
             &[],
-            &crate::v2::test_python(),
+            &crate::engine::test_python(),
             workers,
             &CollectOptions::new(),
         )
@@ -3732,7 +3720,7 @@ assert True
         let oracle = collect(
             tmp.path(),
             &[],
-            &crate::v2::test_python(),
+            &crate::engine::test_python(),
             workers,
             &CollectOptions {
                 tier: TierMode::DynamicOnly,
@@ -3747,7 +3735,7 @@ assert True
                 .iter()
                 .cloned()
                 .map(|mut test| {
-                    test.tier = crate::v2::manifest::Tier::Dynamic;
+                    test.tier = crate::engine::manifest::Tier::Dynamic;
                     test
                 })
                 .collect(),
@@ -3761,7 +3749,7 @@ assert True
     }
 
     /// Which tier answered each id.
-    fn tiers(manifest: &CollectionManifest) -> Vec<(String, crate::v2::manifest::Tier)> {
+    fn tiers(manifest: &CollectionManifest) -> Vec<(String, crate::engine::manifest::Tier)> {
         manifest
             .tests
             .iter()
@@ -3810,7 +3798,7 @@ assert True
 
         let manifest = differential(&tmp, 2);
 
-        use crate::v2::manifest::Tier::{Dynamic, Static};
+        use crate::engine::manifest::Tier::{Dynamic, Static};
         assert_eq!(
             tiers(&manifest),
             vec![
@@ -3901,7 +3889,7 @@ assert True
         let _ =
             collect_with_launcher(&sub, &[], &unspawnable(), 1, &CollectOptions::new()).unwrap();
 
-        assert!(tmp.path().join(".rustest_cache/v2-manifest").is_dir());
+        assert!(tmp.path().join(".rustest_cache/manifest").is_dir());
         assert!(!sub.join(".rustest_cache").exists());
     }
 
@@ -3926,7 +3914,7 @@ assert True
         .unwrap();
         assert_eq!(ids(&manifest), ["test_a.py::test_one"]);
         assert!(
-            !tmp.path().join(".rustest_cache/v2-manifest").exists(),
+            !tmp.path().join(".rustest_cache/manifest").exists(),
             "the run path wrote a manifest cache entry"
         );
     }
@@ -3956,7 +3944,7 @@ assert True
         assert_eq!(stats.hits(), 1, "the static file was not served");
         assert_eq!(stats.misses(), 1, "the dynamic file was cached");
 
-        let raw = std::fs::read_dir(tmp.path().join(".rustest_cache/v2-manifest"))
+        let raw = std::fs::read_dir(tmp.path().join(".rustest_cache/manifest"))
             .unwrap()
             .flatten()
             .map(|entry| fs::read_to_string(entry.path()).unwrap())
@@ -4175,7 +4163,7 @@ assert True
     /// because", and it is the assertion that fails when a rule is relaxed by accident.
     #[test]
     fn each_refusal_names_the_rule_that_fired() {
-        use crate::v2::static_collect::Reason;
+        use crate::engine::static_collect::Reason;
 
         let tmp = tree(&[
             ("test_static.py", "def test_s():\n    pass\n"),
@@ -4211,7 +4199,7 @@ assert True
         let (config, targets) = discover_default(tmp.path(), &[]).unwrap();
         let reasons: Vec<(String, Option<Reason>)> = targets
             .iter()
-            .zip(crate::v2::static_collect::static_pass(
+            .zip(crate::engine::static_collect::static_pass(
                 &targets,
                 &config.rootdir,
                 &config,
@@ -4262,7 +4250,7 @@ assert True
         assert_eq!(manifest.errors[0].path, "test_bad.py");
         assert_eq!(
             manifest.tests[0].tier,
-            crate::v2::manifest::Tier::Static,
+            crate::engine::manifest::Tier::Static,
             "the good file is still static"
         );
     }
@@ -4315,7 +4303,7 @@ assert True
         assert!(manifest
             .tests
             .iter()
-            .all(|test| test.tier == crate::v2::manifest::Tier::Dynamic));
+            .all(|test| test.tier == crate::engine::manifest::Tier::Dynamic));
     }
 
     /// The whole point restated as a test: with `collect_tier = "d"` nothing is static, so a
@@ -4327,7 +4315,7 @@ assert True
         let manifest = collect(
             tmp.path(),
             &[],
-            &crate::v2::test_python(),
+            &crate::engine::test_python(),
             1,
             &CollectOptions {
                 tier: TierMode::DynamicOnly,
@@ -4339,6 +4327,6 @@ assert True
         assert!(manifest
             .tests
             .iter()
-            .all(|test| test.tier == crate::v2::manifest::Tier::Dynamic));
+            .all(|test| test.tier == crate::engine::manifest::Tier::Dynamic));
     }
 }

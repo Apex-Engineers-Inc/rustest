@@ -1,6 +1,6 @@
 //! **Tier S** — collection without an interpreter.
 //!
-//! This module answers the same question `_v2_worker.py` answers — "what tests are in this
+//! This module answers the same question `_worker.py` answers — "what tests are in this
 //! file?" — by *parsing* the file with ruff's Python parser instead of importing it.  When it
 //! can answer, the orchestrator skips the worker round trip entirely; when it cannot, the file
 //! goes to Tier D exactly as before.  Tier D is definitionally correct (it runs the same
@@ -22,12 +22,12 @@
 //! Three classes of hazard motivate rules that are otherwise surprising.
 //!
 //! **Importing can fail.**  `import numpy` in a test file is a *collection error* in the
-//! manifest when numpy is missing (`_v2_worker.py::collect_file` turns any import-time
+//! manifest when numpy is missing (`_worker.py::collect_file` turns any import-time
 //! exception into an `errors` entry, and `_pytest/python.py::importtestmodule` does the
 //! same).  A static answer would list tests for a file pytest reports as broken.  So the
 //! import allowlist is exactly two names — `pytest` and `rustest` — because
-//! `_v2_worker.py::install_pytest_shim` puts `pytest` (and `pytest_asyncio`) into
-//! `sys.modules` before any test module is imported, and the worker *is* `rustest._v2_worker`,
+//! `_worker.py::install_pytest_shim` puts `pytest` (and `pytest_asyncio`) into
+//! `sys.modules` before any test module is imported, and the worker *is* `rustest._worker`,
 //! so both are already-imported modules that cannot raise.  Every other import flags.
 //!
 //! **Importing runs code.**  Any module-level statement that is not a definition, an
@@ -35,7 +35,7 @@
 //! `counter = itertools.count()` is a call; `if sys.version_info >= (3, 13): def test_x()` is
 //! a conditional definition.  Both flag.
 //!
-//! **Fixtures can multiply ids.**  `_v2_worker.py::fixture_param_dimensions` expands one test
+//! **Fixtures can multiply ids.**  `_worker.py::fixture_param_dimensions` expands one test
 //! into one id per parametrized fixture in its closure — and the closure includes autouse
 //! fixtures and every conftest in the chain, none of which the test file mentions.  So a file
 //! whose conftest chain contains a parametrized fixture *cannot* be answered from the file
@@ -47,7 +47,7 @@
 //!
 //! Param ids are **not** recomputed from pytest's `IdMaker`.  The worker consumes ids that
 //! `python/rustest/decorators.py` computed at decoration time (`_build_cases` ->
-//! `_resolve_case_id` -> `_generate_param_id`), and `_v2_worker.py::_parametrization` copies
+//! `_resolve_case_id` -> `_generate_param_id`), and `_worker.py::_parametrization` copies
 //! them verbatim, with `_unique_parameterset_ids` applied on top.  Tier S therefore ports
 //! *those* functions, divergences included — porting pytest's instead would produce ids that
 //! match neither tier and break every `-k` a user has written.  [`generate_param_id`] and
@@ -60,12 +60,12 @@ use rayon::prelude::*;
 use ruff_python_ast::{Expr, Stmt};
 use ruff_python_parser::parse_module;
 
-use crate::v2::config::{
+use crate::engine::config::{
     matches_name_pattern, ResolvedConfig, DEFAULT_ASYNCIO_MODE, DEFAULT_ASYNCIO_TEST_LOOP_SCOPE,
 };
-use crate::v2::manifest::{CollectedTest, MarkSpec, Tier};
-use crate::v2::manifest_cache::{digest_of_chain, DirCache, FreshByDir, ManifestCache};
-use crate::v2::nodeid::build_nodeid;
+use crate::engine::manifest::{CollectedTest, MarkSpec, Tier};
+use crate::engine::manifest_cache::{digest_of_chain, DirCache, FreshByDir, ManifestCache};
+use crate::engine::nodeid::build_nodeid;
 
 // ---------------------------------------------------------------------------
 // Dynamism
@@ -177,7 +177,7 @@ pub enum Reason {
 ///
 /// * **stem collisions.**  Two `test_dup.py` files in different non-package directories import
 ///   under the same module name, and the second one is pytest's `import file mismatch`
-///   collection error (`_v2_worker.py::_import_mismatch_message`).  The orchestrator routes
+///   collection error (`_worker.py::_import_mismatch_message`).  The orchestrator routes
 ///   same-stem files to one worker precisely so that error reproduces; a static answer would
 ///   silently collect both.  Every file whose stem is shared goes to D.
 /// * **the conftest chain**, which is per directory and shared by every file in it, so it is
@@ -193,14 +193,14 @@ pub fn static_pass(
 /// Whether a run may read and write the Tier S manifest cache.
 ///
 /// [`CacheMode::Off`] is the control leg, in the same sense
-/// [`crate::v2::collect::TierMode::DynamicOnly`] is: every cache test needs a way to produce
+/// [`crate::engine::collect::TierMode::DynamicOnly`] is: every cache test needs a way to produce
 /// the answer the cache is supposed to reproduce, and every *user* needs a way to prove a
 /// surprising result is not a stale entry.  It is also what the uncached [`static_pass`]
 /// passes, which is what keeps the several dozen existing Tier S tests writing nothing to
 /// disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CacheMode {
-    /// Read and write `<rootdir>/.rustest_cache/v2-manifest`.
+    /// Read and write `<rootdir>/.rustest_cache/manifest`.
     #[default]
     Auto,
     /// Parse every file, write nothing.
@@ -208,9 +208,9 @@ pub enum CacheMode {
 }
 
 impl CacheMode {
-    /// Parse the wire spelling used by the `v2_collect` boundary and the
-    /// `RUSTEST_V2_MANIFEST_CACHE` escape hatch.  An unknown value means the default, for the
-    /// same reason [`crate::v2::collect::TierMode::from_wire`]'s does: a typo in a debug knob
+    /// Parse the wire spelling used by the `collect` boundary and the
+    /// `RUSTEST_MANIFEST_CACHE` escape hatch.  An unknown value means the default, for the
+    /// same reason [`crate::engine::collect::TierMode::from_wire`]'s does: a typo in a debug knob
     /// must not turn a user's run into a usage error.
     pub fn from_wire(value: &str) -> Self {
         match value {
@@ -350,7 +350,7 @@ pub fn static_pass_cached(
 /// Indexed by target, in walk order.  `Some(key)` is a 64-hex Tier S manifest cache key and
 /// means "this file is statically analysable — rewrite it and cache the bytecode under this
 /// key"; `None` means "leave it alone".  The key travels to the worker on `collect_file`
-/// (`src/v2/protocol.rs`), which is the only consumer.
+/// (`src/engine/protocol.rs`), which is the only consumer.
 ///
 /// # Why this exists separately from [`static_pass_cached`]
 ///
@@ -412,7 +412,7 @@ pub fn rewrite_plan(
     // cannot drift from the manifest cache it is keyed against.
     let cache = ManifestCache::open(rootdir, config, &shadowable_names(&shadows));
 
-    let mut chains: HashMap<PathBuf, (Result<(), Dynamic>, crate::v2::manifest_cache::Digest)> =
+    let mut chains: HashMap<PathBuf, (Result<(), Dynamic>, crate::engine::manifest_cache::Digest)> =
         HashMap::new();
     for path in targets {
         let Some(dir) = path.parent() else { continue };
@@ -437,11 +437,9 @@ pub fn rewrite_plan(
             let source = read_source(path).ok()?;
             let rel_path = relative_posix(path, rootdir);
             rewrite_is_parsable(&source, &rel_path).ok()?;
-            Some(crate::v2::manifest_cache::hex_digest(&cache.key_for_chain(
-                *chain,
-                &rel_path,
-                source.as_bytes(),
-            )))
+            Some(crate::engine::manifest_cache::hex_digest(
+                &cache.key_for_chain(*chain, &rel_path, source.as_bytes()),
+            ))
         })
         .collect()
 }
@@ -472,7 +470,7 @@ type Scanned = (Result<Vec<CollectedTest>, Dynamic>, Option<Fresh>);
 struct Fresh {
     dir: PathBuf,
     name: String,
-    key: crate::v2::manifest_cache::Digest,
+    key: crate::engine::manifest_cache::Digest,
 }
 
 /// One file: read, look up, and parse only on a miss.
@@ -545,13 +543,13 @@ fn shadowable_names(shadows: &HashSet<String>) -> std::collections::BTreeSet<Str
 /// Every module name a file in this run could shadow, so a stdlib import can be trusted.
 ///
 /// `import json` in a test file is safe *because* it resolves to the standard library — and
-/// that is not guaranteed: `_v2_worker.py::sys_path_root_for` puts a directory on `sys.path`
+/// that is not guaranteed: `_worker.py::sys_path_root_for` puts a directory on `sys.path`
 /// for every module it imports, so a `json.py` sitting beside a test file becomes `json` for
 /// the whole worker, and importing it runs user code that can raise.
 ///
 /// The set is complete for a run rather than heuristic.  The only directories that ever reach
 /// `sys.path` are a target's own directory or its package root's parent
-/// (`_v2_worker.py::sys_path_root_for`, called from `import_test_module` for test modules and
+/// (`_worker.py::sys_path_root_for`, called from `import_test_module` for test modules and
 /// from `import_conftest` for conftests) — and every one of those is a target's parent or an
 /// ancestor of one.  Enumerating exactly that set of directories therefore enumerates every
 /// name that can win over the standard library.
@@ -584,7 +582,7 @@ fn shadowing_names(targets: &[PathBuf], rootdir: &Path) -> HashSet<String> {
             // `file_type()` comes off the directory enumeration; `is_dir()` is a `stat` per
             // entry, and this loop visits every file in every directory a run touches.  See
             // `collect::is_dir` for why the two are the same answer.
-            if crate::v2::collect::is_dir(&path, entry.file_type().ok()) {
+            if crate::engine::collect::is_dir(&path, entry.file_type().ok()) {
                 let _ = names.insert(entry.file_name().to_string_lossy().into_owned());
             } else if path.extension().is_some_and(|ext| ext == "py") {
                 if let Some(stem) = path.file_stem() {
@@ -612,7 +610,7 @@ pub fn scan_path(
 /// Split out of [`scan_path`] because the cached pass needs the bytes *before* it decides
 /// whether to parse them — the cache key hashes the source.
 fn read_source(path: &Path) -> Result<String, Dynamic> {
-    // The markdown tier is `_v2_worker.py::collect_markdown`: it evaluates fenced blocks and
+    // The markdown tier is `_worker.py::collect_markdown`: it evaluates fenced blocks and
     // has no static analogue.
     if !path.extension().is_some_and(|ext| ext == "py") {
         return Err(Dynamic::new(
@@ -677,18 +675,18 @@ fn declares_non_utf8_encoding(source: &str) -> Option<String> {
     None
 }
 
-/// `_v2_worker.py::_relative_posix` — the manifest's `path` contract.
+/// `_worker.py::_relative_posix` — the manifest's `path` contract.
 fn relative_posix(path: &Path, rootdir: &Path) -> String {
     match path.strip_prefix(rootdir) {
-        Ok(relative) => crate::v2::to_posix(relative),
-        Err(_) => crate::v2::to_posix(path),
+        Ok(relative) => crate::engine::to_posix(relative),
+        Err(_) => crate::engine::to_posix(path),
     }
 }
 
 /// Is every `conftest.py` that applies to `dir` safe to treat as "adds nothing an id depends
 /// on"?
 ///
-/// The chain is `_v2_worker.py::conftest_chain`'s: every `conftest.py` from `dir` up to and
+/// The chain is `_worker.py::conftest_chain`'s: every `conftest.py` from `dir` up to and
 /// including `rootdir`.  Each one must (a) define no parametrized fixture, and (b) pass the
 /// same import-safety analysis a test file passes.
 ///
@@ -705,7 +703,7 @@ fn relative_posix(path: &Path, rootdir: &Path) -> String {
 /// [`parametrized_fixture_call`]; see that function for what it does and does not catch.
 ///
 /// (b) is needed because a conftest that raises at import time is a *collection error* for
-/// every test file below it: `_v2_worker.py::build_registry` imports the chain before the
+/// every test file below it: `_worker.py::build_registry` imports the chain before the
 /// module, inside `collect_file`'s `try`.
 /// The first call in `body` that may create a **parametrized fixture**, described, or `None`.
 ///
@@ -716,7 +714,7 @@ fn relative_posix(path: &Path, rootdir: &Path) -> String {
 ///
 /// # What it catches that matters
 ///
-/// Every syntactic form that reaches `_v2_worker.py`'s registry with
+/// Every syntactic form that reaches `_worker.py`'s registry with
 /// `__rustest_fixture_params__` set: the decorator form `@fixture(params=[...])`, the
 /// decorator-factory form assigned at module level, and `**kwargs` — where the keys are a
 /// runtime value and `params` may be among them (the splat hole fixed in Task 1).
@@ -937,7 +935,7 @@ fn chain_is_static(
     Ok(())
 }
 
-/// `_v2_worker.py::conftest_chain`, outermost first (order is irrelevant here — every entry
+/// `_worker.py::conftest_chain`, outermost first (order is irrelevant here — every entry
 /// must pass — but kept identical so the two are readably the same walk).
 fn conftest_chain(dir: &Path, rootdir: &Path) -> Vec<PathBuf> {
     let mut chain = Vec::new();
@@ -1002,7 +1000,7 @@ pub enum Lit {
 }
 
 impl Lit {
-    /// The JSON `_v2_worker.py::_json_safe` would produce for this value, or `None` when this
+    /// The JSON `_worker.py::_json_safe` would produce for this value, or `None` when this
     /// module cannot put the value on the wire **unchanged**.
     ///
     /// The `None` case is a negative integer below `i64::MIN`.  `serde_json::Number` holds
@@ -1128,7 +1126,7 @@ fn ascii_escaped(text: &str) -> String {
     out
 }
 
-/// Port of `_v2_worker.py::_unique_parameterset_ids`, itself a port of
+/// Port of `_worker.py::_unique_parameterset_ids`, itself a port of
 /// `_pytest/python.py::IdMaker.make_unique_parameterset_ids`.
 ///
 /// Duplicate ids get a numeric suffix (`1` -> `1_0`, `1_1`; `a` -> `a0`, `a1`), the underscore
@@ -1176,7 +1174,7 @@ fn cross_product_cases(outer: &[Case], inner: &[Case]) -> Vec<Case> {
     cross_cases(outer, inner, false)
 }
 
-/// `_v2_worker.py::_cross_product_cases` — a **class's** cases crossed with a *method's*.
+/// `_worker.py::_cross_product_cases` — a **class's** cases crossed with a *method's*.
 ///
 /// Same nesting (the class dimension varies slowest) but the id joins **method component
 /// first**, because pytest appends each `parametrize` call's component to
@@ -1563,7 +1561,7 @@ impl<'a> Scan<'a> {
     }
 
     /// An imported name that the configured patterns would collect is a test under Tier D —
-    /// `_v2_worker.py::collect_module` iterates `vars(module)`, and `collect_imported_tests`
+    /// `_worker.py::collect_module` iterates `vars(module)`, and `collect_imported_tests`
     /// defaults to `True` — while Tier S, which only sees `def`s, would miss it entirely.
     fn bind_import(&mut self, name: &str) -> Result<(), Dynamic> {
         self.bind(name)?;
@@ -1893,7 +1891,7 @@ impl<'a> Scan<'a> {
 
     /// `pytestmark = <mark>` or `pytestmark = [<mark>, ...]`.
     ///
-    /// `_v2_worker.py::_spec_from_pytestmark` reads `.name`/`.args`/`.kwargs` off whatever the
+    /// `_worker.py::_spec_from_pytestmark` reads `.name`/`.args`/`.kwargs` off whatever the
     /// expression evaluated to, which for an uncalled `pytest.mark.slow` is a
     /// `BareOrFactoryMark` with empty args and kwargs and for a called one is the
     /// `MarkDecorator` the factory returned — i.e. exactly the same two shapes
@@ -1906,7 +1904,7 @@ impl<'a> Scan<'a> {
         // `isinstance(item, list)` (`_pytest/mark/structures.py` l. 427/433), so a *tuple*
         // is appended whole and then dies in `normalize_mark_list` with
         // `TypeError: got (...) instead of Mark`.  Measured: `pytestmark = (m1, m2)` is a
-        // collection error under pytest 8.4.2 and under the v2 worker; unpacking it here
+        // collection error under pytest 8.4.2 and under the worker; unpacking it here
         // made Tier S the only surface that accepted it.
         let entries: Vec<&Expr> = match value {
             Expr::List(list) => list.elts.iter().collect(),
@@ -2065,7 +2063,7 @@ impl<'a> Scan<'a> {
     /// One `def`, if it is a test.  Returns `None` when the name is not collected at all.
     ///
     /// `outer_cases` is the enclosing class's parametrization, handed down exactly as
-    /// `_v2_worker.py::_collect_class` hands it down (a class-level `@parametrize` writes onto
+    /// `_worker.py::_collect_class` hands it down (a class-level `@parametrize` writes onto
     /// the *class* object, where a method cannot see it).
     #[allow(clippy::too_many_arguments)]
     fn function_test(
@@ -2165,7 +2163,7 @@ impl<'a> Scan<'a> {
         }))
     }
 
-    /// One `class`, if it is a test class.  Port of `_v2_worker.py::_collect_class`.
+    /// One `class`, if it is a test class.  Port of `_worker.py::_collect_class`.
     fn class_tests(
         &mut self,
         class: &ruff_python_ast::StmtClassDef,
@@ -2274,7 +2272,7 @@ impl<'a> Scan<'a> {
     ///
     /// Any other base flags, and the reason is not caution for its own sake: pytest collects
     /// **inherited** methods (`_pytest/python.py::PyCollector.collect` walks the whole MRO, and
-    /// `_v2_worker.py::_mro_ordered_members` reproduces the base-first ordering), so a base
+    /// `_worker.py::_mro_ordered_members` reproduces the base-first ordering), so a base
     /// class defined in another file — or produced by a metaclass, or a `unittest.TestCase` —
     /// contributes tests, marks and fixtures that are not in this file's AST at all.
     fn class_bases_are_object(&self, class: &ruff_python_ast::StmtClassDef) -> Result<(), Dynamic> {
@@ -2324,7 +2322,7 @@ impl<'a> Scan<'a> {
 }
 
 /// Build a [`MarkSpec`] from const-evaluated arguments, applying the wire's omission rules
-/// (`_v2_worker.py::MarkSpec.to_wire`: empty `args`/`kwargs` are dropped).
+/// (`_worker.py::MarkSpec.to_wire`: empty `args`/`kwargs` are dropped).
 /// Build a [`MarkSpec`] from const-evaluated arguments, or refuse the file.
 ///
 /// `Err` means a value this module cannot put on the wire unchanged — see [`Lit::to_json`].
@@ -2352,7 +2350,7 @@ fn spec(name: &str, args: Vec<Lit>, kwargs: Vec<(String, Lit)>) -> Result<MarkSp
     })
 }
 
-/// Port of `_v2_worker.py::_requested_argnames` for the subset Tier S admits.
+/// Port of `_worker.py::_requested_argnames` for the subset Tier S admits.
 ///
 /// Only `POSITIONAL_OR_KEYWORD` and `KEYWORD_ONLY` parameters without a default count
 /// (`_pytest/compat.py::getfuncargnames`), and the bound-method first argument is dropped
@@ -2472,7 +2470,7 @@ fn expr_yields(expr: &Expr) -> bool {
 /// binds exactly one plain name to something this module can evaluate.
 ///
 /// Both halves matter, and the second is the one that is easy to get wrong.
-/// `_v2_worker.py::_hasinit` is
+/// `_worker.py::_hasinit` is
 ///
 /// ```text
 /// init = getattr(obj, "__init__", None)
@@ -2601,7 +2599,7 @@ fn literal(expr: &Expr) -> Option<Lit> {
 /// Roots that are in `sys.modules` **before** any test module is imported, and therefore
 /// cannot reach the filesystem at all.
 ///
-/// `_v2_worker.py::install_pytest_shim` assigns `sys.modules["pytest"]` and
+/// `_worker.py::install_pytest_shim` assigns `sys.modules["pytest"]` and
 /// `sys.modules["pytest_asyncio"]` in `main()`, before the protocol loop starts; `rustest` is
 /// the package the worker itself lives in. An `import` of any of them is a dictionary lookup,
 /// so no shadowing check applies — a local `pytest.py` is never consulted.
@@ -2627,9 +2625,9 @@ const PREIMPORTED_ROOTS: [&str; 3] = ["pytest", "rustest", "pytest_asyncio"];
 /// `multiprocessing`. Those raise `ImportError` on a stripped or minimal build, which is
 /// precisely the failure this list exists to exclude.
 ///
-/// The list is checked, not asserted: `python/tests/test_v2_static_tier.py::
+/// The list is checked, not asserted: `python/tests/test_static_tier.py::
 /// test_the_stdlib_allowlist_is_importable_and_actually_stdlib` reads it back through
-/// [`crate::v2::py::v2_static_stdlib_allowlist`] and, on every interpreter CI runs, imports
+/// [`crate::engine::py::static_stdlib_allowlist`] and, on every interpreter CI runs, imports
 /// each entry and confirms its file sits inside `sysconfig`'s stdlib directory. A name that
 /// stops being stdlib fails there rather than becoming a silent false negative.
 const STDLIB_ALLOWLIST: [&str; 92] = [
@@ -2835,9 +2833,9 @@ fn conftest_scan_config() -> ResolvedConfig {
         rootdir: PathBuf::new(),
         config_file: None,
         testpaths: Vec::new(),
-        python_files: owned(crate::v2::config::DEFAULT_PYTHON_FILES),
-        python_classes: owned(crate::v2::config::DEFAULT_PYTHON_CLASSES),
-        python_functions: owned(crate::v2::config::DEFAULT_PYTHON_FUNCTIONS),
+        python_files: owned(crate::engine::config::DEFAULT_PYTHON_FILES),
+        python_classes: owned(crate::engine::config::DEFAULT_PYTHON_CLASSES),
+        python_functions: owned(crate::engine::config::DEFAULT_PYTHON_FUNCTIONS),
         norecursedirs: Vec::new(),
         addopts: Vec::new(),
         pythonpath: Vec::new(),
@@ -2892,7 +2890,7 @@ mod tests {
         );
     }
 
-    /// `_v2_worker.py::_is_test_function` is a **prefix** test first, so `testfoo` collects
+    /// `_worker.py::_is_test_function` is a **prefix** test first, so `testfoo` collects
     /// under the default `python_functions = ["test"]` (corpus `collection/naming-testfoo`).
     #[test]
     fn the_naming_rule_is_prefix_first() {
@@ -3089,7 +3087,7 @@ mod tests {
         );
     }
 
-    /// The pathological id shapes `src/v2/nodeid.rs` pins: an empty id keeps its brackets, and
+    /// The pathological id shapes `src/engine/nodeid.rs` pins: an empty id keeps its brackets, and
     /// an id may contain `]`, `[` or `::`.
     #[test]
     fn pathological_ids_survive_verbatim() {
@@ -3269,7 +3267,7 @@ class TestBox:
     /// pytest unpacks a `list` and *only* a list: a tuple is appended whole and then fails
     /// `normalize_mark_list` (`_pytest/mark/structures.py` l. 427/450-453) with
     /// `TypeError: got (...) instead of Mark`.  Tier S used to unpack tuples, which made it
-    /// the one surface that accepted a shape pytest and the v2 worker both refuse.
+    /// the one surface that accepted a shape pytest and the worker both refuse.
     #[test]
     fn a_tuple_pytestmark_is_refused_the_way_pytest_refuses_it() {
         assert_eq!(
@@ -3316,7 +3314,7 @@ class TestBox:
         );
     }
 
-    /// ...unless this run's own tree could *be* that module.  `_v2_worker.py::
+    /// ...unless this run's own tree could *be* that module.  `_worker.py::
     /// sys_path_root_for` puts a test file's directory on `sys.path`, so a `queue.py` beside
     /// it makes `import queue` user code — which can raise, and which no AST here has seen.
     #[test]
@@ -3700,7 +3698,7 @@ class TestBox:
         assert!(conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).is_ok());
     }
 
-    /// The chain stops at rootdir (`_v2_worker.py::conftest_chain`'s confcutdir rule), so a
+    /// The chain stops at rootdir (`_worker.py::conftest_chain`'s confcutdir rule), so a
     /// conftest *above* rootdir neither helps nor flags.
     #[test]
     fn the_chain_stops_at_rootdir() {
@@ -4396,8 +4394,8 @@ class TestBox:
         let planned = plan[0].as_deref().expect("a static file is rewritable");
 
         let cache = ManifestCache::open(tmp.path(), &config(), &Default::default());
-        let expected = crate::v2::manifest_cache::hex_digest(&cache.key_for_chain(
-            crate::v2::manifest_cache::empty_chain_digest(),
+        let expected = crate::engine::manifest_cache::hex_digest(&cache.key_for_chain(
+            crate::engine::manifest_cache::empty_chain_digest(),
             "test_a.py",
             source.as_bytes(),
         ));
@@ -4501,7 +4499,7 @@ class TestBox:
     #[test]
     fn collect_only_does_not_compute_a_rewrite_plan() {
         assert!(
-            !crate::v2::collect::CollectOptions::new().assert_rewrite,
+            !crate::engine::collect::CollectOptions::new().assert_rewrite,
             "the default must be off; `collect::plan` turns it on for runs"
         );
     }

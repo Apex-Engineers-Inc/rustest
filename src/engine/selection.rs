@@ -35,7 +35,7 @@
 //!
 //! pytest deselects in `pytest_collection_modifyitems`, i.e. **after** collection and
 //! **before** any test runs (`_pytest/mark/__init__.py` l. 283-284: `deselect_by_keyword`
-//! then `deselect_by_mark`, in that order). v2 does the same: the manifest is complete
+//! then `deselect_by_mark`, in that order). the engine does the same: the manifest is complete
 //! first, then filtered, then dispatched. Two consequences that are behaviour, not detail:
 //!
 //! * a file that fails to import still produces a collection error, and therefore still
@@ -55,7 +55,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::v2::manifest::{CollectedTest, MarkSpec};
+use crate::engine::manifest::{CollectedTest, MarkSpec};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -548,7 +548,7 @@ fn evaluate(node: &Node, matcher: &dyn Matcher) -> Result<bool, SelectionError> 
 /// Port of `_pytest/mark/__init__.py::KeywordMatcher`, whose `from_item` walks
 /// `item.listchain()` and keeps `node.name` for every node except the `Session` and the
 /// root `Directory` (`isinstance(node.parent, Session)`).  Reconstructed here from the
-/// manifest entry, because v2 has no live node tree:
+/// manifest entry, because the engine has no live node tree:
 ///
 /// | pytest node | manifest source | probed with |
 /// |---|---|---|
@@ -562,7 +562,7 @@ fn evaluate(node: &Node, matcher: &dyn Matcher) -> Result<bool, SelectionError> 
 /// directory contributes its own basename, which the `-k alpha` row proves is not an
 /// accident of that tree.
 ///
-/// **Two documented gaps**, both needing a wire field v2 does not have: names assigned
+/// **Two documented gaps**, both needing a wire field the engine does not have: names assigned
 /// directly onto the test function (`mapped_names.update(function_obj.__dict__)`) and
 /// `item.listextrakeywords()`.  Both are rare and neither can be reconstructed from a
 /// manifest entry — the manifest is data, and these are live-object introspection.
@@ -570,7 +570,7 @@ fn evaluate(node: &Node, matcher: &dyn Matcher) -> Result<bool, SelectionError> 
 /// **A third gap is shared with [`MarkMatcher`] and is worth naming here too**, because the
 /// mark names in this set are the reason it bites `-k` as well as `-m`: pytest's
 /// `iter_markers()` yields a `parametrize` mark, so *both* `-m parametrize` and
-/// `-k parametrize` select every parametrized case.  v2's collector consumes `@parametrize`
+/// `-k parametrize` select every parametrized case.  the engine's collector consumes `@parametrize`
 /// into `param_id` and records no mark of that name, so both select nothing.  Probed on a
 /// two-case tree: pytest `2/3 tests collected (1 deselected)`, v2 nothing.  Fixing it means
 /// deciding whether a synthesised `parametrize` mark belongs on the wire — recorded, not
@@ -796,7 +796,7 @@ mod tests {
             param_id: None,
             marks: Vec::new(),
             fixtures: Vec::new(),
-            tier: crate::v2::manifest::Tier::Dynamic,
+            tier: crate::engine::manifest::Tier::Dynamic,
         }
     }
 

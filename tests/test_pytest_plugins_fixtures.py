@@ -8,7 +8,7 @@ it skipped under rustest as well as under pytest. Removing the guard would have 
 because nothing reads the field.
 
 The mechanism that does exist is pytest's own ``pytest_plugins``, read by
-`_v2_worker.py::_register_declared_plugins`. Both spellings pytest accepts are supported.
+`_worker.py::_register_declared_plugins`. Both spellings pytest accepts are supported.
 
 The suite is built in ``tmp_path`` and run through a subprocess rather than declared in
 this directory, for a reason worth stating: pytest **rejects** ``pytest_plugins`` in a

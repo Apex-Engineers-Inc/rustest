@@ -110,7 +110,7 @@ jobs:
         # never checked. The great-docs cutover also settles the question its research
         # raised: the site is authored in `.md`, not `.qmd`, so this collector still sees
         # every page. great-docs and Quarto render both formats, but rustest's collector
-        # keys on `.md` (`src/v2/collect.rs::is_markdown`), and keeping the source
+        # keys on `.md` (`src/engine/collect.rs::is_markdown`), and keeping the source
         # extension is what keeps the examples executable. Quarto's own executable fences
         # are spelled ```{python}, which this collector deliberately does not match.
 

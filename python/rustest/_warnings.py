@@ -10,7 +10,7 @@ would see two different objects for one concept.
 
 **MECHANISM M5 of the Phase 4 Task 1b sweep.** ``recwarn`` was listed in the worker's
 ``UNSUPPORTED_BUILTIN_FIXTURES`` on the recorded grounds that it "needs a warnings channel,
-which the v2 wire does not have". That reasoning was wrong, and usefully so: ``recwarn``
+which the worker wire does not have". That reasoning was wrong, and usefully so: ``recwarn``
 captures warnings **in-process**, inside the test's own call phase, and never has to tell
 the orchestrator anything. What needs a wire is *reporting* warnings in the summary, which
 is a different feature. attrs' ``tests/test_packaging.py`` reads ``recwarn.list`` and cost

@@ -2,10 +2,21 @@
 
 Rustest supports Python **3.12 through 3.14**.
 
+!!! warning "The current release is a pre-release, and you have to ask for it by name"
+    `1.0.0rc1` is a release candidate. pip and uv skip pre-releases unless told otherwise,
+    so a plain `pip install rustest` installs the previous stable version instead — not this
+    one. Every command below names the version for that reason.
+
 ## Using pip
 
 ```bash
-pip install rustest
+pip install "rustest==1.0.0rc1"
+```
+
+Or let pip consider pre-releases generally:
+
+```bash
+pip install --pre rustest
 ```
 
 ## Using uv
@@ -13,7 +24,13 @@ pip install rustest
 If you use [uv](https://github.com/astral-sh/uv), add rustest to your project:
 
 ```bash
-uv add rustest
+uv add "rustest==1.0.0rc1"
+```
+
+An explicit pre-release version needs no extra flag. To let uv choose one on its own:
+
+```bash
+uv pip install --prerelease allow rustest
 ```
 
 ## Verifying installation

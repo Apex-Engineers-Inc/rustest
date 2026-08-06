@@ -44,7 +44,7 @@ DEC = "python/rustest/decorators.py"
 CMP = "python/rustest/compat/pytest.py"
 
 T = "python/tests/test_bare_marks.py"
-T_CLI = "python/tests/test_v2_run_cli.py"
+T_CLI = "python/tests/test_run_cli.py"
 
 
 @dataclass

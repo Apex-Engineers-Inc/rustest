@@ -1,7 +1,7 @@
 """The CLI's **parser** surface.
 
 Argument parsing only. Everything the CLI actually *does* is driven end to end against real
-pytest in ``test_v2_flip_cli.py``, ``test_v2_run_cli.py`` and ``test_v2_collect_cli.py`` --
+pytest in ``test_flip_cli.py``, ``test_run_cli.py`` and ``test_collect_cli.py`` --
 a mocked engine proves that a flag was forwarded and nothing about whether it works.
 
 This module used to also hold `cli.run` mock tests, v1's exit-code mapping and a

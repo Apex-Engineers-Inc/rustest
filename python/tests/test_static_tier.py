@@ -1,13 +1,13 @@
 """The **three-way collection differential** — Tier S vs Tier D vs real pytest.
 
-``src/v2/static_collect.rs`` (Tier S) answers "what tests are in this file?" by parsing it
+``src/engine/static_collect.rs`` (Tier S) answers "what tests are in this file?" by parsing it
 with ruff's Python parser instead of importing it. Tier D — the Python worker — imports the
 file and runs the same code pytest would, so it is definitionally the oracle. Tier S is
 therefore only ever allowed to be *faster*, never different, and the way to know is to ask
 the same tree three times:
 
 1. ``manifest(hybrid)``  — the default: Tier S where it can answer, Tier D otherwise;
-2. ``manifest(D-only)``  — ``RUSTEST_V2_COLLECT_TIER=d`` / ``collect_tier="d"``, the control;
+2. ``manifest(D-only)``  — ``RUSTEST_COLLECT_TIER=d`` / ``collect_tier="d"``, the control;
 3. ``pytest --collect-only -q`` — the external oracle both tiers exist to reproduce.
 
 The first two are compared as **whole manifests** (ids, qualnames, class names, param ids,
@@ -99,7 +99,7 @@ def _case_args(case_dir: Path) -> list[str]:
 
 def _manifest(work: Path, args: list[str], tier: str) -> dict[str, Any]:
     """One collection, at the requested tier, straight off the Rust boundary."""
-    payload = rust.v2_collect(
+    payload = rust.collect(
         str(work),
         args,
         sys.executable,
@@ -144,7 +144,7 @@ def _tiers(manifest: dict[str, Any]) -> dict[str, set[str]]:
 
 
 def _waived_cases() -> set[str]:
-    """The cases ``conformance/waivers-v2-collect.toml`` already excuses from pytest parity.
+    """The cases ``conformance/waivers-collect.toml`` already excuses from pytest parity.
 
     Read rather than hard-coded, so this module cannot drift from the gate's ledger — and
     read *only* for the pytest leg. The Tier S question is legs 1 vs 2, and a pre-existing
@@ -154,7 +154,7 @@ def _waived_cases() -> set[str]:
     """
     import tomllib
 
-    ledger = _CORPUS.parent / "waivers-v2-collect.toml"
+    ledger = _CORPUS.parent / "waivers-collect.toml"
     return set(tomllib.loads(ledger.read_text(encoding="utf-8")).get("cases", {}))
 
 
@@ -309,7 +309,7 @@ _STATIC_SHAPES: dict[str, str] = {
 #:
 #: pytest 8.4.2 emits ``test_m[10-1]``/``test_m[10-2]`` (method component first); rustest v1's
 #: ``decorators.py::_cross_product_cases`` emits ``test_m[1-10]``/``test_m[2-10]`` and
-#: ``_v2_worker.py::_cross_product_cases`` consumes those ids verbatim, documenting the
+#: ``_worker.py::_cross_product_cases`` consumes those ids verbatim, documenting the
 #: divergence in its own docstring. Tier S reproduces **rustest's**, which is the only correct
 #: answer available to it: matching pytest here would make Tier S disagree with Tier D.
 #: A class binding `__init__` to a **falsy** value, kept out of the suite above for the same
@@ -318,7 +318,7 @@ _STATIC_SHAPES: dict[str, str] = {
 #: `_hasinit` is `bool(init) and init != object.__init__`, so a falsy `__init__` does not
 #: refuse the class — pytest goes on to **instantiate** it (`_pytest/python.py::newinstance`,
 #: `return self.obj()`) and gets `TypeError: 'NoneType' object is not callable`, i.e. a
-#: collection error and exit 2. `_v2_worker.py::_collect_class` deliberately never
+#: collection error and exit 2. `_worker.py::_collect_class` deliberately never
 #: instantiates ("this parses them off the class ... which avoids instantiating a class during
 #: collection"), so rustest collects the method in both tiers.
 _FALSY_CONSTRUCTOR = (
@@ -428,7 +428,7 @@ def test_the_stdlib_allowlist_is_importable_and_actually_stdlib() -> None:
     import importlib
     import sysconfig
 
-    allowlist = rust.v2_static_stdlib_allowlist()
+    allowlist = rust.static_stdlib_allowlist()
     assert allowlist, "the allowlist is empty; Tier S would refuse every real file"
     assert allowlist == sorted(allowlist), "keep the allowlist sorted so diffs are readable"
 
@@ -451,7 +451,7 @@ def test_a_missing_dependency_is_still_a_collection_error(tmp_path: Path) -> Non
 
     A test file importing something that is not installed is a **collection error** under
     pytest (``_pytest/python.py::importtestmodule``) and under Tier D
-    (``_v2_worker.py::collect_file`` turns any import-time exception into an ``errors`` entry).
+    (``_worker.py::collect_file`` turns any import-time exception into an ``errors`` entry).
     A Tier S that answered for it would report its tests as collected and exit 0 — a shorter,
     greener, wrong run. This is the shape the import allowlist exists to catch.
     """
@@ -478,7 +478,7 @@ def test_a_missing_dependency_is_still_a_collection_error(tmp_path: Path) -> Non
 def test_a_local_module_shadowing_the_stdlib_routes_the_file_to_d(tmp_path: Path) -> None:
     """A ``queue.py`` beside a test file makes ``import queue`` user code.
 
-    ``_v2_worker.py::sys_path_root_for`` puts the test file's own directory on ``sys.path``, so
+    ``_worker.py::sys_path_root_for`` puts the test file's own directory on ``sys.path``, so
     the local module wins — and it can raise, which no static analysis of the *test* file would
     ever reveal. The allowlist is therefore conditioned on the shadow set
     (``static_collect.rs::shadowing_names``), and this is the end-to-end proof that the
@@ -645,7 +645,7 @@ def test_a_fully_static_suite_spawns_no_worker(tmp_path: Path) -> None:
             f"def test_{index:02d}():\n    pass\n", encoding="utf-8"
         )
 
-    payload = rust.v2_collect(
+    payload = rust.collect(
         str(root), [], "definitely-not-an-interpreter", 4, None, None, True, "auto"
     )
     manifest = json.loads(payload)
@@ -655,7 +655,7 @@ def test_a_fully_static_suite_spawns_no_worker(tmp_path: Path) -> None:
 
 
 def test_the_env_var_forces_tier_d_through_the_cli(tmp_path: Path) -> None:
-    """``RUSTEST_V2_COLLECT_TIER=d`` reaches the boundary from a real CLI invocation.
+    """``RUSTEST_COLLECT_TIER=d`` reaches the boundary from a real CLI invocation.
 
     The Rust tests drive ``TierMode`` directly, so without this the environment variable —
     the only way a *subprocess* can select the control leg — would be untested end to end and
@@ -670,9 +670,9 @@ def test_the_env_var_forces_tier_d_through_the_cli(tmp_path: Path) -> None:
 
     def collect(env_value: str | None) -> list[str]:
         env = dict(os.environ)
-        env.pop("RUSTEST_V2_COLLECT_TIER", None)
+        env.pop("RUSTEST_COLLECT_TIER", None)
         if env_value is not None:
-            env["RUSTEST_V2_COLLECT_TIER"] = env_value
+            env["RUSTEST_COLLECT_TIER"] = env_value
         proc = subprocess.run(
             [sys.executable, "-m", "rustest", "--collect-only"],
             cwd=root,

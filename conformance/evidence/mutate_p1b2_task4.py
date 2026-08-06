@@ -33,11 +33,11 @@ class Row:
     extra: list[tuple[str, str, str]] = field(default_factory=list)
 
 
-SEL = "src/v2/selection.rs"
+SEL = "src/engine/selection.rs"
 CORE = "python/rustest/core.py"
 CLI = "python/rustest/cli.py"
-EXE = "src/v2/execute.rs"
-COL = "src/v2/collect.rs"
+EXE = "src/engine/execute.rs"
+COL = "src/engine/collect.rs"
 
 ROWS: list[Row] = [
     # ---------------------------------------------------------------- grammar
@@ -725,8 +725,8 @@ ROWS: list[Row] = [
         '    errors = summary["error"] + collection_errors',
         '    errors = summary["error"]',
         [
-            "python/tests/test_v2_run_cli.py::test_a_collection_error_run_says_error_not_no_tests_ran",
-            "python/tests/test_v2_run_cli.py::test_the_summary_line_omits_empty_buckets",
+            "python/tests/test_run_cli.py::test_a_collection_error_run_says_error_not_no_tests_ran",
+            "python/tests/test_run_cli.py::test_the_summary_line_omits_empty_buckets",
         ],
         "collection errors dropped from the summary line",
         lang="py",
@@ -737,7 +737,7 @@ ROWS: list[Row] = [
         CORE,
         '    return report["exit_code"]',
         "    return 0",
-        ["python/tests/test_v2_run_cli.py::test_exit_codes_match_pytest[failure]"],
+        ["python/tests/test_run_cli.py::test_exit_codes_match_pytest[failure]"],
         "the report's exit code is ignored",
         lang="py",
     ),
@@ -747,7 +747,7 @@ ROWS: list[Row] = [
         CORE,
         "        if report_json is not None:",
         "        if False:",
-        ["python/tests/test_v2_run_cli.py::test_the_json_report_is_schema_v2_with_six_statuses"],
+        ["python/tests/test_run_cli.py::test_the_json_report_is_schema_v2_with_six_statuses"],
         "--report-json never written",
         lang="py",
     ),
@@ -758,7 +758,7 @@ ROWS: list[Row] = [
         '            if test["status"] in ("failed", "error"):',
         "            if False:",
         [
-            "python/tests/test_v2_run_cli.py::test_a_failure_is_reported_on_stdout_without_a_report_file"
+            "python/tests/test_run_cli.py::test_a_failure_is_reported_on_stdout_without_a_report_file"
         ],
         "failures not printed",
         lang="py",
@@ -770,7 +770,7 @@ ROWS: list[Row] = [
         "            keyword=args.pattern,\n            mark_expr=args.mark_expr,\n            report_json=args.report_json,",
         "            keyword=None,\n            mark_expr=None,\n            report_json=args.report_json,",
         [
-            "python/tests/test_v2_run_cli.py::test_the_cli_forwards_selection_pool_size_and_the_report_path"
+            "python/tests/test_run_cli.py::test_the_cli_forwards_selection_pool_size_and_the_report_path"
         ],
         "-k/-m not forwarded to the run",
         lang="py",
@@ -782,7 +782,7 @@ ROWS: list[Row] = [
         '        for chunk in report.get("worker_stderr", []):',
         "        for chunk in []:",
         [
-            "python/tests/test_v2_run_cli.py::test_boundary_teardown_output_is_surfaced_but_never_fails_the_run"
+            "python/tests/test_run_cli.py::test_boundary_teardown_output_is_surfaced_but_never_fails_the_run"
         ],
         "worker stderr never printed",
         lang="py",

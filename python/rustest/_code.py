@@ -31,7 +31,7 @@ through :mod:`rustest._assertion`.
 ``TracebackEntry.ishidden`` **is** here as of the Phase 4 final polish wave, because
 :meth:`Traceback.filter`'s primary argument form is an ``ExceptionInfo`` and that form is
 *defined* as "drop the hidden entries". It was previously left out on the ground that
-``_v2_worker._visible_frames`` already applies the rule against raw frames — true, and that
+``_worker._visible_frames`` already applies the rule against raw frames — true, and that
 remains where the runner's own traceback trimming happens; but a caller who writes
 ``excinfo.traceback.filter(excinfo)`` is asking this class, not the worker.
 """
@@ -573,7 +573,7 @@ class Traceback(list[TracebackEntry]):
         API, it is a **different** one: pytest's zero-argument call is a ``TypeError``, so the
         default silently turned a caller's mistake into a traceback with every internal frame
         still in it — the opposite of what ``filter()`` is for. The default was justified by
-        ``_v2_worker._visible_frames`` applying the rule elsewhere, which is true of the
+        ``_worker._visible_frames`` applying the rule elsewhere, which is true of the
         *runner's* rendering and says nothing about a test that filters a traceback itself.
         """
         from rustest.decorators import ExceptionInfo

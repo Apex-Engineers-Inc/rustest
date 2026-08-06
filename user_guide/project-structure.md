@@ -31,7 +31,7 @@ directories on a worker's `sys.path`, in this order:
    contain an `__init__.py`. A file in a directory with no `__init__.py` at all therefore
    gets its own directory.
 3. **The directory you ran rustest from.** Worker processes are launched as
-   `python -m rustest._v2_worker` and inherit the orchestrator's working directory, and
+   `python -m rustest._worker` and inherit the orchestrator's working directory, and
    `python -m` puts the current directory on `sys.path`.
 
 Nothing else is inferred. rustest does not look for a `src/` directory, does not search

@@ -70,7 +70,7 @@ def test_at_least_one_corpus_case_actually_warms_the_cache() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
         _collect(work, load_case_args(case_dir))
-        store = work / ".rustest_cache" / "v2-manifest"
+        store = work / ".rustest_cache" / "manifest"
         assert store.is_dir(), "no manifest cache was written for a Tier S case"
         shards = list(store.glob("*.json"))
         assert len(shards) == 1, shards
@@ -78,7 +78,7 @@ def test_at_least_one_corpus_case_actually_warms_the_cache() -> None:
 
 
 def test_the_cache_can_be_switched_off_from_the_environment() -> None:
-    """``RUSTEST_V2_MANIFEST_CACHE=off`` writes nothing and answers the same.
+    """``RUSTEST_MANIFEST_CACHE=off`` writes nothing and answers the same.
 
     The escape hatch is what makes a suspected stale entry diagnosable without deleting
     anything, so it has to reach the engine from a real subprocess -- an in-process test
@@ -91,7 +91,7 @@ def test_the_cache_can_be_switched_off_from_the_environment() -> None:
         expected, exit_code = _collect(work, args)
         shutil.rmtree(work / ".rustest_cache", ignore_errors=True)
 
-        env = {**os.environ, "RUSTEST_V2_MANIFEST_CACHE": "off"}
+        env = {**os.environ, "RUSTEST_MANIFEST_CACHE": "off"}
         proc = subprocess.run(
             [sys.executable, "-m", "rustest", "--collect-only", *args],
             cwd=work,
@@ -102,7 +102,7 @@ def test_the_cache_can_be_switched_off_from_the_environment() -> None:
         )
         assert proc.stdout.splitlines() == expected
         assert proc.returncode == exit_code
-        assert not (work / ".rustest_cache" / "v2-manifest").exists()
+        assert not (work / ".rustest_cache" / "manifest").exists()
 
 
 def test_a_corrupt_shard_is_ignored_rather_than_fatal() -> None:
@@ -118,7 +118,7 @@ def test_a_corrupt_shard_is_ignored_rather_than_fatal() -> None:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
         expected, exit_code = _collect(work, args)
 
-        shard = next((work / ".rustest_cache" / "v2-manifest").glob("*.json"))
+        shard = next((work / ".rustest_cache" / "manifest").glob("*.json"))
         whole = shard.read_text(encoding="utf-8")
         shard.write_text(whole[: len(whole) // 2], encoding="utf-8")
 

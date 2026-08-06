@@ -6,10 +6,13 @@ need to change any code at all.
 
 For the full record of every change, see the [Changelog](changelog.md).
 
-## Upgrading to the v2 engine
+## Upgrading from an earlier rustest
 
-This release replaces rustest's engine. The old one ("v1") is deleted, not frozen, and there
-is no flag that runs it. Everything below is a change you may have to act on.
+This release is a ground-up rewrite of rustest's engine, done to make it a genuine drop-in
+replacement for pytest: the goal was agreeing with pytest on node ids, outcomes and exit
+codes, and being stable and predictable while doing it. The previous engine is deleted, not
+frozen, and there is no flag that runs it. Everything below is a change you may have to act
+on.
 
 ### `--pytest-compat` is gone
 
@@ -49,7 +52,7 @@ both the arguments and the return type:
 | Arguments | positional and keyword, including `capture_output`, `pytest_compat`, `ascii`, `no_color`, `verbose` | **keyword-only**, and a different set. See [the Python API page](python-api.md) |
 | Returns | a `rustest.reporting.RunReport` object | an **`int`**: pytest's exit code |
 
-`run` is now a plain alias for the v2 entry point rather than a translating wrapper, and that
+`run` is now the engine entry point directly rather than a translating wrapper, and that
 is deliberate. A compatibility shim would have accepted `pytest_compat=False` and silently
 done the opposite, and would have returned an integer where the old type hint promised a
 `RunReport`. Instead an old call raises `TypeError` immediately, naming the keyword it does

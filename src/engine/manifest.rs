@@ -1,8 +1,8 @@
-//! The collection manifest: the serializable spine artifact of the v2 core.
+//! The collection manifest: the serializable spine artifact of the engine core.
 //!
 //! Collection produces a [`CollectionManifest`] — plain data, never live Python objects.
 //! Workers receive it over a process boundary and resolve callables themselves, the
-//! manifest cache stores it verbatim, and the v2 JSON report is derived from it.
+//! manifest cache stores it verbatim, and the JSON report is derived from it.
 //!
 //! The JSON encoding below is a **frozen wire contract**: field names and the
 //! omit-when-empty rules are consumed by the worker protocol (Phase 1b) and the JSON
@@ -16,7 +16,7 @@ pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 /// Which collection tier produced an entry.
 ///
-/// `"s"` is the Rust static collector ([`crate::v2::static_collect`]), which parsed the file
+/// `"s"` is the Rust static collector ([`crate::engine::static_collect`]), which parsed the file
 /// and never imported it; `"d"` is a Python worker, which imported it.  The field exists
 /// because the two tiers are *supposed* to be indistinguishable — the three-way differential
 /// asserts `manifest(S+D) == manifest(D-only) == pytest` — and a claim that strong needs an
@@ -24,7 +24,7 @@ pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 /// routed everything to D would look exactly like a pass.
 ///
 /// [`Tier::Dynamic`] is the **default and the omitted form**: the Python worker
-/// (`_v2_worker.py::_build_entry`) does not know tiers exist and never sends the key, so
+/// (`_worker.py::_build_entry`) does not know tiers exist and never sends the key, so
 /// every producer that predates this field keeps emitting bytes this type still decodes.
 /// That is the same additive-compatibility argument
 /// [`CollectionManifest::deselected`] makes, and it is why
@@ -78,10 +78,10 @@ pub struct CollectedTest {
     /// block segment reaches `qualname` and never reaches `class_name`, by design. Folding
     /// the two together would give every module-level test inside a documentation block a
     /// phantom class, and `class_name` is the class-scope teardown boundary
-    /// (`_v2_worker.py::FixtureRunner.note_test_boundary`), so that phantom class would
+    /// (`_worker.py::FixtureRunner.note_test_boundary`), so that phantom class would
     /// share a class-scoped fixture across tests that must each get their own instead. See
     /// the doc-block execution design spec (git history, under the removed
-    /// `docs/superpowers/specs/`) for the full argument; `_v2_worker.py::_build_entry`
+    /// `docs/superpowers/specs/`) for the full argument; `_worker.py::_build_entry`
     /// carries the matching note on the Python side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_name: Option<String>,
@@ -244,7 +244,7 @@ mod tests {
     }
 
     /// The wire contract.  Field names and omission rules are consumed by the workers
-    /// (Phase 1b) and the v2 JSON report (Phase 1c); changing this string is a breaking
+    /// (Phase 1b) and the JSON report (Phase 1c); changing this string is a breaking
     /// change that requires bumping [`MANIFEST_SCHEMA_VERSION`].
     #[test]
     fn manifest_json_matches_golden_contract() {
@@ -257,7 +257,7 @@ mod tests {
     }
 
     /// A `CollectedTest` with no explicit `tier` decodes as [`Tier::Dynamic`] — the rule the
-    /// Python worker depends on, since `_v2_worker.py::_build_entry` never writes the key.
+    /// Python worker depends on, since `_worker.py::_build_entry` never writes the key.
     ///
     /// Mutation row for the omission: flipping the default to `Static` fails here, and
     /// flipping the `skip_serializing_if` off fails the golden above.

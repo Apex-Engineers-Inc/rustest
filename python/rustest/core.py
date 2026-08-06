@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from typing import Any, Final, NotRequired, TypedDict
 
     class _ManifestTest(TypedDict):
-        """The one manifest field the collect-only surface reads. See `src/v2/manifest.rs`."""
+        """The one manifest field the collect-only surface reads. See `src/engine/manifest.rs`."""
 
         id: str
 
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
         deselected: NotRequired[int]
 
     class _ReportSummary(TypedDict):
-        """The schema-v2 summary. Six status buckets, not v1's three. See `src/v2/execute.rs`."""
+        """The schema-v2 summary. Six status buckets, not v1's three. See `src/engine/execute.rs`."""
 
         total: int
         passed: int
@@ -95,7 +95,7 @@ if TYPE_CHECKING:
 # `.superpowers/sdd/p2-task-3-report.md` §4 once `shutil` and `_colorize` were taken off the
 # argparse path as well.
 
-# pytest's exit codes (`_pytest.config.ExitCode`), which the v2 engine adopts verbatim --
+# pytest's exit codes (`_pytest.config.ExitCode`), which the engine adopts verbatim --
 # "contracts are pytest's" is the v2 spec's rule. Verified against pytest 8.4.2 by running
 # `pytest --collect-only -q` on each shape rather than transcribed from memory:
 #   * a tree with tests            -> 0
@@ -148,7 +148,7 @@ def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
 
     Probed rather than transcribed: a run with one of each prints
     ``1 failed, 1 passed, 1 skipped, 1 deselected, 1 xfailed, 1 xpassed, 1 error``.
-    ``warnings`` is absent here because v2 has no warnings channel yet; every other bucket
+    ``warnings`` is absent here because the engine has no warnings channel yet; every other bucket
     keeps its position, so adding one later does not reshuffle the line.
 
     Zero buckets are omitted, exactly as pytest omits them -- a run with no xfails should
@@ -199,7 +199,7 @@ def _escaping_unencodable_output() -> Iterator[None]:
     characters and diverge.
 
     The change is scoped and restored, so importing ``rustest`` and calling
-    :func:`v2_collect_only` as a library never leaves the caller's streams reconfigured.
+    :func:`collect_only` as a library never leaves the caller's streams reconfigured.
     Streams that are not real text wrappers (a replaced ``sys.stdout`` in an embedding host)
     are skipped: there is nothing to reconfigure, and printing is unchanged for them.
     """
@@ -297,7 +297,7 @@ def _pool_size(workers: int | None) -> int:
 
 
 #: Forces every file through a Python worker when set to ``"d"``, disabling the Rust static
-#: collection tier (``src/v2/static_collect.rs``).
+#: collection tier (``src/engine/static_collect.rs``).
 #:
 #: Not a documented option and deliberately not a CLI flag: it exists so the **three-way
 #: differential** can collect one tree twice -- once hybrid, once Tier D only -- and diff the
@@ -305,10 +305,10 @@ def _pool_size(workers: int | None) -> int:
 #: Tier S off is the only way to ask "did the static tier change the answer?", and that
 #: question has to be askable from a subprocess, which is what makes it an environment
 #: variable rather than a keyword argument. An unrecognised value means the default; see
-#: ``src/v2/collect.rs::TierMode::from_wire`` for why a typo is not a usage error.
-_COLLECT_TIER_ENV = "RUSTEST_V2_COLLECT_TIER"
+#: ``src/engine/collect.rs::TierMode::from_wire`` for why a typo is not a usage error.
+_COLLECT_TIER_ENV = "RUSTEST_COLLECT_TIER"
 
-#: Turns the Tier S manifest cache (``.rustest_cache/v2-manifest``) off when set to ``"off"``.
+#: Turns the Tier S manifest cache (``.rustest_cache/manifest``) off when set to ``"off"``.
 #:
 #: The cache's twin of :data:`_COLLECT_TIER_ENV`, and an escape hatch for the same reason: a
 #: cache that can only be trusted is not a cache that can be *debugged*. A user who suspects a
@@ -319,7 +319,7 @@ _COLLECT_TIER_ENV = "RUSTEST_V2_COLLECT_TIER"
 #: Not a CLI flag, for the same reason ``--no-cache`` is not one in most build tools: the
 #: correct number of users who need it is small, and a flag would imply the cache is a choice
 #: rather than an invariant of a correct run.
-_MANIFEST_CACHE_ENV = "RUSTEST_V2_MANIFEST_CACHE"
+_MANIFEST_CACHE_ENV = "RUSTEST_MANIFEST_CACHE"
 
 #: Turns assertion rewriting off when set to ``"off"``.
 #:
@@ -333,10 +333,10 @@ _MANIFEST_CACHE_ENV = "RUSTEST_V2_MANIFEST_CACHE"
 #: Not a CLI flag, for the same reason the other two are not: the correct number of users who
 #: need it is small, and a flag would suggest rewriting is a choice rather than how the engine
 #: reports a failed assertion.
-_ASSERT_REWRITE_ENV = "RUSTEST_V2_ASSERT_REWRITE"
+_ASSERT_REWRITE_ENV = "RUSTEST_ASSERT_REWRITE"
 
 
-def v2_collect_only(
+def collect_only(
     *,
     paths: Sequence[str],
     workers: int | None = None,
@@ -346,7 +346,7 @@ def v2_collect_only(
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
-    This is the whole of ``rustest --collect-only``. It runs the v2 spine end to end:
+    This is the whole of ``rustest --collect-only``. It runs the engine end to end:
     config resolution -> file walk -> worker pool -> manifest.
 
     Output is shaped so stdout is a machine-readable node id list:
@@ -393,7 +393,7 @@ def v2_collect_only(
     # crash while *reporting* a failure would be the worst place to leave one.
     with _escaping_unencodable_output():
         try:
-            payload = rust.v2_collect(
+            payload = rust.collect(
                 os.getcwd(),
                 list(paths),
                 sys.executable,
@@ -441,12 +441,12 @@ def v2_collect_only(
                 print(f"  {line}", file=sys.stderr)
         print(_summary(len(tests), len(errors), deselected), file=sys.stderr)
 
-    # The same three branches as `src/v2/execute.rs::exit_code` with `failures = 0`, which
+    # The same three branches as `src/engine/execute.rs::exit_code` with `failures = 0`, which
     # is what a collect-only run always has: collection errors outrank everything, then
     # "nothing left" -- counted *after* deselection, which is why `-k nomatch` is 5 and not
     # 0. Kept here rather than read back off the manifest because collection produces no
     # `exit_code` field. Each branch is diffed against real pytest in
-    # `python/tests/test_v2_collect_cli.py` (`..._exits_5`, `..._exits_2_and_names_the_file`,
+    # `python/tests/test_collect_cli.py` (`..._exits_5`, `..._exits_2_and_names_the_file`,
     # `test_deselecting_everything_exits_5_and_says_how_many`, and
     # `test_selection_does_not_suppress_a_collection_error` for the precedence).
     if errors:
@@ -593,7 +593,7 @@ def _print_failure_sections(tests: Sequence[_ReportTest]) -> None:
     ``fE`` and the section is emitted in that character order
     (``_pytest/terminal.py::short_test_summary``).
 
-    v2's blocks head with a phase-neutral ``ERROR <domain>`` where pytest writes
+    the engine's blocks head with a phase-neutral ``ERROR <domain>`` where pytest writes
     ``ERROR at setup of <domain>``. The wire carries one *reduced* status per test and not
     the phase that produced it, so naming a phase here would be a guess; ``at setup of`` is
     right far more often than not, which is precisely what makes guessing it a bad idea.
@@ -658,7 +658,7 @@ class _CoverageRun:
         can answer with pytest's usage exit code before a single worker is spawned.
 
         The rootdir a bare ``--cov`` resolves to is obtained from
-        :func:`rustest.rust.v2_resolve_config`, i.e. from the **same** resolver the run itself
+        :func:`rustest.rust.resolve_config`, i.e. from the **same** resolver the run itself
         will use, rather than from ``os.getcwd()``. They differ for every run started below a
         config file, and a coverage report scoped to the wrong tree is not obviously wrong when
         you read it.
@@ -666,7 +666,7 @@ class _CoverageRun:
         if cov is None:
             return cls.disabled()
 
-        from ._v2_coverage import (
+        from ._coverage import (
             branch_refusal,
             config_requests_branch,
             parse_report_spec,
@@ -683,7 +683,7 @@ class _CoverageRun:
         if config_requests_branch():
             raise ValueError(branch_refusal("branch = True in the coverage configuration"))
         reports = [parse_report_spec(spec) for spec in (cov_report or ["term"])]
-        rootdir: str = json.loads(rust.v2_resolve_config(os.getcwd(), paths))["rootdir"]
+        rootdir: str = json.loads(rust.resolve_config(os.getcwd(), paths))["rootdir"]
         sources = resolve_sources(cov, rootdir)
 
         import tempfile
@@ -692,9 +692,9 @@ class _CoverageRun:
 
     @property
     def wire(self) -> str | None:
-        """The ``coverage`` argument for ``rust.v2_run`` -- `None` when coverage is off.
+        """The ``coverage`` argument for ``rust.run`` -- `None` when coverage is off.
 
-        A JSON object matching ``src/v2/protocol.rs::CoverageWire`` exactly, because it *is*
+        A JSON object matching ``src/engine/protocol.rs::CoverageWire`` exactly, because it *is*
         that object: the Rust boundary parses it with `serde` and forwards it onto every
         worker's ``init`` line unchanged, so there is one description of the shape rather than
         a Python encoder and a Rust decoder free to drift.
@@ -718,7 +718,7 @@ class _CoverageRun:
         """
         if self._sources is None or self._data_dir is None:
             return
-        from ._v2_coverage import combine_and_report
+        from ._coverage import combine_and_report
 
         try:
             _ = combine_and_report(
@@ -749,11 +749,23 @@ class _CoverageRun:
 
 
 def _posix(path: str) -> str:
-    """Absolute path with forward slashes -- the spelling every v2 wire field uses."""
+    """Absolute path with forward slashes -- the spelling every worker wire field uses."""
     return os.path.abspath(path).replace("\\", "/")
 
 
-def v2_run(
+#: The public ``rustest.run()`` entry point, and a breaking change from the pre-rewrite API.
+#:
+#: Before the rewrite this name took ``pattern``, ``capture_output``, ``pytest_compat``,
+#: ``ascii`` and ``no_color``, and returned a ``rustest.reporting.RunReport`` object. That
+#: engine is deleted, and with it the report model only its Rust half could produce.
+#:
+#: It is the engine entry point directly rather than a translating wrapper, deliberately. A
+#: shim mapping the old keywords onto the new ones would accept ``pytest_compat=False`` and
+#: silently do the opposite (the compatibility shim is unconditional now), and would return
+#: an exit code where the caller's type annotation says ``RunReport``. Both are the
+#: quiet-wrong-answer class this project refuses. A caller on the old signature gets an
+#: immediate ``TypeError`` naming the keyword instead — see CHANGELOG.md for the mapping.
+def run(
     *,
     paths: Sequence[str],
     workers: int | None = None,
@@ -773,7 +785,7 @@ def v2_run(
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
-    This is the whole of a default ``rustest <paths>``.  It runs the v2 spine end to end:
+    This is the whole of a default ``rustest <paths>``.  It runs the engine end to end:
     config resolution, the file walk, a worker pool that collects and then stays alive to
     execute, with ``-k``/``-m`` selection and ``--lf``/``--ff`` reordering in between.
 
@@ -847,7 +859,7 @@ def v2_run(
 
     with _escaping_unencodable_output(), coverage:
         try:
-            payload = rust.v2_run(
+            payload = rust.run(
                 os.getcwd(),
                 list(paths),
                 sys.executable,
@@ -953,7 +965,7 @@ def v2_run(
         # The tail is pytest's, and so is the fact that it is *appended* rather than made
         # part of `_run_summary`: the counts are a claim about outcomes and the duration is
         # not, which is why every parity comparison in the suite strips it. `summary.duration`
-        # is the orchestrator's wall clock over the staged run (`src/v2/execute.rs`), so it
+        # is the orchestrator's wall clock over the staged run (`src/engine/execute.rs`), so it
         # excludes interpreter startup where pytest's includes its own session setup.
         # Rendered **before** the summary line and on **stdout**, which places it where
         # pytest-cov puts it: its `pytest_terminal_summary` hook runs after the failure
@@ -997,19 +1009,3 @@ def v2_run(
             print(f"{summary_line} in {tail}", file=sys.stderr)
 
     return report["exit_code"]
-
-
-#: The public ``rustest.run()`` entry point — **the v2 engine**, and a breaking change.
-#:
-#: Until Phase 4 Task 2 this name was the v1 engine's Python API: it took ``pattern``,
-#: ``capture_output``, ``pytest_compat``, ``ascii``, ``no_color`` and a ``verbose`` bool, and
-#: it returned a ``rustest.reporting.RunReport`` object. v1 is gone, and with it the report
-#: model that only its Rust half could produce.
-#:
-#: An alias rather than a translating wrapper, deliberately. A shim mapping the old keywords
-#: onto the new ones would accept ``pytest_compat=False`` and silently do the opposite (the
-#: shim is unconditional now), and would return an exit code where the caller's type
-#: annotation says ``RunReport``. Both are the quiet-wrong-answer class this project refuses.
-#: A caller on the old signature gets an immediate ``TypeError`` naming the keyword instead —
-#: see CHANGELOG.md for the mapping.
-run = v2_run

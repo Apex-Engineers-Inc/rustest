@@ -1,21 +1,21 @@
-//! The v2 boundary: PyO3 entry points that expose the v2 core to Python.
+//! The PyO3 boundary: entry points entry points that expose the engine core to Python.
 //!
 //! Two functions live here, and they differ in kind:
 //!
-//! * [`v2_resolve_config`] is a pure **debug surface**. It exists so the config subsystem
+//! * [`resolve_config`] is a pure **debug surface**. It exists so the config subsystem
 //!   can be diffed against **real pytest** from Python — see
-//!   `python/tests/test_v2_config_oracle.py`, which builds `tmp_path` layouts, runs pytest
+//!   `python/tests/test_config_oracle.py`, which builds `tmp_path` layouts, runs pytest
 //!   in a subprocess, and compares its reported `rootdir`/`configfile` with what
 //!   [`super::config::resolve_config`] produces for the same layout.
-//! * [`v2_collect`] is the first **user-reachable** v2 surface, behind
-//!   `rustest --collect-only` (`python/rustest/cli.py` → `core.v2_collect_only`).
+//! * [`collect`] is the first **user-reachable** engine surface, behind
+//!   `rustest --collect-only` (`python/rustest/cli.py` → `core.collect_only`).
 //!
 //! Both return JSON strings rather than Python objects, for the same reason the manifest
-//! itself is data: the boundary stays a single serialized value, so nothing about v2's
+//! itself is data: the boundary stays a single serialized value, so nothing about the engine's
 //! internal types leaks into the Python layer and the wire form is testable from both
-//! sides. The JSON emitted by [`v2_resolve_config`] is a *contract with those tests*:
+//! sides. The JSON emitted by [`resolve_config`] is a *contract with those tests*:
 //! field names, ordering and the absolute-posix rendering of paths are pinned by
-//! [`tests::json_is_the_frozen_field_list_in_order`]. [`v2_collect`]'s JSON is
+//! [`tests::json_is_the_frozen_field_list_in_order`]. [`collect`]'s JSON is
 //! [`super::manifest::CollectionManifest`], whose golden form is pinned in that module.
 //!
 //! **Exception kinds are load-bearing**, because the CLI turns them into pytest's exit
@@ -128,7 +128,8 @@ fn validated_invocation_dir(invocation_dir: &str) -> PyResult<PathBuf> {
 /// Raises `ValueError` for an `invocation_dir` that is relative, missing or not a directory,
 /// and for every [`super::config::ConfigError`] (pytest raises `UsageError` for the latter).
 #[pyfunction]
-pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<String> {
+#[pyo3(name = "resolve_config")]
+pub fn py_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let config =
@@ -139,15 +140,16 @@ pub fn v2_resolve_config(invocation_dir: &str, args: Vec<String>) -> PyResult<St
 /// The standard-library roots Tier S treats as import-safe
 /// ([`super::static_collect::stdlib_allowlist`]).
 ///
-/// A **debug surface**, exactly like [`v2_resolve_config`]: it exists so the list can be
+/// A **debug surface**, exactly like [`resolve_config`]: it exists so the list can be
 /// checked against a real interpreter instead of trusted. Tier S's whole import rule rests on
 /// "these names cannot raise", and the only way to know that on 3.12, 3.13 and 3.14 is to
 /// import them there — which is what
-/// `python/tests/test_v2_static_tier.py::test_the_stdlib_allowlist_is_importable_and_actually_stdlib`
+/// `python/tests/test_static_tier.py::test_the_stdlib_allowlist_is_importable_and_actually_stdlib`
 /// does with this list on every interpreter CI runs. Duplicating the names on the Python side
 /// would let the two copies drift, and a drifted copy would certify the wrong list.
 #[pyfunction]
-pub fn v2_static_stdlib_allowlist() -> Vec<String> {
+#[pyo3(name = "static_stdlib_allowlist")]
+pub fn py_static_stdlib_allowlist() -> Vec<String> {
     super::static_collect::stdlib_allowlist()
         .iter()
         .map(|name| (*name).to_string())
@@ -210,7 +212,7 @@ fn run_error_to_py(err: RunError) -> PyErr {
 
 /// Collect `args` (or `testpaths`, or `invocation_dir`) and return the manifest as JSON.
 ///
-/// This is the whole of v2 collection seen from Python. The return value is a
+/// This is the whole of collection seen from Python. The return value is a
 /// [`super::manifest::CollectionManifest`] encoded with `serde_json`; the caller reads
 /// `tests[*].id` for node ids in manifest (== walk) order and `errors[*]` for files that
 /// could not be imported.
@@ -239,16 +241,17 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// `collect_tier` is the **differential's control**, not a user feature: `"d"` forbids the
 /// static tier and sends every file to a worker, so a caller can collect the same tree twice
 /// and diff the two manifests against each other and against pytest. Anything else means the
-/// default (static where possible). The CLI reads it from `RUSTEST_V2_COLLECT_TIER` and does
+/// default (static where possible). The CLI reads it from `RUSTEST_COLLECT_TIER` and does
 /// not advertise it; see [`super::collect::TierMode`].
 ///
 /// `cache_mode` is its twin for the manifest cache: `"off"` parses every file and writes
 /// nothing, which is how a user (or a test) asks "is this answer stale?". Read from
-/// `RUSTEST_V2_MANIFEST_CACHE`; see [`CacheMode`].
+/// `RUSTEST_MANIFEST_CACHE`; see [`CacheMode`].
 #[pyfunction]
+#[pyo3(name = "collect")]
 #[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto"))]
 #[allow(clippy::too_many_arguments)]
-pub fn v2_collect(
+pub fn py_collect(
     py: Python<'_>,
     invocation_dir: &str,
     args: Vec<String>,
@@ -287,7 +290,7 @@ pub fn v2_collect(
         .expect("CollectionManifest is plain data and always serializes"))
 }
 
-/// Run `args` with the v2 engine and return the [`super::execute::RunReport`] as JSON.
+/// Run `args` with the engine and return the [`super::execute::RunReport`] as JSON.
 ///
 /// This is the whole of a flagless `rustest` seen from Python: config resolution, the file walk,
 /// a worker pool that collects and then *stays alive* to execute, `-k`/`-m` selection
@@ -320,7 +323,7 @@ fn parse_last_failed(mode: &str) -> PyResult<LastFailedMode> {
 /// Decode the `coverage` argument — a JSON [`CoverageWire`] object, or `None` for no `--cov`.
 ///
 /// **One serialized value rather than a pair of arguments**, which is this module's own rule
-/// ("the boundary stays a single serialized value, so nothing about v2's internal types leaks
+/// ("the boundary stays a single serialized value, so nothing about the engine's internal types leaks
 /// into the Python layer and the wire form is testable from both sides"). Two optional
 /// arguments — sources and a data directory — would have a fourth state (one without the
 /// other) that means nothing, and a `Vec<String>` plus a sentinel would need this function to
@@ -346,6 +349,7 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
 }
 
 #[pyfunction]
+#[pyo3(name = "run")]
 #[pyo3(signature = (
     invocation_dir,
     args,
@@ -362,7 +366,7 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
     coverage=None,
 ))]
 #[allow(clippy::too_many_arguments)]
-pub fn v2_run(
+pub fn py_run(
     py: Python<'_>,
     invocation_dir: &str,
     args: Vec<String>,
@@ -411,7 +415,7 @@ pub fn v2_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::config::{
+    use crate::engine::config::{
         DEFAULT_ASYNCIO_MODE, DEFAULT_ASYNCIO_TEST_LOOP_SCOPE, DEFAULT_NORECURSEDIRS,
         DEFAULT_PYTHON_CLASSES, DEFAULT_PYTHON_FILES, DEFAULT_PYTHON_FUNCTIONS,
     };
@@ -452,7 +456,7 @@ mod tests {
 
     #[test]
     fn json_is_the_frozen_field_list_in_order() {
-        // The field list `python/tests/test_v2_config_oracle.py` reads by name, in the
+        // The field list `python/tests/test_config_oracle.py` reads by name, in the
         // order the Task 5 brief froze it.
         let expected = format!(
             concat!(
@@ -519,7 +523,7 @@ mod tests {
 
     #[test]
     fn relative_invocation_dir_is_rejected() {
-        let err = v2_resolve_config("relative/dir", Vec::new()).unwrap_err();
+        let err = py_resolve_config("relative/dir", Vec::new()).unwrap_err();
         Python::attach(|py| {
             assert!(err.is_instance_of::<PyValueError>(py));
             assert!(
@@ -540,7 +544,7 @@ mod tests {
         .unwrap();
         std::fs::create_dir_all(root.join("tests")).unwrap();
 
-        let json = v2_resolve_config(&root.join("tests").to_string_lossy(), Vec::new()).unwrap();
+        let json = py_resolve_config(&root.join("tests").to_string_lossy(), Vec::new()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["rootdir"].as_str().unwrap(), to_posix(root));
         assert_eq!(
@@ -561,7 +565,7 @@ mod tests {
         std::fs::write(tests.join("pytest.ini"), "[pytest]\n").unwrap();
 
         let detour = tests.join("..").join("tests");
-        let json = v2_resolve_config(&detour.to_string_lossy(), Vec::new()).unwrap();
+        let json = py_resolve_config(&detour.to_string_lossy(), Vec::new()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["rootdir"].as_str().unwrap(), to_posix(&tests));
         assert_eq!(
@@ -576,7 +580,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let missing = tmp.path().join("no-such-dir");
 
-        let err = v2_resolve_config(&missing.to_string_lossy(), Vec::new()).unwrap_err();
+        let err = py_resolve_config(&missing.to_string_lossy(), Vec::new()).unwrap_err();
         Python::attach(|py| {
             assert!(err.is_instance_of::<PyValueError>(py));
             assert!(
@@ -592,7 +596,7 @@ mod tests {
         let file = tmp.path().join("pytest.ini");
         std::fs::write(&file, "[pytest]\n").unwrap();
 
-        let err = v2_resolve_config(&file.to_string_lossy(), Vec::new()).unwrap_err();
+        let err = py_resolve_config(&file.to_string_lossy(), Vec::new()).unwrap_err();
         Python::attach(|py| {
             assert!(err.is_instance_of::<PyValueError>(py));
             assert!(
@@ -610,7 +614,7 @@ mod tests {
         let root = tmp.path();
         std::fs::write(root.join("setup.cfg"), "[pytest]\npython_classes = Nope\n").unwrap();
 
-        let err = v2_resolve_config(&root.to_string_lossy(), Vec::new()).unwrap_err();
+        let err = py_resolve_config(&root.to_string_lossy(), Vec::new()).unwrap_err();
         Python::attach(|py| {
             assert!(err.is_instance_of::<PyValueError>(py));
             assert!(
@@ -621,7 +625,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // v2_collect
+    // collect
     // ----------------------------------------------------------------------
     //
     // The orchestrator's own behaviour (walk order, routing, pool lifecycle) is covered
@@ -650,11 +654,11 @@ mod tests {
 
     fn collect_json(dir: &Path, args: Vec<String>) -> serde_json::Value {
         let json = Python::attach(|py| {
-            v2_collect(
+            py_collect(
                 py,
                 &dir.to_string_lossy(),
                 args,
-                &crate::v2::test_python(),
+                &crate::engine::test_python(),
                 2,
                 None,
                 None,
@@ -740,11 +744,11 @@ mod tests {
         let tmp = tree(&[("test_a.py", "def test_one():\n    pass\n")]);
 
         let err = Python::attach(|py| {
-            v2_collect(
+            py_collect(
                 py,
                 &tmp.path().to_string_lossy(),
                 vec!["nope".to_string()],
-                &crate::v2::test_python(),
+                &crate::engine::test_python(),
                 1,
                 None,
                 None,
@@ -778,7 +782,7 @@ mod tests {
         let tmp = tree(&[("test_a.py", "def test_one():\n    pass\n")]);
 
         let err = Python::attach(|py| {
-            v2_collect(
+            py_collect(
                 py,
                 &tmp.path().to_string_lossy(),
                 Vec::new(),
@@ -805,16 +809,16 @@ mod tests {
         });
     }
 
-    /// The `invocation_dir` guards are shared with [`v2_resolve_config`]; this pins that
-    /// `v2_collect` really goes through them rather than trusting its caller.
+    /// The `invocation_dir` guards are shared with [`resolve_config`]; this pins that
+    /// `collect` really goes through them rather than trusting its caller.
     #[test]
     fn collect_rejects_a_relative_invocation_dir() {
         let err = Python::attach(|py| {
-            v2_collect(
+            py_collect(
                 py,
                 "relative/dir",
                 Vec::new(),
-                &crate::v2::test_python(),
+                &crate::engine::test_python(),
                 1,
                 None,
                 None,
@@ -841,11 +845,11 @@ mod tests {
         let tmp = tree(&[("test_a.py", "def test_one():\n    pass\n")]);
 
         let json = Python::attach(|py| {
-            v2_collect(
+            py_collect(
                 py,
                 &tmp.path().to_string_lossy(),
                 Vec::new(),
-                &crate::v2::test_python(),
+                &crate::engine::test_python(),
                 0,
                 None,
                 None,

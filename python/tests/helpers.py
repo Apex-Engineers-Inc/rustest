@@ -150,14 +150,14 @@ def run_tree(
 ) -> RunTally:
     """Run *paths* through the real engine in this process and return the tally.
 
-    Drives ``rustest.rust.v2_run`` -- the same boundary ``rustest.core.v2_run`` and therefore
+    Drives ``rustest.rust.run`` -- the same boundary ``rustest.core.run`` and therefore
     the CLI drives -- so the workers, the compat shim and the assertion rewriter are all the
     real ones. Only the *reporting* is different: the JSON report is parsed here instead of
     being printed.
 
     ``workers=1`` by default, and deliberately. These suites assert on fixture *sharing* and
     on setup counts, and a session- or package-scoped fixture is cached per worker
-    (``python/rustest/_v2_worker.py``'s ``FixtureRunner``), so a multi-worker pool would make
+    (``python/rustest/_worker.py``'s ``FixtureRunner``), so a multi-worker pool would make
     the answer depend on how the files were bin-packed. One worker asks the question the
     tests mean to ask.
 
@@ -170,7 +170,7 @@ def run_tree(
     if invocation_dir is None:
         first = Path(resolved[0]) if resolved else Path.cwd()
         invocation_dir = first if first.is_dir() else first.parent
-    payload: str = rust.v2_run(
+    payload: str = rust.run(
         os.fspath(invocation_dir),
         resolved,
         sys.executable,

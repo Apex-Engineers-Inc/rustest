@@ -5,7 +5,7 @@ Two gates read this directory and they ask different questions:
 * the three conformance gates run it with **no coverage flags at all**, because pytest has no
   `--cov` without pytest-cov (which this repository deliberately does not install), so what
   they grade is that the suite itself collects and runs identically under pytest and rustest;
-* `python/tests/test_v2_coverage.py` measures the same tree twice -- `rustest --cov` and
+* `python/tests/test_coverage.py` measures the same tree twice -- `rustest --cov` and
   `coverage run -m pytest` -- and asserts the executed line sets for `covered.py` are equal,
   and equal to a pinned literal.
 

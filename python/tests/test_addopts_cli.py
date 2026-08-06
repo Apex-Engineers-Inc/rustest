@@ -5,7 +5,7 @@ Oracle: `_pytest/config/__init__.py::Config._preparse` (pytest 8.4.2, l. 1385-13
     args[:] = self._validate_args(self.getini("addopts"), "via addopts config") + args
 
 **Prepended**, so an explicit command-line flag still wins a last-one-wins option and a path
-in ``addopts`` comes first.  rustest parsed the key (`src/v2/config.rs` l. 224, and it is
+in ``addopts`` comes first.  rustest parsed the key (`src/engine/config.rs` l. 224, and it is
 part of the manifest-cache fingerprint) and applied it nowhere: click's ``-m 'not stress'``
 meant pytest ran 1 686 tests where rustest ran 32 686, and the Phase 3 sweep had to replay
 the value on both command lines to measure anything at all (report §1.1, §4.2).

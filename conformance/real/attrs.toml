@@ -90,7 +90,7 @@ id_policy = "exact"
 #   M5). `TestLegacyMetadataHack` reads `recwarn.list` to assert the
 #   DeprecationWarning attrs' legacy `__version__` hack emits. rustest was honest
 #   about the gap rather than silently skipping -- `FixtureLookupError: ... not
-#   supported by the rustest v2 worker yet` -- and the recorded reason for the gap
+#   supported by the rustest worker yet` -- and the recorded reason for the gap
 #   ('needs a warnings channel the v2 wire does not have') turned out to be wrong:
 #   `recwarn` records in-process and tells the orchestrator nothing.
 # * ONE failure from the length-1 unpack (M2): `@pytest.mark.parametrize("value",

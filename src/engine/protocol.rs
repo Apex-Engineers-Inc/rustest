@@ -26,11 +26,11 @@
 //! the field docs).  The test module below documents both tolerances explicitly so neither
 //! is ever mistaken for coverage.
 //!
-//! Like [`crate::v2::manifest`], the JSON encoding here is a **frozen wire contract** —
+//! Like [`crate::engine::manifest`], the JSON encoding here is a **frozen wire contract** —
 //! field names, the tag key, and the omit-when-empty rules on `Collected` are pinned by
 //! golden-string tests below, and any incompatible change must bump [`PROTOCOL_VERSION`].
 
-use crate::v2::manifest::{CollectedTest, CollectionErrorEntry};
+use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
 use serde::{Deserialize, Serialize};
 
 /// Version of the worker wire protocol.  Bump on any incompatible change.
@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 /// **v4** (Phase 3 Task 1) adds the three asyncio ini values to [`WorkerRequest::Init`]:
 /// `asyncio_mode`, `asyncio_default_fixture_loop_scope` and `asyncio_default_test_loop_scope`.
 /// They belong on `init` rather than on each `execute_batch` because they are whole-run facts
-/// resolved once by `src/v2/config.rs`, and because the worker needs them at **collection**
+/// resolved once by `src/engine/config.rs`, and because the worker needs them at **collection**
 /// time as well as at execution time — `asyncio_mode` decides whether an `async def` + `yield`
 /// test acquires a synthesised `xfail` mark. The change is incompatible in the direction that
 /// matters: a v3 worker would silently apply its own defaults to a suite that configured
@@ -74,12 +74,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// Omitted entirely when `--cov` is absent, so a plain run's `init` line is byte-identical to
 /// v4's apart from the version number, and the worker registers **no `sys.monitoring` tool at
-/// all** (`python/rustest/_v2_coverage.py`). The bump is nonetheless real and not cosmetic in
+/// all** (`python/rustest/_coverage.py`). The bump is nonetheless real and not cosmetic in
 /// the direction that matters: a v4 worker handed a v5 `init` would reject the unknown field
 /// (`deny_unknown_fields`) — and, worse, a v4 worker that *tolerated* it would run the whole
 /// suite and write no coverage data at all, reporting 0 % for a run the user asked to measure.
 ///
-/// `python/rustest/_v2_worker.py` mirrors this constant and **must be bumped in the same
+/// `python/rustest/_worker.py` mirrors this constant and **must be bumped in the same
 /// commit**; a worker still declaring the old number turns every run into a handshake
 /// error.
 /// **v6** adds `pythonpath`: the `pythonpath` ini, resolved to absolute posix directories,
@@ -207,13 +207,13 @@ pub enum WorkerRequest {
         ///
         /// It is a *key*, not a boolean, because the worker cannot compute one: the key
         /// composes the resolved config, the conftest chain and the stdlib shadow set
-        /// (`src/v2/manifest_cache.rs`), all of which are whole-run facts the orchestrator
+        /// (`src/engine/manifest_cache.rs`), all of which are whole-run facts the orchestrator
         /// holds and a single worker does not. Sending a boolean and re-deriving the key
         /// worker-side would be a second implementation of the key rules, free to diverge —
         /// the same argument `execute_test` makes for sending an id instead of a path.
         ///
         /// `skip_serializing_if` keeps every Tier D `collect_file` line byte-identical to
-        /// v2's, which is what lets the golden below assert the omission rather than describe
+        /// the engine's, which is what lets the golden below assert the omission rather than describe
         /// it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         assert_key: Option<String>,
@@ -223,7 +223,7 @@ pub enum WorkerRequest {
     /// **No orchestrator sends this any more** — [`Self::ExecuteBatch`] replaced it on the
     /// run path at Phase 2 Task 3, including for `-x` (which travels as `stop_on_failure`).
     /// It stays in the contract, and the worker keeps implementing it, because it is the
-    /// unit a batch is *defined in terms of*: `_v2_worker.py::execute_batch` is a loop over
+    /// unit a batch is *defined in terms of*: `_worker.py::execute_batch` is a loop over
     /// `execute_test`, and the worker's own test suite drives the single op directly, which
     /// is how one test's execution can be exercised without a batch's framing in the way.
     ///
@@ -232,7 +232,7 @@ pub enum WorkerRequest {
     /// a **protocol error response, not a silent skip**: a test that vanishes between
     /// collection and execution is the failure mode this whole contract exists to prevent.
     ///
-    /// The id is the manifest id (`src/v2/nodeid.rs`) and nothing else — no path, no
+    /// The id is the manifest id (`src/engine/nodeid.rs`) and nothing else — no path, no
     /// qualname.  The orchestrator already holds ids from collection; re-deriving one
     /// worker-side would be a second implementation of the nodeid rules, free to diverge.
     ExecuteTest { id: String },
@@ -250,10 +250,10 @@ pub enum WorkerRequest {
     /// where each of those is a syscall through whatever filter driver is installed. Batching
     /// a file's tests collapses that to one write and one drain per *file*.
     ///
-    /// **The batch is one file, never more.** `_v2_worker.py` detects module and class
+    /// **The batch is one file, never more.** `_worker.py` detects module and class
     /// boundaries by comparing consecutive tests' files, so a batch spanning two files would
     /// tear down and rebuild module-scoped fixtures inside a single request — the ordering
-    /// contract `src/v2/execute.rs` documents under "Dispatch order: grouped by file".
+    /// contract `src/engine/execute.rs` documents under "Dispatch order: grouped by file".
     ///
     /// `stop_on_failure` carries `-x` **into** the batch. Without it, `-x` would degrade from
     /// "nothing runs after the first failure" to "nothing runs after the failing file", which
@@ -301,7 +301,7 @@ pub enum WorkerResponse {
         /// A **third** exclusive shape beside `tests` and `error`, not a flavour of either,
         /// because pytest treats it as neither: no node id is produced (so it is not
         /// `tests`) and the session continues (so it is not `error`). See
-        /// [`crate::v2::manifest::CollectionManifest::module_skipped`] for the probe.
+        /// [`crate::engine::manifest::CollectionManifest::module_skipped`] for the probe.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         skipped: Option<String>,
     },
@@ -762,7 +762,7 @@ mod tests {
                 param_id: None,
                 marks: Vec::new(),
                 fixtures: Vec::new(),
-                tier: crate::v2::manifest::Tier::Dynamic,
+                tier: crate::engine::manifest::Tier::Dynamic,
             }],
             error: None,
             skipped: None,
@@ -1032,7 +1032,7 @@ mod tests {
     /// The exact `init` line a **v1 orchestrator** sends: right op, right version field,
     /// no `invocation_dir`.  It must not decode.
     ///
-    /// This is the single most likely wrong line to arrive on a v2 worker's stdin, and the
+    /// This is the single most likely wrong line to arrive on a worker's stdin, and the
     /// one shape where a missing field would be silently *plausible* — a decoder that
     /// defaulted `invocation_dir` to `""` would hand every worker an empty invocation
     /// directory and only misbehave later, in whatever fixture resolved a path against it.
@@ -1234,7 +1234,7 @@ mod tests {
         );
     }
 
-    /// A **v2 worker** answering a v3 orchestrator would never send `batch_done`, and a v2
+    /// A **worker** answering a v3 orchestrator would never send `batch_done`, and a v2
     /// orchestrator would never send `execute_batch`.  Neither line may decode on the other
     /// side of the version boundary — asserted here so the handshake is not the only thing
     /// standing between the two, since a handshake only runs once and a bug can reintroduce
@@ -1243,11 +1243,11 @@ mod tests {
     fn the_v2_ops_and_the_v3_ops_are_not_interchangeable() {
         // A v2 orchestrator's `collect_file` still decodes — the field is additive, and that
         // is the point of `default` — but it decodes as "no rewriting", never as a key.
-        let v2_collect: WorkerRequest =
+        let collect: WorkerRequest =
             serde_json::from_str(r#"{"op":"collect_file","path":"/a/t.py"}"#)
                 .expect("a v2 collect_file line still decodes");
         assert_eq!(
-            v2_collect,
+            collect,
             WorkerRequest::CollectFile {
                 path: "/a/t.py".to_string(),
                 assert_key: None,

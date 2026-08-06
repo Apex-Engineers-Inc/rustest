@@ -58,15 +58,15 @@ jobs:
 
       # Gate 1 of 2 (sequential -- see the job-level comment above): Phase 1b.1 -- pytest's
       # collected node ids and collection exit code vs `rustest --collect-only`. Graded
-      # against waivers-v2-collect.toml.
+      # against waivers-collect.toml.
       - name: Run conformance corpus (collection)
-        run: uv run python -m conformance --v2-collect
+        run: uv run python -m conformance --collect
 
       # Gate 2 of 2: Phase 1b.2 -- a real pytest run vs flagless `rustest --report-json` --
       # ordered node ids, the six-value outcome tally (passed/failed/skipped/xfailed/
-      # xpassed/error) and the exit code. Graded against waivers-v2-run.toml.
+      # xpassed/error) and the exit code. Graded against waivers-run.toml.
       - name: Run conformance corpus (full run)
-        run: uv run python -m conformance --v2-run
+        run: uv run python -m conformance --run
 
       # NO REAL-SUITE SMOKE STEP, and the reason is a blocker rather than a decision.
       #

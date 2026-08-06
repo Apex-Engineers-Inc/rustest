@@ -1418,7 +1418,7 @@ def test_cache_operations(cache) -> None:
 
 #### Cache Storage
 
-Values are JSON, written one file per key under `.rustest_cache/v2/v/<key>`:
+Values are JSON, written one file per key under `.rustest_cache/v/<key>`:
 
 ```python
 def test_cache_data_types(cache) -> None:
@@ -1441,7 +1441,7 @@ def test_cache_data_types(cache) -> None:
 
 #### Creating Cache Directories
 
-`mkdir(name)` returns a directory under `.rustest_cache/v2/d/<name>`, creating it if it is not
+`mkdir(name)` returns a directory under `.rustest_cache/d/<name>`, creating it if it is not
 already there. The name may not contain a path separator: the cache is a flat namespace, and a
 nested name raises `ValueError`.
 

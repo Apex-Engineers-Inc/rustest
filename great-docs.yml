@@ -53,7 +53,7 @@ jupyter: python3
 #
 # The pages are `.md`, not `.qmd`, and that is load-bearing: great-docs and Quarto render
 # both, but **rustest's own doc-code-block collector keys on `.md`**
-# (`src/v2/collect.rs::is_markdown`), so authoring in `.md` is what keeps every example on
+# (`src/engine/collect.rs::is_markdown`), so authoring in `.md` is what keeps every example on
 # these pages executing as a test in CI. See `user_guide/markdown-testing.md`.
 user_guide:
   - section: "Get Started"

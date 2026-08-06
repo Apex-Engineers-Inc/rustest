@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rustest._v2_worker import DEFAULT_NAMING, Naming
+from rustest._worker import DEFAULT_NAMING, Naming
 
 
 def _default_naming() -> Naming:
@@ -39,7 +39,7 @@ def test_block_segment_is_in_the_id_but_not_the_class_name(tmp_path: Path) -> No
     A module-level test inside a block must carry NO class_name. If it acquires one,
     class-scope teardown breaks silently; see test_class_scope_is_torn_down_per_test.
     """
-    from rustest._v2_worker import ExecutionPlan, collect_module
+    from rustest._worker import ExecutionPlan, collect_module
     import types
 
     module = types.ModuleType("block_probe")
@@ -86,7 +86,7 @@ def test_unittest_case_in_a_block_carries_the_block_segment_too(tmp_path: Path) 
     explicitly. Without that, two blocks each defining an identically-named `TestCase`
     subclass and method produce IDENTICAL wire ids, a genuine id collision.
     """
-    from rustest._v2_worker import ExecutionPlan, collect_module
+    from rustest._worker import ExecutionPlan, collect_module
     import types
 
     source = (
@@ -272,7 +272,7 @@ def test_codeblock_mark_reaches_the_execution_plan_too(tmp_path: Path) -> None:
     mark. A dropped `marks=(*plan.marks, marks[0])` there is invisible to the wire-only
     test above, the same class of gap the plan-half of `block_segment` had.
     """
-    from rustest._v2_worker import collect_markdown
+    from rustest._worker import collect_markdown
 
     page = tmp_path / "page.md"
     page.write_text("```python\ndef test_inner():\n    assert True\n```\n", encoding="utf-8")
@@ -517,7 +517,7 @@ def test_block_modules_do_not_leak_into_sys_modules_across_files(tmp_path: Path)
     """
     import sys
 
-    from rustest._v2_worker import DEFAULT_NAMING, collect_markdown
+    from rustest._worker import DEFAULT_NAMING, collect_markdown
 
     page = tmp_path / "page.md"
     page.write_text("```python\ndef test_one():\n    assert True\n```\n", encoding="utf-8")

@@ -322,7 +322,7 @@ def _staleness_fixture(
     replaced by one file in ``tmp_path``, because a test that stats this repository would
     pass or fail according to when someone last touched it.
     """
-    source = tmp_path / "src" / "v2" / "engine.rs"
+    source = tmp_path / "src" / "engine" / "engine.rs"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("// build input\n", encoding="utf-8")
     monkeypatch.setattr(real_mod, "_REPO_ROOT", tmp_path)
@@ -370,7 +370,7 @@ def test_a_wheel_older_than_the_source_is_refused_by_name(
     message = str(excinfo.value)
     assert "STALE WHEEL" in message
     assert "rustest-0.0.0-cp314-cp314-win_amd64.whl" in message
-    assert "src/v2/engine.rs" in message
+    assert "src/engine/engine.rs" in message
 
 
 def test_a_wheel_rebuilt_but_never_reinstalled_is_refused_too(

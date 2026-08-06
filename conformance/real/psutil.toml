@@ -182,7 +182,7 @@ The 10 shared failures are psutil's own, in an unelevated developer environment 
 # worker; the default pool dropping from `cpu_count` to 4 on a suite whose tests manipulate
 # process-global state; and two-phase spawn changing the timing of everything after it. The
 # grandchild-inherits-the-protocol-pipe hypothesis is half wrong on its own terms --
-# `_v2_worker._detach_protocol_stream` already dups the protocol channel onto a private,
+# `_worker._detach_protocol_stream` already dups the protocol channel onto a private,
 # non-inheritable descriptor -- though the failure CLASS is real and is now reproduced and
 # contained in a unit test.
 #

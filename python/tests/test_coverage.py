@@ -2,7 +2,7 @@
 
 Three layers, and they answer different questions:
 
-* **unit** -- :class:`rustest._v2_coverage.LineMonitor` in this process, where the questions
+* **unit** -- :class:`rustest._coverage.LineMonitor` in this process, where the questions
   are "which lines" and "what does it cost", both of which a subprocess timing cannot answer
   on a machine whose noise is larger than the effect;
 * **CLI** -- the real binary end to end, because every refusal (`--cov-branch`, `--cov` with
@@ -31,8 +31,8 @@ import sys
 import pytest
 
 # The compiled extension is built and installed by `python/tests/__init__.py`.
-from rustest import _v2_coverage
-from rustest._v2_coverage import LineMonitor
+from rustest import _coverage
+from rustest._coverage import LineMonitor
 
 coverage = pytest.importorskip(
     "coverage",
@@ -292,7 +292,7 @@ def test_stop_is_idempotent_and_frees_the_tool_id(tmp_path: Path) -> None:
     monitor.start()
     acquired = monitor.tool_id
     assert acquired is not None
-    assert sys.monitoring.get_tool(acquired) == _v2_coverage.TOOL_NAME
+    assert sys.monitoring.get_tool(acquired) == _coverage.TOOL_NAME
     monitor.stop()
     monitor.stop()
     assert sys.monitoring.get_tool(acquired) is None
@@ -321,40 +321,40 @@ def test_a_taken_tool_id_is_stepped_over(tmp_path: Path) -> None:
 
 
 def test_report_specs_are_parsed_and_the_rest_are_named() -> None:
-    assert _v2_coverage.parse_report_spec("term") == ("term", None)
-    assert _v2_coverage.parse_report_spec("xml") == ("xml", None)
-    assert _v2_coverage.parse_report_spec("xml:build/cov.xml") == ("xml", "build/cov.xml")
+    assert _coverage.parse_report_spec("term") == ("term", None)
+    assert _coverage.parse_report_spec("xml") == ("xml", None)
+    assert _coverage.parse_report_spec("xml:build/cov.xml") == ("xml", "build/cov.xml")
 
     # The refusal must *name* the type: every one of these is a real pytest-cov value that a
     # user has in a Makefile, and "invalid --cov-report" is not actionable.
     for spec in ("html", "term-missing", "lcov", "json", "annotate"):
         with pytest.raises(ValueError, match="term"):
-            _ = _v2_coverage.parse_report_spec(spec)
+            _ = _coverage.parse_report_spec(spec)
 
 
 def test_sources_resolve_to_directories(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     rootdir = str(tmp_path)
 
-    assert _v2_coverage.resolve_sources([""], rootdir) == [rootdir]
-    assert _v2_coverage.resolve_sources([str(tmp_path / "src")], rootdir) == [str(tmp_path / "src")]
+    assert _coverage.resolve_sources([""], rootdir) == [rootdir]
+    assert _coverage.resolve_sources([str(tmp_path / "src")], rootdir) == [str(tmp_path / "src")]
     # Repeats collapse: `--cov=src --cov=src` is one tree, and a duplicate in `source` would
     # make `_touch_unexecuted` walk it twice.
-    assert len(_v2_coverage.resolve_sources([str(tmp_path / "src")] * 2, rootdir)) == 1
+    assert len(_coverage.resolve_sources([str(tmp_path / "src")] * 2, rootdir)) == 1
 
     with pytest.raises(ValueError, match="not a directory"):
-        _ = _v2_coverage.resolve_sources(["nope"], rootdir)
+        _ = _coverage.resolve_sources(["nope"], rootdir)
 
 
 def test_the_branch_refusal_names_what_it_would_take() -> None:
-    message = _v2_coverage.branch_refusal()
+    message = _coverage.branch_refusal()
     assert "--cov-branch" in message
     # The refusal must say *why* it is not a silent downgrade to line coverage, because that
     # is the failure mode being avoided.
     assert "overstate" in message
     # ...and it must name whichever door the request came through, because the remedy differs:
     # a flag is dropped from a command line, a config setting is removed from a file.
-    config = _v2_coverage.branch_refusal("branch = True in the coverage configuration")
+    config = _coverage.branch_refusal("branch = True in the coverage configuration")
     assert "branch = True in the coverage configuration" in config
     assert "--cov-branch" not in config
     assert "Remove it" in config
@@ -370,14 +370,14 @@ def test_the_branch_config_probe_reads_the_project_configuration(
     detects nothing. This is the test that fails if that argument is ever added to the probe.
     """
     monkeypatch.chdir(tmp_path)
-    assert _v2_coverage.config_requests_branch() is False
+    assert _coverage.config_requests_branch() is False
 
     _write(tmp_path / ".coveragerc", "[run]\nbranch = True\n")
-    assert _v2_coverage.config_requests_branch() is True
+    assert _coverage.config_requests_branch() is True
 
     (tmp_path / ".coveragerc").unlink()
     _write(tmp_path / "pyproject.toml", "[tool.coverage.run]\nbranch = true\n")
-    assert _v2_coverage.config_requests_branch() is True
+    assert _coverage.config_requests_branch() is True
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +538,7 @@ def test_the_reporter_is_built_with_branches_off(tmp_path: Path) -> None:
     os.chdir(tmp_path)
     try:
         coverage.Coverage = Recording  # pyright: ignore[reportAttributeAccessIssue]
-        _ = _v2_coverage.combine_and_report(
+        _ = _coverage.combine_and_report(
             data_dir=str(data_dir),
             sources=[str(tmp_path)],
             data_file=str(tmp_path / ".coverage"),
@@ -572,7 +572,7 @@ def test_cov_writes_a_combined_coverage_file_and_a_term_report(tmp_path: Path) -
 
 
 def test_an_unimported_source_file_reports_zero_rather_than_vanishing(tmp_path: Path) -> None:
-    """`Coverage._post_save_work`'s job, reproduced -- see `_v2_coverage._touch_unexecuted`.
+    """`Coverage._post_save_work`'s job, reproduced -- see `_coverage._touch_unexecuted`.
 
     The file the suite never imports is the one a coverage number exists to find, and a plain
     `combine` + `report` omits it entirely.
@@ -668,7 +668,7 @@ def test_the_wire_object_is_omitted_without_cov_and_shaped_like_the_contract(
 ) -> None:
     """`_CoverageRun.wire` is the *whole* protocol footprint, so its two shapes are pinned.
 
-    The keys and their spelling are `src/v2/protocol.rs::CoverageWire`'s golden line; the
+    The keys and their spelling are `src/engine/protocol.rs::CoverageWire`'s golden line; the
     `None` is what makes a plain run's `init` byte-identical to the pre-v5 form.
     """
     from rustest.core import _CoverageRun  # pyright: ignore[reportPrivateUsage]

@@ -41,7 +41,7 @@ import pytest
 
 # The compiled extension is built and installed by `python/tests/__init__.py`, which runs
 # `ensure_develop_installed()` before any test module is imported -- these subprocess tests
-# exercise the real `rust.v2_run`, not a pure-Python stub.
+# exercise the real `rust.run`, not a pure-Python stub.
 from .helpers import stub_rust_module
 from rustest import cli, core
 
@@ -104,7 +104,7 @@ def _run_v2(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
 
     ``--v2`` is still accepted but now prints a deprecation line to stderr, which the
     stderr-reading assertions below would have to special-case for no benefit.  The alias's
-    own behaviour is pinned in ``test_v2_flip_cli.py``.
+    own behaviour is pinned in ``test_flip_cli.py``.
     """
     return _run([sys.executable, "-m", "rustest", *args], tree)
 
@@ -510,7 +510,7 @@ def test_a_passing_body_with_a_broken_teardown_agrees_on_the_exit_code_only(
     pytest's summary counts **reports**: ``runtestprotocol`` produces up to three per test,
     so a passing body with a raising teardown is ``1 passed, 1 error``. The v2 wire carries
     one **reduced** status per test -- the worker collapses the three phases before the
-    result is ever sent (`src/v2/protocol.rs::TestResult`), and the earliest non-plain-pass
+    result is ever sent (`src/engine/protocol.rs::TestResult`), and the earliest non-plain-pass
     phase wins -- so the same test is exactly ``1 error``.
 
     Both are right about the run: exit 1 either way, and neither reports a green test. The
@@ -921,7 +921,7 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
             }
         )
 
-    with stub_rust_module(v2_run=fake_run):
+    with stub_rust_module(run=fake_run):
         assert cli.main(["-k", "a and b", "-m", "slow", "-n", "3"]) == 0
 
     assert seen == [([], 3, "a and b", "slow")]
@@ -972,7 +972,7 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
             }
         )
 
-    with stub_rust_module(v2_run=fake_run):
+    with stub_rust_module(run=fake_run):
         _ = cli.main([])
         _ = cli.main(["."])
 
@@ -1002,10 +1002,10 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         del invocation_dir, args, python, workers, keyword, mark_expr
         del fail_fast, max_fail, last_failed_mode, no_capture, codeblocks, assert_rewrite
         del coverage
-        raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
+        raise RuntimeError("could not spawn the collection worker `nope -m rustest._worker`")
 
-    with stub_rust_module(v2_run=boom):
-        assert core.v2_run(paths=[]) == 3
+    with stub_rust_module(run=boom):
+        assert core.run(paths=[]) == 3
 
     captured = capsys.readouterr()
     assert captured.out == "", captured
@@ -1126,7 +1126,7 @@ def test_the_failure_report_has_pytests_section_structure(tmp_path: Path) -> Non
 
     pytest is invoked *without* ``-q --tb=no`` here, unlike everywhere else in this module:
     ``--tb=no`` suppresses the very sections under test. Only the section titles and their
-    order are compared. The traceback *inside* a block is produced by the v2 worker's
+    order are compared. The traceback *inside* a block is produced by the worker's
     ``traceback`` module rather than by pytest's ``ExceptionInfo``, and pinning its wording
     would make every upstream reword a red gate for no parity gained.
     """
@@ -1577,7 +1577,7 @@ def test_a_module_level_fail_or_xfail_is_a_collection_error_not_a_dead_worker(
     ``pytest.skip()`` at module scope had an arm (``MODULE_SKIP_EXCEPTIONS``) and its two
     siblings did not. ``OutcomeException`` is a ``BaseException`` on purpose, so
     ``collect_file``'s ``except Exception`` handler could not see a ``Failed``/``XFailed``:
-    it escaped the worker, the worker died, and ``src/v2/py.rs`` reported an *internal*
+    it escaped the worker, the worker died, and ``src/engine/py.rs`` reported an *internal*
     failure at exit 3 -- **the whole run lost to one bad file**, and the second file below
     never ran. pytest files it as an ordinary collection error at exit 2 and keeps going.
 

@@ -2,8 +2,12 @@
 
 Rustest implements the parts of pytest that most suites actually use, and runs them through
 a Rust orchestrator. This page is the ledger: what both runners do, what only pytest does,
-and how much faster rustest is in practice, including the suites where the answer is
-"barely".
+and — secondarily — how much faster rustest is in practice, including the suites where the
+answer is "barely".
+
+The feature table is the part that matters. Compatibility is what this release was built
+for; the performance section at the end reports where speed happens to stand, and is not
+the reason to switch.
 
 ## Feature Comparison Table
 
@@ -30,7 +34,7 @@ and how much faster rustest is in practice, including the suites where the answe
 | `monkeypatch` | ✅ | ✅ | Attributes, env vars, dict items, `sys.path` |
 | `capsys` / `capfd` | ✅ | ✅ | Stream-level and descriptor-level capture respectively, matching pytest |
 | `caplog` | ✅ | ✅ | Root-logger handler; sets no level, as pytest's does not |
-| `cache` | ✅ | ✅ | Persistent store under `.rustest_cache/v2`, shared with `--lf` |
+| `cache` | ✅ | ✅ | Persistent store under `.rustest_cache`, shared with `--lf` |
 | `mocker` | ✅ (`pytest-mock`) | ✅ | Built in |
 | `pytestconfig` | ✅ | ✅ | The same object `request.config` returns |
 | `recwarn` | ✅ | ✅ | |
@@ -308,6 +312,10 @@ class TestMath:
 ```
 
 ## Performance Comparison
+
+**Reported, not advertised.** Speed is not what this release was built for, and it is not
+where the work went; deeper performance work comes later. What follows is where things
+actually stand.
 
 Seventeen real open-source pytest suites have been run under both runners, with the outcome
 tallies diffed to confirm the two runs did the same work. Rustest is between **1.1x and

@@ -36,7 +36,7 @@ REPORT_ENV_VAR: Final = "CONFORMANCE_REAL_REPORT"
 
 #: Reduction precedence, strongest first. A test with reports in more than one phase gets
 #: the strongest status any phase produced, which is how rustest's worker reduces too
-#: (`python/rustest/_v2_worker.py`'s STATUSES). The one place this differs from pytest's
+#: (`python/rustest/_worker.py`'s STATUSES). The one place this differs from pytest's
 #: *summary line* is a passing body with a raising teardown: pytest tallies that as
 #: `1 passed, 1 error` (two entries for one test), this records it as `error` (one entry).
 #: The `--real` gate compares reduced-per-test tallies on BOTH sides for exactly that

@@ -35,7 +35,7 @@ Three things are **not** taken:
 
 ## The mechanism, and why it is a meta-path hook
 
-``_v2_worker.py::import_test_module`` imports test modules by **dotted name** through
+``_worker.py::import_test_module`` imports test modules by **dotted name** through
 ``importlib.import_module`` — the ``ImportMode.prepend`` port that makes ``import conftest``
 inside a test reach the same module object the worker has. Any rewrite must therefore
 intercept the ordinary import machinery rather than replace it, and that is exactly what
@@ -57,12 +57,12 @@ Compiling is the expensive half — for the 5 000-test benchmark suite, parsing 
 500 rewritten modules costs an order of magnitude more than reading 500 ``.pyc``s — so the
 compiled code object is cached at::
 
-    <rootdir>/.rustest_cache/v2-assert/<path-tag>-<key>.pyc
+    <rootdir>/.rustest_cache/assert/<path-tag>-<key>.pyc
 
 where ``<path-tag>`` is a short digest of the source path — it makes the store bounded by
 the tree's *contents* rather than by its history, see :func:`_cache_path` — and ``<key>`` is
 **the Task 2 manifest cache key for that file**, handed down by the
-orchestrator on the ``collect_file`` request (``src/v2/protocol.rs``). Reusing that key is
+orchestrator on the ``collect_file`` request (``src/engine/protocol.rs``). Reusing that key is
 the point: it already covers the file's bytes, the resolved config, the conftest chain, the
 stdlib shadow set and the rustest build, so every invalidation the manifest cache gets, the
 bytecode cache gets for free and by construction.
@@ -314,7 +314,7 @@ def _cache_path(fn: str, key: str) -> str | None:
     file would leave its previous artefact behind **forever** — one dead ``.pyc`` per edit,
     per file, growing without bound in a directory nobody looks at. The manifest cache does
     not have that problem because it stores one entry *per path*, overwritten in place
-    (`src/v2/manifest_cache.rs`, "keyed by file name within the shard, so the store is bounded
+    (`src/engine/manifest_cache.rs`, "keyed by file name within the shard, so the store is bounded
     by the directory's contents rather than by its history"). This reproduces that property
     with a filename instead of a shard.
     """
@@ -357,7 +357,7 @@ def _write_cached(fn: str, key: str, code: types.CodeType) -> bool:
     """Write *code* for *fn* under *key*, and drop that file's superseded artefacts.
 
     Written to a per-process temporary and renamed, for the reason
-    ``src/v2/manifest_cache.rs`` documents at length: two workers of the same pool compile
+    ``src/engine/manifest_cache.rs`` documents at length: two workers of the same pool compile
     the same file only in the stem-collision case, but a half-written ``.pyc`` read by the
     other one would be a corrupt import rather than a miss. ``os.replace`` is atomic for
     readers on both POSIX and Windows.
@@ -366,7 +366,7 @@ def _write_cached(fn: str, key: str, code: types.CodeType) -> bool:
     is, only when the file's content, config or conftest chain actually changed — and it
     removes only the artefacts of *that* file's earlier states. A run that hits every entry
     neither lists the directory nor unlinks anything, which is the trade
-    `src/v2/manifest_cache.rs` makes ("paying a `stat` per cached file on every warm run to
+    `src/engine/manifest_cache.rs` makes ("paying a `stat` per cached file on every warm run to
     tidy it sooner is precisely the trade this cache exists to avoid").
 
     The residual is the manifest cache's too, and bounded the same way: the artefacts of a

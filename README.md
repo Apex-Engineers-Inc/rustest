@@ -15,11 +15,16 @@ install: `import pytest` resolves to rustest's own implementation on every run.
 
 <!--pytest.mark.skip-->
 ```bash
-pip install rustest
+pip install "rustest==1.0.0rc1"    # or: uv pip install "rustest==1.0.0rc1"
 rustest tests/
 ```
 
 That is the whole migration for most suites.
+
+> **This is a release candidate.** It is named explicitly above because pip and uv skip
+> pre-releases by default, so a plain `pip install rustest` still gives you the previous
+> stable release. That is deliberate: the candidate is here to be tried, not to land on
+> anyone who did not ask for it.
 
 ## Does it actually agree with pytest?
 
@@ -43,15 +48,22 @@ is the one class of test rustest structurally cannot pass.
 Underneath the sweep sits a conformance corpus that diffs rustest against real pytest on
 node ids, outcome tallies and exit codes, case by case, on every commit.
 
-## How fast?
+## What about speed?
 
-**1.1x to 5.7x** across those same seventeen suites. Aggregated over all of them it is
-**1.23x**; across the fifteen that are not dominated by their own test bodies it is
-**2.74x**.
+**Speed is not what this release is about.** The rewrite behind it was spent on
+compatibility, stability and reliability — on being a drop-in replacement that agrees with
+pytest, which is what the table above measures. Making it *fast* is the next body of work,
+not this one.
 
-Those numbers are deliberately not a single headline multiplier, because a test runner can
-only make the *framework* part of a run faster, never your code. That share is measurable
-per suite, and it is the ceiling:
+What it does today, honestly: **1.1x to 5.7x** across those same seventeen suites,
+**1.23x** aggregated over all of them, **2.74x** across the fifteen that are not dominated
+by their own test bodies. Useful, and measured rather than asserted — but a long way from
+the headline multipliers rustest used to advertise. Those described an earlier engine that
+has since been deleted, and they are gone from every page rather than quietly inherited.
+
+There is deliberately no single headline multiplier, because a test runner can only make the
+*framework* part of a run faster, never your code. That share is measurable per suite, and
+it is the ceiling:
 
 | Suite | Framework share | Speedup |
 |---|---:|---:|
@@ -66,7 +78,8 @@ per suite, and it is the ceiling:
 
 **A 1.2x on a body-bound suite and a 5.7x on a framework-bound one are the same result.**
 If your suite spends 95% of its wall clock inside your own functions, no runner will give
-you more than a few percent. The component numbers are where the difference comes from:
+you more than a few percent — so if speed is your only reason to switch, measure your own
+framework share first. The component numbers are where today's difference comes from:
 
 | Component (500 files / 5,000 tests) | pytest | rustest | |
 |---|---:|---:|---:|
@@ -190,9 +203,9 @@ that page is the whole statement of what rustest does.
 
 <!--pytest.mark.skip-->
 ```bash
-pip install rustest
+pip install "rustest==1.0.0rc1"
 # or
-uv add rustest
+uv add "rustest==1.0.0rc1"
 ```
 
 **Python 3.12 to 3.14.** [Installation guide](https://apex-engineers-inc.github.io/rustest/user-guide/installation.html)

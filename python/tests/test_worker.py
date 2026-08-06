@@ -1,4 +1,4 @@
-"""Tests for the v2 collection worker (`rustest._v2_worker`).
+"""Tests for the v2 collection worker (`rustest._worker`).
 
 Two correctness cores are under test:
 
@@ -13,7 +13,7 @@ Two correctness cores are under test:
    refusal, staticmethod/classmethod).
 
 Wire-format tests pin the emitted JSON against the **byte-identical golden strings**
-in `src/v2/protocol.rs` / `src/v2/manifest.rs`.
+in `src/engine/protocol.rs` / `src/engine/manifest.rs`.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from rustest._v2_worker import (
+from rustest._worker import (
     DEFAULT_NAMING,
     PROTOCOL_VERSION,
     CollectionRefusal,
@@ -790,7 +790,7 @@ def test_parametrize_expands_with_pytest_ids(tmp_path: Path) -> None:
 
 def test_empty_string_param_id_keeps_its_brackets(tmp_path: Path) -> None:
     """`Some("")` is reachable and distinct from "no param" —
-    see `src/v2/nodeid.rs` module docs (`_pytest/python.py::PyCollector._genfunctions`
+    see `src/engine/nodeid.rs` module docs (`_pytest/python.py::PyCollector._genfunctions`
     guards on `callspec._idlist`, not on the joined id)."""
     entries = collect_source(
         tmp_path,
@@ -1260,7 +1260,7 @@ def test_positional_only_self_does_not_eat_the_first_fixture(tmp_path: Path) -> 
 
 
 def test_fully_populated_entry_matches_the_manifest_golden(tmp_path: Path) -> None:
-    """A REAL collected entry, byte-compared to the `src/v2/manifest.rs` golden.
+    """A REAL collected entry, byte-compared to the `src/engine/manifest.rs` golden.
 
     The golden fragment is the second test in that module's
     `manifest_json_matches_golden_contract`.  Producing it from an actual module —
@@ -1301,7 +1301,7 @@ def test_fully_populated_entry_matches_the_manifest_golden(tmp_path: Path) -> No
 
 
 def test_entries_omit_every_empty_optional_field(tmp_path: Path) -> None:
-    """The manifest's omit-when-empty rules (`src/v2/manifest.rs` golden test):
+    """The manifest's omit-when-empty rules (`src/engine/manifest.rs` golden test):
     a plain test carries only `id`, `path`, `qualname`."""
     entries = collect_source(tmp_path, "test_minimal.py", "def test_x(): pass\n")
 
@@ -1321,7 +1321,7 @@ def test_entries_omit_every_empty_optional_field(tmp_path: Path) -> None:
 
 def test_ready_declares_the_version_the_worker_speaks(tmp_path: Path) -> None:
     """`Ready.protocol_version` is a constant, NEVER an echo of Init's value —
-    otherwise the handshake could not detect skew (`src/v2/protocol.rs`)."""
+    otherwise the handshake could not detect skew (`src/engine/protocol.rs`)."""
     response = handle_init(
         {
             "op": "init",
@@ -1335,7 +1335,7 @@ def test_ready_declares_the_version_the_worker_speaks(tmp_path: Path) -> None:
 
     assert response == {"op": "ready", "protocol_version": PROTOCOL_VERSION}
     # Pinned as a literal, not read from the constant: this and `PROTOCOL_VERSION` in
-    # `src/v2/protocol.rs` must move together, so bumping one alone has to fail here.
+    # `src/engine/protocol.rs` must move together, so bumping one alone has to fail here.
     assert PROTOCOL_VERSION == 7
 
 
@@ -1352,7 +1352,7 @@ def test_bye_line_matches_the_rust_golden() -> None:
 
 
 def test_collected_line_matches_the_rust_golden_and_omits_error() -> None:
-    """Byte-for-byte with `COLLECTED_TESTS_LINE` in `src/v2/protocol.rs`."""
+    """Byte-for-byte with `COLLECTED_TESTS_LINE` in `src/engine/protocol.rs`."""
     line = encode_response(
         {
             "op": "collected",
@@ -1376,7 +1376,7 @@ def test_collected_line_matches_the_rust_golden_and_omits_error() -> None:
 
 
 def test_collected_error_line_matches_the_rust_golden_and_omits_tests() -> None:
-    """Byte-for-byte with `COLLECTED_ERROR_LINE` in `src/v2/protocol.rs`."""
+    """Byte-for-byte with `COLLECTED_ERROR_LINE` in `src/engine/protocol.rs`."""
     line = encode_response(
         {
             "op": "collected",
@@ -1561,7 +1561,7 @@ def test_worker_subprocess_speaks_the_protocol(tmp_path: Path) -> None:
     )
 
     proc = subprocess.run(
-        [sys.executable, "-m", "rustest._v2_worker"],
+        [sys.executable, "-m", "rustest._worker"],
         input=requests + "\n",
         capture_output=True,
         text=True,
@@ -1623,7 +1623,7 @@ def test_execute_batch_answers_every_test_then_batch_done(tmp_path: Path) -> Non
     """The op's whole contract in one exchange: N results in order, then the terminator.
 
     The terminator's ``executed`` is the orchestrator's only defence against a lost result
-    (``src/v2/protocol.rs``), so it is asserted here against the number of results that
+    (``src/engine/protocol.rs``), so it is asserted here against the number of results that
     actually arrived rather than against the number requested — the two differ precisely when
     the bug this field exists for has happened.
     """
@@ -1725,7 +1725,7 @@ def test_an_assert_key_on_collect_file_rewrites_the_module(tmp_path: Path) -> No
     """The Tier S half of the split, through the real protocol loop.
 
     The key doubles as the bytecode cache file name, so the artefact's presence under
-    ``.rustest_cache/v2-assert`` is asserted too — that directory is the payoff Task 2's
+    ``.rustest_cache/assert`` is asserted too — that directory is the payoff Task 2's
     manifest cache key was kept for.
     """
     write(tmp_path / "test_r.py", "\n        def test_one():\n            assert 1 == 2\n        ")
@@ -1753,7 +1753,7 @@ def test_an_assert_key_on_collect_file_rewrites_the_module(tmp_path: Path) -> No
     assert result["message"].rstrip().endswith("AssertionError: assert 1 == 2"), result["message"]
     # One artefact, named `<path tag>-<key>.pyc` (see `_assertion_rewrite._cache_path`); the
     # key half is asserted rather than the whole name, because the tag is a path digest.
-    artefacts = list((tmp_path / ".rustest_cache" / "v2-assert").glob(f"*-{key}.pyc"))
+    artefacts = list((tmp_path / ".rustest_cache" / "assert").glob(f"*-{key}.pyc"))
     assert len(artefacts) == 1, artefacts
 
 
@@ -1780,7 +1780,7 @@ def test_no_assert_key_leaves_the_module_with_plain_asserts(tmp_path: Path) -> N
     # A bare `AssertionError` — no argument, so nothing after the class name. See the
     # comment in the paired test above for why the traceback text cannot be the signal.
     assert result["message"].rstrip().endswith("AssertionError"), result["message"]
-    assert not (tmp_path / ".rustest_cache" / "v2-assert").exists()
+    assert not (tmp_path / ".rustest_cache" / "assert").exists()
 
 
 def test_a_non_string_assert_key_is_protocol_drift(tmp_path: Path) -> None:
@@ -1806,7 +1806,7 @@ def test_a_non_string_assert_key_is_protocol_drift(tmp_path: Path) -> None:
 
 def test_worker_subprocess_rejects_an_unknown_op() -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "rustest._v2_worker"],
+        [sys.executable, "-m", "rustest._worker"],
         input=json.dumps({"op": "collect_dir", "path": "/repo"}) + "\n",
         capture_output=True,
         text=True,
@@ -1820,7 +1820,7 @@ def test_worker_subprocess_rejects_an_unknown_op() -> None:
 
 def _run_worker(lines: list[dict[str, Any]]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "rustest._v2_worker"],
+        [sys.executable, "-m", "rustest._worker"],
         input="".join(json.dumps(line) + "\n" for line in lines),
         capture_output=True,
         text=True,
@@ -1842,7 +1842,7 @@ def test_collect_file_before_init_is_protocol_fatal(tmp_path: Path) -> None:
 def test_collect_file_before_init_raises_not_initialized(tmp_path: Path) -> None:
     """The in-process half of the same rule (the module-level state is global, so this
     also documents that `collect_file` never silently invents a rootdir)."""
-    import rustest._v2_worker as worker
+    import rustest._worker as worker
 
     saved = worker._state  # pyright: ignore[reportPrivateUsage]
     worker._state = None  # pyright: ignore[reportPrivateUsage]
@@ -1885,7 +1885,7 @@ def test_execute_test_for_a_file_this_worker_never_collected_is_protocol_fatal(
     rejection — and leave **nothing on stdout beyond `ready`**, never a swallowed request
     that blocks the orchestrator on a `test_result` line that is never coming.
 
-    The behavioural table for the op lives in `test_v2_worker_execute.py`.
+    The behavioural table for the op lives in `test_worker_execute.py`.
     """
     proc = _run_worker(
         [
@@ -1909,7 +1909,7 @@ def test_execute_test_for_a_file_this_worker_never_collected_is_protocol_fatal(
 
 def test_worker_subprocess_rejects_an_undecodable_line() -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "rustest._v2_worker"],
+        [sys.executable, "-m", "rustest._worker"],
         input="{not json\n",
         capture_output=True,
         text=True,
@@ -1937,7 +1937,7 @@ def test_install_pytest_shim_registers_the_underscore_pytest_stubs() -> None:
             sys.executable,
             "-c",
             "import sys;"
-            "from rustest._v2_worker import install_pytest_shim;"
+            "from rustest._worker import install_pytest_shim;"
             "install_pytest_shim();"
             "print(sys.modules['pytest'].__name__, sys.modules['_pytest'].__name__,"
             " sys.modules['_pytest.outcomes'].__name__)",
@@ -2046,7 +2046,7 @@ def test_pythonpath_on_init_reaches_sys_path_before_any_import(tmp_path: Path) -
 
 def test_apply_pythonpath_prepends_in_ini_order() -> None:
     """`for path in reversed(entries): sys.path.insert(0, ...)` -> `[a, b, *original]`."""
-    from rustest._v2_worker import _apply_pythonpath
+    from rustest._worker import _apply_pythonpath
 
     first, second = str(Path("/first")), str(Path("/second"))
     original = list(sys.path)
@@ -2068,7 +2068,7 @@ def test_apply_pythonpath_normalises_the_wire_posix_to_native_separators() -> No
     acceptance target. No-op on posix, which is why the assertion is written against
     `os.sep` rather than against a literal.
     """
-    from rustest._v2_worker import _apply_pythonpath
+    from rustest._worker import _apply_pythonpath
 
     original = list(sys.path)
     try:
@@ -2082,7 +2082,7 @@ def test_apply_pythonpath_normalises_the_wire_posix_to_native_separators() -> No
 
 
 def test_apply_pythonpath_does_nothing_when_the_key_is_absent() -> None:
-    from rustest._v2_worker import _apply_pythonpath
+    from rustest._worker import _apply_pythonpath
 
     original = list(sys.path)
     assert _apply_pythonpath(None) == []

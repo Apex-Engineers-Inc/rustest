@@ -9,8 +9,8 @@ import pytest
 
 import conformance.__main__ as conformance_main
 from conformance.__main__ import (
-    V2_COLLECT_WAIVERS,
-    V2_RUN_WAIVERS,
+    COLLECT_WAIVERS,
+    RUN_WAIVERS,
     _FLAGS,
     _grade_one_collect,
     _grade_one_run,
@@ -32,13 +32,13 @@ from conformance.harness.runners import (
 # evidence in that task's report. The point of asserting the *set* rather than the size is
 # that a divergence cannot be papered over by editing a ledger: a new key fails here until
 # someone has written down what it is.
-ADJUDICATED_V2_COLLECT_WAIVERS: set[str] = {
+ADJUDICATED_COLLECT_WAIVERS: set[str] = {
     # pytest's `reorder_items` groups items by a higher-scoped parametrized fixture; v2 has
     # no session-wide pass, so the collected ORDER differs while the id set does not.
     "fixtures/module-param-reorder",
 }
 
-ADJUDICATED_V2_RUN_WAIVERS: set[str] = {
+ADJUDICATED_RUN_WAIVERS: set[str] = {
     # The collect-gate entry above, which diverges identically once the tests are run.
     "fixtures/module-param-reorder",
     # A conftest session fixture is rebuilt per FILE, not per worker: `build_registry` makes
@@ -46,7 +46,7 @@ ADJUDICATED_V2_RUN_WAIVERS: set[str] = {
     "fixtures/session-scope",
     # The SAME per-worker boundary, seen through the event loop rather than through a
     # fixture: a session-scoped loop is per worker because a worker is handed a subset of the
-    # files (`src/v2/collect.rs::worker_for`). The case matched until Phase 4 Task 1 stopped
+    # files (`src/engine/collect.rs::worker_for`). The case matched until Phase 4 Task 1 stopped
     # collecting markdown on a directory walk, which removed that directory's own README from
     # the target list and changed the pool size its stems hash against. Its README named this
     # ledger as the place the entry would go if the routing ever moved.
@@ -56,8 +56,8 @@ ADJUDICATED_V2_RUN_WAIVERS: set[str] = {
     "marks/pytest-exit",
     # THE ONLY DELIBERATE ONE. rustest defaults `asyncio_mode` to `auto` where
     # pytest-asyncio defaults to `strict`; both modes are implemented faithfully and every
-    # case that sets the option explicitly matches. See `src/v2/config.rs`'s
-    # `DEFAULT_ASYNCIO_MODE` for the argument and `python/rustest/_v2_worker.py`'s
+    # case that sets the option explicitly matches. See `src/engine/config.rs`'s
+    # `DEFAULT_ASYNCIO_MODE` for the argument and `python/rustest/_worker.py`'s
     # `FixtureRunner.test_loop_scope` for the rule the default selects between.
     "async/mode-default",
 }
@@ -204,7 +204,7 @@ def test_the_harness_error_flag_is_ee_and_distinct_from_every_other(
     # permanently red gate.
     monkeypatch.setattr(conformance_main, "_grade_one_collect", _broken)
     monkeypatch.setattr(
-        sys, "argv", ["conformance", "--v2-collect", "--only", "collection/class-collection"]
+        sys, "argv", ["conformance", "--collect", "--only", "collection/class-collection"]
     )
 
     exit_code = main()
@@ -232,7 +232,7 @@ def test_only_matching_no_cases_exits_1_and_says_so(
     names the prefix *and* lists the corpus, because the next thing anyone does after this
     error is look for the name they meant to type.
     """
-    monkeypatch.setattr(sys, "argv", ["conformance", "--v2-collect", "--only", "no/such-case"])
+    monkeypatch.setattr(sys, "argv", ["conformance", "--collect", "--only", "no/such-case"])
 
     exit_code = main()
 
@@ -254,7 +254,9 @@ def test_grade_one_collect_grades_ids_and_exit_code(tmp_path: Path) -> None:
     def _v2(case_dir: Path, args: list[str]) -> CollectResult:
         return CollectResult(ids=[], exit_code=5)
 
-    result = _grade_one_collect(case_dir, "area/case", {}, run_pytest_fn=_pytest, run_v2_fn=_v2)
+    result = _grade_one_collect(
+        case_dir, "area/case", {}, run_pytest_fn=_pytest, run_rustest_fn=_v2
+    )
 
     assert result.status == "DIVERGE"
     assert "missing from v2" in result.detail
@@ -286,7 +288,7 @@ def test_grade_one_collect_passes_case_args_to_both_runners(tmp_path: Path) -> N
         "area/case",
         {},
         run_pytest_fn=_record("pytest"),
-        run_v2_fn=_record("v2"),
+        run_rustest_fn=_record("v2"),
     )
 
     assert seen == {"pytest": ["-m", "smoke"], "v2": ["-m", "smoke"]}
@@ -319,12 +321,12 @@ def test_every_ledger_key_names_a_real_case() -> None:
     """
     known = {name for name, _ in discover_cases()}
 
-    for ledger in (V2_COLLECT_WAIVERS, V2_RUN_WAIVERS):
+    for ledger in (COLLECT_WAIVERS, RUN_WAIVERS):
         unknown = set(_load_waivers_or_exit(ledger)) - known
         assert not unknown, f"{ledger.name} waives cases that do not exist: {sorted(unknown)}"
 
 
-def test_v2_collect_ledger_holds_only_adjudicated_waivers() -> None:
+def test_collect_ledger_holds_only_adjudicated_waivers() -> None:
     """The v2 collection ledger names nothing that has not been written up.
 
     A new entry appearing here means an unadjudicated divergence was papered over, which is
@@ -335,9 +337,9 @@ def test_v2_collect_ledger_holds_only_adjudicated_waivers() -> None:
     that is a ``python/rustest/`` or ``_pytest/`` source reference, which is the thing a
     reader needs and the thing a hurried entry omits.
     """
-    waived = _load_waivers_or_exit(V2_COLLECT_WAIVERS)
+    waived = _load_waivers_or_exit(COLLECT_WAIVERS)
 
-    assert set(waived) == ADJUDICATED_V2_COLLECT_WAIVERS
+    assert set(waived) == ADJUDICATED_COLLECT_WAIVERS
     for name, reason in waived.items():
         # Hoisted out of the assert so that both the repo's ruff and pre-commit's pinned
         # one format this identically -- they disagree about multi-line assert messages.
@@ -345,7 +347,7 @@ def test_v2_collect_ledger_holds_only_adjudicated_waivers() -> None:
         assert cites_a_mechanism, f"{name} waiver states a verdict but cites no mechanism"
 
 
-def test_v2_run_ledger_holds_only_adjudicated_waivers() -> None:
+def test_run_ledger_holds_only_adjudicated_waivers() -> None:
     """The v2 run ledger names nothing that has not been written up.
 
     This ledger was **empty** at the close of Phase 1b.2 -- none of the six v1 execution
@@ -355,9 +357,9 @@ def test_v2_run_ledger_holds_only_adjudicated_waivers() -> None:
     test is where that claim is enforced: a new key fails until it is named here, at which
     point somebody has to say what it is.
     """
-    waived = _load_waivers_or_exit(V2_RUN_WAIVERS)
+    waived = _load_waivers_or_exit(RUN_WAIVERS)
 
-    assert set(waived) == ADJUDICATED_V2_RUN_WAIVERS
+    assert set(waived) == ADJUDICATED_RUN_WAIVERS
     for name, reason in waived.items():
         # Hoisted out of the assert so that both the repo's ruff and pre-commit's pinned
         # one format this identically -- they disagree about multi-line assert messages.
@@ -403,13 +405,13 @@ def test_grade_one_run_passes_case_args_to_both_runners(tmp_path: Path) -> None:
         "area/case",
         {},
         run_pytest_fn=_record("pytest"),
-        run_v2_fn=_record("v2"),
+        run_rustest_fn=_record("v2"),
     )
 
     assert seen == {"pytest": ["-m", "smoke"], "v2": ["-m", "smoke"]}
 
 
-def test_main_v2_run_mode_grades_the_case_the_old_engine_silently_passed(
+def test_main_run_mode_grades_the_case_the_old_engine_silently_passed(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """End-to-end through the real CLI on the worst bug the corpus ever found.
@@ -419,7 +421,7 @@ def test_main_v2_run_mode_grades_the_case_the_old_engine_silently_passed(
     in the archived v1 ledger (git history) and must MATCH here -- a red
     run reported as red is the entire point of the execution gate.
     """
-    monkeypatch.setattr(sys, "argv", ["conformance", "--v2-run", "--only", "collection/unittest"])
+    monkeypatch.setattr(sys, "argv", ["conformance", "--run", "--only", "collection/unittest"])
 
     exit_code = main()
 
@@ -449,13 +451,15 @@ def test_main_with_no_gate_flag_refuses_instead_of_choosing_one(
 
     err = capsys.readouterr().err
     assert exit_code == 4
-    assert "--v2-collect" in err, err
-    assert "--v2-run" in err, err
-    assert "v1" in err, err
+    assert "--collect" in err, err
+    assert "--run" in err, err
+    # The message must also say what a bare invocation *used* to be, so a stale CI line that
+    # relied on the retired gate learns why it no longer runs rather than just which flags exist.
+    assert "previous engine" in err, err
 
 
 def test_main_rejects_both_v2_modes_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--v2-collect`` and ``--v2-run`` grade different contracts against different
+    """``--collect`` and ``--run`` grade different contracts against different
     ledgers, so asking for both is a mistake argparse must refuse rather than a
     silent precedence rule the caller has to know.
 
@@ -464,7 +468,7 @@ def test_main_rejects_both_v2_modes_at_once(monkeypatch: pytest.MonkeyPatch) -> 
     full corpus run -- minutes of subprocesses -- rather than an assertion.
     """
     monkeypatch.setattr(
-        sys, "argv", ["conformance", "--v2-collect", "--v2-run", "--only", "no/such-case"]
+        sys, "argv", ["conformance", "--collect", "--run", "--only", "no/such-case"]
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -480,10 +484,10 @@ def test_main_v2_collect_mode_grades_a_real_case(
 
     ``collection/class-collection`` is the case the v1 engine could not get right (it
     collected methods on a class with ``__init__``; pytest refuses them), and it is the
-    first entry in the archived v1 ledger. Under ``--v2-collect`` it must MATCH -- the
+    first entry in the archived v1 ledger. Under ``--collect`` it must MATCH -- the
     headline result of 1b.1.
     """
-    monkeypatch.setattr(sys, "argv", ["conformance", "--v2-collect", "--only", "collection/class"])
+    monkeypatch.setattr(sys, "argv", ["conformance", "--collect", "--only", "collection/class"])
 
     exit_code = main()
 
@@ -508,7 +512,7 @@ def test_stale_waiver_flows_into_summary_and_exit_code(tmp_path: Path) -> None:
         "area/case",
         waivers,
         run_pytest_fn=_matching,
-        run_v2_fn=_matching,
+        run_rustest_fn=_matching,
     )
     assert result.status == "STALE-WAIVER"
 

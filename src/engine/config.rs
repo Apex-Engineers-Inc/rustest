@@ -1,4 +1,4 @@
-//! v2 configuration subsystem: rootdir resolution + ini semantics.
+//! Configuration subsystem: rootdir resolution + ini semantics.
 //!
 //! **Every rule in this module was extracted from the installed pytest source**
 //! (`.venv/Lib/site-packages/_pytest/`, pytest 8.4.2) — pytest is the oracle, not
@@ -84,7 +84,7 @@ pub const DEFAULT_ASYNCIO_TEST_LOOP_SCOPE: &str = "function";
 /// Everything *else* about the option is the oracle's: both values, their precedence, and
 /// their effect on tests and fixtures. Only this default differs, it is one ini line to
 /// erase in either direction, and a suite that sets `asyncio_mode` explicitly behaves
-/// identically under both runners. Recorded in `conformance/waivers-v2-run.toml` under
+/// identically under both runners. Recorded in `conformance/waivers-run.toml` under
 /// `async/mode-default`, which is the corpus case that measures it.
 pub const DEFAULT_ASYNCIO_MODE: &str = "auto";
 
@@ -118,7 +118,7 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// The resolved rootdir plus the ini values v2 collection and the CLI need.
+/// The resolved rootdir plus the ini values collection and the CLI need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedConfig {
     pub rootdir: PathBuf,

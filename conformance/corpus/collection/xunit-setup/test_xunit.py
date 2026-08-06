@@ -3,7 +3,7 @@
 `_pytest/python.py` registers four of them -- `_register_setup_module_fixture` and
 `_register_setup_function_fixture` (l. 554-555, before `parsefactories`), and
 `_register_setup_class_fixture`/`_register_setup_method_fixture` (l. 769-770, likewise).
-None of the four was called by the v2 worker, so a class that builds its state in
+None of the four was called by the worker, so a class that builds its state in
 `setup_method` reported `AttributeError: ... has no attribute 'dy'` -- 8 tests on the
 acceptance target.
 

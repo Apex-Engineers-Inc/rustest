@@ -7,12 +7,23 @@ title: User Guide
 A Rust-powered test runner for Python that runs your existing pytest suite unchanged.
 
 ```bash
-pip install rustest
+pip install "rustest==1.0.0rc1"
 rustest tests/
 ```
 
 There is no flag to enable pytest compatibility; it is the only behaviour. `import pytest`
 resolves to rustest's own implementation on every run, so an existing suite just runs.
+
+!!! note "A release candidate, and what it is for"
+    The version is named explicitly above because pip and uv skip pre-releases by default —
+    a plain `pip install rustest` still gives the previous stable release.
+
+    This release is the result of a ground-up rewrite of the engine, and the rewrite was
+    spent on **compatibility, stability and reliability**: being a runner that genuinely
+    agrees with pytest, measured against a conformance corpus and seventeen real open-source
+    suites. It is also faster than pytest, but that is not what this release is about, and
+    [Performance](performance.md) reports the numbers rather than advertising them. Speed is
+    the next body of work.
 
 ## Which describes you?
 

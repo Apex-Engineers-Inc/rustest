@@ -4,10 +4,18 @@ This file provides guidance for Claude Code when working with the rustest codeba
 
 ## Project Overview
 
-**rustest** is a Rust-powered pytest-compatible test runner focused on raw performance, with familiar pytest ergonomics.
+**rustest** is a Rust-powered test runner that aims to be a **drop-in replacement for
+pytest**: it runs an existing pytest suite unchanged, agreeing with pytest on node ids,
+outcomes and exit codes.
+
+**The message, and it is deliberate.** The rewrite behind 1.0 was spent on **compatibility,
+stability and reliability** — not on speed. Lead with that everywhere. rustest is still
+faster than pytest, but the large multipliers earlier versions advertised described the
+previous engine, which is deleted. Performance is a *future* body of work; do not write
+copy that makes speed the pitch.
 
 **The measured figures**, for anything that needs to state one. Do not invent a headline
-multiplier; these are what the tree can defend:
+multiplier; these are what the tree can defend, and they are reported rather than sold:
 
 - **1.1x–5.7x** wall-clock across seventeen real open-source pytest suites (13 MATCH /
   4 EXPLAINED / 0 DIVERGE). Aggregate over all seventeen **1.23x**; over the fifteen that
@@ -19,8 +27,13 @@ multiplier; these are what the tree can defend:
   table and every caveat, including that the marginal-overhead metric is noisy enough on a
   loaded machine that a single reading of it must not be quoted as a gate result.
 
-The old "8.5x average, up to 19x" line was a **v1** measurement; v1 was deleted in Phase 4
-Task 2 and the number describes a runner that no longer exists. It is gone from every page.
+The old "8.5x average, up to 19x" line measured the **previous engine**, which was deleted;
+the number describes a runner that no longer exists. It is gone from every page.
+
+**Naming.** The engine has no version name. It is "the engine" or "rustest" — not "v2".
+`src/engine/`, `python/rustest/_worker.py`, `rust.run()`/`rust.collect()`. The report
+*schema* version (`schema_version: 2`) is a real wire version and keeps its number; the
+engine does not.
 
 - **Languages**: Rust (core engine) + Python (user API/CLI)
 - **Build System**: Maturin (PyO3 bridge for Rust-Python integration)
@@ -32,13 +45,13 @@ Task 2 and the number describes a runner that no longer exists. It is gone from 
 ```
 src/                          # Rust core (rustest-core crate)
 ├── lib.rs                    # PyO3 boundary -- four functions, nothing else
-└── v2/                       # The engine
+└── engine/                   # The engine
     ├── config.rs             # rootdir + ini resolution (pytest's rules)
     ├── collect.rs            # The file walk and the worker pool
     ├── static_collect.rs     # Tier S: AST collection without importing
     ├── manifest.rs           # Collection output as data
     ├── manifest_cache.rs     # Tier S's content-addressed cache
-    ├── execute.rs            # Run orchestration, the schema-v2 report
+    ├── execute.rs            # Run orchestration, the run report
     ├── selection.rs          # -k / -m expression engine
     ├── nodeid.rs             # pytest-byte-identical node ids
     ├── protocol.rs           # The orchestrator <-> worker wire
@@ -49,8 +62,8 @@ python/rustest/               # Python package (user API)
 ├── __init__.py               # Public API exports (lazy)
 ├── __main__.py               # CLI entry point
 ├── decorators.py             # @fixture, @parametrize, @mark, outcome exceptions
-├── _v2_worker.py             # The worker: collection + execution inside Python
-├── _v2_builtins.py           # The engine's builtin fixtures (pytest ports)
+├── _worker.py                # The worker: collection + execution inside Python
+├── _builtins.py              # The engine's builtin fixtures (pytest ports)
 ├── builtin_fixtures.py       # Public fixture TYPES + MonkeyPatch
 ├── cli.py                    # Command-line interface
 ├── core.py                   # Wrapper around the Rust layer; `run` lives here
@@ -188,7 +201,7 @@ interpreter: the freethreaded and standard builds ship different OpenSSL builds.
 ## Architecture Notes
 
 ### Hybrid Design
-1. **Rust Core** (`src/v2/`) - High-performance engine for:
+1. **Rust Core** (`src/engine/`) - High-performance engine for:
    - Config resolution and the file walk
    - Static (AST) collection and its manifest cache
    - Orchestrating the spawn-based worker pool and reporting
@@ -204,9 +217,9 @@ interpreter: the freethreaded and standard builds ship different OpenSSL builds.
 ### Key Entry Points
 - CLI: `python -m rustest` → `__main__.py` → `cli.py:main()`
 - Python API: `from rustest import fixture, mark, parametrize`
-- Test Discovery: `src/v2/collect.rs:collect()`
-- Test Execution: `src/v2/execute.rs:run()`
-- Worker (Python side): `python/rustest/_v2_worker.py`
+- Test Discovery: `src/engine/collect.rs:collect()`
+- Test Execution: `src/engine/execute.rs:run()`
+- Worker (Python side): `python/rustest/_worker.py`
 
 ## Pre-commit Requirements
 
@@ -323,7 +336,7 @@ is why it is a `[dependency-groups] docs` group rather than an extra, and why
 `scripts/docs.py` uses a separate environment.
 
 **Why the pages are `.md` and not `.qmd`.** great-docs and Quarto render both. rustest's
-own doc-code-block collector keys on `.md` (`src/v2/collect.rs::is_markdown`), so
+own doc-code-block collector keys on `.md` (`src/engine/collect.rs::is_markdown`), so
 authoring in `.md` is what keeps every example on the site executing as a test in CI —
 verified directly: a `.qmd` passed to rustest reports "found no collectors". The two
 systems do not collide, because Quarto's *executable* fences are spelled ```` ```{python} ````

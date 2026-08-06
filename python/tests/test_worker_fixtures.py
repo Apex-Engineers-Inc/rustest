@@ -1,4 +1,4 @@
-"""Tests for the v2 worker's fixture engine (`rustest._v2_worker`).
+"""Tests for the worker's fixture engine (`rustest._worker`).
 
 Four things are under test, and the six `conformance/corpus/fixtures/*` cases are the
 acceptance table for all of them:
@@ -34,7 +34,7 @@ import types
 
 import pytest
 
-from rustest._v2_worker import (
+from rustest._worker import (
     DEFAULT_NAMING,
     SCOPE_NAMES,
     ExecutionPlan,
@@ -49,7 +49,7 @@ from rustest._v2_worker import (
     conftest_chain,
     fixture_param_dimensions,
 )
-import rustest._v2_worker as worker
+import rustest._worker as worker
 
 
 # ---------------------------------------------------------------------------
@@ -686,7 +686,7 @@ def test_unsupported_builtin_says_so_instead_of_not_found(tmp_path: Path) -> Non
         _ids, plans = collect(target, tmp_path)
         with pytest.raises(FixtureLookupError) as excinfo:
             _ = FixtureRunner().setup(plans[0])
-    assert "not supported by the rustest v2 worker yet" in str(excinfo.value)
+    assert "not supported by the rustest worker yet" in str(excinfo.value)
     assert "not found" not in str(excinfo.value)
 
 
@@ -1707,8 +1707,8 @@ def test_supported_builtins_resolve(tmp_path: Path) -> None:
 
         def test_builtins(tmp_path, monkeypatch, capsys):
             assert isinstance(tmp_path, Path) and tmp_path.is_dir()
-            monkeypatch.setenv("RUSTEST_V2_PROBE", "1")
-            assert os.environ["RUSTEST_V2_PROBE"] == "1"
+            monkeypatch.setenv("RUSTEST_PROBE", "1")
+            assert os.environ["RUSTEST_PROBE"] == "1"
             print("hello")
             assert capsys.readouterr().out == "hello\\n"
         """,
@@ -1716,7 +1716,7 @@ def test_supported_builtins_resolve(tmp_path: Path) -> None:
     with isolated_import_state():
         _ids, plans = collect(target, tmp_path)
         assert run_all(plans) == [("test_builtins.py::test_builtins", "passed")]
-    assert "RUSTEST_V2_PROBE" not in __import__("os").environ
+    assert "RUSTEST_PROBE" not in __import__("os").environ
 
 
 # ---------------------------------------------------------------------------

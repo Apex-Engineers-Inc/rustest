@@ -1,4 +1,4 @@
-//! Nodeid construction and decomposition — the addressing contract of the v2 core.
+//! Nodeid construction and decomposition — the addressing contract of the engine core.
 //!
 //! A nodeid is the byte string pytest prints, selects on, and writes into reports, so
 //! **every rule here was extracted from the installed pytest source**

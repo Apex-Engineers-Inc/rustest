@@ -13,9 +13,9 @@ pytest 8.4.2:
 * ``_pytest/_io/saferepr.py`` — ``SafeRepr``, because every operand in a message goes
   through it and its truncation rules are part of the format.
 
-**Why port rather than import.** A v2 worker must never pull real pytest into its process —
+**Why port rather than import.** A worker must never pull real pytest into its process —
 it installs rustest's own ``pytest`` and ``_pytest`` shims before importing a single test
-module (``_v2_worker.py::install_pytest_shim``), so ``from _pytest.assertion import util``
+module (``_worker.py::install_pytest_shim``), so ``from _pytest.assertion import util``
 inside a worker would either fail or, worse, resolve to the stub. The format is therefore
 copied, with the provenance of each function named in its own docstring so a future reader
 can diff it against the version of pytest they have.

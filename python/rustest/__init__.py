@@ -101,9 +101,9 @@ _LAZY: Final[dict[str, tuple[str, str]]] = {
     #
     # `CollectionError`, `RunReport` and `TestResult` were exported here until Phase 4 Task 2.
     # They were `rustest.reporting`'s dataclasses over v1's `PyRunReport`, and there is no v2
-    # object to repoint them at: the v2 engine's report is a JSON document (schema v2, six
+    # object to repoint them at: the engine's report is a JSON document (schema v2, six
     # status buckets to v1's three), written by `--report-json` and described in
-    # `src/v2/execute.rs`. Re-exporting a name backed by nothing is worse than removing it.
+    # `src/engine/execute.rs`. Re-exporting a name backed by nothing is worse than removing it.
     # Fixture types
     "Cache": ("builtin_fixtures", "Cache"),
     "CaptureFixture": ("builtin_fixtures", "CaptureFixture"),

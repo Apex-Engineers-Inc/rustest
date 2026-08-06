@@ -36,7 +36,7 @@ import pytest
 
 # The compiled extension is built and installed by `python/tests/__init__.py`, which runs
 # `ensure_develop_installed()` before any test module is imported -- these subprocess tests
-# exercise the real `rust.v2_collect`, not the pure-Python fallback stub.
+# exercise the real `rust.collect`, not the pure-Python fallback stub.
 from .helpers import stub_rust_module
 from rustest import cli, core
 
@@ -383,10 +383,10 @@ def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> No
     ) -> str:
         del invocation_dir, args, python, workers, keyword, mark_expr
         del codeblocks, collect_tier, cache_mode
-        raise RuntimeError("could not spawn the collection worker `nope -m rustest._v2_worker`")
+        raise RuntimeError("could not spawn the collection worker `nope -m rustest._worker`")
 
-    with stub_rust_module(v2_collect=boom):
-        assert core.v2_collect_only(paths=[], workers=1) == 3
+    with stub_rust_module(collect=boom):
+        assert core.collect_only(paths=[], workers=1) == 3
 
     captured = capsys.readouterr()
     assert captured.out == "", captured
@@ -413,7 +413,7 @@ def test_missing_path_argument_is_a_usage_error(tmp_path: Path) -> None:
 
 
 def test_collect_only_never_reaches_the_run_path() -> None:
-    """``--collect-only`` returns before the runner, so ``core.v2_run`` is never called.
+    """``--collect-only`` returns before the runner, so ``core.run`` is never called.
 
     The negative half is the load-bearing one. "Collect and print the ids" and "run the
     suite" are answered by different functions, and a router that called both would satisfy
@@ -422,8 +422,8 @@ def test_collect_only_never_reaches_the_run_path() -> None:
     suite with side effects would find out afterwards.
     """
     with (
-        patch("rustest.cli.v2_run") as run_path,
-        patch("rustest.cli.v2_collect_only", return_value=5) as collect,
+        patch("rustest.cli.run") as run_path,
+        patch("rustest.cli.collect_only", return_value=5) as collect,
     ):
         assert cli.main(["--collect-only"]) == 5
 
@@ -434,8 +434,8 @@ def test_collect_only_never_reaches_the_run_path() -> None:
 def test_a_bare_invocation_runs_rather_than_collects() -> None:
     """...and the converse: no mode flag means execute, and collect-only is not reached."""
     with (
-        patch("rustest.cli.v2_collect_only") as collect,
-        patch("rustest.cli.v2_run", return_value=0) as run_path,
+        patch("rustest.cli.collect_only") as collect,
+        patch("rustest.cli.run", return_value=0) as run_path,
     ):
         assert cli.main([]) == 0
 
@@ -464,7 +464,7 @@ def test_absent_path_arguments_are_passed_through_as_none_given() -> None:
         seen.append(list(args))
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'
 
-    with stub_rust_module(v2_collect=fake_collect):
+    with stub_rust_module(collect=fake_collect):
         _ = cli.main(["--collect-only"])
         _ = cli.main(["--collect-only", "."])
 
@@ -491,7 +491,7 @@ def test_core_passes_sys_executable_to_the_worker_pool() -> None:
         assert workers >= 1
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'
 
-    with stub_rust_module(v2_collect=fake_collect):
-        assert core.v2_collect_only(paths=[], workers=None) == 5
+    with stub_rust_module(collect=fake_collect):
+        assert core.collect_only(paths=[], workers=None) == 5
 
     assert seen == [sys.executable]

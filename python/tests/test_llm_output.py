@@ -7,7 +7,7 @@ two properties load-bearing in a way they are not for the human renderer:
   with :func:`json.loads`; a stray banner, a coverage table or a summary sentence would fail
   the parse rather than merely look untidy.
 * **The bytes are deterministic.**  The engine reassembles ``report["tests"]`` in manifest
-  order however the pool interleaved (``src/v2/execute.rs``), so the renderer sorts nothing
+  order however the pool interleaved (``src/engine/execute.rs``), so the renderer sorts nothing
   and the same failures produce the same stream at any ``-n``.  Pinned directly by
   :func:`test_the_stream_is_identical_at_every_worker_count`.
 

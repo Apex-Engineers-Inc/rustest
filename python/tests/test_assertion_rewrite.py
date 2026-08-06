@@ -425,9 +425,9 @@ _FILE = "/repo/tests/test_cached.py"
 def cache_dir(tmp_path: Path) -> Path:
     """Point the module's cache at a temporary directory and restore it afterwards."""
     previous = _assertion_rewrite._cache_dir
-    _assertion_rewrite._cache_dir = str(tmp_path / "v2-assert")
+    _assertion_rewrite._cache_dir = str(tmp_path / "assert")
     try:
-        yield tmp_path / "v2-assert"
+        yield tmp_path / "assert"
     finally:
         _assertion_rewrite._cache_dir = previous
 
@@ -518,7 +518,7 @@ def test_writing_a_new_key_prunes_that_files_superseded_artefacts(cache_dir: Pat
     Keyed by content alone, every edit to a test file would leave its previous ``.pyc``
     behind forever — an unbounded directory nobody looks at. The path tag in the file name is
     what makes the store bounded by the tree's *contents* rather than by its history, exactly
-    as the manifest cache is bounded by a directory's contents (`src/v2/manifest_cache.rs`).
+    as the manifest cache is bounded by a directory's contents (`src/engine/manifest_cache.rs`).
     """
     for key in ("a" * 64, "b" * 64, "c" * 64):
         assert _assertion_rewrite._write_cached(_FILE, key, _some_code())
@@ -545,7 +545,7 @@ def test_a_warm_write_free_run_does_not_list_the_cache_directory(cache_dir: Path
     """Pruning is **lazy**: it happens on a miss, never on a hit.
 
     A fully warm run must not pay a directory listing per file — the same trade
-    `src/v2/manifest_cache.rs` makes when it declines to `stat` every cached file to tidy
+    `src/engine/manifest_cache.rs` makes when it declines to `stat` every cached file to tidy
     sooner. Asserted by making the listing itself fail: a hit must not reach it.
     """
     assert _assertion_rewrite._write_cached(_FILE, _KEY, _some_code())

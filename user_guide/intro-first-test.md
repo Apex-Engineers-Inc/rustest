@@ -7,13 +7,13 @@ Zero to passing tests, in about the time it takes to make coffee.
 With pip:
 
 ```bash
-pip install rustest
+pip install "rustest==1.0.0rc1"
 ```
 
 With uv:
 
 ```bash
-uv add rustest
+uv add "rustest==1.0.0rc1"
 ```
 
 ## Step 2: Create a test file

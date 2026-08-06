@@ -1,11 +1,11 @@
-//! The rustest **v2** core.
+//! The rustest engine core.
 //!
-//! v2 is being built alongside the v1 runner (see the architecture design spec, in git
+//! the engine is being built alongside the v1 runner (see the architecture design spec, in git
 //! history under the removed `docs/superpowers/specs/`).  Until the
 //! conformance corpus reports parity, both trees live in this crate: everything under
-//! `src/v2/` is new code, and nothing outside it may be changed by v2 work.
+//! `src/engine/` is new code, and nothing outside it is part of the engine.
 //!
-//! The organising rule of the v2 spine is that **collection output is data**: the
+//! The organising rule of the engine is that **collection output is data**: the
 //! collector produces a serializable [`manifest::CollectionManifest`] rather than live
 //! Python objects, and callables are resolved inside workers at execution time.  That
 //! single rule is what makes the manifest cache, spawn-based process workers, and the
@@ -25,9 +25,9 @@ pub mod static_collect;
 
 use std::path::Path;
 
-/// Render a path with posix separators — the v2 path convention.
+/// Render a path with posix separators — the path convention.
 ///
-/// Every path v2 emits (manifest `rootdir`, node ids, protocol payloads, the debug
+/// Every path the engine emits (manifest `rootdir`, node ids, protocol payloads, the debug
 /// surface's JSON) goes through here, so the wire form is platform-independent.
 ///
 /// Only Windows separators are rewritten: on unix a backslash is a legal filename byte

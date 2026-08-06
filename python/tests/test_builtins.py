@@ -6,7 +6,7 @@ cannot see the things below: which descriptor a capture restores, whether a reco
 the same object across a phase boundary, the order two patches are unwound in, or which of
 two differently-worded refusals a bad ``getini`` name gets. Those are pinned here.
 
-Provenance for every assertion is in ``python/rustest/_v2_builtins.py``, which cites the
+Provenance for every assertion is in ``python/rustest/_builtins.py``, which cites the
 pytest (and pytest-mock) source each class is a port of.
 """
 
@@ -25,9 +25,9 @@ from typing import Any
 
 import pytest
 
-import rustest._v2_builtins as builtins_mod
-import rustest._v2_worker as worker
-from rustest._v2_builtins import (
+import rustest._builtins as builtins_mod
+import rustest._worker as worker
+from rustest._builtins import (
     Cache,
     CaptureFixture,
     CaptureFixtureConflict,
@@ -286,7 +286,7 @@ def test_text_is_the_formatted_stream_not_a_join_of_messages() -> None:
     fixture = LogCaptureFixture(capture)
     with capture.phase("call"):
         logging.getLogger("fmt").warning("body")
-    assert fixture.text.startswith("WARNING  fmt:test_v2_builtins.py:")
+    assert fixture.text.startswith("WARNING  fmt:test_builtins.py:")
     assert fixture.text.endswith("body\n")
 
 
@@ -307,7 +307,7 @@ def _isolated_import_state() -> Iterator[None]:
 
     Importing a generated ``conftest.py`` binds ``sys.modules["conftest"]`` to *that* file,
     and the next test that generates one hits the worker's own import-mismatch refusal — the
-    same contract ``test_v2_worker_fixtures.isolated_import_state`` exists for. Kept local
+    same contract ``test_worker_fixtures.isolated_import_state`` exists for. Kept local
     rather than imported across test modules so this file has no cross-file dependency.
     """
     saved_path = list(sys.path)
@@ -371,7 +371,7 @@ def test_no_log_capture_for_a_test_that_does_not_ask(tmp_path: Path) -> None:
 
 
 def test_cache_uses_pytests_value_and_directory_layout(tmp_path: Path) -> None:
-    """``v/<key>`` and ``d/<name>`` — the layout ``src/v2/cache.rs`` now writes into."""
+    """``v/<key>`` and ``d/<name>`` — the layout ``src/engine/cache.rs`` now writes into."""
     cache = Cache(tmp_path)
     cache.set("plugin/state", {"n": 1})
     assert json.loads((tmp_path / "v" / "plugin" / "state").read_text(encoding="UTF-8")) == {"n": 1}
@@ -576,7 +576,7 @@ def test_getini_answers_the_carried_names(tmp_path: Path) -> None:
 def test_getini_words_its_two_refusals_differently(tmp_path: Path) -> None:
     """A real pytest ini this worker does not carry is not a typo, and must not read as one."""
     config = _config(tmp_path)
-    with pytest.raises(ValueError, match="not available to a rustest v2 worker"):
+    with pytest.raises(ValueError, match="not available to a rustest worker"):
         _ = config.getini("markers")
     with pytest.raises(ValueError, match="unknown configuration value"):
         _ = config.getini("not_an_ini_name_at_all")
@@ -633,7 +633,7 @@ _DETACH_PROBE = """
 import os
 import sys
 
-import rustest._v2_worker as worker
+import rustest._worker as worker
 
 protocol = worker._detach_protocol_stream(sys.stdout)
 os.write(1, b"this must not reach the protocol\\n")

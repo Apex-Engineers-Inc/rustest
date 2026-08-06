@@ -3,7 +3,7 @@
 Deliberately *not* a test module: it is the thing under measurement, so its executed lines
 are a property of what the suite next door does rather than of how the runner collects. Every
 construct in it exists to make one line-accounting question concrete, and the expected set is
-pinned in `python/tests/test_v2_coverage.py`:
+pinned in `python/tests/test_coverage.py`:
 
 * a module-level constant and an import   -- import-time lines, which coverage.py counts
   because it starts before collection;

@@ -1,4 +1,4 @@
-"""The v2 worker's **asyncio loop-scope model** (`rustest._v2_worker`).
+"""The worker's **asyncio loop-scope model** (`rustest._worker`).
 
 `pytest_asyncio/plugin.py` (pytest-asyncio 1.2.0, installed in this repo's venv) is the
 oracle for every rule here, and every rule cites the line it ports. Where the oracle's
@@ -36,7 +36,7 @@ import warnings
 
 import pytest
 
-from rustest._v2_worker import (
+from rustest._worker import (
     ASYNC_NOT_SUPPORTED_MESSAGE,
     DEFAULT_NAMING,
     AsyncioConfig,
@@ -52,7 +52,7 @@ from rustest._v2_worker import (
     execute_test,
     handle_init,
 )
-import rustest._v2_worker as worker
+import rustest._worker as worker
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ import rustest._v2_worker as worker
 def worker_for(rootdir: Path, config: AsyncioConfig) -> Iterator[None]:
     """Install worker state carrying *config*, then undo every global it touched.
 
-    Broader than ``test_v2_worker_execute.isolated_worker_state`` by exactly one global —
+    Broader than ``test_worker_execute.isolated_worker_state`` by exactly one global —
     ``_state``, which is where the asyncio configuration lives and which nothing else in the
     suite needs to vary.  Leaking it would silently apply one test's ``asyncio_mode`` to the
     next, and the symptom (an unmarked async test passing where it should fail) is precisely
@@ -168,7 +168,7 @@ def plan_with(marks: tuple[MarkSpec, ...], func: object = _noop) -> ExecutionPla
 def test_init_carries_the_three_asyncio_values(tmp_path: Path) -> None:
     """`init` -> :class:`AsyncioConfig`, with the omitted fixture scope staying ``None``.
 
-    `src/v2/protocol.rs` omits `asyncio_default_fixture_loop_scope` from the wire when it is
+    `src/engine/protocol.rs` omits `asyncio_default_fixture_loop_scope` from the wire when it is
     unset, and the absence is a **third answer**: `plugin.py::pytest_fixture_setup`
     (l. 736-741) falls back to the fixture's own caching scope only for that case.  Reading
     the missing key as ``"function"`` would move every module- and session-scoped async

@@ -801,13 +801,12 @@ async def test_parallel_timing_verify(module_timing):
     # If parallel: t2_start should be very close to t1_start (< 50ms)
     # If sequential: t2_start would be after t1_end (100ms+ difference)
     time_diff = abs(t2_start - t1_start)
-    if os.environ.get("RUSTEST_ENGINE") == "v2":
-        # KNOWN GAP (Phase 3): the v2 engine executes one test per `execute_test` message and
-        # awaits each coroutine on its own, so same-loop-scope tests are *sequential* where
-        # v1's `async_executor.py` batches them into a single `asyncio.gather`. Closing it
-        # needs a batched execute op on the worker wire. The assertion below is v1's
-        # concurrency claim and is not one v2 makes yet, so it is checked only under v1
-        # rather than deleted -- v1 must not silently lose the property either.
+    if os.environ.get("RUSTEST_RUNNING"):
+        # KNOWN GAP: rustest executes one test per `execute_test` message and awaits each
+        # coroutine on its own, so same-loop-scope tests run *sequentially*. Closing it needs
+        # a batched execute op on the worker wire. The assertion below is a concurrency claim
+        # rustest does not make yet, so it is checked under pytest -- which does make it --
+        # rather than deleted, so the property cannot be lost silently there either.
         assert time_diff >= 0, "clocks are monotonic"
         return
     assert time_diff < 0.05, f"Tests didn't run in parallel: start diff = {time_diff:.3f}s"

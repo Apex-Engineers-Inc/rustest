@@ -39,7 +39,7 @@ def _mark_payloads(marks: Sequence[Any]) -> list[dict[str, Any]]:
     """Marks -> the ``{"name", "args", "kwargs"}`` dicts the worker already reads.
 
     The same shape ``MarkDecorator.__call__`` writes into ``__rustest_marks__``, so
-    ``_v2_worker::_spec_from_mark_dict`` consumes a per-parameter mark with no new reader.
+    ``_worker::_spec_from_mark_dict`` consumes a per-parameter mark with no new reader.
     ``_normalize_args`` is deliberately not applied: it evaluates a *string* skipif condition
     against a target function, and a parameter set has no target.
     """
@@ -800,7 +800,7 @@ class SkipMarkDecorator(MarkDecorator):
     ``MarkDecorator.__call__``'s ``__rustest_marks__`` entry.
 
     That attribute began as a v1 requirement and is **still load-bearing**, which is why it
-    did not leave with the engine: ``_v2_worker::_mark_specs`` reads both sources, so this is
+    did not leave with the engine: ``_worker::_mark_specs`` reads both sources, so this is
     now simply which of the two channels a compat ``skip`` decoration uses — writing both
     would report the same skip twice. Any future removal has to move the write, not delete
     it.
@@ -808,7 +808,7 @@ class SkipMarkDecorator(MarkDecorator):
 
     def __call__(self, func: TFunc) -> TFunc:
         # `__rustest_skip__` **only** -- deliberately not `MarkDecorator.__call__`'s
-        # `__rustest_marks__` entry as well. `_v2_worker::_mark_specs` reads both sources and
+        # `__rustest_marks__` entry as well. `_worker::_mark_specs` reads both sources and
         # would then report the same skip twice. The object is still a legal `pytestmark`
         # *value* because it is a `MarkDecorator` and answers `.name`/`.args`/`.kwargs`;
         # what changes here is only what decorating writes.
@@ -879,7 +879,7 @@ class BareOrFactoryMark:
 
     ``name``/``args``/``kwargs`` are exposed because the *uncalled* object is a legitimate
     mark in its own right: ``pytestmark = pytest.mark.xfail`` puts it straight into the list
-    that ``_v2_worker::_spec_from_pytestmark`` reads, and pytest's uncalled ``MarkDecorator``
+    that ``_worker::_spec_from_pytestmark`` reads, and pytest's uncalled ``MarkDecorator``
     answers exactly these three with the same empty values.
     """
 
@@ -896,7 +896,7 @@ class BareOrFactoryMark:
         self._factory = factory
         # pytest's bare form stores `Mark(name, (), {})` — empty args *and* empty kwargs.
         # Empty args is what makes a bare `skipif`/`xfail` unconditional in
-        # `_v2_worker::_conditions`, which is the behaviour real pytest shows.
+        # `_worker::_conditions`, which is the behaviour real pytest shows.
         self._bare: Callable[[Any], Any] = bare if bare is not None else MarkDecorator(name, (), {})
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -1004,7 +1004,7 @@ class MarkGenerator:
     not a mark **value**, so ``pytestmark = pytest.mark.asyncio`` — four modules of Apex
     Member Designer — refused the whole file with ``malformed pytestmark entry ... <bound
     method MarkGenerator.asyncio ...> is not a mark``, and because pytest's
-    ``pytest_runtestloop`` (and `src/v2/execute.rs::stage`) raise ``Interrupted`` before the
+    ``pytest_runtestloop`` (and `src/engine/execute.rs::stage`) raise ``Interrupted`` before the
     first item, four such files meant *nothing* in that 6 132-test suite ran. Its factory
     now returns an :class:`AsyncioMarkDecorator`, which is a mark value too.
     """
@@ -1103,7 +1103,7 @@ class MarkGenerator:
         # alias's one real conflict, and pytest-asyncio raises it from
         # `_get_marked_loop_scope` (l. 771-774) at *setup*, so the run reports a per-test
         # `error` and exits 1. The worker reproduces it there
-        # (`_v2_worker.py::_marked_loop_scope`); rejecting it here would move the same
+        # (`_worker.py::_marked_loop_scope`); rejecting it here would move the same
         # complaint to import time, i.e. to a collection error at exit 2, and the corpus
         # differential would diverge on a shape that is otherwise byte-identical.
         #
@@ -1406,7 +1406,7 @@ class ExceptionInfo:
         """The type name of the exception."""
         # Message built first so the repo's ruff (0.14) and the pre-commit-pinned ruff
         # (0.8) format this identically -- they wrap `assert cond, msg` differently and
-        # would otherwise fight over the line (see `test_v2_config_oracle.py` for the same
+        # would otherwise fight over the line (see `test_config_oracle.py` for the same
         # note). Fixed properly by #134 in Phase 4 Task 2.
         unfilled = ".typename can only be used after the context manager exits"
         assert self._excinfo is not None, unfilled
@@ -1817,7 +1817,7 @@ class Failed(OutcomeException):
     a ``BaseException``. See :class:`OutcomeException` for why that matters.
 
     The worker catches ``BaseException`` at every test-body boundary
-    (:func:`_v2_worker._phases` and friends), so nothing else had to move.
+    (:func:`_worker._phases` and friends), so nothing else had to move.
 
     **pytest's ``__module__ = "builtins"`` hack is deliberately NOT copied** (here or on
     :class:`Skipped`). It is cosmetic for pytest — it shortens the name in a report — and it
@@ -1850,7 +1850,7 @@ def fail(reason: str = "", pytrace: bool = True) -> None:
                  the floor until the Phase 4 convergence wave, so a module-level
                  ``fail(..., pytrace=False)`` printed the import plumbing it exists to
                  suppress. Currently honoured at **collection** (see
-                 ``_v2_worker.py::_module_outcome_error_message``); a failing test *body*
+                 ``_worker.py::_module_outcome_error_message``); a failing test *body*
                  still renders its traceback either way.
 
     Raises:
@@ -1966,10 +1966,10 @@ class XFailed(Failed):
       dynamic ``pytest.xfail()`` into a pass — the same hazard :class:`OutcomeException`
       describes;
     * the **order** of the worker's classification tables becomes load-bearing rather than
-      accidentally irrelevant. ``_v2_worker`` checks ``XFAILED_EXCEPTIONS`` *before*
+      accidentally irrelevant. ``_worker`` checks ``XFAILED_EXCEPTIONS`` *before*
       ``FAILED_EXCEPTIONS`` and its comment already said so ("relying on that accident would
       break the day the hierarchy is aligned"). This is that day, and the order was already
-      right; :func:`_v2_worker.report_for_phase` routes by ``isinstance`` in that order and
+      right; :func:`_worker.report_for_phase` routes by ``isinstance`` in that order and
       is re-verified by the outcome-classifier tests.
     """
 

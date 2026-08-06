@@ -8,16 +8,16 @@ there is no configuration in which it is off.
 
 ```bash
 # no installation needed
-uvx rustest tests/
+uvx "rustest==1.0.0rc1" tests/
 
 # or install first
-pip install rustest
+pip install "rustest==1.0.0rc1"
 rustest tests/
 ```
 
 !!! warning "`--pytest-compat` was removed"
-    It used to opt into a *compatibility mode*. The v2 engine flip made that mode the
-    default and the only behaviour, so the flag could only have been a no-op or a lie.
+    It used to opt into a *compatibility mode*. The rewrite made that mode the default
+    and the only behaviour, so the flag could only have been a no-op or a lie.
     Passing it now exits **4** with a pointer to `CHANGELOG.md`, and so does `--v1`. See
     [The legacy engine](#the-legacy-engine) below.
 
@@ -68,7 +68,7 @@ the root logger keeps its default `WARNING`, so `logging.info(...)` is not captu
 you call `caplog.set_level(logging.INFO)`. A logger with `propagate = False` is not captured
 either, and it is not captured under pytest.
 
-`cache` is pytest's `config.cache` API over `.rustest_cache/v2`, sharing the store `--lf`
+`cache` is pytest's `config.cache` API over `.rustest_cache`, sharing the store `--lf`
 writes: `cache.get("cache/lastfailed", {})` answers with the last run's failures.
 
 The remaining pytest built-ins are **not implemented yet**, and requesting one is a loud
@@ -76,7 +76,7 @@ error that names it rather than pytest's generic `fixture 'x' not found`. "Not f
 send you hunting for a missing `@fixture` that was never yours to write:
 
 ```text
-FixtureLookupError: fixture 'pytester' is not supported by the rustest v2 worker yet
+FixtureLookupError: fixture 'pytester' is not supported by the rustest worker yet
 (supported builtins: tmp_path_factory, tmp_path, tmpdir_factory, tmpdir, monkeypatch,
 capsys, capfd, caplog, cache, mocker, pytestconfig, recwarn)
 ```
@@ -113,7 +113,7 @@ def conditional_setup(request):
 ```
 
 `request.node` is a **façade** over the execution plan rather than a collection-tree node,
-because v2 replaced the tree with a flat manifest. It carries the attributes real conftests
+because the engine replaced pytest's tree with a flat manifest. It carries the attributes real conftests
 read: `name`, `nodeid`, `originalname`, `path`, `fspath`, `cls`, `module`, `function`,
 `instance`, `keywords`, `own_markers`, `config`, and the methods `iter_markers()`,
 `get_closest_marker()` and `add_marker()`.
@@ -297,10 +297,10 @@ a rustest run; under pytest, `import pytest` is pytest.
 
 ## The legacy engine
 
-**It is gone.** `--v1` used to run the pre-flip engine, frozen, as somewhere for a suite the
-current engine could not yet run to go. Phase 4 deleted both halves of it, the Rust
+**It is gone.** `--v1` used to run the previous engine, frozen, as somewhere for a suite the
+current engine could not yet run to go. The rewrite deleted both halves of it — the Rust
 discovery/execution core and the Python runtime around it, roughly 15 000 lines and six Rust
-dependencies, rather than keep a second answer alive behind a flag that no gate measured.
+dependencies — rather than keep a second answer alive behind a flag that no gate measured.
 
 Passing `--v1` exits **4** with a message naming the change. `rustest.run()`, which used to
 be that engine's Python API, now drives the default engine and returns pytest's exit code
@@ -321,13 +321,13 @@ per-suite table, the methodology and every caveat are in [Performance](performan
 
 ## Troubleshooting
 
-### `fixture 'X' is not supported by the rustest v2 worker yet`
+### `fixture 'X' is not supported by the rustest worker yet`
 
 Exactly what it says: `X` is a pytest built-in that has not been ported. Check the
 [not-yet list](#built-in-fixtures). For `capsysbinary`/`capfdbinary`, read `capsys`/`capfd`
 and encode the result yourself.
 
-### `ValueError: the ini value 'markers' is not available to a rustest v2 worker`
+### `ValueError: the ini value 'markers' is not available to a rustest worker`
 
 `request.config.getini` answers only for the values the run carries to the worker; see
 [the `request` object](#the-request-object). The wording is deliberately different from

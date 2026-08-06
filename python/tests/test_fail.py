@@ -62,7 +62,7 @@ def test_fail_pytrace_parameter():
     It was accepted and dropped until the Phase 4 convergence wave, and this test asserted
     only that the call did not raise a ``TypeError`` -- which a signature with the parameter
     misspelled would also have satisfied. ``Failed.pytrace`` is the channel
-    ``_v2_worker.py::_module_outcome_error_message`` reads to decide between pytest's two
+    ``_worker.py::_module_outcome_error_message`` reads to decide between pytest's two
     collection-error renderings, so the value has to survive the call.
     """
     with raises(Failed) as traced:

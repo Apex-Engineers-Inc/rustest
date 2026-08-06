@@ -2,7 +2,7 @@
 
 Every assertion here is a diff against pytest itself, not against remembered behaviour.
 Four ``tmp_path`` layouts are built, real pytest is run in each via ``subprocess``, and its
-answers are compared with what ``rust.v2_resolve_config`` (the Rust port of
+answers are compared with what ``rust.resolve_config`` (the Rust port of
 ``_pytest/config/findpaths.py::determine_setup``) produces for the same layout. Any
 disagreement is a bug in the port.
 
@@ -82,7 +82,7 @@ TEST_MODULE = "def test_x():\n    assert True\n"
 # `addini("python_functions", type="args", default=["test"])`. The default is the bare
 # prefix `test`, NOT `test_*`, which is why `testfoo` is collected (corpus case
 # `collection/naming-testfoo`). If a pytest upgrade ever changes this, that corpus case and
-# `src/v2/config.rs::DEFAULT_PYTHON_FUNCTIONS` must be re-audited -- so it should fail loudly.
+# `src/engine/config.rs::DEFAULT_PYTHON_FUNCTIONS` must be re-audited -- so it should fail loudly.
 PYTEST_SOURCE_PYTHON_FUNCTIONS_DEFAULT = ["test"]
 
 
@@ -161,7 +161,7 @@ def _run_real_pytest(cwd: Path, args: list[str]) -> PytestAnswer:
 
 
 def _resolve(cwd: Path, args: list[str]) -> dict[str, Any]:
-    payload: dict[str, Any] = json.loads(rust.v2_resolve_config(str(cwd), args))
+    payload: dict[str, Any] = json.loads(rust.resolve_config(str(cwd), args))
     return payload
 
 

@@ -10,18 +10,18 @@ ledger (24 entries, every one a v1 bug with a fixed-in-v2 citation) is archived 
 history, under the removed `docs/superpowers/history/`. Defaulting the bare
 invocation onto a surviving gate would answer a question nobody asked, so it refuses.
 
-- `python -m conformance --v2-collect` — the **Phase 1b.1 gate**: diff pytest's
+- `python -m conformance --collect` — the **Phase 1b.1 gate**: diff pytest's
   collected node IDs and collection exit code against
   `rustest --collect-only`. Nothing is executed, so nothing but IDs and the
-  exit code is graded. Uses `waivers-v2-collect.toml`.
-- `python -m conformance --v2-run` — the **Phase 1b.2 gate**: diff a real pytest
+  exit code is graded. Uses `waivers-collect.toml`.
+- `python -m conformance --run` — the **Phase 1b.2 gate**: diff a real pytest
   run against flagless `rustest --report-json`. Graded on the **ordered** node IDs
   the schema-v2 report carries, the **six-value** outcome tally
   (`passed/failed/skipped/xfailed/xpassed/error`) and the exit code. Uses
-  `waivers-v2-run.toml`. `--v2-collect` and `--v2-run` are mutually exclusive.
+  `waivers-run.toml`. `--collect` and `--run` are mutually exclusive.
 - `conformance/corpus/<area>/<case>/` — one directory per case: `test_*.py`
   files, optional `conftest.py`, optional `case.toml` (`[case] args = [...]`).
-- `conformance/waivers-v2-collect.toml` and `conformance/waivers-v2-run.toml` —
+- `conformance/waivers-collect.toml` and `conformance/waivers-run.toml` —
   every known divergence with a mandatory reason, one ledger per gate. Phase gates
   are defined as these files shrinking. `NEW-BUG:` prefix marks divergences the
   corpus discovered rather than predicted. They are kept separate because an entry
@@ -60,16 +60,16 @@ Task 2. The cost of that ambiguity is on the record — a `1 diverged` reading
 that turned out to be a subprocess timeout under concurrent load (P1b.2 Task 5
 report §10.7), which is where this status was recommended.
 
-Under `--v2-collect` the five statuses are graded on collected IDs and the
-collection exit code alone, against `waivers-v2-collect.toml`. Under `--v2-run`
+Under `--collect` the five statuses are graded on collected IDs and the
+collection exit code alone, against `waivers-collect.toml`. Under `--run`
 they apply to ordered IDs, the seven-value tally and the exit code, against
-`waivers-v2-run.toml`.
+`waivers-run.toml`.
 
 `--only PREFIX` that matches no case **exits 1** with a message naming the
 prefix and listing the corpus. It used to print `0 cases: …` and exit 0, which
 answered "all clear" to a question that was never asked.
 
-## The `--v2-collect` comparison protocol
+## The `--collect` comparison protocol
 
 Both runners see the **same** configuration environment, because otherwise they
 would not be answering the same question. pytest can be pinned to a rootdir with
@@ -83,7 +83,7 @@ runner is getting wrong.
 So each case is **copied into a temporary tree** (minus `__pycache__`) with a bare
 `pytest.ini` at its root, and both runners are invoked there with no config flags
 at all. An empty `pytest.ini` is authoritative for pytest
-(`_pytest/config/findpaths.py`) and for v2 (`src/v2/config.rs`), so both resolve
+(`_pytest/config/findpaths.py`) and for v2 (`src/engine/config.rs`), so both resolve
 the same rootdir by their own unmodified rules and both emit case-relative IDs. A
 case that ships its own config file keeps it.
 
@@ -108,7 +108,7 @@ Two further rules the grader follows:
   the wording differs by design. Grading anything but stdout IDs and the exit code
   manufactures divergences out of diagnostics.
 
-## The `--v2-run` comparison protocol
+## The `--run` comparison protocol
 
 The same isolation protocol — copy the case out of the repo, drop a bare
 `pytest.ini` unless the case ships config that would really anchor the search,
@@ -132,7 +132,7 @@ Two mappings the harness applies so the two sides answer the same question:
 
 - **A collection error means nothing ran.** pytest's `pytest_runtestloop` raises
   `Interrupted` before the first item, so exit 2 leaves the executed-ID list empty
-  however many IDs the collect pass listed; `src/v2/execute.rs::stage` encodes the
+  however many IDs the collect pass listed; `src/engine/execute.rs::stage` encodes the
   identical rule. Without this the gate would pit pytest's *collected* set against
   v2's *executed* one.
 - **Collection errors count in the `error` bucket**, because pytest reports a failed

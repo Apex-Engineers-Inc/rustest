@@ -1,8 +1,8 @@
-"""The v2 collection worker: one file in, collected-test data out.
+"""The collection worker: one file in, collected-test data out.
 
-The Rust orchestrator spawns ``python -m rustest._v2_worker`` and talks to it over
+The Rust orchestrator spawns ``python -m rustest._worker`` and talks to it over
 stdin/stdout in JSON lines (one object per line, newline-terminated, flushed).  The
-wire contract is frozen in ``src/v2/protocol.rs`` and ``src/v2/manifest.rs``; the
+wire contract is frozen in ``src/engine/protocol.rs`` and ``src/engine/manifest.rs``; the
 golden strings there are authority and are mirrored byte-for-byte by this module's
 tests.  Two rules are easy to violate and impossible to detect downstream:
 
@@ -92,7 +92,7 @@ traceback filtering — because those distinguish one outcome from another.
   coroutine-origin tracking — and no test outcome.
 * *``asyncio_mode`` defaults to ``auto``, where pytest-asyncio defaults to ``strict``.*  Both
   modes are implemented faithfully; only the default differs, and only because rustest cannot
-  be uninstalled the way a plugin can.  The reasoning is at ``src/v2/config.rs::
+  be uninstalled the way a plugin can.  The reasoning is at ``src/engine/config.rs::
   DEFAULT_ASYNCIO_MODE`` and the measurement is ``conformance/corpus/async/mode-default``.
 * *No warning for a bare ``@usefixtures``.*  pytest warns that it has no effect
   (`_pytest/fixtures.py::_getusefixturesnames`); with no warnings channel the mark is simply
@@ -117,7 +117,7 @@ traceback filtering — because those distinguish one outcome from another.
   ``conformance/corpus/fixtures/module-param-reorder``, which the gate catches on the
   **ordered** ids alone: the tally, the id set and the exit code all agree.
 * *``session`` and ``package`` scope are **per worker**, for setup and teardown alike.*  A
-  worker is handed a subset of the run's files (``src/v2/collect.rs`` routes by stem hash),
+  worker is handed a subset of the run's files (``src/engine/collect.rs`` routes by stem hash),
   so a session fixture is instantiated once per worker process — pytest-xdist's contract, and
   the same boundary the asyncio loops have.  It was narrower still until Phase 4c: per
   **file**, because the conftest chain's ``FixtureDef`` objects were rebuilt per file and the
@@ -173,7 +173,7 @@ from typing import TYPE_CHECKING, Any, Final, NoReturn, NotRequired, TextIO, Typ
 import unittest
 import warnings
 
-from . import _v2_builtins as _builtins
+from . import _builtins as _builtins
 
 if TYPE_CHECKING:
     # Type-check-only, so the ~240 ms runtime import stays deferred (see the note above
@@ -247,7 +247,7 @@ __all__ = [
 ]
 
 #: The protocol this worker **speaks**.  Mirrors ``PROTOCOL_VERSION`` in
-#: ``src/v2/protocol.rs``; the two must move together — a worker declaring the other side's
+#: ``src/engine/protocol.rs``; the two must move together — a worker declaring the other side's
 #: number turns every run into a handshake error.
 #:
 #: v2 adds the execute ops (``execute_test`` -> ``test_result``) and ``init.invocation_dir``.
@@ -263,7 +263,7 @@ __all__ = [
 #: (:func:`_async_generator_xfail`) — which is why they ride on ``init`` rather than on the
 #: execute ops.
 #:
-#: v5 adds ``init.coverage`` — ``--cov``'s only wire footprint (:mod:`rustest._v2_coverage`).
+#: v5 adds ``init.coverage`` — ``--cov``'s only wire footprint (:mod:`rustest._coverage`).
 #: **Absent** for a run without ``--cov``, and the absence is load-bearing: it is what makes
 #: the worker register no ``sys.monitoring`` tool at all.  Measurement has to start at ``init``
 #: rather than at execution, because a module's import-time lines are lines coverage.py counts.
@@ -292,7 +292,7 @@ PROTOCOL_VERSION: Final = 7
 #: id nobody collected — and a user's broken teardown is not that.  A distinct code keeps the
 #: two diagnoses apart while still being fatal: the orchestrator treats any non-zero status
 #: after ``bye`` as a failed run and reports the code
-#: (``src/v2/collect.rs::a_nonzero_exit_after_bye_is_still_a_failure``), so ``bye`` is still
+#: (``src/engine/collect.rs::a_nonzero_exit_after_bye_is_still_a_failure``), so ``bye`` is still
 #: written and the stream is still well-formed — the run just does not come back green.
 SHUTDOWN_TEARDOWN_EXIT: Final = 3
 
@@ -303,7 +303,7 @@ SHUTDOWN_TEARDOWN_EXIT: Final = 3
 
 
 class MarkSpecDict(TypedDict):
-    """``MarkSpec`` (``src/v2/manifest.rs``).  A bare mark is ``{"name": "slow"}``."""
+    """``MarkSpec`` (``src/engine/manifest.rs``).  A bare mark is ``{"name": "slow"}``."""
 
     name: str
     args: NotRequired[list[Any]]
@@ -311,7 +311,7 @@ class MarkSpecDict(TypedDict):
 
 
 class CollectedTestDict(TypedDict):
-    """``CollectedTest`` (``src/v2/manifest.rs``), key order = serde field order."""
+    """``CollectedTest`` (``src/engine/manifest.rs``), key order = serde field order."""
 
     id: str
     path: str
@@ -323,7 +323,7 @@ class CollectedTestDict(TypedDict):
 
 
 class CollectionErrorDict(TypedDict):
-    """``CollectionErrorEntry`` (``src/v2/manifest.rs``)."""
+    """``CollectionErrorEntry`` (``src/engine/manifest.rs``)."""
 
     path: str
     message: str
@@ -335,7 +335,7 @@ class ReadyResponse(TypedDict):
 
 
 class CollectedResponse(TypedDict):
-    """``WorkerResponse::Collected`` (``src/v2/protocol.rs``).
+    """``WorkerResponse::Collected`` (``src/engine/protocol.rs``).
 
     ``skipped`` is the module-level skip: the file asked, at import time, not to be
     collected at all (``pytest.skip(..., allow_module_level=True)`` or an
@@ -360,7 +360,7 @@ class CollectedResponse(TypedDict):
 
 
 class ResultResponse(TypedDict):
-    """``WorkerResponse::TestResult`` (``src/v2/protocol.rs``), key order = serde field order.
+    """``WorkerResponse::TestResult`` (``src/engine/protocol.rs``), key order = serde field order.
 
     Named for the *response*, not for the wire tag: a ``TestResultDict`` would match the
     default ``python_classes = ["Test"]`` prefix and be probed for collection in every module
@@ -380,7 +380,7 @@ class ResultResponse(TypedDict):
 
 
 class BatchDoneResponse(TypedDict):
-    """``WorkerResponse::BatchDone`` (``src/v2/protocol.rs``) — the batch stream terminator.
+    """``WorkerResponse::BatchDone`` (``src/engine/protocol.rs``) — the batch stream terminator.
 
     Both fields are always written. ``executed`` is counted here, independently of the
     orchestrator's own tally, so a result that never reached the wire becomes a loud protocol
@@ -411,7 +411,7 @@ class UnknownTestError(Exception):
     """``execute_test`` named an id this worker never collected.
 
     The orchestrator routes an execute back to the worker that collected the file
-    (``src/v2/collect.rs`` stem-hash routing), so an id that is not in this worker's index
+    (``src/engine/collect.rs`` stem-hash routing), so an id that is not in this worker's index
     is **routing drift, not data**.  ``WorkerResponse`` has no error variant for the execute
     op, and the two candidate answers are not equivalent: replying ``status:"error"`` would
     put a fabricated test into the report and let a whole worker's worth of mis-routed ids
@@ -472,7 +472,7 @@ def matches_name_pattern(name: str, patterns: Sequence[str]) -> bool:
 
     The prefix test comes first, which is why the default ``python_functions =
     ["test"]`` collects ``testfoo`` (corpus ``collection/naming-testfoo``).  Mirrors
-    ``src/v2/config.rs::matches_name_pattern``.
+    ``src/engine/config.rs::matches_name_pattern``.
     """
     for option in patterns:
         if name.startswith(option):
@@ -507,7 +507,7 @@ IGNORED_ATTRIBUTES: Final[frozenset[str]] = frozenset(
 
 
 def build_nodeid(path: str, parts: Sequence[str], param_id: str | None) -> str:
-    """Port of ``src/v2/nodeid.rs::build_nodeid``.
+    """Port of ``src/engine/nodeid.rs::build_nodeid``.
 
     ``path`` is rootdir-relative posix, ``parts`` is the class chain followed by the
     function name, ``param_id`` is the bracket content *without* brackets.  Nothing
@@ -534,7 +534,7 @@ def _relative_posix(path: Path, rootdir: Path) -> str:
     supply one).  The worker has no initialpaths and must return something
     addressable, so it emits the absolute posix path rather than ``..`` segments,
     which would break the "first segment is a path" nodeid contract in
-    ``src/v2/nodeid.rs``.  Unreachable in practice: the orchestrator only sends files
+    ``src/engine/nodeid.rs``.  Unreachable in practice: the orchestrator only sends files
     it walked from rootdir.
     """
     try:
@@ -880,7 +880,7 @@ class MarkSpec:
     kwargs: Mapping[str, object] = _NO_KWARGS
 
     def to_wire(self) -> MarkSpecDict:
-        """The JSON-safe ``MarkSpec`` of ``src/v2/manifest.rs``, empty fields omitted."""
+        """The JSON-safe ``MarkSpec`` of ``src/engine/manifest.rs``, empty fields omitted."""
         spec: MarkSpecDict = {"name": self.name}
         if self.args:
             spec["args"] = [_json_safe(arg) for arg in self.args]
@@ -1465,7 +1465,7 @@ _SCOPE_INDEX: Final[Mapping[str, int]] = {name: index for index, name in enumera
 #:
 #: ``package`` and ``session`` collapse onto one worker-lifetime *teardown* bucket.
 #: **Documented limitation, not an oversight:** a worker is handed an arbitrary subset of
-#: the run's files (``src/v2/collect.rs`` routes by stem hash), so it cannot know when the
+#: the run's files (``src/engine/collect.rs`` routes by stem hash), so it cannot know when the
 #: last test of a package — or of the session — has run anywhere else.  A package fixture
 #: is therefore not torn down at the package boundary.
 #:
@@ -1557,7 +1557,7 @@ def _as_coroutine(awaitable: Any) -> Any:
 DEFAULT_ASYNCIO_TEST_LOOP_SCOPE: Final = "function"
 
 #: rustest's default `asyncio_mode`.  pytest-asyncio's is ``strict``; the reasoning for the
-#: difference lives with the config that produces it (``src/v2/config.rs::
+#: difference lives with the config that produces it (``src/engine/config.rs::
 #: DEFAULT_ASYNCIO_MODE``) and is measured by ``conformance/corpus/async/mode-default``.
 DEFAULT_ASYNCIO_MODE: Final = "auto"
 
@@ -1589,7 +1589,7 @@ class AsyncioConfig:
     coroutine runs on.
     """
 
-    #: ``auto`` or ``strict``; validated orchestrator-side (``src/v2/config.rs``).
+    #: ``auto`` or ``strict``; validated orchestrator-side (``src/engine/config.rs``).
     mode: str = DEFAULT_ASYNCIO_MODE
     #: ``None`` when unset, and that is a **third answer**, not a synonym for ``"function"``:
     #: `plugin.py::pytest_fixture_setup` l. 736-741 resolves an async fixture's loop scope as
@@ -1786,7 +1786,7 @@ def _asyncio_timeout(mark: MarkSpec | None) -> float | None:
     return float(raw)
 
 
-#: Builtin fixtures this worker provides — :mod:`rustest._v2_builtins`, which owns both the
+#: Builtin fixtures this worker provides — :mod:`rustest._builtins`, which owns both the
 #: implementations and the order they are registered in.  Mirrored here because it is part of
 #: this module's public surface (the "supported builtins" list a lookup failure prints).
 BUILTIN_FIXTURES: Final = tuple(_builtins.V2_BUILTIN_FIXTURES)
@@ -1798,7 +1798,7 @@ BUILTIN_FIXTURES: Final = tuple(_builtins.V2_BUILTIN_FIXTURES)
 #: Phase 3 Task 2 emptied most of it — ``cache``, ``capfd``, ``caplog``, ``mocker``,
 #: ``pytestconfig``, ``tmpdir`` and ``tmpdir_factory`` all moved into
 #: :data:`BUILTIN_FIXTURES`; Phase 4 Task 1c moved ``recwarn`` (MECHANISM M5), whose entry
-#: here claimed it "needs a warnings channel, which the v2 wire does not have" — it does
+#: here claimed it "needs a warnings channel, which the worker wire does not have" — it does
 #: not, because it records **in-process** and tells the orchestrator nothing.  What is left
 #: is genuinely unimplemented, and each entry is a distinct piece of machinery rather than a
 #: variation on one that exists:
@@ -2350,7 +2350,7 @@ class ExecutionPlan:
 class _ItemNode:
     """The collection-tree node ``request.node`` returns — pytest's ``Function`` item.
 
-    v2 has no collection tree (the manifest replaced it), so this is a **façade** over the
+    the engine has no collection tree (the manifest replaced it), so this is a **façade** over the
     :class:`ExecutionPlan` carrying the attributes real conftests actually read.  It exists
     because "no tree" is an implementation choice and ``request.node.name`` is a public
     pytest API: rustest's own ``tests/test_conftest_nested`` uses it in an autouse fixture,
@@ -2480,10 +2480,10 @@ class SubRequest:
     ``request.param`` raises ``AttributeError`` exactly as under pytest.
 
     ``config`` is a **subset** and loud past its edge — see
-    :class:`rustest._v2_builtins.Config`.  It answers ``rootpath``, ``inipath``,
+    :class:`rustest._builtins.Config`.  It answers ``rootpath``, ``inipath``,
     ``invocation_params.dir``, ``cache`` and ``getini`` for the six ini values ``init``
     carries; ``getoption`` without a default raises pytest's own ``no option named`` error,
-    because the v2 wire carries no command-line options and a fabricated answer would let a
+    because the worker wire carries no command-line options and a fabricated answer would let a
     suite report on a mode it never ran in.
     """
 
@@ -2588,7 +2588,7 @@ class SubRequest:
 
     @property
     def config(self) -> _builtins.Config:
-        """`FixtureRequest.config` — see :class:`rustest._v2_builtins.Config` for the subset.
+        """`FixtureRequest.config` — see :class:`rustest._builtins.Config` for the subset.
 
         Unlike :attr:`node` this does **not** need a live test: it is whole-run state, so a
         session fixture built before any test can read it.
@@ -3282,7 +3282,7 @@ class FixtureRunner:
         unset, an async fixture's loop scope is **its own caching scope**, so a
         ``scope="module"`` async fixture gets a module-lived loop without anyone configuring
         one.  That is why the option travels as an ``Option`` all the way from
-        ``src/v2/config.rs``: collapsing "unset" into ``"function"`` would put every wider
+        ``src/engine/config.rs``: collapsing "unset" into ``"function"`` would put every wider
         async fixture on a loop that dies before it does.
 
         The scope check is **inside** this method rather than beside its callers, because the
@@ -3338,7 +3338,7 @@ class FixtureRunner:
             + f"{_format_fixturedef_line(fixturedef)}\n"
             + "Requested fixture:\n"
             + f"  the {loop_scope}-scoped event loop "
-            + "(python/rustest/_v2_worker.py::FixtureRunner.loop_runner)"
+            + "(python/rustest/_worker.py::FixtureRunner.loop_runner)"
         )
 
     def wraps_async_fixture(self, func: object) -> bool:
@@ -3580,7 +3580,7 @@ def _fixture_not_found_message(name: str, registry: FixtureRegistry) -> str:
     """
     if name in UNSUPPORTED_BUILTIN_FIXTURES:
         return (
-            f"fixture '{name}' is not supported by the rustest v2 worker yet "
+            f"fixture '{name}' is not supported by the rustest worker yet "
             + f"(supported builtins: {', '.join(BUILTIN_FIXTURES)})"
         )
     return f"fixture '{name}' not found" + _available_fixtures_suffix(registry)
@@ -3708,7 +3708,7 @@ def _conftest_baseid(conftest: Path, rootdir: Path) -> str:
 def _register_builtin_fixtures(registry: FixtureRegistry) -> None:
     """Register this worker's builtins, at total visibility.
 
-    The implementations live in :mod:`rustest._v2_builtins` and are ports of pytest's own
+    The implementations live in :mod:`rustest._builtins` and are ports of pytest's own
     plugins — ``capsys``/``capfd`` of `_pytest/capture.py`, ``caplog`` of
     `_pytest/logging.py`, ``cache`` of `_pytest/cacheprovider.py`, ``tmp_path``/``tmpdir`` of
     `_pytest/tmpdir.py` + `_pytest/legacypath.py`, ``mocker`` of pytest-mock's plugin.  Each
@@ -3948,7 +3948,7 @@ def _register_declared_plugins(module: types.ModuleType, registry: FixtureRegist
     the baseid is the empty string" — `FixtureDef.__init__`).
 
     This is the *fixture* half of the plugin protocol and nothing else: hooks a named module
-    defines are not called, because v2 has no hook system.  A plugin that only supplies
+    defines are not called, because the engine has no hook system.  A plugin that only supplies
     fixtures — the overwhelmingly common shape, and the one rustest's own
     ``tests/test_pytest_plugins_and_applymarker`` exercises — works; one that implements
     ``pytest_collection_modifyitems`` is silently inert, exactly as it is under v1.
@@ -4723,7 +4723,7 @@ def collect_markdown(
     Two shapes differ from v1 and both are cosmetic, recorded rather than discovered later:
 
     * the node id is ``docs/guide/fixtures.md::codeblock_0_line_15`` — v1's *test name*
-      verbatim — where v1 *displayed* ``...::codeblock_0::line_15``.  v2 ids are
+      verbatim — where v1 *displayed* ``...::codeblock_0::line_15``.  the engine's ids are
       rootdir-relative posix and a second ``::`` would claim the block is a class member;
     * a block marked skipped carries a real ``skip`` mark instead of v1's out-of-band
       ``skip_reason``, so it travels on the wire and is evaluated by the same
@@ -4930,7 +4930,7 @@ def collect_markdown(
 #: wire — see :attr:`PhaseReport.status`.
 PHASES: Final = ("setup", "call", "teardown")
 
-#: The closed set of wire statuses (``src/v2/protocol.rs``, `TestResult::status`).  These
+#: The closed set of wire statuses (``src/engine/protocol.rs``, `TestResult::status`).  These
 #: are pytest's *reporting categories* (its `.`/`F`/`s`/`x`/`X`/`E` letters), not
 #: ``TestReport.outcome``, which only ever holds three of them.
 STATUSES: Final = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
@@ -4991,7 +4991,7 @@ ABORT_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (KeyboardInterrupt, _
 #: Distinct from 0 (clean), 2 (protocol drift) and :data:`SHUTDOWN_TEARDOWN_EXIT` (3, a
 #: broken teardown), because the orchestrator has to tell "the user ended the session" from
 #: "the worker broke" — the first keeps the results already produced and exits 2, the second
-#: is an orchestration failure and exits 3.  ``src/v2/execute.rs::SESSION_EXIT_EXIT``
+#: is an orchestration failure and exits 3.  ``src/engine/execute.rs::SESSION_EXIT_EXIT``
 #: mirrors this constant and **must be changed in the same commit**.
 #:
 #: The exit code is the whole channel: it carries the *fact* of a session exit and nothing
@@ -5682,7 +5682,7 @@ class _Capture:
     Structure is pytest's default capture mode, `--capture=fd`
     (`_pytest/capture.py::CaptureManager.start_global_capturing` -> ``MultiCapture`` of
     ``FDCapture``), reduced to out and err: fd 0 is the worker's request channel and nothing
-    here may touch it.  ``rustest._v2_builtins.FdCapture`` also redirects ``sys.stdout`` /
+    here may touch it.  ``rustest._builtins.FdCapture`` also redirects ``sys.stdout`` /
     ``sys.stderr`` onto the same temporary file, which is what keeps a ``print()`` and a raw
     fd write in the order they happened.
 
@@ -5825,13 +5825,13 @@ class _Capture:
 CAPTURE_CLOSED_MESSAGE: Final = "<capture closed by the test>"
 
 #: Set to ``no`` by the orchestrator under ``-s`` / ``--no-capture``
-#: (`src/v2/collect.rs::CAPTURE_ENV`, which **must be renamed in the same commit** as this).
+#: (`src/engine/collect.rs::CAPTURE_ENV`, which **must be renamed in the same commit** as this).
 #:
 #: An environment variable rather than a protocol field because capture is *spawn*
 #: configuration: it is constant for a worker's whole life and identical for every worker in
 #: the pool, exactly like the interpreter path and the argv.  Putting it on the wire would
 #: mean a `PROTOCOL_VERSION` bump for a value that can never vary between two messages.
-CAPTURE_ENV: Final = "RUSTEST_V2_CAPTURE"
+CAPTURE_ENV: Final = "RUSTEST_CAPTURE"
 
 
 def capture_enabled() -> bool:
@@ -5963,7 +5963,7 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
     gets pytest's own failure with pytest's own message.
 
     The third branch — a test that ``return``s a non-``None`` value — is pytest's
-    ``PytestReturnNotNoneWarning``. v2 has no warnings channel, so it is silently ignored,
+    ``PytestReturnNotNoneWarning``. the engine has no warnings channel, so it is silently ignored,
     exactly as before; the outcome is identical either way.
 
     **A fresh ``contextvars.Context`` per test body, and it is isolation, not tidiness.**
@@ -6043,7 +6043,7 @@ def _log_capture_for(plan: ExecutionPlan) -> _builtins.LogCapture | None:
     pytest installs its capture handler for **every** item (`_pytest/logging.py::
     LoggingPlugin.pytest_runtest_setup`), because the same handler also feeds the
     ``add_report_section(when, "log", ...)`` block the terminal prints under a failure.  The
-    v2 wire has no report sections, so the only reader is the ``caplog`` fixture and the
+    worker wire has no report sections, so the only reader is the ``caplog`` fixture and the
     handler is installed only when a test's **closure** contains it.
 
     The closure rather than the signature: an autouse fixture, a ``usefixtures`` mark or a
@@ -6256,7 +6256,7 @@ class WorkerState:
 
 _state: WorkerState | None = None
 
-#: Whether ``init`` carried a ``coverage`` object and :func:`rustest._v2_coverage.start`
+#: Whether ``init`` carried a ``coverage`` object and :func:`rustest._coverage.start`
 #: succeeded.
 #:
 #: A plain `bool` rather than a reference to the monitor, so that :func:`main`'s ``finally``
@@ -6266,7 +6266,7 @@ _coverage_started: bool = False
 
 #: Execution plans for every test this worker has collected, keyed by manifest id.
 #: Worker-local by design: the orchestrator routes an ``execute_test`` back to the worker
-#: that collected the file (``src/v2/collect.rs`` stem-hash routing), so the plan — and the
+#: that collected the file (``src/engine/collect.rs`` stem-hash routing), so the plan — and the
 #: warm module object it points at — is always here.  An id that is not is a routing bug,
 #: and :func:`execution_plan` says so loudly rather than returning ``None``.
 _execution_plans: dict[str, ExecutionPlan] = {}
@@ -6307,11 +6307,11 @@ def _asyncio_config_from_init(message: Mapping[str, object]) -> AsyncioConfig:
     """Read the three ``asyncio_*`` fields off an ``init`` line.
 
     ``asyncio_default_fixture_loop_scope`` is **absent from the wire when unset**
-    (`src/v2/protocol.rs`, `skip_serializing_if`), so ``message.get`` returning ``None`` is
+    (`src/engine/protocol.rs`, `skip_serializing_if`), so ``message.get`` returning ``None`` is
     the option's real third state and is stored as such -- see
     :meth:`FixtureRunner.fixture_loop_scope` for what it means.
 
-    No value is re-validated here.  ``src/v2/config.rs`` already rejected a bad mode or scope
+    No value is re-validated here.  ``src/engine/config.rs`` already rejected a bad mode or scope
     with pytest-asyncio's own message and exit 4, before this process existed; a second
     implementation of the rules would be a second thing free to disagree with the first.
     """
@@ -6375,7 +6375,7 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     The reply states :data:`PROTOCOL_VERSION` — the version this worker *speaks*.
     It is never an echo of ``message["protocol_version"]``: an echo would make the
     handshake agree with any orchestrator and detect no skew at all.  Deciding what
-    to do about a mismatch is the orchestrator's job (``src/v2/protocol.rs``).
+    to do about a mismatch is the orchestrator's job (``src/engine/protocol.rs``).
 
     ``invocation_dir`` **is** stored as of Phase 3 Task 2: ``request.config`` answers with it
     through ``Config.invocation_params.dir``, which is the value pytest itself resolves a
@@ -6400,18 +6400,18 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     # `find_spec` delegation per import and nothing else.
     from . import _assertion_rewrite
 
-    _ = _assertion_rewrite.install_hook(str(rootdir / ".rustest_cache" / "v2-assert"))
+    _ = _assertion_rewrite.install_hook(str(rootdir / ".rustest_cache" / "assert"))
 
     # Coverage starts **here**, before the first `collect_file`, because a module's
     # import-time lines are lines coverage.py counts: `coverage run -m pytest` starts before
     # pytest imports anything.  The import is inside the branch so a run without `--cov` never
-    # loads `_v2_coverage` — or, behind it, `coverage` — at all.
+    # loads `_coverage` — or, behind it, `coverage` — at all.
     coverage_wire = message.get("coverage")
     if coverage_wire is not None:
         global _coverage_started
-        from . import _v2_coverage
+        from . import _coverage
 
-        _ = _v2_coverage.start(cast("Mapping[str, object]", coverage_wire))
+        _ = _coverage.start(cast("Mapping[str, object]", coverage_wire))
         _coverage_started = True
 
     naming = Naming(
@@ -6437,7 +6437,7 @@ def _ini_values(
 
     Seven names, and the list is deliberately not padded.  ``markers``, ``xfail_strict``,
     ``filterwarnings`` and the rest are real pytest inis whose values this worker does not
-    have; :class:`rustest._v2_builtins.Config` refuses them by name rather than returning a
+    have; :class:`rustest._builtins.Config` refuses them by name rather than returning a
     plausible default, because a suite branching on a fabricated ``getini`` result reports a
     green run about a mode it never ran in.
 
@@ -6483,7 +6483,7 @@ def drain_at_shutdown() -> BaseException | None:
         raise
     except BaseException as exc:  # noqa: BLE001 - returned to main, never dropped
         print(
-            "rustest v2 worker: errors while tearing down fixtures at shutdown:\n"
+            "rustest worker: errors while tearing down fixtures at shutdown:\n"
             + _format_exception(exc),
             file=sys.stderr,
         )
@@ -6561,7 +6561,7 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
             # than once here. An autouse fixture reaches the tests a block defines but not
             # the block's own top-level statements -- see `collect_markdown`'s docstring.
             # The orchestrator only ever sends a `.md` path when code blocks are enabled
-            # (`src/v2/collect.rs::is_markdown`).
+            # (`src/engine/collect.rs::is_markdown`).
             tests, plans = collect_markdown(
                 file_path,
                 state.rootdir,
@@ -6647,7 +6647,7 @@ def execute_batch(
     ``stop_on_failure`` is ``-x`` reaching inside the batch. Checked *after* each result is
     emitted, because pytest reports the failing test and then stops: the failure is data the
     user needs, and only what comes after it is cancelled. See
-    ``src/v2/protocol.rs::WorkerRequest::ExecuteBatch``.
+    ``src/engine/protocol.rs::WorkerRequest::ExecuteBatch``.
 
     ``max_fail`` is ``--maxfail``'s **remaining budget** for this batch (protocol v7), which
     is why it is a count and not the configured ``N``: the orchestrator has already
@@ -6677,7 +6677,7 @@ def encode_response(response: Mapping[str, object]) -> str:
     """Encode one response as a protocol line (no trailing newline).
 
     ``separators`` is compact because serde_json is compact and the golden strings in
-    ``src/v2/protocol.rs`` are byte contracts.  ``ensure_ascii`` stays on so the line
+    ``src/engine/protocol.rs`` are byte contracts.  ``ensure_ascii`` stays on so the line
     is pure ASCII whatever the console encoding happens to be on Windows; serde
     decodes ``\\uXXXX`` escapes back to the same string.
     """
@@ -6772,7 +6772,7 @@ def main() -> int:
     * **2** — *protocol drift*: an unparseable line, an unknown ``op``, a ``collect_file``
       with no ``path``, a ``collect_file`` before ``init``, an ``execute_test`` with no
       ``id``, or an ``execute_test`` for an id this worker never collected.  The protocol is
-      internal, so drift means a bug and must be loud (``src/v2/protocol.rs`` module docs) —
+      internal, so drift means a bug and must be loud (``src/engine/protocol.rs`` module docs) —
       and it must be *distinguishable*, which an uncaught traceback (exit 1, no framing) is
       not.  A file that merely fails to import is NOT drift: it is data, and it comes back as
       a ``collected`` error entry.
@@ -6837,12 +6837,12 @@ def main() -> int:
         # It runs **before** the flush, and after `drain_at_shutdown` on the ordinary path, so
         # module- and session-scoped fixture teardowns are measured — as they are under pytest.
         if _coverage_started:
-            from . import _v2_coverage
+            from . import _coverage
 
             try:
-                _ = _v2_coverage.stop_and_write()
+                _ = _coverage.stop_and_write()
             except Exception as exc:  # noqa: BLE001 - a broken write must not hide the results
-                print(f"rustest v2 worker: could not write coverage data: {exc}", file=sys.stderr)
+                print(f"rustest worker: could not write coverage data: {exc}", file=sys.stderr)
         # **Every** exit path flushes, including the two that leave through an exception:
         # `pytest.exit()` above and a `KeyboardInterrupt` that propagates out of `main`.  A
         # batch writes its results with `emit_buffered`, so an abort mid-batch can be holding
@@ -6879,7 +6879,7 @@ def _protocol_loop(
         try:
             request = cast(Mapping[str, object], json.loads(line))
         except ValueError as exc:
-            print(f"rustest v2 worker: undecodable request line: {exc}: {line!r}", file=sys.stderr)
+            print(f"rustest worker: undecodable request line: {exc}: {line!r}", file=sys.stderr)
             return 2
 
         op = request.get("op")
@@ -6889,35 +6889,35 @@ def _protocol_loop(
             path = request.get("path")
             if not isinstance(path, str):
                 print(
-                    f"rustest v2 worker: collect_file without a path: {line!r}",
+                    f"rustest worker: collect_file without a path: {line!r}",
                     file=sys.stderr,
                 )
                 return 2
             assert_key = request.get("assert_key")
             if assert_key is not None and not isinstance(assert_key, str):
                 print(
-                    f"rustest v2 worker: collect_file with a non-string assert_key: {line!r}",
+                    f"rustest worker: collect_file with a non-string assert_key: {line!r}",
                     file=sys.stderr,
                 )
                 return 2
             try:
                 response = collect_file(path, assert_key)
             except NotInitializedError as exc:
-                print(f"rustest v2 worker: {exc}", file=sys.stderr)
+                print(f"rustest worker: {exc}", file=sys.stderr)
                 return 2
             emit(response)
         elif op == "execute_test":
             test_id = request.get("id")
             if not isinstance(test_id, str):
                 print(
-                    f"rustest v2 worker: execute_test without an id: {line!r}",
+                    f"rustest worker: execute_test without an id: {line!r}",
                     file=sys.stderr,
                 )
                 return 2
             try:
                 emit(execute_test(test_id))
             except UnknownTestError as exc:
-                print(f"rustest v2 worker: {exc}", file=sys.stderr)
+                print(f"rustest worker: {exc}", file=sys.stderr)
                 return 2
         elif op == "execute_batch":
             ids = request.get("ids")
@@ -6926,7 +6926,7 @@ def _protocol_loop(
                 isinstance(item, str) for item in cast("list[object]", ids)
             ):
                 print(
-                    f"rustest v2 worker: execute_batch without a list of ids: {line!r}",
+                    f"rustest worker: execute_batch without a list of ids: {line!r}",
                     file=sys.stderr,
                 )
                 return 2
@@ -6935,7 +6935,7 @@ def _protocol_loop(
                 # `-x` off inside every batch, and "kept going after a failure" is exactly
                 # the behaviour `-x` exists to prevent.
                 print(
-                    f"rustest v2 worker: execute_batch without stop_on_failure: {line!r}",
+                    f"rustest worker: execute_batch without stop_on_failure: {line!r}",
                     file=sys.stderr,
                 )
                 return 2
@@ -6952,7 +6952,7 @@ def _protocol_loop(
                 # orchestrator keeps the results it earned and reports the drift against the
                 # right test instead of losing the whole file.
                 _ = flush()
-                print(f"rustest v2 worker: {exc}", file=sys.stderr)
+                print(f"rustest worker: {exc}", file=sys.stderr)
                 return 2
             emit_buffered(done)
             _ = flush()
@@ -6963,7 +6963,7 @@ def _protocol_loop(
             emit(handle_shutdown())
             return SHUTDOWN_TEARDOWN_EXIT if shutdown_failure is not None else 0
         else:
-            print(f"rustest v2 worker: unknown op {op!r} in line: {line!r}", file=sys.stderr)
+            print(f"rustest worker: unknown op {op!r} in line: {line!r}", file=sys.stderr)
             return 2
 
 

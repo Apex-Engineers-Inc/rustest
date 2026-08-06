@@ -9,7 +9,7 @@ point. They pinned "a package- or session-scoped fixture is rebuilt once PER FIL
 limitation the ``fixtures/session-scope`` ledger entry described, and they were ``strict``
 precisely so that fixing it would turn them into a red XPASS rather than an invisible pass.
 The two halves then landed in different places: the v1 deletion added the markers in a
-worktree while the caching fix (``_v2_worker.py::conftest_fixturedefs``) landed on the main
+worktree while the caching fix (``_worker.py::conftest_fixturedefs``) landed on the main
 branch, so neither side could see the other and the merge of the two was textually clean.
 The strict flag is what surfaced it -- the convergence wave's first `python/tests` run came
 back ``2 failed`` with the marker's own removal instructions in the failure message. Every

@@ -74,7 +74,7 @@ setup = [
 # (`Config._configure_python_path`) and rustest's v2 engine did not implement it -- without
 # the scaffolding every one of the ~285 test files failed to import and the comparison
 # measured one missing ini option instead of a suite. v2 reads and applies the ini itself
-# now (`_v2_worker::_apply_pythonpath`, protocol v6), so the scaffolding is gone and rustest
+# now (`_worker::_apply_pythonpath`, protocol v6), so the scaffolding is gone and rustest
 # resolves `src/` from the repo's own pyproject.toml exactly as pytest does.
 pythonpath = []
 
