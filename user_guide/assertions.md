@@ -1,16 +1,16 @@
-# Assertion Helpers
+# Assertion helpers
 
 Rustest exports three assertion helpers: `approx()` for numeric comparisons, `raises()` for
 exception testing, and `fail()` for explicit failures. Two more, `warns()` and
 `deprecated_call()`, live on the pytest compatibility surface and are reached through
 `import pytest`.
 
-## The approx() Function
+## The approx() function
 
 `approx()` compares numbers with a tolerance, so floating-point representation error does not
 fail a test that is arithmetically correct.
 
-### Basic Usage
+### Basic usage
 
 ```python
 from rustest import approx
@@ -29,13 +29,13 @@ def test_without_approx():
     assert 0.1 + 0.2 == 0.3
 ```
 
-### Tolerance Parameters
+### Tolerance parameters
 
 `approx(expected, rel=None, abs=None, nan_ok=False)`. Both tolerances default to `None`, which
 means "unspecified" rather than zero, so passing `rel=None` explicitly is legal and does what
 omitting it does.
 
-#### Relative Tolerance
+#### Relative tolerance
 
 ```python
 from rustest import approx
@@ -51,7 +51,7 @@ def test_relative_tolerance():
     assert 100.0 == approx(101.0, rel=0.02)  # 2% tolerance
 ```
 
-#### Absolute Tolerance
+#### Absolute tolerance
 
 ```python
 from rustest import approx
@@ -65,7 +65,7 @@ def test_absolute_tolerance():
     assert 0.0 == approx(0.001, abs=0.01)
 ```
 
-#### Combining Tolerances
+#### Combining tolerances
 
 The tolerance actually applied is `max(rel * abs(expected), abs)`, so a value inside either one
 passes. The exception is giving `abs` alone: with no `rel`, the absolute tolerance is used by
@@ -79,7 +79,7 @@ def test_combined_tolerances():
     assert 1.0 == approx(1.001, rel=1e-6, abs=0.01)
 ```
 
-### Comparing Collections
+### Comparing collections
 
 `approx()` handles lists, tuples, and anything else that is sized and indexable.
 
@@ -104,7 +104,7 @@ compared exactly and the tolerance would silently not apply.
 When numpy is already imported, an array on either side is compared element by element, and a
 failure prints an index/obtained/expected table rather than a single line.
 
-### Complex Numbers
+### Complex numbers
 
 ```python
 from rustest import approx
@@ -125,9 +125,9 @@ pytest's, and rustest reproduces it. Separately, `approx()` refuses a boolean co
 `if approx(x):` raises rather than being quietly truthy, since the only correct use is on one
 side of a comparison.
 
-### Real-World Examples
+### Real-world examples
 
-#### Scientific Computing
+#### Scientific computing
 
 ```python
 from rustest import approx
@@ -142,7 +142,7 @@ def test_physics_calculation():
     assert velocity == approx(10.204081632653061, rel=1e-6)
 ```
 
-#### Financial Calculations
+#### Financial calculations
 
 ```python
 from rustest import approx
@@ -156,7 +156,7 @@ def test_price_calculation():
     assert total == approx(21.5892, abs=0.01)  # Round to cents
 ```
 
-#### Statistical Tests
+#### Statistical tests
 
 ```python
 from rustest import approx
@@ -168,9 +168,9 @@ def test_mean_calculation():
     assert mean == approx(3.3, rel=1e-9)
 ```
 
-## The raises() Context Manager
+## The raises() context manager
 
-### Basic Usage
+### Basic usage
 
 ```python
 from rustest import raises
@@ -184,7 +184,7 @@ If the block completes without raising, `raises` fails the test with `DID NOT RA
 failure is a `BaseException` subclass, so a stray `except Exception:` around the block cannot
 turn it into a pass.
 
-### Matching the Exception Message
+### Matching the exception message
 
 `match` is a regex, applied with `re.search`, so it matches anywhere in the message unless you
 anchor it. PEP 678 `__notes__` are part of the searched text alongside `str(exc)`.
@@ -228,7 +228,7 @@ A pattern that fails to compile is reported when you write it, not when the bloc
 the regex misses but the message equals the pattern verbatim, the failure adds a
 "Did you mean to `re.escape()` the regex?" hint.
 
-### Multiple Exception Types
+### Multiple exception types
 
 ```python
 from rustest import raises
@@ -245,7 +245,7 @@ def test_multiple_exceptions():
 An exception whose type is not among the expected ones propagates unchanged rather than being
 reported as a mismatch. You see the real traceback, not a wrapper.
 
-### Accessing Exception Information
+### Accessing exception information
 
 `with raises(...) as exc_info` binds an `ExceptionInfo`, which is unfilled until the block
 exits. Reading `.value` before then raises rather than returning something misleading.
@@ -267,7 +267,7 @@ def test_exception_details():
 Beyond `.value` and `.type` it carries `.tb` (the raw traceback), `.typename`, `.traceback`
 (an iterable list of entries), `.exconly()`, `.errisinstance()` and `.match()`.
 
-### Two Further Parameters
+### Two further parameters
 
 `check=` takes a callable applied to the exception after the type and `match` have both passed;
 returning anything falsy fails the test.
@@ -277,9 +277,9 @@ which calls `func` immediately and returns the `ExceptionInfo`. In that form the
 arguments go to `func`, so `raises(E, f, match="x")` passes `match="x"` to `f` rather than
 using it as a pattern.
 
-### Real-World Examples
+### Real-world examples
 
-#### Input Validation
+#### Input validation
 
 ```python
 from rustest import raises
@@ -301,7 +301,7 @@ def test_email_validation():
         validate_email("not-an-email")
 ```
 
-#### API Error Handling
+#### API error handling
 
 <!--rustest.mark.skip-->
 ```python
@@ -314,7 +314,7 @@ def test_api_unauthorized():
         api.protected_resource(token="invalid")
 ```
 
-#### File Operations
+#### File operations
 
 ```python
 from rustest import raises
@@ -335,7 +335,7 @@ def test_permission_denied():
         open("/root/protected.txt", "w")
 ```
 
-#### Type Checking
+#### Type checking
 
 ```python
 from rustest import raises
@@ -345,12 +345,12 @@ def test_type_error():
         "string" + 42
 ```
 
-## The fail() Function
+## The fail() function
 
 `fail()` raises immediately with your message. It earns its keep where the failure condition is
 too involved to read well as a single `assert`.
 
-### Basic Usage
+### Basic usage
 
 <!--rustest.mark.skip-->
 ```python
@@ -366,7 +366,7 @@ def test_conditional_validation():
     process_data(data)
 ```
 
-### With Detailed Messages
+### With detailed messages
 
 <!--rustest.mark.skip-->
 ```python
@@ -385,9 +385,9 @@ def test_operation_result():
 `fail(reason, pytrace=False)` reports the message alone instead of a traceback. That flag is
 honoured at collection; a failing test *body* still renders its traceback either way.
 
-### Real-World Examples
+### Real-world examples
 
-#### State Validation
+#### State validation
 
 <!--rustest.mark.skip-->
 ```python
@@ -403,7 +403,7 @@ def test_database_state():
     assert db.table_exists("users")
 ```
 
-#### Multi-Step Verification
+#### Multi-step verification
 
 <!--rustest.mark.skip-->
 ```python
@@ -420,7 +420,7 @@ def test_user_workflow():
     assert user.can_login()
 ```
 
-#### Test Preconditions
+#### Test preconditions
 
 <!--rustest.mark.skip-->
 ```python
@@ -433,7 +433,7 @@ def test_feature_availability():
     assert result is not None
 ```
 
-### When to Use fail() Versus assert
+### When to use fail() versus assert
 
 Use `assert` for straightforward conditions:
 
@@ -461,8 +461,9 @@ if result.is_error():
 # Continue with more tests...
 ```
 
-!!! tip "Clear failure messages"
-    Always include descriptive messages with `fail()` to make debugging easier:
+::: {.callout-tip title="Clear failure messages"}
+Always include descriptive messages with `fail()` to make debugging easier:
+:::
 
 <!--rustest.mark.skip-->
 ```
@@ -473,7 +474,7 @@ fail(f"Expected user {user_id} to exist, but not found in database")
 fail("Test failed")
 ```
 
-## Combining Assertion Helpers
+## Combining assertion helpers
 
 ```python
 from rustest import approx, raises, fail
@@ -506,12 +507,12 @@ def test_complex_validation():
         process_invalid_data()
 ```
 
-## The warns() Context Manager
+## The warns() context manager
 
 `warns()` asserts that a block emits a warning. It comes from the pytest compatibility surface
 rather than the `rustest` namespace, so reach it through `import pytest`.
 
-### Basic Usage
+### Basic usage
 
 ```python
 import warnings
@@ -530,7 +531,7 @@ The expected category defaults to `Warning`, so a bare `pytest.warns()` asserts 
 was warned. Passing an exception class that is not a `Warning` subclass is a `TypeError` at the
 point you write it.
 
-### Pattern Matching
+### Pattern matching
 
 ```python
 import warnings
@@ -548,7 +549,7 @@ def test_regex_match():
 A failure distinguishes the two ways this goes wrong: no warning of that category at all, or
 the right category with a message the pattern did not match.
 
-### Capturing Multiple Warnings
+### Capturing multiple warnings
 
 ```python
 import warnings
@@ -576,7 +577,7 @@ The `as` target is a recorder, not a bare list. Indexing, `len()` and iteration 
 the assertion did not claim are re-emitted on exit, so they still reach the enclosing filter
 stack.
 
-### Multiple Warning Types
+### Multiple warning types
 
 ```python
 import warnings
@@ -587,7 +588,7 @@ def test_multiple_types():
         warnings.warn("some warning", UserWarning)
 ```
 
-## The deprecated_call() Context Manager
+## The deprecated_call() context manager
 
 ```python
 import warnings
@@ -602,14 +603,15 @@ def test_deprecated_with_match():
         warnings.warn("use new_api instead", DeprecationWarning)
 ```
 
-!!! note "deprecated_call versus warns"
-    `deprecated_call()` is `warns((DeprecationWarning, PendingDeprecationWarning, FutureWarning))`.
-    `FutureWarning` is in the set because it is the category libraries pick for deprecations
-    aimed at end users rather than developers, which is what numpy and pandas both do.
+::: {.callout-note title="deprecated_call versus warns"}
+`deprecated_call()` is `warns((DeprecationWarning, PendingDeprecationWarning, FutureWarning))`.
+`FutureWarning` is in the set because it is the category libraries pick for deprecations
+aimed at end users rather than developers, which is what numpy and pandas both do.
+:::
 
-## Best Practices
+## Best practices
 
-### Use Appropriate Tolerances
+### Use appropriate tolerances
 
 ```python
 from rustest import approx
@@ -630,7 +632,7 @@ def test_bad_tolerance():
     assert 100 == approx(200, rel=0.5)  # 50% tolerance is too much!
 ```
 
-### Be Specific with Exception Messages
+### Be specific with exception messages
 
 Without `match`, any exception of the right class passes, including one raised by a bug on the
 line before the one you meant to test.
@@ -653,7 +655,7 @@ def test_validation_loose():
         validate_email("")
 ```
 
-### Don't Overuse approx()
+### Don't overuse approx()
 
 ```python
 from rustest import approx
@@ -670,7 +672,7 @@ def test_unnecessary_approx():
     assert 5 == approx(5)  # Just use assert 5 == 5
 ```
 
-### Test Exception Details
+### Test exception details
 
 <!--rustest.mark.skip-->
 ```python
@@ -689,7 +691,7 @@ def test_exception_basic():
         validate_user({"name": ""})
 ```
 
-## Standard Python Assertions
+## Standard Python assertions
 
 Where `approx()` and `raises()` do not fit, a plain `assert` is the answer.
 
@@ -724,7 +726,7 @@ Two differences from pytest are worth knowing. Assertion verbosity is fixed at p
 so `-v` does not lengthen diffs or un-truncate reprs the way it does under pytest. And failure
 sections are not syntax highlighted.
 
-## Next Steps
+## Next steps
 
 - [Writing Tests](writing-tests.md) - Learn more about test structure
 - [Parametrization](intro-parametrization.md) - Test multiple values

@@ -1,12 +1,12 @@
-# Marks & Skipping
+# Marks & skipping
 
 A mark is a label attached to a test. Rustest uses marks for the behaviours pytest uses them
 for (skipping, expected failures, async execution) and lets you invent your own to categorise
 tests for `-m` filtering.
 
-## Skipping Tests
+## Skipping tests
 
-### The skip() Function
+### The skip() function
 
 `skip()` raises immediately, so anything after it in the test body never runs. Use it when the
 decision depends on something only known at run time.
@@ -49,7 +49,7 @@ def test_also_skipped() -> None:
     assert False
 ```
 
-### Conditional Skipping
+### Conditional skipping
 
 For a condition you can evaluate at import time, `@mark.skipif` below is the direct tool. An
 inline conditional decorator also works, since a decorator may be any expression:
@@ -80,7 +80,7 @@ def test_expensive_operation() -> None:
     pass
 ```
 
-## Standard Pytest Marks
+## Standard Pytest marks
 
 ### @mark.skipif
 
@@ -272,7 +272,7 @@ class TestDatabaseOperations:
 This is what you want when a fixture has side effects but no return value, when a whole class
 needs the same setup, or when the fixture's name would collide with a parameter name.
 
-## Custom Marks
+## Custom marks
 
 Any attribute on `mark` becomes a mark. Nothing needs registering first: rustest does not read
 the `markers` ini option and emits no unknown-mark warning, and `--strict-markers` is accepted
@@ -296,7 +296,7 @@ def test_long_running_process() -> None:
     pass
 ```
 
-### Multiple Marks
+### Multiple marks
 
 ```python
 from rustest import mark
@@ -309,7 +309,7 @@ def test_full_workflow() -> None:
     pass
 ```
 
-## Marks with Arguments
+## Marks with arguments
 
 A mark called with arguments carries them, and `-m` can filter on the keyword ones.
 
@@ -334,9 +334,9 @@ Rustest records these arguments and matches on them. It does not act on them: `@
 above is a label, not an enforced limit. For a real per-test timeout on an async test, use
 `@mark.asyncio(timeout=...)`.
 
-## Common Mark Patterns
+## Common mark patterns
 
-### Speed Categories
+### Speed categories
 
 ```python
 from rustest import mark
@@ -351,7 +351,7 @@ def test_expensive_computation() -> None:
     assert result > 0
 ```
 
-### Test Levels
+### Test levels
 
 ```python
 from rustest import mark
@@ -372,7 +372,7 @@ def test_end_to_end_workflow() -> None:
     pass
 ```
 
-### Environment-Specific Tests
+### Environment-specific tests
 
 ```python
 from rustest import mark
@@ -390,7 +390,7 @@ def test_production_behavior() -> None:
     pass
 ```
 
-### Priority Levels
+### Priority levels
 
 ```python
 from rustest import mark
@@ -411,7 +411,7 @@ def test_bug_fix() -> None:
     pass
 ```
 
-## Marks on Test Classes
+## Marks on test classes
 
 A mark on a class applies to every test in it.
 
@@ -449,7 +449,7 @@ class TestAPI:
         pass
 ```
 
-## Marks with Parametrization
+## Marks with parametrization
 
 ```python
 from rustest import parametrize, mark
@@ -467,7 +467,7 @@ def test_square(value: int, expected: int) -> None:
 `param(..., marks=...)` marks a single case rather than the whole function, so one
 parametrized case can be xfailed while its siblings run normally.
 
-## Filtering Tests by Marks
+## Filtering tests by marks
 
 `-m` takes a boolean expression over mark names. Rustest ports pytest's expression grammar,
 including its error messages and their 1-based column numbers, so a bad expression exits 4 with
@@ -476,7 +476,7 @@ the wording you would grep for under pytest.
 Deselection happens after collection and before anything runs. A file that fails to import is
 still a collection error and still exits 2, however aggressively `-m` deselects.
 
-### Basic Mark Filtering
+### Basic mark filtering
 
 <!--rustest.mark.skip-->
 ```bash
@@ -503,7 +503,7 @@ rustest -m "not slow"
 rustest -m "not integration"
 ```
 
-### Boolean Expressions
+### Boolean expressions
 
 `and` binds tighter than `or`, and `not` tighter than both.
 
@@ -519,7 +519,7 @@ rustest -m "slow or integration"
 rustest -m "slow and not integration"
 ```
 
-### Complex Expressions
+### Complex expressions
 
 <!--rustest.mark.skip-->
 ```bash
@@ -530,7 +530,7 @@ rustest -m "(slow or fast) and not integration"
 rustest -m "(critical or smoke) and not slow"
 ```
 
-### Matching a Mark's Arguments
+### Matching a mark's arguments
 
 A name followed by parentheses constrains the mark's keyword arguments. At least one mark of
 that name has to satisfy every constraint given. Values may be quoted strings, integers,
@@ -545,7 +545,7 @@ rustest -m "net(scope='wide')"
 rustest -m "net(scope='wide', retries=3)"
 ```
 
-### Combining with Pattern Matching
+### Combining with pattern matching
 
 `-k` matches a case-insensitive substring against the test's node names: each directory in its
 path, the file name (with the `.py`), each enclosing class, the function name plus any
@@ -567,7 +567,7 @@ Two emptiness rules differ, which is pytest's asymmetry and worth knowing before
 you: `-k "   "` filters nothing and selects everything, while `-m "   "` compiles to the empty
 expression and deselects everything. Only `-m ""` skips mark filtering.
 
-### Common Filtering Patterns
+### Common filtering patterns
 
 <!--rustest.mark.skip-->
 ```bash
@@ -587,7 +587,7 @@ rustest -m "critical or smoke"
 rustest -m "slow or integration"
 ```
 
-## Keeping a Mark Registry
+## Keeping a mark registry
 
 Since rustest requires no registration, a module docstring is a decent place to record what
 each mark in the project is supposed to mean.
@@ -618,9 +618,9 @@ def test_calculation():
     assert 2 + 2 == 4
 ```
 
-## Best Practices
+## Best practices
 
-### Use Consistent Mark Names
+### Use consistent mark names
 
 Since `-m` matches exactly, a typo is a mark nobody will ever select, and rustest will not warn
 you about it. Pick one spelling convention.
@@ -652,7 +652,7 @@ Avoid these inconsistent styles:
 @mark.end2end       # Inconsistent - abbreviated differently
 ```
 
-### Document Custom Marks
+### Document custom marks
 
 A custom mark carries no behaviour of its own, so its meaning has to live in prose or in
 whatever runs your CI.
@@ -673,7 +673,7 @@ def test_external_api():
 Rustest does not retry anything on its own. The mark above records an intent for a wrapper
 script or a CI job to act on.
 
-### Don't Overuse Marks
+### Don't overuse marks
 
 ```python
 from rustest import mark
@@ -695,7 +695,7 @@ def test_database_migration():
     pass
 ```
 
-### Combine with Test Organization
+### Combine with test organization
 
 Directory layout and marks answer different questions. The directory says where a test lives;
 the mark says what a CI job should do with it.
@@ -712,7 +712,7 @@ tests/
     └── test_workflows.py
 ```
 
-## skip() Versus @mark.skip
+## skip() versus @mark.skip
 
 `skip()` decides at run time and `@mark.skip` at import time. That is the whole distinction.
 
@@ -735,7 +735,7 @@ def test_b() -> None:
 Use `skip()` when the answer depends on the machine the tests are running on, and `@mark.skip`
 when you already know at import that the test should not run.
 
-## Next Steps
+## Next steps
 
 - [Test Classes](test-classes.md) - Use marks with test classes
 - [CLI Usage](cli.md) - Filter tests using the command line

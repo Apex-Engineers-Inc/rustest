@@ -1,8 +1,8 @@
-# Your First Test in 5 Minutes
+# Your first test in 5 minutes
 
 Zero to passing tests, in about the time it takes to make coffee.
 
-## Step 1: Install rustest
+## Step 1: install rustest
 
 With pip:
 
@@ -16,7 +16,7 @@ With uv:
 uv add "rustest==1.0.0rc1"
 ```
 
-## Step 2: Create a test file
+## Step 2: create a test file
 
 Create a new file called `test_math.py`:
 
@@ -32,23 +32,15 @@ Three things make that a test rustest will find and run:
 - **Function name**: `test_addition()`. Test functions start with `test_`
 - **assert**: this checks that something is true. If `result == 4`, the test passes. If not, it fails
 
-## Step 3: Run your test
+## Step 3: run your test
 
-In your terminal, run:
+In your terminal, run `rustest`:
 
-```bash
-rustest
-```
-
-You should see:
-
-```
-1 passed in 0.40s
-```
+{{< termshow file="first-test-pass" autoplay="false" loop="false" >}}
 
 You just wrote and ran your first automated test.
 
-## Understanding What Happened
+## Understanding what happened
 
 When you ran `rustest`, it:
 
@@ -62,7 +54,7 @@ A green run is deliberately boring: no ticks, no progress bar, just the count an
 it took. Everything rustest has to say about a run appears *above* that line, so when the
 summary is the only output, there was nothing to say.
 
-## Step 4: See a failing test
+## Step 4: see a failing test
 
 Break the test on purpose:
 
@@ -75,19 +67,7 @@ def test_addition():
 
 Run `rustest` again:
 
-```
-================================== FAILURES ===================================
-________________________________ test_addition ________________________________
-Traceback (most recent call last):
-  File "/path/to/test_math.py", line 3, in test_addition
-    assert result == 5  # This is wrong on purpose!
-    ^^^^^^^^^^^^^^^^^^
-AssertionError: assert 4 == 5
-=========================== short test summary info ===========================
-FAILED test_math.py::test_addition
-
-1 failed in 0.35s
-```
+{{< termshow file="first-test-fail" autoplay="false" loop="false" >}}
 
 Rustest shows you:
 
@@ -98,12 +78,13 @@ Rustest shows you:
 - **A copyable list**: `short test summary info` repeats every failure's node id at the
   bottom, so a long red run ends with the roll-call rather than making you scroll
 
-!!! tip "Re-running just the failures"
-    Use `--lf` (last-failed) to re-run only what went red. Pasting the node id back as a
-    path argument does *not* narrow the run, as [the CLI guide](cli.md) explains, but `--lf`
-    does, and it needs no copying.
+::: {.callout-tip title="Re-running just the failures"}
+Use `--lf` (last-failed) to re-run only what went red. Pasting the node id back as a
+path argument does *not* narrow the run, as [the CLI guide](cli.md) explains, but `--lf`
+does, and it needs no copying.
+:::
 
-## Step 5: Test something real
+## Step 5: test something real
 
 Two-plus-two is a warm-up. Create a file called `calculator.py`:
 
@@ -134,23 +115,13 @@ def test_multiply():
     assert result == 20
 ```
 
-Run `rustest`:
+Run `rustest`, then add `-v` to see the names:
 
-```
-3 passed in 0.33s
-```
+{{< termshow file="first-test-real" autoplay="false" loop="false" >}}
 
-Three passing tests against real code. To see their names, add `-v`:
+Three passing tests against real code.
 
-```
-test_calculator.py::test_add_positive_numbers PASSED                    [ 33%]
-test_calculator.py::test_add_negative_numbers PASSED                    [ 66%]
-test_calculator.py::test_multiply PASSED                                [100%]
-
-3 passed in 0.33s
-```
-
-## Step 6: Add more assertions
+## Step 6: add more assertions
 
 You can have multiple assertions in one test:
 
@@ -167,7 +138,7 @@ def test_string_operations():
 
 All four assertions must pass for the test to succeed.
 
-## Common Patterns
+## Common patterns
 
 ### Testing for expected errors
 
@@ -223,7 +194,7 @@ def test_add_negative_numbers():
 
 Later, you'll learn about **parametrization**, which collapses all three into one.
 
-## Organizing Your Tests
+## Organizing your tests
 
 As you write more tests, organize them in a `tests/` directory:
 
@@ -238,7 +209,7 @@ my_project/
 
 Rustest will automatically find all `test_*.py` files in the `tests/` directory.
 
-## Running Specific Tests
+## Running specific tests
 
 You don't have to run all tests every time:
 
@@ -256,7 +227,7 @@ rustest -k "add"  # Runs test_add_positive_numbers and test_add_negative_numbers
 rustest -v
 ```
 
-## What You've Learned
+## What you've learned
 
 In just 5 minutes, you:
 
@@ -267,7 +238,7 @@ In just 5 minutes, you:
 - Learned common testing patterns
 - Organized tests properly
 
-## What's Next?
+## What's next?
 
 The fundamentals behind what you just did:
 

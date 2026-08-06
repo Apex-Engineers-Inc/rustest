@@ -1,4 +1,4 @@
-# Async Testing
+# Async testing
 
 Rustest runs `async def` tests natively. There is no plugin to install and nothing to enable:
 the engine ports pytest-asyncio's model directly, including loop scopes, the
@@ -8,7 +8,7 @@ equivalent for, `timeout`.
 
 Only asyncio is supported. anyio, trio, tornasync and twisted have no equivalent handling.
 
-## What is Async? (For Beginners)
+## What is Async? (for beginners)
 
 If you're new to async programming, here's a simple explanation:
 
@@ -37,7 +37,7 @@ Within one test, `await` lets several slow operations overlap instead of running
 another. Between tests, see [Concurrency](#concurrency) below: two async tests do not overlap
 just because they are async.
 
-## Quick Start
+## Quick start
 
 Write an `async def` test. Under rustest's default `asyncio_mode` of `auto`, no marker is
 needed:
@@ -96,9 +96,9 @@ A suite already written against pytest-asyncio needs no edits. `import pytest_as
 resolves to rustest's compatibility module, so `@pytest_asyncio.fixture` and
 `@pytest.mark.asyncio` keep working in strict mode.
 
-## Basic Usage
+## Basic usage
 
-### Simple Async Test
+### Simple Async test
 
 ```python
 import asyncio
@@ -111,7 +111,7 @@ async def test_basic_async():
     assert True
 ```
 
-### Async Test with Assertions
+### Async test with assertions
 
 ```python
 import asyncio
@@ -130,7 +130,7 @@ async def test_fetch_user():
     assert user["name"] == "Alice"
 ```
 
-### Multiple Await Statements
+### Multiple await statements
 
 ```python
 import asyncio
@@ -152,7 +152,7 @@ async def test_multiple_operations():
     assert result2 == 9
 ```
 
-## Loop Scopes
+## Loop scopes
 
 `loop_scope` controls how long the event loop your test runs on lives. Tests that name the same
 scope run on the same loop; a narrower scope means a fresh loop more often. The four values are
@@ -163,7 +163,7 @@ sets one.
 `scope=` is accepted as pytest-asyncio's deprecated spelling of `loop_scope=`. Passing both on
 one marker is an error.
 
-### Function Scope (Default)
+### Function scope (default)
 
 Each test gets its own fresh event loop:
 
@@ -177,7 +177,7 @@ async def test_with_function_loop():
     await asyncio.sleep(0.1)
 ```
 
-### Module Scope
+### Module scope
 
 All tests in the module share the same event loop:
 
@@ -196,7 +196,7 @@ async def test_two():
     await asyncio.sleep(0.1)
 ```
 
-### Class Scope
+### Class scope
 
 All async methods in a class share the same event loop:
 
@@ -225,7 +225,7 @@ class TestAsyncAPI:
         assert user["name"] == "Bob"
 ```
 
-### Session Scope
+### Session scope
 
 All tests in the entire test session share one event loop:
 
@@ -242,13 +242,14 @@ async def test_session_scoped():
     await setup_database()
 ```
 
-!!! note "Session scope is per worker process"
-    Rustest distributes test files across a pool of worker processes, so a session-scoped
-    loop is created once per worker, not once per run. This is the same boundary
-    pytest-xdist gives session-scoped fixtures. Run with `-n 1` if a suite needs one loop
-    for the whole run.
+::: {.callout-note title="Session scope is per worker process"}
+Rustest distributes test files across a pool of worker processes, so a session-scoped
+loop is created once per worker, not once per run. This is the same boundary
+pytest-xdist gives session-scoped fixtures. Run with `-n 1` if a suite needs one loop
+for the whole run.
+:::
 
-## Async Fixtures
+## Async fixtures
 
 An `async def` fixture is awaited before the test that requests it, and an async generator
 fixture yields its value and is resumed for teardown:
@@ -269,25 +270,26 @@ async def test_uses_async_fixture(async_client):
     assert async_client["open"] is True
 ```
 
-!!! warning "In strict mode, async fixtures need `@pytest_asyncio.fixture`"
-    Under `asyncio_mode = "strict"`, an `async def` fixture declared with a plain `@fixture`
-    is **not awaited**. The test receives the coroutine object itself, and Python reports
-    `RuntimeWarning: coroutine 'name' was never awaited`. This is pytest-asyncio's rule, and
-    rustest reproduces it: the flag that marks a fixture as async-aware is set only by
-    `pytest_asyncio.fixture`.
+::: {.callout-warning title="In strict mode, async fixtures need `@pytest_asyncio.fixture`"}
+Under `asyncio_mode = "strict"`, an `async def` fixture declared with a plain `@fixture`
+is **not awaited**. The test receives the coroutine object itself, and Python reports
+`RuntimeWarning: coroutine 'name' was never awaited`. This is pytest-asyncio's rule, and
+rustest reproduces it: the flag that marks a fixture as async-aware is set only by
+`pytest_asyncio.fixture`.
 
-    ```python
-    import asyncio
-    import pytest_asyncio
+```python
+import asyncio
+import pytest_asyncio
 
-    @pytest_asyncio.fixture
-    async def client():
-        await asyncio.sleep(0)
-        return {"open": True}
-    ```
+@pytest_asyncio.fixture
+async def client():
+    await asyncio.sleep(0)
+    return {"open": True}
+```
 
-    Under the default `auto` mode, a plain `@fixture` on an `async def` is awaited normally
-    and needs no change.
+Under the default `auto` mode, a plain `@fixture` on an `async def` is awaited normally
+and needs no change.
+:::
 
 An async fixture's loop scope resolves in three steps: an explicit `loop_scope` on the fixture,
 then `asyncio_default_fixture_loop_scope`, then the fixture's own caching scope. That last
@@ -326,13 +328,13 @@ def event_loop_policy():
     return asyncio.DefaultEventLoopPolicy()
 ```
 
-## Built-in Timeout Support
+## Built-in timeout support
 
 `@mark.asyncio(timeout=...)` fails a test that runs too long. pytest-asyncio has no timeout
 keyword, so the equivalent there is a `pytest-timeout` dependency or a hand-written
 `asyncio.wait_for()` around the slow call.
 
-### Basic Timeout
+### Basic timeout
 
 Add a timeout to any async test with the `timeout` parameter:
 
@@ -358,13 +360,13 @@ cancelled rather than left running. It fails with:
 Test timed out after 5.0 seconds
 ```
 
-### Why Built-in Timeouts Matter
+### Why built-in timeouts matter
 
 A bug in async code can wait forever, and an untimed test that hangs takes the whole run with
 it, in CI as well as locally. A timeout also turns a performance regression into a test
 failure: an operation that should take 100ms and now takes 10 seconds reports itself.
 
-### Timeout with Loop Scope
+### Timeout with loop scope
 
 Combine timeout with loop scopes for maximum control:
 
@@ -385,7 +387,7 @@ async def test_database_query():
     assert len(results) > 0
 ```
 
-### Class-Level Timeout
+### Class-level timeout
 
 Apply timeout to all methods in a test class:
 
@@ -412,7 +414,7 @@ class TestSlowOperations:
         assert True
 ```
 
-### Per-Test Timeout Override
+### Per-test timeout override
 
 When using class decoration, you can override the timeout for specific methods:
 
@@ -440,7 +442,7 @@ class TestMixedTimeouts:
         await very_slow_operation()
 ```
 
-### Timeout Gotchas
+### Timeout gotchas
 
 **1. Timeout only applies to async tests**
 
@@ -561,7 +563,7 @@ async def test_concurrent_operations():
     assert all(user["id"] for user in results)
 ```
 
-## Advanced Patterns
+## Advanced patterns
 
 ### Using create_task
 
@@ -589,7 +591,7 @@ async def test_with_tasks():
     assert result2 is not None
 ```
 
-### Async Context Managers
+### Async context managers
 
 ```python
 import asyncio
@@ -611,7 +613,7 @@ async def test_async_context_manager():
         assert user is not None
 ```
 
-### Async Generators
+### Async generators
 
 An `async def` function that consumes an async generator is an ordinary async test:
 
@@ -636,7 +638,7 @@ A test function that is *itself* an async generator, meaning `async def` with a 
 its own body, is reported as xfail rather than run. There is no way to assert against something
 that yields instead of returning, and pytest-asyncio makes the same call.
 
-### Timeouts (Manual vs Built-in)
+### Timeouts (manual vs built-in)
 
 `@mark.asyncio(timeout=...)` bounds the whole test (see [Built-in Timeout
 Support](#built-in-timeout-support) above). `asyncio.wait_for()` inside the body bounds one
@@ -688,9 +690,9 @@ async def test_timeout_error():
         )
 ```
 
-## Combining with Other Features
+## Combining with other features
 
-### With Fixtures
+### With fixtures
 
 Async tests work with synchronous fixtures as well as async ones:
 
@@ -714,7 +716,7 @@ async def test_with_fixture(api_key: str):
     assert result["status"] == "success"
 ```
 
-### With Parametrization
+### With parametrization
 
 ```python
 import asyncio
@@ -737,7 +739,7 @@ async def test_parametrized_async(user_id: int, expected_name: str):
     assert user["name"] == expected_name
 ```
 
-### With Other Marks
+### With other marks
 
 ```python
 import asyncio
@@ -756,7 +758,7 @@ async def test_full_workflow():
     assert result["success"] is True
 ```
 
-### With Exception Assertions
+### With exception assertions
 
 ```python
 import asyncio
@@ -775,7 +777,7 @@ async def test_async_exception():
         await process_data(None)
 ```
 
-## Test Classes
+## Test classes
 
 You can apply `@mark.asyncio` to entire test classes:
 
@@ -824,7 +826,7 @@ class TestAsyncDatabase:
         assert not db.is_connected()
 ```
 
-### Mixed Sync and Async Tests
+### Mixed sync and Async tests
 
 You can mix sync and async tests in the same class:
 
@@ -853,7 +855,7 @@ class TestMixed:
         assert result == 4
 ```
 
-## Exception Handling
+## Exception handling
 
 Exceptions raised in async tests are properly propagated:
 
@@ -894,9 +896,9 @@ async def test_expected_exception():
         await validate_data(invalid_data)
 ```
 
-## Performance Considerations
+## Performance considerations
 
-### Loop Overhead
+### Loop overhead
 
 Creating a new event loop for each test (function scope) has some overhead. For test suites with many small async tests, consider using broader scopes:
 
@@ -995,9 +997,9 @@ async def test_with_timeout():
 | `asyncio_debug` ini option | Supported | Not read |
 | pytest hooks in `conftest.py` | Run | Not run; rustest has no hook system |
 
-## Common Patterns
+## Common patterns
 
-### Shared Async Resources
+### Shared Async resources
 
 Use module or class-scoped loops for shared async resources:
 
@@ -1027,7 +1029,7 @@ async def test_with_shared_pool():
         assert result is not None
 ```
 
-## Best Practices
+## Best practices
 
 1. **Always use timeouts**: Add `timeout=X` to every async test to prevent hanging tests in CI:
    <!--rustest.mark.skip-->
@@ -1064,7 +1066,7 @@ async def test_with_shared_pool():
   closed later than pytest-asyncio would close it.
 - Only asyncio is handled. anyio, trio, tornasync and twisted have no support.
 
-## Next Steps
+## Next steps
 
 - [Async event loops](async-event-loops.md) - Loop scope configuration and troubleshooting
 - [Marks & Skipping](marks.md) - Learn more about marks

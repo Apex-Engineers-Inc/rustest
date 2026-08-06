@@ -84,8 +84,8 @@ This is not the same feature it used to be. Two changes, both breaking:
 **It is off by default.** Naming a `.md` file used to collect its python fences
 unconditionally; now nothing collects until `--codeblocks`, `[tool.rustest] codeblocks =
 true`, or the pytest ini section's `codeblocks = true` turns it on. Without one of those,
-naming a `.md` file is a usage error, exit 4, `found no collectors for <path>` — pytest's
-own answer for the same argument.
+naming a `.md` file is a usage error, exit 4, `found no collectors for <path>`, which is
+pytest's own answer for the same argument.
 
 ```bash
 rustest README.md user_guide/*.md               # exit 4 unless something enables it
@@ -95,13 +95,13 @@ rustest tests/                                   # a directory never picks up .m
 
 **A block's `def test_*` functions really run now, each as its own node.** The old mechanism
 indented a block into `def run_codeblock(): <body>` and called the wrapper, so any test
-function the block defined was a local of that wrapper — defined, never called, its
+function the block defined was a local of that wrapper: defined, never called, its
 assertions never checked. A block now execs at module level, at collect time, and is
 enumerated the same way a `.py` file is: a `def test_*` inside it collects and runs as its
 own node, `page.md::codeblock_N_line_M::test_name`, and fixtures, `@parametrize`, `Test*`
 classes and xunit hooks all work inside it. This surfaced 109 previously invisible failures
-on this repository's own docs — the feature doing its job, not a regression, but real work
-if your own markdown relies on the tier.
+on this repository's own docs. That is the feature doing its job rather than a regression,
+but it is real work if your own markdown relies on the tier.
 
 Everything that follows from real execution is a further breaking change in its own right:
 node ids for a block with tests gain a segment, a broken block is now a failing *test*
@@ -109,14 +109,14 @@ rather than a file-level collection error (exit 1, not 2), a stale `--lf` entry 
 single-node id will not match, an autouse fixture no longer reaches a block's top-level
 statements (only the tests inside it) because the body now runs before any fixture closure
 exists, deselecting a block with `-k`/`-m`/`--lf` no longer stops its body from running
-(collect-time execution again — the same as a `.py` module's top-level code), and a block's
+(collect-time execution again, the same as a `.py` module's top-level code), and a block's
 own top-level output is no longer captured or attached to its node. See the Changelog's
 "documentation code block execution" entry for the full nine-item list, and
 [Markdown testing](markdown-testing.md) for the mechanism itself.
 
 ## Not a change, but the thing most likely to catch you out
 
-This is not new in this release — it has always been true — but it is the one difference
+This is not new in this release, and it has always been true, but it is the one difference
 that fails *silently*, so it belongs next to the breaking changes rather than buried in a
 gap table.
 
@@ -125,7 +125,7 @@ after `::` in a path argument:
 
 ```bash
 rustest tests/test_math.py::test_add    # runs EVERY test in test_math.py
-rustest tests/test_math.py::test_gone   # also runs every test — pytest says "collected 0 items"
+rustest tests/test_math.py::test_gone   # also runs every test; pytest says "collected 0 items"
 ```
 
 Pasting a node id back as a path is pytest muscle memory, and rustest hands you the ids that

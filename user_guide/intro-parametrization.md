@@ -1,8 +1,8 @@
-# Testing Multiple Cases with Parametrization
+# Testing multiple cases with parametrization
 
 Often you want to test the same logic with different inputs. Parametrization lets you do this efficiently without writing repetitive tests.
 
-## The Problem: Repetitive Tests
+## The problem: repetitive tests
 
 Imagine testing an `add()` function:
 
@@ -28,7 +28,7 @@ def test_add_with_zero():
 
 Five function definitions for one behavior. The only thing that changes is the numbers.
 
-## The Solution: Parametrization
+## The solution: parametrization
 
 **Parametrization** lets you run the same test with different inputs:
 
@@ -52,7 +52,7 @@ def test_add(a, b, expected):
 
 **This one test runs 5 times** with different inputs.
 
-## How It Works
+## How it works
 
 ```python
 from rustest import parametrize
@@ -98,9 +98,9 @@ test_add.py::test_add[10-20-30] PASSED                                  [100%]
 
 If one set fails, only that set goes red. The others still run and still report.
 
-## Real-World Examples
+## Real-world examples
 
-### Testing Email Validation
+### Testing email validation
 
 ```python
 import re
@@ -127,7 +127,7 @@ def test_invalid_emails(email):
     assert is_valid_email(email) is False
 ```
 
-### Testing Password Strength
+### Testing password strength
 
 ```python
 from rustest import parametrize
@@ -152,7 +152,7 @@ def test_password_strength(password, expected_strength):
     assert strength == expected_strength
 ```
 
-### Testing Edge Cases
+### Testing edge cases
 
 ```python
 from rustest import parametrize
@@ -172,7 +172,7 @@ def test_sum_list(input, expected):
     assert result == expected
 ```
 
-## Parametrize Multiple Parameters
+## Parametrize multiple parameters
 
 Test combinations of inputs:
 
@@ -197,7 +197,7 @@ def test_rectangle_area(width, height, expected_area):
     assert rect.area() == expected_area
 ```
 
-## Testing for Errors
+## Testing for errors
 
 Parametrize expected errors too:
 
@@ -214,7 +214,7 @@ def test_division_by_zero(dividend, divisor):
         result = dividend / divisor
 ```
 
-## Making Tests Easier to Read
+## Making tests easier to read
 
 Values make serviceable ids, but names make better ones. Pass `ids=`:
 
@@ -244,7 +244,7 @@ test_login.py::test_login[wrong_password] PASSED                        [ 66%]
 test_login.py::test_login[unknown_user] PASSED                          [100%]
 ```
 
-## Combining Parametrization with Fixtures
+## Combining parametrization with fixtures
 
 You can use both together:
 
@@ -281,7 +281,7 @@ def test_create_user(database, name, email):
 
 The fixture runs for **each** parameter set.
 
-## When to Use Parametrization
+## When to use parametrization
 
 Use parametrization when you:
 
@@ -294,9 +294,9 @@ Skip it when:
 - Tests have different logic (use separate tests)
 - You're only testing one or two cases (regular tests are simpler)
 
-## Common Patterns
+## Common patterns
 
-### Testing String Transformations
+### Testing string transformations
 
 ```python
 from rustest import parametrize
@@ -314,7 +314,7 @@ def test_to_uppercase(input, expected):
     assert to_uppercase(input) == expected
 ```
 
-### Testing Number Ranges
+### Testing number ranges
 
 ```python
 from rustest import parametrize
@@ -331,7 +331,7 @@ def test_invalid_ages(age):
     assert is_valid_age(age) is False
 ```
 
-### Testing Different Data Structures
+### Testing different data structures
 
 ```python
 from rustest import parametrize
@@ -345,7 +345,7 @@ def test_sum_iterables(data):
     assert sum(data) == 6
 ```
 
-## Debugging Parametrized Tests
+## Debugging parametrized tests
 
 When a parametrized test fails, rustest shows you which case failed:
 
@@ -372,7 +372,7 @@ To re-run just that case while you fix it, select it with `-k`:
 rustest test_math.py -k "5-3-7"
 ```
 
-## What's Next?
+## What's next?
 
 Structure a suite that has grown past a single file:
 

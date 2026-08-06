@@ -1,4 +1,4 @@
-# CLI Usage
+# CLI usage
 
 `rustest <paths>` is the whole invocation. There is one engine and the pytest
 compatibility shim is always installed, so `import pytest` resolves to rustest's own
@@ -14,7 +14,7 @@ that used to exist are gone and now **exit 4** with a message naming the change:
 distinguished something. Neither reached a release, so neither is listed above as a
 removal. Collect-only is spelled `--collect-only` (or `--co`), as in pytest.
 
-## Quick Reference
+## Quick reference
 
 ```bash
 rustest --help
@@ -94,9 +94,9 @@ options:
                         None of the other options apply.
 ```
 
-## Basic Commands
+## Basic commands
 
-### Running All Tests
+### Running all tests
 
 ```bash
 # Run all tests in current directory
@@ -109,11 +109,11 @@ rustest tests/
 rustest tests/ integration/ e2e/
 ```
 
-### Test Discovery and Directory Exclusion
+### Test discovery and directory exclusion
 
 Rustest discovers test files matching `test_*.py` and `*_test.py`, and skips the directories pytest skips. Both lists are pytest's own ini defaults, `python_files` and `norecursedirs`, so a tree collects the same files under either runner.
 
-#### Automatically Excluded Directories
+#### Automatically excluded directories
 
 The following directories are excluded from test discovery to prevent running tests from dependencies:
 
@@ -138,7 +138,7 @@ The following directories are excluded from test discovery to prevent running te
 - `node_modules` - Node.js dependencies
 - `__pycache__` - pruned unconditionally, ahead of the list above, exactly as pytest prunes it
 
-#### Why This Matters
+#### Why this matters
 
 When you run `rustest` without specifying a path, it searches the current directory for tests. Without directory exclusion, rustest would discover and run tests from your virtual environment's site-packages, which can be slow and produce confusing results:
 
@@ -150,7 +150,7 @@ rustest  # Would find thousands of tests in venv/lib/python3.11/site-packages/
 rustest  # Only finds your project's tests
 ```
 
-#### Customizing Test Discovery
+#### Customizing test discovery
 
 If you need to test specific directories that would normally be excluded, explicitly specify them:
 
@@ -162,12 +162,13 @@ rustest .venv/custom_tests/
 rustest build/generated_tests/test_*.py
 ```
 
-!!! tip "Pytest Compatibility"
-    The list is pytest's default `norecursedirs`, plus the two prunes pytest applies
-    unconditionally: `__pycache__`, and any directory that looks like a virtualenv root.
-    An explicit path argument bypasses all of it, which is why the examples above work.
+::: {.callout-tip title="Pytest Compatibility"}
+The list is pytest's default `norecursedirs`, plus the two prunes pytest applies
+unconditionally: `__pycache__`, and any directory that looks like a virtualenv root.
+An explicit path argument bypasses all of it, which is why the examples above work.
+:::
 
-### Running Specific Files
+### Running specific files
 
 ```bash
 # Run a single test file
@@ -184,21 +185,22 @@ rustest README.md user_guide/*.md --codeblocks
 Markdown has to be **named**, as it is above. A directory argument collects no `.md` at
 all, because pytest walking the same tree collects none either.
 
-!!! warning "A `path::node::id` argument selects the file, not the node"
-    Copying a node id out of a failure report and pasting it back as a path is pytest
-    muscle memory, and it does not work here. Rustest ignores everything after `::` in a
-    path argument, so `rustest test_mixed.py::test_a` runs **every** test in
-    `test_mixed.py`. A node id that no longer exists behaves the same way, where pytest
-    would answer `no tests ran`. A CI line aimed at one test can therefore go red for a
-    neighbour, or green for a test that has been deleted.
+::: {.callout-warning title="A `path::node::id` argument selects the file, not the node"}
+Copying a node id out of a failure report and pasting it back as a path is pytest
+muscle memory, and it does not work here. Rustest ignores everything after `::` in a
+path argument, so `rustest test_mixed.py::test_a` runs **every** test in
+`test_mixed.py`. A node id that no longer exists behaves the same way, where pytest
+would answer `no tests ran`. A CI line aimed at one test can therefore go red for a
+neighbour, or green for a test that has been deleted.
 
-    Select with `-k` instead, which does understand the parametrized id:
-    `rustest test_mixed.py -k "test_a"`. The node ids rustest prints are byte-identical to
-    pytest's; it is only selection *by* them that is missing.
+Select with `-k` instead, which does understand the parametrized id:
+`rustest test_mixed.py -k "test_a"`. The node ids rustest prints are byte-identical to
+pytest's; it is only selection *by* them that is missing.
+:::
 
-## Filtering Tests
+## Filtering tests
 
-### Pattern Matching (-k)
+### Pattern matching (-k)
 
 Filter tests by name pattern:
 
@@ -251,9 +253,9 @@ rustest -k "not slow"
 rustest -k "user and critical"
 ```
 
-## Test Workflow Options
+## Test workflow options
 
-### Last Failed Tests (--lf)
+### Last failed tests (--lf)
 
 Rerun only tests that failed in the previous run. This is helpful for quickly iterating on fixes:
 
@@ -306,17 +308,18 @@ The word to watch is **deselected**: the other three were not run, not skipped. 
 line always accounts for every collected test, so `2 + 3` still adds up to the 5 that were
 found.
 
-!!! tip "Cache Location"
-    Failed test information is stored in `.rustest_cache/v/cache/lastfailed`, created
-    and updated after every run. The path inside `.rustest_cache/` is pytest's own
-    cache-value layout, and the document is pytest's `{nodeid: true}` map, so the `cache`
-    fixture reads the same file: `cache.get("cache/lastfailed", {})`.
+::: {.callout-tip title="Cache Location"}
+Failed test information is stored in `.rustest_cache/v/cache/lastfailed`, created
+and updated after every run. The path inside `.rustest_cache/` is pytest's own
+cache-value layout, and the document is pytest's `{nodeid: true}` map, so the `cache`
+fixture reads the same file: `cache.get("cache/lastfailed", {})`.
 
-    Entries for tests that did not run this time are kept, which is what makes a `--lf`
-    loop converge. Run the 3 failures, fix 1, and the next `--lf` still knows about the
-    other 2. A test that passes or skips loses its entry.
+Entries for tests that did not run this time are kept, which is what makes a `--lf`
+loop converge. Run the 3 failures, fix 1, and the next `--lf` still knows about the
+other 2. A test that passes or skips loses its entry.
+:::
 
-### Failed First (--ff)
+### Failed first (--ff)
 
 Run previously failed tests first, then continue with all other tests. This helps you see failures quickly while still running the full suite:
 
@@ -343,7 +346,7 @@ test_workflow.py::test_passing_3 PASSED                                 [100%]
 first and second. That is `--ff`. Nothing is deselected here, so the counts match a plain
 run; only the order changed.
 
-### Fail Fast (-x)
+### Fail fast (-x)
 
 Stop execution immediately after the first test failure. Useful for quick feedback during development:
 
@@ -364,7 +367,7 @@ stopping after 1 failures (-x)
 Three tests ran instead of five, and `stopping after 1 failures (-x)` says why. The counts
 only ever describe what actually ran.
 
-### Combining Workflow Options
+### Combining workflow options
 
 Combine `--ff` and `-x` to run failed tests first and stop on first failure:
 
@@ -386,7 +389,7 @@ One test ran: `--ff` put a known failure first and `-x` stopped there. This is t
 loop available for iterating on a fix, and unlike pasting a node id back as a path
 argument, it actually narrows the run.
 
-### Workflow Use Cases
+### Workflow use cases
 
 ```bash
 # Quick fix iteration - run only what failed
@@ -406,12 +409,13 @@ rustest -k "database" --lf      # Only failed database tests
 rustest -k "integration" -x     # Stop on first integration test failure
 ```
 
-!!! tip "Pytest Compatibility"
-    These options work exactly like pytest's `--lf`, `--ff`, and `-x` flags, making rustest a drop-in replacement for your existing workflow.
+::: {.callout-tip title="Pytest Compatibility"}
+These options work exactly like pytest's `--lf`, `--ff`, and `-x` flags, making rustest a drop-in replacement for your existing workflow.
+:::
 
-## Output Control
+## Output control
 
-### Collection Feedback
+### Collection feedback
 
 There isn't any, and that is deliberate. Rustest prints no spinner and no collection
 banner, because collection is fast enough (a warm collect over 5,000 tests is roughly
@@ -427,15 +431,16 @@ no tests ran in 0.02s
 echo $?    # 5, pytest's EXIT_NOTESTSCOLLECTED
 ```
 
-!!! note "Piping changes the width, and nothing else"
-    Rustest never varies its *content* by whether stdout is a terminal. There are no
-    colour codes to strip out of a CI log, no progress frames to filter, and no
-    `--no-progress` flag to remember. The one thing that does vary is the line width:
-    separator rules and the `-v` percent column are laid out against the terminal's
-    column count, and a redirected stdout has none, so they fall back to 80 columns.
-    Set `COLUMNS` if you want a redirected run to match a particular width.
+::: {.callout-note title="Piping changes the width, and nothing else"}
+Rustest never varies its *content* by whether stdout is a terminal. There are no
+colour codes to strip out of a CI log, no progress frames to filter, and no
+`--no-progress` flag to remember. The one thing that does vary is the line width:
+separator rules and the `-v` percent column are laid out against the terminal's
+column count, and a redirected stdout has none, so they fall back to 80 columns.
+Set `COLUMNS` if you want a redirected run to match a particular width.
+:::
 
-### Verbose Mode
+### Verbose mode
 
 Rustest has pytest's verbosity ladder, narrowed to three rungs:
 
@@ -478,12 +483,13 @@ test_example.py::test_broken_feature FAILED                             [100%]
 1 failed, 3 passed, 1 skipped in 0.40s
 ```
 
-!!! tip "Outcome words"
-    `PASSED`, `FAILED`, `SKIPPED (reason)`, `XFAIL`, `XPASS`, `ERROR`. These are pytest's
-    wording, so anything that greps your CI logs keeps working. Skip *reasons* appear only
-    at `-v`.
+::: {.callout-tip title="Outcome words"}
+`PASSED`, `FAILED`, `SKIPPED (reason)`, `XFAIL`, `XPASS`, `ERROR`. These are pytest's
+wording, so anything that greps your CI logs keeps working. Skip *reasons* appear only
+at `-v`.
+:::
 
-### Capture Mode
+### Capture mode
 
 By default, rustest captures stdout/stderr during tests:
 
@@ -516,7 +522,7 @@ rustest
 rustest --no-capture
 ```
 
-### Machine-Readable Output (`--llm`)
+### Machine-readable output (`--llm`)
 
 `--llm` replaces the human output with **JSONL**: one JSON object per line, a meta
 header first and a summary sentinel last. It exists for LLM coding agents and other tools
@@ -532,13 +538,13 @@ The exit code is unchanged, and `stdout` is JSONL and nothing else. See
 [LLM Output Mode](llm-output.md) for the full contract, the verbosity ladder and
 the `--lf` agent loop.
 
-## Markdown Code Block Testing
+## Markdown code block testing
 
 ### Enable/Disable
 
 Markdown code blocks are **off by default**. Naming a `.md` file with nothing enabling the
-tier is a usage error, exit 4 with `found no collectors for <path>` — pytest's own answer
-for the same argument, since pytest collects nothing from a `.md` file either. `--codeblocks`
+tier is a usage error, exit 4 with `found no collectors for <path>`. That is pytest's own
+answer for the same argument, since pytest collects nothing from a `.md` file either. `--codeblocks`
 and `--no-codeblocks` are a tri-state pair: pass one to force it on or off for a single run,
 or leave both unset and `[tool.rustest] codeblocks` (or the pytest ini section's own
 `codeblocks` key) decides:
@@ -568,9 +574,9 @@ two runners and their answers have to agree, or when config has turned the tier 
 run needs it off. See [Markdown Testing](markdown-testing.md) for the config spellings, the
 node-id shape a block with inner tests produces, and the full execution model.
 
-## Command-Line Reference
+## Command-line reference
 
-### Full Command Format
+### Full command format
 
 ```bash
 rustest [OPTIONS] [PATHS...]
@@ -628,7 +634,7 @@ flag that changes what *runs* must never be ignored quietly, so `--doctest-modul
 refused rather than swallowed. Use `-o addopts=` to run a project whose ini carries such a
 flag without editing the project.
 
-## Checking the Version
+## Checking the version
 
 ```bash
 rustest --version    # -> rustest 1.0.0rc1
@@ -642,7 +648,7 @@ this runner would otherwise refuse.
 The string is read from the installed distribution's metadata, which is the same source the
 `meta` line of [`--llm`](llm-output.md) reports, so the two cannot disagree.
 
-## Exit Codes
+## Exit codes
 
 Rustest uses pytest's exit codes:
 
@@ -685,9 +691,9 @@ else
 fi
 ```
 
-## Real-World Examples
+## Real-world examples
 
-### Development Workflow
+### Development workflow
 
 ```bash
 # Quick test during development
@@ -713,7 +719,7 @@ rustest -x                        # Continue to next failure
 rustest --ff -x                   # Run failed tests first, stop on first failure
 ```
 
-### CI/CD Pipeline
+### CI/CD pipeline
 
 ```bash
 # Run all tests
@@ -737,7 +743,7 @@ rustest --ff                      # Failed tests run first for quick feedback
 rustest -x                        # Stop on first failure to save CI time
 ```
 
-### Pre-commit Checks
+### Pre-commit checks
 
 ```bash
 # Run fast tests before commit
@@ -747,7 +753,7 @@ rustest -k "not slow and not integration"
 rustest $(git diff --name-only '*.py' | grep test_)
 ```
 
-### Documentation Testing
+### Documentation testing
 
 ```bash
 # Test README examples
@@ -765,9 +771,9 @@ The site's pages live in a flat `user_guide/` directory, so one glob reaches all
 Each block executes in its own fresh namespace, which is why every block has to import
 what it uses.
 
-## Advanced Usage
+## Advanced usage
 
-### Testing Specific Patterns
+### Testing specific patterns
 
 ```bash
 # Test only parametrized tests
@@ -783,7 +789,7 @@ rustest -k "TestUserService"
 rustest -k "TestUserService and test_create"
 ```
 
-### Combining Options
+### Combining options
 
 ```bash
 # Multiple options together
@@ -796,9 +802,9 @@ rustest integration/ -k "database" --no-codeblocks
 rustest -k "user and (create or update)" --no-capture
 ```
 
-### Using with Other Tools
+### Using with other tools
 
-#### With Coverage
+#### With coverage
 
 rustest measures line coverage itself, and writes coverage.py's own data format:
 
@@ -821,14 +827,14 @@ coverage report
 
 See [Coverage](coverage.md) for the full surface and its accuracy.
 
-#### With Timeout
+#### With timeout
 
 ```bash
 # Using timeout command (Unix/Linux)
 timeout 60 rustest  # 60 second timeout
 ```
 
-#### With Watch Tools
+#### With watch tools
 
 ```bash
 # Using entr (requires entr installed)
@@ -838,7 +844,7 @@ find . -name "*.py" | entr rustest
 watch -n 2 rustest
 ```
 
-## Module Invocation
+## Module invocation
 
 Run rustest as a Python module:
 
@@ -853,7 +859,7 @@ python -m rustest tests/ -k "user"
 python3 -m rustest
 ```
 
-## Environment Variables
+## Environment variables
 
 Rustest respects standard Python environment variables:
 
@@ -889,7 +895,7 @@ before 1.0.0. Use `RUSTEST_RUNNING` for "am I under rustest?".
 
 ## Troubleshooting
 
-### No Tests Found
+### No tests found
 
 ```bash
 # Check test discovery
@@ -902,7 +908,7 @@ rustest tests/test_*.py
 rustest .
 ```
 
-### Import Errors
+### Import errors
 
 ```bash
 # Set PYTHONPATH
@@ -912,16 +918,16 @@ PYTHONPATH=src:python rustest
 python -m rustest
 ```
 
-### See Test Output
+### See test output
 
 ```bash
 # Use --no-capture to see print statements
 rustest --no-capture
 ```
 
-## Best Practices
+## Best practices
 
-### Use Pattern Matching Effectively
+### Use pattern matching effectively
 
 ```bash
 # Good - specific patterns
@@ -934,7 +940,7 @@ rustest -k "integration and not slow"
 rustest -k "test"
 ```
 
-### Organize Tests for Easy Filtering
+### Organize tests for easy filtering
 
 ```python
 # Name tests with clear patterns
@@ -948,7 +954,7 @@ def test_slow_full_workflow():  # Can filter with -k "slow"
     pass
 ```
 
-### Use --no-capture Selectively
+### Use --no-capture selectively
 
 ```bash
 # During debugging - see all output
@@ -961,7 +967,7 @@ rustest
 rustest -k "debug" --no-capture
 ```
 
-## Next Steps
+## Next steps
 
 - [Python API](python-api.md) - Run tests programmatically
 - [Writing Tests](writing-tests.md) - Create discoverable tests

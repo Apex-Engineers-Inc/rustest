@@ -1,8 +1,8 @@
-# Making Tests Reusable with Fixtures
+# Making tests reusable with fixtures
 
 As you write more tests, you'll notice yourself copying the same setup code over and over. Fixtures solve this problem by letting you **define setup once and reuse it everywhere**.
 
-## The Problem: Repetitive Setup
+## The problem: repetitive setup
 
 Imagine you're testing a shopping cart:
 
@@ -41,7 +41,7 @@ def test_multiple_items():
 
 Every test builds its own `ShoppingCart()`. Three copies of one line today, thirty tomorrow.
 
-## The Solution: Fixtures
+## The solution: fixtures
 
 A **fixture** is a reusable piece of setup code:
 
@@ -89,7 +89,7 @@ def test_multiple_items(cart):
 
 The setup exists in one place now.
 
-## How Fixtures Work
+## How fixtures work
 
 When you run a test that uses a fixture:
 
@@ -100,7 +100,7 @@ When you run a test that uses a fixture:
 
 The parameter name is the whole wiring mechanism, which is why it has to match the fixture's name.
 
-## Fixture Benefits
+## Fixture benefits
 
 ### Less code duplication
 
@@ -171,7 +171,7 @@ def test_user_login(database, user):
     assert result.success is True
 ```
 
-## Real-World Example: Testing an API
+## Real-world example: testing an API
 
 Here is the same idea against an API client:
 
@@ -216,7 +216,7 @@ def test_delete_resource(api_client):
 
 Every test gets a fresh, authenticated API client without any setup code.
 
-## Cleanup with Yield Fixtures
+## Cleanup with yield fixtures
 
 Sometimes you need to clean up after tests (close files, disconnect from databases, and so on). Use `yield`:
 
@@ -252,11 +252,11 @@ def test_read_file(temp_file):
 
 Cleanup happens whether the test passed or failed.
 
-## Built-in Fixtures
+## Built-in fixtures
 
 Rustest provides useful fixtures out of the box. Three you'll reach for constantly:
 
-### tmp_path: Temporary Directory
+### tmp_path: temporary directory
 
 ```python
 def test_create_file(tmp_path):
@@ -271,7 +271,7 @@ def test_create_file(tmp_path):
 Each test gets its own directory, named after the test, so a failing run leaves something
 readable behind until the session finishes.
 
-### monkeypatch: Modify Things Temporarily
+### monkeypatch: modify things temporarily
 
 ```python
 import os
@@ -285,7 +285,7 @@ def test_with_env_var(monkeypatch):
     # After the test, the environment is restored!
 ```
 
-### capsys: Capture Printed Output
+### capsys: capture printed output
 
 ```python
 def test_print_message(capsys):
@@ -298,7 +298,7 @@ def test_print_message(capsys):
 There are more: `tmp_path_factory`, `tmpdir`, `tmpdir_factory`, `capfd`, `caplog`, `cache`,
 `mocker`, `pytestconfig` and `recwarn`. The [fixtures guide](fixtures.md) covers them.
 
-## Fixtures Can Use Other Fixtures
+## Fixtures can use other fixtures
 
 Fixtures can depend on other fixtures:
 
@@ -340,9 +340,9 @@ def test_user_posts(database, user):
 
 Rustest resolves the dependencies and runs the fixtures in the order they require.
 
-## Common Patterns
+## Common patterns
 
-### Fixture for Test Data
+### Fixture for test data
 
 ```python
 from rustest import fixture
@@ -373,7 +373,7 @@ def test_import_users(sample_users, database):
     assert database.count("users") == 2
 ```
 
-### Fixture for Configuration
+### Fixture for configuration
 
 ```python
 from types import SimpleNamespace
@@ -395,7 +395,7 @@ def test_app_startup(test_config):
     assert app.is_debug is True
 ```
 
-### Fixture for Mocks
+### Fixture for mocks
 
 ```python
 from rustest import fixture
@@ -423,7 +423,7 @@ def test_signup_sends_email(mock_email_service):
     assert mock_email_service[0]["subject"] == "Welcome!"
 ```
 
-## When to Use Fixtures
+## When to use fixtures
 
 Use fixtures when you:
 
@@ -437,7 +437,7 @@ Skip them when:
 - The setup is used in only one test (just put it in the test)
 - The fixture would be more confusing than helpful
 
-## What's Next?
+## What's next?
 
 Now that setup lives in one place, put the same test through many inputs:
 

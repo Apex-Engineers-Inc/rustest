@@ -3,13 +3,14 @@
 This page is the evidence behind rustest's speed numbers: what was measured, on what, under
 what conditions, and what those numbers do and do not license you to expect.
 
-!!! note "Speed is not this release's headline"
-    The rewrite behind this version was spent on compatibility, stability and reliability —
-    on agreeing with pytest well enough to be a drop-in replacement. Performance work is the
-    *next* body of work. The figures below are real and measured, but they are a report on
-    where things stand, not a pitch. Earlier versions of rustest advertised much larger
-    multipliers; those described an engine that has since been deleted, and they have been
-    removed from every page rather than quietly carried forward.
+::: {.callout-note title="Speed is not this release's headline"}
+The rewrite behind this version was spent on compatibility, stability and reliability: on
+agreeing with pytest well enough to be a drop-in replacement. Performance work is the
+*next* body of work. The figures below are real and measured, but they are a report on
+where things stand, not a pitch. Earlier versions of rustest advertised much larger
+multipliers; those described an engine that has since been deleted, and they have been
+removed from every page rather than quietly carried forward.
+:::
 
 **The short version.** On seventeen real open-source pytest suites, rustest ran between
 **1.1x and 5.7x** faster than pytest. Aggregated over all seventeen the figure is **1.23x**,
@@ -148,13 +149,14 @@ imports your modules, behind a content-addressed manifest cache. Marginal overhe
 left per test once the fixed per-run costs (spawning the worker pool, booting CPython in each
 worker) are subtracted out.
 
-!!! warning "The overhead metric is noisy on ordinary hardware"
-    The marginal-overhead figure above is the tracked gate measurement. When the benchmark
-    baselines were later regenerated on a machine carrying ordinary background load, the same
-    metric read 178µs/test, and **that move must not be read as a regression**. In the
-    investigation that followed, a byte-identical control build reported 93.6, 61.9, 37.1,
-    94.1, 16.0 and 37.0µs/test across six consecutive runs. A metric whose unchanged control
-    swings 6x cannot resolve a 40µs effect. Quote this number with that caveat, or not at all.
+::: {.callout-warning title="The overhead metric is noisy on ordinary hardware"}
+The marginal-overhead figure above is the tracked gate measurement. When the benchmark
+baselines were later regenerated on a machine carrying ordinary background load, the same
+metric read 178µs/test, and **that move must not be read as a regression**. In the
+investigation that followed, a byte-identical control build reported 93.6, 61.9, 37.1,
+94.1, 16.0 and 37.0µs/test across six consecutive runs. A metric whose unchanged control
+swings 6x cannot resolve a 40µs effect. Quote this number with that caveat, or not at all.
+:::
 
 ### Synthetic baselines
 

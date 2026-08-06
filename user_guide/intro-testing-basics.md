@@ -1,9 +1,9 @@
-# Testing Basics
+# Testing basics
 
 You have a passing test. These are the ideas underneath it: how a test is shaped, what you
 can assert, and what separates a test you'll thank yourself for from one you'll delete.
 
-## The Anatomy of a Test
+## The anatomy of a test
 
 Every test follows a simple pattern called **Arrange-Act-Assert** (AAA):
 
@@ -30,7 +30,7 @@ def test_user_signup():
 
 Three steps, in order:
 
-### 1. Arrange (Setup)
+### 1. Arrange (setup)
 
 Prepare everything you need for the test:
 
@@ -46,7 +46,7 @@ This might include:
 - Configuring mock objects
 - Preparing input values
 
-### 2. Act (Execute)
+### 2. Act (execute)
 
 Run the code you're testing:
 
@@ -58,7 +58,7 @@ user = signup(email, password)
 
 This is usually **one line**: the specific function or method you're testing.
 
-### 3. Assert (Verify)
+### 3. Assert (verify)
 
 Check that the results are correct:
 
@@ -71,10 +71,11 @@ assert user.is_active is True
 
 If all assertions pass, the test succeeds. If any fail, the test fails and shows you why.
 
-!!! tip "Keep it simple"
-    Each test should focus on **one specific behavior**. If you're testing too many things, split it into multiple tests.
+::: {.callout-tip title="Keep it simple"}
+Each test should focus on **one specific behavior**. If you're testing too many things, split it into multiple tests.
+:::
 
-## Types of Assertions
+## Types of assertions
 
 Assertions are how you verify correctness. Here are the most common patterns:
 
@@ -142,7 +143,7 @@ def test_types():
     assert type(data) is dict
 ```
 
-## Testing for Errors
+## Testing for errors
 
 Sometimes you *want* your code to raise an error. Use `raises()`:
 
@@ -182,7 +183,7 @@ The test only passes if:
 1. A `ValueError` is raised
 2. The error message contains "Invalid email format"
 
-## Numeric Comparisons with Tolerance
+## Numeric comparisons with tolerance
 
 Floating point math is imprecise. Use `approx()` for tolerant comparisons:
 
@@ -210,7 +211,7 @@ This works with:
 - Dictionaries: `approx({"x": 1.1, "y": 2.2})`
 - Complex numbers: `approx(1.1 + 2.2j)`
 
-## What Makes a Good Test?
+## What makes a good test?
 
 ### Independent
 
@@ -372,7 +373,7 @@ def test_profile_shows_user_name():
 
 When one test fails, you immediately know *what* broke.
 
-## Test Organization Strategies
+## Test organization strategies
 
 ### Group related tests
 
@@ -431,7 +432,7 @@ Think about:
 - Invalid inputs
 - Boundary conditions
 
-## Running and Filtering Tests
+## Running and filtering tests
 
 Run all tests:
 
@@ -458,7 +459,7 @@ See detailed output:
 rustest -v  # Verbose mode shows each test name
 ```
 
-## What's Next?
+## What's next?
 
 ### Make tests reusable
 

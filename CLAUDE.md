@@ -312,6 +312,11 @@ The CI workflow (`ci.yml`) runs all checks across Python 3.12-3.14. **ALL must p
 The site is built by **great-docs** (Quarto-based), configured in `great-docs.yml`. It
 replaced zensical/MkDocs; there is no `zensical.toml` and no `mkdocs.yml`.
 
+- Admonitions are **Quarto callouts**, `::: {.callout-note title="..."}` … `:::`, not
+  MkDocs' `!!! note "..."`. great-docs renders through Quarto, which does not understand the
+  `!!!` form: the marker line falls through as a paragraph and the four-space body becomes
+  an indented code block, so the admonition renders as its own markdown source. All 62 of
+  them were converted; do not write a new one in the old spelling.
 - Content: `user_guide/` — a **flat** directory of `.md` files. Flat is great-docs' design
   (it globs one level and copies by basename), which is why the six beginner pages carry
   an `intro-` prefix instead of living in a subdirectory.
@@ -328,6 +333,28 @@ replaced zensical/MkDocs; there is no `zensical.toml` and no `mkdocs.yml`.
 - `docs/` holds only `assets/` (logos, favicon). The SDD plans and specs that used to live
   in `docs/superpowers/` were removed from the tree before the 1.0.0 release; they remain in
   git history, and the path is now git-ignored so it cannot come back
+
+### Terminal recordings
+
+Pages that show what a run looks like play a **recording**, not a transcript:
+
+```markdown
+{{< termshow file="first-run" autoplay="false" loop="false" >}}
+```
+
+`demos/scenes.toml` declares each scene and `poe demos` re-records them into
+`demos/*.termshow` by running the commands for real and capturing the output with its
+arrival times. great-docs pre-renders those into SVG keyframes at build time.
+
+Pass `autoplay="false" loop="false"` on every embed. That is not "do not play": an
+IntersectionObserver in `great-docs.yml`'s `include_in_header` starts each player when the
+reader reaches it, which the shortcode's own `autoplay` cannot do (it fires at page init, so
+a five-second recording below the fold is over before anyone sees it). Looping is off
+because a terminal cycling in the corner of the eye is hostile to reading.
+`demos/README.md` has the rest.
+
+Do not hand-write a block of rustest output on a page. It goes stale silently, and the
+recorder exists so it cannot.
 
 **The docs toolchain is deliberately not in `.venv`.** great-docs pulls jupyter, which
 pulls anyio, which registers a **pytest plugin** — and the conformance gates run real
@@ -404,8 +431,9 @@ assert value == expected  # These variables don't need to exist
 ```
 ```
 
-!!! note "pytest compatibility"
-    For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+::: {.callout-note title="pytest compatibility"}
+For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+:::
 
 #### Guidelines for Documentation Code
 

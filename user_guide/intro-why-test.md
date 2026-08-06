@@ -1,9 +1,9 @@
-# Why Automated Testing?
+# Why automated testing?
 
 If you have never written a test before, start here. This page is about what automated
 testing buys you and why it is worth the effort.
 
-## The Problem: Bugs Happen
+## The problem: bugs happen
 
 When you write code, bugs will happen. The question is not whether, but when and how many.
 
@@ -15,7 +15,7 @@ Maybe you:
 
 **This is normal.** Even experienced developers make mistakes. The question is: how do you catch them?
 
-## The Old Way: Manual Testing
+## The old way: manual testing
 
 The traditional approach is manual testing:
 
@@ -33,7 +33,7 @@ This works, but it has problems:
 - **It doesn't scale.** As your code grows, manual testing becomes impossible
 - **It's not repeatable.** Six months later, will you remember all the edge cases?
 
-## The Better Way: Automated Testing
+## The better way: automated testing
 
 Your computer can do the checking for you. You write **test code** that exercises your
 **real code** and reports whether it behaved.
@@ -58,7 +58,7 @@ $ rustest
 
 That took less than half a second, with no clicking and no manual checking.
 
-## What Automated Tests Give You
+## What automated tests give you
 
 ### Confidence to change code
 
@@ -149,7 +149,7 @@ Knowing your code is tested means:
 - Safer to refactor old code
 - Less stress when deploying
 
-## The Developer Workflow
+## The developer workflow
 
 Here's how testing fits into your development:
 
@@ -166,7 +166,7 @@ This is called **Test-Driven Development (TDD)**, and many developers like it be
 
 You don't have to use TDD. Writing tests *after* your code is still worth doing.
 
-## Real-World Example
+## Real-world example
 
 Imagine you're building a shopping cart:
 
@@ -216,7 +216,7 @@ Now:
 - When you add a new feature (gift cards?), you can write tests first
 - When a bug is reported, you write a test that reproduces it, then fix it
 
-## Common Concerns
+## Common concerns
 
 ### "Writing tests takes too long"
 
@@ -235,7 +235,7 @@ Even simple code can have bugs. And simple code grows into complex code. Startin
 
 We all say this. It rarely happens. The best time to write tests is **now**, when the code is fresh in your mind.
 
-## What's Next?
+## What's next?
 
 Write one:
 

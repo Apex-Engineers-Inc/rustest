@@ -1,4 +1,4 @@
-# Project Structure and Import Paths
+# Project structure and import paths
 
 Test files have to be able to import the code they test. This page describes exactly which
 directories rustest puts on `sys.path`, where they come from, and what to do when an import
@@ -19,7 +19,7 @@ pythonpath = ["src"]
 from mypackage import my_function
 ```
 
-## What Ends Up on sys.path
+## What ends up on sys.path
 
 rustest uses pytest's default `prepend` import mode and nothing else. Three things put
 directories on a worker's `sys.path`, in this order:
@@ -78,7 +78,7 @@ in setup.cfg files is no longer supported, change to [tool:pytest] instead.` Use
 `-o`/`--override-ini` will not set `pythonpath` from the command line. It supports `addopts`
 and refuses everything else rather than accepting the flag and quietly doing nothing.
 
-### Multiple Paths
+### Multiple paths
 
 `pythonpath` takes a list, and every entry is prepended:
 
@@ -87,7 +87,7 @@ and refuses everything else rather than accepting the flag and quietly doing not
 pythonpath = ["src", "lib", "vendor"]
 ```
 
-### Which Config File Wins
+### Which config file wins
 
 rustest resolves the rootdir and the ini file with pytest's algorithm, so the answer matches
 the `rootdir:` and `configfile:` lines in pytest's own header. Walking up from the common
@@ -105,9 +105,9 @@ within each directory:
 A `pyproject.toml` with only a `[project]` table does not stop the search, which is why a
 packaging-only `pyproject.toml` above a `tox.ini` still lets the `tox.ini` supply the config.
 
-## How Path Discovery Works, Step by Step
+## How path discovery works, step by step
 
-### Step 1: Locate the config file
+### Step 1: locate the config file
 
 Starting from the common ancestor of the paths you passed on the command line, rustest walks
 **up** the directory tree, testing each directory against the table above:
@@ -126,7 +126,7 @@ The directory holding that file becomes the rootdir. When no config file qualifi
 up the tree, rustest falls back to pytest's rules: the nearest ancestor containing a
 `setup.py`, and failing that the common ancestor itself.
 
-### Step 2: Prepend the pythonpath entries
+### Step 2: prepend the pythonpath entries
 
 Each `pythonpath` entry is made absolute against the config file's own directory and
 prepended to `sys.path`. This happens in every worker before a single test module or
@@ -142,7 +142,7 @@ That puts `/path/to/myproject/src` and `/path/to/myproject/lib` at the front.
 This step is skipped entirely when `pythonpath` is unset, which is the common case. There is
 no fallback behind it: nothing takes its place, and no directory is guessed.
 
-### Step 3: Insert each test file's package root
+### Step 3: insert each test file's package root
 
 As a file is imported, rustest walks up from it while each directory has an `__init__.py`,
 and inserts the first directory that does not at `sys.path[0]`:
@@ -164,9 +164,9 @@ module name.
 A file with no `__init__.py` beside it gets its own directory as the package root and its
 bare stem as the module name.
 
-## Supported Project Layouts
+## Supported project layouts
 
-### Src Layout (Recommended for Libraries)
+### Src layout (recommended for libraries)
 
 The src layout keeps the package out of the directory you run from, so tests import the
 package the same way a user would.
@@ -201,7 +201,7 @@ from mypackage import module1
 from mypackage.module2 import SomeClass
 ```
 
-### Flat Layout (Simpler Projects)
+### Flat layout (simpler projects)
 
 Common for applications that are not published as packages.
 
@@ -233,7 +233,7 @@ the config makes the layout work from anywhere:
 pythonpath = ["."]
 ```
 
-### Nested Package Tests
+### Nested package tests
 
 Tests can live inside the package:
 
@@ -259,9 +259,9 @@ Drop that `__init__.py` and the chain stops immediately: the package root become
 `myproject/mypackage/tests`, the module is imported as bare `test_module1`, and `mypackage`
 is importable only through rule 3, the directory you ran from.
 
-## Common Patterns
+## Common patterns
 
-### Multiple Source Directories
+### Multiple source directories
 
 Several packages under one `src/`:
 
@@ -286,7 +286,7 @@ from package2 import another
 from package3 import yet_another
 ```
 
-### Tests Scattered Across Directories
+### Tests scattered across directories
 
 ```text
 myproject/
@@ -307,7 +307,7 @@ rustest tests/integration/
 rustest tests/
 ```
 
-### Monorepo with Multiple Projects
+### Monorepo with multiple projects
 
 ```text
 monorepo/
@@ -329,9 +329,9 @@ rustest project1/tests/
 rustest project2/tests/
 ```
 
-## Troubleshooting Import Issues
+## Troubleshooting import issues
 
-### ModuleNotFoundError: No module named 'mypackage'
+### ModuleNotFoundError: no module named 'mypackage'
 
 Work through these in order.
 
@@ -404,7 +404,7 @@ sys.path.insert(0, str(Path(__file__).parent / "custom"))
 This is rule 3 doing the work: your imports are resolving through the directory you ran
 from. Name that directory in `pythonpath` and the run stops depending on where it started.
 
-## Best Practices
+## Best practices
 
 ### Set pythonpath explicitly
 
@@ -471,7 +471,7 @@ this import resolve:
 from tests.helpers.utils import helper_function
 ```
 
-## Advanced: Understanding the Implementation
+## Advanced: understanding the implementation
 
 **When does path setup happen?** The `pythonpath` entries go on before any test module or
 `conftest.py` is imported. Each test file's package root goes on at the moment that file is

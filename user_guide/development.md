@@ -1,4 +1,4 @@
-# Development Guide
+# Development guide
 
 This guide is for people contributing to rustest. You do not need to know Rust to be
 useful here: most of the user-facing surface is Python, and the Rust core is a small,
@@ -22,10 +22,11 @@ rustc --version
 cargo --version
 ```
 
-!!! info "What is Rust?"
-    Rust is a systems programming language with memory safety and no garbage collector. In
-    rustest it handles config resolution, the file walk, static collection and the worker
-    pool; Python provides the API you write tests against.
+::: {.callout-note title="What is Rust?"}
+Rust is a systems programming language with memory safety and no garbage collector. In
+rustest it handles config resolution, the file walk, static collection and the worker
+pool; Python provides the API you write tests against.
+:::
 
 ### 2. uv
 
@@ -39,9 +40,10 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv --version
 ```
 
-!!! info "What is uv?"
-    A faster replacement for pip and virtualenv. It manages Python dependencies, the
-    virtual environment, and the interpreters themselves.
+::: {.callout-note title="What is uv?"}
+A faster replacement for pip and virtualenv. It manages Python dependencies, the
+virtual environment, and the interpreters themselves.
+:::
 
 ### 3. Python 3.12-3.14
 
@@ -55,14 +57,14 @@ you which it settled on.
 
 ## Setup
 
-### 1. Clone the Repository
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/Apex-Engineers-Inc/rustest.git
 cd rustest
 ```
 
-### 2. Install Python Dependencies
+### 2. Install Python dependencies
 
 ```bash
 # Creates virtual environment and installs dependencies
@@ -73,7 +75,7 @@ That covers testing, linting and type checking. It deliberately leaves out the
 documentation toolchain, which lives in its own environment for a reason described under
 [Building Documentation Locally](#building-documentation-locally).
 
-### 3. Build the Rust Extension
+### 3. Build the Rust extension
 
 ```bash
 # Compiles Rust code and installs as Python module
@@ -83,11 +85,12 @@ uv run maturin develop
 This compiles `src/` into a native extension and installs it into the virtual environment
 as `rustest.rust`. The first build takes a minute or two; later ones are incremental.
 
-!!! warning "Common Issue"
-    Errors about a missing Rust toolchain mean step 1 did not finish. Run
-    `source $HOME/.cargo/env` and try again.
+::: {.callout-warning title="Common Issue"}
+Errors about a missing Rust toolchain mean step 1 did not finish. Run
+`source $HOME/.cargo/env` and try again.
+:::
 
-### 4. Verify Everything Works
+### 4. Verify everything works
 
 ```bash
 # Run example tests
@@ -103,7 +106,7 @@ cargo test --no-default-features -- --test-threads=1
 On Windows the last one needs the Python DLL directory on `PATH` first, or it exits before
 running anything. See [Running the Rust tests](#running-the-rust-tests).
 
-## Project Structure
+## Project structure
 
 Rustest is a hybrid Python/Rust project:
 
@@ -150,7 +153,7 @@ The Rust side does discovery, config and orchestration. The Python side provides
 decorators, the builtin fixtures and the worker that actually imports and runs your tests.
 PyO3 and maturin connect the two.
 
-## Development Tasks
+## Development tasks
 
 Tasks run through `poe` (poethepoet), and are defined under `[tool.poe.tasks]` in
 `pyproject.toml`. `uv sync` installs poethepoet into `.venv` rather than onto your `PATH`,
@@ -189,20 +192,21 @@ breaks CI.
 them concurrently puts several pools on one machine at once and produces spurious
 subprocess timeouts.
 
-!!! warning "Windows: the test binary needs the Python DLL directory on PATH"
-    Without it the binary exits `0xc0000135` (`STATUS_DLL_NOT_FOUND`) before running a
-    single test. It links `pythonXY.dll` and does not find it on a bare PATH. This looks
-    like a crash and is not one. Prepend the uv-managed interpreter's directory:
+::: {.callout-warning title="Windows: the test binary needs the Python DLL directory on PATH"}
+Without it the binary exits `0xc0000135` (`STATUS_DLL_NOT_FOUND`) before running a
+single test. It links `pythonXY.dll` and does not find it on a bare PATH. This looks
+like a crash and is not one. Prepend the uv-managed interpreter's directory:
 
-    ```powershell
-    $env:PATH = "$HOME\AppData\Roaming\uv\python\cpython-3.14.2-windows-x86_64-none;$env:PATH"
-    ```
+```powershell
+$env:PATH = "$HOME\AppData\Roaming\uv\python\cpython-3.14.2-windows-x86_64-none;$env:PATH"
+```
 
-    Adjust the version to whatever `uv python list` says the project resolves.
+Adjust the version to whatever `uv python list` says the project resolves.
+:::
 
-## Pre-commit Hooks
+## Pre-commit hooks
 
-### Setup (One-time)
+### Setup (one-time)
 
 ```bash
 # Install pre-commit hooks
@@ -226,7 +230,7 @@ The ruff and basedpyright versions in `.pre-commit-config.yaml` are pinned to th
 `uv.lock` resolves. Bumping one means bumping both, or the hook and the CI step disagree
 about formatting and each undoes the other.
 
-### Manual Usage
+### Manual usage
 
 ```bash
 # Run all hooks on all files
@@ -253,7 +257,7 @@ This is machine-global and rebuilds the project venv, so do not do it in the mid
 another task. Do not work around it by copying a DLL from a sibling interpreter either:
 the freethreaded and standard builds ship different OpenSSL builds.
 
-## Typical Workflow
+## Typical workflow
 
 ```bash
 # 1. Make your changes to Python or Rust files
@@ -270,9 +274,9 @@ git add .
 git commit -m "Your message"
 ```
 
-## Making Your First Change
+## Making your first change
 
-### Adding a Python Feature
+### Adding a Python feature
 
 ```bash
 # 1. Edit a Python file
@@ -286,7 +290,7 @@ poe typecheck
 poe lint
 ```
 
-### Adding a Rust Feature
+### Adding a Rust feature
 
 ```bash
 # 1. Edit a Rust file
@@ -302,9 +306,9 @@ cargo test --no-default-features -- --test-threads=1
 poe fmt
 ```
 
-## Testing Your Changes
+## Testing your changes
 
-### Python Tests
+### Python tests
 
 ```bash
 # Run Python unit tests
@@ -336,13 +340,13 @@ uv run python -m rustest README.md user_guide/*.md
 ```
 
 **Know what this gate does and does not catch.** This tier is off by default (`--codeblocks`,
-or `[tool.rustest] codeblocks = true` -- this repository sets the latter, which is the only
+or `[tool.rustest] codeblocks = true`; this repository sets the latter, which is the only
 reason the command above works with no flag). Each `python` block executes **at module
 level, at collect time**, and is then handed to the same enumerator a `.py` file goes
 through: a `def test_*` inside the block is no longer defined-and-discarded, it collects and
 runs as its own node, with real fixture resolution, `@parametrize` and `Test*` classes if the
 block uses them. A wrong assertion inside one is caught exactly as it would be in a test
-file -- this used to be false, and it is why the gate previously reported 109 broken
+file. That used to be false, and it is why the gate previously reported 109 broken
 examples as green:
 
 ````markdown
@@ -361,7 +365,7 @@ tests inside a block but never the block's own top-level statements, because the
 before any fixture closure exists. See [Markdown testing](markdown-testing.md) for the full
 mechanism.
 
-### Rust Tests
+### Rust tests
 
 The Rust tests all live in `#[cfg(test)]` modules inside `src/`, so there is one binary and
 `--lib` selects the same set as the bare invocation.
@@ -377,7 +381,7 @@ cargo test --no-default-features -- --test-threads=1 --nocapture
 cargo test --no-default-features walk_is_name_sorted_and_depth_first -- --test-threads=1
 ```
 
-## Understanding the Rust↔Python Bridge
+## Understanding the Rust↔Python bridge
 
 Three pieces:
 
@@ -450,20 +454,21 @@ also need Python development headers: `sudo apt-get install python3-dev`.
 
 **Solution:** Run `poe dev` to rebuild it.
 
-## Getting Help
+## Getting help
 
 - **Rust documentation:** https://doc.rust-lang.org/book/
 - **PyO3 guide:** https://pyo3.rs/
 - **rustest issues:** https://github.com/Apex-Engineers-Inc/rustest/issues
 
-!!! tip "For Python developers new to Rust"
-    Start with Python-side changes: decorators, the CLI, the builtin fixtures. Those are
-    where most of the user-visible behaviour lives. When you do open a Rust file, read the
-    module doc comment first; each one names the pytest source it ports and why.
+::: {.callout-tip title="For Python developers new to Rust"}
+Start with Python-side changes: decorators, the CLI, the builtin fixtures. Those are
+where most of the user-visible behaviour lives. When you do open a Rust file, read the
+module doc comment first; each one names the pytest source it ports and why.
+:::
 
 ## Documentation
 
-### Updating CLI Documentation
+### Updating CLI documentation
 
 If you change CLI arguments, update the documentation:
 
@@ -476,7 +481,7 @@ This script captures the output of `rustest --help` and updates the "Quick Refer
 in `user_guide/cli.md`. The flags **table** further down that page is hand-maintained, so
 adding or removing a flag means editing both.
 
-### Building Documentation Locally
+### Building documentation locally
 
 The site is built by [great-docs](https://posit-dev.github.io/great-docs/), which shells
 out to Quarto. Two prerequisites:
@@ -526,7 +531,7 @@ the site reaching the CI gate at all (with the limits on that gate described und
 [Python Tests](#python-tests)). Quarto's executable fences are spelled ```` ```{python} ````,
 which the collector deliberately does not match.
 
-## Quick Reference
+## Quick reference
 
 ```bash
 # Setup (first time only)
@@ -563,7 +568,7 @@ Bug fixes, features, documentation, performance work and test improvements are a
 Behaviour changes that touch pytest compatibility should come with a conformance corpus
 case, so the new behaviour cannot regress unnoticed.
 
-## See Also
+## See also
 
 - [Performance](performance.md) - Understanding rustest's speed
 - [Comparison with pytest](comparison.md) - Feature compatibility

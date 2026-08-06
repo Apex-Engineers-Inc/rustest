@@ -23,11 +23,87 @@ parser: google
 # re-running the probe.
 dynamic: false
 
-logo: assets/logo.svg
+logo:
+  light: assets/logo-icon.svg
+  dark: assets/logo-icon.svg
+  # Otherwise the bar is a mark followed immediately by the "Reference" nav item, and the
+  # site never says its own name.
+  show_title: true
 favicon: assets/favicon.ico
 
 repo_url: "https://github.com/Apex-Engineers-Inc/rustest"
 github_style: icon
+
+# The site index is `user_guide/index.md` with the hero below prepended, rather than
+# `README.md`. The README has to earn its place on a GitHub project page -- badges,
+# install line, the compatibility table -- and a landing page has a different job. Pointing
+# both at one file made each of them worse.
+homepage: user_guide
+
+# The hero is written by hand at the top of `user_guide/index.md` rather than generated
+# from a `hero:` block here, for two reasons. It wants an install line and two buttons,
+# which the generated hero has no slot for -- and great-docs 0.16.0 emits the generated one
+# as ```` ```{=html}  # pragma: no cover ````, a stray coverage pragma on the fence line
+# (`core.py:6374`). Pandoc does not recognise that as a raw-HTML opener, so the fence falls
+# through and swallows the first real code block on the page as literal text. Re-check this
+# before turning `hero:` back on after a great-docs upgrade.
+hero: false
+
+# Start each terminal recording when the reader reaches it.
+#
+# great-docs' own `autoplay="true"` starts every player as soon as the page initialises, and
+# these recordings run two to five seconds. Anything below the fold is therefore over before
+# the reader arrives: they scroll down to a still frame with a replay button on it, which is
+# the opposite of what a recording is for. Every `{{< termshow >}}` on the site passes
+# `autoplay="false" loop="false"` and this starts them on visibility instead.
+#
+# It lives inline rather than in `docs/assets/` because `site.css` is the only asset key
+# great-docs copies into the build directory; there is no equivalent for a script file, and
+# a pre-render hook to copy one in is more machinery than 20 lines of JavaScript deserve.
+include_in_header:
+  - text: |
+      <script>
+      (function () {
+        var THRESHOLD = 0.35, POLL_MS = 100, POLL_LIMIT = 60;
+        function pressPlay(el) {
+          var tries = 0;
+          (function attempt() {
+            var btn = el.querySelector(".gd-tp-play-btn");
+            // Only press a stopped player, so a reader who paused one deliberately is not
+            // overridden by their own scrolling.
+            if (btn) { if (!el.classList.contains("gd-tp-playing")) btn.click(); return; }
+            if (++tries < POLL_LIMIT) window.setTimeout(attempt, POLL_MS);
+          })();
+        }
+        function init() {
+          var players = document.querySelectorAll(".gd-termshow");
+          if (!players.length) return;
+          if (!("IntersectionObserver" in window)) {
+            Array.prototype.forEach.call(players, pressPlay);
+            return;
+          }
+          var io = new IntersectionObserver(function (entries) {
+            entries.forEach(function (e) {
+              if (!e.isIntersecting) return;
+              io.unobserve(e.target);
+              pressPlay(e.target);
+            });
+          }, { threshold: THRESHOLD });
+          Array.prototype.forEach.call(players, function (el) { io.observe(el); });
+        }
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", init);
+        } else {
+          init();
+        }
+      })();
+      </script>
+
+# Deep orange, which is the colour the previous site ran and the one this project is
+# recognised by. `docs/assets/rustest.css` builds the rest of the palette out from it.
+accent_color:
+  light: "#d84315"
+  dark: "#ff7043"
 
 authors:
   - name: rustest contributors
@@ -43,6 +119,8 @@ site:
   theme: flatly
   toc: true
   toc-depth: 2
+  # Loaded after great-docs' own SCSS, so it can override without fighting.
+  css: docs/assets/rustest.css
 
 jupyter: python3
 

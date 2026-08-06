@@ -2,14 +2,14 @@
 
 Rustest implements the parts of pytest that most suites actually use, and runs them through
 a Rust orchestrator. This page is the ledger: what both runners do, what only pytest does,
-and — secondarily — how much faster rustest is in practice, including the suites where the
+and, secondarily, how much faster rustest is in practice, including the suites where the
 answer is "barely".
 
 The feature table is the part that matters. Compatibility is what this release was built
 for; the performance section at the end reports where speed happens to stand, and is not
 the reason to switch.
 
-## Feature Comparison Table
+## Feature comparison table
 
 | Feature | pytest | rustest | Notes |
 |---------|--------|---------|-------|
@@ -106,7 +106,7 @@ Rustest implements the pytest surface that ordinary suites depend on and leaves 
 extension machinery. That trade is what makes the speed possible: no plugin manager, no
 hook dispatch, and no collection tree to walk.
 
-### When to Use rustest
+### When to use rustest
 
 - Your suite spends a meaningful share of its wall clock in the framework rather than in
   your own test bodies. That share is the ceiling on any speedup, it is measurable, and
@@ -117,7 +117,7 @@ hook dispatch, and no collection tree to walk.
   tests, `def test_*` functions included, with no `pytest-codeblocks` to add. Off by
   default; see [Markdown Testing](markdown-testing.md).
 
-### When to Use pytest
+### When to use pytest
 
 - You need pytest plugins such as pytest-django or pytest-cov. See the
   [plugin migration guide](pytest-plugins.md).
@@ -128,7 +128,7 @@ hook dispatch, and no collection tree to walk.
 
 ## Migration from pytest
 
-### Easy Migration
+### Easy migration
 
 Most pytest suites run under rustest without edits. `import pytest` inside a rustest run
 resolves to rustest's own implementation, so the common case is that nothing changes:
@@ -149,7 +149,7 @@ def test_double(value, expected):
 
 The same file runs under both runners, unchanged.
 
-### What Stays the Same
+### What stays the same
 
 - Test discovery patterns
 - Fixture syntax and scopes
@@ -160,9 +160,9 @@ The same file runs under both runners, unchanged.
 - Test class structure
 - `pytest.ini` / `pyproject.toml` config, including `addopts` and `pythonpath`
 
-### What Changes
+### What changes
 
-#### Import Statements
+#### Import statements
 
 Migrating imports is optional. It buys typed exports and better IDE completion, since
 `rustest`'s API is typed and `import pytest` inside a rustest run goes through a shim:
@@ -179,7 +179,7 @@ from rustest import approx, fixture, mark, parametrize, raises
 Note that `parametrize` is a top-level export in rustest and is not one in pytest, where it
 is only reachable as `pytest.mark.parametrize`.
 
-#### Running Tests
+#### Running tests
 
 ```bash
 # pytest
@@ -191,7 +191,7 @@ rustest tests/
 
 Markdown is the one argument shape that differs: rustest can collect code blocks from a
 `.md` file **named** as an argument, and a directory walk collects none either way. The tier
-itself is **off by default** -- `--codeblocks`, or `[tool.rustest] codeblocks = true`, has to
+itself is **off by default**: `--codeblocks`, or `[tool.rustest] codeblocks = true`, has to
 turn it on, or naming a `.md` file is a usage error, matching `pytest`'s own answer for the
 same argument.
 
@@ -214,7 +214,7 @@ testpaths = ["tests"]
 The gap is `PYTEST_ADDOPTS`, which pytest reads from the environment and rustest does not.
 Move those options into `addopts` or onto the command line.
 
-### Compatibility Layer
+### Compatibility layer
 
 Nothing is needed to keep both runners working. rustest's shim only exists inside a rustest
 run, so under pytest `import pytest` is pytest. A suite in the middle of a migration can be
@@ -225,7 +225,7 @@ pytest tests/
 rustest tests/
 ```
 
-## Feature Deep Dive
+## Feature deep dive
 
 ### Fixtures
 
@@ -281,7 +281,7 @@ arguments. See [CLI Usage](cli.md).
 Unknown marks are never an error in rustest, and `--strict-markers` is accepted and
 ignored.
 
-### Assertion Helpers
+### Assertion helpers
 
 <!--rustest.mark.skip-->
 ```python
@@ -295,7 +295,7 @@ def test_comparison():
         raise ValueError("invalid input")
 ```
 
-### Test Classes
+### Test classes
 
 <!--rustest.mark.skip-->
 ```python
@@ -311,7 +311,7 @@ class TestMath:
         assert calculator.add(2, 3) == 5
 ```
 
-## Performance Comparison
+## Performance comparison
 
 **Reported, not advertised.** Speed is not what this release was built for, and it is not
 where the work went; deeper performance work comes later. What follows is where things
@@ -344,7 +344,7 @@ surface. Tooling that shells out to a test command and reads node ids has the sa
 to work with, since rustest's are byte-identical to pytest's. Tooling that loads pytest as
 a library and hooks its internals has nothing to hook.
 
-## Future Roadmap
+## Future roadmap
 
 Not implemented:
 
@@ -367,7 +367,7 @@ format rustest does not produce.
 The two are not mutually exclusive during a migration: the same suite can be run under both
 from the same source, and that is how rustest's own compatibility claims are checked.
 
-## See Also
+## See also
 
 - [Pytest Plugins](pytest-plugins.md) - Migration guide for popular pytest plugins
 - [pytest Compatibility](pytest-compat.md) - The full compatibility ledger

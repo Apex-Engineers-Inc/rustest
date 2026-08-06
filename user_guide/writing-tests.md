@@ -1,8 +1,8 @@
-# Writing Tests
+# Writing tests
 
 Rustest follows pytest's conventions for test discovery and organization.
 
-## Test Discovery
+## Test discovery
 
 Rustest discovers tests by looking for:
 
@@ -15,7 +15,7 @@ These are the defaults. All three come from ini options rustest reads out of you
 a project that has already customized them for pytest keeps the same discovery under
 rustest.
 
-### Example Directory Structure
+### Example directory structure
 
 <!--rustest.mark.skip-->
 ```
@@ -30,7 +30,7 @@ my_project/
 └── pyproject.toml
 ```
 
-## Basic Test Functions
+## Basic test functions
 
 Test functions are simple Python functions that start with `test_`:
 
@@ -51,9 +51,10 @@ def test_list_operations() -> None:
     assert 4 in items
 ```
 
-!!! tip "Type hints"
-    Type hints are not required on tests. They help your editor and your type checker, and
-    rustest ignores them either way.
+::: {.callout-tip title="Type hints"}
+Type hints are not required on tests. They help your editor and your type checker, and
+rustest ignores them either way.
+:::
 
 ## Assertions
 
@@ -86,7 +87,7 @@ def test_comparisons() -> None:
     assert x is not [1, 2, 3]
 ```
 
-### Custom Assertion Messages
+### Custom assertion messages
 
 An assertion can carry its own message. It is printed above the rewritten comparison, so
 you get both:
@@ -100,9 +101,9 @@ def test_with_message() -> None:
     assert value > 0, f"Expected positive value, got {value}"
 ```
 
-## Test Organization
+## Test organization
 
-### Grouping Related Tests
+### Grouping related tests
 
 Related tests belong in the same file:
 
@@ -122,7 +123,7 @@ def test_division() -> None:
     assert 10 / 2 == 5
 ```
 
-### Using Test Classes
+### Using test classes
 
 Classes give you a second level of grouping, and a place to hang class-scoped fixtures:
 
@@ -148,7 +149,7 @@ class TestStringOperations:
 
 See [Test Classes](test-classes.md) for more details.
 
-## Setup and Teardown
+## Setup and teardown
 
 Use a fixture rather than a setup/teardown method. A fixture that yields runs its setup
 before the test and everything after the `yield` once the test finishes, pass or fail:
@@ -184,7 +185,7 @@ def test_query(database_connection):
 
 See [Fixtures](intro-fixtures.md) for more information.
 
-## Test Output
+## Test output
 
 The default output is the failure report plus the counts:
 
@@ -206,7 +207,7 @@ The tests that passed and the one that skipped print nothing of their own. That 
 shape and it is deliberate: on a suite of a few thousand tests, the lines worth reading are
 the ones about what broke.
 
-### Verbose Output
+### Verbose output
 
 For one line per test, use `-v` or `--verbose`:
 
@@ -249,7 +250,7 @@ segments, the class names, the function name with its `[param]` suffix, and the 
 any marks. `-k test_list_operations` works; a whole node id with `::` in it matches
 nothing.
 
-### Viewing Print Statements
+### Viewing print statements
 
 Rustest captures stdout and stderr by default. To see print statements as a test runs:
 
@@ -264,9 +265,9 @@ def test_with_output() -> None:
     assert True
 ```
 
-## Best Practices
+## Best practices
 
-### Keep Tests Simple and Focused
+### Keep tests simple and focused
 
 Each test should verify one behavior. When a test that checks four things fails, the report
 tells you the first one that broke and nothing about the rest:
@@ -302,7 +303,7 @@ def test_user_operations() -> None:
     assert not user.exists()
 ```
 
-### Use Descriptive Test Names
+### Use descriptive test names
 
 The test name is what a failure prints, so it should say what broke without your having to
 open the file:
@@ -327,7 +328,7 @@ def test_cart() -> None:
     assert cart.total == 0
 ```
 
-### Arrange-Act-Assert Pattern
+### Arrange-Act-Assert pattern
 
 Set up the data, perform the action, then check the result:
 
@@ -358,7 +359,7 @@ def test_user_can_add_items_to_cart() -> None:
     assert cart.total == 10
 ```
 
-## Next Steps
+## Next steps
 
 - [Fixtures](intro-fixtures.md) - Learn about reusable test data and setup
 - [Parametrization](intro-parametrization.md) - Run the same test with different inputs

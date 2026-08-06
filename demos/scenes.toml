@@ -1,0 +1,168 @@
+# The terminal recordings the documentation site plays.
+#
+# Each `[[scene]]` is a throwaway project: `files` is written into a fresh temporary
+# directory, `commands` are run there for real, and everything the process writes is
+# captured with its real arrival times into `demos/<name>.termshow`.
+#
+# Nothing here is transcribed by hand. If rustest's output changes, `poe demos` re-records
+# and the pages change with it. The only synthesized parts of a recording are the shell
+# prompt and the keystrokes of the command itself -- see `scripts/record_demos.py`.
+#
+# The test files live here rather than in the tree because one of them fails on purpose.
+# A `test_*.py` sitting in the repository that is meant to fail is a trap for anyone who
+# points a runner at the root.
+
+# ── The landing page and the guide index ────────────────────────────────────────
+#
+# The repository's own example suite, verbose, so the recording shows node ids in
+# pytest's spelling rather than a bare count.
+[[scene]]
+name = "quickstart"
+title = "rustest examples/tests/ -v"
+cols = 72
+cwd = "."
+commands = [["rustest", "examples/tests/", "-v"]]
+
+# ── Quick start, step 2: what a green run looks like ────────────────────────────
+[[scene]]
+name = "first-run"
+title = "rustest"
+cols = 72
+commands = [["rustest"], ["rustest", "-v"]]
+
+[scene.files]
+"test_math.py" = '''
+def test_simple_addition() -> None:
+    assert 1 + 1 == 2
+
+
+def test_string_operations() -> None:
+    text = "hello world"
+    assert text.startswith("hello")
+    assert "world" in text
+'''
+
+# ── "Your first test", steps 3 and 4 ────────────────────────────────────────────
+#
+# Two scenes rather than one, because the file changes between them and a scene runs its
+# commands against one tree. Split, they also drop into the page where each belongs.
+[[scene]]
+name = "first-test-pass"
+title = "rustest"
+dir = "myproject"
+cols = 72
+commands = [["rustest"]]
+
+[scene.files]
+"test_math.py" = '''
+def test_addition():
+    result = 2 + 2
+    assert result == 4
+'''
+
+[[scene]]
+name = "first-test-fail"
+title = "rustest"
+dir = "myproject"
+cols = 78
+commands = [["rustest"]]
+
+[scene.files]
+"test_math.py" = '''
+def test_addition():
+    result = 2 + 2
+    assert result == 5  # This is wrong on purpose!
+'''
+
+# ── "Your first test", step 5: tests against real code ──────────────────────────
+[[scene]]
+name = "first-test-real"
+title = "rustest -v"
+dir = "myproject"
+cols = 72
+commands = [["rustest"], ["rustest", "-v"]]
+
+[scene.files]
+"calculator.py" = '''
+def add(a, b):
+    return a + b
+
+
+def multiply(a, b):
+    return a * b
+'''
+"test_calculator.py" = '''
+from calculator import add, multiply
+
+
+def test_add_positive_numbers():
+    result = add(2, 3)
+    assert result == 5
+
+
+def test_add_negative_numbers():
+    result = add(-1, -1)
+    assert result == -2
+
+
+def test_multiply():
+    result = multiply(4, 5)
+    assert result == 20
+'''
+
+# ── Quick start, step 4: parametrized ids ───────────────────────────────────────
+[[scene]]
+name = "parametrize"
+title = "rustest -v"
+cols = 72
+commands = [["rustest", "-v"], ["rustest", "-k", "2-4"]]
+
+[scene.files]
+"test_math.py" = '''
+from rustest import parametrize
+
+
+@parametrize(
+    "value,expected",
+    [
+        (1, 2),
+        (2, 4),
+        (3, 6),
+    ],
+)
+def test_double(value: int, expected: int) -> None:
+    assert value * 2 == expected
+'''
+
+# ── A failing run, which is the output that actually matters ────────────────────
+#
+# The assertion is wrong on purpose: 150*2 + 220*1 is 520, not 500. It is here to show the
+# rewritten assertion, the FAILURES block and the short summary, all in pytest's shape.
+[[scene]]
+name = "failure"
+title = "rustest"
+# The scene runs in a directory called `shop`, because a traceback prints the absolute
+# path of the file it came from and that path ends up on the site.
+dir = "shop"
+cols = 76
+commands = [["rustest"], ["rustest", "--lf"]]
+
+[scene.files]
+"test_cart.py" = '''
+from rustest import fixture
+
+
+@fixture
+def cart() -> dict[str, int]:
+    return {"apples": 2, "pears": 1}
+
+
+def test_total_items(cart: dict[str, int]) -> None:
+    assert sum(cart.values()) == 3
+
+
+def test_subtotal(cart: dict[str, int]) -> None:
+    prices = {"apples": 150, "pears": 220}
+    subtotal = sum(prices[item] * count for item, count in cart.items())
+    assert subtotal == 500
+'''

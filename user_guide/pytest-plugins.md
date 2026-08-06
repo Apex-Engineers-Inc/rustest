@@ -1,17 +1,18 @@
-# Pytest Plugins and rustest
+# Pytest plugins and rustest
 
-!!! warning "Pytest plugins are not supported"
-    rustest **does not support pytest plugins** and this is an intentional design decision. This page explains why and provides concrete migration strategies for the most popular pytest plugins.
+::: {.callout-warning title="Pytest plugins are not supported"}
+rustest **does not support pytest plugins** and this is an intentional design decision. This page explains why and provides concrete migration strategies for the most popular pytest plugins.
+:::
 
 Several of the plugins below have no migration to do, because rustest ports their behaviour
 into the engine. `--cov`, the worker pool, the `mocker` fixture and async support are all
 built in.
 
-## Important Distinction: Fixture Modules vs Plugins
+## Important distinction: fixture modules vs plugins
 
 Two different things share the name "plugin", and only one of them works.
 
-### Fixture Modules (SUPPORTED)
+### Fixture modules (SUPPORTED)
 
 A `pytest_plugins` declaration names Python modules whose `@fixture` functions get registered
 globally. rustest honours it in a `conftest.py` and in a test module, the same two places
@@ -34,7 +35,7 @@ module are not called.
 See [Loading fixtures from external modules](fixtures.md#loading-fixtures-from-external-modules)
 for details.
 
-### Pytest Plugins (NOT SUPPORTED)
+### Pytest plugins (NOT SUPPORTED)
 
 rustest does not implement any of the machinery a real pytest plugin needs:
 
@@ -50,9 +51,9 @@ only sources of parametrization.
 This page covers plugins from PyPI. For the `pytest_plugins` fixture-module mechanism, see
 above.
 
-## Why rustest Doesn't Support Plugins
+## Why rustest doesn't support plugins
 
-### The Technical Reasons
+### The technical reasons
 
 pytest's plugin system is built on pluggy. `_pytest/hookspec.py` in pytest 8.4.2 declares 52
 hooks, covering initialization, collection, execution, reporting and fixtures. Implementing
@@ -86,7 +87,7 @@ pytest's hook API changes between versions, so a compatibility matrix would have
 and tested. Plugins interact with each other in ways that are hard to reproduce, and some reach
 into private pytest APIs that have no stable equivalent to port.
 
-### The Philosophical Reasons
+### The philosophical reasons
 
 rustest implements the parts of pytest that most suites actually use, and leaves the rest to
 pytest. The goal is a fast runner with a faithful core, not a pytest clone.
@@ -95,7 +96,7 @@ What that buys: a codebase without plugin infrastructure, and a collection and e
 that stays in Rust. What it costs: niche features, and any plugin whose behaviour has not been
 ported.
 
-### What About Migration?
+### What about migration?
 
 Most suites need no plugins to migrate. rustest already provides:
 
@@ -122,7 +123,7 @@ be silently ignored.
 
 ---
 
-## Top 10 Pytest Plugins: Migration Guide
+## Top 10 Pytest plugins: migration guide
 
 Download figures are from October 2025.
 
@@ -224,10 +225,11 @@ Two differences from pytest-xdist worth knowing:
 Session- and package-scoped fixtures are instantiated once per worker process, which is
 pytest-xdist's contract for them too.
 
-!!! warning "Shared external state"
-    Parallel workers are separate processes. A suite that shares a database, a port, or a
-    filesystem path across tests needs `-n 1`, exactly as it would need `--dist=loadfile`
-    or a lock under xdist. rustest has no `xdist_group` equivalent yet.
+::: {.callout-warning title="Shared external state"}
+Parallel workers are separate processes. A suite that shares a database, a port, or a
+filesystem path across tests needs `-n 1`, exactly as it would need `--dist=loadfile`
+or a lock under xdist. rustest has no `xdist_group` equivalent yet.
+:::
 
 ---
 
@@ -584,8 +586,9 @@ For a synchronous test:
         slow_operation()
     ```
 
-!!! warning "Platform differences"
-    The `signal` module approach only works on Unix/Linux. For Windows compatibility, use the threading approach or a third-party library like `timeout-decorator`.
+::: {.callout-warning title="Platform differences"}
+The `signal` module approach only works on Unix/Linux. For Windows compatibility, use the threading approach or a third-party library like `timeout-decorator`.
+:::
 
 `@mark.timeout(...)` is accepted as an ordinary mark, so it can be selected with `-m`, but it
 has no effect on how long a test may run.
@@ -721,8 +724,9 @@ def db():
     # Cleanup handled by SQLite :memory:
 ```
 
-!!! warning "Limited Django support"
-    rustest does not have full Django integration. For Django projects with complex requirements, pytest-django is recommended.
+::: {.callout-warning title="Limited Django support"}
+rustest does not have full Django integration. For Django projects with complex requirements, pytest-django is recommended.
+:::
 
 ---
 
@@ -783,11 +787,11 @@ benchmarks under pytest with the plugin, or use `py-spy` / `pyinstrument` for pr
 
 ---
 
-## Plugin Categories Not Supported
+## Plugin categories not supported
 
 Beyond the top 10, here are categories of plugins that rustest doesn't support:
 
-### Framework Integration Plugins
+### Framework integration plugins
 
 - **pytest-django**: Use Django's test runner or pytest
 - **pytest-flask**: Use Flask's test client directly
@@ -797,7 +801,7 @@ Beyond the top 10, here are categories of plugins that rustest doesn't support:
 None of these frameworks have rustest-specific handling. Their own test utilities work inside
 ordinary rustest fixtures.
 
-### Async Frameworks Other Than asyncio
+### Async frameworks other than asyncio
 
 - **anyio**, **pytest-trio**, **pytest-tornasync**, **pytest-twisted**: not supported
 
@@ -805,7 +809,7 @@ rustest's async support is asyncio only. In `asyncio_mode = "strict"`, an unmark
 test fails with pytest's own message, which lists these plugins as things you might install
 under pytest; that is a reproduction of pytest's wording, not a statement that they work here.
 
-### Advanced Test Manipulation
+### Advanced test manipulation
 
 - **pytest-randomly**: Randomize test order (not supported)
 - **pytest-repeat**: Repeat tests N times (use bash loop or test-level retry decorator)
@@ -814,7 +818,7 @@ under pytest; that is a reproduction of pytest's wording, not a statement that t
 `-p no:randomly` and similar `-p` arguments are accepted and ignored, so an `addopts` line
 carrying one does not break the run.
 
-### Specialized Output Formats
+### Specialized output formats
 
 - **pytest-html**: HTML reports (not implemented)
 - **pytest-json-report**: use `--report-json PATH`, which writes a schema-2 JSON report of the
@@ -823,7 +827,7 @@ carrying one does not break the run.
   `record_testsuite_property` and `record_xml_attribute` fixtures are unavailable for the same
   reason.
 
-### IDE/Tool Integration
+### IDE/Tool integration
 
 - **pytest-pycharm**: PyCharm integration (use IDE's test runner)
 - **pytest-vscode**: VS Code integration (use test explorer)
@@ -832,11 +836,11 @@ Most IDEs can run rustest tests via Python's unittest discovery or by configurin
 
 ---
 
-## Hybrid Approach: Using Both pytest and rustest
+## Hybrid approach: using both pytest and rustest
 
 For projects with complex pytest plugin dependencies, you can use both tools:
 
-### Strategy 1: Split by Test Type
+### Strategy 1: split by test type
 
 ```bash
 # Fast unit tests with rustest
@@ -848,7 +852,7 @@ rustest tests/unit/
 pytest --cov=myapp tests/integration/
 ```
 
-### Strategy 2: Gradual Migration
+### Strategy 2: gradual migration
 
 ```python
 # conftest.py - Compatible with both
@@ -866,7 +870,7 @@ if TEST_RUNNER == "pytest":
     pytest_plugins = ["pytest_django", "pytest_cov"]
 ```
 
-### Strategy 3: Development vs CI
+### Strategy 3: development vs CI
 
 ```yaml
 # .github/workflows/test.yml
@@ -887,11 +891,11 @@ rustest does not implement.
 
 ---
 
-## Creating Your Own Solutions
+## Creating your own solutions
 
 For plugins not covered above, you can often replicate functionality with fixtures:
 
-### Template: Creating a Plugin Replacement
+### Template: creating a plugin replacement
 
 ```python
 # conftest.py
@@ -927,7 +931,7 @@ def test_something(my_custom_fixture):
     assert result == expected
 ```
 
-### Sharing Fixtures Across Projects
+### Sharing fixtures across projects
 
 Package the fixtures and name the module in `pytest_plugins`, or import them into a conftest:
 
@@ -946,7 +950,7 @@ pytest_plugins = "my_test_utils.fixtures"
 
 ---
 
-## Decision Tree: Should You Use rustest?
+## Decision tree: should you use rustest?
 
 ```
 Do you use pytest plugins?
@@ -962,7 +966,7 @@ Do you use pytest plugins?
         └─ Stick with pytest for now
 ```
 
-## Future Plans
+## Future plans
 
 Full plugin support is not planned. Built-in equivalents for common plugin use cases are.
 
@@ -989,7 +993,7 @@ Full plugin support is not planned. Built-in equivalents for common plugin use c
 
 ---
 
-## Getting Help
+## Getting help
 
 If you're migrating from pytest and encounter issues:
 
@@ -1020,7 +1024,7 @@ migration.
 
 ---
 
-## See Also
+## See also
 
 - [Comparison with pytest](comparison.md) - Feature-by-feature comparison
 - [Migration Guide](migration-guide.md) - General pytest to rustest migration

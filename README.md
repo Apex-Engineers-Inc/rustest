@@ -51,13 +51,13 @@ node ids, outcome tallies and exit codes, case by case, on every commit.
 ## What about speed?
 
 **Speed is not what this release is about.** The rewrite behind it was spent on
-compatibility, stability and reliability — on being a drop-in replacement that agrees with
+compatibility, stability and reliability: on being a drop-in replacement that agrees with
 pytest, which is what the table above measures. Making it *fast* is the next body of work,
 not this one.
 
 What it does today, honestly: **1.1x to 5.7x** across those same seventeen suites,
 **1.23x** aggregated over all of them, **2.74x** across the fifteen that are not dominated
-by their own test bodies. Useful, and measured rather than asserted — but a long way from
+by their own test bodies. Useful, and measured rather than asserted, but a long way from
 the headline multipliers rustest used to advertise. Those described an earlier engine that
 has since been deleted, and they are gone from every page rather than quietly inherited.
 
@@ -78,7 +78,7 @@ it is the ceiling:
 
 **A 1.2x on a body-bound suite and a 5.7x on a framework-bound one are the same result.**
 If your suite spends 95% of its wall clock inside your own functions, no runner will give
-you more than a few percent — so if speed is your only reason to switch, measure your own
+you more than a few percent, so if speed is your only reason to switch, measure your own
 framework share first. The component numbers are where today's difference comes from:
 
 | Component (500 files / 5,000 tests) | pytest | rustest | |

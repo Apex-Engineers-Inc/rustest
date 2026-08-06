@@ -1,4 +1,4 @@
-# pytest Compatibility
+# pytest compatibility
 
 **pytest compatibility is not a mode. It is what rustest is.**
 
@@ -15,11 +15,12 @@ pip install "rustest==1.0.0rc1"
 rustest tests/
 ```
 
-!!! warning "`--pytest-compat` was removed"
-    It used to opt into a *compatibility mode*. The rewrite made that mode the default
-    and the only behaviour, so the flag could only have been a no-op or a lie.
-    Passing it now exits **4** with a pointer to `CHANGELOG.md`, and so does `--v1`. See
-    [The legacy engine](#the-legacy-engine) below.
+::: {.callout-warning title="`--pytest-compat` was removed"}
+It used to opt into a *compatibility mode*. The rewrite made that mode the default
+and the only behaviour, so the flag could only have been a no-op or a lie.
+Passing it now exits **4** with a pointer to `CHANGELOG.md`, and so does `--v1`. See
+[The legacy engine](#the-legacy-engine) below.
+:::
 
 There is one engine, so everything on this page describes it.
 
@@ -186,14 +187,14 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 
 | gap | what happens | cost |
 | --- | --- | --- |
-| **`path::node::id` selection** | Everything after `::` in a path argument is ignored, so `rustest test_m.py::test_a` runs **every** test in `test_m.py`. A node id that no longer exists behaves identically, where pytest answers `collected 0 items`. | The failure is silent and can go either way: a CI line aimed at one test goes red for a neighbour, or green for a test that was deleted. Select with `-k` instead — `rustest test_m.py -k "test_a"`. The ids rustest *prints* are byte-identical to pytest's; only selection **by** them is missing. See [the CLI page](cli.md#running-specific-files). |
+| **`path::node::id` selection** | Everything after `::` in a path argument is ignored, so `rustest test_m.py::test_a` runs **every** test in `test_m.py`. A node id that no longer exists behaves identically, where pytest answers `collected 0 items`. | The failure is silent and can go either way: a CI line aimed at one test goes red for a neighbour, or green for a test that was deleted. Select with `-k` instead: `rustest test_m.py -k "test_a"`. The ids rustest *prints* are byte-identical to pytest's; only selection **by** them is missing. See [the CLI page](cli.md#running-specific-files). |
 | **`pytest.exit(returncode=N)`** | `pytest.exit()` itself stops the session and exits 2, pytest's answer. The `returncode=` payload is not honoured (the worker exit code is the whole channel), and an `exit()` at *import* time surfaces as exit 3 rather than 2. | A custom exit code is lost. Corpus case `marks/pytest-exit`. |
 | **Session fixtures across workers** | A `session`-scoped fixture is built once per **worker** process, and a worker is handed a subset of the files. At `-n 1` that is pytest's behaviour exactly; across a pool it is pytest-xdist's. | Cross-file shared state works within a worker, not across the pool. Corpus case `fixtures/session-scope`. |
 | **No item reordering** | pytest groups tests that share a higher-scoped parametrized fixture; rustest keeps source order. | A module-scoped `params=["a", "b"]` fixture costs 2 setups under pytest and 4 here. Corpus case `fixtures/module-param-reorder`. |
 | **`package` scope** | Cached for the worker's lifetime; not torn down at the package boundary. | Late teardown. |
 | **Async concurrency** | Async tests in the same loop scope run sequentially, as they do under pytest-asyncio, which drives each coroutine through a non-re-entrant `asyncio.Runner.run`. | No wall-clock overlap, and none under pytest either. Listed so it is not mistaken for a divergence; `loop_scope` itself is implemented. |
 | **`PYTEST_ADDOPTS`** | The `addopts` **ini** is applied; the environment variable is not. | Options exported into the environment are ignored. Set them in the ini or on the command line. |
-| **Markdown code blocks** | Off by default; `--codeblocks`, or `[tool.rustest] codeblocks = true`, turns it on. With it off, a `.md` argument is a usage error and rustest's answer matches pytest's **exactly** — this is no longer a divergence. With it on, rustest collects python fences out of a `.md` file **named as an argument**; a *directory* walk still collects none. | `rustest user_guide/` runs nothing either way, so name the files once enabled: `rustest user_guide/*.md --codeblocks`. pytest has no equivalent without a plugin, which is why the walk does not, even with the tier on. |
+| **Markdown code blocks** | Off by default; `--codeblocks`, or `[tool.rustest] codeblocks = true`, turns it on. With it off, a `.md` argument is a usage error and rustest's answer matches pytest's **exactly**, so this is no longer a divergence. With it on, rustest collects python fences out of a `.md` file **named as an argument**; a *directory* walk still collects none. | `rustest user_guide/` runs nothing either way, so name the files once enabled: `rustest user_guide/*.md --codeblocks`. pytest has no equivalent without a plugin, which is why the walk does not, even with the tier on. |
 | **Reporting-only flags** | Accepted and ignored, with a note on stderr naming each one. | See the table below. |
 | **`capsys` is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors, exactly as pytest's `capsys` is. | Use `capfd` for a subprocess or a C extension; it redirects the descriptors and does catch them (probed both ways). |
 | **`xfail_strict` ini, `--runxfail`** | Not implemented. The `strict=` *keyword* works. | Set `strict=` on the mark. |
@@ -298,9 +299,9 @@ a rustest run; under pytest, `import pytest` is pytest.
 ## The legacy engine
 
 **It is gone.** `--v1` used to run the previous engine, frozen, as somewhere for a suite the
-current engine could not yet run to go. The rewrite deleted both halves of it — the Rust
+current engine could not yet run to go. The rewrite deleted both halves of it, the Rust
 discovery/execution core and the Python runtime around it, roughly 15 000 lines and six Rust
-dependencies — rather than keep a second answer alive behind a flag that no gate measured.
+dependencies, rather than keep a second answer alive behind a flag that no gate measured.
 
 Passing `--v1` exits **4** with a message naming the change. `rustest.run()`, which used to
 be that engine's Python API, now drives the default engine and returns pytest's exit code

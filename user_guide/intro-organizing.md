@@ -1,8 +1,8 @@
-# Organizing Your Tests
+# Organizing your tests
 
 As your project grows, you'll need to organize your tests effectively. This guide shows you how to structure tests for maintainability and clarity.
 
-## Directory Structure
+## Directory structure
 
 A typical Python project with tests looks like this:
 
@@ -22,7 +22,7 @@ my_project/
 └── README.md
 ```
 
-### Why a `tests/` Directory?
+### Why a `tests/` directory?
 
 Keeping tests separate from code gives you:
 
@@ -31,7 +31,7 @@ Keeping tests separate from code gives you:
 - **Better packaging.** Tests don't ship with your app
 - **Flexible testing.** Run all tests with one command
 
-### Alternative Structure
+### Alternative structure
 
 For larger projects, mirror your code structure:
 
@@ -56,22 +56,22 @@ my_project/
 
 This makes it easy to find tests for specific code files.
 
-## Naming Conventions
+## Naming conventions
 
 Rustest automatically finds tests using these patterns:
 
-### Test Files
+### Test files
 
 - `test_*.py` is collected, for example `test_auth.py`
 - `*_test.py` is collected, for example `auth_test.py`
 - `tests.py` is not collected, because it matches neither pattern
 
-### Test Functions
+### Test functions
 
 - `test_*()` is collected, for example `test_login()`
 - `check_login()` is not collected, because it doesn't start with `test_`
 
-### Test Classes
+### Test classes
 
 - `Test*` is collected, for example `TestUserAuth`
 - `AuthTests` is not collected, because it doesn't start with `Test`
@@ -79,10 +79,11 @@ Rustest automatically finds tests using these patterns:
 These are pytest's defaults, and rustest reads the same `python_files`, `python_classes`
 and `python_functions` ini settings if your project overrides them.
 
-!!! tip "Be Consistent"
-    Pick one style (`test_*.py` or `*_test.py`) and stick with it across your project.
+::: {.callout-tip title="Be Consistent"}
+Pick one style (`test_*.py` or `*_test.py`) and stick with it across your project.
+:::
 
-## Grouping Tests with Marks
+## Grouping tests with marks
 
 **Marks** let you categorize and filter tests:
 
@@ -105,7 +106,7 @@ def test_large_dataset():
     assert result.success
 ```
 
-### Running Specific Marks
+### Running specific marks
 
 ```bash
 # Run only unit tests
@@ -118,7 +119,7 @@ rustest -m "not slow"
 rustest -m "integration or slow"
 ```
 
-### Common Marks
+### Common marks
 
 <!--rustest.mark.skip-->
 ```python
@@ -129,7 +130,7 @@ rustest -m "integration or slow"
 @mark.regression    # Tests for previously fixed bugs
 ```
 
-## Test Classes
+## Test classes
 
 Group related tests in classes:
 
@@ -163,14 +164,14 @@ class TestUserAuth:
         assert user.is_logged_in is False
 ```
 
-### Benefits of Test Classes
+### Benefits of test classes
 
 - **Logical grouping.** Related tests stay together
 - **Shared setup.** A fixture defined in the class is available to every test in it
 - **Clearer output.** The class name is part of every node id
 - **Easier navigation.** One place to look for one area of behavior
 
-### Sharing Setup in Classes
+### Sharing setup in classes
 
 ```python
 from rustest import fixture
@@ -205,7 +206,7 @@ class TestShoppingCart:
         assert cart.total == 0.00
 ```
 
-## Sharing Fixtures with conftest.py
+## Sharing fixtures with conftest.py
 
 For fixtures used across multiple test files, use `conftest.py`:
 
@@ -269,7 +270,7 @@ tests/
 
 Fixtures in inner `conftest.py` override outer ones if they have the same name.
 
-## Separating Test Types
+## Separating test types
 
 Organize tests by type for flexibility:
 
@@ -298,9 +299,9 @@ rustest tests/integration/
 rustest tests/
 ```
 
-## Running Tests Efficiently
+## Running tests efficiently
 
-### Run Only Changed Tests
+### Run only changed tests
 
 Use `--lf` (last failed) to rerun failed tests:
 
@@ -314,7 +315,7 @@ Use `--ff` (failed first) to run failed tests first, then all others:
 rustest --ff
 ```
 
-### Filter by Name
+### Filter by name
 
 Run tests matching a pattern:
 
@@ -334,7 +335,7 @@ function name (parameter id included), and also against the names of any marks i
 So `-k "not slow"` drops both a test called `test_slow_import` and a test carrying
 `@mark.slow`. When you mean the mark and only the mark, use `-m "not slow"`.
 
-### Stop on First Failure
+### Stop on first failure
 
 Fail fast for quick debugging:
 
@@ -342,7 +343,7 @@ Fail fast for quick debugging:
 rustest -x  # Exit after first failure
 ```
 
-### Combine Options
+### Combine options
 
 ```bash
 # Run failed tests first, stop on first new failure
@@ -352,7 +353,7 @@ rustest --ff -x
 rustest tests/unit/ -m "not slow"
 ```
 
-## Real-World Project Structure
+## Real-world project structure
 
 Here's a complete example:
 
@@ -392,7 +393,7 @@ rustest
 rustest -v
 ```
 
-## Best Practices
+## Best practices
 
 ### Keep tests fast
 
@@ -483,7 +484,7 @@ def test_divide_floats():
     assert divide(7, 2) == approx(3.5)
 ```
 
-## What's Next?
+## What's next?
 
 That is the end of the beginner track. Across the six pages you have seen why automated
 testing pays for itself, how to write and run a test, the fundamentals (arrange-act-assert,

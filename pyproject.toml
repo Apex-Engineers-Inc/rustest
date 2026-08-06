@@ -117,8 +117,8 @@ lint = "uv run --all-extras ruff check python conformance"
 typecheck = "uv run --all-extras basedpyright python conformance"
 pytests = "uv run pytest python/tests -v"
 tests = "uv run rustest tests/ examples/tests/"
-# Python, not `bash script.sh`, for the reason spelled out on the `docs` tasks below.
-demos = "python scripts/demos.py"
+# Re-records the terminal sessions the documentation site plays. See `demos/README.md`.
+demos = "python scripts/record_demos.py"
 # Both go through `scripts/docs.py`, which bootstraps `.venv-docs` -- see the
 # `[dependency-groups] docs` comment for why the docs toolchain does not live in `.venv`.
 #

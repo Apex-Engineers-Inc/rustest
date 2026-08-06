@@ -54,9 +54,10 @@ Errors come before failures deliberately: a file that did not import is a larger
 problem than an assertion that did not hold, because none of its tests were even
 attempted.
 
-!!! note "Completion sentinel"
-    The `summary` line is always the final line of a completed run. If it is
-    absent, the run was interrupted, a signal your tooling can rely on.
+::: {.callout-note title="Completion sentinel"}
+The `summary` line is always the final line of a completed run. If it is
+absent, the run was interrupted, a signal your tooling can rely on.
+:::
 
 ## Line types
 
@@ -105,11 +106,12 @@ A failure with no node ID to hang it on.
 | `file` | Present for `scope: "collection"` only. A teardown failure the engine could not attribute has no path, and inventing one would be a guess. |
 | `msg` | The engine's message, verbatim. |
 
-!!! warning "A collection error interrupts the run"
-    Exactly as under pytest: one unimportable file exits 2 even when other files
-    collected, and the tests in them were never attempted. The sentinel says so,
-    because `total` will be 0, which is what stops an agent reading "no failures"
-    off an aborted run.
+::: {.callout-warning title="A collection error interrupts the run"}
+Exactly as under pytest: one unimportable file exits 2 even when other files
+collected, and the tests in them were never attempted. The sentinel says so,
+because `total` will be 0, which is what stops an agent reading "no failures"
+off an aborted run.
+:::
 
 ### `skip` (with `-v`)
 
@@ -142,10 +144,11 @@ The counts are the engine's own, not a re-tally of the lines above, so they are
 correct at `-q`, where no `skip` line was emitted, and under `--maxfail`, where
 `total` is the selection rather than what ran.
 
-!!! danger "`stopped_early` matters"
-    `{"failed":1,"passed":0,"total":9}` reads as "one failure in a suite of nine"
-    when eight of the nine were never attempted. Check for `stopped_early` before
-    concluding anything about the tests that produced no line.
+::: {.callout-important title="`stopped_early` matters"}
+`{"failed":1,"passed":0,"total":9}` reads as "one failure in a suite of nine"
+when eight of the nine were never attempted. Check for `stopped_early` before
+concluding anything about the tests that produced no line.
+:::
 
 ### `error` versus `error`
 
@@ -177,16 +180,17 @@ the **values**, not just the source text: `assert 401 == 200`, not
 `assert response.status == 200`. It is the single highest-value string in the whole
 run for a coding agent, and it arrives without any parsing.
 
-!!! info "Changed in schema 2"
-    Schema 1 (rustest 0.18) split the same string into `error`, `msg`, `expected`,
-    `actual`, `code` and `frames` using six regexes over the traceback. Six fields
-    said what one string already said, the `expected`/`actual` pair only appeared
-    for comparisons a regex happened to recognise, and the rewriting was lost in
-    the shredding. Schema 2 emits the message and lets the model read it.
+::: {.callout-note title="Changed in schema 2"}
+Schema 1 (rustest 0.18) split the same string into `error`, `msg`, `expected`,
+`actual`, `code` and `frames` using six regexes over the traceback. Six fields
+said what one string already said, the `expected`/`actual` pair only appeared
+for comparisons a regex happened to recognise, and the rewriting was lost in
+the shredding. Schema 2 emits the message and lets the model read it.
 
-    The one thing still derived from the text is `line`, because the runner's
-    internal wire carries no line number. It is read off the last frame and
-    **omitted**, never `0` as schema 1 emitted, when there is no frame.
+The one thing still derived from the text is `line`, because the runner's
+internal wire carries no line number. It is read off the last frame and
+**omitted**, never `0` as schema 1 emitted, when there is no frame.
+:::
 
 ## Verbosity
 

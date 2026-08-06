@@ -3,17 +3,18 @@
 `rustest.run()` runs a suite from inside Python and returns pytest's exit code. It is the
 same entry point the `rustest` command uses: the CLI parses arguments and calls this.
 
-!!! warning "This function changed shape in this release"
-    `run()` used to take arguments including `capture_output`, `pytest_compat`, `ascii`,
-    `no_color` and `verbose`, and it returned a `rustest.reporting.RunReport` object. It is
-    now **keyword-only**, takes a different set of arguments, and returns an **`int`**.
+::: {.callout-warning title="This function changed shape in this release"}
+`run()` used to take arguments including `capture_output`, `pytest_compat`, `ascii`,
+`no_color` and `verbose`, and it returned a `rustest.reporting.RunReport` object. It is
+now **keyword-only**, takes a different set of arguments, and returns an **`int`**.
 
-    It is the engine entry point directly rather than a translating wrapper, and that is
-    deliberate. A shim would have accepted `pytest_compat=False` and silently done the
-    opposite (the compatibility shim is unconditional now), and would have returned an
-    integer where the old type hint promised a `RunReport`. An old call raises `TypeError`
-    immediately, naming the keyword it does not recognise. See the
-    [upgrade guide](migration-guide.md).
+It is the engine entry point directly rather than a translating wrapper, and that is
+deliberate. A shim would have accepted `pytest_compat=False` and silently done the
+opposite (the compatibility shim is unconditional now), and would have returned an
+integer where the old type hint promised a `RunReport`. An old call raises `TypeError`
+immediately, naming the keyword it does not recognise. See the
+[upgrade guide](migration-guide.md).
+:::
 
 ## Basic usage
 

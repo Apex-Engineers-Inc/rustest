@@ -4,7 +4,7 @@ Parametrization runs one test body against many inputs. Each input becomes a sep
 with its own node id, so a failure names the case that failed instead of the loop that
 contained it.
 
-## Basic Parametrization
+## Basic parametrization
 
 Use the `@parametrize` decorator to run a test multiple times with different arguments:
 
@@ -28,7 +28,7 @@ test_double.py::test_double[2-4] PASSED                                 [ 66%]
 test_double.py::test_double[3-6] PASSED                                 [100%]
 ```
 
-## How IDs Are Generated
+## How IDs are generated
 
 The part in brackets is pytest's, generated the same way and byte-identical to what pytest
 produces for the same values. One component per argument name, joined with `-`:
@@ -42,9 +42,9 @@ produces for the same values. One component per argument name, joined with `-`:
 
 Pass `ids=` when the generated form is unreadable; see [Custom Test IDs](#custom-test-ids).
 
-## Parameter Formats
+## Parameter formats
 
-### Comma-Separated String
+### Comma-separated string
 
 Names in one string, split on commas. This is the form most pytest suites use:
 
@@ -60,7 +60,7 @@ def test_addition(x: int, y: int, expected: int) -> None:
     assert x + y == expected
 ```
 
-### List of Strings
+### List of strings
 
 One name per element. For two or more names this is equivalent to the string form; for
 exactly one name the two forms differ, as the next section describes:
@@ -77,7 +77,7 @@ def test_addition(x: int, y: int, expected: int) -> None:
     assert x + y == expected
 ```
 
-## Single Parameter
+## Single parameter
 
 With one name, values are passed through as they are:
 
@@ -104,7 +104,7 @@ def test_is_positive_unpacked(value: int) -> None:
     assert value > 0
 ```
 
-## Custom Test IDs
+## Custom test IDs
 
 `ids=` takes one string per case and replaces the generated id entirely. The list must be
 the same length as the value list:
@@ -167,7 +167,7 @@ def test_calculator(operation: str, a: int, b: int, expected: int) -> None:
         assert a / b == expected
 ```
 
-## Parametrizing with Fixtures
+## Parametrizing with fixtures
 
 Parameters and fixtures are resolved independently, so a test can request both. Names that
 are not parametrized are looked up in the fixture registry as usual:
@@ -188,7 +188,7 @@ def test_multiply(multiplier: int, value: int, expected: int) -> None:
     assert multiplier * value == expected
 ```
 
-## Indirect Parametrization
+## Indirect parametrization
 
 `indirect=` routes a parametrized value **through a fixture of the same name** instead of
 handing it straight to the test. The fixture reads it as `request.param`; the test receives
@@ -198,15 +198,16 @@ making a name indirect never changes a test id.
 This is pytest's meaning, ported in full
 (`_pytest/python.py::Metafunc._resolve_args_directness`).
 
-!!! warning "This changed in 1.0"
-    rustest used to read an indirect value as *the name of a fixture to resolve*. That was a
-    rustest-only reading that borrowed pytest's keyword, so a suite written for pytest got
-    the wrong value. Rewrite `@parametrize("data", ["fixture_a"], indirect=True)` as a
-    fixture that reads `request.param`. The recipes below show how, including the
-    `request.getfixturevalue(request.param)` form that reproduces the old behaviour when you
-    really do want to select a fixture by name.
+::: {.callout-warning title="This changed in 1.0"}
+rustest used to read an indirect value as *the name of a fixture to resolve*. That was a
+rustest-only reading that borrowed pytest's keyword, so a suite written for pytest got
+the wrong value. Rewrite `@parametrize("data", ["fixture_a"], indirect=True)` as a
+fixture that reads `request.param`. The recipes below show how, including the
+`request.getfixturevalue(request.param)` form that reproduces the old behaviour when you
+really do want to select a fixture by name.
+:::
 
-### Using `indirect` with a List
+### Using `indirect` with a list
 
 Name the parameters to route; the rest stay direct:
 
@@ -242,7 +243,7 @@ def test_all_positive(dataset: list) -> None:
     assert all(x > 0 for x in dataset)
 ```
 
-### Selecting a Fixture by Name
+### Selecting a fixture by name
 
 The old behaviour, written the way pytest writes it: one fixture that resolves the name it
 is handed.
@@ -267,24 +268,25 @@ def test_all_positive(chosen: list) -> None:
     assert all(x > 0 for x in chosen)
 ```
 
-!!! note "`indirect="name"` is not a shorthand"
-    A `str` is a `Sequence`, so pytest iterates it character by character and
-    `indirect="config"` fails with `indirect fixture 'c' doesn't exist`. rustest reproduces
-    that. Pass `["config"]` or `True`.
+::: {.callout-note title="`indirect="name"` is not a shorthand"}
+A `str` is a `Sequence`, so pytest iterates it character by character and
+`indirect="config"` fails with `indirect fixture 'c' doesn't exist`. rustest reproduces
+that. Pass `["config"]` or `True`.
+:::
 
-### Why Use Indirect Parametrization?
+### Why use indirect parametrization?
 
 - **Complex setup per parameter**: the fixture can do work, and teardown, for each value
 - **Wider scopes**: a module-scoped fixture parametrized indirectly is built once per value
 - **Reuse**: the same fixture serves tests that do not parametrize it at all
 
-## Complex Parameter Values
+## Complex parameter values
 
 Any Python object can be a parameter value. Containers and instances have no id of their
 own, so the generated ids for the three sections below are `user0`, `user1`, `numbers0` and
 so on; that is why the first two pass `ids=`.
 
-### Using Dictionaries
+### Using dictionaries
 
 ```python
 from rustest import parametrize
@@ -299,7 +301,7 @@ def test_user_valid(user: dict) -> None:
     assert user["age"] > 0
 ```
 
-### Using Objects
+### Using objects
 
 ```python
 from dataclasses import dataclass
@@ -318,7 +320,7 @@ def test_user_email(user: User) -> None:
     assert "@" in user.email
 ```
 
-### Using Lists
+### Using lists
 
 ```python
 from rustest import parametrize
@@ -332,7 +334,7 @@ def test_sum_positive(numbers: list) -> None:
     assert sum(numbers) > 0
 ```
 
-## Multiple Parametrize Decorators
+## Multiple parametrize decorators
 
 Stacked decorators produce the cross product of their value lists:
 
@@ -353,7 +355,7 @@ the id:
 - `test_combinations[4-1]` (x=1, y=4)
 - `test_combinations[4-2]` (x=2, y=4)
 
-## Parametrizing Test Classes
+## Parametrizing test classes
 
 A `@parametrize` on the class applies to every test method it contains, and each method
 takes the parameter as an argument:
@@ -373,9 +375,9 @@ class TestNumber:
 That is six tests: `TestNumber::test_positive[1]` through `TestNumber::test_less_than_ten[3]`.
 A method that carries its own `@parametrize` gets the cross product of the two.
 
-## Real-World Examples
+## Real-world examples
 
-### Testing Edge Cases
+### Testing edge cases
 
 ```python
 from rustest import parametrize
@@ -391,7 +393,7 @@ def test_string_length(text: str, expected: int) -> None:
     assert len(text) == expected
 ```
 
-### Testing Multiple Data Types
+### Testing multiple data types
 
 ```python
 from rustest import parametrize
@@ -407,7 +409,7 @@ def test_type_checking(value, expected_type):
     assert isinstance(value, expected_type)
 ```
 
-### Testing Error Conditions
+### Testing error conditions
 
 ```python
 from rustest import parametrize, raises
@@ -422,7 +424,7 @@ def test_invalid_conversion(invalid_input, error_type):
         int(invalid_input)
 ```
 
-### Testing API Responses
+### Testing API responses
 
 ```python
 from rustest import parametrize
@@ -448,9 +450,9 @@ def test_api_endpoints(endpoint: str, expected_status: int):
     assert response.status_code == expected_status
 ```
 
-## Best Practices
+## Best practices
 
-### Use Meaningful IDs
+### Use meaningful IDs
 
 Without `ids=`, the cases below collect as `17-False`, `18-True`, and `65-True`. Those say
 what the values are but not what each one is testing:
@@ -480,7 +482,7 @@ def test_age_validation(age: int, valid: bool):
     assert is_adult(age) == valid
 ```
 
-### Keep Test Cases Focused
+### Keep test cases focused
 
 ```python
 from rustest import parametrize
@@ -509,7 +511,7 @@ def test_number_sign(value: int, expected: str):
         assert value < 0
 ```
 
-### Document Complex Parameters
+### Document complex parameters
 
 ```python
 from rustest import parametrize
@@ -539,7 +541,7 @@ def test_environment_behavior(config: dict, expected_result: str):
     assert result.cache_status == expected_result
 ```
 
-## Next Steps
+## Next steps
 
 - [Fixtures](intro-fixtures.md) - Combine fixtures with parametrization
 - [Marks & Skipping](marks.md) - Mark parametrized tests

@@ -1,0 +1,13 @@
+{"version": 1, "format": "termshow", "term": {"cols": 78, "rows": 13, "type": "xterm-256color"}, "title": "rustest"}
+[0.0, "o", "\u001b[1;32m$\u001b[0m "]
+[0.045, "o", "r"]
+[0.045, "o", "u"]
+[0.045, "o", "s"]
+[0.045, "o", "t"]
+[0.045, "o", "e"]
+[0.045, "o", "s"]
+[0.045, "o", "t"]
+[0.35, "o", "\r\n"]
+[0.522, "o", "================================= FAILURES =================================="]
+[0.0, "o", "\r\n_______________________________ test_addition _______________________________\r\nTraceback (most recent call last):\r\n  File \"C:\\tmp\\myproject\\test_math.py\", line 3, in test_addition\r\n    assert result == 5  # This is wrong on purpose!\r\n    ^^^^^^^^^^^^^^^^^^\r\nAssertionError: assert 4 == 5\r\n========================== short test summary info ==========================\r\nFAILED test_math.py::test_addition\r\n1 failed in 0.38s\r\n"]
+[0.6, "o", "\u001b[1;32m$\u001b[0m "]

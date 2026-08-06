@@ -1,4 +1,4 @@
-# Markdown Code Block Testing
+# Markdown code block testing
 
 rustest can run the Python code blocks in your markdown files as tests, so a documentation
 example that stops working fails the build instead of sitting there misleading people. This
@@ -8,10 +8,10 @@ The feature covers the same ground as pytest-codeblocks, including its skip mark
 needs no plugin.
 
 **It is off by default.** A block that defines `def test_*` functions runs each as its own
-test, with its own node id — not a dead-code example that looks tested and isn't. Read
+test, with its own node id, rather than as a dead-code example that looks tested and isn't. Read
 "Enabling It" first; every other section on this page assumes the setting is on.
 
-## Enabling It
+## Enabling it
 
 Nothing named `.md` collects until you turn this on. Highest precedence first:
 
@@ -37,7 +37,7 @@ codeblocks = true
 
 Within one `pyproject.toml`, `[tool.rustest]` wins over `[tool.pytest.ini_options]`. The
 pytest-section spelling is what lets `pytest.ini`, `tox.ini` and `setup.cfg` carry the
-setting too, since those files have no `[tool.rustest]` table to read — its cost is that a
+setting too, since those files have no `[tool.rustest]` table to read. Its cost is that a
 rustest-only key sits in pytest's namespace, so a real pytest run with `--strict-config`
 rejects it. Prefer `[tool.rustest]` for a `pyproject.toml`-based project.
 
@@ -46,7 +46,7 @@ downward walk. A `[tool.rustest]` table in a subdirectory's `pyproject.toml`, or
 above the repository, is not honoured.
 
 Without any of the above, naming a `.md` file is a usage error, exit 4 with
-`found no collectors for <path>` — pytest's own answer for the same argument:
+`found no collectors for <path>`, which is pytest's own answer for the same argument:
 
 ```bash
 rustest README.md    # ERROR: found no collectors for README.md   (no config, no flag)
@@ -67,10 +67,10 @@ rustest --no-codeblocks tests/
 ```
 
 This repository enables the setting for itself in `pyproject.toml`, which is what makes
-`rustest README.md user_guide/*.md` — the exact line CI runs — a real gate rather than one
+`rustest README.md user_guide/*.md`, the exact line CI runs, a real gate rather than one
 that passes vacuously because nothing was collected.
 
-## Naming the Files
+## Naming the files
 
 **Markdown files must be named as arguments.** A directory argument collects none, whatever
 the setting above says. Run from this repository, the two lines below do very different
@@ -91,7 +91,7 @@ Shell globs are the usual way to name a whole directory of pages. rustest's own 
 rustest README.md user_guide/*.md
 ```
 
-## Markdown File Example
+## Markdown file example
 
 Create a markdown file (e.g., `example.md`):
 
@@ -149,15 +149,15 @@ example.md::codeblock_2_line_13 PASSED                                  [100%]
 Every block is compiled with the markdown file as its filename, so a traceback names the
 page and the line rather than an anonymous `<string>`.
 
-## How a Block Executes
+## How a block executes
 
 A block's source runs at **collect time**, exactly when a `.py` test module's own top-level
-code runs — `collect_file` imports a `.py` file during collection, and a doc block goes
+code runs. `collect_file` imports a `.py` file during collection, and a doc block goes
 through the same collector (`collect_module`) once its source has been exec'd into a fresh
 module. This is not a special case built for `test_*`; it is the ordinary module-collection
 path, reused.
 
-Three consequences follow, and they are not new hazards — they are the same consequences a
+Three consequences follow, and they are not new hazards. They are the same consequences a
 `.py` file has always had:
 
 - **A `def test_*` inside a block really runs**, as its own test with its own node id. There
@@ -165,7 +165,7 @@ Three consequences follow, and they are not new hazards — they are the same co
 - **`--collect-only` runs the body.** Collecting is importing, for a block exactly as for
   a file.
 - **Deselecting a block does not stop its body from running.** `-k`, `-m "not codeblock"`
-  and `--lf` decide which *tests* execute, not which module-level code does — a block's
+  and `--lf` decide which *tests* execute, not which module-level code does. A block's
   statements outside any `def` already ran by the time selection is applied, identical to
   a `.py` module's imports and assignments. This is an accepted, deliberate consequence of
   reusing `.py` semantics, not a bug to route around.
@@ -195,18 +195,18 @@ def test_uses_a_fixture(sample):
 
 A block can request a fixture from a `conftest.py` above the markdown file, define its own
 `@fixture`, use `@parametrize`, define `Test*` classes, and use xunit-style `setup_function`/
-`setup_module` hooks — all of it resolves through the same conftest chain a `.py` file gets.
+`setup_module` hooks. All of it resolves through the same conftest chain a `.py` file gets.
 
 **One exception, and it is the sharpest edge on this page: autouse fixtures reach a block's
 inner tests, but not the block's own top-level statements.** The old mechanism ran the whole
 block body inside a fixture closure, so a conftest's `@fixture(autouse=True)` applied to
-bare, non-`def` code in the block. That is no longer true — the body now executes at
-collect, before any fixture closure exists — and it is consistent with `.py` semantics,
+bare, non-`def` code in the block. That is no longer true. The body now executes at
+collect, before any fixture closure exists, and that is consistent with `.py` semantics,
 where module-level code has never had autouse fixtures applied either. A doc example that
 relied on an autouse fixture at block top level needs to move that dependency into a
 `def test_*`.
 
-## Two Node Shapes
+## Two node shapes
 
 **A block defining one or more `def test_*` functions produces one node per test**, each
 addressable on its own:
@@ -236,9 +236,9 @@ def double(x: int) -> int:
 assert double(21) == 42
 ```
 
-## A Failing Block Is a Failing Test
+## A failing block is a failing test
 
-A block that raises is a **failing test**, carrying the traceback — not a file-level
+A block that raises is a **failing test**, carrying the traceback, rather than a file-level
 collection error. Siblings on the same page are unaffected:
 
 ````markdown
@@ -279,19 +279,19 @@ def test_never_defined():
   its own merits.
 - The block itself gets its own `codeblock_N_line_M` node, carrying the exec failure. This is
   the one situation where a test-defining block still gets a block-level node.
-- `test_never_defined` never came into being — its `def` was never reached — so no node for
+- `test_never_defined` never came into being, because its `def` was never reached, so no node for
   it exists at all; it does not appear as failing, skipped, or anything else.
 - Output the block printed before raising is **not** captured or attributed to the block's
   node. Capture wraps the execute phase, and a block's body now runs at collect, outside it,
-  so a `print()` reaches the orchestrator's stderr live and unattributed instead — the same
+  so a `print()` reaches the orchestrator's stderr live and unattributed instead. The same
   is true of a block that never raises at all. `--report-json` gives the block node no
   `stdout` key, where an ordinary failing `.py` test in the same run gets one.
 - The block node **replays** the outcome decided at collect; it does not re-run the body a
   second time at execute, which would double any side effect.
 
-## `-k` and the `codeblock` Mark
+## `-k` and the `codeblock` mark
 
-Every collected node — the single-node shape and every inner test — carries a `codeblock`
+Every collected node, the single-node shape and every inner test alike, carries a `codeblock`
 mark, so `-m` can select or exclude doc examples at either granularity:
 
 ```bash
@@ -306,9 +306,9 @@ rustest user_guide/fixtures.md -k codeblock_3_line_88   # every test in that one
 rustest user_guide/fixtures.md -k test_uses_tmp_path    # that one test, in whichever block defines it
 ```
 
-## Skipping Code Blocks
+## Skipping code blocks
 
-An HTML comment above a fence stops that block from being executed at all — not deselected,
+An HTML comment above a fence stops that block from being executed at all: not deselected,
 not collected-then-skipped, never even compiled:
 
 ```markdown
@@ -325,25 +325,27 @@ from its fence by a paragraph does nothing.
 
 The skipped block reports as `SKIPPED (Skipped via HTML comment marker)`.
 
-!!! warning "A skip marker is permanent, and it is silent"
-    Skipping does not just exempt a block from this run. It exempts it from every future run,
-    so nothing will ever tell you when the code in it stops being correct. A skipped example
-    that calls an API you later rename, or passes an argument you later reject, keeps sitting
-    on the page looking authoritative while CI stays green.
+::: {.callout-warning title="A skip marker is permanent, and it is silent"}
+Skipping does not just exempt a block from this run. It exempts it from every future run,
+so nothing will ever tell you when the code in it stops being correct. A skipped example
+that calls an API you later rename, or passes an argument you later reject, keeps sitting
+on the page looking authoritative while CI stays green.
 
-    Reach for the marker when a block genuinely cannot execute: it needs a service, a package
-    you will not depend on, or it is deliberately incomplete. When a block is skipped only
-    because it needs a little setup, write the setup instead — a fixture-taking `def test_*`
-    is a full test now, not a dead end. A stub of five lines is cheaper than an example that
-    quietly goes stale.
+Reach for the marker when a block genuinely cannot execute: it needs a service, a package
+you will not depend on, or it is deliberately incomplete. When a block is skipped only
+because it needs a little setup, write the setup instead. A fixture-taking `def test_*`
+is a full test now, not a dead end. A stub of five lines is cheaper than an example that
+quietly goes stale.
 
-    Skipped blocks are worth re-reading by hand whenever the API around them changes, because
-    no tool is going to do it for you.
+Skipped blocks are worth re-reading by hand whenever the API around them changes, because
+no tool is going to do it for you.
+:::
 
-!!! note "pytest compatibility"
-    For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+::: {.callout-note title="pytest compatibility"}
+For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+:::
 
-## Language Filtering
+## Language filtering
 
 Only Python code blocks are tested. The language is the text after the opening fence,
 lowercased, so ```` ```Python ```` counts and ```` ```pycon ```` does not. Other languages
@@ -368,7 +370,7 @@ echo "Hello"
 ```
 ````
 
-## Code Block Sharing State
+## Code block sharing state
 
 The fresh-namespace rule above is what this looks like in practice. The second block here
 fails, because `x` belongs to the first block's namespace and nothing carries it over:
@@ -398,7 +400,7 @@ assert x + y == 30
 ```
 ````
 
-## Handling Expected Failures
+## Handling expected failures
 
 If you want to show code that deliberately fails, use text blocks or describe the failure:
 
@@ -422,13 +424,13 @@ with raises(ZeroDivisionError):
 ```
 ````
 
-## Best Practices
+## Best practices
 
 ### Prefer a real assertion over a defined-but-uncalled function
 
 The old mechanism made this a hard rule: a `def test_*` in a block never ran, so any block
 whose checks lived only inside one was untested despite looking tested. Blocks execute for
-real now, so this is a style preference rather than a correctness requirement — but it is
+real now, so this is a style preference rather than a correctness requirement, but it is
 still worth keeping documentation examples short and their assertions visible at a glance:
 
 ```python
@@ -452,7 +454,7 @@ def test_example(sample):
     assert sample == "test"
 ```
 
-### Keep Code Blocks Focused
+### Keep code blocks focused
 
 ```python
 # Good - single concept per block
@@ -468,7 +470,7 @@ assert "test".replace("t", "T") == "TesT"
 # ... many more assertions
 ```
 
-### Use Realistic Examples
+### Use realistic examples
 
 ```python
 # Good - realistic usage
@@ -484,7 +486,7 @@ x = 1
 assert x == 1
 ```
 
-### Include Setup When Needed
+### Include setup when needed
 
 ```python
 # Good - shows complete example
@@ -503,9 +505,9 @@ assert Path(filepath).exists()
 Path(filepath).unlink()
 ```
 
-## Integration with Documentation Workflow
+## Integration with documentation workflow
 
-### During Development
+### During development
 
 Test your documentation as you write it:
 
@@ -536,7 +538,7 @@ spelling), add `--codeblocks` to the line above, or the step passes with nothing
 Point the glob at whatever directory holds your pages. A bare directory argument in that
 position silently tests nothing, and the step still goes green.
 
-### Pre-commit Hook
+### Pre-commit hook
 
 pre-commit passes the changed filenames to the hook by default, which is exactly the naming
 the collector needs. Restrict it to markdown with `files`:
@@ -552,7 +554,7 @@ the collector needs. Restrict it to markdown with `files`:
       files: \.md$
 ```
 
-## Programmatic Usage
+## Programmatic usage
 
 `rustest.run()` is keyword-only and returns pytest's exit code as an `int`. `codeblocks` is
 tri-state and defaults to `None`, meaning "config decides", matching the CLI: it does **not**
@@ -586,18 +588,18 @@ run(paths=["tests/"], codeblocks=False)
 - A block must be a complete, compilable Python fragment unless it is marked skipped
 - Interactive console transcripts are not recognised; render them as `text` if you need them
 - Autouse fixtures reach a block's inner tests but never the block's own top-level
-  statements — see "How a Block Executes" above
+  statements. See "How a Block Executes" above
 - Assertion rewriting does not apply inside a block, the same as any other non-Tier-S `.py`
   file: a failing `assert` is a bare `AssertionError`, without the rewritten
   `assert 41 == 42`-style comparison
 - `-n` distributes work by **file**, so a page with many blocks serializes on one worker
   while separate pages parallelize across workers
 - A block's own top-level output is not captured or attributed to its node, whether the
-  block passes or fails — it reaches the orchestrator's stderr live instead, and
+  block passes or fails. It reaches the orchestrator's stderr live instead, and
   `--report-json` records no `stdout` for that node. Output printed inside a `def test_*`
   the block defines is captured normally, since that runs at execute like any other test
 
-## Next Steps
+## Next steps
 
 - [CLI Usage](cli.md) - Learn about --codeblocks, --no-codeblocks and other options
 - [Python API](python-api.md) - Control markdown testing programmatically

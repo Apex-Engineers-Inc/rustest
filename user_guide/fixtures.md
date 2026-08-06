@@ -2,7 +2,7 @@
 
 A fixture supplies a test with something it needs before it can run: sample data, a temporary directory, an open connection. Tests ask for fixtures by name, so one definition can serve a whole suite.
 
-## Basic Fixtures
+## Basic fixtures
 
 A fixture is a function decorated with `@fixture` that returns test data:
 
@@ -22,7 +22,7 @@ def test_user_name(sample_user: dict) -> None:
 
 Each parameter of a test function is matched against the registered fixture names, and the fixture's value is passed in.
 
-## Renaming Fixtures
+## Renaming fixtures
 
 The `name` parameter registers a fixture under a name other than its function's:
 
@@ -69,11 +69,11 @@ def test_query(db):
     assert result == 1
 ```
 
-## Fixture Scopes
+## Fixture scopes
 
 A fixture's scope decides how often it is built and when it is torn down. rustest accepts pytest's five: `function`, `class`, `module`, `package` and `session`. Any other value raises `ValueError` at decoration.
 
-### Function Scope (Default)
+### Function scope (default)
 
 Creates a new instance for each test function:
 
@@ -94,7 +94,7 @@ def test_increment_2(counter: dict) -> None:
     assert counter["count"] == 1  # Still 1, not 2
 ```
 
-### Class Scope
+### Class scope
 
 Shared across all test methods in a class:
 
@@ -119,7 +119,7 @@ class TestDatabase:
         assert len(database["data"]) == 1
 ```
 
-### Module Scope
+### Module scope
 
 Shared across all tests in a Python module:
 
@@ -138,7 +138,7 @@ def test_api_timeout(api_client: dict) -> None:
     assert api_client["timeout"] == 30
 ```
 
-### Session Scope
+### Session scope
 
 Built once per worker process and shared by every test that worker runs:
 
@@ -157,27 +157,29 @@ def test_config_loaded(config: dict) -> None:
     assert "environment" in config
 ```
 
-!!! warning "Session scope is per worker, not per run"
-    rustest hands each worker process a subset of the run's files, so a suite spread over
-    several workers gets one session-fixture instance per worker. That is pytest-xdist's
-    contract; `-n 1` gives pytest's exactly. Do not rely on a session fixture running
-    exactly once for side effects outside the process, such as creating a shared database.
+::: {.callout-warning title="Session scope is per worker, not per run"}
+rustest hands each worker process a subset of the run's files, so a suite spread over
+several workers gets one session-fixture instance per worker. That is pytest-xdist's
+contract; `-n 1` gives pytest's exactly. Do not rely on a session fixture running
+exactly once for side effects outside the process, such as creating a shared database.
+:::
 
-### Package Scope
+### Package scope
 
 `scope="package"` is accepted and behaves like session scope inside a worker: the fixture is
 built once and kept for that worker's lifetime. It is **not** torn down when the package's
 last test finishes, because a worker holds an arbitrary subset of the files and cannot know
 where the package's other tests ran.
 
-!!! tip "When to Use Each Scope"
-    - **function**: Test isolation is important (default)
-    - **class**: Expensive setup shared within a test class
-    - **module**: Expensive setup shared within a file
-    - **package**: As session, without a teardown at the package boundary
-    - **session**: Very expensive setup (database connections, config loading)
+::: {.callout-tip title="When to Use Each Scope"}
+- **function**: Test isolation is important (default)
+- **class**: Expensive setup shared within a test class
+- **module**: Expensive setup shared within a file
+- **package**: As session, without a teardown at the package boundary
+- **session**: Very expensive setup (database connections, config loading)
+:::
 
-## Fixture Dependencies
+## Fixture dependencies
 
 Fixtures can depend on other fixtures:
 
@@ -202,11 +204,11 @@ def test_repository(user_repository: dict) -> None:
 
 rustest resolves the dependency graph and builds each fixture before the ones that request it.
 
-## Autouse Fixtures
+## Autouse fixtures
 
 An autouse fixture runs for every test in its scope whether or not the test names it as a parameter. Use it for setup and teardown that should happen unconditionally.
 
-### Basic Autouse Fixture
+### Basic autouse fixture
 
 ```python
 import rustest
@@ -251,7 +253,7 @@ def test_user_deletion():
     assert not user_exists("Bob")
 ```
 
-### Autouse with Different Scopes
+### Autouse with different scopes
 
 Autouse fixtures respect scope boundaries just like regular fixtures:
 
@@ -313,7 +315,7 @@ def test_second():
     pass
 ```
 
-### Autouse Fixtures with Dependencies
+### Autouse fixtures with dependencies
 
 Autouse fixtures can depend on other fixtures:
 
@@ -351,7 +353,7 @@ def test_user_count(database_connection):
     assert result > 0
 ```
 
-### Autouse with Test Classes
+### Autouse with test classes
 
 Autouse fixtures work with test classes too:
 
@@ -388,7 +390,7 @@ class TestUserService:
         assert self.service.is_ready()
 ```
 
-### Common Use Cases for Autouse
+### Common use cases for autouse
 
 **1. Logging and Monitoring**
 
@@ -436,12 +438,13 @@ def reset_global_state():
     global_state.reset()
 ```
 
-!!! tip "When to Use Autouse"
-    Autouse suits work that every test in a scope needs and no test should have to remember:
-    resetting a database, clearing a cache, initialising global state, logging the test
-    boundary, cleaning up temporary files.
+::: {.callout-tip title="When to Use Autouse"}
+Autouse suits work that every test in a scope needs and no test should have to remember:
+resetting a database, clearing a cache, initialising global state, logging the test
+boundary, cleaning up temporary files.
+:::
 
-## Yield Fixtures (Setup/Teardown)
+## Yield fixtures (Setup/Teardown)
 
 Use `yield` to perform cleanup after tests:
 
@@ -468,7 +471,7 @@ def test_file_exists(temp_file: str) -> None:
     # After this test, the file is automatically deleted
 ```
 
-### Yield Fixtures with Scopes
+### Yield fixtures with scopes
 
 Teardown timing depends on the fixture scope:
 
@@ -508,7 +511,7 @@ class TestQueries:
         # Connection stays open between tests
 ```
 
-## Shared Fixtures with conftest.py
+## Shared fixtures with conftest.py
 
 Create a `conftest.py` file to share fixtures across multiple test files:
 
@@ -541,7 +544,7 @@ def test_get_user(api_client, database):
     assert user is not None
 ```
 
-### Nested conftest.py Files
+### Nested conftest.py files
 
 rustest reads a `conftest.py` from every directory between the rootdir and the test file:
 
@@ -574,7 +577,7 @@ def api_url(base_config):  # Can depend on parent fixtures
 
 Child fixtures can override parent fixtures with the same name.
 
-### Loading Fixtures from External Modules
+### Loading fixtures from external modules
 
 A large suite can split its fixtures into separate Python modules and have `conftest.py` pull them in with a `pytest_plugins` declaration:
 
@@ -652,35 +655,37 @@ def test_admin_privileges(admin_user):
 
 A module named this way is registered with no nodeid, which is what pytest does with a plugin, so its fixtures are visible to the whole run rather than only below the conftest that named it. A module rustest cannot import becomes a collection error for the file, the same treatment a broken `import` in the conftest itself gets.
 
-!!! note "What this loads, and what it does not"
-    rustest reads `pytest_plugins` for its **fixtures** and nothing else. It imports the
-    named modules and registers their `@fixture` functions. Hooks those modules define are
-    never called, because rustest has no hook system: there is no pluggy, no `pytest11`
-    setuptools entry point, and no support for plugins built on hooks such as pytest-django.
-    A plugin that only supplies fixtures works; one that implements
-    `pytest_collection_modifyitems` is silently inert.
+::: {.callout-note title="What this loads, and what it does not"}
+rustest reads `pytest_plugins` for its **fixtures** and nothing else. It imports the
+named modules and registers their `@fixture` functions. Hooks those modules define are
+never called, because rustest has no hook system: there is no pluggy, no `pytest11`
+setuptools entry point, and no support for plugins built on hooks such as pytest-django.
+A plugin that only supplies fixtures works; one that implements
+`pytest_collection_modifyitems` is silently inert.
+:::
 
-!!! warning "pytest requires this declaration at the rootdir. rustest does not."
-    The layout above puts `pytest_plugins` in `tests/conftest.py`, below a rootdir at
-    `project/`. rustest accepts that. **pytest refuses it**, and the reason is the run-wide
-    registration described just above:
+::: {.callout-warning title="pytest requires this declaration at the rootdir. rustest does not."}
+The layout above puts `pytest_plugins` in `tests/conftest.py`, below a rootdir at
+`project/`. rustest accepts that. **pytest refuses it**, and the reason is the run-wide
+registration described just above:
 
-    ```text
-    Defining 'pytest_plugins' in a non-top-level conftest is no longer supported:
-    It affects the entire test suite instead of just below the conftest as expected.
-    ```
+```text
+Defining 'pytest_plugins' in a non-top-level conftest is no longer supported:
+It affects the entire test suite instead of just below the conftest as expected.
+```
 
-    The refusal depends on how pytest is invoked, which is what makes it easy to miss.
-    Naming the directory works (`pytest tests/` loads that conftest as an initial one);
-    collecting from the project root (`pytest` or `pytest .`) is a collection error that
-    stops the run. A suite can therefore pass locally and fail in CI on the same tree.
+The refusal depends on how pytest is invoked, which is what makes it easy to miss.
+Naming the directory works (`pytest tests/` loads that conftest as an initial one);
+collecting from the project root (`pytest` or `pytest .`) is a collection error that
+stops the run. A suite can therefore pass locally and fail in CI on the same tree.
 
-    If your suite must run under both, put the declaration in the **rootdir**
-    `conftest.py`. If it only ever runs under rustest, either placement works. Either way
-    the fixtures are registered run-wide, so moving the declaration up does not change
-    which tests can see them.
+If your suite must run under both, put the declaration in the **rootdir**
+`conftest.py`. If it only ever runs under rustest, either placement works. Either way
+the fixtures are registered run-wide, so moving the declaration up does not change
+which tests can see them.
+:::
 
-## Fixture Methods in Test Classes
+## Fixture methods in test classes
 
 Fixtures can be defined as methods on a test class, where they are visible to that class and to nothing else:
 
@@ -730,9 +735,9 @@ class TestUserService:
         assert not user_service.exists(sample_user.id)
 ```
 
-## Advanced Examples
+## Advanced examples
 
-### Fixture Providing Multiple Values
+### Fixture providing multiple values
 
 ```python
 from rustest import fixture
@@ -769,7 +774,7 @@ def test_caching(database_and_cache):
     assert cache is not None
 ```
 
-### Conditional Fixture Behavior
+### Conditional fixture behavior
 
 ```python
 import os
@@ -796,7 +801,7 @@ def test_database(database):
     assert database.url is not None
 ```
 
-### Fixtures with Complex Setup
+### Fixtures with complex setup
 
 ```python
 from rustest import fixture
@@ -844,9 +849,9 @@ def test_environment_setup(test_environment):
     assert test_environment["server"] is not None
 ```
 
-## Best Practices
+## Best practices
 
-### Keep Fixtures Focused
+### Keep fixtures focused
 
 Each fixture should have a single, clear purpose:
 
@@ -894,7 +899,7 @@ def test_all_data(test_data):
     assert test_data["user"] is not None
 ```
 
-### Use Appropriate Scopes
+### Use appropriate scopes
 
 Choose the narrowest scope that meets your needs:
 
@@ -924,7 +929,7 @@ def test_config(config):
     assert config["env"] == "test"
 ```
 
-### Document Your Fixtures
+### Document your fixtures
 
 Add docstrings to complex fixtures:
 
@@ -953,7 +958,7 @@ def test_database_documented(database):
     assert database is not None
 ```
 
-## Built-in Fixtures
+## Built-in fixtures
 
 rustest ships ports of pytest's own built-in fixtures. They need no import and no `conftest.py` entry: `tmp_path`, `tmp_path_factory`, `tmpdir`, `tmpdir_factory`, `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `mocker`, `pytestconfig` and `recwarn`, plus `request`.
 
@@ -962,7 +967,7 @@ Nine of pytest's are still missing: `capsysbinary`, `capfdbinary`, `capteesys`,
 `record_testsuite_property` and `record_xml_attribute`. Asking for one is an error that
 names the fixture, never a silent skip.
 
-### tmp_path - Temporary Directories with pathlib
+### tmp_path - temporary directories with pathlib
 
 The `tmp_path` fixture provides a unique temporary directory for each test function as a `pathlib.Path` object:
 
@@ -988,11 +993,12 @@ own directory, named after the test itself (sanitised and cut to 30 characters) 
 run leaves a tree you can read. The whole tree is removed at the end of the session rather
 than after each test, which means a directory is still there while you are debugging.
 
-!!! tip "pathlib.Path"
-    `tmp_path` hands back a `pathlib.Path`, not a string, so you join with `/` and read and
-    write through `.mkdir()`, `.read_text()` and `.write_text()` without importing `os.path`.
+::: {.callout-tip title="pathlib.Path"}
+`tmp_path` hands back a `pathlib.Path`, not a string, so you join with `/` and read and
+write through `.mkdir()`, `.read_text()` and `.write_text()` without importing `os.path`.
+:::
 
-### tmp_path_factory - Creating Multiple Temporary Directories
+### tmp_path_factory - creating multiple temporary directories
 
 Use `tmp_path_factory` when one test needs several temporary directories, or needs to create them at chosen moments rather than at setup:
 
@@ -1035,12 +1041,13 @@ makes it usable as a uniqueness assertion.
 `tmp_path_factory` is session-scoped, so it lives for the worker's lifetime and removes
 everything it created when that worker finishes.
 
-!!! note "Factory vs Direct Fixture"
-    `tmp_path` covers the common case of one directory per test.
-    Reach for `tmp_path_factory` when a single test needs several, or needs to choose when
-    each one appears.
+::: {.callout-note title="Factory vs Direct Fixture"}
+`tmp_path` covers the common case of one directory per test.
+Reach for `tmp_path_factory` when a single test needs several, or needs to choose when
+each one appears.
+:::
 
-### tmpdir - Legacy Support for py.path
+### tmpdir - legacy support for py.path
 
 `tmpdir` is a `py.path.local` pointing at **the same directory** `tmp_path` returns, for suites still written against the `py` library:
 
@@ -1055,11 +1062,12 @@ def test_with_legacy_tmpdir(tmpdir) -> None:
     assert tmpdir.listdir()  # List directory contents
 ```
 
-!!! warning "Prefer tmp_path"
-    `tmpdir` exists for compatibility with older suites. Write new tests against `tmp_path`
-    and `pathlib.Path`.
+::: {.callout-warning title="Prefer tmp_path"}
+`tmpdir` exists for compatibility with older suites. Write new tests against `tmp_path`
+and `pathlib.Path`.
+:::
 
-### tmpdir_factory - Session-Level Legacy Temporary Directories
+### tmpdir_factory - Session-level legacy temporary directories
 
 `tmpdir_factory` is `tmp_path_factory` over the same tree, handing back `py.path.local` objects:
 
@@ -1075,11 +1083,11 @@ def test_with_legacy_factory(tmpdir_factory) -> None:
     assert file1.check()  # Check if file exists
 ```
 
-### monkeypatch - Patching Attributes and Environment Variables
+### monkeypatch - patching attributes and environment variables
 
 `monkeypatch` changes an attribute, an environment variable, a dictionary item, `sys.path` or the working directory for the duration of one test, then puts everything back:
 
-#### Patching Object Attributes
+#### Patching object attributes
 
 ```python
 class Config:
@@ -1094,7 +1102,7 @@ def test_patch_attribute(monkeypatch) -> None:
     # After the test, Config.debug reverts to False
 ```
 
-#### Patching Environment Variables
+#### Patching environment variables
 
 ```python
 import os
@@ -1111,7 +1119,7 @@ def test_remove_environment_variable(monkeypatch) -> None:
     # HOME is restored after the test
 ```
 
-#### Patching Dictionary Items
+#### Patching dictionary items
 
 ```python
 def test_patch_dict(monkeypatch) -> None:
@@ -1136,7 +1144,7 @@ def test_add_to_syspath(monkeypatch) -> None:
     # After the test, it's removed from sys.path
 ```
 
-#### Changing the Working Directory
+#### Changing the working directory
 
 ```python
 import os
@@ -1152,7 +1160,7 @@ def test_change_directory(monkeypatch, tmp_path: Path) -> None:
     # The original directory comes back at teardown, after this test returns
 ```
 
-#### Patching Module Functions
+#### Patching module functions
 
 ```python
 import json
@@ -1167,7 +1175,7 @@ def test_patch_module_function(monkeypatch) -> None:
     assert result == {"result": "mocked"}
 ```
 
-#### Using the Context Manager
+#### Using the context manager
 
 ```python
 from rustest.builtin_fixtures import MonkeyPatch
@@ -1182,11 +1190,12 @@ def test_with_context_manager() -> None:
     # Changes are reverted after the with block
 ```
 
-!!! tip "Automatic Cleanup"
-    The fixture undoes every change at teardown, including after a failing test, so one
-    test's patches cannot leak into the next.
+::: {.callout-tip title="Automatic Cleanup"}
+The fixture undoes every change at teardown, including after a failing test, so one
+test's patches cannot leak into the next.
+:::
 
-### capsys - Capturing stdout and stderr
+### capsys - capturing stdout and stderr
 
 `capsys` captures what a test writes to `sys.stdout` and `sys.stderr`:
 
@@ -1216,11 +1225,12 @@ def test_multiple_captures(capsys) -> None:
 
 `readouterr()` returns an `(out, err)` pair of strings and resets the buffers.
 
-!!! tip "Capture Resets on Read"
-    Because each `readouterr()` clears what it returns, a test can read the output of one
-    phase, then the output of the next, without the two running together.
+::: {.callout-tip title="Capture Resets on Read"}
+Because each `readouterr()` clears what it returns, a test can read the output of one
+phase, then the output of the next, without the two running together.
+:::
 
-### capfd - File Descriptor Level Capture
+### capfd - file descriptor level capture
 
 `capfd` has the same interface as `capsys` but redirects the **operating-system file descriptors** 1 and 2, so it also catches output that never passes through `sys.stdout`:
 
@@ -1237,14 +1247,16 @@ def test_fd_capture(capfd) -> None:
     assert captured.out.splitlines() == ["through sys.stdout", "straight to the descriptor"]
 ```
 
-!!! note "When to Use capfd vs capsys"
-    Use `capsys` for most Python output testing (`print`, `sys.stdout.write`).
-    Use `capfd` when the output is written straight to a file descriptor: a subprocess that inherits it, a C extension, or a bare `os.write(1, ...)`.
+::: {.callout-note title="When to Use capfd vs capsys"}
+Use `capsys` for most Python output testing (`print`, `sys.stdout.write`).
+Use `capfd` when the output is written straight to a file descriptor: a subprocess that inherits it, a C extension, or a bare `os.write(1, ...)`.
+:::
 
-!!! warning "One capture fixture per test"
-    `capsys` and `capfd` cannot both be requested by the same test. Doing so is a setup error reading `cannot use capfd and capsys at the same time`. They would each redirect the other's redirect, and whichever started second would silently swallow the first one's output. This matches pytest.
+::: {.callout-warning title="One capture fixture per test"}
+`capsys` and `capfd` cannot both be requested by the same test. Doing so is a setup error reading `cannot use capfd and capsys at the same time`. They would each redirect the other's redirect, and whichever started second would silently swallow the first one's output. This matches pytest.
+:::
 
-### caplog - Capturing Logging Output
+### caplog - capturing logging output
 
 `caplog` captures messages logged through Python's `logging` module. Its handler goes on the **root logger** and, exactly as under pytest, it changes no level: the root logger keeps its default of `WARNING`, so an `INFO` record is never created until you ask for one with `caplog.set_level`.
 
@@ -1274,10 +1286,11 @@ def test_only_warnings_by_default(caplog) -> None:
     assert "Low disk space" in caplog.text
 ```
 
-!!! warning "Loggers that do not propagate"
-    A logger with `propagate = False` never reaches a handler on the root logger, so its records are **not** captured, under pytest either. A suite that needs them adds `caplog.handler` to that logger itself.
+::: {.callout-warning title="Loggers that do not propagate"}
+A logger with `propagate = False` never reaches a handler on the root logger, so its records are **not** captured, under pytest either. A suite that needs them adds `caplog.handler` to that logger itself.
+:::
 
-#### Filtering by Log Level
+#### Filtering by log level
 
 Control which log levels are captured:
 
@@ -1313,7 +1326,7 @@ def test_with_at_level_context(caplog) -> None:
     assert "Not captured in context" not in caplog.messages
 ```
 
-#### Accessing Log Records
+#### Accessing log records
 
 Four attributes read the same capture at different levels of detail: `records` holds the raw `LogRecord` objects, `record_tuples` reduces each to `(name, level, message)`, `messages` keeps only the message strings, and `text` is the whole capture formatted as one string. `caplog.get_records("setup")` reads one phase on its own, with `"call"` and `"teardown"` as the other two.
 
@@ -1342,7 +1355,7 @@ def test_log_record_details(caplog) -> None:
     assert "Connection failed" in caplog.text
 ```
 
-#### Clearing Captured Logs
+#### Clearing captured logs
 
 Clear logs mid-test to isolate different phases:
 
@@ -1362,12 +1375,13 @@ def test_log_clearing(caplog) -> None:
     assert caplog.messages == ["Phase 2"]  # Only Phase 2 remains
 ```
 
-!!! tip "Testing Logging Behavior"
-    `caplog` is how a test asserts on logging itself: that the expected message was emitted,
-    that it came out at the level you intended, that a secret never reached the log, or that
-    an error path logged what it was supposed to before recovering.
+::: {.callout-tip title="Testing Logging Behavior"}
+`caplog` is how a test asserts on logging itself: that the expected message was emitted,
+that it came out at the level you intended, that a secret never reached the log, or that
+an error path logged what it was supposed to before recovering.
+:::
 
-### cache - Persistent Cache Between Test Runs
+### cache - persistent cache between test runs
 
 `cache` is a small JSON store under `.rustest_cache/` that survives between runs. It has three
 methods: `get(key, default)`, `set(key, value)` and `mkdir(name)`. The `default` argument to
@@ -1397,7 +1411,7 @@ def test_version_tracking(cache) -> None:
     cache.set("myapp/version", "1.1.0")
 ```
 
-#### Cache Operations
+#### Cache operations
 
 Reads and writes both go through named methods. There is no dict-style access: `cache[key]`,
 `cache[key] = value` and `key in cache` all raise `TypeError`. A missing key is not an error,
@@ -1416,7 +1430,7 @@ def test_cache_operations(cache) -> None:
     assert value == "fallback"
 ```
 
-#### Cache Storage
+#### Cache storage
 
 Values are JSON, written one file per key under `.rustest_cache/v/<key>`:
 
@@ -1439,7 +1453,7 @@ def test_cache_data_types(cache) -> None:
     assert cache.get("nested", None)["users"][0]["name"] == "Alice"
 ```
 
-#### Creating Cache Directories
+#### Creating cache directories
 
 `mkdir(name)` returns a directory under `.rustest_cache/d/<name>`, creating it if it is not
 already there. The name may not contain a path separator: the cache is a flat namespace, and a
@@ -1460,7 +1474,7 @@ def test_cache_directories(cache) -> None:
     assert (data_dir / "config.json").read_text() == '{"key": "value"}'
 ```
 
-#### Cache Keys Convention
+#### Cache keys convention
 
 A key with forward slashes in it becomes a nested path on disk, so a slash-separated prefix keeps one project's entries out of another's:
 
@@ -1479,18 +1493,20 @@ def test_cache_key_organization(cache) -> None:
     assert cache.get("test/results/last_run", None)["passed"] == 42
 ```
 
-!!! tip "Cache Use Cases"
-    Anything a run would rather not recompute: the result of an expensive setup step, a
-    record of what the previous run did, or a downloaded artifact a test needs. Reading
-    rustest's own `cache/lastfailed` entry falls in the same category.
+::: {.callout-tip title="Cache Use Cases"}
+Anything a run would rather not recompute: the result of an expensive setup step, a
+record of what the previous run did, or a downloaded artifact a test needs. Reading
+rustest's own `cache/lastfailed` entry falls in the same category.
+:::
 
-!!! warning "Cache Cleanup"
-    The cache persists between test runs by design. To clear the cache:
-    ```bash
-    rm -rf .rustest_cache/
-    ```
+::: {.callout-warning title="Cache Cleanup"}
+The cache persists between test runs by design. To clear the cache:
+```bash
+rm -rf .rustest_cache/
+```
+:::
 
-### mocker - Mocking and Test Doubles
+### mocker - mocking and test doubles
 
 `mocker` is a port of pytest-mock's fixture. It wraps `unittest.mock` and stops every patch it started when the test ends, newest first, so nested patches of one attribute unwind in the right order.
 
@@ -1541,13 +1557,14 @@ def test_direct_mock_creation(mocker):
     mock_obj.method.assert_called_once()
 ```
 
-!!! tip "pytest-mock Compatibility"
-    A suite written against [pytest-mock](https://pytest-mock.readthedocs.io/) should run
-    unchanged. Four pieces of it are missing: `mocker.patch.context_manager`, the
-    `mock_use_standalone_module` ini, the wider-scoped `class_mocker`, `module_mocker`,
-    `package_mocker` and `session_mocker` fixtures, and pytest-mock's process-wide rewriting
-    of `unittest.mock`'s `assert_called_with` family, which changes the failure message but
-    not the outcome.
+::: {.callout-tip title="pytest-mock Compatibility"}
+A suite written against [pytest-mock](https://pytest-mock.readthedocs.io/) should run
+unchanged. Four pieces of it are missing: `mocker.patch.context_manager`, the
+`mock_use_standalone_module` ini, the wider-scoped `class_mocker`, `module_mocker`,
+`package_mocker` and `session_mocker` fixtures, and pytest-mock's process-wide rewriting
+of `unittest.mock`'s `assert_called_with` family, which changes the failure message but
+not the outcome.
+:::
 
 **Main patching methods:**
 
@@ -1630,11 +1647,12 @@ def test_reset_an_untracked_mock(mocker):
     mock_fn.assert_not_called()
 ```
 
-!!! note "Automatic Cleanup"
-    Every patch and mock is undone when the test finishes. Calling `stop()` or `stopall()`
-    yourself is only for undoing a patch early, in the middle of a test.
+::: {.callout-note title="Automatic Cleanup"}
+Every patch and mock is undone when the test finishes. Calling `stop()` or `stopall()`
+yourself is only for undoing a patch early, in the middle of a test.
+:::
 
-### recwarn - Recording Warnings
+### recwarn - recording warnings
 
 `recwarn` collects the warnings a test raises, so they can be asserted on after the fact rather than caught at the point they are issued:
 
@@ -1651,7 +1669,7 @@ def test_records_a_warning(recwarn) -> None:
 The recorder is open for the whole test, and it installs the `"default"` warning filter, which
 is once per location. A warning raised twice from the same line is recorded once.
 
-### pytestconfig - The Session Config Object
+### pytestconfig - the session config object
 
 `pytestconfig` is the session-scoped form of `request.config`, for code that wants the config without going through a request:
 
@@ -1663,13 +1681,13 @@ def test_rootdir_is_known(pytestconfig) -> None:
 
 The same limits apply to both: see the warning under [Accessing Configuration](#accessing-configuration) below.
 
-### request - Accessing Test Metadata and Parameters
+### request - accessing test metadata and parameters
 
 `request` gives a fixture or a test access to the item it is running for: the node, the
 config, and the current value of a parametrized fixture. It is available everywhere without
 being registered.
 
-#### Type Annotation
+#### Type annotation
 
 Annotate the parameter with `FixtureRequest`, which is importable from `rustest`:
 
@@ -1683,7 +1701,7 @@ def my_fixture(request: FixtureRequest):
     return "data"
 ```
 
-#### Parametrized Fixtures
+#### Parametrized fixtures
 
 A fixture declared with `params=` runs once per value, and `request.param` is the value for the current run:
 
@@ -1700,7 +1718,7 @@ def test_numbers(number: int):
     assert number in [1, 2, 3]
 ```
 
-#### Custom Parameter IDs
+#### Custom parameter IDs
 
 `ids=` replaces the generated id component in each node id, which is what `-k` matches against and what the report prints:
 
@@ -1717,7 +1735,7 @@ def test_database(database_type: str):
     assert database_type in ["sqlite", "postgres", "mysql"]
 ```
 
-#### Accessing Test Node Information
+#### Accessing test node information
 
 `request.node.name` is the test's name including its parameter id, and `request.node.nodeid` is the full identifier, path included:
 
@@ -1733,7 +1751,7 @@ def log_test_info(request: FixtureRequest):
     print(f"Finished: {request.node.name}")
 ```
 
-#### Checking for Markers
+#### Checking for markers
 
 `get_closest_marker(name)` returns the nearest mark of that name, or `None`, so a fixture can behave differently for the tests that carry it:
 
@@ -1773,7 +1791,7 @@ def test_with_mock_db(database):
     assert database.is_mock()
 ```
 
-#### Accessing Configuration
+#### Accessing configuration
 
 `request.config` is a small subset of pytest's `Config`. It answers `rootpath`, `inipath`,
 `invocation_params.dir`, `cache`, `getini(name)` and `getoption(name, default)`. The same
@@ -1802,19 +1820,20 @@ def api_client(request: FixtureRequest):
     return create_client(base_url)
 ```
 
-!!! warning "getoption always returns your default"
-    rustest does not put the run's command-line flags on the worker's wire, so
-    `getoption(name, default)` returns `default` for every name, and `getoption(name)` with
-    no default raises `ValueError: no option named ...`. That is deliberate: a fabricated
-    `verbose=0` would let a suite report on a mode it never ran in. Pass a default and treat
-    the result as the default.
+::: {.callout-warning title="getoption always returns your default"}
+rustest does not put the run's command-line flags on the worker's wire, so
+`getoption(name, default)` returns `default` for every name, and `getoption(name)` with
+no default raises `ValueError: no option named ...`. That is deliberate: a fabricated
+`verbose=0` would let a suite report on a mode it never ran in. Pass a default and treat
+the result as the default.
 
-    `getini` is narrower still. It answers for the six values the worker carries, the three
-    `python_*` naming patterns and the three `asyncio_*` options, and raises for anything
-    else. An ini name pytest knows but rustest does not carry, `markers` or `testpaths` for
-    instance, gets its own message saying so, rather than being reported as a typo.
+`getini` is narrower still. It answers for the six values the worker carries, the three
+`python_*` naming patterns and the three `asyncio_*` options, and raises for anything
+else. An ini name pytest knows but rustest does not carry, `markers` or `testpaths` for
+instance, gets its own message saying so, rather than being reported as a typo.
+:::
 
-### Combining Built-in Fixtures
+### Combining built-in fixtures
 
 Built-in fixtures compose with each other and with your own:
 
@@ -1839,7 +1858,7 @@ def test_multiple_builtin_fixtures(tmp_path: Path, monkeypatch) -> None:
     assert os.getcwd() == str(tmp_path)
 ```
 
-## Next Steps
+## Next steps
 
 - [Parametrization](intro-parametrization.md) - Combine fixtures with parametrized tests
 - [Test Classes](test-classes.md) - Use fixtures in test classes

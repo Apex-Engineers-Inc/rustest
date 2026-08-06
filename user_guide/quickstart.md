@@ -18,22 +18,13 @@ def test_string_operations() -> None:
 
 ## 2. Run your tests
 
-Run your tests with the `rustest` command:
+Run your tests with the `rustest` command, then again with `-v`:
 
-<!--rustest.mark.skip-->
-```bash
-rustest
-```
+{{< termshow file="first-run" autoplay="false" loop="false" >}}
 
-You should see output like this:
-
-```
-2 passed in 0.36s
-```
-
-That is the whole of a green run. Rustest's output is pytest's, so a quiet run is quiet:
-there is no spinner, no progress bar and no per-test tick at the default verbosity, just the
-summary line. Anything that went wrong prints above it.
+That first line is the whole of a green run. Rustest's output is pytest's, so a quiet run is
+quiet: there is no spinner, no progress bar and no per-test tick at the default verbosity,
+just the summary line. Anything that went wrong prints above it.
 
 The verbosity ladder has three rungs:
 
@@ -43,20 +34,12 @@ The verbosity ladder has three rungs:
 | *default* | Plus `ERRORS` / `FAILURES` blocks and a `short test summary info` list of node ids |
 | `-v` | Plus one line per test, in pytest's wording |
 
-!!! tip "Verbose output"
-    Use `-v` or `--verbose` to see one line per test with a running percentage:
-    ```
-    test_math.py::test_simple_addition PASSED                               [ 50%]
-    test_math.py::test_string_operations PASSED                             [100%]
-
-    2 passed in 0.38s
-    ```
-
-!!! note "Which stream is which"
-    **stdout** carries the payload: the per-test lines and the failure blocks. **stderr**
-    carries the diagnostics: collection errors, anything the workers wrote, and the summary
-    line. So `rustest > results.txt` leaves you a grep-able file of results while the summary
-    still reaches your terminal.
+::: {.callout-note title="Which stream is which"}
+**stdout** carries the payload: the per-test lines and the failure blocks. **stderr**
+carries the diagnostics: collection errors, anything the workers wrote, and the summary
+line. So `rustest > results.txt` leaves you a grep-able file of results while the summary
+still reaches your terminal.
+:::
 
 ## 3. Using fixtures
 
@@ -83,36 +66,22 @@ Run the same test with different inputs using `@parametrize`:
 ```python
 from rustest import parametrize
 
-@parametrize("input,expected", [
+@parametrize("value,expected", [
     (1, 2),
     (2, 4),
     (3, 6),
 ])
-def test_double(input: int, expected: int) -> None:
-    assert input * 2 == expected
+def test_double(value: int, expected: int) -> None:
+    assert value * 2 == expected
 ```
 
-This runs three separate test cases:
+That is three separate test cases. Run it with `-v` to see the ids parametrization
+generates, then select one of them with `-k`:
 
-```
-3 passed in 0.32s
-```
+{{< termshow file="parametrize" autoplay="false" loop="false" >}}
 
-Add `-v` to see the generated ids, which is where parametrization becomes easy to read:
-
-```
-test_math.py::test_double[1-2] PASSED                                   [ 33%]
-test_math.py::test_double[2-4] PASSED                                   [ 66%]
-test_math.py::test_double[3-6] PASSED                                   [100%]
-
-3 passed in 0.32s
-```
-
-Those bracketed ids are pytest's, byte for byte. To run just one case, select it with `-k`:
-
-```bash
-rustest test_math.py -k "2-4"      # -> 1 passed, 2 deselected
-```
+Those bracketed ids are pytest's, byte for byte, which is what makes `-k` selections and
+CI failure reports portable between the two runners.
 
 ## 5. Assertion helpers
 
@@ -173,9 +142,9 @@ rustest README.md --codeblocks
 
 Markdown has to be **named**, and the tier itself is **off by default**. A directory
 argument collects no `.md` at all even when the tier is on, which is what pytest walking the
-same tree does too. Naming a `.md` file with nothing enabling the tier -- no `--codeblocks`,
-no `[tool.rustest] codeblocks = true` -- is a usage error, matching `pytest README.md`
-exactly. See [Markdown Testing](markdown-testing.md) for the config spellings and what a
+same tree does too. Naming a `.md` file with nothing enabling the tier, with no
+`--codeblocks` and no `[tool.rustest] codeblocks = true`, is a usage error, matching
+`pytest README.md` exactly. See [Markdown Testing](markdown-testing.md) for the config spellings and what a
 block actually runs.
 
 ### From Python

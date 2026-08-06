@@ -1,9 +1,9 @@
-# Test Classes
+# Test classes
 
 A test class groups related tests and lets them share fixtures, setup, and class
 attributes. rustest collects classes the same way pytest does.
 
-## Basic Test Classes
+## Basic test classes
 
 A class is collected when its name starts with `Test`:
 
@@ -35,13 +35,14 @@ test is case-sensitive and unanchored at the end, so `Test` also collects `Testi
 but not `testCase`. A `unittest.TestCase` subclass is collected whatever `python_classes`
 says, as it is under pytest.
 
-!!! warning "A test class must not define `__init__`"
-    rustest builds a fresh instance for every test method, so the class needs no constructor.
-    A class that defines `__init__` or `__new__` is skipped entirely, and nothing is printed
-    about it: pytest reports the same case through `PytestCollectionWarning`, and the
-    orchestrator has no channel to carry warnings on yet.
+::: {.callout-warning title="A test class must not define `__init__`"}
+rustest builds a fresh instance for every test method, so the class needs no constructor.
+A class that defines `__init__` or `__new__` is skipped entirely, and nothing is printed
+about it: pytest reports the same case through `PytestCollectionWarning`, and the
+orchestrator has no channel to carry warnings on yet.
+:::
 
-## Using Fixtures in Test Classes
+## Using fixtures in test classes
 
 Test methods can use fixtures just like standalone test functions:
 
@@ -60,7 +61,7 @@ class TestCalculator:
         assert calculator["multiply"](4, 5) == 20
 ```
 
-## Class-Scoped Fixtures
+## Class-scoped fixtures
 
 Use class-scoped fixtures to share expensive setup across all tests in a class:
 
@@ -86,11 +87,12 @@ class TestDatabase:
         assert len(database["data"]) == 1
 ```
 
-!!! warning "Shared State"
-    A class-scoped fixture is built once and handed to every test in the class. When the
-    value is mutable, whatever one test does to it is what the next test sees.
+::: {.callout-warning title="Shared State"}
+A class-scoped fixture is built once and handed to every test in the class. When the
+value is mutable, whatever one test does to it is what the next test sees.
+:::
 
-## Fixture Methods Within Classes
+## Fixture methods within classes
 
 Define fixtures as methods inside the test class:
 
@@ -136,9 +138,9 @@ class TestUserService:
         assert service.count() >= 1
 ```
 
-## Class and Instance Variables
+## Class and instance variables
 
-### Class Variables
+### Class variables
 
 Class variables are shared across all test methods:
 
@@ -153,7 +155,7 @@ class TestSharedData:
         assert self.shared_config["timeout"] == 30
 ```
 
-### Instance Variables
+### Instance variables
 
 Each test method gets a fresh instance, so instance variables are isolated:
 
@@ -169,7 +171,7 @@ class TestInstanceVariables:
         assert self.value == 20
 ```
 
-## Parametrized Test Methods
+## Parametrized test methods
 
 Use `@parametrize` on class methods:
 
@@ -190,7 +192,7 @@ class TestStringOperations:
         assert value > 0
 ```
 
-## Marks on Test Classes
+## Marks on test classes
 
 Apply marks to all tests in a class:
 
@@ -213,9 +215,9 @@ class TestDatabaseIntegration:
         pass
 ```
 
-## Organizing Tests with Classes
+## Organizing tests with classes
 
-### By Feature
+### By feature
 
 ```python
 class TestUserAuthentication:
@@ -239,7 +241,7 @@ class TestUserProfile:
         pass
 ```
 
-### By Test Type
+### By test type
 
 ```python
 from rustest import mark
@@ -261,7 +263,7 @@ class TestIntegrationAPI:
         pass
 ```
 
-## Nested Test Classes
+## Nested test classes
 
 Nested classes are collected, and each level adds a segment to the node id, so the inner
 test below runs as `test_file.py::TestOuter::TestInner::test_something`. A flat structure is
@@ -280,9 +282,9 @@ class TestOuterInner:
         pass
 ```
 
-## Real-World Examples
+## Real-world examples
 
-### API Testing
+### API testing
 
 Stand in for your real client with whatever you already use. The shape is what matters: a
 class-scoped fixture builds it once and closes it after the last test in the class.
@@ -336,7 +338,7 @@ class TestUserAPI:
         assert response.status == 200
 ```
 
-### Database Testing
+### Database testing
 
 ```python
 from rustest import fixture
@@ -405,7 +407,7 @@ class TestUserRepository:
         assert user is None
 ```
 
-### Service Testing
+### Service testing
 
 ```python
 from rustest import fixture, parametrize
@@ -460,7 +462,7 @@ class TestEmailService:
         assert result.success is True
 ```
 
-## Setup and Teardown Methods
+## Setup and teardown methods
 
 rustest calls `setup_method()` before, and `teardown_method()` after, **every** test method
 on a plain test class. These are pytest's xunit-style hooks, with pytest's semantics:
@@ -500,7 +502,7 @@ outright:
 `setup_class()` and `teardown_class()` are also supported, running once around the whole
 class.
 
-## Class-Method Fixtures Share the Instance
+## Class-method fixtures share the instance
 
 A fixture defined as a method on a test class receives the **same instance** as the test
 that requests it, so `self` refers to one object in both:
@@ -523,14 +525,15 @@ This is what lets a fixture stash state on the instance for the test to read, an
 fixtures on the same class coordinate through `self`. It matches pytest, where a
 class-scoped fixture method is bound to the same instance as the test.
 
-!!! tip "Prefer the return value"
-    Sharing `self` is useful, but reading the fixture's **return value** is clearer than
-    reaching for an attribute it happened to set. Use the instance when two fixtures must
-    coordinate; use the parameter the rest of the time.
+::: {.callout-tip title="Prefer the return value"}
+Sharing `self` is useful, but reading the fixture's **return value** is clearer than
+reaching for an attribute it happened to set. Use the instance when two fixtures must
+coordinate; use the parameter the rest of the time.
+:::
 
-## Best Practices
+## Best practices
 
-### Keep Classes Focused
+### Keep classes focused
 
 Each class should test a single component or feature:
 
@@ -558,7 +561,7 @@ class TestEverything:
         pass
 ```
 
-### Use Descriptive Class Names
+### Use descriptive class names
 
 ```python
 # Good - clear what's being tested
@@ -576,7 +579,7 @@ class TestStuff:
     pass
 ```
 
-### Don't Overuse Class Scope
+### Don't overuse class scope
 
 A class-scoped fixture is built once and torn down after the last method in the class, which
 pays for itself when the setup is slow. For a constant, function scope costs nothing and
@@ -635,7 +638,7 @@ class TestPosts:
         pass
 ```
 
-## When to Use Test Classes
+## When to use test classes
 
 A class earns its keep when several tests share setup, when a class-scoped fixture or
 `setup_method` would otherwise be duplicated across functions, or when the grouping makes
@@ -644,7 +647,7 @@ beyond the file they live in, reads better as plain functions.
 
 Classes and functions can sit in the same file, and rustest collects both.
 
-## Next Steps
+## Next steps
 
 - [Fixtures](intro-fixtures.md) - Learn more about fixture scopes
 - [Marks & Skipping](marks.md) - Apply marks to test classes
