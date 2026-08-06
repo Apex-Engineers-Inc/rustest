@@ -5,7 +5,7 @@ discovered.
 `python/tests/test_codeblock_execution.py` covers the mechanism itself (node shapes,
 fixture resolution, the failure model). This file covers the observable, deliberately
 accepted behavior a user hits from the CLI once the feature is enabled: a block's body
-runs at *collect*, not at execute, so `-m`/`--v2-collect-only`/`-k` interact with it the
+runs at *collect*, not at execute, so `-m`/`--collect-only`/`-k` interact with it the
 same way they do with an ordinary `.py` module's top-level code -- and that is a real,
 documented shift from the old wrap-in-a-function mechanism, not an incidental detail.
 
@@ -64,7 +64,7 @@ def test_deselection_does_not_gate_body_execution(tmp_path: Path) -> None:
 
 
 def test_collect_only_executes_bodies(tmp_path: Path) -> None:
-    """--v2-collect-only runs module-level code, exactly as it does for a .py file."""
+    """--collect-only runs module-level code, exactly as it does for a .py file."""
     page = _md(
         tmp_path,
         "```python\n"
@@ -72,7 +72,7 @@ def test_collect_only_executes_bodies(tmp_path: Path) -> None:
         "Path('collected.txt').write_text('yes')\n"
         "```\n",
     )
-    proc = _run(str(page), "--v2-collect-only", cwd=tmp_path)
+    proc = _run(str(page), "--collect-only", cwd=tmp_path)
     assert (tmp_path / "collected.txt").exists(), proc.stdout + proc.stderr
 
 

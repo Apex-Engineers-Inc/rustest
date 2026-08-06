@@ -34,7 +34,7 @@ def v2_collect(
 ) -> str:
     """Collect tests with the v2 engine; returns a ``CollectionManifest`` JSON string.
 
-    Backs ``rustest --v2-collect-only`` (see ``python/rustest/core.py``). ``invocation_dir``
+    Backs ``rustest --collect-only`` (see ``python/rustest/core.py``). ``invocation_dir``
     must be absolute; ``args`` are raw CLI path arguments, and an empty list lets
     ``testpaths`` decide the roots. ``python_executable`` is the interpreter the collection
     workers run under (``sys.executable``) -- the Rust side never guesses one.
@@ -86,7 +86,7 @@ def v2_run(
 ) -> str:
     """Run tests with the v2 engine; returns a schema-v2 ``RunReport`` JSON string.
 
-    Backs ``rustest --v2`` (see ``python/rustest/core.py``). Arguments are ``v2_collect``'s;
+    Backs ``rustest`` (see ``python/rustest/core.py``). Arguments are ``v2_collect``'s;
     the difference is that the worker pool stays alive after collection and executes the
     selected tests, each on the worker that already imported its file.
 

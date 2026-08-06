@@ -127,20 +127,25 @@ def test_a_bare_invocation_runs_the_v2_engine(tmp_path: Path) -> None:
     assert _summary_line(result.stderr) == "1 passed", result.stderr
 
 
-def test_the_v2_flag_is_a_no_op_alias_that_says_so(tmp_path: Path) -> None:
-    """``--v2`` still works and warns, so a CI file that predates the flip keeps passing.
+def test_the_v2_flag_is_gone_and_is_not_a_removed_flag(tmp_path: Path) -> None:
+    """``--v2`` was scaffolding, and it left before 1.0.0 rather than being frozen in.
 
-    Removing it outright would fail those pipelines with argparse's ``unrecognized
-    arguments`` — a worse outcome than a deprecation line, and one that teaches nothing.
+    It was a no-op alias while the engine name still distinguished something. It never
+    appeared in a released version, so nothing outside this repository can have run it —
+    which is why it is **not** in ``REMOVED_FLAGS`` alongside ``--v1`` and
+    ``--pytest-compat``. Those two earn a message naming the change because real CI files
+    pass them; this one only ever needed to stop existing. Ordinary argparse rejection is
+    the correct outcome, and this pins that it is still a *rejection* — exit 4, not a
+    silently swallowed path argument, which is what ``nargs="*"`` would otherwise do.
     """
     tree = _tree(tmp_path, "alias", {"test_ok.py": "def test_one():\n    assert True\n"})
 
     with_flag = _rustest(tree, ["--v2"])
     without = _rustest(tree, [])
 
-    assert with_flag.returncode == without.returncode == 0
-    assert "--v2 is a no-op" in with_flag.stderr, with_flag.stderr
-    assert "--v2 is a no-op" not in without.stderr
+    assert without.returncode == 0, without.stderr
+    assert with_flag.returncode == 4, with_flag.stderr
+    assert "unrecognized arguments: --v2" in with_flag.stderr, with_flag.stderr
 
 
 def test_the_v1_flag_is_refused_and_says_what_replaced_it(tmp_path: Path) -> None:

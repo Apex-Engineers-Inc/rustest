@@ -647,7 +647,7 @@ def test_cov_branch_is_refused_loudly(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (["--v2-collect-only", "--cov=src"], "collect-only"),
+        (["--collect-only", "--cov=src"], "collect-only"),
         (["--cov-report=term"], "without --cov"),
         (["--cov=src", "--cov-report=html"], "term"),
         (["--cov=nope"], "not a directory"),

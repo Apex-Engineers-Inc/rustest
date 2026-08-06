@@ -674,7 +674,7 @@ def test_the_env_var_forces_tier_d_through_the_cli(tmp_path: Path) -> None:
         if env_value is not None:
             env["RUSTEST_V2_COLLECT_TIER"] = env_value
         proc = subprocess.run(
-            [sys.executable, "-m", "rustest", "--v2-collect-only"],
+            [sys.executable, "-m", "rustest", "--collect-only"],
             cwd=root,
             capture_output=True,
             text=True,

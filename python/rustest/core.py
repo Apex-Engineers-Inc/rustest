@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 
 # The `TypedDict`s above live under `TYPE_CHECKING`, and that is a latency decision like the
 # ones below rather than a style one: on CPython 3.14 `typing` pulls `annotationlib` and
-# `ast` behind it, ~15 ms that a `--v2-collect-only` run has no use for. `from __future__
+# `ast` behind it, ~15 ms that a `--collect-only` run has no use for. `from __future__
 # import annotations` makes every annotation a string, so the declarations are never
 # evaluated at run time; the two `cast()` calls they used to serve became annotated
 # assignments, which a type checker reads identically.
@@ -83,14 +83,14 @@ if TYPE_CHECKING:
 #
 # Two stdlib modules are deferred for the same measured reason, each into the one function
 # that needs it: `datetime` (only :func:`_format_duration`) and `pathlib` (only the
-# `--report-json` write). A `--v2-collect-only` run reaches neither, and it is the
+# `--report-json` write). A `--collect-only` run reaches neither, and it is the
 # latency-sensitive path.
 #
 # **`shutil` is not deferred, it is removed** — see :func:`_terminal_size`. Deferring it was
 # the first attempt and it did not work, because `argparse` imports it too (below), so every
 # rustest invocation paid it whether or not anything rendered.
 #
-# Measured, Phase 2 Task 3: warm `--v2-collect-only` on the 5 000-test suite went from 508 ms
+# Measured, Phase 2 Task 3: warm `--collect-only` on the 5 000-test suite went from 508 ms
 # to ~285 ms with `rich` and the package's own graph made lazy, and to the figure in
 # `.superpowers/sdd/p2-task-3-report.md` §4 once `shutil` and `_colorize` were taken off the
 # argparse path as well.
@@ -279,7 +279,7 @@ def _flush_stdout() -> None:
     Called at *every* stdout-to-stderr transition rather than once at the end, because the
     summary line is not the only stderr write on the path: ``worker_stderr``, the teardown
     errors, the ``Exit:`` banner, the ``stopping after N failures (-x)`` banner and
-    ``--v2-collect-only``'s ``N tests collected`` were all misplaced by the same mechanism.
+    ``--collect-only``'s ``N tests collected`` were all misplaced by the same mechanism.
     """
     sys.stdout.flush()
 
@@ -346,7 +346,7 @@ def v2_collect_only(
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
-    This is the whole of ``rustest --v2-collect-only``. It runs the v2 spine end to end:
+    This is the whole of ``rustest --collect-only``. It runs the v2 spine end to end:
     config resolution -> file walk -> worker pool -> manifest.
 
     Output is shaped so stdout is a machine-readable node id list:
@@ -431,7 +431,7 @@ def v2_collect_only(
         if tests:
             _ = sys.stdout.write("".join(f"{test['id']}\n" for test in tests))
         # The same stdout/stderr hand-off the run path has, and the same hazard: without this
-        # a redirected `--v2-collect-only` printed `N tests collected` *above* the ids it
+        # a redirected `--collect-only` printed `N tests collected` *above* the ids it
         # counts. Unconditional -- an empty tree writes no ids but still has the flush, which
         # costs nothing and keeps the invariant from depending on `if tests`.
         _flush_stdout()
@@ -982,8 +982,8 @@ def v2_run(
             # **stderr is deliberate, and it is kept.** pytest puts its entire terminal report
             # on stdout and so has no ordering hazard here at all; rustest's summary is on
             # stderr because that is this surface's convention for every human diagnostic --
-            # `--v2-collect-only` is the load-bearing case, where node ids go to stdout and
-            # its summary goes to stderr so `rustest --v2-collect-only | xargs` gets a clean
+            # `--collect-only` is the load-bearing case, where node ids go to stdout and
+            # its summary goes to stderr so `rustest --collect-only | xargs` gets a clean
             # list. Worth being exact about what the split does *not* buy, since it invites
             # the wrong justification: `--report-json` writes a file and never touches stdout,
             # and on a red run stdout already carries the human `FAILURES` block, so this is

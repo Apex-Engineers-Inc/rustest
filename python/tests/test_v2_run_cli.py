@@ -659,7 +659,7 @@ SELECTION_QUERIES: list[list[str]] = [
 
 @pytest.mark.parametrize("query", SELECTION_QUERIES, ids=lambda q: " ".join(q).replace(" ", "_"))
 def test_selection_picks_the_same_tests_as_pytest(tmp_path: Path, query: list[str]) -> None:
-    """Node ids, in order, from ``--v2-collect-only`` against ``pytest --collect-only -q``.
+    """Node ids, in order, from ``--collect-only`` against ``pytest --collect-only -q``.
 
     Collect-only is the right surface for this: it isolates *which* tests selection keeps
     from what happens when they run, and the un-waiving of ``marks/mark-filter`` in the
@@ -671,7 +671,7 @@ def test_selection_picks_the_same_tests_as_pytest(tmp_path: Path, query: list[st
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *query],
         tree,
     )
-    ours = _run([sys.executable, "-m", "rustest", "--v2-collect-only", *query], tree)
+    ours = _run([sys.executable, "-m", "rustest", "--collect-only", *query], tree)
     where = f"query={query}\n{_context('pytest', oracle)}\n{_context('v2', ours)}"
 
     expected: list[str] = []
@@ -802,7 +802,7 @@ def test_the_json_report_records_deselection_and_collection_errors(tmp_path: Pat
 
 def test_a_clean_run_prints_nothing_on_stdout(tmp_path: Path) -> None:
     """stdout is reserved for failure detail, so a green run is silent there and the summary
-    goes to stderr -- the same stdout/stderr split ``--v2-collect-only`` uses."""
+    goes to stderr -- the same stdout/stderr split ``--collect-only`` uses."""
     tree = _tree(tmp_path, "quiet", {"test_a.py": "def test_one():\n    pass\n"})
 
     proc = _run_v2(tree, [])
@@ -922,7 +922,7 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         )
 
     with stub_rust_module(v2_run=fake_run):
-        assert cli.main(["--v2", "-k", "a and b", "-m", "slow", "-n", "3"]) == 0
+        assert cli.main(["-k", "a and b", "-m", "slow", "-n", "3"]) == 0
 
     assert seen == [([], 3, "a and b", "slow")]
 
@@ -973,8 +973,8 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         )
 
     with stub_rust_module(v2_run=fake_run):
-        _ = cli.main(["--v2"])
-        _ = cli.main(["--v2", "."])
+        _ = cli.main([])
+        _ = cli.main(["."])
 
     assert seen == [[], ["."]]
 
@@ -1501,7 +1501,7 @@ def test_teardown_diagnostics_precede_the_summary_on_a_merged_stream(tmp_path: P
 
 
 def test_collect_only_ids_precede_their_own_summary_on_a_merged_stream(tmp_path: Path) -> None:
-    """``--v2-collect-only`` splits the streams the same way and had the same defect.
+    """``--collect-only`` splits the streams the same way and had the same defect.
 
     Node ids go to stdout so the list can be piped; the ``N tests collected`` line goes to
     stderr to keep that list clean. Redirected together, the summary was landing *above* the
@@ -1509,7 +1509,7 @@ def test_collect_only_ids_precede_their_own_summary_on_a_merged_stream(tmp_path:
     """
     tree = _tree(tmp_path, "ordering5", {"test_a.py": THREE_RED_TWO_GREEN})
 
-    ours = _v2_merged(tree, ["--v2-collect-only"])
+    ours = _v2_merged(tree, ["--collect-only"])
 
     merged = ours.stdout
     assert ours.returncode == 0, _merged_context(ours)

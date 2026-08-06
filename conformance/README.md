@@ -12,7 +12,7 @@ invocation onto a surviving gate would answer a question nobody asked, so it ref
 
 - `python -m conformance --v2-collect` — the **Phase 1b.1 gate**: diff pytest's
   collected node IDs and collection exit code against
-  `rustest --v2-collect-only`. Nothing is executed, so nothing but IDs and the
+  `rustest --collect-only`. Nothing is executed, so nothing but IDs and the
   exit code is graded. Uses `waivers-v2-collect.toml`.
 - `python -m conformance --v2-run` — the **Phase 1b.2 gate**: diff a real pytest
   run against flagless `rustest --report-json`. Graded on the **ordered** node IDs
@@ -73,7 +73,7 @@ answered "all clear" to a question that was never asked.
 
 Both runners see the **same** configuration environment, because otherwise they
 would not be answering the same question. pytest can be pinned to a rootdir with
-`-c <empty ini>` and `--rootdir=<case dir>`; the `--v2-collect-only` surface has
+`-c <empty ini>` and `--rootdir=<case dir>`; the `--collect-only` surface has
 neither flag and resolves config by walking *up* from its working directory. Run in place, the two disagree about
 rootdir for every in-repo case — this repo's `pyproject.toml` carries
 `[tool.pytest.ini_options]`, so v2's IDs would read `conformance/corpus/…` while
@@ -123,7 +123,7 @@ prints its ID twice (`PASSED` then `ERROR`), while the schema-v2 report carries 
 reduced status per test. Grading reports against tests would manufacture an ID
 divergence out of a difference that is real only in the counts.
 
-**`rustest --v2`** is read entirely from `--report-json`: IDs verbatim and in order
+**`rustest`** is read entirely from `--report-json`: IDs verbatim and in order
 from `tests[]`, the six buckets from `summary`, the exit code from the process.
 Neither stream is parsed — worker stderr legitimately carries class/module teardown
 output on a completely green run.
@@ -231,7 +231,7 @@ Phase 0 recorded pytest vs the v1 runner only, back when a bare `rustest` comman
 *was* the v1 runner. Phase 1c Task 3 regenerated the table below after the flip: the
 v1 column now runs with an explicit `--v1`, and two columns are new —
 `rustest v2 run` (the bare, flag-less command: the default path since the flip) and
-`rustest v2 collect` (`--v2-collect-only`, reserved since Phase 0 and filled in now).
+`rustest v2 collect` (`--collect-only`, reserved since Phase 0 and filled in now).
 
 | files | tests | pytest collect | pytest run | rustest v1 run | rustest v2 run | rustest v2 collect |
 | ----- | ----- | --------------- | ---------- | --------------- | --------------- | ------------------- |

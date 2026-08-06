@@ -29,7 +29,7 @@ from .harness.runners import (
 ROOT = Path(__file__).parent
 
 # Two gates, two ledgers. The collect ledger records only what
-# `rustest --v2-collect-only` cannot reproduce about pytest's *collection*; the run ledger
+# `rustest --collect-only` cannot reproduce about pytest's *collection*; the run ledger
 # the same for a flagless `rustest`'s *execution*. They are kept apart because an entry in
 # one says nothing about the other: `fixtures/session-scope` and `marks/pytest-exit` are
 # waived for the run and MATCH on collect, because both diverge only once something is
@@ -130,7 +130,7 @@ def _grade_one_collect(
     run_pytest_fn: Callable[[Path, list[str]], CollectResult] = run_pytest_collect,
     run_v2_fn: Callable[[Path, list[str]], CollectResult] = run_rustest_v2_collect,
 ) -> CaseResult:
-    """Grade a single case on collection only, pytest vs ``rustest --v2-collect-only``.
+    """Grade a single case on collection only, pytest vs ``rustest --collect-only``.
 
     ``case.toml`` args are passed to *both* runners unchanged, including the ones v2
     cannot honor yet (``-m``). Quietly dropping them for the v2 side would compare two
@@ -212,7 +212,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Grade collection only -- pytest's collected node ids and exit code against "
-            "`rustest --v2-collect-only` -- using waivers-v2-collect.toml"
+            "`rustest --collect-only` -- using waivers-v2-collect.toml"
         ),
     )
     mode.add_argument(

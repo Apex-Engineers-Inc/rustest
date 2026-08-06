@@ -10,8 +10,9 @@ that used to exist are gone and now **exit 4** with a message naming the change:
 | `--pytest-compat` | Nothing. Compatibility is the default behaviour, not a mode. See [pytest compatibility](pytest-compat.md). |
 | `--v1` | Nothing. The legacy engine it selected was deleted, not frozen. |
 
-`--v2` survives as an accepted no-op, so scripts written during the transition keep
-running. It prints a deprecation note on stderr and changes nothing about the run.
+`--v2` and `--v2-collect-only` existed during the rewrite, while naming the engine still
+distinguished something. Neither reached a release, so neither is listed above as a
+removal. Collect-only is spelled `--collect-only` (or `--co`), as in pytest.
 
 ## Quick Reference
 
@@ -25,8 +26,7 @@ usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [-s] [-v] [-q]
                [-o OPTION=VALUE] [--maxfail NUM] [--codeblocks]
                [--no-codeblocks] [--lf] [--ff] [-x] [--report-json PATH]
                [--cov [SOURCE]] [--cov-report TYPE] [--cov-branch] [--llm]
-               [--llm-full] [--llm-schema] [--version] [--v2-collect-only]
-               [--v2]
+               [--llm-full] [--llm-schema] [--version] [--collect-only]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -88,13 +88,10 @@ options:
                         exit 0. Runs nothing; every other option is ignored.
   --version             Print the rustest version on stdout and exit 0. Runs
                         nothing.
-  --v2-collect-only     Collect tests and print their node ids one per line,
+  --collect-only, --co  Collect tests and print their node ids one per line,
                         without running anything. Honours -k, -m and -n. Exits
                         0 with tests, 5 with none, 2 on collection errors.
                         None of the other options apply.
-  --v2                  Deprecated no-op: there is one engine. Accepted so old
-                        scripts keep working.
-
 ```
 
 ## Basic Commands
@@ -607,8 +604,7 @@ rustest [OPTIONS] [PATHS...]
 | `--llm-full` | With `--llm`: attach captured output whole instead of the last 50 lines. Refused on its own |
 | `--llm-schema` | Print the JSON Schema for `--llm` output and exit 0 |
 | `--version` | Print the installed version (`rustest 1.0.0`) and exit 0. Runs nothing |
-| `--v2-collect-only` | Collect and print node ids, one per line, without running anything. Honours `-k`, `-m` and `-n`; refuses `--llm` and `--cov`, since a run that executes nothing has no result to report or measure |
-| `--v2` | Deprecated no-op: there is one engine. Accepted so old scripts keep working, with a note on stderr |
+| `--collect-only`, `--co` | Collect and print node ids, one per line, without running anything. Honours `-k`, `-m` and `-n`; refuses `--llm` and `--cov`, since a run that executes nothing has no result to report or measure |
 | `-h, --help` | Show help message and exit |
 
 ### pytest flags that are accepted and ignored
@@ -663,13 +659,12 @@ Exit **4** is the one worth knowing about when upgrading. This CLI refuses flags
 honour rather than accepting them silently, so you get it from:
 
 - `--pytest-compat` or `--v1`, both removed
-- any flag rustest does not recognise, including pytest's `--collect-only` (the spelling
-  here is `--v2-collect-only`)
+- any flag rustest does not recognise
 - `--llm-full` without `--llm`, and `--cov-report` without `--cov`, each of which would
   otherwise be inert
 - `--cov-branch`, or `branch = True` in the coverage configuration, since branch coverage
   is not implemented and reporting line coverage instead would overstate it
-- `--llm` or `--cov` alongside `--v2-collect-only`
+- `--llm` or `--cov` alongside `--collect-only`
 - `-o`/`--override-ini` naming any key but `addopts`
 - a path argument that does not exist, or a `-k`/`-m` expression that does not parse
 

@@ -221,7 +221,7 @@ def _write_mini_suite(root: Path) -> None:
 def test_check_pytest_collect_exit_passes_through_collectable_outcomes() -> None:
     """0 (collected), 2 (collection error) and 5 (nothing collected) are gradeable.
 
-    All three are outcomes the v2 ``--v2-collect-only`` surface also produces, so the
+    All three are outcomes the v2 ``--collect-only`` surface also produces, so the
     grader must see them rather than have the harness raise over them.
     """
     for returncode in (0, 2, 5):
@@ -382,7 +382,7 @@ COLLECT_COMMANDS = {
         "--collect-only",
         "-q",
     ],
-    "v2": [sys.executable, "-m", "rustest", "--v2-collect-only"],
+    "v2": [sys.executable, "-m", "rustest", "--collect-only"],
 }
 
 
@@ -454,7 +454,7 @@ def test_collect_runners_ignore_a_surrounding_project_config(
     adopt this ``pytest.ini`` (collecting nothing, since ``python_files`` no longer
     matches ``test_mini.py``), while pytest can be pinned to the case dir with ``-c`` +
     ``--rootdir``. Copying the case out of the tree removes the disagreement for both sides
-    at once, without either runner needing flags the ``--v2-collect-only`` surface does not
+    at once, without either runner needing flags the ``--collect-only`` surface does not
     have.
     """
     (tmp_path / "pytest.ini").write_text("[pytest]\npython_files = check_*.py\n", encoding="utf-8")
@@ -609,7 +609,7 @@ def test_run_rustest_v2_collect_reads_only_stdout_ids(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# The full-run (`--v2-run`) gate: real pytest execution vs `rustest --v2 --report-json`.
+# The full-run (`--v2-run`) gate: real pytest execution vs `rustest --report-json`.
 # --------------------------------------------------------------------------------------
 
 
@@ -750,7 +750,7 @@ def test_full_run_runners_agree_on_all_six_outcomes(
 
     Parametrizing over the two runners is what makes this a *differential* assertion
     rather than two independent ones: the same literal expectation has to hold for
-    pytest and for ``rustest --v2``, so a change to either side that this file did not
+    pytest and for ``rustest``, so a change to either side that this file did not
     anticipate fails here rather than being absorbed into a matching expectation.
     """
     result = runner(_case_with_six_outcomes(tmp_path), [])
@@ -787,7 +787,7 @@ def test_full_run_runners_ignore_a_surrounding_project_config(
     """The isolation protocol, on the run surface: config above the case is invisible.
 
     Identical in kind to the collect gate's protocol test, and load-bearing for the
-    same reason: ``rustest --v2`` resolves config by walking up from its cwd and has no
+    same reason: ``rustest`` resolves config by walking up from its cwd and has no
     ``-c``/``--rootdir`` to pin it, so without the copy-out both runners would answer
     different questions about rootdir and every case would "diverge" on an id prefix
     neither is getting wrong.
@@ -957,7 +957,7 @@ def test_run_pytest_full_keeps_its_ids_when_a_test_calls_pytest_exit(tmp_path: P
 
 
 def test_run_rustest_v2_run_raises_when_no_report_is_written(tmp_path: Path) -> None:
-    """``rustest --v2`` dying before it writes a report is a loud failure, never zeros.
+    """``rustest`` dying before it writes a report is a loud failure, never zeros.
 
     Fabricating an all-zeros ``FullRunResult`` here would grade as a divergence with no
     explanation attached -- and on a case whose pytest side is also empty (an empty
@@ -967,7 +967,7 @@ def test_run_rustest_v2_run_raises_when_no_report_is_written(tmp_path: Path) -> 
     case_dir.mkdir()
     _write_mini_suite(case_dir)
 
-    with pytest.raises(RuntimeError, match="rustest --v2 wrote no report"):
+    with pytest.raises(RuntimeError, match="rustest wrote no report"):
         run_rustest_v2_run(case_dir, ["--definitely-not-a-real-flag"])
 
 

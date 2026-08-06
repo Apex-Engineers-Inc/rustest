@@ -1,4 +1,4 @@
-"""The ``rustest --v2-collect-only`` CLI surface, diffed against REAL pytest.
+"""The ``rustest --collect-only`` CLI surface, diffed against REAL pytest.
 
 This is the first user-reachable v2 surface: it runs the whole v2 spine (config -> walk
 -> worker pool -> manifest) and prints the manifest's node ids, one per line, in manifest
@@ -105,7 +105,7 @@ def _run_bytes(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[bytes]
 
 
 def _run_v2(cwd: Path, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
-    return _run([sys.executable, "-m", "rustest", "--v2-collect-only", *(args or [])], cwd)
+    return _run([sys.executable, "-m", "rustest", "--collect-only", *(args or [])], cwd)
 
 
 def _run_pytest(cwd: Path, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -194,6 +194,26 @@ def test_summary_goes_to_stderr_and_stdout_holds_only_nodeids(tmp_path: Path) ->
     assert "collected" not in proc.stdout, _context("v2", proc)
 
 
+def test_the_co_alias_is_accepted_and_is_not_an_ambiguous_abbreviation(tmp_path: Path) -> None:
+    """``--co`` is pytest's short spelling, and it has to be *declared* to work at all.
+
+    argparse resolves unambiguous prefixes, and ``--co`` is a prefix of five other flags on
+    this parser — ``--color``, ``--codeblocks``, ``--cov``, ``--cov-report`` and
+    ``--cov-branch``. Left to abbreviation it fails with ``ambiguous option``, which is what
+    it did before ``--co`` was added as an explicit option string. An exact match outranks
+    abbreviation, so declaring it is the whole fix; this pins that it stayed declared, and
+    that it means the same thing as the long spelling rather than merely parsing.
+    """
+    tree = _mini_suite(tmp_path)
+
+    short = _run([sys.executable, "-m", "rustest", "--co"], tree)
+    long = _run_v2(tree)
+
+    assert short.returncode == 0, _context("--co", short)
+    assert "ambiguous" not in short.stderr, _context("--co", short)
+    assert short.stdout == long.stdout, _context("--co", short)
+
+
 def test_explicit_file_argument_matches_pytest(tmp_path: Path) -> None:
     tree = _mini_suite(tmp_path)
 
@@ -233,7 +253,7 @@ def test_unencodable_nodeids_are_escaped_exactly_as_pytest_escapes_them(tmp_path
     oracle = _run_bytes(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"], tree
     )
-    ours = _run_bytes([sys.executable, "-m", "rustest", "--v2-collect-only"], tree)
+    ours = _run_bytes([sys.executable, "-m", "rustest", "--collect-only"], tree)
 
     where = (
         f"pytest rc={oracle.returncode} {oracle.stdout!r}\nv2 rc={ours.returncode} {ours.stdout!r}"
@@ -393,7 +413,7 @@ def test_missing_path_argument_is_a_usage_error(tmp_path: Path) -> None:
 
 
 def test_collect_only_never_reaches_the_run_path() -> None:
-    """``--v2-collect-only`` returns before the runner, so ``core.v2_run`` is never called.
+    """``--collect-only`` returns before the runner, so ``core.v2_run`` is never called.
 
     The negative half is the load-bearing one. "Collect and print the ids" and "run the
     suite" are answered by different functions, and a router that called both would satisfy
@@ -405,7 +425,7 @@ def test_collect_only_never_reaches_the_run_path() -> None:
         patch("rustest.cli.v2_run") as run_path,
         patch("rustest.cli.v2_collect_only", return_value=5) as collect,
     ):
-        assert cli.main(["--v2-collect-only"]) == 5
+        assert cli.main(["--collect-only"]) == 5
 
     run_path.assert_not_called()
     assert collect.call_count == 1
@@ -445,8 +465,8 @@ def test_absent_path_arguments_are_passed_through_as_none_given() -> None:
         return '{"schema_version":2,"rootdir":"/x","tests":[]}'
 
     with stub_rust_module(v2_collect=fake_collect):
-        _ = cli.main(["--v2-collect-only"])
-        _ = cli.main(["--v2-collect-only", "."])
+        _ = cli.main(["--collect-only"])
+        _ = cli.main(["--collect-only", "."])
 
     assert seen == [[], ["."]]
 

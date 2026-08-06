@@ -86,7 +86,7 @@ dev = [
 # A named group is excluded from `uv sync --all-extras`, so the gates keep their clean
 # pytest.
 #
-# `scripts/docs.sh` installs this group into a separate `.venv-docs`; `poe docs` and
+# `scripts/docs.py` installs this group into a separate `.venv-docs`; `poe docs` and
 # `poe docs-build` go through it, as does the `docs.yml` workflow. Quarto's own CLI is a
 # further, non-Python prerequisite -- see `user_guide/development.md`.
 docs = [
@@ -118,10 +118,14 @@ typecheck = "uv run --all-extras basedpyright python conformance"
 pytests = "uv run pytest python/tests -v"
 tests = "uv run rustest tests/ examples/tests/"
 demos = "bash scripts/generate-demos.sh"
-# Both go through `scripts/docs.sh`, which bootstraps `.venv-docs` -- see the
+# Both go through `scripts/docs.py`, which bootstraps `.venv-docs` -- see the
 # `[dependency-groups] docs` comment for why the docs toolchain does not live in `.venv`.
-docs = "bash scripts/docs.sh preview"
-docs-build = "bash scripts/docs.sh build"
+#
+# Python, not `bash script.sh`: on Windows `bash` is whichever one wins the PATH race, and
+# in PowerShell that is WSL's, which cannot see `uv`, a Windows Quarto install, or this
+# venv's `Scripts/python.exe`. The script's docstring has the long form.
+docs = "python scripts/docs.py preview"
+docs-build = "python scripts/docs.py build"
 
 [tool.ruff]
 line-length = 100

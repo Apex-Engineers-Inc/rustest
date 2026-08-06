@@ -267,7 +267,7 @@ or let `--lf` do it.
 | `--cov` | Works. The coverage table goes to **stderr** so stdout stays JSONL. |
 | `--report-json` | Works. Independent of `--llm`; write both if you want the full report on disk. |
 | `-s` | Works, but captures are then empty, because the tests wrote straight through to the terminal. |
-| `--v2-collect-only` | **Refused** (exit 4). It runs no test, so a `summary` line would be a well-formed lie; its stdout is already machine-readable, one node ID per line. |
+| `--collect-only` | **Refused** (exit 4). It runs no test, so a `summary` line would be a well-formed lie; its stdout is already machine-readable, one node ID per line. |
 
 ## Edge cases
 

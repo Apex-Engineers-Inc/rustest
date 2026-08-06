@@ -162,7 +162,7 @@ Three consequences follow, and they are not new hazards — they are the same co
 
 - **A `def test_*` inside a block really runs**, as its own test with its own node id. There
   is no wrapper hiding it inside a function that is defined and never called.
-- **`--v2-collect-only` runs the body.** Collecting is importing, for a block exactly as for
+- **`--collect-only` runs the body.** Collecting is importing, for a block exactly as for
   a file.
 - **Deselecting a block does not stop its body from running.** `-k`, `-m "not codeblock"`
   and `--lf` decide which *tests* execute, not which module-level code does — a block's

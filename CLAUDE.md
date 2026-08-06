@@ -306,7 +306,10 @@ replaced zensical/MkDocs; there is no `zensical.toml` and no `mkdocs.yml`.
 - Landing page: `README.md` (great-docs generates the site index from it)
 - API reference: **auto-generated** from `python/rustest` docstrings by the `reference:`
   key. The five hand-written `docs/api/*.md` pages are gone — do not re-add them.
-- Build: `poe docs-build` · Preview: `poe docs` — both go through `scripts/docs.sh`
+- Build: `poe docs-build` · Preview: `poe docs` — both go through `scripts/docs.py`.
+  It is Python, not a shell script, because `bash` on Windows is whichever one wins the
+  PATH race: in PowerShell that is WSL's, which cannot see `uv`, a Windows Quarto install,
+  or `.venv-docs/Scripts/python.exe`. Do not port it back to `.sh`
 - Prerequisites: the **Quarto CLI** on PATH (`winget install --id Posit.Quarto -e` on
   Windows), plus a `.venv-docs` the script bootstraps
 - `docs/` holds only `assets/` (logos, favicon). The SDD plans and specs that used to live
@@ -317,7 +320,7 @@ replaced zensical/MkDocs; there is no `zensical.toml` and no `mkdocs.yml`.
 pulls anyio, which registers a **pytest plugin** — and the conformance gates run real
 pytest out of `.venv` and must keep loading exactly what an unpolluted pytest loads. That
 is why it is a `[dependency-groups] docs` group rather than an extra, and why
-`scripts/docs.sh` uses a separate environment.
+`scripts/docs.py` uses a separate environment.
 
 **Why the pages are `.md` and not `.qmd`.** great-docs and Quarto render both. rustest's
 own doc-code-block collector keys on `.md` (`src/v2/collect.rs::is_markdown`), so

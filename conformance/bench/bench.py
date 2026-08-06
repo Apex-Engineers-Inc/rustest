@@ -74,7 +74,7 @@ class BenchRow(TypedDict):
     #: ``rustest_run_s`` column sat beside this one until Phase 4 Task 2 and timed
     #: ``rustest --v1``; it went with the engine it measured.
     rustest_v2_run_s: float
-    #: ``rustest --v2-collect-only <suite>`` with the Tier S manifest cache **cold** --
+    #: ``rustest --collect-only <suite>`` with the Tier S manifest cache **cold** --
     #: ``.rustest_cache/v2-manifest`` is deleted immediately before the measurement, so
     #: every file is read and parsed. Reserved through Phase 1c Task 2; filled in by Task 3.
     rustest_collect_s: float
@@ -93,7 +93,7 @@ class Derived(TypedDict):
     #: The axis ``OVERHEAD_SIZES`` differences out by construction.
     pytest_per_file_ms: float | None
     rustest_v2_per_file_ms: float | None
-    #: How much of ``rustest_v2_per_file_ms`` a ``--v2-collect-only`` already pays. The
+    #: How much of ``rustest_v2_per_file_ms`` a ``--collect-only`` already pays. The
     #: remainder is what the *execute* half spends per file: the worker's import of the
     #: module, plus the module/class fixture boundaries around its tests. Splitting the term
     #: is the difference between "make collection faster" and "make per-file dispatch
@@ -123,7 +123,7 @@ class PerFileRow(TypedDict):
     #: ``rustest . -n 1 -q`` -- sequential for the same reason the overhead cells are: a
     #: pool whose size varies with the machine would put spawn cost in the delta.
     rustest_v2_run_s: float
-    #: ``rustest --v2-collect-only .`` warm, so the pair also answers *where* the per-file
+    #: ``rustest --collect-only .`` warm, so the pair also answers *where* the per-file
     #: cost lands rather than only how big it is.
     rustest_v2_collect_s: float
 
@@ -157,7 +157,7 @@ def _time_cmd(cmd: list[str], cwd: Path) -> float:
 
 
 def _time_cold_collect(rustest_base: list[str], suite: Path) -> float:
-    """Time a ``--v2-collect-only`` with the manifest cache guaranteed cold.
+    """Time a ``--collect-only`` with the manifest cache guaranteed cold.
 
     The cache is removed rather than assumed absent. Earlier rows in the same suite
     directory (the *run* timings) do not write it -- the run path is Tier D only
@@ -166,7 +166,7 @@ def _time_cold_collect(rustest_base: list[str], suite: Path) -> float:
     column into a second warm one.
     """
     shutil.rmtree(suite / ".rustest_cache" / "v2-manifest", ignore_errors=True)
-    return _time_cmd([*rustest_base, "--v2-collect-only", "."], suite)
+    return _time_cmd([*rustest_base, "--collect-only", "."], suite)
 
 
 def measure_overhead(quick: bool = False) -> tuple[Derived, list[OverheadRow]]:
@@ -277,7 +277,7 @@ def measure_per_file(quick: bool = False) -> tuple[Derived, list[PerFileRow]]:
     not in the delta, both cells warmed by a discarded run so neither pays a cold cache the
     other does not, and medians rather than single samples.
 
-    A third column, warm ``--v2-collect-only``, is measured on the same two suites so the
+    A third column, warm ``--collect-only``, is measured on the same two suites so the
     derived figure comes with its own decomposition: whatever share of the per-file cost
     collection already accounts for is a Tier S / walk / parse problem, and the rest belongs
     to the execute half.
@@ -298,7 +298,7 @@ def measure_per_file(quick: bool = False) -> tuple[Derived, list[PerFileRow]]:
             commands = {
                 "pytest_run_s": [*pytest_base, "--tb=no", "-p", "no:randomly"],
                 "rustest_v2_run_s": [*rustest_base, ".", "-n", "1", "-q"],
-                "rustest_v2_collect_s": [*rustest_base, "--v2-collect-only", "."],
+                "rustest_v2_collect_s": [*rustest_base, "--collect-only", "."],
             }
             row: PerFileRow = {
                 "files": files,
@@ -369,9 +369,7 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
                 # every file however many benchmark commands ran before it.
                 "rustest_collect_s": _time_cold_collect(rustest_base, suite),
                 # Warm: the very next run, reading what the cold one just wrote.
-                "rustest_collect_warm_s": _time_cmd(
-                    [*rustest_base, "--v2-collect-only", "."], suite
-                ),
+                "rustest_collect_warm_s": _time_cmd([*rustest_base, "--collect-only", "."], suite),
             }
             results.append(row)
         if quick:

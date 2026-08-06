@@ -5,7 +5,7 @@ latency decision with a number behind it rather than a style preference.
 
 ``python -m rustest`` executes this module before ``__main__`` — a package is always
 imported before its ``__main__`` submodule — so whatever is imported here is on the critical
-path of *every* rustest invocation: a ``--v2-collect-only``, a ``--report-json`` run, and
+path of *every* rustest invocation: a ``--collect-only``, a ``--report-json`` run, and
 each of the N worker subprocesses a run spawns. Eagerly importing the whole API cost ~390 ms
 above a bare interpreter on the reference machine (``rich`` alone ~230 ms of it, ``inspect``
 via ``decorators`` ~30 ms), none of which a collect-only run uses.

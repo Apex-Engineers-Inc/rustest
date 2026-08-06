@@ -337,7 +337,7 @@ def _check_pytest_collect_exit(proc: subprocess.CompletedProcess[str]) -> None:
 
     Under ``--collect-only`` the gradeable codes are 0 (collected), 2 (a file failed
     to import) and 5 (nothing collected -- an empty tree, or everything deselected by
-    ``-m``). All three are codes the ``--v2-collect-only`` surface also produces, so
+    ``-m``). All three are codes the ``--collect-only`` surface also produces, so
     the grader must see them. Codes 3 (internal error) and 4 (usage error) mean pytest
     never collected at all; parsing zero ids out of that would fabricate a divergence
     with no explanation, so they route to ``_grade_one_collect``'s harness-error
@@ -440,7 +440,7 @@ def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
 
 
 def run_rustest_v2_collect(case_dir: Path, args: list[str]) -> CollectResult:
-    """Collect *case_dir* with ``rustest --v2-collect-only`` in an isolated copy.
+    """Collect *case_dir* with ``rustest --collect-only`` in an isolated copy.
 
     stdout carries node ids and *only* node ids, one per line, in manifest order, so
     it is read with a bare ``splitlines()`` -- no parsing, no filtering, no sorting
@@ -456,7 +456,7 @@ def run_rustest_v2_collect(case_dir: Path, args: list[str]) -> CollectResult:
     """
     with tempfile.TemporaryDirectory() as tmp:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
-        proc = _run([sys.executable, "-m", "rustest", "--v2-collect-only", *args], work)
+        proc = _run([sys.executable, "-m", "rustest", "--collect-only", *args], work)
     return CollectResult(ids=proc.stdout.splitlines(), exit_code=proc.returncode)
 
 
@@ -466,7 +466,7 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
     Isolation protocol (a), identical to ``run_pytest_collect``: ``copytree`` minus the
     caches, a content-qualified check for a config file the case ships itself, and a bare
     ``[pytest]`` ini otherwise. Like the collect oracle it is invoked with **no config
-    flags at all**, because ``rustest --v2`` has none to offer and a flag used on one side
+    flags at all**, because ``rustest`` has none to offer and a flag used on one side
     only would make the gate a comparison of harness invocations rather than of runners.
 
     Two invocations in the one isolated tree, because pytest publishes the two halves of
@@ -551,7 +551,7 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
 
 
 def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
-    """Run *case_dir* with ``rustest --v2 --report-json`` in an isolated copy.
+    """Run *case_dir* with ``rustest --report-json`` in an isolated copy.
 
     The report is the whole read surface. stdout (``FAILED <id>`` plus the message) and
     stderr (``ERROR collecting`` blocks, **worker stderr**, the summary line) are never
@@ -582,7 +582,7 @@ def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
     difference of report *schema*, not of behaviour. Nothing is double-counted: a run
     interrupted by a broken import dispatches no tests, so ``summary.error`` is 0.
 
-    A missing report means ``rustest --v2`` died before writing one, and that raises. The
+    A missing report means ``rustest`` died before writing one, and that raises. The
     alternative -- an all-zeros ``FullRunResult`` -- would grade as a **MATCH** against a
     pytest side that is also empty (an empty tree, or everything deselected), certifying a
     run that never happened.
@@ -593,12 +593,12 @@ def run_rustest_v2_run(case_dir: Path, args: list[str]) -> FullRunResult:
         # thing the runner under test can see, and this one changes size mid-run.
         report_path = Path(tmp) / "report.json"
         proc = _run(
-            [sys.executable, "-m", "rustest", "--v2", "--report-json", str(report_path), *args],
+            [sys.executable, "-m", "rustest", "--report-json", str(report_path), *args],
             work,
         )
         if not report_path.exists():
             raise RuntimeError(
-                f"rustest --v2 wrote no report (exit {proc.returncode}): {proc.stderr[-500:]}"
+                f"rustest wrote no report (exit {proc.returncode}): {proc.stderr[-500:]}"
             )
         data: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
     summary: dict[str, int] = data["summary"]

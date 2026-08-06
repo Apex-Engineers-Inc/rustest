@@ -37,7 +37,7 @@ CASES = discover_cases()
 
 
 def _collect(work: Path, args: list[str]) -> tuple[list[str], int]:
-    proc = _run([sys.executable, "-m", "rustest", "--v2-collect-only", *args], work)
+    proc = _run([sys.executable, "-m", "rustest", "--collect-only", *args], work)
     return proc.stdout.splitlines(), proc.returncode
 
 
@@ -93,7 +93,7 @@ def test_the_cache_can_be_switched_off_from_the_environment() -> None:
 
         env = {**os.environ, "RUSTEST_V2_MANIFEST_CACHE": "off"}
         proc = subprocess.run(
-            [sys.executable, "-m", "rustest", "--v2-collect-only", *args],
+            [sys.executable, "-m", "rustest", "--collect-only", *args],
             cwd=work,
             capture_output=True,
             text=True,

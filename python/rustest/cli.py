@@ -2,8 +2,10 @@
 
 **There is one engine.**  ``rustest <paths>`` runs the v2 spine end to end — config
 resolution, the file walk, a worker pool that collects and then executes, pytest's exit
-codes — with the pytest compatibility shim installed unconditionally.  ``--v2`` remains a
-no-op alias so existing scripts and CI files keep working.
+codes — with the pytest compatibility shim installed unconditionally.  ``--v2`` and
+``--v2-collect-only`` were scaffolding from the rewrite, when naming the engine still
+distinguished something; both went before 1.0.0 rather than being frozen into the released
+surface.  Collect-only survives under pytest's spelling, ``--collect-only`` / ``--co``.
 
 The v1 engine, reached through ``--v1`` between the Phase 1c flip and Phase 4 Task 2, is
 deleted.  ``--v1`` is now a **removed flag**: it exits 4 naming the change rather than being
@@ -40,7 +42,7 @@ class _LazyHelpFormatter(argparse.HelpFormatter):
 
     So building this CLI's parser — 15 arguments — imported ``shutil`` (and behind it
     ``bz2``, ``lzma``, ``zlib``, ``zstd``) and ``_colorize`` on **every** rustest invocation,
-    including ``--v2-collect-only`` and every worker subprocess, none of which ever print
+    including ``--collect-only`` and every worker subprocess, none of which ever print
     help. Measured on the reference machine: constructing a parser with one argument cost
     ~170 ms more than constructing an empty one.
 
@@ -464,21 +466,20 @@ def build_parser() -> _Parser:
         dest="version",
         help="Print the rustest version on stdout and exit 0. Runs nothing.",
     )
+    # `--co` is spelled out rather than left to argparse's prefix matching, which would call
+    # it ambiguous against `--color`, `--codeblocks` and the three `--cov*` flags. An exact
+    # option string wins over abbreviation, so declaring it is what makes pytest's short
+    # spelling usable at all.
     _ = parser.add_argument(
-        "--v2-collect-only",
+        "--collect-only",
+        "--co",
         action="store_true",
-        dest="v2_collect_only",
+        dest="collect_only",
         help=(
             "Collect tests and print their node ids one per line, without running anything. "
             "Honours -k, -m and -n. Exits 0 with tests, 5 with none, 2 on collection errors. "
             "None of the other options apply."
         ),
-    )
-    _ = parser.add_argument(
-        "--v2",
-        action="store_true",
-        dest="v2",
-        help="Deprecated no-op: there is one engine. Accepted so old scripts keep working.",
     )
     parser.set_defaults(
         capture_output=True,
@@ -488,8 +489,7 @@ def build_parser() -> _Parser:
         maxfail=0,
         quiet=False,
         report_json=None,
-        v2_collect_only=False,
-        v2=False,
+        collect_only=False,
         cov=None,
         cov_report=None,
         cov_branch=False,
@@ -780,14 +780,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # every `testpaths` project.
     paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
 
-    if args.v2_collect_only:
+    if args.collect_only:
         if args.llm:
             # Collect-only's stdout is already a machine format -- one node id per line -- and
             # it produces no result, no status and no capture, so there is nothing for a
             # `fail` or `summary` line to say. Answering with a stream of `meta` and an
             # all-zero `summary` would be a well-formed lie about a run that never happened.
             print(
-                "ERROR: --llm and --v2-collect-only ask for different things: collect-only"
+                "ERROR: --llm and --collect-only ask for different things: collect-only"
                 + " runs no test, so there is no result to report as JSONL. Its stdout is"
                 + " already machine-readable -- one node id per line. Drop one.",
                 file=sys.stderr,
@@ -797,7 +797,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Collect-only runs no test, so the only lines it could report are import-time
             # ones. Refused rather than answered with a number that means nothing.
             print(
-                "ERROR: --cov and --v2-collect-only ask for different things: collect-only"
+                "ERROR: --cov and --collect-only ask for different things: collect-only"
                 + " runs no test, so there is no execution to measure. Drop one.",
                 file=sys.stderr,
             )
@@ -810,12 +810,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             codeblocks=args.enable_codeblocks,
         )
 
-    if args.v2:
-        print(
-            "NOTE: --v2 is a no-op; the v2 engine is the default."
-            + " The flag will be removed in a future release.",
-            file=sys.stderr,
-        )
     return v2_run(
         paths=paths,
         workers=args.workers,

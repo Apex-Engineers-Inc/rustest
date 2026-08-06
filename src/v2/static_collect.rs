@@ -4495,7 +4495,7 @@ class TestBox:
         assert_eq!(rewrite_plan(&[path], tmp.path(), &config()), vec![None]);
     }
 
-    /// A `--v2-collect-only` run must not pay for a plan it cannot use. Asserted at the
+    /// A `--collect-only` run must not pay for a plan it cannot use. Asserted at the
     /// option that gates it, because the cost is a read and a parse **per file** and the
     /// collect-only path is the one whose whole point is latency.
     #[test]

@@ -805,7 +805,7 @@ def test_llm_full_without_llm_is_a_usage_error(tmp_path: Path, capsys: Any) -> N
 
 def test_llm_with_collect_only_is_a_usage_error(tmp_path: Path, capsys: Any) -> None:
     """Collect-only runs nothing, so a ``summary`` line would be a well-formed lie."""
-    assert cli.main(["--v2-collect-only", "--llm", str(tmp_path)]) == 4
+    assert cli.main(["--collect-only", "--llm", str(tmp_path)]) == 4
     assert "collect-only runs no test" in capsys.readouterr().err
 
 

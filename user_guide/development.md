@@ -489,7 +489,7 @@ brew install --cask quarto              # macOS
 # Linux: https://quarto.org/docs/get-started/
 ```
 
-**2. Nothing else.** `scripts/docs.sh` bootstraps a `.venv-docs` on first run:
+**2. Nothing else.** `scripts/docs.py` bootstraps a `.venv-docs` on first run:
 
 <!--rustest.mark.skip-->
 ```bash
@@ -497,7 +497,7 @@ uv run poe docs         # starts a local preview server
 uv run poe docs-build   # writes great-docs/_site
 ```
 
-Both forward to `great-docs` inside `.venv-docs`, which `scripts/docs.sh` creates and
+Both forward to `great-docs` inside `.venv-docs`, which `scripts/docs.py` creates and
 installs into on first run.
 
 The docs toolchain lives in `.venv-docs` rather than `.venv` on purpose. great-docs depends

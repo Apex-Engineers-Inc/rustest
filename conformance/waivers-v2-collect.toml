@@ -1,4 +1,4 @@
-# Documented divergences between pytest's collection and `rustest --v2-collect-only`.
+# Documented divergences between pytest's collection and `rustest --collect-only`.
 #
 # This is the Phase 1b.1 gate's ledger, kept separate from waivers.toml (the v1
 # end-to-end ledger) because an entry in one says nothing about the other. Two

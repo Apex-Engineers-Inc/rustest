@@ -27,7 +27,7 @@ use pyo3::wrap_pyfunction;
 #[pymodule]
 fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `v2_resolve_config` is internal (exercised by the pytest-oracle differential tests);
-    // `v2_collect` backs `rustest --v2-collect-only` and `v2_run` backs a flagless `rustest`.
+    // `v2_collect` backs `rustest --collect-only` and `v2_run` backs a flagless `rustest`.
     m.add_function(wrap_pyfunction!(v2::py::v2_resolve_config, m)?)?;
     m.add_function(wrap_pyfunction!(v2::py::v2_collect, m)?)?;
     m.add_function(wrap_pyfunction!(v2::py::v2_run, m)?)?;

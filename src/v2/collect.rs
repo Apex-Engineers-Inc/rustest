@@ -391,7 +391,7 @@ pub struct CollectOptions {
     /// Compute the assertion-rewrite plan ([`crate::v2::static_collect::rewrite_plan`]).
     ///
     /// **Off by default**, and the default is the interesting half: only a *run* imports the
-    /// modules, so only a run can benefit from rewritten assertions. `--v2-collect-only`
+    /// modules, so only a run can benefit from rewritten assertions. `--collect-only`
     /// would pay a read and a parse per file for a plan it then throws away, on the one
     /// surface whose entire point is latency.
     pub assert_rewrite: bool,
@@ -403,7 +403,7 @@ pub struct CollectOptions {
     /// them here would be a second implementation of a rule whose only other implementation
     /// lives next to coverage.py's own `source` handling.
     ///
-    /// `--v2-collect-only` never sets it: collect-only imports nothing in the sense that
+    /// `--collect-only` never sets it: collect-only imports nothing in the sense that
     /// matters — it does import modules, but it runs no test and reports no coverage, so
     /// measuring would cost every worker a `sys.monitoring` registration for data nothing
     /// reads.
@@ -521,7 +521,7 @@ pub(crate) struct Dispatch {
     /// may be rewritten, or `None`.
     ///
     /// Empty (rather than all-`None`) when the caller did not ask for a plan, which is every
-    /// path except a run — `--v2-collect-only` imports nothing, so there is nothing to
+    /// path except a run — `--collect-only` imports nothing, so there is nothing to
     /// rewrite and nothing to pay for computing.  [`Dispatch::assert_key`] reads it, and
     /// treats short and empty the same way, so a caller cannot get a *wrong* key by
     /// forgetting to fill it — only no key.
@@ -538,7 +538,7 @@ pub(crate) struct Dispatch {
 /// `ExecuteTest` out of the `ExecutionPlan` table `collect_file` filled *while importing the
 /// module*; a file Tier S answered was never imported anywhere, so no worker holds a plan for
 /// its tests and every one of them would come back `unknown test`.  Tier S therefore belongs
-/// to [`collect`] — the `--v2-collect-only` surface, and from Task 2 the manifest cache — and
+/// to [`collect`] — the `--collect-only` surface, and from Task 2 the manifest cache — and
 /// [`crate::v2::execute`] keeps calling this.
 pub(crate) fn plan(
     invocation_dir: &Path,
@@ -555,7 +555,7 @@ pub(crate) fn plan(
         &CollectOptions {
             // `codeblocks` is the run path's own tri-state (`RunOptions::codeblocks`),
             // forwarded verbatim: `None` means the CLI said nothing, so `plan_with_options`
-            // falls back to `[tool.rustest] codeblocks` exactly as `--v2-collect-only` does.
+            // falls back to `[tool.rustest] codeblocks` exactly as `--collect-only` does.
             codeblocks,
             coverage,
             tier: TierMode::DynamicOnly,

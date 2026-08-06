@@ -8,7 +8,7 @@ skipped, so a reflow that moves an anchor cannot quietly reduce the table.
 
 Every row here mutates the *harness*, not the runner under test: this table proves that
 the new gate would notice if it stopped grading something, which is a different question
-from whether `rustest --v2` is correct (that is what the gate itself answers).
+from whether `rustest` is correct (that is what the gate itself answers).
 
 Run: `uv run python conformance/evidence/mutate_p1b2_task5.py [row ids...]`
 
@@ -194,9 +194,9 @@ ROWS: list[Row] = [
         "v2 report",
         RUN,
         "        if not report_path.exists():\n            raise RuntimeError(\n"
-        + '                f"rustest --v2 wrote no report',
+        + '                f"rustest wrote no report',
         "        if False:\n            raise RuntimeError(\n"
-        + '                f"rustest --v2 wrote no report',
+        + '                f"rustest wrote no report',
         [f"{T_RUN}::test_run_rustest_v2_run_raises_when_no_report_is_written"],
         "missing-report guard removed -- a dead run grades as data",
     ),
@@ -222,9 +222,9 @@ ROWS: list[Row] = [
         17,
         "v2 report",
         RUN,
-        '            [sys.executable, "-m", "rustest", "--v2", "--report-json", '
+        '            [sys.executable, "-m", "rustest", "--report-json", '
         + "str(report_path), *args],",
-        '            [sys.executable, "-m", "rustest", "--v2", "--report-json", str(report_path)],',
+        '            [sys.executable, "-m", "rustest", "--report-json", str(report_path)],',
         [f"{T_RUN}::test_full_run_runners_pass_case_args_through[run_rustest_v2_run]"],
         "case args dropped on the v2 side",
     ),

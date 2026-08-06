@@ -84,7 +84,7 @@ def grade_collect_case(
 ) -> CaseResult:
     """Grade a case on collection alone: the ordered node-id list and the exit code.
 
-    Those two *are* the whole ``--v2-collect-only`` contract. There are no outcome
+    Those two *are* the whole ``--collect-only`` contract. There are no outcome
     counts to compare (nothing is executed) and no separate collection-error flag to
     compare (pytest signals that as exit 2, and so does v2). Stderr is not read on
     either side -- see ``run_rustest_v2_collect``.
@@ -135,7 +135,7 @@ def grade_run_case(
 ) -> CaseResult:
     """Grade a case on a full run: ordered ids, the seven graded counts, the exit code.
 
-    Those three *are* the whole ``rustest --v2`` contract as a machine reader sees it.
+    Those three *are* the whole ``rustest`` contract as a machine reader sees it.
     Nothing else is compared, and each omission is deliberate:
 
     * **stdout/stderr prose** -- worded differently by design on the v2 side, and worker

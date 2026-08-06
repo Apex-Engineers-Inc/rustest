@@ -8,7 +8,7 @@
 //!   in a subprocess, and compares its reported `rootdir`/`configfile` with what
 //!   [`super::config::resolve_config`] produces for the same layout.
 //! * [`v2_collect`] is the first **user-reachable** v2 surface, behind
-//!   `rustest --v2-collect-only` (`python/rustest/cli.py` → `core.v2_collect_only`).
+//!   `rustest --collect-only` (`python/rustest/cli.py` → `core.v2_collect_only`).
 //!
 //! Both return JSON strings rather than Python objects, for the same reason the manifest
 //! itself is data: the boundary stays a single serialized value, so nothing about v2's
@@ -270,7 +270,7 @@ pub fn v2_collect(
         cache: CacheMode::from_wire(cache_mode),
         keyword,
         mark: mark_expr,
-        // `--v2-collect-only` imports nothing, so there is nothing to rewrite; computing the
+        // `--collect-only` imports nothing, so there is nothing to rewrite; computing the
         // plan would cost a read and a parse per file on the one surface whose whole point
         // is latency.  The run path turns it on (`collect::plan`).
         assert_rewrite: false,
@@ -289,7 +289,7 @@ pub fn v2_collect(
 
 /// Run `args` with the v2 engine and return the [`super::execute::RunReport`] as JSON.
 ///
-/// This is the whole of `rustest --v2` seen from Python: config resolution, the file walk,
+/// This is the whole of a flagless `rustest` seen from Python: config resolution, the file walk,
 /// a worker pool that collects and then *stays alive* to execute, `-k`/`-m` selection
 /// between the two, and pytest's exit code in the report's `exit_code` field.
 ///

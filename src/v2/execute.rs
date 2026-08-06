@@ -122,7 +122,7 @@ pub struct RunOptions {
     /// `None` means the CLI said nothing, so `[tool.rustest] codeblocks` (or the pytest ini
     /// spelling) decides, and the built-in default is **off** — [`collect::plan_with_options`]
     /// resolves it with `options.codeblocks.or(config.codeblocks).unwrap_or(false)`, the same
-    /// tri-state [`super::collect::CollectOptions::codeblocks`] uses for `--v2-collect-only`.
+    /// tri-state [`super::collect::CollectOptions::codeblocks`] uses for `--collect-only`.
     pub codeblocks: Option<bool>,
     /// Rewrite the assertions of statically analysable files
     /// (`crate::v2::static_collect::rewrite_plan`, `python/rustest/_assertion_rewrite.py`).

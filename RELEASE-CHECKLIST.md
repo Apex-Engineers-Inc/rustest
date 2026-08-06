@@ -25,7 +25,7 @@ Everything below was verified against the tree and against GitHub, not inferred 
 
 ### What is left for you
 
-1. **Review the docs.** `bash scripts/docs.sh build` → `great-docs/_site/index.html`. Builds
+1. **Review the docs.** `poe docs-build` → `great-docs/_site/index.html`. Builds
    with zero warnings. The seven beginner/CLI pages changed most: every console sample was
    re-captured from a real run.
 2. **Try it on other projects** — install from the branch:
@@ -178,7 +178,7 @@ Run in order. Nothing here has side effects beyond the working tree.
 - [ ] `uv run python -m rustest README.md user_guide/*.md`
 - [ ] `uv run ruff format --check python conformance` · `uv run ruff check python conformance`
       · `uv run basedpyright python conformance`
-- [ ] `bash scripts/docs.sh build` — needs the Quarto CLI on PATH
+- [ ] `poe docs-build` — needs the Quarto CLI on PATH
 - [ ] Confirm `git merge-tree --write-tree origin/main HEAD` still reports the §1.2 set and
       nothing new.
 

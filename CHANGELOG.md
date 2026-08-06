@@ -143,7 +143,7 @@ full mechanism. Nine breaking changes fall out of that fix:
 8. **Deselecting a block no longer stops its body from running.** A block's top-level
    statements now execute at *collect*, the same moment a `.py` module's top-level code
    does, so `-k`, `-m "not codeblock"` and `--lf` decide which *tests* run, not whether a
-   block's own statements already ran — and `--v2-collect-only` executes them too. This is
+   block's own statements already ran — and `--collect-only` executes them too. This is
    the change most likely to bite a real user, because it inverts the intent of a
    deselecting command line: someone who runs `-m "not codeblock"` specifically to avoid
    executing documentation examples now executes their bodies anyway. Consistent with `.py`
@@ -166,8 +166,12 @@ full mechanism. Nine breaking changes fall out of that fix:
 workers, pytest's config resolution and node ids, pytest's exit codes, and the pytest
 compatibility shim installed unconditionally. Every run is now a compat run.
 
-- **`--v2` is a no-op alias** and prints a deprecation note, so pipelines that adopted it
-  early keep working.
+- **`--v2` and `--v2-collect-only` are gone**, and unlike the removals above they are not
+  listed as breaking changes: both were scaffolding from the rewrite, when naming the
+  engine still distinguished something, and neither ever appeared in a released version.
+  Nothing outside this repository can have used them. Collect-only itself survives under
+  pytest's own spelling — **`--collect-only`, with `--co`** — which is what it should have
+  been called once there was one engine to collect with.
 
 ### Added
 
@@ -299,10 +303,10 @@ which is the worst answer a test runner can give.
   anything reading the tail of a log for the verdict worked until it silently did not. Only
   red runs were affected, since a green run has no stdout blocks to be reordered against.
   The same missing flush displaced `worker_stderr`, the teardown errors, the `Exit:` banner,
-  the `stopping after N failures (-x)` banner, and `--v2-collect-only`'s `N tests collected`,
+  the `stopping after N failures (-x)` banner, and `--collect-only`'s `N tests collected`,
   which printed *above* the ids it counts. pytest has no such hazard because its whole
   terminal report is on stdout; rustest keeps the stderr split -- it is what lets
-  `rustest --v2-collect-only | xargs` see a clean id list -- and now flushes at every
+  `rustest --collect-only | xargs` see a clean id list -- and now flushes at every
   stdout-to-stderr hand-off. Pinned by five tests that run a tree with
   `stderr=subprocess.STDOUT`: separate pipes are each individually well-ordered, so a test
   that reads the two streams apart cannot see this at all.
