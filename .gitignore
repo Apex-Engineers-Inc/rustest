@@ -40,3 +40,6 @@ conformance/real/_work/
 
 # SDD scratch (git-ignored)
 .superpowers/
+
+# SDD artifacts (kept in git history, not in the tree)
+docs/superpowers/

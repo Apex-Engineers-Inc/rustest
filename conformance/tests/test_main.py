@@ -416,7 +416,7 @@ def test_main_v2_run_mode_grades_the_case_the_old_engine_silently_passed(
 
     ``collection/unittest-basic`` is #129: the v1 engine discarded ``TestCase.run()``'s
     result, so a genuinely failing ``unittest`` suite reported **all green**. It was waived
-    in the archived v1 ledger (``docs/superpowers/history/``) and must MATCH here -- a red
+    in the archived v1 ledger (git history) and must MATCH here -- a red
     run reported as red is the entire point of the execution gate.
     """
     monkeypatch.setattr(sys, "argv", ["conformance", "--v2-run", "--only", "collection/unittest"])

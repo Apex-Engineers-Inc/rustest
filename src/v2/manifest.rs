@@ -80,8 +80,9 @@ pub struct CollectedTest {
     /// phantom class, and `class_name` is the class-scope teardown boundary
     /// (`_v2_worker.py::FixtureRunner.note_test_boundary`), so that phantom class would
     /// share a class-scoped fixture across tests that must each get their own instead. See
-    /// `docs/superpowers/specs/2026-08-04-doc-block-execution-design.md` for the full
-    /// argument; `_v2_worker.py::_build_entry` carries the matching note on the Python side.
+    /// the doc-block execution design spec (git history, under the removed
+    /// `docs/superpowers/specs/`) for the full argument; `_v2_worker.py::_build_entry`
+    /// carries the matching note on the Python side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_name: Option<String>,
     /// Bracket content for parametrized cases, without brackets (e.g. "x-1").

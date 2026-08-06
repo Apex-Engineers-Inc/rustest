@@ -513,7 +513,7 @@ than an extra, so `uv sync --all-extras` leaves it out.
 | `user_guide/*.md` | Every page on the site. Flat, because great-docs globs one level and copies by basename, which is why the beginner pages are `intro-*.md` |
 | `great-docs.yml` | Config, nav ordering, and the auto-discovered API reference |
 | `README.md` | The site's landing page |
-| `docs/superpowers/` | Internal engineering artifacts. Not site content, not built |
+| `docs/assets/` | Logos and favicon. Not page content |
 
 The API reference is generated from `python/rustest` docstrings, so there are no
 hand-written API pages to update. Improve a docstring and the page follows.

@@ -16,9 +16,9 @@ Everything below was verified against the tree and against GitHub, not inferred 
 | Release branch | `v2/release-candidate` — **PR [#141](https://github.com/Apex-Engineers-Inc/rustest/pull/141)** |
 | Superseded branch | `v2/phase0-conformance` (unchanged; the RC branched from its tip) |
 | Merge with `origin/main` | **Done.** All 37 conflicting paths resolved per §1.2, plus three deviations §1.2 did not predict — see the merge commit |
-| Version | `1.0.0rc1` (`pyproject.toml`) / `1.0.0-rc.1` (`Cargo.toml`) — an RC number for unambiguous git installs, **not** a decision to ship 1.0.0. See §2 |
+| Version | **`1.0.0`** — decided, and set in `pyproject.toml`, `Cargo.toml` and `CHANGELOG.md`. See §2 |
 | Version on `origin/main` | `0.18.0` |
-| **Does merging publish?** | **Yes — this changed.** `1.0.0rc1` is not on PyPI, so `check-version` resolves `publish=true` and the merge push itself releases and deploys docs. The reviewable gap §6 step 1 used to promise is gone. **Decide the version before merging**, not after — see §6 step 1 |
+| **Does merging publish?** | **Yes, and that is now the intent.** `1.0.0` is not on PyPI, so `check-version` resolves `publish=true` and the merge push itself publishes 1.0.0 and deploys docs. There is no reviewable gap between merge and release — the merge **is** the release. See §6 step 1 |
 | `publish.yml` 3.14 wheel fix (#132) | **applied** (`812b279`), not triggered |
 | Deferred items closed on the RC | 1, 2, 3, 4, 5, 8 — see §4 |
 | Deferred items still open | **3**: items 6, 7 and 9 (the version). None is a behaviour regression |
@@ -32,8 +32,8 @@ Everything below was verified against the tree and against GitHub, not inferred 
    ```bash
    uv pip install "rustest @ git+https://github.com/Apex-Engineers-Inc/rustest.git@v2/release-candidate"
    ```
-3. **Decide the version** (§2) — **before** merging PR #141, because at `1.0.0rc1` the merge
-   push publishes on its own. Then run the release (§6). Close issues only once it is live (§5).
+3. **The version is decided: `1.0.0`** (§2), set before the merge because the merge push
+   publishes on its own. Run the release (§6). Close issues only once it is live (§5).
 
 ---
 
@@ -135,24 +135,19 @@ merge is not evidence of a correct one.
 
 ---
 
-## 2. Version — the maintainer's call, not made here
+## 2. Version — decided: `1.0.0`
 
-`pyproject.toml` still says `0.16.2` on this branch. It was deliberately left alone: the
-ledger reserves messaging and naming decisions for the end, and `publish.yml` derives what
-to publish by grepping this field, so **editing it is what triggers a real PyPI release**.
+The constraint was that `main` is already at **0.18.0**, so whatever ships must be greater.
+The two defensible answers were `1.0.0` and `0.19.0`; **`1.0.0` was chosen.** This is the
+first release the project is willing to call stable, and the v2 arc is the work that earns
+it: compatibility is no longer a mode, the conformance corpus and the seventeen-suite sweep
+are the evidence a 1.0 claim needs, and the flag removals are the one-time breaking cleanup
+a project does before committing to semver discipline. `0.19.0` would have understated
+**seven** breaking changes (see `CHANGELOG.md`).
 
-The constraint, not the decision: `main` is already at **0.18.0**, so whatever ships must be
-greater than that. `0.16.2` cannot ship. Two defensible answers:
-
-- **`1.0.0`** — this is the first release the project is willing to call stable, and the v2
-  arc is the work that earns it: compatibility is no longer a mode, the conformance corpus
-  and the seventeen-suite sweep are the evidence a 1.0 claim needs, and the flag removals
-  are the one-time breaking cleanup a project does before committing to semver discipline.
-- **`0.19.0`** — if "stable" is not the message yet. But note this release has **seven**
-  breaking changes (see `CHANGELOG.md`), and a minor bump understates that.
-
-Whichever is chosen, rename `## [Unreleased]` in `CHANGELOG.md` to `## [<version>] - <date>`
-and re-run the changelog sync.
+Applied on this branch: `pyproject.toml` → `1.0.0`, `Cargo.toml` → `1.0.0`, and
+`CHANGELOG.md`'s `## [Unreleased]` renamed to `## [1.0.0] - 2026-08-06` with the changelog
+sync re-run.
 
 ---
 
@@ -276,33 +271,29 @@ be separate, deliberate acts.
 
 1. [ ] §1's merge has landed on `main` and CI is green on `main` HEAD.
 
-   > **⚠ The gap this step used to promise no longer exists. Read before merging.**
+   > **⚠ There is no gap between merge and release. Read before merging.**
    >
-   > This step read: "Pushing the merge alone does **not** publish: `0.16.2` already exists
-   > on PyPI, so `check-version` resolves `publish=false`. That is a useful property — it
-   > gives a reviewable gap between merge and release." **That was true only while the
-   > version was `0.16.2`.** The version is now `1.0.0rc1`, and `1.0.0rc1` is **not** on
-   > PyPI — verified against `https://pypi.org/pypi/rustest/json`, whose `releases` map runs
-   > `0.1.0` … `0.18.0` and contains no `1.0.0rc1`.
+   > This step once read: "Pushing the merge alone does **not** publish: `0.16.2` already
+   > exists on PyPI, so `check-version` resolves `publish=false`. That is a useful property
+   > — it gives a reviewable gap between merge and release." **That was true only while the
+   > version was `0.16.2`.** The version is now `1.0.0`, which is **not** on PyPI — the
+   > `releases` map at `https://pypi.org/pypi/rustest/json` runs `0.1.0` … `0.18.0`.
    >
    > So `check-version` resolves **`publish=true`**, and merging PR #141 runs
    > `build-wheels` → `build-sdist` → `publish` → `deploy-docs` on the merge push itself.
    > **Merging is the release**, and a published PyPI version can be yanked but never
-   > replaced.
+   > replaced. This is now deliberate: §2's decision was made and applied *before* the
+   > merge, which is what steps 2–3 below used to defer.
    >
-   > It also splits the story if allowed to fire: pip skips pre-releases by default, so
-   > `pip install rustest` would still resolve `0.18.0` while the docs site had already
-   > redeployed describing v2 — users reading 1.0 docs against a 0.18 install.
-   >
-   > **Therefore: settle §2's version decision *before* the merge, not after.** The
-   > merge-then-bump sequence in steps 2–4 below assumes a gap this tree does not have.
-   > Either set the intended final version first and accept that the merge publishes it, or
-   > park the version at something already on PyPI to restore the gap deliberately.
-2. [ ] Decide the version (§2) and set it in `pyproject.toml`.
-3. [ ] Rename `CHANGELOG.md`'s `## [Unreleased]` to `## [<version>] - <date>`, and
-       `cp CHANGELOG.md user_guide/changelog.md`.
-4. [ ] Commit and push **once**, version bump and changelog together. This is the push that
-       publishes.
+   > One consequence to expect: `1.0.0` is a final release, not a pre-release, so
+   > `pip install rustest` resolves it immediately and the docs redeploy describes the same
+   > version. (Had an RC shipped here, pip would have skipped it and left users on `0.18.0`
+   > while reading v2 docs.)
+2. [x] Version decided and set in `pyproject.toml` and `Cargo.toml` — `1.0.0` (§2).
+3. [x] `CHANGELOG.md`'s `## [Unreleased]` renamed to `## [1.0.0] - 2026-08-06`, and synced
+       to `user_guide/changelog.md` by the pre-commit hook.
+4. [ ] Merge and push. The merge push **is** the release — there is no separate bump commit
+       left to make.
 5. [ ] Watch the run: `check-version` → `build-wheels` (3 OS × **3** interpreters now, per
        #132) → `build-sdist` → `publish` (trusted publishing, no token) → `deploy-docs`.
 6. [ ] Verify on PyPI that a **cp314** wheel is present for all three OSes — that is the

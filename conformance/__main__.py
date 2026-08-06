@@ -38,8 +38,9 @@ ROOT = Path(__file__).parent
 # **There were three.** The first graded pytest against the v1 engine end to end, against
 # `waivers.toml` -- 24 entries, every one of them a v1 bug with a fixed-in-v2 citation. v1
 # was deleted in Phase 4 Task 2 and the gate went with it; the ledger is ARCHIVED, not
-# discarded, at `docs/superpowers/history/2026-07-29-v1-conformance-ledger/`, because it is
-# the record of what the rewrite was *for*.
+# discarded -- it lived at `docs/superpowers/history/2026-07-29-v1-conformance-ledger/`
+# until the SDD artifacts were removed from the tree before 1.0.0, and remains in git
+# history, because it is the record of what the rewrite was *for*.
 V2_COLLECT_WAIVERS = ROOT / "waivers-v2-collect.toml"
 V2_RUN_WAIVERS = ROOT / "waivers-v2-run.toml"
 CORPUS = ROOT / "corpus"
@@ -265,8 +266,7 @@ def main() -> int:
         print(
             "conformance: choose a gate -- --v2-collect (collection) or --v2-run (a full"
             + " run). A bare invocation was the v1 end-to-end gate, which was retired with"
-            + " the v1 engine in Phase 4 Task 2; its ledger is archived under"
-            + " docs/superpowers/history/.",
+            + " the v1 engine in Phase 4 Task 2; its ledger is archived in git history.",
             file=sys.stderr,
         )
         return 4

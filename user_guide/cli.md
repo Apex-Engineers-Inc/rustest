@@ -606,7 +606,7 @@ rustest [OPTIONS] [PATHS...]
 | `--llm` | Emit the run as JSONL on stdout for LLM tooling. See [LLM output](llm-output.md) |
 | `--llm-full` | With `--llm`: attach captured output whole instead of the last 50 lines. Refused on its own |
 | `--llm-schema` | Print the JSON Schema for `--llm` output and exit 0 |
-| `--version` | Print the installed version (`rustest 1.0.0rc1`) and exit 0. Runs nothing |
+| `--version` | Print the installed version (`rustest 1.0.0`) and exit 0. Runs nothing |
 | `--v2-collect-only` | Collect and print node ids, one per line, without running anything. Honours `-k`, `-m` and `-n`; refuses `--llm` and `--cov`, since a run that executes nothing has no result to report or measure |
 | `--v2` | Deprecated no-op: there is one engine. Accepted so old scripts keep working, with a note on stderr |
 | `-h, --help` | Show help message and exit |
@@ -635,7 +635,7 @@ flag without editing the project.
 ## Checking the Version
 
 ```bash
-rustest --version    # -> rustest 1.0.0rc1
+rustest --version    # -> rustest 1.0.0
 ```
 
 Prints the installed version on `stdout` and exits 0, running nothing. Like `--llm-schema`,

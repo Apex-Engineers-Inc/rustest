@@ -1,7 +1,7 @@
 //! The rustest **v2** core.
 //!
-//! v2 is being built alongside the v1 runner (see
-//! `docs/superpowers/specs/2026-07-25-rustest-v2-architecture-design.md`).  Until the
+//! v2 is being built alongside the v1 runner (see the architecture design spec, in git
+//! history under the removed `docs/superpowers/specs/`).  Until the
 //! conformance corpus reports parity, both trees live in this crate: everything under
 //! `src/v2/` is new code, and nothing outside it may be changed by v2 work.
 //!

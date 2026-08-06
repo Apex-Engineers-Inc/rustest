@@ -5,13 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-08-06
 
-> **Release-candidate builds report `1.0.0rc1`.** The number is set so that a build
-> installed from git is unambiguous in `pip list` next to a PyPI `0.18.0`. It is **not** a
-> decision that this ships as 1.0.0. The final version is the maintainer's call at release
-> time (see `RELEASE-CHECKLIST.md` §2), and nothing publishes from the release-candidate
-> branch: `publish.yml` triggers only on a push to `main`.
+> **This is the first release the project calls stable.** It supersedes `0.18.0`, the last
+> version published from the v1 engine. The seven breaking changes below are the one-time
+> cleanup taken before committing to semver discipline; from here, a breaking change means
+> a major bump.
 
 This entry covers the **v2 arc**: a ground-up rewrite of rustest's engine, validated
 against a conformance corpus that diffs rustest against real pytest case by case, and

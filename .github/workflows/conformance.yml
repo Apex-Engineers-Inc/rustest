@@ -12,8 +12,8 @@ jobs:
   # A single job, not a matrix: the two conformance gates below run as two steps in
   # one job, which GitHub Actions always executes in file order on the same runner. That
   # sequencing is load-bearing, not incidental -- see the "never run conformance gates
-  # concurrently" directive in docs/superpowers/plans/2026-07-26-phase1c-compat-default.md
-  # header. Splitting these into parallel jobs (even matrix legs of the same job) would
+  # concurrently" directive in the Phase 1c plan (git history, under the removed
+  # docs/superpowers/plans/) header. Splitting these into parallel jobs (even matrix legs of the same job) would
   # let two gates race for CPU on the runner at once, which is exactly the kind of
   # concurrent load that produced the subprocess-timeout misread recorded in the P1b.2
   # Task 5 report Sec 10.7 (a `1 diverged` reading that was actually a HARNESS-ERROR).
@@ -52,7 +52,7 @@ jobs:
 
       # THERE WERE THREE. The first gate ran a real pytest against the v1 engine end to
       # end, graded against conformance/waivers.toml. v1 was deleted in Phase 4 Task 2 and
-      # the gate went with it; its ledger is archived under docs/superpowers/history/.
+      # the gate went with it; its ledger is archived in git history.
       # A bare `python -m conformance` now exits 4 naming the two below rather than
       # defaulting onto one of them.
 

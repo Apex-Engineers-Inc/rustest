@@ -63,7 +63,7 @@ tests/                        # Integration test suite
 examples/tests/               # Example test suite
 user_guide/                   # The documentation site's content (flat, .md)
 great-docs.yml                # The documentation site's config
-docs/superpowers/             # Internal SDD artifacts -- NOT site content
+docs/assets/                  # Logos and favicon for the site
 ```
 
 ## Development Commands
@@ -309,7 +309,9 @@ replaced zensical/MkDocs; there is no `zensical.toml` and no `mkdocs.yml`.
 - Build: `poe docs-build` · Preview: `poe docs` — both go through `scripts/docs.sh`
 - Prerequisites: the **Quarto CLI** on PATH (`winget install --id Posit.Quarto -e` on
   Windows), plus a `.venv-docs` the script bootstraps
-- `docs/superpowers/` is internal SDD material, not site content, and is not built
+- `docs/` holds only `assets/` (logos, favicon). The SDD plans and specs that used to live
+  in `docs/superpowers/` were removed from the tree before the 1.0.0 release; they remain in
+  git history, and the path is now git-ignored so it cannot come back
 
 **The docs toolchain is deliberately not in `.venv`.** great-docs pulls jupyter, which
 pulls anyio, which registers a **pytest plugin** — and the conformance gates run real

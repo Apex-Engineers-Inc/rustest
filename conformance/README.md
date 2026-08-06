@@ -1,13 +1,13 @@
 # Conformance & Benchmarks
 
-The fitness function for the rustest v2 rewrite
-(see `docs/superpowers/specs/2026-07-25-rustest-v2-architecture-design.md`).
+The fitness function for the rustest v2 rewrite (the architecture design spec it was
+written against is in git history, under the removed `docs/superpowers/specs/`).
 
 **Two gates**, and a bare `python -m conformance` is neither: it exits **4** naming them.
 It used to be a third gate — pytest against the **v1 engine**, end to end, against
 `conformance/waivers.toml` — retired in Phase 4 Task 2 with the engine it measured. Its
-ledger (24 entries, every one a v1 bug with a fixed-in-v2 citation) is archived at
-`docs/superpowers/history/2026-07-29-v1-conformance-ledger/`. Defaulting the bare
+ledger (24 entries, every one a v1 bug with a fixed-in-v2 citation) is archived in git
+history, under the removed `docs/superpowers/history/`. Defaulting the bare
 invocation onto a surviving gate would answer a question nobody asked, so it refuses.
 
 - `python -m conformance --v2-collect` — the **Phase 1b.1 gate**: diff pytest's
@@ -261,8 +261,8 @@ one process per CPU core — 16 on the recording machine, clamped to the file co
 the 10-file suite) with no static collection tier and no manifest cache to skip any of
 that work on a warm re-run. v1 has none of that fixed cost (no worker pool to spawn at
 all for these suite sizes). This is not a bug to chase down inside
-Phase 1c — it is exactly the gap Phase 2
-(`docs/superpowers/plans/2026-07-26-phase2-speed.md`) exists to close: a static Rust
+Phase 1c — it is exactly the gap Phase 2 (whose plan is in git history) exists to close:
+a static Rust
 collector, a manifest cache, and dispatch tuning, gated on warm collection
 **≤ 50ms** at 5k tests and per-test overhead **< 200µs**, measured against this exact
 table.

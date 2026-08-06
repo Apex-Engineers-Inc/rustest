@@ -13,8 +13,8 @@
 //! not free: it kept `pyo3` classes, an event-callback protocol and six external crates alive
 //! in the build, it owned half of `cargo test` (whose dead tests were #133), and every
 //! compat fix had to be reasoned about twice.  Its conformance ledger — 24 waivers, each one
-//! a v1 bug with a fixed-in-v2 citation — is archived at
-//! `docs/superpowers/history/2026-07-29-v1-conformance-ledger/`.
+//! a v1 bug with a fixed-in-v2 citation — is archived in git history, under the
+//! `docs/superpowers/history/` tree removed before 1.0.0.
 
 #![allow(clippy::useless_conversion)]
 
