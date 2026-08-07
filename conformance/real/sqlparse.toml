@@ -1,0 +1,56 @@
+# sqlparse -- KEEP (no swap needed), and the smallest suite in this Task 1b batch. tests/
+# conftest.py at 0.5.5 is the only conftest.py in the repo: three plain @pytest.fixture
+# factory functions (filepath/load_file/get_stream, all reading tests/files/ fixture SQL).
+# Zero pytest_* hooks anywhere. No pyproject/pytest.ini/setup.cfg/tox.ini pytest section
+# exists at all -- more-itertools-shaped in that respect, though sqlparse's suite IS native
+# pytest-style (not unittest). New domain: SQL tokenizing/parsing. Flag for the implementer:
+# 10 test modules is noticeably thinner than every other target in the corpus -- a good
+# "does rustest handle plain fixtures and files correctly" check, but it won't stress
+# hook/plugin edge cases because the suite itself doesn't use any.
+
+[repo]
+kind = "oss"
+url = "https://github.com/andialbrecht/sqlparse.git"
+tag = "0.5.5"
+# Annotated tag; this is the commit it points at, not the tag object's own SHA.
+rev = "0d240230939bfb3b751b504878b1c7df04a3cab3"
+test_paths = ["tests"]
+
+[env]
+# No test extra in pyproject.toml at all (only dev=["build"], doc=["sphinx"]); actual test
+# deps live under [tool.pixi.feature.test.dependencies] as pytest + coverage + flake8. Just
+# pytest is needed to run the suite; coverage/flake8 are not.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# The repo declares no pytest config at all (no ini_options, no pytest.ini, no setup.cfg, no
+# tox.ini).
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+
+[divergence.global]

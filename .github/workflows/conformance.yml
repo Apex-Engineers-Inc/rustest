@@ -1,0 +1,95 @@
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly benchmark run
+
+jobs:
+  # A single job, not a matrix: the two conformance gates below run as two steps in
+  # one job, which GitHub Actions always executes in file order on the same runner. That
+  # sequencing is load-bearing, not incidental -- see the "never run conformance gates
+  # concurrently" directive in the Phase 1c plan (git history, under the removed
+  # docs/superpowers/plans/) header. Splitting these into parallel jobs (even matrix legs of the same job) would
+  # let two gates race for CPU on the runner at once, which is exactly the kind of
+  # concurrent load that produced the subprocess-timeout misread recorded in the P1b.2
+  # Task 5 report Sec 10.7 (a `1 diverged` reading that was actually a HARNESS-ERROR).
+  # Keep these as sequential steps of one job; do not "parallelize" this workflow.
+  conformance:
+    name: Conformance corpus + benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install uv and dependencies
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          python-version: "3.12" # conformance harness uses tomllib; v2 floor is 3.12+
+
+      - name: Install dependencies and build package
+        run: uv sync --all-extras
+
+      - name: Build Rust extension (release)
+        run: uv run maturin develop --release
+
+      # Fail fast on a broken default path before paying for the full corpus below:
+      # `rustest <paths>` with no flag is the engine end to end (collect + execute +
+      # report). This is not a gate (no waivers, no grading) -- just "does the shipped
+      # CLI's default invocation still exit 0 on a known-good corpus case at all".
+      - name: Smoke test (default path)
+        run: uv run rustest conformance/corpus/collection/multi-file-ordering
+
+      - name: Run conformance harness unit tests
+        run: uv run pytest conformance/tests -v
+
+      # THERE WERE THREE. The first gate ran a real pytest against the v1 engine end to
+      # end, graded against conformance/waivers.toml. v1 was deleted in Phase 4 Task 2 and
+      # the gate went with it; its ledger is archived in git history.
+      # A bare `python -m conformance` now exits 4 naming the two below rather than
+      # defaulting onto one of them.
+
+      # Gate 1 of 2 (sequential -- see the job-level comment above): Phase 1b.1 -- pytest's
+      # collected node ids and collection exit code vs `rustest --collect-only`. Graded
+      # against waivers-collect.toml.
+      - name: Run conformance corpus (collection)
+        run: uv run python -m conformance --collect
+
+      # Gate 2 of 2: Phase 1b.2 -- a real pytest run vs flagless `rustest --report-json` --
+      # ordered node ids, the six-value outcome tally (passed/failed/skipped/xfailed/
+      # xpassed/error) and the exit code. Graded against waivers-run.toml.
+      - name: Run conformance corpus (full run)
+        run: uv run python -m conformance --run
+
+      # NO REAL-SUITE SMOKE STEP, and the reason is a blocker rather than a decision.
+      #
+      # `python -m conformance --real more-itertools` is the intended CI smoke (it clones
+      # fast and pulls no compiled dependencies, unlike the other sixteen targets, one of
+      # which -- member-designer -- is a local read-only tree no runner has). It cannot run
+      # here yet: **all seventeen `conformance/real/*.toml` configs install rustest from a
+      # hardcoded wheel filename**, `{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl`
+      # (two say cp313). That is a Windows wheel and a pinned version, so the step would
+      # fail on ubuntu-latest at env setup, before it graded anything.
+      #
+      # Adding the step needs `conformance/harness/real.py` to resolve the built wheel by
+      # glob (platform tag, ABI tag and version all discovered rather than spelled), which
+      # is a harness change, not a workflow one. Recorded here so the gap is visible at the
+      # place someone would look for the step.
+
+      - name: Benchmarks (scheduled/manual only)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: uv run python -m conformance.bench.bench --out bench_results.json
+
+      - name: Upload benchmark results
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench_results.json

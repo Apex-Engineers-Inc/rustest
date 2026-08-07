@@ -1,0 +1,103 @@
+# attrs -- KEEP-with-ledgered-hooks (Phase 4 Task 1b batch 2). tests/conftest.py at 26.1.0 is
+# the ONLY conftest.py in the repo (33 lines, full text quoted in the audit). One hook,
+# `pytest_configure`, whose entire body registers + loads a Hypothesis settings profile
+# (`settings.register_profile("patience", ...)`, raises the deadline, suppresses
+# `HealthCheck.too_slow`) -- Hypothesis config, not a pytest marker/collection mechanism, and
+# it does NOT call `config.addinivalue_line`. Plus two trivial parametrized boolean fixtures
+# (`slots`, `frozen`, `params=(True, False)`) and a two-entry `collect_ignore`
+# (`test_pattern_matching.py` unless PY_3_10_PLUS, `test_forward_references.py` unless
+# PY_3_14_PLUS -- both true on our Python 3.14 pin, so nothing is actually ignored here).
+# Squarely LIMITED per the batch-2 rule (marker/config registration + a handful-of-files
+# collect_ignore): no pytest_generate_tests, no custom collectors, no plugin registration of
+# attrs' own. New domain: class-boilerplate generation, versus schema validation
+# (marshmallow), CLI (click), templating (jinja2), WSGI (werkzeug).
+#
+# One adjacent HEAVY mechanism intentionally NOT counted against this pick: `pytest-mypy-plugins`
+# (a custom `.yml`-file collector) only activates for `tests/test_mypy.yml` when that plugin is
+# installed, gated to a separate `mypy` tox/dependency-group env outside this draft's `tests`
+# testpaths -- not installed here, so it never loads.
+
+[repo]
+kind = "oss"
+url = "https://github.com/python-attrs/attrs.git"
+tag = "26.1.0"
+# Annotated + cryptographically signed tag (SSH-signed by hynek); this is the commit it
+# resolves to, not the tag object's own SHA.
+rev = "7bfc49e9b22d5ba25b6e429524c3d49fee27cb36"
+test_paths = ["tests"]
+
+[env]
+# [dependency-groups].tests: cloudpickle (CPython-only, pickle-compat regression data),
+# hypothesis (drives most edge-case tests; also supplies the conftest's "patience" profile),
+# pympler (memory-usage checks in a handful of tests), pytest, pytest-xdist[psutil] (parallel
+# execution via `-n auto`, not required for correctness -- left out, same call made for every
+# other target in this corpus that only uses a plugin for perf/output shaping).
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "hypothesis", "pympler", "cloudpickle"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# [tool.pytest.ini_options]: addopts = ["-ra", "--strict-markers", "--strict-config",
+# "--import-mode=importlib"]; xfail_strict = true; testpaths = "tests"; filterwarnings =
+# ["once::Warning", "ignore:::pympler[.*]"]. No `markers` key at all (consistent with the
+# conftest registering none). Same mechanism as click's addopts: rustest applies `addopts`
+# itself by reading `[tool.pytest.ini_options]` out of the target's own pyproject.toml (Phase
+# 4 Task 1 port of `Config._preparse`), so both runners pick this up automatically -- nothing
+# to inject on the command line.
+configured = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# MEASURED, not the draft's guess. The draft expected the click/jinja2 IdMaker spelling gap;
+# that gap is closed and is NOT what happens here. Exactly 3 of 1387 ids differ, and all 3 are
+# a downstream symptom of the length-1-sequence-unpack defect ledgered below -- rustest binds
+# a different VALUE, so it then generates a different id from it. `strip_params` is kept for
+# that reason: it raises the raw id difference as its own graded `ids` problem (below) instead
+# of scattering it across per-id noise, and it goes stale the moment the unpack is fixed. Once
+# it is, re-test `exact` here -- on this evidence the suite should reach it.
+# TIGHTENED to `exact` at Phase 4 Task 1c, and that is a result in its own right. The
+# `strip_params` policy was here because the length-1 unpack (MECHANISM M2) corrupted
+# node ids as well as values -- `test_setattr`'s id differed with BOTH cases passing on
+# BOTH runners, which is the sighting that proved the defect can be entirely silent.
+# With M2 ported, the ids agree, so the gate now compares them one for one.
+id_policy = "exact"
+
+[divergence.ids]
+# EMPTY as of Phase 4 Task 1c -- this target is now a clean MATCH at 1380 passed /
+# 5 skipped / 2 xfailed on both runners, exit 0 on both.
+#
+# What used to be here, 5 tests across 2 mechanisms:
+#
+# * FOUR errors (2 tests x 2 params) from the missing `recwarn` builtin (MECHANISM
+#   M5). `TestLegacyMetadataHack` reads `recwarn.list` to assert the
+#   DeprecationWarning attrs' legacy `__version__` hack emits. rustest was honest
+#   about the gap rather than silently skipping -- `FixtureLookupError: ... not
+#   supported by the rustest worker yet` -- and the recorded reason for the gap
+#   ('needs a warnings channel the v2 wire does not have') turned out to be wrong:
+#   `recwarn` records in-process and tells the orchestrator nothing.
+# * ONE failure from the length-1 unpack (M2): `@pytest.mark.parametrize("value",
+#   ["", list(range(1))])` -- `[0]` is a length-1 list under one argname, so rustest
+#   bound the bare int and attrs' `min_len` raised `TypeError: object of type 'int'
+#   has no len()` instead of the expected `ValueError`. The `""` case was unaffected.
+[divergence.global]
+# EMPTY as of Phase 4 Task 1c: exit codes agree (0 on both) and the tally agrees
+# exactly. The two hooks the pre-clone audit flagged -- Hypothesis profile registration
+# and the two-entry `collect_ignore` -- produce no divergence at all, as Task 1b found.

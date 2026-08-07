@@ -11,7 +11,7 @@
     "pytest",
     "pytests",
     "rankdir",
-    "rustest",
-    "zensical"
+    "quarto",
+    "rustest"
 ]
 }

@@ -1,0 +1,215 @@
+# FastAPI -- the PARTIAL run the user decided on after the batch-2 audit returned
+# BLOCKED-BY-DESIGN. Recorded in the plan as: "@anyio-marked tests deselected (anyio's pytest11
+# collection plugin is the blocker, not FastAPI); sync TestClient majority runs; async subset
+# ledgered plugin-dependent."
+#
+# THE BLOCKER IS NOT FASTAPI'S CODE. FastAPI has exactly one conftest.py in the whole repo and
+# it is outside this target's test_paths (`scripts/tests/test_translation_fixer/`), and it
+# registers no pytest plugin of its own. The blocker is `anyio`, a HARD entry in the `tests`
+# dependency group, which self-registers a pytest plugin via
+# `[project.entry-points] pytest11 = {anyio = "anyio.pytest_plugin"}`. That plugin's
+# `pytest_collection_finish` hand-builds duplicate `pytest.Function`/`CallSpec2` objects for
+# every `@pytest.mark.anyio` async test, once per available backend (asyncio AND trio, since
+# `anyio[trio]` is not optional here) -- functionally `pytest_generate_tests` implemented as
+# post-collection item rewriting. rustest does not load pytest11 entry-point plugins, so under
+# rustest those tests would neither be duplicated nor driven by a backend loop.
+#
+# HOW BIG IS THE EXCLUDED SLICE? Measured on this clone: **7 `@pytest.mark.anyio` occurrences
+# across 5 files, out of 490 test files.** The deselection is genuinely marginal and the "sync
+# TestClient majority" is very nearly the whole suite -- which is what makes the partial run
+# worth doing rather than a fig leaf.
+#
+# HOW THE DESELECTION IS DONE, and why this spelling: `-m "not anyio"` on BOTH runners. Mark
+# deselection happens in `pytest_collection_modifyitems`, which runs BEFORE
+# `pytest_collection_finish`, so the anyio plugin's rewriting hook never sees the marked items
+# at all -- the duplication is prevented rather than papered over afterwards. Both runners
+# support `-m`, both report the deselected count, and the harness grades `deselected` as part
+# of the tally, so a drift in what gets deselected cannot hide.
+
+[repo]
+kind = "oss"
+url = "https://github.com/fastapi/fastapi.git"
+tag = "0.140.7"
+# Lightweight tag; commit SHA directly. Re-verified at clone time with `git ls-remote` -- the
+# audit could only web-corroborate it (api.github.com 403'd), and it additionally noted 0.140.7
+# was published mid-audit, superseding 0.140.6. Confirmed unchanged.
+rev = "98b12fe56f97107e71a20fc1cf334ccfa590efb5"
+test_paths = ["tests"]
+
+[env]
+setup = [
+  # 3.13, NOT 3.14 -- the fourth target in this corpus to need it, for the identical reason
+  # jinja2, werkzeug and pynite record: this box's uv-managed CPython 3.14.2 has a broken `_ssl`
+  # (missing libcrypto-3-x64.dll). `anyio/_core/_sockets.py` does `import ssl` at module scope
+  # and anyio is imported by fastapi itself, so on 3.14 pytest died before writing a report
+  # (measured: exit 1, harness EE). Interpreter-install fault on this machine, not a property of
+  # FastAPI or of rustest.
+  ["uv", "venv", "--python", "3.13", "{venv}"],
+  # The `tests` dependency group is 28 entries deep and pulls a large transitive tree
+  # (pydantic, starlette, httpx, sqlmodel, flask, strawberry-graphql, typer, pwdlib, pyjwt,
+  # dirty-equals, inline-snapshot, a2wsgi, ...), so it is taken from the repo's OWN uv.lock via
+  # `uv export --frozen` rather than hand-listed. `--frozen` reads the lock and never rewrites
+  # it; `--no-emit-project` keeps fastapi itself out so the editable install below is the one
+  # that lands.
+  [
+    "uv", "export", "--frozen", "--project", "{repo}",
+    "--no-default-groups", "--group", "tests",
+    "--no-emit-project", "--no-hashes",
+    "--format", "requirements-txt", "-o", "{work}/_fastapi-requirements.txt",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-r", "{work}/_fastapi-requirements.txt"],
+  # The lock pins `pytest>=9.0.0`; this corpus's oracle is 8.4.2 everywhere and the comparison
+  # must not start measuring pytest-version skew. Forced back down AFTER the export install.
+  # `python-multipart` is NOT in the exported `tests` group but 21 test modules need it:
+  # FastAPI raises `RuntimeError: Form data requires "python-multipart" to be installed` at
+  # import time for anything declaring `Form(...)`/`File(...)`. Without it BOTH runners abort
+  # with collection errors (measured: pytest 21, rustest 30, gate EE). Upstream gets it via
+  # the `fastapi[standard]` extra, which the tests group does not pull in on its own.
+  # `orjson` likewise: four modules (test_orjson_response_class.py and three
+  # test_tutorial/test_custom_response ones) open with `pytest.importorskip("orjson")`, so
+  # without it they are module-skipped rather than run. Installing it removes an avoidable
+  # asymmetry and lets those tests be compared for real.
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "pytest==8.4.2", "python-multipart", "orjson",
+  ],
+  # Reporting/execution plugins are REMOVED rather than left installed, and the reason is
+  # symmetry: rustest loads no pytest11 entry points at all, so every pytest plugin that alters
+  # collection, ordering, timing or reporting is a difference between the two runners that has
+  # nothing to do with compatibility. pytest-sugar (reporting), pytest-codspeed (benchmark
+  # collection), pytest-xdist (distribution), pytest-cov/coverage (tracing) and pytest-timeout
+  # (per-test alarms) all go. `anyio` STAYS -- it is a hard runtime import for the library
+  # itself, and its plugin is the very thing this partial run is scoped around.
+  [
+    "uv", "pip", "uninstall", "--python", "{py}",
+    "pytest-sugar", "pytest-codspeed", "pytest-xdist", "pytest-cov", "pytest-timeout",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp313-cp313-win_amd64.whl",
+  ],
+]
+# The tutorial tests under tests/ import their subjects from `docs_src/`, which upstream wires
+# in as `PYTHONPATH=./docs_src` (never as a positional path -- addopts carries
+# `--ignore=docs_src` precisely so it is importable but not collected). Both runners get it
+# identically here, so it is scaffolding, not a compensation for anything rustest lacks.
+pythonpath = ["docs_src"]
+
+[addopts]
+# `[tool.pytest]` -- the pytest-9-NATIVE table, not `[tool.pytest.ini_options]`. Under this
+# corpus's pytest==8.4.2 oracle the whole table is silently inert, so `--strict-config`,
+# `--strict-markers`, `--ignore=docs_src`, `strict_xfail`, `filterwarnings = ["error"]` and
+# `timeout = "20"` apply to NEITHER runner. Recorded here as what the project declares; nothing
+# is replayed and nothing is dropped. (Same shape as Pillow and psutil -- three of the five
+# batch-2 picks have already moved to the pytest-9 table.)
+configured = [
+  "--strict-config", "--strict-markers", "--ignore=docs_src",
+]
+replay = []
+dropped = []
+
+[run]
+# The deselection, applied IDENTICALLY to both runners -- see the header for why this spelling.
+pytest_args = ["-m", "not anyio"]
+rustest_args = ["-m", "not anyio"]
+# 490 test files, twice, plus a large tutorial surface.
+timeout_s = 3600
+id_policy = "exact"
+
+[divergence.ids]
+# EMPTY as of Phase 4 Task 1c -- this target went from BLOCKED (0 tests collected, 8
+# collection errors) to EXPLAINED over all 3 289 ids, with the per-id status map IDENTICAL
+# on both runners.
+#
+# What used to be here: a whole-suite block, from two mechanisms compounding.
+#
+# * MODULE-LEVEL SKIP (MECHANISM M7). Several modules call `pytest.importorskip` or
+#   `pytest.skip(..., allow_module_level=True)` at import; rustest raised that out of
+#   collection, and a collection error aborts the session.
+# * `argnames=` AS A KEYWORD (MECHANISM M8). Three modules write
+#   `@pytest.mark.parametrize(argnames=..., argvalues=...)`. pytest's own signature is
+#   `Metafunc.parametrize(argnames, argvalues, indirect=False, ids=None, scope=None)`, so
+#   calling it by keyword is ordinary usage; rustest's first parameter was spelled
+#   `arg_names` and the `argvalues` alias already existed, so this was a completed pattern
+#   with one case missed. One alias, 3 289 tests.
+#
+# Re-swept: 3248 passed / 8 failed / 5 skipped / 5 xfailed / 23 error on BOTH runners, exit
+# 1 on both. pytest's own 8 failures and 23 errors are environment-conditioned (this is not
+# FastAPI's CI container) and rustest reproduces them exactly, which is the strongest form
+# of the claim: the two runners agree test by test, including on what this environment
+# breaks.
+[divergence.global]
+tally = """\
+The ONLY tally difference left is the deselected count: pytest 18, rustest 9. Everything \
+else is identical -- 3248 passed / 8 failed / 5 skipped / 5 xfailed / 23 error on both \
+sides, over the same 3289 ids, exit 1 on both. (Before Phase 4 Task 1c this entry read \
+"rustest 0 of everything, 8 collection errors": the suite did not collect at all. See the \
+ids ledger above for the two mechanisms that blocked it.)
+
+THE DESELECTED COUNTS DIFFER 18 vs 9, AND THAT PART IS REAL AND EXPECTED -- it is the anyio \
+asymmetry this partial run was designed around, showing up in the one number that survived. \
+There are 9 `@pytest.mark.anyio` tests. Under pytest, anyio's pytest11 plugin parametrizes \
+them over `anyio_backend` (asyncio AND trio, since `anyio[trio]` is a hard dependency) BEFORE \
+`-m "not anyio"` deselection runs, so pytest deselects 18 items -- 9 tests x 2 backends. \
+rustest loads no pytest11 entry points, sees the 9 undoubled tests, and deselects 9. Exactly \
+2x, exactly as the mechanism predicts. This is the ledgered "async subset plugin-dependent" \
+outcome the user's partial-run decision called for, and it is confirmed as a measurement \
+rather than an assumption.
+
+pytest's own 23 errors + 8 failures are environment-conditioned (this is not FastAPI's CI \
+container). rustest now reproduces every one of them, id for id, which is a stronger result \
+than a clean run would have been: the two runners agree about what this environment breaks, \
+not merely about what it passes."""
+
+[notes]
+# KNOWN LIMITATION, and the target's own, recorded as a NOTE rather than as a graded ledger
+# entry because it is INTERMITTENT: a ledger entry would go STALE-LEDGER on the runs where it
+# does not fire, which is most of them. Notes are printed with every verdict and grade
+# nothing, which is exactly the right weight for a hazard that may or may not appear.
+#
+# WHAT: on some pooled runs one id -- `test_tutorial/test_custom_request_and_route/
+# test_tutorial002.py::test_endpoint_works[tutorial002_py310]` -- comes back `error` where
+# pytest has `passed`, and the traceback is not from that file at all:
+#
+#   File ".../test_tutorial/test_custom_docs_ui/test_tutorial002.py", line 19, in client
+#       static_dir.rmdir()
+#   FileNotFoundError: [WinError 2] ... '...\fastapi\static'
+#
+# A module-scoped teardown from a DIFFERENT module, surfacing on the next file's first test
+# (rustest attributes boundary teardown that way, by design).
+#
+# WHY: three of fastapi's test files create and remove the SAME `<cwd>/static` directory with
+# `mkdir(exist_ok=True)` / `rmdir()` -- `test_custom_docs_ui/test_tutorial001.py`,
+# `test_custom_docs_ui/test_tutorial002.py` and `test_static_files/test_tutorial001.py`.
+# fastapi knows: all three are decorated `@workdir_lock`, and `tests/utils.py` defines
+# `workdir_lock = pytest.mark.xdist_group("workdir_lock")` -- pytest-xdist's "put these on one
+# worker" instruction, i.e. the target's own written acknowledgement that these files must not
+# run concurrently. It is an xdist marker, not core pytest; rustest implements no xdist markers
+# and routes by file STEM, and the group spans two stems (`test_tutorial001`,
+# `test_tutorial002`), so the group is split across workers by construction.
+#
+# EVIDENCE (Phase 4b Task 2 report, Sec 8.3): re-run immediately after the sweep, same wheel,
+# same machine, same `-m "not anyio"` -- `-n 1` and three consecutive `-n 4` runs all reported
+# 23 errors, id-for-id identical to pytest's 23; the sweep's own `-n 4` run reported 24. ONE
+# occurrence in four pooled runs. The hazard needs two or more workers, which was equally true
+# at the old `cpu_count` default, and the new default of four makes a two-stem collision LESS
+# likely (~1/4 at four bins against ~1/16 at sixteen). Nothing in Phase 4b created it.
+#
+# THE FIX IS A FEATURE, NOT A PATCH: honouring `xdist_group` by routing a marked group to a
+# single worker. That is a collection-time marker read with its own design and its own
+# conformance evidence, and three targets in this corpus now own a shared-external-state
+# hazard of this class (jsonschema's import-order dependency and Member Designer's shared
+# MongoDB are the other two, both handled today with an `-n 1` pin in [run]).
+xdist_group = """\
+fastapi marks three files @pytest.mark.xdist_group("workdir_lock") because they share \
+<cwd>/static; rustest implements no xdist markers and routes by file stem, so the group can \
+split across workers and race. Intermittent: 1 occurrence in 4 pooled runs (Phase 4b Task 2 \
+Sec 8.3). Target-owned hazard, not a compat defect; honouring xdist_group is a feature \
+request."""

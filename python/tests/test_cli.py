@@ -1,11 +1,18 @@
-from __future__ import annotations
+"""The CLI's **parser** surface.
 
-import os
-from unittest.mock import patch
+Argument parsing only. Everything the CLI actually *does* is driven end to end against real
+pytest in ``test_flip_cli.py``, ``test_run_cli.py`` and ``test_collect_cli.py`` --
+a mocked engine proves that a flag was forwarded and nothing about whether it works.
+
+This module used to also hold `cli.run` mock tests, v1's exit-code mapping and a
+``TestCIDetection`` block for the colour auto-detection only ``_run_v1`` consulted. All
+three went with the v1 engine in Phase 4 Task 2.
+"""
+
+from __future__ import annotations
 
 import pytest
 
-from rustest import RunReport, TestResult
 from rustest import cli
 
 
@@ -16,59 +23,6 @@ class TestCli:
         assert tuple(args.paths) == (".",)
         assert args.capture_output is True
 
-    def test_main_invokes_core_run(self) -> None:
-        result = TestResult(
-            name="test_case",
-            path="tests/test_sample.py",
-            status="passed",
-            duration=0.1,
-            message=None,
-            stdout=None,
-            stderr=None,
-        )
-        report = RunReport(
-            total=1,
-            passed=1,
-            failed=0,
-            skipped=0,
-            duration=0.1,
-            results=(result,),
-            collection_errors=(),
-        )
-
-        # Clear CI environment variables to simulate local environment
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                exit_code = cli.main(["tests"])
-
-            mock_run.assert_called_once_with(
-                paths=["tests"],
-                pattern=None,
-                mark_expr=None,
-                workers=None,
-                capture_output=True,
-                enable_codeblocks=True,
-                last_failed_mode="none",
-                fail_fast=False,
-                pytest_compat=False,
-                verbose=False,
-                ascii=False,
-                no_color=False,
-                llm=False,
-                llm_verbosity=0,
-                llm_full=False,
-            )
-            assert exit_code == 0
-
-    def test_main_surfaces_rust_errors(self) -> None:
-        def raising_run(*_args: object, **_kwargs: object) -> None:
-            raise RuntimeError("boom")
-
-        with patch("rustest.cli.run", side_effect=RuntimeError("boom")):
-            with pytest.raises(RuntimeError):
-                cli.main(["tests"])
-
 
 class TestCliArguments:
     """Test CLI argument parsing."""
@@ -77,13 +31,13 @@ class TestCliArguments:
         """Test -v flag is parsed correctly."""
         parser = cli.build_parser()
         args = parser.parse_args(["-v"])
-        assert args.verbose == 1
+        assert args.verbose is True
 
     def test_verbose_flag_long(self) -> None:
         """Test --verbose flag is parsed correctly."""
         parser = cli.build_parser()
         args = parser.parse_args(["--verbose"])
-        assert args.verbose == 1
+        assert args.verbose is True
 
     def test_ascii_flag(self) -> None:
         """Test --ascii flag is parsed correctly."""
@@ -119,115 +73,9 @@ class TestCliArguments:
         """Test multiple flags can be combined."""
         parser = cli.build_parser()
         args = parser.parse_args(["-v", "--ascii", "--color", "never"])
-        assert args.verbose == 1
+        assert args.verbose is True
         assert args.ascii is True
         assert args.color == "never"
-
-
-class TestCIDetection:
-    """Test CI environment detection."""
-
-    def test_ci_detected_with_github_actions(self) -> None:
-        """Test CI detection with GitHub Actions env var."""
-        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_detected_with_ci_var(self) -> None:
-        """Test CI detection with generic CI env var."""
-        with patch.dict(os.environ, {"CI": "true"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_detected_with_gitlab(self) -> None:
-        """Test CI detection with GitLab CI env var."""
-        with patch.dict(os.environ, {"GITLAB_CI": "true"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_detected_with_jenkins(self) -> None:
-        """Test CI detection with Jenkins env var."""
-        with patch.dict(os.environ, {"JENKINS_HOME": "/var/jenkins"}):
-            assert cli.is_ci_environment() is True
-
-    def test_ci_not_detected_locally(self) -> None:
-        """Test CI is not detected in local environment."""
-        # Clear all CI environment variables
-        ci_vars = [
-            "CI",
-            "CONTINUOUS_INTEGRATION",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "TRAVIS",
-            "JENKINS_HOME",
-            "JENKINS_URL",
-            "BUILDKITE",
-            "DRONE",
-            "TEAMCITY_VERSION",
-            "TF_BUILD",
-            "BITBUCKET_BUILD_NUMBER",
-            "CODEBUILD_BUILD_ID",
-            "APPVEYOR",
-        ]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            assert cli.is_ci_environment() is False
-
-    def test_color_disabled_in_ci_by_default(self) -> None:
-        """Test that colors are disabled in CI when not explicitly set."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        with patch.dict(os.environ, {"CI": "true"}):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main([])
-
-            # Should have no_color=True in CI
-            assert mock_run.call_args.kwargs["no_color"] is True
-
-    def test_color_enabled_locally_by_default(self) -> None:
-        """Test that colors are enabled locally when not explicitly set."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        # Clear all CI vars to simulate local environment
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main([])
-
-            # Should have no_color=False (colors enabled) locally
-            assert mock_run.call_args.kwargs["no_color"] is False
-
-    def test_color_always_overrides_ci_detection(self) -> None:
-        """Test that --color always overrides CI detection."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        with patch.dict(os.environ, {"CI": "true"}):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--color", "always"])
-
-            # Should have no_color=False even in CI when --color always is passed
-            assert mock_run.call_args.kwargs["no_color"] is False
 
 
 class TestCliEdgeCases:
@@ -311,11 +159,17 @@ class TestCliEdgeCases:
         args = parser.parse_args(["--exitfirst"])
         assert args.fail_fast is True
 
-    def test_pytest_compat_flag(self) -> None:
-        """Test --pytest-compat flag."""
+    def test_pytest_compat_flag_is_gone(self) -> None:
+        """``--pytest-compat`` was deleted at the flip; the parser must not know it.
+
+        Rejection happens *before* parsing (``cli.REMOVED_FLAGS``), so argparse having no
+        such option is the contract here and ``cli.main`` owns the message and the exit code
+        (pinned in ``tests/integration/test_pytest_fixture_detection.py``).
+        """
         parser = cli.build_parser()
-        args = parser.parse_args(["--pytest-compat"])
-        assert args.pytest_compat is True
+        with pytest.raises(SystemExit):
+            _ = parser.parse_args(["--pytest-compat"])
+        assert "--pytest-compat" in cli.REMOVED_FLAGS
 
     def test_no_codeblocks_flag(self) -> None:
         """Test --no-codeblocks flag."""
@@ -348,7 +202,13 @@ class TestCliEdgeCases:
         assert args.mark_expr == "(slow or integration) and not smoke"
 
     def test_all_flags_combined(self) -> None:
-        """Test all flags can be combined."""
+        """Test all flags can be combined.
+
+        ``--ascii`` and ``--color`` are accepted and inert since Phase 4 Task 2 -- they were
+        v1 renderer options and v2's output is neither coloured nor box-drawn. They stay on
+        the parser because they live in projects' ``addopts`` forever, and refusing a purely
+        cosmetic flag would refuse a run rustest can do. Parsing them is still the contract.
+        """
         parser = cli.build_parser()
         args = parser.parse_args(
             [
@@ -364,12 +224,11 @@ class TestCliEdgeCases:
                 "4",
                 "--lf",
                 "-x",
-                "--pytest-compat",
                 "--no-capture",
                 "tests/",
             ]
         )
-        assert args.verbose == 1
+        assert args.verbose is True
         assert args.ascii is True
         assert args.color == "always"
         assert args.pattern == "test_pattern"
@@ -377,279 +236,44 @@ class TestCliEdgeCases:
         assert args.workers == 4
         assert args.last_failed is True
         assert args.fail_fast is True
-        assert args.pytest_compat is True
         assert args.capture_output is False
         assert args.paths == ["tests/"]
 
 
-class TestCliReturnCodes:
-    """Test CLI return codes for different scenarios."""
+class TestVersionFlag:
+    """``rustest --version``.
 
-    def test_returns_zero_on_success(self) -> None:
-        """Test exit code is 0 when all tests pass."""
-        report = RunReport(
-            total=5,
-            passed=5,
-            failed=0,
-            skipped=0,
-            duration=0.5,
-            results=(),
-            collection_errors=(),
-        )
+    It had never existed; ``RELEASE-CHECKLIST.md`` §7 recorded that as the one gap worth
+    closing before calling anything 1.0. Shaped after ``pytest --version``, which is the
+    oracle this project uses everywhere else: ``pytest 8.4.2`` on **stdout**, exit **0**.
+    """
 
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
+    def test_prints_name_and_version_on_stdout_and_exits_zero(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from importlib.metadata import version
 
-        assert exit_code == 0
+        assert cli.main(["--version"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out.strip() == f"rustest {version('rustest')}"
+        assert captured.err == ""
 
-    def test_returns_one_on_failure(self) -> None:
-        """Test exit code is 1 when tests fail."""
-        result = TestResult(
-            name="test_failure",
-            path="tests/test_fail.py",
-            status="failed",
-            duration=0.1,
-            message="AssertionError",
-            stdout=None,
-            stderr=None,
-        )
-        report = RunReport(
-            total=1,
-            passed=0,
-            failed=1,
-            skipped=0,
-            duration=0.1,
-            results=(result,),
-            collection_errors=(),
-        )
+    def test_is_answered_without_needing_a_runnable_tree(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A path that cannot be collected must not stop the query being answered.
 
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
+        Same property ``--llm-schema`` has and for the same reason: a tool asking what
+        version it is talking to should not have to be standing in a project this runner
+        can actually run.
+        """
+        assert cli.main(["--version", "/no/such/directory"]) == 0
+        assert capsys.readouterr().out.startswith("rustest ")
 
-        assert exit_code == 1
-
-    def test_returns_two_on_collection_errors(self) -> None:
-        """Test exit code is 2 when there are collection errors."""
-        from rustest import CollectionError
-
-        collection_error = CollectionError(
-            path="tests/test_broken.py",
-            message="SyntaxError: invalid syntax",
-        )
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.1,
-            results=(),
-            collection_errors=(collection_error,),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
-
-        assert exit_code == 2
-
-    def test_returns_zero_with_only_skipped(self) -> None:
-        """Test exit code is 0 when all tests are skipped."""
-        result = TestResult(
-            name="test_skipped",
-            path="tests/test_skip.py",
-            status="skipped",
-            duration=0.0,
-            message="Skipped because reason",
-            stdout=None,
-            stderr=None,
-        )
-        report = RunReport(
-            total=1,
-            passed=0,
-            failed=0,
-            skipped=1,
-            duration=0.1,
-            results=(result,),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report):
-                exit_code = cli.main(["tests"])
-
-        assert exit_code == 0
-
-
-class TestCliOutput:
-    """Test CLI output formatting."""
-
-    def test_verbose_mode_passed_to_run(self) -> None:
-        """Test verbose flag is passed to run function."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["-v"])
-
-            assert mock_run.call_args.kwargs["verbose"] is True
-
-    def test_ascii_mode_passed_to_run(self) -> None:
-        """Test ascii flag is passed to run function."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--ascii"])
-
-            assert mock_run.call_args.kwargs["ascii"] is True
-
-
-class TestLlmFlag:
-    """Test --llm flag behavior."""
-
-    def test_llm_flag_parsed(self) -> None:
-        """Test --llm flag is parsed as True."""
+    def test_the_parser_knows_the_flag(self) -> None:
+        """Registered, not just intercepted -- that is what puts it in ``--help`` and what
+        keeps ``nargs="*"`` from collecting it as a path."""
         parser = cli.build_parser()
-        args = parser.parse_args(["--llm"])
-        assert args.llm is True
-
-    def test_llm_flag_default_false(self) -> None:
-        """Test --llm flag defaults to False."""
-        parser = cli.build_parser()
-        args = parser.parse_args([])
-        assert args.llm is False
-
-    def test_llm_overrides_color_and_ascii(self) -> None:
-        """Test --llm forces no_color=True, ascii=True, and passes llm=True."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--llm"])
-
-            assert mock_run.call_args.kwargs["no_color"] is True
-            assert mock_run.call_args.kwargs["ascii"] is True
-            assert mock_run.call_args.kwargs["llm"] is True
-
-    def test_llm_silently_overrides_color_always(self) -> None:
-        """Test --llm overrides --color always, still forcing no_color=True and ascii=True."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--llm", "--color", "always"])
-
-            assert mock_run.call_args.kwargs["no_color"] is True
-            assert mock_run.call_args.kwargs["ascii"] is True
-
-    def test_llm_with_verbose(self) -> None:
-        """Test --llm and -v can be combined."""
-        report = RunReport(
-            total=0,
-            passed=0,
-            failed=0,
-            skipped=0,
-            duration=0.0,
-            results=(),
-            collection_errors=(),
-        )
-
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--llm", "-v"])
-
-            assert mock_run.call_args.kwargs["llm"] is True
-            assert mock_run.call_args.kwargs["verbose"] is True
-
-
-class TestLlmPytestCompat:
-    """Test --llm and --pytest-compat flags together."""
-
-    def test_llm_pytest_compat_flags_passed(self) -> None:
-        """Test --llm and --pytest-compat both pass through to core.run()."""
-        report = RunReport(
-            total=0, passed=0, failed=0, skipped=0, duration=0.0, results=(), collection_errors=()
-        )
-        ci_vars = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS_HOME"]
-        with patch.dict(os.environ, {var: "" for var in ci_vars}, clear=True):
-            with patch("rustest.cli.run", return_value=report) as mock_run:
-                cli.main(["--llm", "--pytest-compat"])
-
-        assert mock_run.call_args.kwargs["llm"] is True
-        assert mock_run.call_args.kwargs["pytest_compat"] is True
-
-
-def test_verbose_is_count() -> None:
-    from rustest.cli import build_parser
-
-    args = build_parser().parse_args(["-vv"])
-    assert args.verbose == 2
-
-
-def test_llm_schema_flag_parses() -> None:
-    from rustest.cli import build_parser
-
-    args = build_parser().parse_args(["--llm-schema"])
-    assert args.llm_schema is True
-
-
-def test_llm_full_flag_parses() -> None:
-    from rustest.cli import build_parser
-
-    args = build_parser().parse_args(["--llm", "--llm-full"])
-    assert args.llm_full is True
-
-
-def test_llm_schema_prints_and_exits_zero(capsys: object) -> None:
-    import json as _json
-
-    from rustest.cli import main
-
-    rc = main(["--llm-schema"])
-    assert rc == 0
-    out = capsys.readouterr().out  # type: ignore[attr-defined]
-    doc = _json.loads(out.strip())
-    assert doc["version"] == 1
+        args = parser.parse_args(["--version"])
+        assert args.version is True
+        assert args.paths == (".",)

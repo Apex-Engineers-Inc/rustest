@@ -1,0 +1,82 @@
+# marshmallow -- one of the four suites in this Task 1b batch that KEEPS its original pick
+# (no swap needed). tests/conftest.py at 4.3.0 has exactly three plain @pytest.fixture
+# functions (user/blog/serialized_user, with blog and serialized_user depending on user) and
+# no pytest_* hooks of any kind anywhere in the repo -- LIMITED, cleanly. New domain versus
+# the rest of the corpus: schema validation/serialization rather than CLI (click), templating
+# (jinja2), iterators (more-itertools), or structural engineering (Member Designer).
+
+[repo]
+kind = "oss"
+url = "https://github.com/marshmallow-code/marshmallow.git"
+tag = "4.3.0"
+# Lightweight tag; commit SHA directly.
+rev = "b596fdb0d1bda68ae400ab29e1f1bde2f06900b3"
+test_paths = ["tests"]
+
+[env]
+# [dependency-groups].tests is exactly pytest + simplejson (an alternate JSON backend some
+# tests exercise, not a pytest plugin). No hypothesis, no pytest-xdist/randomly/cov anywhere
+# in the manifest.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2), for the same
+  # reason every other OSS target in this corpus is.
+  # `tzdata` is NOT in marshmallow's own dependency-groups, and it is not a compensation for
+  # anything rustest does: `tests/base.py` does `ZoneInfo("America/Chicago")` at module import,
+  # and Windows ships no IANA time-zone database, so on this platform BOTH runners die in
+  # conftest import with `ZoneInfoNotFoundError` (measured: pytest exit 4, no report at all,
+  # which the harness correctly reports as EE rather than a vacuous match). On Linux the OS
+  # supplies the same data. This makes the suite runnable at all; it is symmetric across the
+  # two runners by construction, since it is installed once into the one shared venv.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "simplejson", "tzdata"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# [tool.pytest.ini_options] declares only norecursedirs (".git .ropeproject .tox docs env venv
+# tests/mypy_test_cases") -- not an addopts key, so nothing to replay or drop here. Whether
+# rustest honors norecursedirs (tests/mypy_test_cases holds mypy-only fixture files, not real
+# tests) is unverified; check at gate time if collection counts look off by those files.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+"tests/test_deserialization.py::TestFieldDeserialization::test_invalid_datetime_deserialization*" = """\
+NOT A RUSTEST DIVERGENCE -- the target suite is not deterministic. Two of this test's \
+parameter values are `dt.datetime.now().strftime("%H:%M:%S %Y-%m-%d")` and \
+`dt.datetime.now().strftime("%m-%d-%Y %H:%M:%S")` (tests/test_deserialization.py:446-447), \
+evaluated at IMPORT time, so the node id carries the wall-clock second of whichever process \
+imported the module. The gate runs pytest first and rustest second, seconds apart, so the two \
+runs legitimately produce different ids: e.g. pytest `[03:07:59 2026-07-28]` vs rustest \
+`[03:08:07 2026-07-28]`. That arrives as 2 ids "missing from rustest" and 2 "extra in \
+rustest", all four `passed` on their own side. Nothing about rustest is being measured here; \
+the same diff appears between two consecutive pytest runs. Deliberately NOT worked around \
+(no id normalization, no freezegun): the corpus's rule is that the gate reports what the \
+runners actually emit."""
+
+[divergence.global]
+# EMPTY as of Phase 4 Task 1c. The `tally` entry that lived here described the
+# 2-test delta from the length-1-sequence unpack (MECHANISM M2); with M2 ported from
+# `ParameterSet._for_parametrize`, the tallies agree exactly -- 1177 passed / 1 failed
+# on BOTH runners, and the one failure is the suite's own, present on both sides. The
+# `test_validator_nested_many_pass_original_and_pass_collection` ids entry went with
+# it: `@pytest.mark.parametrize("data", ([{...}],))` now binds `data` to the length-1
+# list, as pytest does, and both of its cases pass.

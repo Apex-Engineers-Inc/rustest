@@ -4,10 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "rustest"
-version = "0.18.0"
+version = "1.0.0rc1"
 description = "Rust powered pytest-compatible runner"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "rustest contributors" }]
 classifiers = [
@@ -15,24 +15,47 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "Topic :: Software Development :: Testing",
 ]
-dependencies = ["typing-extensions>=4.15", "rich>=13.0.0"]
+dependencies = [
+    "typing-extensions>=4.15",
+    "rich>=13.0.0",
+]
 scripts = { rustest = "rustest.__main__:main" }
 
 [project.optional-dependencies]
-docs = ["zensical"]
-
-[dependency-groups]
+# `--cov` is opt-in packaging, not a hard dependency: see
+# `python/rustest/_coverage.py`'s module docstring for the decision (coverage.py's data
+# API over a hand-rolled lcov writer) and `user_guide/coverage.md` for the user-facing
+# half. A run without `--cov` never imports `coverage`, so the extra costs a user who does
+# not ask for coverage exactly nothing.
+cov = [
+    "coverage>=7.6",
+]
 dev = [
-    "basedpyright>=1.19",
+    # Bounded, and the bound is load-bearing: `.pre-commit-config.yaml` pins the same
+    # basedpyright version as an `additional_dependencies` entry, and a hook running a
+    # different type checker from the CI step is a gate that disagrees with itself.
+    "basedpyright>=1.32.1,<1.33",
+    # The `cov` extra, present here so this repository's own gates can exercise the coverage
+    # path and diff it against coverage.py.  `coverage` registers no pytest plugin (unlike
+    # pytest-cov, which is deliberately NOT installed), so its presence changes nothing about
+    # what the pytest leg of the conformance gates loads.
+    "coverage>=7.6",
     "maturin>=1.4,<2",
+    # `conformance/corpus/builtins/approx-numpy` grades `ndarray == approx(...)` -- the
+    # dispatch mechanism (`__array_ufunc__ = None` / `__array_priority__ = 100`) that cost
+    # Apex Member Designer two tests before `approx` became a port. It is DECLARED rather
+    # than left to `pytest.importorskip` because an undeclared optional dependency makes
+    # that case's verdict a function of the machine: with numpy the v1 gate matched, without
+    # it pytest skipped the module while v1 turned the module-level skip into a collection
+    # error (exit 2 vs 0) and the gate went red in CI only. numpy registers no pytest plugin,
+    # so its presence changes nothing about what either leg of the gates loads.
+    "numpy>=1.26",
     "packaging>=20.0",
     "poethepoet>=0.22",
     "pre-commit>=3.5",
@@ -40,13 +63,46 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=1.2.0",
     "pytest-codeblocks>=0.17.0",
-    "ruff>=0.1.9",
+    # **Bounded on purpose (#134).** `.pre-commit-config.yaml` pins `ruff-pre-commit` to an
+    # exact `rev`, and an unbounded floor here let the two drift six minor releases apart
+    # (v0.8.4 in the hook, 0.14.x in the lock). ruff's formatter changes between minors, so
+    # the skew was not cosmetic: `pre-commit run --all-files` and the CI `ruff format` step
+    # reformatted the same files differently, each undoing the other. The upper bound makes
+    # a `uv lock --upgrade` that would break the pairing fail resolution instead.
+    "ruff>=0.14.3,<0.15",
+]
+
+# NOTE: the documentation toolchain is deliberately **not** an extra. See
+# `[dependency-groups] docs` below.
+
+[dependency-groups]
+# great-docs (the Quarto-based generator that replaced zensical) is declared as a
+# dependency *group*, not an extra, and the distinction is load-bearing rather than
+# stylistic: `uv sync --all-extras` -- what CI and `CLAUDE.md` both tell you to run --
+# installs every extra into `.venv`, and great-docs pulls `jupyter`, which pulls `anyio`,
+# which **registers a pytest plugin**. The conformance gates compare rustest against real
+# pytest in the same environment, and this repository's own rule (see the `numpy` comment
+# above) is that nothing may enter that environment which changes what either leg loads.
+# A named group is excluded from `uv sync --all-extras`, so the gates keep their clean
+# pytest.
+#
+# `scripts/docs.py` installs this group into a separate `.venv-docs`; `poe docs` and
+# `poe docs-build` go through it, as does the `docs.yml` workflow. Quarto's own CLI is a
+# further, non-Python prerequisite -- see `user_guide/development.md`.
+docs = [
+    "great-docs>=0.16",
 ]
 
 [project.urls]
 Homepage = "https://github.com/Apex-Engineers-Inc/rustest"
 Repository = "https://github.com/Apex-Engineers-Inc/rustest"
 Documentation = "https://apex-engineers-inc.github.io/rustest"
+
+# rustest's own settings.  `codeblocks` is off by default; this repository's CI gate is
+# `rustest README.md user_guide/*.md`, so it must ask for the feature explicitly or the
+# gate passes vacuously.
+[tool.rustest]
+codeblocks = true
 
 [tool.maturin]
 module-name = "rustest.rust"
@@ -57,18 +113,31 @@ compatibility = "manylinux2014"
 build = "uv build"
 dev = "uv run maturin develop"
 fmt = "cargo fmt"
-lint = "uv run ruff check python"
-typecheck = "uv run basedpyright python"
+lint = "uv run --all-extras ruff check python conformance"
+typecheck = "uv run --all-extras basedpyright python conformance"
 pytests = "uv run pytest python/tests -v"
 tests = "uv run rustest tests/ examples/tests/"
-demos = "bash scripts/generate-demos.sh"
-docs = "uv run zensical serve"
+# Re-records the terminal sessions the documentation site plays. See `demos/README.md`.
+demos = "python scripts/record_demos.py"
+# Both go through `scripts/docs.py`, which bootstraps `.venv-docs` -- see the
+# `[dependency-groups] docs` comment for why the docs toolchain does not live in `.venv`.
+#
+# Python, not `bash script.sh`: on Windows `bash` is whichever one wins the PATH race, and
+# in PowerShell that is WSL's, which cannot see `uv`, a Windows Quarto install, or this
+# venv's `Scripts/python.exe`. The script's docstring has the long form.
+docs = "python scripts/docs.py preview"
+docs-build = "python scripts/docs.py build"
 
 [tool.ruff]
 line-length = 100
+# `conformance/real/_work` holds shallow clones of the OSS validation targets. They are
+# other projects' source at pinned revisions -- linting or reformatting them would be both
+# meaningless and a modification of the thing under test. (They are gitignored, but each
+# clone is its own git repo, so ruff's gitignore discovery does not reach them.)
+extend-exclude = ["conformance/corpus", "conformance/real/_work"]
 
 [tool.basedpyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 pythonPlatform = "Linux"
 typeCheckingMode = "strict"
 strictListInference = true
@@ -87,13 +156,16 @@ reportImplicitStringConcatenation = "error"
 reportMissingSuperCall = "error"
 reportPropertyTypeMismatch = "error"
 reportUninitializedInstanceVariable = "error"
-include = ["python/rustest"]
+include = ["python/rustest", "conformance"]
 exclude = [
     "**/__pycache__",
     "**/.*",
     "**/*.pyc",
     "**/tests",
     "python/rustest/_pytest_stub",
+    "conformance/corpus",
+    # Shallow clones of the `--real` validation targets: other projects' source, pinned.
+    "conformance/real/_work",
 ]
 
 [tool.uv]
@@ -104,9 +176,22 @@ rustest = { path = "." }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Set explicitly, which is what pytest-asyncio's own PytestDeprecationWarning asks every
+# project to do ("The event loop scope for asynchronous fixtures will default to the fixture
+# caching scope. Future versions ... will default ... to function scope. Set the default
+# fixture loop scope explicitly in order to avoid unexpected behavior in the future").
+#
+# `session`/`session` is also the shape rustest's own async suites were written against.
+# They predate the loop-scope model (they exercise v1's "widest fixture scope wins"
+# auto-detection) and assume every fixture and every test share one loop; under the ported
+# pytest-asyncio model with these options UNSET, a session-scoped async fixture gets a
+# session loop while a test gets a function loop, and `tests/test_async_fixture_event_loop_issue.py`
+# reports "Task got Future attached to a different loop" -- which real pytest + pytest-asyncio
+# does too, measured on the same file. Declaring the scopes is the fix pytest-asyncio
+# documents, not a workaround for rustest.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 python_files = ["test_*.py", "*_test.py", "pytest_*.py"]
-# Ignore tests that use rustest-specific features not compatible with pytest
-addopts = "--ignore=tests/test_indirect_parametrization.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",

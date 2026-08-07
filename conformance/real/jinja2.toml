@@ -1,0 +1,74 @@
+# jinja2 -- a suite with heavy fixture use, parametrized fixtures whose params are
+# *functions* (`params=[_asyncio_run, trio.run]`), async tests driven without
+# pytest-asyncio, and `filterwarnings = ["error"]`.
+
+[repo]
+kind = "oss"
+url = "https://github.com/pallets/jinja.git"
+tag = "3.1.6"
+# Annotated tag; this is the commit it points at.
+rev = "15206881c006c79667fe5154fe80c01c65410679"
+test_paths = ["tests"]
+
+[env]
+# `requirements/tests.in` is exactly `pytest` and `trio`; MarkupSafe comes in with the
+# editable install of the project itself.
+setup = [
+  # 3.13, not the 3.14 the other two OSS targets use, and the reason is this machine, not
+  # jinja2: the uv-managed `cpython-3.14.2-windows-x86_64-none` install here is missing
+  # `libcrypto-3-x64.dll`, so `import ssl` raises
+  # `ImportError: DLL load failed while importing _ssl`. jinja2's `tests/test_async.py` and
+  # `tests/test_async_filters.py` import `trio`, which imports `ssl`, so BOTH runners fail
+  # to collect them -- an environment fault that agrees with itself. (It is caught as a
+  # vacuous run by `grade_real` now, but the fix is a working interpreter.) click and
+  # more-itertools never import ssl, which is why only this target trips over it.
+  ["uv", "venv", "--python", "3.13", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (this repo's dev
+  # dependency, 8.4.2). Unpinned, uv installs the newest release and the comparison starts
+  # measuring pytest-version skew instead of rustest: on pytest 9.1.1 click 8.4.2's
+  # `tests/test_basic.py` raises `PytestRemovedIn10Warning: Passing a non-Collection
+  # iterable to parametrize is deprecated`, which the repo's `filterwarnings = ["error"]`
+  # turns into a collection error, so pytest exits 2 having run nothing at all.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "trio"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp313-cp313-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# jinja2 declares no addopts.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# TIGHTENED TO `exact` in Phase 4 Task 1b, same story as click. jinja2 parametrizes over
+# *functions* (`params=[_asyncio_run, trio.run]`, plus bare lambdas for the sync/async
+# variants), which used to be one of the value kinds rustest named differently -- 95 of 909
+# ids differed by spelling alone, so the config said `strip_params`. The `IdMaker` port makes
+# the raw ids byte-identical, so the relaxation is removed and the gate proves per-node-id
+# parity across all 909 tests. Measured green under `exact`.
+id_policy = "exact"
+
+[divergence.ids]
+# EMPTY as of Phase 4 Task 1: `pytest.raises`'s legacy callable form and the missing
+# `ExceptionInfo` readers (`.tb`, `.match()`) are implemented (commit bb03e06), and with
+# them the 50 failures across 46 functions this section used to name.
+[divergence.global]
+# EMPTY as of Phase 4 Task 1's review. The last entry here was PARAMETRIZE ID GENERATION --
+# rustest did not reproduce `_pytest/python.py::IdMaker` for containers, enums, bytes,
+# functions or long strings, and this suite's ids differed from pytest's by spelling alone.
+# `decorators.py::_idval_from_value` and `src/engine/static_collect.rs::generate_param_id` are
+# now ports of it, both halves of the tier pair moving together, and the suite MATCHES.

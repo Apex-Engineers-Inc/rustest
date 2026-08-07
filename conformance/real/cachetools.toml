@@ -1,0 +1,63 @@
+# cachetools -- SWAP-IN for networkx (Phase 4 Task 1b audit). networkx's tests/conftest.py
+# at networkx-3.6.1 is HEAVY: pytest_addoption (--runslow/--backend/--fallback-to-nx),
+# pytest_configure (dynamic marker registration + entry-point backend-plugin loading +
+# monkeypatching nx.utils.backends._dispatchable.__call__), pytest_collection_modifyitems
+# (skip-injection + backend.on_start_tests), and ~55-file dependency-conditional
+# collect_ignore -- exactly the HEAVY bucket the user's "no/limited hook usage" directive
+# rules out. cachetools has ZERO pytest surface at all: no conftest.py anywhere in the repo,
+# and its 13 test files are plain unittest.TestCase (with shared mixins), collected by
+# pytest but authored against unittest, not pytest, fixtures. Closer in spirit to
+# more-itertools than to click/jinja2 -- a second unittest.TestCase-shaped suite, this one at
+# ~250-290 tests across mixin-based subclassing rather than more-itertools' flat functions.
+
+[repo]
+kind = "oss"
+url = "https://github.com/tkem/cachetools.git"
+tag = "v7.1.6"
+# Annotated tag; this is the commit it points at, not the tag object's own SHA.
+rev = "13bb86a55e36e501cf0b3e4c35db516ed9409fd7"
+test_paths = ["tests"]
+
+[env]
+# No [tool.pytest.ini_options]/pytest.ini/setup.cfg pytest section exists at all -- tox.ini's
+# only test deps are pytest + pytest-cov, and pytest-cov is coverage-reporting-only (as with
+# click/jinja2/more-itertools, left out: it changes nothing about what the pytest leg of the
+# gate loads).
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2), for the same
+  # reason every other OSS target in this corpus is: unpinned, uv installs newest and the
+  # comparison starts measuring pytest-version skew instead of rustest.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# The repo declares no pytest config at all (no ini_options, no pytest.ini, no setup.cfg).
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# Draft default; unittest.TestCase ids are stable strings (ClassName.method), not
+# value-derived parametrize ids, so exact should hold the way it did for more-itertools --
+# verify at gate time before relaxing to strip_params.
+id_policy = "exact"
+
+[divergence.ids]
+
+[divergence.global]

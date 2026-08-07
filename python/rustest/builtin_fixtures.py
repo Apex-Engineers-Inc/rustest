@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-import importlib
+import inspect
 import itertools
 import os
 import shutil
@@ -56,6 +56,68 @@ class _NotSet:
 _NOT_SET = _NotSet()
 
 
+def _annotated_getattr(obj: object, name: str, ann: str) -> object:
+    """Port of `_pytest/monkeypatch.py::annotated_getattr` (pytest 8.4.2, l. 88-95)."""
+    try:
+        obj = getattr(obj, name)
+    except AttributeError as exc:
+        raise AttributeError(
+            f"{type(obj).__name__!r} object at {ann} has no attribute {name!r}"
+        ) from exc
+    return obj
+
+
+def _resolve(name: str) -> object:
+    """Port of `_pytest/monkeypatch.py::resolve` (pytest 8.4.2, l. 60-85).
+
+    The point of the walk — and the reason a single ``rsplit(".", 1)`` +
+    ``import_module`` is wrong — is that *the longest importable prefix* is imported and
+    everything after it is reached with ``getattr``.  ``click.shell_completion.BashComplete``
+    is a class inside a module, so the naive split asks for a module
+    ``click.shell_completion.BashComplete`` that does not exist and dies with
+    ``ModuleNotFoundError``; this walks ``click`` -> ``shell_completion`` -> ``BashComplete``
+    instead.
+
+    ``getattr`` is tried *first* at each step, which is what makes ``os.path.join``
+    resolve without importing ``os.path.join`` as a module, and the ``expected == used``
+    test is what keeps a genuinely missing top-level module reporting its own
+    ``ModuleNotFoundError`` while a missing intermediate segment is re-raised wrapped.
+    """
+    parts = name.split(".")
+
+    used = parts.pop(0)
+    found: object = __import__(used)
+    for part in parts:
+        used += "." + part
+        try:
+            found = getattr(found, part)
+        except AttributeError:
+            pass
+        else:
+            continue
+        # Un-nested exactly as pytest un-nests it, to avoid a chained exception.
+        try:
+            __import__(used)
+        except ImportError as exc:
+            expected = str(exc).split()[-1]
+            if expected == used:
+                raise
+            raise ImportError(f"import error in {used}: {exc}") from exc
+        found = _annotated_getattr(found, part, used)
+    return found
+
+
+def _derive_importpath(import_path: object, raising: bool) -> tuple[str, object]:
+    """Port of `_pytest/monkeypatch.py::derive_importpath` (pytest 8.4.2, l. 98-105)."""
+    if not isinstance(import_path, str) or "." not in import_path:
+        raise TypeError(f"must be absolute import path string, not {import_path!r}")
+    module, attr = import_path.rsplit(".", 1)
+    target = _resolve(module)
+    if raising:
+        _ = _annotated_getattr(target, attr, ann=module)
+    return attr, target
+
+
 class MonkeyPatch:
     """Lightweight re-implementation of :class:`pytest.MonkeyPatch`."""
 
@@ -81,65 +143,65 @@ class MonkeyPatch:
         target: object | str,
         name: object | str = _NOT_SET,
         value: object = _NOT_SET,
-        *,
         raising: bool = True,
     ) -> None:
+        """Port of `_pytest/monkeypatch.py::MonkeyPatch.setattr` (pytest 8.4.2, l. 181-251).
+
+        ``raising`` is positional-or-keyword because pytest's is: ``setattr(obj, "x", 1,
+        False)`` is a shape real suites use, and a keyword-only parameter turned it into
+        ``TypeError: takes from 2 to 4 positional arguments but 5 were given``.
+        """
         if value is _NOT_SET:
             if not isinstance(target, str):
-                raise TypeError("use setattr(target, name, value) or setattr('module.attr', value)")
-            if "." not in target:
                 raise TypeError(
-                    f"setattr() with dotted path requires at least one dot: {target!r}. "
-                    + "Use setattr(target_object, 'name', value) or setattr('module.attr', value)"
+                    "use setattr(target, name, value) or "
+                    + "setattr(target, value) with target being a dotted import string"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
-            attr_value = name
-            if attr_value is _NOT_SET:
-                raise TypeError("value must be provided when using dotted path syntax")
-            attr_name = attr_name
-        else:
-            if not isinstance(name, str):
-                raise TypeError("attribute name must be a string")
-            obj = target
-            attr_name = name
-            attr_value = value
+            value = name
+            name, target = _derive_importpath(target, raising)
+        elif not isinstance(name, str):
+            raise TypeError(
+                "use setattr(target, name, value) with name being a string or "
+                + "setattr(target, value) with target being a dotted import string"
+            )
 
-        original = getattr(obj, attr_name, _NOT_SET)
-        if original is _NOT_SET and raising:
-            raise AttributeError(f"{attr_name!r} not found for patching")
+        original = getattr(target, name, _NOT_SET)
+        if raising and original is _NOT_SET:
+            raise AttributeError(f"{target!r} has no attribute {name!r}")
 
-        setattr(obj, attr_name, attr_value)
-        self._setattrs.append((obj, attr_name, original))
+        # Avoid class descriptors like staticmethod/classmethod: `getattr` on a class
+        # returns the *bound* object, and restoring that would silently turn a
+        # `staticmethod` into a plain function (pytest l. 247-249).
+        if inspect.isclass(target):
+            original = target.__dict__.get(name, _NOT_SET)
+        self._setattrs.append((target, name, original))
+        setattr(target, name, value)
 
     def delattr(
-        self, target: object | str, name: str | _NotSet = _NOT_SET, *, raising: bool = True
+        self,
+        target: object | str,
+        name: str | _NotSet = _NOT_SET,
+        raising: bool = True,
     ) -> None:
-        if isinstance(target, str) and name is _NOT_SET:
-            if "." not in target:
+        """Port of `_pytest/monkeypatch.py::MonkeyPatch.delattr` (pytest 8.4.2, l. 253-289)."""
+        if isinstance(name, _NotSet):
+            if not isinstance(target, str):
                 raise TypeError(
-                    f"delattr() with dotted path requires at least one dot: {target!r}. "
-                    + "Use delattr(target_object, 'name') or delattr('module.attr')"
+                    "use delattr(target, name) or "
+                    + "delattr(target) with target being a dotted import string"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
-            attr_name = attr_name
-        else:
-            if not isinstance(name, str):
-                raise TypeError("attribute name must be a string")
-            obj = target
-            attr_name = name
+            name, target = _derive_importpath(target, raising)
 
-        original = getattr(obj, attr_name, _NOT_SET)
-        if original is _NOT_SET:
+        if not hasattr(target, name):
             if raising:
-                raise AttributeError(f"{attr_name!r} not found for deletion")
+                raise AttributeError(name)
             return
 
-        delattr(obj, attr_name)
-        self._setattrs.append((obj, attr_name, original))
+        original = getattr(target, name, _NOT_SET)
+        if inspect.isclass(target):
+            original = target.__dict__.get(name, _NOT_SET)
+        self._setattrs.append((target, name, original))
+        delattr(target, name)
 
     def setitem(self, mapping: MutableMapping[Any, Any], key: Any, value: Any) -> None:
         original = mapping.get(key, _NOT_SET)
@@ -189,11 +251,24 @@ class MonkeyPatch:
         os.chdir(os.fspath(path))
 
     def undo(self) -> None:
+        """Reverse every recorded change, newest first.
+
+        Port of `_pytest/monkeypatch.py::MonkeyPatch.undo` (l. 322-350).
+
+        **One deliberate softening, and it is the `delattr` branch.** pytest calls
+        ``delattr(obj, name)`` bare: an attribute that was absent when it was patched and has
+        since been *removed by the test itself* makes pytest's undo raise ``AttributeError``.
+        This swallows that, because the alternative is a teardown error attributed to the
+        fixture rather than to the test that deleted the attribute, and the state pytest and
+        rustest end in is identical either way -- the attribute is gone, which is what undo
+        was asked to arrange. Noted rather than silently different: a suite that *relies* on
+        the raise (nothing plausibly does) would see a green teardown here.
+        """
         for obj, attr_name, original in reversed(self._setattrs):
             if original is _NOT_SET:
                 try:
                     delattr(obj, attr_name)
-                except AttributeError:  # pragma: no cover - defensive
+                except AttributeError:  # the test already removed it; see the docstring
                     pass
             else:
                 setattr(obj, attr_name, original)
@@ -1125,120 +1200,6 @@ def mocker() -> Generator[MockerFixture, None, None]:
         m.stopall()
 
 
-@fixture(scope="session")
-def rustestconfig(request: Any) -> Any:
-    """
-    Session-scoped fixture that returns the rustest config object.
-
-    This provides access to rustest's configuration. When running in pytest-compat
-    mode, this fixture is also available as `pytestconfig` for compatibility.
-
-    **Supported:**
-        - rustestconfig.getoption(name, default=None): Get command-line option
-        - rustestconfig.getini(name): Get ini configuration value
-        - rustestconfig.rootpath: Root directory path
-        - rustestconfig.inipath: Config file path (always None in rustest)
-
-    **Limited Support:**
-        - rustestconfig.option: Namespace with common options
-        - rustestconfig.pluginmanager: Stub (minimal functionality)
-
-    Common usage:
-        def test_conditional(rustestconfig):
-            verbose = rustestconfig.getoption("verbose", default=0)
-            if verbose > 1:
-                print("Running in verbose mode")
-
-        @fixture
-        def needs_feature(rustestconfig):
-            mode = rustestconfig.getoption("assertmode", default="rewrite")
-            if mode != "rewrite":
-                pytest.skip("This test requires assertion rewrite")
-
-    Note:
-        In pytest-compat mode, this fixture is aliased as `pytestconfig` for
-        compatibility with existing pytest test suites.
-    """
-    # Import here to avoid circular dependency
-    from rustest.compat.pytest import Config
-
-    try:
-        import rustest._runtime_config as _runtime_config
-    except ModuleNotFoundError:
-        # Fallback for when rustest is not recognized as a package (e.g., during testing)
-        from . import _runtime_config
-
-    # Get actual runtime configuration
-    runtime_config = _runtime_config.get_runtime_config()
-
-    # Create Config object with runtime values
-    config = Config(
-        options=runtime_config.copy(),
-        ini_values={
-            "markers": [],
-            "python_files": ["test_*.py", "*_test.py"],
-            "python_classes": ["Test"],
-            "python_functions": ["test"],
-        },
-    )
-
-    return config
-
-
-@fixture(scope="session")
-def pytestconfig(rustestconfig: Any) -> Any:
-    """
-    Pytest compatibility fixture for accessing configuration.
-
-    **IMPORTANT:** This fixture is ONLY for pytest-compat mode.
-    Use `rustestconfig` for native rustest code.
-
-    When running without --pytest-compat, this fixture will raise an error
-    directing you to use rustestconfig instead.
-
-    **Supported:**
-        - pytestconfig.getoption(name, default=None): Get command-line option
-        - pytestconfig.getini(name): Get ini configuration value
-        - pytestconfig.rootpath: Root directory path
-        - pytestconfig.inipath: Config file path (always None)
-
-    Example (pytest compatibility):
-        def test_example(pytestconfig):
-            verbose = pytestconfig.getoption("verbose", default=0)
-
-        @pytest.fixture
-        def needs_assert_rewrite(pytestconfig):
-            option = pytestconfig.getoption("assertmode")
-            if option != "rewrite":
-                pytest.skip("assertion rewrite required")
-    """
-    # Check if pytest-compat mode is active using runtime config
-    # This is more reliable than path-based detection
-    try:
-        import rustest._runtime_config as _runtime_config
-    except ModuleNotFoundError:
-        # Fallback for when rustest is not recognized as a package (e.g., during testing)
-        from . import _runtime_config
-
-    if not _runtime_config.is_pytest_compat_mode():
-        raise RuntimeError(
-            (
-                "The 'pytestconfig' fixture is only available in pytest-compat mode.\n\n"
-                "For native rustest code, use 'rustestconfig' instead:\n\n"
-                "  # Change this:\n"
-                "  def test_example(pytestconfig):\n"
-                "      verbose = pytestconfig.getoption('verbose')\n\n"
-                "  # To this:\n"
-                "  def test_example(rustestconfig):\n"
-                "      verbose = rustestconfig.getoption('verbose')\n\n"
-                "Or run with --pytest-compat flag:\n"
-                "  rustest --pytest-compat tests/"
-            )
-        )
-
-    return rustestconfig
-
-
 __all__ = [
     "Cache",
     "CaptureFixture",
@@ -1253,8 +1214,6 @@ __all__ = [
     "capfd",
     "mocker",
     "monkeypatch",
-    "pytestconfig",
-    "rustestconfig",
     "request",
     "tmpdir",
     "tmpdir_factory",

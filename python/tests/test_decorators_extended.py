@@ -93,7 +93,7 @@ class TestExtendedSkip:
 
 class TestExtendedParametrize:
     def test_parametrize_with_single_value(self) -> None:
-        @parametrize("x", [(1,)])
+        @parametrize("x", [1])
         def test_func(x: int) -> int:
             return x
 
@@ -128,7 +128,7 @@ class TestExtendedParametrize:
         assert isinstance(cases[0]["values"]["list_val"], list)
 
     def test_parametrize_with_custom_ids(self) -> None:
-        @parametrize("value", [(1,), (2,), (3,)], ids=["first", "second", "third"])
+        @parametrize("value", [1, 2, 3], ids=["first", "second", "third"])
         def test_func(value: int) -> int:
             return value
 
@@ -138,7 +138,7 @@ class TestExtendedParametrize:
         assert cases[2]["id"] == "third"
 
     def test_parametrize_with_unicode_ids(self) -> None:
-        @parametrize("value", [(1,), (2,)], ids=["测试", "🚀"])
+        @parametrize("value", [1, 2], ids=["测试", "🚀"])
         def test_func(value: int) -> int:
             return value
 
@@ -147,7 +147,7 @@ class TestExtendedParametrize:
         assert cases[1]["id"] == "🚀"
 
     def test_parametrize_with_none_values(self) -> None:
-        @parametrize("value", [(None,), (None,)])
+        @parametrize("value", [None, None])
         def test_func(value: None) -> None:
             pass
 
@@ -163,7 +163,7 @@ class TestExtendedParametrize:
                 pass
 
     def test_parametrize_with_boolean_values(self) -> None:
-        @parametrize("flag", [(True,), (False,)])
+        @parametrize("flag", [True, False])
         def test_func(flag: bool) -> bool:
             return flag
 
@@ -172,7 +172,7 @@ class TestExtendedParametrize:
         assert cases[1]["values"]["flag"] is False
 
     def test_parametrize_with_zero_and_negative_numbers(self) -> None:
-        @parametrize("num", [(0,), (-1,), (-100,)])
+        @parametrize("num", [0, -1, -100])
         def test_func(num: int) -> int:
             return num
 
@@ -182,7 +182,7 @@ class TestExtendedParametrize:
         assert cases[2]["values"]["num"] == -100
 
     def test_parametrize_with_float_values(self) -> None:
-        @parametrize("value", [(1.5,), (2.7,), (3.14159,)])
+        @parametrize("value", [1.5, 2.7, 3.14159])
         def test_func(value: float) -> float:
             return value
 
@@ -191,7 +191,7 @@ class TestExtendedParametrize:
         assert abs(cases[2]["values"]["value"] - 3.14159) < 0.00001
 
     def test_parametrize_with_tuple_values(self) -> None:
-        @parametrize("data", [((1, 2),), ((3, 4),)])
+        @parametrize("data", [(1, 2), (3, 4)])
         def test_func(data: tuple) -> tuple:
             return data
 

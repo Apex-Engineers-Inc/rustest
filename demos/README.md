@@ -1,132 +1,59 @@
-# Demo Recordings
+# Terminal recordings
 
-This directory contains VHS tape files for generating demonstration recordings of rustest's terminal output.
-
-## Prerequisites
-
-Install [VHS](https://github.com/charmbracelet/vhs):
+The recordings the documentation site plays. Every one of them is a real run: the process
+is spawned, its output is captured as it arrives, and the arrival times become the
+playback timing. Nothing here is a transcript.
 
 ```bash
-# macOS
-brew install vhs
-
-# Linux
-go install github.com/charmbracelet/vhs@latest
-
-# Or download from releases
-# https://github.com/charmbracelet/vhs/releases
+poe demos               # re-record every scene
+poe demos failure       # or just one
 ```
 
-## Generating Demos
+## How a scene is put together
 
-### Quick Start
+`scenes.toml` declares each one:
 
-Run the automated script:
+| Key | What it does |
+|---|---|
+| `name` | The output file, `demos/<name>.termshow`, and the `file=` a page passes |
+| `title` | The label above the player |
+| `cols` | Terminal width. The recorder exports it as `COLUMNS`, so the run really is that wide |
+| `commands` | The commands to run, in order, in one session |
+| `files` | Written into a throwaway project before the commands run |
+| `dir` | The directory name that project gets. It shows up in tracebacks, so it is worth choosing |
+| `cwd` | `"."` to run in this repository instead of a throwaway project |
 
-```bash
-./scripts/generate-demos.sh
-```
+The scene files live in `scenes.toml` rather than in the tree because one of them fails on
+purpose, and a `test_*.py` that is meant to fail is a trap for anyone who points a runner
+at the repository root.
 
-Or use the poe task:
+## What is real and what is drawn
 
-```bash
-poe demos
-```
+The program output is real, down to the order the two streams interleave. rustest writes
+per-test lines to stdout and the summary to stderr, and the recorder merges them the way a
+terminal does rather than concatenating one after the other.
 
-### Manual Generation
+Two things are drawn, because there is no shell in the loop to produce them: the `$`
+prompt, and the keystrokes of the command being typed. Everything after the newline came
+from the process.
 
-Generate individual demos:
-
-```bash
-# Basic output demo
-vhs demos/basic-output.tape
-
-# Full test suite demo
-vhs demos/full-suite.tape
-```
-
-## Available Demos
-
-### `basic-output.tape`
-Shows rustest running a small test suite with 3 tests. Good for quick demonstrations.
-
-**Outputs:**
-- `docs/assets/rustest-output.gif` - Animated GIF for GitHub/docs
-- `docs/assets/rustest-output.png` - Static screenshot
-- `docs/assets/rustest-output.webm` - Video format
-
-### `full-suite.tape`
-Shows rustest running the complete test suite with multiple files and progress bars.
-
-**Outputs:**
-- `docs/assets/rustest-full-suite.gif`
-- `docs/assets/rustest-full-suite.png`
-- `docs/assets/rustest-full-suite.webm`
-
-## Customizing Demos
-
-Edit the `.tape` files to customize:
-
-- `Set FontSize <number>` - Adjust font size
-- `Set Width <number>` - Terminal width (columns)
-- `Set Height <number>` - Terminal height (rows)
-- `Set Theme "<theme>"` - Color scheme (see VHS docs)
-- `Set PlaybackSpeed <number>` - Playback speed multiplier
-
-Available themes include:
-- "Catppuccin Mocha" (current)
-- "Dracula"
-- "Nord"
-- "Tokyo Night"
-- See [VHS themes](https://github.com/charmbracelet/vhs/tree/main/themes)
-
-## Automation
-
-Demos are automatically regenerated when:
-- Output rendering code changes (`src/output/**`, `python/rustest/renderers/**`)
-- Tape files are updated (`demos/**`)
-- Manually triggered via GitHub Actions
-
-The workflow commits updated demo files back to the repository.
-
-## Using in Documentation
-
-### Markdown
+## Playing one on a page
 
 ```markdown
-![rustest output demo](assets/rustest-output.gif)
+{{< termshow file="quickstart" autoplay="false" loop="false" >}}
 ```
 
-### HTML (with fallback)
+`autoplay="false"` does not mean the recording sits there waiting to be clicked. A small
+IntersectionObserver in `great-docs.yml` starts each player as it scrolls into view, which
+is what the shortcode's own `autoplay` cannot do: that one fires at page init, so a
+five-second recording below the fold has finished before anyone reaches it.
 
-```html
-<picture>
-  <source srcset="assets/rustest-output.webm" type="video/webm">
-  <img src="assets/rustest-output.gif" alt="rustest demo">
-</picture>
-```
+great-docs pre-renders each `.termshow` into SVG keyframes at build time and inlines them,
+so playback needs no network and the frames stay sharp at any zoom. The player, the
+shortcode and the SVG renderer are all great-docs'; this directory only supplies the
+recordings.
 
-## Troubleshooting
+## Re-recording
 
-### VHS command not found
-
-Ensure VHS is installed and in your PATH:
-
-```bash
-which vhs
-```
-
-### Build errors
-
-Ensure rustest is built before generating demos:
-
-```bash
-uv run maturin develop
-```
-
-### Recording looks wrong
-
-Check your terminal theme and font support Unicode characters:
-- Use a modern terminal (iTerm2, Alacritty, WezTerm, etc.)
-- Ensure terminal supports 256 colors
-- Use a font with good Unicode coverage (Nerd Fonts recommended)
+Timings change on every run, so a re-record always produces a diff even when the output is
+identical. Re-record when the output itself changes, not on a schedule.

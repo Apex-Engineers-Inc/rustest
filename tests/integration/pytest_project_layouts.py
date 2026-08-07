@@ -7,6 +7,7 @@ can correctly discover and run tests for each layout pattern.
 NOTE: These tests use pytest fixtures and subprocess to test rustest externally.
 They are automatically skipped when run with rustest (via conftest.py).
 """
+
 import subprocess
 import sys
 import tempfile
@@ -15,9 +16,17 @@ from pathlib import Path
 import pytest
 
 
-def run_rustest(project_dir):
+def run_rustest(project_dir, *args):
     """Run rustest on a project directory and return result."""
-    cmd = [sys.executable, "-m", "rustest", str(project_dir / "tests"), "--color", "never"]
+    cmd = [
+        sys.executable,
+        "-m",
+        "rustest",
+        str(project_dir / "tests"),
+        "--color",
+        "never",
+        *args,
+    ]
     result = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True)
     return result
 
@@ -127,12 +136,46 @@ def test_process():
     return tmp_path
 
 
-def test_src_layout(src_layout_project):
-    """Test that src/ layout works without PYTHONPATH."""
+def test_src_layout_matches_pytest_on_the_default_engine(src_layout_project):
+    """A bare ``src/`` layout is a **collection error** by default, exactly as under pytest.
+
+    This is an adjudicated behaviour change at the v2 flip, not a regression left unnoticed.
+    v1 silently inserted the project's ``src/`` directory into ``sys.path``, so
+    ``from mypackage import ...`` resolved with no install, no ``PYTHONPATH`` and no ini.
+    **pytest does not do that** -- probed on this exact layout, ``pytest tests`` reports
+    ``ERROR collecting tests/test_basic.py: ModuleNotFoundError: No module named
+    'mypackage'`` and exits 2 -- and the default engine's contract is pytest's behaviour.
+
+    ``--v1`` kept the old convenience while the legacy engine existed, and the second half
+    of this test used to pin that. Phase 4 Task 2 deleted the engine, so the escape hatch is
+    gone and the *supported* answer is the one the next test pins: pytest's ``pythonpath``
+    ini, implemented in Phase 4 Task 1.
+    """
+    result = run_rustest(src_layout_project)
+    assert result.returncode == 2, f"expected pytest's collection-error exit: {result.stderr}"
+    assert "No module named 'mypackage'" in result.stdout + result.stderr, result.stderr
+
+
+def test_src_layout_works_once_the_pythonpath_ini_is_set(src_layout_project):
+    """...and the *supported* way to make it importable is pytest's ``pythonpath`` ini.
+
+    Implemented in Phase 4 Task 1 (`_pytest/config/__init__.py::Config._configure_python_path`,
+    l. 1316-1319; the option is declared at l. 1258-1260 with ``type="paths"``). The entry is
+    resolved against the **config file's** directory, prepended to the worker's ``sys.path``
+    before any import, and answered by ``request.config.getini("pythonpath")`` as a list of
+    ``Path`` objects the way pytest answers it.
+
+    This restores what v1 did through ``src/python_support.rs::read_pythonpath_from_pyproject``
+    -- but only what pytest itself does: the project root and the auto-detected ``src/`` that
+    v1 also injected are deliberately *not* added back, because an import that succeeds under
+    rustest and fails under pytest is the worse of the two bugs.
+    """
+    (src_layout_project / "pytest.ini").write_text("[pytest]\npythonpath = src\n")
+
     result = run_rustest(src_layout_project)
 
-    assert result.returncode == 0, f"rustest failed: {result.stderr}"
-    assert "3 passed" in result.stderr, f"Expected 3 tests to pass: {result.stderr}"
+    assert result.returncode == 0, f"pythonpath ini not honoured: {result.stdout}{result.stderr}"
+    assert "3 passed" in result.stderr, result.stderr
 
 
 def test_flat_layout(flat_layout_project):

@@ -6,6 +6,7 @@ Usage:
     python scripts/update_cli_docs.py
 """
 
+import os
 import subprocess
 import re
 from pathlib import Path
@@ -17,14 +18,21 @@ def get_cli_help() -> str:
         ["python", "-m", "rustest", "--help"],
         capture_output=True,
         text=True,
-        env={"PYTHONPATH": "python"},
+        # Merge, do not replace. A bare `env={"PYTHONPATH": "python"}` hands the child an
+        # environment with no PATH, which finds `python` on Windows only through a
+        # CreateProcess fallback and raises FileNotFoundError elsewhere.
+        env={**os.environ, "PYTHONPATH": "python"},
     )
     return result.stdout
 
 
 def update_cli_docs(help_text: str) -> None:
     """Update the CLI documentation with the captured help text."""
-    cli_doc_path = Path("docs/guide/cli.md")
+    # NOTE: this script syncs the "Quick Reference" `--help` block ONLY. The flags table
+    # further down `cli.md` is hand-maintained, which is how it kept a `--pytest-compat`
+    # row for a whole release after the flag started exiting 4. When you add or remove a
+    # flag, edit both.
+    cli_doc_path = Path("user_guide/cli.md")
 
     if not cli_doc_path.exists():
         print(f"Error: {cli_doc_path} not found")
@@ -33,15 +41,10 @@ def update_cli_docs(help_text: str) -> None:
     content = cli_doc_path.read_text()
 
     # Define the pattern to match the help output section
-    pattern = r'(## Quick Reference\n\n```bash\nrustest --help\n```\n\n```\n)(.*?)(```\n\n## Basic Commands)'
+    pattern = r"(## Quick Reference\n\n```bash\nrustest --help\n```\n\n```\n)(.*?)(```\n\n## Basic Commands)"
 
     # Replace the help output
-    new_content = re.sub(
-        pattern,
-        f'\\1{help_text}\n\\3',
-        content,
-        flags=re.DOTALL
-    )
+    new_content = re.sub(pattern, f"\\1{help_text}\n\\3", content, flags=re.DOTALL)
 
     if new_content == content:
         print("Warning: No changes made. Pattern might not match.")

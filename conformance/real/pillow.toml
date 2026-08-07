@@ -1,0 +1,116 @@
+# Pillow -- KEEP-with-ledgered-hooks (Phase 4 Task 1b batch 2). Two conftest.py files, both
+# LIMITED (full text quoted in the audit):
+#   /conftest.py (repo root, 3 lines): `pytest_plugins = ["Tests.helper"]` -- registers
+#   Tests/helper.py as an in-repo plugin module. Currently a no-op: helper.py defines ZERO
+#   `pytest_*` hooks (it's pure assert-helpers + skip-decorator factories + the `hopper()`
+#   test-image loader, all called directly by test bodies, not hook machinery).
+#   Tests/conftest.py (49 lines): `pytest_configure` registers exactly two markers via
+#   `config.addinivalue_line` (`pil_noop_mark`, `valgrind_known_error`, the latter
+#   try/excepted so it's a no-op if pytest-valgrind is already installed) -- textbook LIMITED.
+#   `pytest_report_header` injects `PIL.features.pilinfo()` output into the header (cosmetic).
+#   `pytest_terminal_summary` can `pytest.exit(..., returncode=1)` but ONLY under a
+#   free-threaded (`Py_GIL_DISABLED`) build where the GIL got re-enabled mid-run -- dormant on
+#   a standard (non-`t`) cp314 build, which is what this draft targets.
+# No collect_ignore, no pytest_generate_tests, no custom collectors, no pytest_collect_file.
+# New domain: image codec I/O, versus everything else in the corpus.
+
+[repo]
+kind = "oss"
+url = "https://github.com/python-pillow/Pillow.git"
+tag = "12.3.0"
+# Lightweight tag (RELEASING.md's documented procedure is a bare `git tag X.Y.Z`, no `-a`).
+rev = "bb1d8e8ab8d29048624d96e3ee53cecf7c13d13d"
+test_paths = ["Tests"]
+
+[env]
+# BUILD-REQUIREMENT NOTE (the audit's item 4 ask): Pillow's C extension is built via a custom
+# pybind11-based build backend (`_custom_build/`) linking libjpeg/zlib/libtiff/libwebp/etc --
+# an editable/from-source install (`-e {repo}`, the pattern every other OSS target in this
+# corpus uses) would force a LOCAL COMPILE requiring those system image libraries + a C
+# toolchain, which this task's constraints rule out. Verified instead: PyPI publishes
+# `pillow-12.3.0-cp314-cp314-win_amd64.whl` (7,237,707 bytes, not yanked,
+# requires_python>=3.10) for the exact pinned version -- so this draft installs Pillow
+# NON-EDITABLE, by version pin from PyPI, and uses `{repo}` (checked out at the matching tag)
+# only as the source of the `Tests/` tree, not as an install target. No local compilation is
+# needed on cp314/win_amd64 for this pin.
+#
+# [project.optional-dependencies].tests: coverage, defusedxml, markdown2, olefile, packaging,
+# pytest, pytest-cov, pytest-timeout, pytest-xdist, setuptools, trove-classifiers. Installed
+# below: the plain hard-import libs a handful of format-specific tests need directly
+# (defusedxml for XML-based format security tests, markdown2, olefile for FPX/MIC OLE-based
+# formats, packaging for version-comparison helpers). Left out as coverage/build/perf-only,
+# same convention as every other target in this corpus: coverage, pytest-cov, pytest-timeout
+# (nothing in [addopts] activates it under this pin -- see below), pytest-xdist, setuptools,
+# trove-classifiers. Also left out: numpy and the test-arrow extra (arro3-*/pyarrow/nanoarrow)
+# -- both are tox-only / a separate optional extra, not in the PEP 621 "tests" group; the
+# array-interop tests that need them should skip cleanly rather than error, same acceptance
+# tabulate/humanize made for their own optional extras.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "defusedxml", "markdown2", "olefile", "packaging"],
+  # Non-editable, version-pinned install from PyPI -- see the build-requirement note above.
+  ["uv", "pip", "install", "--python", "{py}", "pillow==12.3.0"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# pyproject.toml declares `[tool.pytest]` (addopts = ["-ra", "--color=auto"], testpaths =
+# ["Tests"]) -- NOT `[tool.pytest.ini_options]`. This is pytest 9's native TOML config table
+# (added in pytest 9.0, per direct confirmation while researching psutil's identical pattern);
+# this corpus's oracle pin, pytest==8.4.2, predates that and does not read `[tool.pytest]` at
+# all, so this whole block is silently inert to the pytest leg. tox.ini has no [pytest]
+# section as a fallback (just [testenv] deps/commands: pytest-sugar, numpy, `--dist worksteal
+# --numprocesses auto -W always`, not replayed, same treatment as more-itertools'/tabulate's
+# tox invocations). Both declared flags are cosmetic (verbosity/color) so dropping costs
+# nothing functionally; `testpaths=["Tests"]` is separately covered by `[repo].test_paths`.
+# OPEN ITEM for the implementer: confirm whether rustest's own pyproject-config reader also
+# ignores bare `[tool.pytest]` (matching pytest 8.4.2) or already supports it like pytest 9 --
+# if rustest reads it and pytest 8.4.2 doesn't, that mismatch (e.g. `--color=auto` on one side
+# only) is itself a source of divergence, not just a dropped no-op.
+configured = ["-ra", "--color=auto"]
+replay = []
+dropped = ["-ra", "--color=auto"]
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# `id_policy` is DEFAULT (`exact`), and the decision this file used to defer is now made.
+# The draft carried `strip_params` with "UNVERIFIED, and honestly so: no Pillow test has ever
+# executed under rustest ... re-decide this the moment the blocker is fixed". The blocker (the
+# module-level skip, MECHANISM M7) was fixed in Phase 4 Task 1c and this target re-swept to a
+# clean MATCH of all 4 036 ids -- so the coarse policy was proved unnecessary and was doing
+# nothing but hiding resolution: `strip_params` compares a status *multiset per function* and
+# is blind to two parameter cases of one function trading statuses. Removed here rather than
+# left inert, because an id policy nobody needs is a weakened comparison nobody can see.
+
+[divergence.ids]
+# EMPTY as of Phase 4 Task 1c -- this target went from BLOCKED (0 tests collected) to a
+# clean MATCH of all 4 036.
+#
+# What used to be here: a whole-suite block. Six of Pillow's modules call
+# `pytest.skip(..., allow_module_level=True)` or `pytest.importorskip` at module scope
+# for optional codecs; rustest raised that out of collection, and a collection error
+# aborts the session, so all 4 036 tests were lost to six skips (MECHANISM M7).
+# Re-swept: 3745 passed / 288 skipped / 3 xfailed on BOTH runners, exit 0 on both,
+# and rustest is 1.63x faster (48.4s vs 78.8s).
+[divergence.global]
+# Expected friction to flag, not pre-waived -- ALL of it still unmeasured, because rustest never
+# collected a single test:
+# - Tests/images/, Tests/fonts/, Tests/icc/ hold a large binary format-sample corpus bundled
+#   directly in the repo tree (not fetched separately) -- irrelevant to install size (wheel
+#   install doesn't pull it), but the checked-out {repo} tree used for test_paths is sizeable.
+# - djpeg/ImageMagick/GraphicsMagick/netpbm CLI-tool-gated tests (helper.py's
+#   djpeg_available()/netpbm_available()/magick_command()) should skip identically on both
+#   engines absent those binaries -- confirm at gate time rather than assume.

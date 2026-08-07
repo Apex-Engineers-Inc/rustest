@@ -1,0 +1,9 @@
+# Shell scripts must keep LF endings.
+#
+# This repository is cloned on Windows with `core.autocrlf=true`, which rewrites text
+# files to CRLF on checkout. For a shell script that is fatal rather than cosmetic: bash
+# reads `set -euo pipefail<CR>` and reports `set: pipefail: invalid option name`, so
+# `poe docs` (which runs `bash scripts/docs.sh preview`) fails before it does anything.
+# Git Bash happens to tolerate it; PowerShell's bash does not, so the failure looks
+# shell-specific and unrelated to line endings.
+*.sh text eol=lf

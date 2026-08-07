@@ -1,6 +1,6 @@
 [package]
 name = "rustest-core"
-version = "0.18.0"
+version = "1.0.0-rc.1"
 edition = "2021"
 authors = ["rustest contributors"]
 description = "A hyper-performant pytest-compatible test runner powered by Rust"
@@ -12,21 +12,67 @@ repository = "https://example.com/rustest"
 name = "_rust"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# On by default so `maturin build`/`develop`, which use default features, are unchanged.
+# `cargo test --no-default-features` turns it off so the test executable links libpython --
+# see the note on the `pyo3` dependency below.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-indexmap = "2.1"
-pyo3 = { version = "0.27", features = ["extension-module", "anyhow"] }
+# Content addressing for the Tier S manifest cache (`src/engine/manifest_cache.rs`).  blake3
+# rather than a general-purpose hasher because the cache key is the *only* thing standing
+# between a user and a silently stale manifest: it is collision resistant, and it is fast
+# enough that hashing every collected file's bytes costs less than the parse it replaces.
+blake3 = "1"
+# `extension-module` is behind a *default* feature rather than being unconditional, and the
+# reason is `cargo test`.  That feature tells pyo3 to leave the CPython symbols undefined,
+# because an extension module is dlopened by an interpreter that already provides them.  A
+# test binary is an ordinary executable with no such host, so on Linux every one of those
+# symbols is an undefined-reference link error (`PyObject_GetAttr`, `PyErr_Print`, ...).  It
+# links on Windows either way -- the platform has no undefined-symbol shared objects, so pyo3
+# links `pythonXY.lib` regardless -- which is exactly why this was invisible until CI ran the
+# suite on Linux for the first time.
+#
+# `default` keeps maturin's path unchanged (it builds with default features); `cargo test
+# --no-default-features` links libpython and gets a working interpreter.
+pyo3 = { version = "0.27", features = ["anyhow"] }
+# Tier S parses files in parallel (`src/engine/static_collect.rs`); nothing else in the engine
+# uses a thread pool -- the run itself is parallelised by the process pool, not by rayon.
 rayon = "1.8"
-globset = "0.4.13"
-walkdir = "2.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-regex = "1.10"
-console = "0.15"
-indicatif = "0.17"
+# Tier S (`src/engine/static_collect.rs`) parses test files with ruff's own Python parser
+# instead of importing them.  ruff publishes no semver crates for these — karva (MIT, the
+# reference wiring) tracks `branch = "main"` — so they are **pinned by rev**: a moving
+# branch would let an upstream AST change alter which files Tier S considers static, and
+# that is a correctness input, not a dependency detail.  Bumping the rev is a deliberate
+# act that must re-run the three-way differential.
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff/", rev = "fb2b844c0a72b9ee4578f836f407938cc2ab1b79" }
+
+# Job objects, and nothing else.  A worker is put in its own job at spawn
+# (`src/engine/collect.rs::JobObject`) so that closing the job handle kills the worker *and
+# every process the tests it ran spawned* — and so that a killed or crashed orchestrator
+# takes its pool with it instead of leaving interpreters spinning for hours (#140).  There
+# is no portable API for this, and `windows-sys` is the raw-FFI crate the standard library
+# itself uses.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  # `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` embeds `IO_COUNTERS`, which lives under
+  # Threading.  The extended struct is not optional: `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+  # is documented as requiring it, and the basic struct silently ignores the flag.
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 pyo3 = { version = "0.27", features = ["auto-initialize"] }
+tempfile = "3"
 
 [build-dependencies]
 pyo3-build-config = "0.27"

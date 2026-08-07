@@ -4,40 +4,79 @@ This file provides guidance for Claude Code when working with the rustest codeba
 
 ## Project Overview
 
-**rustest** is a Rust-powered pytest-compatible test runner focused on raw performance. It delivers massive speedups (8.5x average, up to 19x faster) while maintaining familiar pytest ergonomics.
+**rustest** is a Rust-powered test runner that aims to be a **drop-in replacement for
+pytest**: it runs an existing pytest suite unchanged, agreeing with pytest on node ids,
+outcomes and exit codes.
+
+**The message, and it is deliberate.** The rewrite behind 1.0 was spent on **compatibility,
+stability and reliability** — not on speed. Lead with that everywhere. rustest is still
+faster than pytest, but the large multipliers earlier versions advertised described the
+previous engine, which is deleted. Performance is a *future* body of work; do not write
+copy that makes speed the pitch.
+
+**The measured figures**, for anything that needs to state one. Do not invent a headline
+multiplier; these are what the tree can defend, and they are reported rather than sold:
+
+- **1.1x–5.7x** wall-clock across seventeen real open-source pytest suites (13 MATCH /
+  4 EXPLAINED / 0 DIVERGE). Aggregate over all seventeen **1.23x**; over the fifteen that
+  are not body-bound, **2.74x**.
+- **~37x** on warm collection and **~8x** on marginal per-test overhead (500 files /
+  5,000 tests: 8.39s → 227.6ms, and 933.6µs → 117.9µs per test).
+- Any speedup is bounded by a suite's *framework share* — the fraction of wall clock that
+  is not the user's own test bodies. `user_guide/performance.md` carries the per-suite
+  table and every caveat, including that the marginal-overhead metric is noisy enough on a
+  loaded machine that a single reading of it must not be quoted as a gate result.
+
+The old "8.5x average, up to 19x" line measured the **previous engine**, which was deleted;
+the number describes a runner that no longer exists. It is gone from every page.
+
+**Naming.** The engine has no version name. It is "the engine" or "rustest" — not "v2".
+`src/engine/`, `python/rustest/_worker.py`, `rust.run()`/`rust.collect()`. The report
+*schema* version (`schema_version: 2`) is a real wire version and keeps its number; the
+engine does not.
 
 - **Languages**: Rust (core engine) + Python (user API/CLI)
 - **Build System**: Maturin (PyO3 bridge for Rust-Python integration)
-- **Python Support**: 3.10 - 3.14
+- **Python Support**: 3.12 - 3.14
 - **License**: MIT
 
 ## Project Structure
 
 ```
 src/                          # Rust core (rustest-core crate)
-├── lib.rs                    # Main entry point, PyO3 module
-├── discovery.rs              # Fast test file discovery
-├── execution.rs              # Test execution engine
-├── model.rs                  # Data structures (TestCase, Fixture, etc.)
-├── python_support.rs         # Rust-Python bridge
-├── mark_expr.rs              # Mark expression parsing
-├── cache.rs                  # Caching logic
-└── output/                   # Output formatting
+├── lib.rs                    # PyO3 boundary -- four functions, nothing else
+└── engine/                   # The engine
+    ├── config.rs             # rootdir + ini resolution (pytest's rules)
+    ├── collect.rs            # The file walk and the worker pool
+    ├── static_collect.rs     # Tier S: AST collection without importing
+    ├── manifest.rs           # Collection output as data
+    ├── manifest_cache.rs     # Tier S's content-addressed cache
+    ├── execute.rs            # Run orchestration, the run report
+    ├── selection.rs          # -k / -m expression engine
+    ├── nodeid.rs             # pytest-byte-identical node ids
+    ├── protocol.rs           # The orchestrator <-> worker wire
+    ├── cache.rs              # --lf / --ff store
+    └── py.rs                 # The PyO3 functions themselves
 
 python/rustest/               # Python package (user API)
-├── __init__.py               # Public API exports
+├── __init__.py               # Public API exports (lazy)
 ├── __main__.py               # CLI entry point
-├── decorators.py             # @fixture, @parametrize, @mark, etc.
-├── builtin_fixtures.py       # tmp_path, tmpdir, monkeypatch, capsys, capfd, request
+├── decorators.py             # @fixture, @parametrize, @mark, outcome exceptions
+├── _worker.py                # The worker: collection + execution inside Python
+├── _builtins.py              # The engine's builtin fixtures (pytest ports)
+├── builtin_fixtures.py       # Public fixture TYPES + MonkeyPatch
 ├── cli.py                    # Command-line interface
-├── core.py                   # Wrapper around Rust layer
+├── core.py                   # Wrapper around the Rust layer; `run` lives here
 ├── approx.py                 # Numeric comparison helper
+├── _pytest_stub/             # `_pytest.*` import surface (aliases, not forks)
 └── compat/pytest.py          # pytest compatibility layer
 
 python/tests/                 # Python unit tests
 tests/                        # Integration test suite
 examples/tests/               # Example test suite
-docs/                         # MkDocs documentation
+user_guide/                   # The documentation site's content (flat, .md)
+great-docs.yml                # The documentation site's config
+docs/assets/                  # Logos and favicon for the site
 ```
 
 ## Development Commands
@@ -64,11 +103,28 @@ uv run pytest python/tests -v
 # Integration tests
 uv run pytest tests/ examples/tests/ -v
 
-# Run with rustest itself
+# Run with rustest itself -- there is one engine
 uv run python -m rustest tests/ examples/tests/ -v
 
-# Rust tests
-cargo test
+# Rust tests. TWO flags, both required.
+#
+# `--no-default-features` turns OFF `extension-module`. That feature is correct for the
+# wheel -- it leaves the CPython symbols undefined for the host interpreter to supply -- but
+# a test binary is an ordinary executable with no host, so on Linux it fails to LINK, with a
+# wall of `undefined symbol: PyObject_GetAttr`-style errors. Windows links `pythonXY.lib`
+# either way, so omitting the flag appears to work locally and breaks CI.
+#
+# `--test-threads=1` is required, not optional: these drive real Python worker pools, and
+# running them concurrently produces spurious subprocess timeouts.
+cargo test --no-default-features -- --test-threads=1
+
+# ON WINDOWS, the test binary needs the Python DLL directory on PATH or it exits
+# 0xc0000135 (STATUS_DLL_NOT_FOUND) before running anything -- it links pythonXY.dll and
+# does not find it on a bare PATH. This is not a build failure and not a regression; it
+# looks like a crash and costs ten minutes if you do not know. Prepend the uv-managed
+# interpreter's directory, e.g.:
+#   $env:PATH = "$HOME\AppData\Roaming\uv\python\cpython-3.14.2-windows-x86_64-none;$env:PATH"
+# Adjust the version to whatever `uv python list` says the project resolves.
 
 # Example tests
 uv run rustest examples/tests/
@@ -109,7 +165,24 @@ poe lint      # Check Python style
 poe typecheck # Type check Python
 poe fmt       # Format Rust
 poe tests     # Run integration and example tests
+poe docs      # Preview the docs site locally (great-docs preview)
+poe docs-build # Build the docs site into great-docs/_site
 ```
+
+### Pre-commit repair (uv-managed CPython)
+
+If `pre-commit` cannot bootstrap any hook environment — the symptom is a `virtualenv`
+failure rooted in `import ssl`, because the uv-managed interpreter is missing
+`libcrypto-3-x64.dll` — the repair is to reinstall that interpreter:
+
+```bash
+uv python install --reinstall cpython-3.14.2
+uv run pre-commit run --all-files
+```
+
+This is machine-global and rebuilds the project venv, so it is not something to do in the
+middle of another task. Do **not** paper over it by copying a DLL from a sibling
+interpreter: the freethreaded and standard builds ship different OpenSSL builds.
 
 ## Code Style and Conventions
 
@@ -128,10 +201,10 @@ poe tests     # Run integration and example tests
 ## Architecture Notes
 
 ### Hybrid Design
-1. **Rust Core** (`src/`) - High-performance engine for:
-   - Test discovery (globset, regex)
-   - Test execution (rayon for parallelization)
-   - Result formatting
+1. **Rust Core** (`src/engine/`) - High-performance engine for:
+   - Config resolution and the file walk
+   - Static (AST) collection and its manifest cache
+   - Orchestrating the spawn-based worker pool and reporting
 
 2. **Python Layer** (`python/rustest/`) - User-friendly API for:
    - Decorators (`@fixture`, `@parametrize`, `@mark`)
@@ -144,8 +217,9 @@ poe tests     # Run integration and example tests
 ### Key Entry Points
 - CLI: `python -m rustest` → `__main__.py` → `cli.py:main()`
 - Python API: `from rustest import fixture, mark, parametrize`
-- Test Discovery: `src/discovery.rs:discover_tests()`
-- Test Execution: `src/execution.rs:run_collected_tests()`
+- Test Discovery: `src/engine/collect.rs:collect()`
+- Test Execution: `src/engine/execute.rs:run()`
+- Worker (Python side): `python/rustest/_worker.py`
 
 ## Pre-commit Requirements
 
@@ -166,7 +240,7 @@ poe tests     # Run integration and example tests
 - `uv run pre-commit run --all-files` - Run complete check suite
 
 ### Tests (ALL must pass)
-- `cargo test` - Rust unit tests
+- `cargo test --no-default-features -- --test-threads=1` - Rust unit tests (both flags required; see above)
 - `uv run pytest python/tests -v` - Python unit tests (via pytest)
 - `uv run pytest tests/ examples/tests/ -v` - Integration tests (via pytest)
 - `uv run python -m rustest tests/ examples/tests/ -v` - Integration tests (via rustest)
@@ -186,8 +260,10 @@ poe tests     # Run integration and example tests
 ### Test Execution
 Tests are run through multiple runners to ensure compatibility:
 1. **pytest** - Standard Python test runner
-2. **rustest** - The project's own test runner
-3. **Documentation tests** - Python code blocks in README.md and docs/
+2. **rustest** - The project's own test runner. `rustest <paths>` runs the engine with the
+   pytest compatibility shim always installed. `--pytest-compat` and `--v1` were both
+   removed -- passing either exits 4 with a message naming the change.
+3. **Documentation tests** - Python code blocks in `README.md` and `user_guide/*.md`
 
 ### When Adding Features
 - Add unit tests in `python/tests/`
@@ -211,13 +287,13 @@ Tests are run through multiple runners to ensure compatibility:
 
 ### Modifying Rust core
 1. Make changes in `src/`
-2. Run `cargo test` for Rust tests
+2. Run `cargo test --no-default-features -- --test-threads=1` for Rust tests
 3. Run `uv run maturin develop` to rebuild
 4. Run Python tests to verify integration
 
 ## CI/CD Pipeline
 
-The CI workflow (`ci.yml`) runs all checks across Python 3.10-3.14. **ALL must pass**:
+The CI workflow (`ci.yml`) runs all checks across Python 3.12-3.14. **ALL must pass**:
 
 ### Tests
 - Python unit tests via pytest
@@ -233,25 +309,96 @@ The CI workflow (`ci.yml`) runs all checks across Python 3.10-3.14. **ALL must p
 
 ## Documentation
 
-- Main docs: `docs/` (MkDocs with Material theme, Zensical compatible)
-- Build locally: `mkdocs serve`
-- API reference auto-generated from docstrings
+The site is built by **great-docs** (Quarto-based), configured in `great-docs.yml`. It
+replaced zensical/MkDocs; there is no `zensical.toml` and no `mkdocs.yml`.
+
+- Admonitions are **Quarto callouts**, `::: {.callout-note title="..."}` … `:::`, not
+  MkDocs' `!!! note "..."`. great-docs renders through Quarto, which does not understand the
+  `!!!` form: the marker line falls through as a paragraph and the four-space body becomes
+  an indented code block, so the admonition renders as its own markdown source. All 62 of
+  them were converted; do not write a new one in the old spelling.
+- Content: `user_guide/` — a **flat** directory of `.md` files. Flat is great-docs' design
+  (it globs one level and copies by basename), which is why the six beginner pages carry
+  an `intro-` prefix instead of living in a subdirectory.
+- Config + nav + API-reference discovery: `great-docs.yml`
+- Landing page: `README.md` (great-docs generates the site index from it)
+- API reference: **auto-generated** from `python/rustest` docstrings by the `reference:`
+  key. The five hand-written `docs/api/*.md` pages are gone — do not re-add them.
+- Build: `poe docs-build` · Preview: `poe docs` — both go through `scripts/docs.py`.
+  It is Python, not a shell script, because `bash` on Windows is whichever one wins the
+  PATH race: in PowerShell that is WSL's, which cannot see `uv`, a Windows Quarto install,
+  or `.venv-docs/Scripts/python.exe`. Do not port it back to `.sh`
+- Prerequisites: the **Quarto CLI** on PATH (`winget install --id Posit.Quarto -e` on
+  Windows), plus a `.venv-docs` the script bootstraps
+- `docs/` holds only `assets/` (logos, favicon). The SDD plans and specs that used to live
+  in `docs/superpowers/` were removed from the tree before the 1.0.0 release; they remain in
+  git history, and the path is now git-ignored so it cannot come back
+
+### Terminal recordings
+
+Pages that show what a run looks like play a **recording**, not a transcript:
+
+```markdown
+{{< termshow file="first-run" autoplay="false" loop="false" >}}
+```
+
+`demos/scenes.toml` declares each scene and `poe demos` re-records them into
+`demos/*.termshow` by running the commands for real and capturing the output with its
+arrival times. great-docs pre-renders those into SVG keyframes at build time.
+
+Pass `autoplay="false" loop="false"` on every embed. That is not "do not play": an
+IntersectionObserver in `great-docs.yml`'s `include_in_header` starts each player when the
+reader reaches it, which the shortcode's own `autoplay` cannot do (it fires at page init, so
+a five-second recording below the fold is over before anyone sees it). Looping is off
+because a terminal cycling in the corner of the eye is hostile to reading.
+`demos/README.md` has the rest.
+
+Do not hand-write a block of rustest output on a page. It goes stale silently, and the
+recorder exists so it cannot.
+
+**The docs toolchain is deliberately not in `.venv`.** great-docs pulls jupyter, which
+pulls anyio, which registers a **pytest plugin** — and the conformance gates run real
+pytest out of `.venv` and must keep loading exactly what an unpolluted pytest loads. That
+is why it is a `[dependency-groups] docs` group rather than an extra, and why
+`scripts/docs.py` uses a separate environment.
+
+**Why the pages are `.md` and not `.qmd`.** great-docs and Quarto render both. rustest's
+own doc-code-block collector keys on `.md` (`src/engine/collect.rs::is_markdown`), so
+authoring in `.md` is what keeps every example on the site executing as a test in CI —
+verified directly: a `.qmd` passed to rustest reports "found no collectors". The two
+systems do not collide, because Quarto's *executable* fences are spelled ```` ```{python} ````
+and this collector matches only ```` ```python ````.
 
 ### Documentation Code Blocks
 
-**CRITICAL**: All Python code blocks in documentation are tested as executable code in CI.
+**CRITICAL**: Every Python code block in documentation is executed as a test in CI unless
+explicitly skip-marked, and a `def test_*` inside one really runs, as its own node — not
+defined and silently discarded.
+The mechanism is the same collector a `.py` test file goes through: a block's source execs
+into a fresh module at collect time and that module is enumerated exactly as a file would
+be, so fixtures, `@parametrize`, `Test*` classes and xunit-style `setup_function` all work
+inside a block with no special-casing.
+
+**This tier is off by default.** Nothing named `.md` collects unless something turns it on:
+`--codeblocks` on the command line, or `codeblocks = true` in `[tool.rustest]` (or the
+pytest ini section) in `pyproject.toml`. **This repository turns it on** — see
+`pyproject.toml`'s `[tool.rustest]` table — which is exactly why every command below in this
+section works with no flag: run it from a clone that has not set the key and the same
+command is a usage error, exit 4, `found no collectors for README.md`. See
+`user_guide/markdown-testing.md` for the full config precedence and the CLI flag pair.
 
 #### Testing Documentation
-Python code blocks in the following files are automatically tested:
-- `README.md`
-- `docs/guide/writing-tests.md`
-- `docs/guide/fixtures.md`
-- `docs/guide/assertions.md`
-- `docs/guide/test-classes.md`
+CI runs `rustest README.md user_guide/*.md` — that is, **every page on the site**, not a
+subset. Each block executes in its own fresh namespace, so every block must import
+everything it uses.
 
 #### Writing Testable Code Blocks
 
-**Default Behavior**: All Python code blocks are executed as tests unless marked otherwise.
+**Default Behavior**: every Python code block is collected and executed as a test unless
+marked otherwise. A block with no `def test_*` in it is one node, passing if its top-level
+statements — including a bare `assert` — run cleanly. A block that defines one or more
+`def test_*` functions produces **one node per function**, and those functions are called
+for real:
 
 ```python
 # This will be executed and must work
@@ -265,6 +412,13 @@ def test_example(sample):
     assert sample == "test"
 ```
 
+One consequence worth knowing before it surprises you: a block's own top-level code (outside
+any `def`) runs at **collect** time, the same moment a `.py` file's module-level code runs.
+`-m`/`-k` deselection and `--lf` decide which *tests* execute, not whether a block's
+top-level statements already ran — and a conftest's autouse fixture reaches the `def test_*`
+functions inside a block but never the block's own top-level statements, consistent with
+`.py` semantics where module-level code has never had autouse applied either.
+
 #### Skipping Code Blocks
 
 Use `<!--rustest.mark.skip-->` to skip code blocks that are examples only:
@@ -277,8 +431,9 @@ assert value == expected  # These variables don't need to exist
 ```
 ```
 
-!!! note "pytest compatibility"
-    For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+::: {.callout-note title="pytest compatibility"}
+For compatibility with pytest-codeblocks, `<!--pytest.mark.skip-->` and `<!--pytest-codeblocks:skip-->` also work.
+:::
 
 #### Guidelines for Documentation Code
 
@@ -291,13 +446,12 @@ assert value == expected  # These variables don't need to exist
 #### Testing Documentation Locally
 
 ```bash
-# Test all documentation code blocks
-uv run python -m rustest README.md
-uv run python -m rustest docs/guide/fixtures.md -v
+# One page, verbosely
+uv run python -m rustest user_guide/fixtures.md -v
 
-# Test entire directories
-uv run python -m rustest docs/guide/
-uv run python -m rustest README.md docs/guide/ docs/api/
+# The exact CI line -- markdown must be NAMED, not walked: a directory argument collects
+# no `.md` (pytest walking the same tree collects none either).
+uv run python -m rustest README.md user_guide/*.md
 ```
 
 #### Common Patterns

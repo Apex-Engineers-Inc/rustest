@@ -1,0 +1,125 @@
+# jsonschema -- KEEP (Phase 4 Task 1b batch 2). ZERO conftest.py anywhere in the repo --
+# confirmed by direct probes of every plausible location (root, jsonschema/, jsonschema/tests/,
+# docs/) plus a full root-tree listing showing only .github/, docs/, json/, jsonschema/ exist.
+# Classification: NONE, the cleanest of this batch.
+#
+# The suite's real complexity is NOT a pytest mechanism at all: the vendored official
+# JSON-Schema-Test-Suite (`json/`, fully committed to the tree at this tag -- confirmed NOT a
+# git submodule, see below) is turned into test classes by `jsonschema/tests/_suite.py`'s
+# `Version.to_unittest_testcase()`, a plain `type(name, (unittest.TestCase,), methods)` call
+# executed at MODULE IMPORT TIME from `jsonschema/tests/test_jsonschema_test_suite.py` (six
+# module-level assignments: TestDraft3/4/6/7/201909/202012). No `pytest_generate_tests`, no
+# `metafunc.parametrize`, no `@pytest.mark.parametrize`, no custom `pytest.Collector`/`Item`,
+# no `pytest_collect_file`, no pytest entry-point plugin -- skipping uses stdlib
+# `unittest.skip(reason)`/`unittest.expectedFailure`, not pytest's mark equivalents. When
+# pytest points at this tree it exercises nothing but its own built-in, out-of-the-box
+# unittest.TestCase discovery -- the same code path as any hand-written unittest suite. New
+# domain: JSON Schema validation, versus everything else in the corpus.
+#
+# Submodule check (relevant to whether a plain checkout even has the test data): `.gitmodules`
+# is 404 at this tag, and `raw.githubusercontent.com/.../json/README.md` returns real content
+# (a git submodule "gitlink" entry has no blob content a raw-content CDN could serve) --
+# `json/` is vendored directly, not a submodule. No `git submodule update` step needed.
+
+[repo]
+kind = "oss"
+url = "https://github.com/python-jsonschema/jsonschema.git"
+tag = "v4.26.0"
+# Release-workflow-published tag (softprops/action-gh-release via GitHub's Release API, which
+# creates annotated tag objects) -- api.github.com's `git/refs/tags` endpoint that would give
+# API-verified confirmation was 403-blocked this session; the commit below is corroborated via
+# two independent github.com web-UI fetches (the release page and the tag's commits page)
+# instead, not API-verified. Flag for the implementer to re-verify with `gh api` if certainty
+# matters before gate time.
+rev = "a7277432b0f7bcd0551f6e589d30457017125df4"
+test_paths = ["jsonschema/tests"]
+
+[env]
+# [dependency-groups].test = ["virtue", "jsonpath-ng"]. Notably, pytest itself is NOT a
+# declared dependency anywhere in this project -- its canonical/CI-enforced runner is `virtue`
+# ("a modern, extensible, unittest-compliant test runner... not a test framework", same
+# author as jsonschema). `virtue` isn't needed to run the suite under pytest (pytest's builtin
+# unittest.TestCase collection is sufficient on its own), so it's left out below; `jsonpath-ng`
+# is a plain data-library hard-import kept in. Same shape as cachetools/tabulate: install our
+# own pytest pin regardless of what the project itself declares as its runner.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2).
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "jsonpath-ng"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# No [tool.pytest.ini_options], no pytest.ini/setup.cfg/tox.ini pytest section anywhere --
+# confirmed by direct fetch (all 404). ruff config even documents why: `[tool.ruff.lint]
+# ignore = ["PT", ...]  # We use unittest`.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = ["-n", "1"]
+# Suite-generated test-method count is large (6 drafts wired up out of 8 vendored, each with
+# dozens of core+format+optional JSON case files, each holding multiple test instances per
+# case -- grounded estimate well into the thousands, not individually counted). Same 1800s
+# budget as the rest of the corpus as a starting point; flag for the implementer to raise if
+# it proves too tight.
+timeout_s = 1800
+# unittest.TestCase methods get stable string ids (ClassName.method_name, the method names
+# built by _suite.py's own delimiter-substitution scheme at class-creation time) -- not
+# pytest's value-derived parametrize id machinery at all, so no id-spelling divergence
+# mechanism should apply here. Same reasoning as cachetools' draft; verify at gate time before
+# fully trusting it given the sheer test-method volume.
+id_policy = "exact"
+
+[divergence.ids]
+
+[divergence.global]
+# EMPTY, and under `-n 1` this suite is a clean MATCH: 7815 ids on both sides with identical
+# spelling, 7287 passed / 527 skipped / 1 failed on BOTH runners, same exit code 1. The one
+# failure is the target's own -- see the note below.
+#
+# TWO OBSERVATIONS THAT ARE NOT DIVERGENCES, recorded because both would be easy to misread:
+#
+# 1. `jsonschema/tests/test_deprecations.py::TestDeprecations::test_import_cli` FAILS UNDER
+#    PYTEST TOO, and is the reason `[run] rustest_args` pins `-n 1`. The test is
+#    order-dependent by construction:
+#
+#        with self.assertWarnsRegex(DeprecationWarning, message) as w:
+#            import jsonschema.cli
+#            importlib.reload(jsonschema.cli)
+#        self.assertEqual(w.filename, importlib.__file__)
+#
+#    `assertWarns` captures the FIRST matching warning, so the assertion only holds if
+#    `jsonschema.cli` was ALREADY imported by something earlier in the same process -- then
+#    the `import` line is a no-op and the warning comes from the `reload`, attributed to
+#    importlib. Run that file alone, under pytest, and it fails exactly the same way (measured:
+#    `1 failed, 22 deselected`). It is a latent bug in the suite that a whole-session run
+#    happens to hide.
+#
+#    Under rustest's DEFAULT worker pool the test lands in a worker that never imported
+#    `jsonschema.cli`, so it fails: rustest 2 failed vs pytest 1. Under `-n 1` the priming
+#    import happens in the same process and the tallies become identical. Same shape as
+#    member-designer's shared-MongoDB entry: not a compat defect -- rustest runs exactly the
+#    tests the suite asked for -- but a real and reportable cost of running an
+#    order-dependent suite under a parallel runner. KNOWN-LIMITATION.
+#
+# 2. NODE ID PREFIXES are repo-root-relative in an unexpected way (`conformance/real/_work/
+#    jsonschema/jsonschema/tests/...`) because jsonschema ships NO pytest config of any kind --
+#    no ini_options, no pytest.ini, no setup.cfg, no tox.ini section -- so the rootdir search
+#    walks all the way up out of the clone and anchors on THIS repo's pyproject.toml, which
+#    does carry `[tool.pytest.ini_options]`. BOTH runners resolve it identically and agree on
+#    every id, so nothing is graded here; it is an artifact of staging clones inside the
+#    rustest tree, not a rustest behaviour. Worth knowing before reading the id list.

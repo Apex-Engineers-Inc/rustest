@@ -16,7 +16,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.12', '3.13', '3.14']
+
+    # `setup-uv@v3`'s `python-version` input did not take: every job resolved the runner's
+    # system CPython (3.12.3) and this matrix silently tested 3.12 three times. Discovered
+    # the first time the v2 branch was pushed -- the 3.14-only tests failed in all three
+    # jobs, which is what gave it away. `UV_PYTHON` is the setting `uv sync` and `uv run`
+    # both honour, and the guard step below makes the matrix falsifiable.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +39,51 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies and build package
-        run: uv sync --all-extras
+        run: |
+          uv python install "${{ matrix.python-version }}"
+          uv sync --all-extras
+
+      # A matrix that silently collapses to one interpreter is worse than no matrix: it
+      # reports three green checks for one configuration. Fail loudly instead.
+      - name: Verify the interpreter really is ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          ACTUAL="$(uv run python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          echo "matrix asks for ${{ matrix.python-version }}; uv run gives $ACTUAL"
+          test "$ACTUAL" = "${{ matrix.python-version }}"
+
+      # Added in Phase 4 Task 2, and only possible because of it: half of `cargo test` was
+      # the v1 engine's, and #133 recorded those tests as dead weight that could not be made
+      # green. With v1 deleted the suite is 397 tests and fully green, so it becomes a gate
+      # rather than a skip-list.
+      #
+      # `--test-threads=1` is not caution, it is the ledger's note: these tests spawn real
+      # Python worker pools and drive real subprocesses, so running the suite's own cases
+      # concurrently puts several pools on one runner at once. That is exactly the concurrent
+      # load that produced the misread subprocess timeout recorded in the P1b.2 Task 5 report
+      # §10.7, and a flaky gate teaches people to re-run rather than to read.
+      # `--no-default-features` drops `extension-module`, which must be off for a test
+      # *executable*: with it on, pyo3 leaves the CPython symbols undefined for a host
+      # interpreter to supply, and a test binary has no host -- on Linux that is a wall of
+      # `undefined symbol: PyObject_GetAttr`-style link errors. Windows links `pythonXY.lib`
+      # either way, which is why this only ever failed once CI ran the suite on Linux.
+      # These tests drive real Python worker pools, so the binary needs a real libpython to
+      # link against and to find at run time; `PYO3_PYTHON` picks the matrix interpreter and
+      # `LD_LIBRARY_PATH` points at the `lib/` beside it.
+      - name: Run Rust tests
+        run: |
+          set -euo pipefail
+          # Ask the interpreter about itself rather than guessing paths: `uv python find`
+          # does not see the environment `uv sync` just built, and the library directory is
+          # not derivable from the executable's path on a uv standalone build. `sysconfig`
+          # is authoritative for both.
+          PY="$(uv run python -c 'import sys; print(sys.executable)')"
+          LIBDIR="$(uv run python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR") or "")')"
+          echo "Interpreter: $PY"
+          echo "LIBDIR: $LIBDIR"
+          export PYO3_PYTHON="$PY"
+          export LD_LIBRARY_PATH="${LIBDIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          cargo test --no-default-features -- --test-threads=1
 
       - name: Run Python unit tests with pytest
         run: .venv/bin/pytest python/tests -v -ra
@@ -39,15 +91,28 @@ jobs:
       - name: Run all integration tests with pytest
         run: .venv/bin/pytest tests/ examples/tests/ -v -ra
 
-      - name: Run all integration tests with rustest (native mode)
+      # There is one engine, and the pytest compatibility shim is always installed, so this
+      # is the whole of the self-suite run. `--pytest-compat` was deleted at the Phase 1c
+      # flip and `--v1` with the engine it selected in Phase 4 Task 2; both now exit 4.
+      - name: Run all integration tests with rustest
         run: .venv/bin/python -m rustest tests/ examples/tests/ -v
 
-      - name: Run pytest-compat mode verification (compatibility testing)
-        run: .venv/bin/python -m rustest tests/ examples/tests/ --pytest-compat -v
-        continue-on-error: false  # This will fail if pytest-compat has issues
-
       - name: Test documentation code blocks with rustest
-        run: .venv/bin/python -m rustest README.md docs/guide/ docs/getting-started/ docs/api/
+        run: .venv/bin/python -m rustest README.md user_guide/*.md
+        # Markdown is named, not walked: since 0.18 a *directory* argument collects no
+        # `.md` at all, because pytest walking the same tree collects none either and a
+        # repo with python fences in its docs was getting tests under `rustest tests/`
+        # that `pytest tests/` never sees. Naming the files keeps the docs tested.
+        #
+        # `user_guide/*.md` is the WHOLE site now, not the four-directory subset this
+        # line used to name -- that subset was an artifact of the old `docs/` tree, and
+        # the pages outside it (the beginner track, the pytest-comparison pages) were
+        # never checked. The great-docs cutover also settles the question its research
+        # raised: the site is authored in `.md`, not `.qmd`, so this collector still sees
+        # every page. great-docs and Quarto render both formats, but rustest's collector
+        # keys on `.md` (`src/engine/collect.rs::is_markdown`), and keeping the source
+        # extension is what keeps the examples executable. Quarto's own executable fences
+        # are spelled ```{python}, which this collector deliberately does not match.
 
   lint:
     name: Lint and Format
@@ -68,16 +133,16 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install dependencies
         run: uv sync --all-extras
 
       - name: Auto-fix Python formatting with ruff
-        run: uv run --no-project ruff format python
+        run: uv run --no-project ruff format python conformance
 
       - name: Auto-fix Python linting with ruff
-        run: uv run --no-project ruff check --fix python
+        run: uv run --no-project ruff check --fix python conformance
 
       - name: Auto-fix Rust formatting
         run: cargo fmt
@@ -93,10 +158,10 @@ jobs:
           fi
 
       - name: Check Python formatting with ruff
-        run: uv run --no-project ruff format --check python
+        run: uv run --no-project ruff format --check python conformance
 
       - name: Lint Python with ruff
-        run: uv run --no-project ruff check python
+        run: uv run --no-project ruff check python conformance
 
       - name: Check Rust formatting
         run: cargo fmt --check
@@ -115,10 +180,10 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install dependencies
         run: uv sync --all-extras
 
       - name: Type check with basedpyright
-        run: uv run --no-project basedpyright python
+        run: uv run --no-project basedpyright python conformance

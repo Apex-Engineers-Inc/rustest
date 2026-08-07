@@ -1,0 +1,160 @@
+# Apex Member Designer's `server/` suite -- the user-designated acceptance target, and the
+# reason Phase 3 ported pytest-asyncio's loop-scope model at all: it runs
+# `asyncio_mode = "auto"` with BOTH loop-scope defaults set to `session`, on a
+# free-threaded CPython 3.14t interpreter, over ~6k tests that talk to a real MongoDB.
+#
+# READ-ONLY, AND MEANT LITERALLY. Nothing is installed into the repo's own `.venv`,
+# nothing is written into its tree, and its `uv.lock` is never updated:
+#
+#   * the environment is built OUTSIDE the tree from `uv export --frozen`, so the lock is
+#     read and never rewritten;
+#   * pytest runs with `-p no:cacheprovider`, so no `.pytest_cache` appears;
+#   * the reporting plugin is copied into the harness's temp directory and reached via
+#     PYTHONPATH, never dropped into the repo;
+#   * `.rustest_cache` is removed after the run unless the repo already had one.
+
+[repo]
+kind = "local"
+path = "C:/Users/JeffreyMBloss/local-repos/Apex-Member-Designer/main/server"
+test_paths = ["tests"]
+
+[env]
+# 3.14t, not 3.14: the repo pins `3.14+freethreaded` in `.python-version`, its lock is
+# resolved for that ABI, and its own `.venv` is a cp314t build. rustest is installed from
+# the cp314t wheel built for this sweep (`maturin build --release -i python3.14t`).
+#
+# `--no-emit-package rustest` keeps the lock's own rustest (a git dependency on this
+# project's `main`) out of the environment: the point of the run is THIS working tree's
+# engine, and letting the lock install a different rustest over it would validate the
+# wrong binary. `--no-default-groups --group dev` takes the test dependencies
+# (pytest, pytest-asyncio, ...) without the `build` group's PyInstaller.
+setup = [
+  ["uv", "venv", "--python", "3.14t", "{venv}"],
+  [
+    "uv",
+    "export",
+    "--frozen",
+    "--project",
+    "{repo}",
+    "--no-default-groups",
+    "--group",
+    "dev",
+    "--no-emit-project",
+    "--no-emit-package",
+    "rustest",
+    "--no-hashes",
+    "--format",
+    "requirements-txt",
+    "-o",
+    "{work}/_member-designer-requirements.txt",
+  ],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "-r",
+    "{work}/_member-designer-requirements.txt",
+  ],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314t-win_amd64.whl",
+  ],
+]
+
+# NO COMPENSATION, as of Phase 4 Task 1. Through Phase 3 the harness exported the repo's
+# `pythonpath = ["src"]` on PYTHONPATH for both runners, because pytest honoured the ini
+# (`Config._configure_python_path`) and rustest's v2 engine did not implement it -- without
+# the scaffolding every one of the ~285 test files failed to import and the comparison
+# measured one missing ini option instead of a suite. v2 reads and applies the ini itself
+# now (`_worker::_apply_pythonpath`, protocol v6), so the scaffolding is gone and rustest
+# resolves `src/` from the repo's own pyproject.toml exactly as pytest does.
+pythonpath = []
+
+[addopts]
+# pyproject.toml: addopts = ["-vv", "-s"]. Recorded, not replayed: since Phase 4 Task 1
+# each runner applies the target's own `addopts` for itself, so nothing is put on either
+# command line. Both are core pytest flags rustest also accepts, so nothing is dropped.
+# (The repo's commented-out `--cov --cov-report=xml:cov.xml` line is not active.)
+configured = ["-vv", "-s"]
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+# `-n 1`, and it is the one runner flag this target carries. NOT a compensation for a
+# compat defect: it is the only way to ask the two runners the same question about a suite
+# whose fixtures **drop and recreate a single shared MongoDB database**. rustest's default
+# worker pool gives each worker its own session-scoped fixtures, so worker B's `testDB`
+# teardown lands while worker A is mid-insert and pymongo answers
+# `OperationFailure: The database is currently being dropped`. Measured on this tree:
+# default pool -> 262 errors + 94 failures; `-n 1` -> 0 errors, 25 failures, 6082 passed.
+# The parallel result is ledgered under [divergence.global] rather than hidden, because it
+# is a real and reportable property of running this suite under rustest.
+rustest_args = ["-n", "1"]
+# ~6k tests against a real MongoDB, twice.
+timeout_s = 7200
+# `id_policy` is DEFAULT (`exact`), and the entry that used to sit here documented its own
+# expiry: `strip_params` was declared because "rustest's parametrize ids do not reproduce
+# pytest's `IdMaker` for any non-scalar ... it still goes stale the moment `IdMaker` is
+# ported". `IdMaker` was ported whole in Phase 4 Task 1 (`0e6193d`), all 473 spelling
+# differences went away, and Task 1c re-swept this target to a clean MATCH of all 6 132 ids.
+# The policy is therefore removed rather than left inert: under `strip_params` outcomes are
+# compared as a per-`file::function` status multiset, which cannot say WHICH parameter case
+# moved and is blind to two cases of one function trading statuses -- a real loss of
+# resolution on the acceptance target, bought for a problem that no longer exists.
+
+
+[divergence.ids]
+# EMPTY as of Phase 4 Task 1c -- this target is now a clean MATCH of all 6 132 ids:
+# 6084 passed / 37 skipped / 10 xfailed / 1 xpassed on BOTH runners, exit 0 on both.
+#
+# What used to be here: the four residuals Task 1 ledgered UNADJUDICATED and Task 1b
+# adjudicated to two mechanisms. All four are closed.
+#
+# * `test_flange_bracing.py` (2 tests) -- MECHANISM M9a. `ApproxBase.__array_ufunc__ =
+#   None` / `__array_priority__ = 100` are the entire reason `ndarray == approx(scalar)`
+#   returns a bool; without them numpy won the dispatch and produced an elementwise bool
+#   ARRAY, so the enclosing assert raised `ValueError: The truth value of an array ... is
+#   ambiguous`. Measured in THIS venv during Task 1b: `np.array([5.,5.,5.]) ==
+#   pytest.approx(5.0)` -> True; the same against the old rustest.approx -> `array([True,
+#   True, True])`.
+# * `test_link_helpers.py` (1 test) -- MECHANISM M9b. pytest's signature defaults `rel`
+#   and `abs` to `None` meaning 'unspecified', resolved by `ApproxScalar.tolerance`; this
+#   repo's own `def approx(expected, abs_tol=None): return pytest.approx(expected,
+#   abs=abs_tol)` therefore passes `abs=None` on every call. rustest defaulted them to
+#   numbers and took the `None` literally: `TypeError: '>' not supported between
+#   'NoneType' and 'float'`. It only fired for values that are NOT bit-identical, because
+#   exact equality short-circuits first -- which is why one test tripped it and hundreds
+#   of sibling approx assertions did not.
+# * `test_framing_2d_member.py` (1 test) -- MECHANISM M2, the length-1 sequence unpack.
+#   Found here FIRST and then confirmed in three unrelated suites. A length-1 list holding
+#   a `LineString` was unpacked, so the test received the bare geometry where pytest hands
+#   it the list, and the failure surfaced only because the wrong value was un-iterable.
+#
+# `rustest.approx` is now a port of `_pytest/python_api.py` rather than a lookalike, and
+# `parametrize` a port of `ParameterSet._for_parametrize`; both are pinned by
+# `conformance/corpus/builtins/approx-numeric` and
+# `conformance/corpus/parametrize/single-argname-unpack`.
+# Everything this section used to hold is fixed. The four collection errors that stopped the
+# whole suite (`pytestmark = pytest.mark.asyncio`), the 120 `TestAPIEndpoints` failures
+# (`indirect=`), the 9 xfails that never applied (`pytest.param(marks=...)`, on a *fixture's*
+# params), the 8 `setup_method` failures (xunit hooks), the 13 markdown ids (no `.md` on a
+# directory walk) and the 946 spelling differences (`IdMaker`) are all gone.
+#
+# What is left is **four tests**, and as of Phase 4 Task 1b all four are ADJUDICATED to
+# exactly two mechanisms, both reproduced in isolation (single-file/single-class runs, so
+# neither is order-dependent, neither is environmental, and both are rustest defects).
+
+[divergence.global]
+# EMPTY as of Phase 4 Task 1c: exit codes agree (0 on both) and the tally agrees exactly.
+# The `-n 1` this target pins in [run] is unchanged and is NOT a compat divergence -- it is
+# a real cost of running an order-dependent suite (a shared test database) under a parallel
+# runner, the same class as jsonschema's `test_import_cli`, and it is recorded in [run].

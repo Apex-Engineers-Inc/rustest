@@ -1,0 +1,164 @@
+# humanize -- SWAP-IN for Pygments (Phase 4 Task 1b audit). All three of Pygments' conftest.py
+# files at 2.20.0 (tests/, tests/snippets/, tests/examplefiles/) are HEAVY: pytest_collect_file
+# + custom pytest.File/pytest.Item subclasses (LexerTestFile/LexerTestItem/
+# LexerSeparateTestItem/LexerInlineTestItem) overriding runtest()/repr_failure()/reportinfo(),
+# plus pytest_addoption and pytest_runtest_teardown -- the deepest, least-portable layer of
+# the pytest plugin API, and it drives the *majority* of what the suite actually collects
+# (per-lexer example/snippet files), not a side path. Exactly the HEAVY bucket the user's
+# "no/limited hook usage" directive rules out.
+#
+# humanize has NO conftest.py anywhere and NO pytest_* hooks anywhere in the repo -- the one
+# fixture that exists is a plain autouse session fixture in tests/test_benchmarks.py that
+# pre-warms gettext catalogs. One real wrinkle found in its own config, not rustest's:
+# pyproject.toml declares "[tool.pytest]" (verified character-for-character via raw fetch,
+# twice) -- NOT the pytest-recognized "[tool.pytest.ini_options]" -- so its minversion = "9.0"
+# / addopts = ["--color=yes"] / testpaths / filterwarnings = ["error"] are silently inert to a
+# bare `pytest` invocation. The config that actually governs one is tox.ini's own [pytest]
+# section, which is real and is what [addopts] below reflects.
+
+[repo]
+kind = "oss"
+url = "https://github.com/python-humanize/humanize.git"
+tag = "4.16.0"
+# Lightweight tag; commit SHA directly.
+rev = "3c577d7650508d52aa2982e930b0e744c343082f"
+test_paths = ["tests"]
+
+[env]
+# [project.optional-dependencies].tests is freezegun, pytest>=9, pytest-benchmark,
+# pytest-codspeed, pytest-cov. freezegun is a hard import in tests/test_time.py. The other
+# three are left OUT of this first-pass draft: pytest-cov is coverage-reporting-only (same
+# call made for every other OSS target in this corpus); pytest-benchmark/pytest-codspeed are
+# needed only by tests/test_benchmarks.py (a `benchmark`-fixture consumer) -- without them
+# those specific tests should ERROR identically on both runners (missing fixture, not a
+# behavioral divergence) rather than silently skip, which the implementer should confirm at
+# gate time before deciding whether to add the plugins in.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2). humanize's own
+  # ini nominally asks for pytest>=9 (project.optional-dependencies.tests), but per the header
+  # note that constraint lives under a pyproject.toml key pytest never reads
+  # ("[tool.pytest]", not "[tool.pytest.ini_options]") and tox.ini's real [pytest] section
+  # declares no minversion at all -- so 8.4.2 should run this suite same as everywhere else
+  # in the corpus. Flagged for the implementer to double check at gate time regardless.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "freezegun"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# tox.ini's [pytest] section (the config pytest actually resolves to, see header note):
+# addopts = --color=yes --doctest-modules. Both runners read that ini for themselves -- the
+# harness retired the addopts replay in Phase 4 Task 1 -- so what this table records is which
+# of the configured options each runner ENDS UP applying, and why they differ.
+#
+# "--color=yes" is a harmless display flag and reaches both. "--doctest-modules" reaches
+# pytest and is neutralized for rustest with the `-o addopts=` escape hatch in [run], because
+# rustest deliberately does not implement it. See the global divergence note below.
+configured = ["--color=yes", "--doctest-modules"]
+replay = ["--color=yes"]
+dropped = ["--doctest-modules"]
+
+[run]
+pytest_args = []
+# THE ESCAPE HATCH, added in Phase 4 Task 1c with the M1 fix, and the reason this target
+# grades at all. `-o addopts=...` replaces the ini value for rustest only; pytest still reads
+# its own tox.ini and still runs with `--doctest-modules`. That is a deliberate ASYMMETRY and
+# it is sound here for one measured reason: the flag is INERT on this suite. Measured on this
+# clone at Task 1b -- `pytest --collect-only -q tests` collects 784 with the repo's addopts
+# and 784 with `-o addopts=--color=yes`, because humanize's `tests/` modules carry no
+# doctests. So both runners are answering the same question. `id_policy = "exact"` is the
+# guard: a doctest item pytest collected and rustest did not would appear as an extra id, not
+# as a silently absorbed difference.
+rustest_args = ["-o", "addopts=--color=yes"]
+timeout_s = 1800
+# Draft default. test_number.py/test_time.py parametrize heavily over (value, expected)
+# tuples and locale strings -- the same value-kinds click/jinja2 already ledgered as
+# spelling-only id divergences under rustest's parametrize-id generation. Expect the same
+# mechanism here; verify at gate time and relax from "exact" if so.
+id_policy = "exact"
+
+[divergence.ids]
+# EMPTY as of the Phase 4 final polish wave -- this target is now a clean MATCH of all 784
+# ids, and the entry that used to sit here documented its own fix.
+#
+# What used to be here: MECHANISM M10, five id pairs, spelling only, all ten PASSING on both
+# runners. `@pytest.mark.parametrize(..., ids=str)` (tests/test_number.py:314) over values
+# whose `str()` contains non-ASCII: pytest ASCII-escapes an id returned by a callable `ids=`
+# and rustest did not, so pytest collected `test_metric[[0.00012]-120 \u03bc]` where rustest
+# emitted the character itself.
+#
+# The mechanism was one call site, exactly as the entry predicted. `IdMaker._idval_from_function`
+# (`_pytest/python.py` l. 968-987) feeds the callable's answer BACK through `_idval_from_value`,
+# so a returned string is ascii-escaped like any other; `_resolve_case_id` used
+# `str(generated)` verbatim. Fixed in `python/rustest/decorators.py` by the final polish wave
+# and pinned by `python/tests/test_decorators.py::TestCallableIdsGoBackThroughIdMaker`, whose
+# five cases were each probed against pytest 8.4.2 first -- one of them corrected the fix (an
+# answer with no spelling of its own falls back to the ORIGINAL value's id, not to
+# `<argname><index>`).
+#
+# This entry went STALE-LEDGER on the first sweep after the fix, which is the detector doing
+# its job: a ledger entry that describes a defect nobody can reproduce any more is a claim
+# that has stopped being true.
+
+[divergence.global]
+# NO GLOBAL LEDGER ENTRIES, and the reason is worth stating: the exit code AGREES (1 on
+# both runners) and the tally agrees exactly (700 passed / 69 skipped / 15 error). Both
+# sides exit 1 for the same environmental reason -- 15 errors from
+# tests/test_benchmarks.py, whose tests request the `benchmark` fixture pytest-benchmark
+# supplies and which this target's [env] deliberately does not install, the corpus
+# convention for benchmarking plugins. Identical ids, identical count, both runners. That
+# is a property of the target's environment, not a divergence, so it gets a comment rather
+# than a ledger entry -- an entry describing something the gate cannot see goes stale.
+
+# ============================================================================================
+# UNBLOCKED at Phase 4 Task 1c (MECHANISM M1). The history is kept because the fix is an
+# escape hatch rather than a feature, and that distinction is the whole point.
+#
+# WHAT WAS BLOCKED. tox.ini's `[pytest]` section -- the config pytest actually resolves to
+# here, since pyproject.toml misspells the table as `[tool.pytest]` -- carries
+# `addopts = --color=yes --doctest-modules`. Both runners read that ini for themselves. pytest
+# honours it; rustest rejected it:
+#
+#   rustest: error: unrecognized arguments: --doctest-modules
+#     inifile: .../humanize/tox.ini
+#     rootdir: .../humanize
+#
+# exit 4, no report written, harness EE -- correctly, because no comparison happened.
+#
+# WHY THE REFUSAL WAS RIGHT, AND STILL IS. `--doctest-modules` changes what gets COLLECTED.
+# Silently ignoring it would manufacture a quiet divergence, which is why it is not on
+# rustest's `IGNORED_PYTEST_FLAGS` table -- that table is deliberately limited to
+# reporting-only flags. rustest STILL REFUSES IT and Task 1c did not change that: doctest
+# collection is a distinct absorption (a whole collector, `_pytest/doctest.py`), not a
+# compat-shim gap. Adding it to the warn-and-drop allowlist was considered and REJECTED on
+# the evidence rule -- a drop is only honest where the flag is provably inert, and that is a
+# property of THIS suite, not of the flag; a project with doctests in its collected tree
+# would silently under-collect.
+#
+# WHAT WAS ACTUALLY MISSING, AND WHAT WAS FIXED. There was no way to say "read this project's
+# config except that key": no `-o`, no `--override-ini`, no `-c`. pytest has both levers;
+# rustest had neither, so any project with a collection-changing flag in its ini `addopts`
+# was a HARD BLOCK rather than a degraded run -- and nothing the harness could put in
+# `pytest_args`/`rustest_args` could reach it, because rustest fails while parsing the ini it
+# finds by walking up from its own cwd and the target repo is read-only to this harness.
+# Task 1c implements `-o`/`--override-ini` for the `addopts` key
+# (`python/rustest/cli.py::_extract_ini_overrides`, `OVERRIDABLE_INI_KEYS`). Any other ini
+# key is a LOUD usage error (exit 4) naming what is supported, because those keys are read by
+# the engine's own config resolver, which has no override channel -- accepting them and doing
+# nothing would be the silent no-op this project refuses.
+#
+# WILD-READINESS IMPACT: the class this suite stands for -- a collection-changing flag in ini
+# addopts -- is now a degraded run a caller opts into, not a block. `--doctest-modules`
+# itself remains unimplemented and remains refused.
+# ============================================================================================

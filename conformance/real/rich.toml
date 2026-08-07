@@ -1,0 +1,82 @@
+# rich -- KEEP (no swap needed). tests/conftest.py at v15.0.0 is the only conftest.py in the
+# whole repo and holds exactly one autouse fixture (reset_color_envvars, clearing
+# FORCE_COLOR/NO_COLOR via monkeypatch.delenv) -- LIMITED, and about as thin as LIMITED gets.
+# Zero pytest_* hooks anywhere. Windows-only console tests are gated by a plain module-level
+# `pytestmark = pytest.mark.skipif(...)`, not a hook. New domain: terminal rendering/markup,
+# versus schema validation (marshmallow), CLI (click), templating (jinja2).
+
+[repo]
+kind = "oss"
+url = "https://github.com/Textualize/rich.git"
+tag = "v15.0.0"
+# Lightweight tag; commit SHA directly.
+rev = "6ac483cbea39cab124dfd3483bba70ffafb71050"
+test_paths = ["tests"]
+
+[env]
+# Poetry-format pyproject.toml (no PEP 621 [project] table). [tool.poetry.dev-dependencies]:
+# pytest ^7.0.0, pytest-cov ^3.0.0, attrs ^21.4.0, plus black/mypy/pre-commit (not needed to
+# run tests). pytest-cov is coverage-reporting-only, left out as everywhere else in this
+# corpus. No hypothesis, no pytest-xdist/randomly.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (8.4.2); rich's own pin
+  # (^7.0.0, i.e. <8) is a Poetry dev-dependency constraint on ITS environment, not something
+  # pytest enforces at runtime -- click's and jinja2's own repos make the identical
+  # (unenforced) ask and both run fine under 8.4.2 in this corpus already.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "attrs"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# [tool.pytest.ini_options] declares only testpaths = ["tests"]. No addopts key.
+configured = []
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+"test_traceback.py::test_suppress" = """\
+BY DESIGN, and it is the compat layer's defining property rather than a defect. The test is \
+`Traceback(suppress=[pytest, "foo"]); assert "pytest" in traceback.suppress[0]` \
+(tests/test_traceback.py:286-293). rich resolves a MODULE passed to `suppress=` into the \
+directory holding it (`os.path.dirname(module.__file__)`), so the assertion is really about \
+where the `pytest` module object lives on disk. Under rustest, `sys.modules["pytest"]` is \
+`rustest.compat.pytest` -- rustest shadows the real pytest package even when, as here, real \
+pytest IS installed in the venv, because the suite's `pytest.fixture` / `pytest.mark` / \
+`pytest.raises` have to be rustest's for rustest to run the suite at all. The directory is \
+therefore `...\\site-packages\\rustest\\compat`, which does not contain the substring \
+"pytest", and the assert fails. Measured: `AssertionError: assert 'pytest' in \
+'...\\site-packages\\rustest\\compat'`. Reproduces with the one file alone -- not \
+order-dependent.
+
+There is no fix available that keeps the compat layer: any shim that makes `pytest.__file__` \
+point at real pytest would also hand the suite real pytest's decorators. This is the one \
+class of test rustest structurally cannot pass -- a test that introspects the IDENTITY of the \
+pytest module rather than using its API. Worth stating plainly in the compat docs; not worth \
+a code change. KNOWN-LIMITATION."""
+
+[divergence.global]
+exit_code = """\
+rustest exits 1 where pytest exits 0, entirely because of the single `test_suppress` failure \
+ledgered above."""
+tally = """\
+pytest 984 passed / 23 skipped; rustest 983 passed / 1 failed / 23 skipped. The same 1007 ids \
+on both sides with identical spelling, the same 23 skips, and the one-test delta is \
+`test_suppress` and nothing else."""

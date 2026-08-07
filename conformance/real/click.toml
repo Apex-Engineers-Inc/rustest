@@ -1,0 +1,70 @@
+# click -- a mainstream pytest suite with real configuration: `testpaths`, a custom
+# marker, `filterwarnings = ["error"]`, and a selection-changing `addopts`.
+
+[repo]
+kind = "oss"
+url = "https://github.com/pallets/click.git"
+tag = "8.4.2"
+# The tag is annotated, so this is the commit it points at, not the tag object's own SHA.
+rev = "b2e30a175449cfda909ee4fbf4a29a6a071cad53"
+test_paths = ["tests"]
+
+[env]
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Pinned to the SAME pytest the corpus gates use as their oracle (this repo's dev
+  # dependency, 8.4.2). Unpinned, uv installs the newest release and the comparison starts
+  # measuring pytest-version skew instead of rustest: on pytest 9.1.1 click 8.4.2's
+  # `tests/test_basic.py` raises `PytestRemovedIn10Warning: Passing a non-Collection
+  # iterable to parametrize is deprecated`, which the repo's `filterwarnings = ["error"]`
+  # turns into a collection error, so pytest exits 2 having run nothing at all.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[addopts]
+# pyproject.toml: addopts = "-m 'not stress'". Recorded, not replayed: since Phase 4 Task 1
+# rustest applies `addopts` itself (`cli.py::main`, the port of `Config._preparse`), so both
+# runners read this value out of click's own pyproject.toml and neither gets it on the
+# command line. Through Phase 3 the value had to be neutralized on the pytest side and
+# replayed to both, because rustest parsed the key and applied it nowhere -- pytest ran
+# 1 686 tests and rustest 32 686, a "divergence" that was entirely the harness's fault.
+configured = ["-m", "not stress"]
+replay = []
+dropped = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+# TIGHTENED TO `exact` in Phase 4 Task 1b, and this is the point of the entry. click
+# parametrizes over dicts, tuples, enums and long strings, all four of which rustest used to
+# name differently from pytest, so through Phase 4 Task 1 this said `strip_params` and the
+# ~1800 spelling differences were raised as one graded `ids` problem. With `IdMaker` ported
+# (`decorators.py::_idval_from_value` + `src/engine/static_collect.rs::generate_param_id`) the raw
+# ids are byte-identical, so the relaxation is no longer buying anything and is removed:
+# the gate now proves per-node-id parity across all 1686 selected tests, and compares
+# statuses id by id rather than as a per-function multiset. Measured green under `exact`.
+id_policy = "exact"
+
+[divergence.ids]
+# EMPTY as of Phase 4 Task 1: the monkeypatch dotted-path defect that errored
+# `tests/test_shell_completion.py`'s 14 parameter cases is fixed (commit 8daac97 --
+# `_pytest/monkeypatch.py::resolve` ported). Nothing in click is ledgered by id any more.
+[divergence.global]
+# EMPTY as of Phase 4 Task 1's review. The last entry here was PARAMETRIZE ID GENERATION --
+# rustest did not reproduce `_pytest/python.py::IdMaker` for containers, enums, bytes,
+# functions or long strings, and this suite's ids differed from pytest's by spelling alone.
+# `decorators.py::_idval_from_value` and `src/engine/static_collect.rs::generate_param_id` are
+# now ports of it, both halves of the tier pair moving together, and the suite MATCHES.

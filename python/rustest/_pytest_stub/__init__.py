@@ -9,7 +9,7 @@ transition to rustest. You should migrate away from _pytest imports to either:
 1. Use rustest's native API (preferred)
 2. Use pytest's public API (pytest.fixture, pytest.mark, etc.)
 
-For details on migration, see: https://github.com/anthropics/rustest
+For details on migration, see: https://github.com/Apex-Engineers-Inc/rustest
 """
 
 import warnings
@@ -26,7 +26,7 @@ warnings.warn(
     (
         "_pytest is pytest's internal API and is not fully supported by rustest. "
         "Please migrate to rustest's public API or pytest's public API. "
-        "See https://github.com/anthropics/rustest for migration guide."
+        "See https://github.com/Apex-Engineers-Inc/rustest for migration guide."
     ),
     DeprecationWarning,
     stacklevel=2,

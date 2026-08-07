@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from rustest import run
+from .helpers import run_tree
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +184,7 @@ def test_builtin_fixtures_are_available(tmp_path: Path) -> None:
     module_path = tmp_path / "test_builtin_fixtures.py"
     _write_builtin_fixture_module(module_path)
 
-    report = run(paths=[str(tmp_path)])
+    report = run_tree(str(tmp_path))
 
     assert report.total == 15
     assert report.passed == 15
@@ -217,13 +217,13 @@ GLOBAL_DICT = {"key": "value"}
 
 def test_monkeypatch_setattr_dotted_path_requires_dot(monkeypatch):
     '''Test that setattr with dotted path requires at least one dot.'''
-    with pytest.raises(TypeError, match="at least one dot"):
+    with pytest.raises(TypeError, match="must be absolute import path string"):
         monkeypatch.setattr("nodots", "value")
 
 
 def test_monkeypatch_delattr_dotted_path_requires_dot(monkeypatch):
     '''Test that delattr with dotted path requires at least one dot.'''
-    with pytest.raises(TypeError, match="at least one dot"):
+    with pytest.raises(TypeError, match="must be absolute import path string"):
         monkeypatch.delattr("nodots")
 
 
@@ -311,7 +311,7 @@ def test_monkeypatch_edge_cases(tmp_path: Path) -> None:
     module_path = tmp_path / "test_monkeypatch_edge_cases.py"
     _write_monkeypatch_edge_cases_module(module_path)
 
-    report = run(paths=[str(tmp_path)])
+    report = run_tree(str(tmp_path))
 
     assert report.total == 13
     assert report.passed == 13
@@ -331,23 +331,23 @@ def test_cache_get_default(cache):
 
 
 def test_cache_set_and_get(cache):
-    '''Test cache set and get.'''
+    '''Test cache set and get. `default` is REQUIRED, as in pytest.'''
     cache.set("test/key", {"data": 123})
-    result = cache.get("test/key")
+    result = cache.get("test/key", None)
     assert result == {"data": 123}
 
 
-def test_cache_dict_style_access(cache):
-    '''Test cache dict-style access.'''
-    cache["dict/key"] = [1, 2, 3]
-    assert cache["dict/key"] == [1, 2, 3]
+def test_cache_has_no_dict_sugar(cache):
+    '''pytest's Cache is get/set/mkdir -- no __setitem__, __getitem__ or __contains__.
 
-
-def test_cache_contains(cache):
-    '''Test cache __contains__.'''
+    v1 added all three. They are absent here on purpose: a suite written against them
+    would break the moment it ran under real pytest, which is the opposite of what a
+    compatibility runner is for.
+    '''
     cache.set("exists/key", "value")
-    assert "exists/key" in cache
-    assert "nonexistent/key" not in cache
+    assert cache.get("exists/key", None) == "value"
+    assert not hasattr(cache, "__setitem__")
+    assert not hasattr(cache, "__contains__")
 
 
 def test_cache_mkdir(cache, tmp_path):
@@ -367,13 +367,14 @@ def test_cache_various_types(cache):
     cache.set("list", [1, 2, 3])
     cache.set("dict", {"nested": {"data": 1}})
 
-    assert cache.get("string") == "hello"
-    assert cache.get("number") == 42
-    assert cache.get("float") == 3.14
-    assert cache.get("bool") is True
-    assert cache.get("none") is None
-    assert cache.get("list") == [1, 2, 3]
-    assert cache.get("dict") == {"nested": {"data": 1}}
+    sentinel = object()
+    assert cache.get("string", sentinel) == "hello"
+    assert cache.get("number", sentinel) == 42
+    assert cache.get("float", sentinel) == 3.14
+    assert cache.get("bool", sentinel) is True
+    assert cache.get("none", sentinel) is None
+    assert cache.get("list", sentinel) == [1, 2, 3]
+    assert cache.get("dict", sentinel) == {"nested": {"data": 1}}
 """
     )
 
@@ -383,10 +384,10 @@ def test_cache_edge_cases(tmp_path: Path) -> None:
     module_path = tmp_path / "test_cache_edge_cases.py"
     _write_cache_edge_cases_module(module_path)
 
-    report = run(paths=[str(tmp_path)])
+    report = run_tree(str(tmp_path))
 
-    assert report.total == 6
-    assert report.passed == 6
+    assert report.total == 5
+    assert report.passed == 5
 
 
 def _write_capture_fixture_module(target: Path) -> None:
@@ -441,7 +442,7 @@ def test_capture_fixtures(tmp_path: Path) -> None:
     module_path = tmp_path / "test_capture_fixtures.py"
     _write_capture_fixture_module(module_path)
 
-    report = run(paths=[str(tmp_path)])
+    report = run_tree(str(tmp_path))
 
     assert report.total == 3
     assert report.passed == 3
@@ -455,14 +456,30 @@ import logging
 
 
 def test_caplog_basic(caplog):
-    '''Test basic caplog functionality.'''
-    logging.info("test message")
+    '''Basic capture -- at the ROOT LOGGER's own level, which pytest does not lower.
+
+    `logging.info(...)` is deliberately not used here: pytest's caplog installs a handler
+    at level 0 but leaves the root logger at WARNING, so INFO never reaches the handler.
+    v1 forced the root logger to DEBUG and captured it; that is the archived ledger's
+    `builtins/caplog-levels` divergence, and this asserts the pytest side of it.
+    '''
+    logging.warning("test message")
     assert "test message" in caplog.text
     assert len(caplog.records) == 1
 
 
+def test_caplog_does_not_lower_the_root_level(caplog):
+    '''The absence that defines the fixture: sub-WARNING records are NOT captured.'''
+    logging.debug("debug msg")
+    logging.info("info msg")
+
+    assert caplog.records == []
+    assert caplog.text == ""
+
+
 def test_caplog_levels(caplog):
-    '''Test caplog with different levels.'''
+    '''All four levels, once set_level has actually lowered the threshold.'''
+    caplog.set_level(logging.DEBUG)
     logging.debug("debug msg")
     logging.info("info msg")
     logging.warning("warning msg")
@@ -478,6 +495,7 @@ def test_caplog_levels(caplog):
 
 def test_caplog_record_tuples(caplog):
     '''Test caplog.record_tuples.'''
+    caplog.set_level(logging.INFO)
     logging.info("tuple test")
     tuples = caplog.record_tuples
     assert len(tuples) == 1
@@ -488,6 +506,7 @@ def test_caplog_record_tuples(caplog):
 
 def test_caplog_messages(caplog):
     '''Test caplog.messages property.'''
+    caplog.set_level(logging.INFO)
     logging.info("msg1")
     logging.info("msg2")
     assert caplog.messages == ["msg1", "msg2"]
@@ -495,7 +514,7 @@ def test_caplog_messages(caplog):
 
 def test_caplog_clear(caplog):
     '''Test caplog.clear().'''
-    logging.info("before clear")
+    logging.warning("before clear")
     assert len(caplog.records) == 1
 
     caplog.clear()
@@ -530,193 +549,7 @@ def test_caplog_fixture(tmp_path: Path) -> None:
     module_path = tmp_path / "test_caplog_fixture.py"
     _write_caplog_fixture_module(module_path)
 
-    report = run(paths=[str(tmp_path)])
+    report = run_tree(str(tmp_path))
 
-    assert report.total == 7
-    assert report.passed == 7
-
-
-def _write_rustestconfig_module(target: Path) -> None:
-    """Write module testing rustestconfig fixture."""
-    target.write_text(
-        """
-from pathlib import Path
-
-
-def test_rustestconfig_available(rustestconfig):
-    '''Test rustestconfig fixture is available.'''
-    assert rustestconfig is not None
-    assert hasattr(rustestconfig, 'getoption')
-    assert hasattr(rustestconfig, 'getini')
-    assert hasattr(rustestconfig, 'rootpath')
-
-
-def test_rustestconfig_getoption(rustestconfig):
-    '''Test rustestconfig.getoption() with defaults.'''
-    verbose = rustestconfig.getoption("verbose", default=0)
-    assert verbose == 0
-
-    capture = rustestconfig.getoption("capture", default="fd")
-    assert capture == "fd"
-
-    # Test non-existent option
-    custom = rustestconfig.getoption("nonexistent", default="fallback")
-    assert custom == "fallback"
-
-
-def test_rustestconfig_getini(rustestconfig):
-    '''Test rustestconfig.getini() returns expected defaults.'''
-    markers = rustestconfig.getini("markers")
-    assert isinstance(markers, list)
-
-    testpaths = rustestconfig.getini("testpaths")
-    assert isinstance(testpaths, list)
-
-    # String-type ini values
-    minversion = rustestconfig.getini("minversion")
-    assert isinstance(minversion, str)
-
-
-def test_rustestconfig_rootpath(rustestconfig):
-    '''Test rustestconfig.rootpath is a Path.'''
-    assert isinstance(rustestconfig.rootpath, Path)
-    assert rustestconfig.rootpath.exists()
-
-
-def test_rustestconfig_option_namespace(rustestconfig):
-    '''Test rustestconfig.option namespace access.'''
-    assert hasattr(rustestconfig, 'option')
-    # Should be able to access options as attributes
-    verbose = rustestconfig.option.verbose
-    # May be None since we didn't set it
-    assert verbose is None or isinstance(verbose, int)
-
-
-def test_rustestconfig_in_fixture(rustestconfig):
-    '''Test using rustestconfig in a fixture.'''
-    from rustest import fixture
-
-    @fixture
-    def config_dependent(rustestconfig):
-        mode = rustestconfig.getoption("assertmode", default="rewrite")
-        return {"mode": mode}
-
-    # This just tests that the fixture can be defined
-    # Actual execution happens via rustest runner
-    assert config_dependent is not None
-"""
-    )
-
-
-def test_rustestconfig_fixture(tmp_path: Path) -> None:
-    """Test rustestconfig fixture in native mode."""
-    module_path = tmp_path / "test_rustestconfig.py"
-    _write_rustestconfig_module(module_path)
-
-    report = run(paths=[str(tmp_path)])
-
-    assert report.total == 6
-    assert report.passed == 6
-
-
-def _write_pytestconfig_noncompat_module(target: Path) -> None:
-    """Write module testing pytestconfig in non-compat mode (should fail)."""
-    target.write_text(
-        """
-import pytest
-
-
-def test_pytestconfig_raises_in_noncompat(pytestconfig):
-    '''Test that pytestconfig raises RuntimeError in non-compat mode.'''
-    # This should never execute because fixture setup will fail
-    assert False, "Should not reach here"
-"""
-    )
-
-
-def test_pytestconfig_noncompat_mode(tmp_path: Path) -> None:
-    """Test that pytestconfig raises error in non-compat mode."""
-    module_path = tmp_path / "test_pytestconfig_noncompat.py"
-    _write_pytestconfig_noncompat_module(module_path)
-
-    report = run(paths=[str(tmp_path)])
-
-    # Should fail with RuntimeError
-    assert report.total == 1
-    assert report.failed == 1
-    # Check that the error message mentions pytest-compat mode
-    assert len(report.collection_errors) == 0  # Not a collection error, it's a fixture error
-
-
-def _write_pytestconfig_compat_module(target: Path) -> None:
-    """Write module testing pytestconfig in pytest-compat mode."""
-    target.write_text(
-        """
-import pytest
-from pathlib import Path
-
-
-def test_pytestconfig_available(pytestconfig):
-    '''Test pytestconfig fixture is available in compat mode.'''
-    assert pytestconfig is not None
-    assert hasattr(pytestconfig, 'getoption')
-    assert hasattr(pytestconfig, 'getini')
-    assert hasattr(pytestconfig, 'rootpath')
-
-
-def test_pytestconfig_getoption(pytestconfig):
-    '''Test pytestconfig.getoption() works.'''
-    verbose = pytestconfig.getoption("verbose", default=0)
-    assert verbose == 0
-
-    capture = pytestconfig.getoption("capture", default="fd")
-    assert capture == "fd"
-
-
-def test_pytestconfig_getini(pytestconfig):
-    '''Test pytestconfig.getini() works.'''
-    markers = pytestconfig.getini("markers")
-    assert isinstance(markers, list)
-
-
-def test_pytestconfig_rootpath(pytestconfig):
-    '''Test pytestconfig.rootpath is a Path.'''
-    assert isinstance(pytestconfig.rootpath, Path)
-
-
-def test_pytestconfig_pytest_mock_pattern(pytestconfig):
-    '''Test pytest-mock pattern with pytestconfig.'''
-    @pytest.fixture
-    def needs_assert_rewrite(pytestconfig):
-        option = pytestconfig.getoption("assertmode", default="rewrite")
-        if option != "rewrite":
-            pytest.skip("assertion rewrite required")
-        return option
-
-    # This just verifies the pattern compiles
-    assert needs_assert_rewrite is not None
-
-
-def test_both_configs_work(pytestconfig, rustestconfig):
-    '''Test that both pytestconfig and rustestconfig work in compat mode.'''
-    assert pytestconfig is not None
-    assert rustestconfig is not None
-
-    # They should return the same config object
-    verbose_pytest = pytestconfig.getoption("verbose", default=0)
-    verbose_rustest = rustestconfig.getoption("verbose", default=0)
-    assert verbose_pytest == verbose_rustest
-"""
-    )
-
-
-def test_pytestconfig_compat_mode(tmp_path: Path) -> None:
-    """Test pytestconfig fixture in pytest-compat mode."""
-    module_path = tmp_path / "test_pytestconfig_compat.py"
-    _write_pytestconfig_compat_module(module_path)
-
-    # Run with pytest-compat mode enabled
-    report = run(paths=[str(tmp_path)], pytest_compat=True)
-
-    assert report.total == 6
-    assert report.passed == 6
+    assert report.total == 8
+    assert report.passed == 8
