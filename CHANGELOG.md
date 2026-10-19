@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Linux aarch64 wheels**: the publish workflow now builds `manylinux` and `musllinux` wheels for aarch64 (on an arm runner) and `musllinux` wheels for x86_64, so `pip install rustest` no longer falls back to a source build in aarch64 Linux containers such as Docker on Apple Silicon.
+
 ## [0.18.0] - 2026-07-24
 
 ### Added

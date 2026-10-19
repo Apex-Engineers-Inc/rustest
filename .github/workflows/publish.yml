@@ -49,13 +49,31 @@ jobs:
           fi
 
   build-wheels:
-    name: Build wheels on ${{ matrix.os }}
+    name: Build ${{ matrix.name }} wheels
     needs: check-version
     if: needs.check-version.outputs.should_publish == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            manylinux: auto
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            manylinux: auto
+          - name: musllinux-x86_64
+            os: ubuntu-latest
+            manylinux: musllinux_1_2
+          - name: musllinux-aarch64
+            os: ubuntu-24.04-arm
+            manylinux: musllinux_1_2
+          - name: windows
+            os: windows-latest
+            manylinux: auto
+          - name: macos
+            os: macos-latest
+            manylinux: auto
     steps:
       - uses: actions/checkout@v4
 
@@ -63,12 +81,12 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
-          manylinux: auto
+          manylinux: ${{ matrix.manylinux }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
+          name: wheels-${{ matrix.name }}
           path: dist
 
   build-sdist:

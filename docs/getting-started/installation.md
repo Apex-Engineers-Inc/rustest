@@ -18,6 +18,14 @@ If you're using [uv](https://github.com/astral-sh/uv), you can add rustest to yo
 uv add rustest
 ```
 
+## Platforms
+
+Prebuilt wheels are published for Linux (x86_64 and aarch64, `manylinux` and
+`musllinux`), macOS arm64 and Windows amd64. On any other platform, or for a Python
+version without a wheel, pip falls back to building the source distribution, which needs a
+C compiler and a Rust toolchain (for example `build-essential` and [rustup](https://rustup.rs)
+in a Debian-based container).
+
 ## Verifying Installation
 
 After installation, verify that rustest is working correctly:
