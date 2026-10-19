@@ -149,7 +149,6 @@ def database(request):
 - `request.node.parent` - Always None
 - `request.node.session` - Always None
 - `request.function`, `request.cls`, `request.module` - Always None
-- `request.addfinalizer()` - Not supported (use fixture yield instead)
 
 ### Partial Support
 
@@ -278,7 +277,6 @@ Use this checklist to assess your pytest suite's compatibility:
 
 - [ ] Heavy use of pytest plugins (pytest-django, etc.)
 - [ ] Custom pytest hooks (pytest_configure, etc.)
-- [ ] Uses `request.addfinalizer()`
 - [ ] Relies on pytest internals
 - [ ] Custom collectors or test generation
 
@@ -375,24 +373,29 @@ def my_fixture(other_fixture):  # Direct parameter
     return setup(other_fixture)
 ```
 
-### "request.addfinalizer() not supported"
+### Using request.addfinalizer()
 
-Use fixture teardown with yield:
+`request.addfinalizer()` is supported. Finalizers run last in, first out when the
+fixture's scope ends, together with any `yield` teardown. If one raises, the
+remaining finalizers still run and the failure is reported as a teardown error.
+Yield-based teardown remains the simpler option for new code:
 
 ```python
-# Before
 @pytest.fixture
 def my_fixture(request):
     resource = setup()
     request.addfinalizer(lambda: cleanup(resource))
     return resource
+```
 
-# After
+`request.fixturenames` lists the fixtures in effect for the current test, which
+is useful for checking whether a test also requested another fixture:
+
+```python
 @pytest.fixture
-def my_fixture():
-    resource = setup()
-    yield resource
-    cleanup(resource)
+def db(request):
+    if "transactional_db" in request.fixturenames:
+        ...
 ```
 
 ### Tests hang with @mark.asyncio

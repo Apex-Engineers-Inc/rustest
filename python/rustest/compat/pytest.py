@@ -46,6 +46,7 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, Callable, TypeVar, TypedDict, cast
 
 try:
@@ -372,12 +373,16 @@ class _PluginManagerStub:
         return "<PluginManager (stub)>"
 
 
+class FinalizerError(RuntimeError):
+    """Raised during teardown when a ``request.addfinalizer`` callback fails."""
+
+
 class FixtureRequest:
     """Pytest-compatible FixtureRequest for fixture parametrization.
 
-    Supports: param, scope, node, config, getfixturevalue().
-    Not implemented: function, cls, module, fixturename (always None),
-    addfinalizer() (raises NotImplementedError).
+    Supports: param, scope, node, config, fixturenames, getfixturevalue(),
+    addfinalizer().
+    Not implemented: function, cls, module, fixturename (always None).
     """
 
     def __init__(
@@ -387,6 +392,7 @@ class FixtureRequest:
         nodeid: str | None = None,
         node_markers: list[MarkerDict] | None = None,
         config_options: dict[str, Any] | None = None,
+        fixturenames: list[str] | None = None,
     ) -> None:
         """Initialize a FixtureRequest.
 
@@ -396,9 +402,12 @@ class FixtureRequest:
             nodeid: Fully-qualified identifier for the current test node
             node_markers: List of markers applied to the node
             config_options: Dictionary of configuration options
+            fixturenames: Names of the fixtures in effect for the current test
         """
         super().__init__()
         self.param: Any = param
+        self.fixturenames: list[str] = list(fixturenames) if fixturenames else []
+        self._finalizers: list[Callable[[], Any]] = []
         self.fixturename: str | None = None
         self.scope: str = "function"
 
@@ -420,21 +429,31 @@ class FixtureRequest:
         # Cache for executed fixtures (per-test)
         self._executed_fixtures: dict[str, Any] = {}
 
-    def addfinalizer(self, finalizer: Callable[[], None]) -> None:
-        """Not supported — use yield-based fixture teardown instead. Always raises NotImplementedError."""
-        msg = (
-            "request.addfinalizer() is not supported in rustest pytest-compat mode.\n"
-            "\n"
-            "Workaround: Use fixture teardown with yield:\n"
-            "  @pytest.fixture\n"
-            "  def my_fixture():\n"
-            "      resource = setup()\n"
-            "      yield resource\n"
-            "      teardown(resource)  # Runs after test\n"
-            "\n"
-            "For full pytest features, use pytest directly or migrate to native rustest."
-        )
-        raise NotImplementedError(msg)
+    def addfinalizer(self, finalizer: Callable[[], Any]) -> None:
+        """Register a callable to run when the requesting fixture's scope ends.
+
+        Finalizers run last-in first-out, together with the fixture's yield
+        teardown. If a finalizer raises, the remaining ones still run and the
+        failure is reported as a teardown error.
+        """
+        self._finalizers.append(finalizer)
+
+    def _teardown_generator(self) -> Iterator[None]:
+        """Generator handed to the runner so finalizers run like yield teardown."""
+        errors: list[BaseException] = []
+        while self._finalizers:
+            finalizer = self._finalizers.pop()
+            try:
+                finalizer()
+            except Exception as exc:  # noqa: BLE001 - keep running the others
+                errors.append(exc)
+        if errors:
+            details = "; ".join(f"{type(exc).__name__}: {exc}" for exc in errors)
+            raise FinalizerError(
+                f"error in request.addfinalizer() callback: {details}"
+            ) from errors[0]
+        return
+        yield  # pragma: no cover - makes this function a generator
 
     def getfixturevalue(self, name: str) -> Any:
         """Get the value of another fixture by name, resolving dependencies recursively."""

@@ -216,6 +216,8 @@ rustest -m "(slow or fast) and not integration"
 - `request.config.getoption(name)` — Get CLI option
 - `request.config.getini(name)` — Get config value
 - `request.config.option` — Access option namespace
+- `request.fixturenames` — Names of the fixtures in effect for the current test
+- `request.addfinalizer(fn)` — Register teardown that runs (last in, first out) when the fixture's scope ends
 
 **What doesn't work:**
 

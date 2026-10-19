@@ -871,6 +871,7 @@ fn run_async_batch<'a>(
             test_display_name,
             test_nodeid,
             test_marks.clone(),
+            test.parameters.clone(),
             module.has_pytest_fixtures,
         );
 
@@ -1533,6 +1534,7 @@ fn execute_test_case(
         test_display_name,
         test_nodeid,
         test_marks.clone(),
+        test_case.parameters.clone(),
         module.has_pytest_fixtures,
     );
 
@@ -1665,13 +1667,29 @@ fn execute_test_case(
     let event_loop = resolver
         .get_test_scope_event_loop()
         .map(|l| l.clone_ref(py));
-    finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
+    let teardown_errors =
+        finalize_generators_collect(py, &mut resolver.function_teardowns, event_loop.as_ref());
+    let mut finalizer_failure: Option<String> = None;
+    for err in &teardown_errors {
+        if is_finalizer_error(py, err) {
+            finalizer_failure
+                .get_or_insert_with(|| format_pyerr(py, err).unwrap_or_else(|_| err.to_string()));
+        } else {
+            eprintln!("Warning: Error during fixture teardown: {}", err);
+        }
+    }
 
     // Close the function-scoped event loop to release async resources (DB connections,
     // sockets, etc.) immediately rather than leaking them until GC runs.
     close_event_loop(py, &mut resolver.function_event_loop);
 
     match result {
+        // A failing finalizer turns an otherwise passing test into a teardown error.
+        Ok(_) if finalizer_failure.is_some() => Err(TestCallFailure {
+            message: finalizer_failure.unwrap_or_default(),
+            stdout,
+            stderr,
+        }),
         Ok(_) => Ok(TestCallSuccess { stdout, stderr }),
         Err(err) => {
             let message = format_pyerr(py, &err).unwrap_or_else(|_| err.to_string());
@@ -1730,6 +1748,8 @@ struct FixtureResolver<'py> {
     test_nodeid: String,
     /// Marks attached to the current test
     test_marks: Vec<Mark>,
+    /// Argument names of the current test function (for request.fixturenames)
+    test_parameters: Vec<String>,
     /// True when the module or any conftest file in its ancestor chain contains
     /// @pytest.fixture definitions. Used to enrich "Unknown fixture" error messages.
     has_pytest_fixtures: bool,
@@ -1757,6 +1777,7 @@ impl<'py> FixtureResolver<'py> {
         test_display_name: String,
         test_nodeid: String,
         test_marks: Vec<Mark>,
+        test_parameters: Vec<String>,
         has_pytest_fixtures: bool,
     ) -> Self {
         Self {
@@ -1785,6 +1806,7 @@ impl<'py> FixtureResolver<'py> {
             test_display_name,
             test_nodeid,
             test_marks,
+            test_parameters,
             has_pytest_fixtures,
         }
     }
@@ -1810,7 +1832,13 @@ impl<'py> FixtureResolver<'py> {
     fn resolve_fixture_value(&mut self, name: &str) -> PyResult<Py<PyAny>> {
         // Special handling for "request" fixture - create with current param value
         if name == "request" {
-            return self.create_request_fixture();
+            let request = self.create_request_fixture()?;
+            // A request handed straight to the test (not to a fixture) finalizes
+            // together with the function-scoped fixtures.
+            if self.stack.is_empty() {
+                self.register_request_finalizers(&request, FixtureScope::Function)?;
+            }
+            return Ok(request);
         }
 
         // Check if this is a parametrized fixture and get the cache key
@@ -1908,6 +1936,15 @@ impl<'py> FixtureResolver<'py> {
         for param in fixture.parameters.iter() {
             let value = self.resolve_argument(param)?;
             args.push(value);
+        }
+
+        // Requests handed to this fixture finalize with the fixture's own scope.
+        // They are registered after the dependencies (so those tear down later)
+        // and before the fixture body (so they run after its yield teardown).
+        for (param, value) in fixture.parameters.iter().zip(args.iter()) {
+            if param == "request" {
+                self.register_request_finalizers(value, fixture.scope)?;
+            }
         }
 
         // Execute the fixture
@@ -2046,6 +2083,26 @@ impl<'py> FixtureResolver<'py> {
         }
 
         Ok(result)
+    }
+
+    /// Queue the `request.addfinalizer()` callbacks of `request` so they run
+    /// (LIFO) when `scope` ends, alongside generator fixture teardowns.
+    fn register_request_finalizers(
+        &mut self,
+        request: &Py<PyAny>,
+        scope: FixtureScope,
+    ) -> PyResult<()> {
+        let request = request.bind(self.py);
+        request.setattr("scope", scope_to_string(&scope))?;
+        let teardown = request.call_method0("_teardown_generator")?.unbind();
+        match scope {
+            FixtureScope::Session => self.teardowns.session.push(teardown),
+            FixtureScope::Package => self.teardowns.package.push(teardown),
+            FixtureScope::Module => self.teardowns.module.push(teardown),
+            FixtureScope::Class => self.teardowns.class.push(teardown),
+            FixtureScope::Function => self.function_teardowns.push(teardown),
+        }
+        Ok(())
     }
 
     fn resolve_for_request(&mut self, name: &str) -> PyResult<Py<PyAny>> {
@@ -2237,9 +2294,53 @@ impl<'py> FixtureResolver<'py> {
         kwargs.set_item("node_name", &self.test_display_name)?;
         kwargs.set_item("nodeid", &self.test_nodeid)?;
         kwargs.set_item("node_markers", self.build_marker_list()?)?;
+        kwargs.set_item("fixturenames", self.fixture_closure()?)?;
         let request = fixture_request_class.call((), Some(&kwargs))?;
 
         Ok(request.unbind())
+    }
+
+    /// Names of every fixture in effect for the current test: autouse fixtures,
+    /// `usefixtures` marks and the test arguments, plus all of their transitive
+    /// dependencies, without duplicates.
+    fn fixture_closure(&self) -> PyResult<Vec<String>> {
+        let mut roots: Vec<String> = self
+            .fixtures
+            .iter()
+            .filter(|(_, fixture)| {
+                fixture.autouse
+                    && match (&fixture.class_name, self.test_class_name) {
+                        (Some(fixture_class), Some(test_class)) => {
+                            fixture_class.as_str() == test_class
+                        }
+                        (None, _) => true,
+                        (Some(_), None) => false,
+                    }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        roots.sort_by_key(|name| std::cmp::Reverse(self.fixtures[name].scope));
+
+        for mark in self.test_marks.iter().filter(|m| m.is_named("usefixtures")) {
+            for item in mark.args.bind(self.py).iter() {
+                roots.push(item.extract()?);
+            }
+        }
+        roots.extend(self.test_parameters.iter().cloned());
+
+        let mut names: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut pending: Vec<String> = roots.into_iter().rev().collect();
+        while let Some(name) = pending.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            names.push(name.clone());
+            if let Some(fixture) = self.fixtures.get(&name) {
+                pending.extend(fixture.parameters.iter().rev().cloned());
+            }
+        }
+        Ok(names)
     }
 
     fn build_marker_list(&self) -> PyResult<Py<PyList>> {
@@ -2451,6 +2552,20 @@ fn finalize_generators(
     generators: &mut Vec<Py<PyAny>>,
     event_loop: Option<&Py<PyAny>>,
 ) {
+    for err in finalize_generators_collect(py, generators, event_loop) {
+        // In pytest, teardown errors are collected but don't stop other teardowns
+        // from running; callers without a test to attach them to just warn.
+        eprintln!("Warning: Error during fixture teardown: {}", err);
+    }
+}
+
+/// Like [`finalize_generators`], but returns the teardown errors instead of printing them.
+fn finalize_generators_collect(
+    py: Python<'_>,
+    generators: &mut Vec<Py<PyAny>>,
+    event_loop: Option<&Py<PyAny>>,
+) -> Vec<PyErr> {
+    let mut errors = Vec::new();
     // Process generators in reverse order (LIFO) to match pytest behavior
     for generator in generators.drain(..).rev() {
         let gen_bound = generator.bind(py);
@@ -2490,13 +2605,19 @@ fn finalize_generators(
             if !err.is_instance_of::<pyo3::exceptions::PyStopIteration>(py)
                 && !err.is_instance_of::<pyo3::exceptions::PyStopAsyncIteration>(py)
             {
-                // For other exceptions, we could log them, but for now we'll ignore
-                // to avoid breaking the test run. In pytest, teardown errors are collected
-                // but don't stop other teardowns from running.
-                eprintln!("Warning: Error during fixture teardown: {}", err);
+                errors.push(err);
             }
         }
     }
+    errors
+}
+
+/// Whether a teardown error came from a failing `request.addfinalizer()` callback.
+fn is_finalizer_error(py: Python<'_>, err: &PyErr) -> bool {
+    err.get_type(py)
+        .name()
+        .map(|name| name == "FinalizerError")
+        .unwrap_or(false)
 }
 
 /// Write the cache of failed tests for the --lf and --ff options.

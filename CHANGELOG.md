@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pytest Compatibility - `request.fixturenames` and `request.addfinalizer()`**: `FixtureRequest` now exposes the names of the fixtures in effect for the current test, and `addfinalizer()` registers teardown callables that run last-in first-out when the fixture's scope ends, alongside yield-fixture teardown
+  - A failing finalizer fails the test with a teardown error; the remaining finalizers still run
+
 ## [0.18.0] - 2026-07-24
 
 ### Added

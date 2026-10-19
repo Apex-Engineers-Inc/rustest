@@ -326,13 +326,14 @@ def request() -> Any:
 
     **Supported:**
         - request.param: Current parameter value for parametrized fixtures
-        - request.scope: Returns "function"
+        - request.scope: Scope of the requesting fixture
+        - request.fixturenames: Names of the fixtures in effect for the test
+        - request.addfinalizer(fn): Teardown callable run when the scope ends
         - Type annotations: request: pytest.FixtureRequest
 
     **Not supported (returns None or raises NotImplementedError):**
         - request.node, function, cls, module, config
         - request.fixturename
-        - Methods: addfinalizer(), getfixturevalue()
 
     Example:
         @fixture(params=[1, 2, 3])
