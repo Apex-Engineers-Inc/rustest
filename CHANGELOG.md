@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Class-level and module-level marks now apply to test methods**: marks on a test class (`@mark.django_db`) and a module-level `pytestmark` (single mark or list) are merged into each test's marks, so `request.node.get_closest_marker(...)` and `-m` expressions see them. Marks closest to the test win (method, then class, then module).
+
 ## [0.18.0] - 2026-07-24
 
 ### Added

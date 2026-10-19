@@ -723,6 +723,11 @@ class MarkGenerator:
             def __init__(self, mark_name: str) -> None:
                 super().__init__()
                 self.mark_name = mark_name
+                # Expose the same shape as MarkDecorator so a bare `mark.name`
+                # can be used as a module-level `pytestmark` entry.
+                self.name = mark_name
+                self.args: tuple[Any, ...] = ()
+                self.kwargs: dict[str, Any] = {}
 
             def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 # If called with a single argument that's a function, it's @mark.name

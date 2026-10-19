@@ -875,8 +875,19 @@ fn collect_from_file(
     let module = load_python_module(py, path, &module_name, package_name.as_deref())?;
     let module_dict: Bound<'_, PyDict> = module.getattr("__dict__")?.cast_into()?;
 
-    let (module_fixtures, tests, pytest_names) =
+    let (module_fixtures, mut tests, pytest_names) =
         inspect_module(py, path, &module_dict, config.pytest_compat)?;
+
+    // Module-level `pytestmark` applies to every test in the module. Module marks are
+    // the outermost, so they go first and the test's own marks stay closest.
+    let module_marks = collect_module_marks(&module_dict)?;
+    if !module_marks.is_empty() {
+        for test in &mut tests {
+            let own_marks = std::mem::take(&mut test.marks);
+            test.marks = module_marks.clone();
+            test.marks.extend(own_marks);
+        }
+    }
 
     // Propagate any detected @pytest.fixture names to the caller for warning emission.
     // Check whether this module itself or any conftest in its ancestor chain has pytest
@@ -1568,6 +1579,13 @@ fn discover_plain_class_tests_and_fixtures(
     let class_param_cases = collect_parametrization(py, cls)?;
     let class_indirect_params = extract_indirect_params(cls)?;
 
+    // Marks applied to the class itself apply to every test method in it
+    // (`asyncio` is skipped: its decorator already copies the mark onto async methods)
+    let class_marks: Vec<Mark> = collect_marks(cls)?
+        .into_iter()
+        .filter(|mark| !mark.is_named("asyncio"))
+        .collect();
+
     // Process all members
     let members = inspect.call_method1("getmembers", (cls,))?;
 
@@ -1647,7 +1665,9 @@ fn discover_plain_class_tests_and_fixtures(
                 skip_reason = check_for_rustest_mark_skip(&method)?;
             }
 
-            let marks = collect_marks(&method)?;
+            // Class marks come first so that the method's own marks are the closest
+            let mut marks = class_marks.clone();
+            marks.extend(collect_marks(&method)?);
             let method_param_cases = collect_parametrization(py, &method)?;
             let method_indirect_params = extract_indirect_params(&method)?;
 
@@ -2364,6 +2384,40 @@ fn collect_marks(value: &Bound<'_, PyAny>) -> PyResult<Vec<Mark>> {
         let kwargs: Py<PyDict> = kwargs.extract()?;
 
         marks.push(Mark::new(name, args, kwargs));
+    }
+    Ok(marks)
+}
+
+/// Collect marks declared through a module-level `pytestmark` (a single mark or a
+/// list/tuple of marks).
+fn collect_module_marks(module_dict: &Bound<'_, PyDict>) -> PyResult<Vec<Mark>> {
+    let Some(pytestmark) = module_dict.get_item("pytestmark")? else {
+        return Ok(Vec::new());
+    };
+    let py = module_dict.py();
+    let items: Vec<Bound<'_, PyAny>> =
+        if pytestmark.is_instance_of::<PyList>() || pytestmark.is_instance_of::<PyTuple>() {
+            pytestmark.try_iter()?.collect::<PyResult<_>>()?
+        } else {
+            vec![pytestmark]
+        };
+
+    let mut marks = Vec::new();
+    for item in items {
+        let Ok(name) = item.getattr("name").and_then(|n| n.extract::<String>()) else {
+            continue;
+        };
+        let args = match item.getattr("args") {
+            Ok(args) => PyList::new(py, args.try_iter()?.collect::<PyResult<Vec<_>>>()?)?,
+            Err(_) => PyList::empty(py),
+        };
+        let kwargs = match item.getattr("kwargs") {
+            Ok(kwargs) => kwargs
+                .cast_into::<PyDict>()
+                .unwrap_or_else(|_| PyDict::new(py)),
+            Err(_) => PyDict::new(py),
+        };
+        marks.push(Mark::new(name, args.unbind(), kwargs.unbind()));
     }
     Ok(marks)
 }
