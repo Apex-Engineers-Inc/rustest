@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pytest Compatibility - Async Fixtures**: Removed the stale hint claiming `--pytest-compat` may not support async fixtures, and corrected the docs to state that `pytest_asyncio.fixture` is available under `--pytest-compat` as an alias of `rustest.fixture`
+
 ## [0.18.0] - 2026-07-24
 
 ### Added

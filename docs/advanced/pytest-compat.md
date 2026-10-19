@@ -161,7 +161,7 @@ def database(request):
 
 ⚠️ **Async support** - Built-in @mark.asyncio works differently
 - No event_loop fixture
-- No pytest_asyncio.fixture
+- `pytest_asyncio.fixture` is available under `--pytest-compat` as an alias of `rustest.fixture` (async and async generator fixtures work natively)
 - Auto mode (`asyncio_mode = "auto"`) not supported
 - Use rustest's `@mark.asyncio` decorator
 - `asyncio_default_test_loop_scope` and `asyncio_default_fixture_loop_scope` are read from `pyproject.toml` `[tool.pytest.ini_options]`

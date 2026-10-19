@@ -266,7 +266,7 @@ async def test_parametrized_async(value):
 **Limitations**:
 
 - Event loop fixture (`event_loop`) is not available
-- Cannot use `pytest_asyncio.fixture` for async fixtures (use regular fixtures with async functions)
+- `pytest_asyncio.fixture` is only importable under `--pytest-compat` (where it is an alias of `rustest.fixture`); otherwise use `@fixture` on async functions
 - Auto mode (`asyncio_mode = "auto"`) is not supported
 
 **Async fixtures**:
