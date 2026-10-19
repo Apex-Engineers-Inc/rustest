@@ -1654,7 +1654,7 @@ fn execute_test_case(
             finalize_generators(py, &mut resolver.function_teardowns, event_loop.as_ref());
             close_event_loop(py, &mut resolver.function_event_loop);
             return Err(TestCallFailure {
-                message: err.to_string(),
+                message: unittest_skip_message(py, &err).unwrap_or_else(|| err.to_string()),
                 stdout: None,
                 stderr: None,
             });
@@ -2308,10 +2308,31 @@ where
     Ok((result, stdout, stderr))
 }
 
+/// If `err` is a `unittest.SkipTest` (or a subclass), return a message in the
+/// `Skipped: <reason>` form understood by [`is_skip_exception`].
+///
+/// The check is done on the exception type rather than the formatted traceback so
+/// that subclasses are recognised and unrelated text mentioning "SkipTest" is not.
+fn unittest_skip_message(py: Python<'_>, err: &PyErr) -> Option<String> {
+    let skip_test = py.import("unittest").ok()?.getattr("SkipTest").ok()?;
+    if !err.value(py).is_instance(&skip_test).unwrap_or(false) {
+        return None;
+    }
+    let reason = err
+        .value(py)
+        .str()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    Some(format!("Skipped: {}", reason))
+}
+
 /// Format a Python exception using `traceback.format_exception`.
 /// For AssertionErrors, also attempts to extract the actual vs expected values
 /// from the local scope.
 fn format_pyerr(py: Python<'_>, err: &PyErr) -> PyResult<String> {
+    if let Some(message) = unittest_skip_message(py, err) {
+        return Ok(message);
+    }
     let traceback = py.import("traceback")?;
     let exc_type: Py<PyAny> = err.get_type(py).unbind().into();
     let exc_value: Py<PyAny> = err.value(py).clone().unbind().into();

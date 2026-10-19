@@ -33,7 +33,7 @@ That's it! Your existing pytest tests will run with rustest's performance benefi
 ### Functions
 
 - ✅ `pytest.raises()` - Exception assertions
-- ✅ `pytest.skip()` - Dynamic test skipping
+- ✅ `pytest.skip()` - Dynamic test skipping (raising `unittest.SkipTest` also skips)
 - ✅ `pytest.xfail()` - Mark test as expected to fail
 - ✅ `pytest.fail()` - Explicitly fail a test
 - ✅ `pytest.approx()` - Floating-point comparisons

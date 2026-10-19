@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`unittest.SkipTest` is reported as skipped**: a test or fixture that raises `unittest.SkipTest` (or a subclass), as Django's `skipIfDBFeature` does, is now reported as skipped with the exception message as the reason, instead of failed
+
 ## [0.18.0] - 2026-07-24
 
 ### Added
