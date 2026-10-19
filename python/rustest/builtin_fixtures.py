@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import itertools
 import os
 import shutil
@@ -56,6 +57,40 @@ class _NotSet:
 _NOT_SET = _NotSet()
 
 
+def _resolve_dotted_path(path: str) -> object:
+    """Import the longest importable prefix of ``path`` and getattr the rest."""
+    parts = path.split(".")
+    obj: object | None = None
+    used = 0
+    for end in range(len(parts), 0, -1):
+        module_name = ".".join(parts[:end])
+        try:
+            obj = importlib.import_module(module_name)
+        except ImportError as exc:
+            # Only skip when the module itself (or a parent) is missing; a broken
+            # import inside an existing module should surface.
+            missing = exc.name
+            if (
+                isinstance(exc, ModuleNotFoundError)
+                and missing is not None
+                and (module_name == missing or module_name.startswith(missing + "."))
+            ):
+                continue
+            raise
+        used = end
+        break
+    if used == 0:
+        raise ImportError(f"could not import any module from {path!r}")
+    for part in parts[used:]:
+        try:
+            obj = getattr(obj, part)
+        except AttributeError:
+            raise AttributeError(
+                f"could not resolve {path!r}: {part!r} not found on {obj!r}"
+            ) from None
+    return obj
+
+
 class MonkeyPatch:
     """Lightweight re-implementation of :class:`pytest.MonkeyPatch`."""
 
@@ -92,9 +127,8 @@ class MonkeyPatch:
                     f"setattr() with dotted path requires at least one dot: {target!r}. "
                     + "Use setattr(target_object, 'name', value) or setattr('module.attr', value)"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
+            owner_path, attr_name = target.rsplit(".", 1)
+            obj = _resolve_dotted_path(owner_path)
             attr_value = name
             if attr_value is _NOT_SET:
                 raise TypeError("value must be provided when using dotted path syntax")
@@ -109,6 +143,9 @@ class MonkeyPatch:
         original = getattr(obj, attr_name, _NOT_SET)
         if original is _NOT_SET and raising:
             raise AttributeError(f"{attr_name!r} not found for patching")
+        if inspect.isclass(obj):
+            # Keep the raw descriptor (classmethod/staticmethod) so undo restores it as-is.
+            original = obj.__dict__.get(attr_name, _NOT_SET)
 
         setattr(obj, attr_name, attr_value)
         self._setattrs.append((obj, attr_name, original))
@@ -122,10 +159,8 @@ class MonkeyPatch:
                     f"delattr() with dotted path requires at least one dot: {target!r}. "
                     + "Use delattr(target_object, 'name') or delattr('module.attr')"
                 )
-            module_path, attr_name = target.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            obj = module
-            attr_name = attr_name
+            owner_path, attr_name = target.rsplit(".", 1)
+            obj = _resolve_dotted_path(owner_path)
         else:
             if not isinstance(name, str):
                 raise TypeError("attribute name must be a string")
@@ -137,6 +172,8 @@ class MonkeyPatch:
             if raising:
                 raise AttributeError(f"{attr_name!r} not found for deletion")
             return
+        if inspect.isclass(obj):
+            original = obj.__dict__.get(attr_name, _NOT_SET)
 
         delattr(obj, attr_name)
         self._setattrs.append((obj, attr_name, original))

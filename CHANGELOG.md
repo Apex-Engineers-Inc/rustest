@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`monkeypatch` string paths through classes**: `monkeypatch.setattr("pathlib.Path.home", fn)` and `monkeypatch.delattr("pkg.mod.Class.attr")` no longer raise `ModuleNotFoundError`. The target is resolved like pytest does: the longest importable module prefix is imported and the remaining parts are looked up with `getattr`, so class and nested-class paths work. Patching a class attribute now also restores the original `classmethod`/`staticmethod` object on undo instead of a bound copy. (#151)
+
 ## [0.18.0] - 2026-07-24
 
 ### Added
