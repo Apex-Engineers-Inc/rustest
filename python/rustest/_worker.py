@@ -281,7 +281,11 @@ __all__ = [
 #: v8 adds ``bye.hooks`` — the ``pytest_*`` callables this worker found in the conftest and
 #: ``pytest_plugins`` modules it loaded (:func:`unrun_hooks`).  Absent when there are none, so
 #: an ordinary ``bye`` line is byte-identical to v7's.
-PROTOCOL_VERSION: Final = 8
+#:
+#: v9 makes every ``execute_batch`` one **module instance**: :func:`execute_batch` tears
+#: module scope down before its first test even when the file is the previous batch's, as
+#: pytest does on reaching a different ``Module`` object of the same file.
+PROTOCOL_VERSION: Final = 9
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -2836,6 +2840,16 @@ class FixtureRunner:
         if path != self._current_module:
             self.teardown("module")
         self._current_module = path
+
+    def start_module_instance(self) -> None:
+        """Make the next test's :meth:`note_module_boundary` a boundary whatever its file.
+
+        A batch is one module instance (protocol v9), and pytest builds a fresh one each time
+        it reaches a different ``Module`` object — including the same file again, as in
+        ``a.py b.py a.py`` or ``a.py a.py``.  The teardown itself still runs from
+        :func:`drain_boundaries`, so a failure in it is attributed exactly as before.
+        """
+        self._current_module = None
 
     def _resolve_active(
         self,
@@ -6540,7 +6554,7 @@ def execute_batch(
     emit: Callable[[Mapping[str, object]], None],
     max_fail: int | None = None,
 ) -> BatchDoneResponse:
-    """Run a whole file's tests, emitting one ``test_result`` each, then ``batch_done``.
+    """Run one module instance's tests, emitting one ``test_result`` each, then ``batch_done``.
 
     The results are *streamed* — :func:`main`'s ``emit`` is called per test rather than a
     list being returned — so the orchestrator can start reading before the batch finishes,
@@ -6563,6 +6577,7 @@ def execute_batch(
     single ``execute_test``: an id this worker never collected is a routing bug, and the
     results already emitted stay on the wire for the orchestrator to keep.
     """
+    _execution_runner().start_module_instance()
     executed = 0
     stopped = False
     failures = 0

@@ -98,7 +98,13 @@ use serde::{Deserialize, Serialize};
 /// `pytest_plugins` modules it loaded, which the engine does not run. The orchestrator
 /// dedupes them across the pool and says so once on stderr. Omitted when empty, so an
 /// ordinary `bye` line is byte-identical to v7's.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// **v9** changes what an `execute_batch` *means*, not its shape: a batch is one **module
+/// instance**, and the worker tears module scope down before its first test even when the
+/// file is the one the previous batch ran.  The orchestrator now cuts batches in selection
+/// order (`a.py b.py a.py`, interleaved node ids), so two batches of one file reach a worker,
+/// and a v8 worker would silently share one module fixture across both where pytest builds
+/// it twice.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The `--cov` instruction carried on [`WorkerRequest::Init`].
 ///
@@ -240,7 +246,7 @@ pub enum WorkerRequest {
     /// qualname.  The orchestrator already holds ids from collection; re-deriving one
     /// worker-side would be a second implementation of the nodeid rules, free to diverge.
     ExecuteTest { id: String },
-    /// Execute a **whole file's** collected tests in one request.
+    /// Execute one **module instance's** selected tests in one request.
     ///
     /// The worker answers one [`WorkerResponse::TestResult`] per executed id, in the order
     /// they were sent, and terminates the stream with [`WorkerResponse::BatchDone`]. The
@@ -252,12 +258,12 @@ pub enum WorkerRequest {
     /// `execute_test` round trip cost ~160 µs of orchestrator time against ~20 µs of actual
     /// in-worker execution: two pipe writes and a blocking line read per test, on a platform
     /// where each of those is a syscall through whatever filter driver is installed. Batching
-    /// a file's tests collapses that to one write and one drain per *file*.
+    /// a module's tests collapses that to one write and one drain per *module*.
     ///
-    /// **The batch is one file, never more.** `_worker.py` detects module and class
-    /// boundaries by comparing consecutive tests' files, so a batch spanning two files would
-    /// tear down and rebuild module-scoped fixtures inside a single request — the ordering
-    /// contract `src/engine/execute.rs` documents under "Dispatch order: grouped by file".
+    /// **The batch is one module instance, never more** (v9).  The worker starts each batch
+    /// with module scope torn down, as pytest does on reaching a different module object, so
+    /// `a.py b.py a.py` builds `a.py`'s module fixtures twice — see "Dispatch order" in
+    /// `src/engine/execute.rs`.
     ///
     /// `stop_on_failure` carries `-x` **into** the batch. Without it, `-x` would degrade from
     /// "nothing runs after the first failure" to "nothing runs after the failing file", which
@@ -433,9 +439,9 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -536,7 +542,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -748,7 +754,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":8}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":9}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;

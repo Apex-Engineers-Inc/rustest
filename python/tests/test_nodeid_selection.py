@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -73,6 +74,32 @@ FILES = {
     ),
     "odd/notes.dat": "x\n",
     "odd/notes.txt": "x\n",
+    # Every module instance and every test writes itself to `order.log`, so the comparison
+    # covers what actually ran and in which order -- not just the report.
+    "conftest.py": """\
+import pathlib
+
+import pytest
+
+LOG = pathlib.Path(__file__).with_name("order.log")
+
+
+def note(text):
+    with LOG.open("a", encoding="utf-8") as log:
+        log.write(text + "\\n")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def module_instance(request):
+    note("setup " + request.path.name)
+    yield
+    note("teardown " + request.path.name)
+
+
+@pytest.fixture(autouse=True)
+def each_test(request):
+    note(request.node.nodeid)
+""",
 }
 
 #: ``(args, message_difference)``.  The second element names a known, deliberate difference
@@ -113,6 +140,13 @@ CASES: list[tuple[str, tuple[str, str] | None]] = [
     ("sub/test_n.py::test_a sub/test_n.py sub/test_n.py::test_a", None),
     ("sub test_m.py sub/test_n.py::test_a", None),
     ("sub/test_n.py::test_z test_m.py::test_b sub/test_n.py::test_a", None),
+    # Plain paths follow the same cache (`. x` drops `.`), and a file named twice is two
+    # module instances: its module fixture is built twice.
+    ("test_m.py sub/test_n.py test_m.py", None),
+    ("sub/test_n.py sub/test_n.py", None),
+    (". sub", None),
+    ("sub .", None),
+    (". test_m.py", None),
     # --- shapes ---
     ("test_m.py::TestC::test_q", None),
     ("test_nest.py::TestOuter", None),
@@ -133,6 +167,7 @@ CASES: list[tuple[str, tuple[str, str] | None]] = [
     ("test_m.py::test_a odd/broken.py", None),
     # --- options ---
     ("-x test_m.py::test_b test_m.py::test_a", None),
+    ("-x sub/test_n.py::test_z test_m.py::test_b sub/test_n.py::test_a", None),
     ("-m slow test_m.py::test_a", None),
     ("-k test_q test_m.py::TestC", None),
 ]
@@ -160,9 +195,11 @@ def _pytest(
 
 
 def _rustest(tree: Path, args: list[str]) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """One worker, so ``order.log`` is a single sequence like pytest's."""
     report = tree / "report.json"
     report.unlink(missing_ok=True)
-    proc = run([sys.executable, "-m", "rustest", *args, "--report-json", str(report)], tree, _env())
+    argv = [sys.executable, "-m", "rustest", "-n", "1", *args, "--report-json", str(report)]
+    proc = run(argv, tree, _env())
     if not report.exists():
         return proc, []
     payload: dict[str, list[dict[str, str]]] = json.loads(report.read_text(encoding="utf-8"))
@@ -173,13 +210,25 @@ def _executed(stdout: str) -> list[str]:
     return [match.group(1) for line in stdout.splitlines() if (match := _VERBOSE.match(line))]
 
 
+def _order(tree: Path) -> list[str]:
+    """Read and clear ``order.log``: setups, tests and teardowns in the order they ran."""
+    log = tree / "order.log"
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    log.unlink(missing_ok=True)
+    return lines
+
+
 def _errors(stderr: str) -> str:
     """The ``ERROR:`` text with pytest's trailing blank line(s) normalised away."""
     return stderr.strip()
 
 
-def _assert_agree(tree: Path, args: list[str], difference: tuple[str, str] | None = None) -> None:
-    oracle = _pytest(tree, args)
+def _assert_agree(
+    tree: Path, args: list[str], difference: tuple[str, str] | None = None, *, cache: bool = False
+) -> None:
+    _ = _order(tree)
+    oracle = _pytest(tree, args, cache=cache)
+    oracle_order = _order(tree)
     ours, ids = _rustest(tree, args)
     where = (
         f"args={args}\n--- pytest rc={oracle.returncode}\n{oracle.stdout}\n{oracle.stderr}"
@@ -187,6 +236,7 @@ def _assert_agree(tree: Path, args: list[str], difference: tuple[str, str] | Non
     )
     assert ours.returncode == oracle.returncode, where
     assert ids == _executed(oracle.stdout), where
+    assert _order(tree) == oracle_order, where
     if oracle.returncode == 4:
         expected = _errors(oracle.stderr)
         if difference is not None:
@@ -219,12 +269,14 @@ def _listed(stdout: str) -> list[str]:
     ],
 )
 def test_collect_only_lists_what_pytest_lists(tree: Path, line: str, tier: str) -> None:
-    """On the static tier (cold, then warm off the manifest cache) and the dynamic one."""
+    """``auto``: the static tier cold, then warm off the manifest cache; ``d``: the dynamic
+    tier, which never caches, twice."""
     args = ["--collect-only", *line.split()]
     oracle = run(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", *args], tree, _env()
     )
     env = {**_env(), "RUSTEST_COLLECT_TIER": tier}
+    shutil.rmtree(tree / ".rustest_cache", ignore_errors=True)
     for _ in range(2):
         ours = run([sys.executable, "-m", "rustest", *args], tree, env)
         where = f"{args}\n{oracle.stdout}{oracle.stderr}\n---\n{ours.stdout}{ours.stderr}"
@@ -254,14 +306,7 @@ def test_last_failed_applies_after_node_id_selection(tmp_path: Path, line: str) 
     assert _pytest(tree, seed, cache=True).returncode == 1
     assert _rustest(tree, seed)[0].returncode == 1
 
-    args = line.split()
-    oracle = _pytest(tree, args, cache=True)
-    ours, ids = _rustest(tree, args)
-    where = f"{args}\n{oracle.stdout}{oracle.stderr}\n---\n{ours.stdout}{ours.stderr}"
-    assert ours.returncode == oracle.returncode, where
-    assert ids == _executed(oracle.stdout), where
-    if oracle.returncode == 4:
-        assert _errors(ours.stderr) == _errors(oracle.stderr), where
+    _assert_agree(tree, line.split(), cache=True)
 
 
 # --------------------------------------------------------------------------------------

@@ -308,7 +308,7 @@ def test_corpus_case_count_is_pinned() -> None:
     # (the numpy half of `approx-numeric`, split so a missing optional dependency can only
     # move one case's verdict -- review finding C1) and `collection/all-modules-skipped`
     # (the exit-5 shape, review finding I8).
-    assert len(discover_cases()) == 52
+    assert len(discover_cases()) == 53
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

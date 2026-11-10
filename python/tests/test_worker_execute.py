@@ -167,13 +167,17 @@ def run_module(path: Path, rootdir: Path) -> list[ResultResponse]:
     return results
 
 
-def run_files(targets: Sequence[Path], rootdir: Path) -> list[ResultResponse]:
+def run_files(
+    targets: Sequence[Path], rootdir: Path, *, hooks: Sequence[str] = ()
+) -> list[ResultResponse]:
     """Collect and execute several files against **one** worker, then shut it down.
 
     The cross-file twin of :func:`run_module`, and the shape every session-scope question
     needs: a worker really is handed several files in sequence and really does keep one
     :class:`FixtureRunner` across all of them, so a test that drives one file at a time
     against fresh state cannot see a session fixture leak — or fail to be shared.
+
+    ``hooks`` is what the ``bye`` must name; see :func:`shutdown`.
     """
     results: list[ResultResponse] = []
     for target in targets:
@@ -181,7 +185,7 @@ def run_files(targets: Sequence[Path], rootdir: Path) -> list[ResultResponse]:
         _entries, plans = collect_module(module, target, rootdir, DEFAULT_NAMING, registry)
         register(plans)
         results += [execute_test(plan.id) for plan in plans]
-    _ = shutdown()
+    _ = shutdown(hooks=hooks)
     return results
 
 
@@ -215,16 +219,32 @@ def pytest_events(tree: Path) -> list[str]:
     raise AssertionError(f"no EVENTS line:\nstdout={proc.stdout}\nstderr={proc.stderr}")
 
 
-def shutdown() -> BaseException | None:
+def shutdown(*, hooks: Sequence[str] = ()) -> BaseException | None:
     """Shut the worker's execution state down the way ``main`` does: drain, then answer.
 
     A helper rather than a bare ``handle_shutdown()`` call because the two halves are a
     contract — answering ``shutdown`` without draining leaks every module- and session-scoped
     fixture — and a test that only called the second half would not notice.
+
+    ``hooks`` is the exact ``bye.hooks`` list the loaded conftests should produce
+    (:func:`worker.unrun_hooks`): none of them is run, so a tree defining one is named.
     """
     failure = worker.drain_at_shutdown()
-    assert worker.handle_shutdown() == {"op": "bye"}
+    expected: dict[str, object] = {"op": "bye"}
+    if hooks:
+        expected["hooks"] = list(hooks)
+    assert worker.handle_shutdown() == expected
     return failure
+
+
+def sessionfinish_hook(tree: Path) -> list[str]:
+    """The ``bye.hooks`` entry for a tree whose ``conftest.py`` defines ``pytest_sessionfinish``.
+
+    That hook is the pytest-side ordering oracle (:func:`pytest_events`) and inert under the
+    worker, so the worker names it.  Absolute, because these tests send no ``init``: the
+    label falls back to a path relative to the cwd, which the tree is not under.
+    """
+    return [f"{(tree / 'conftest.py').as_posix()}::pytest_sessionfinish"]
 
 
 def statuses(results: list[ResultResponse]) -> dict[str, str]:
@@ -2159,7 +2179,7 @@ def test_narrower_conftest_scopes_are_still_per_file_after_the_chain_cache(
 
     oracle = pytest_events(tmp_path)
     with isolated_worker_state():
-        results = run_files([first, second], tmp_path)
+        results = run_files([first, second], tmp_path, hooks=sessionfinish_hook(tmp_path))
         events = getattr(sys.modules["conftest"], "events")
 
     assert set(statuses(results).values()) == {"passed"}, results
@@ -2239,7 +2259,7 @@ def test_session_finalizers_unwind_lifo_across_the_files_that_registered_them(
 
     oracle = pytest_events(tmp_path)
     with isolated_worker_state():
-        results = run_files([first, second], tmp_path)
+        results = run_files([first, second], tmp_path, hooks=sessionfinish_hook(tmp_path))
         events = getattr(sys.modules["conftest"], "events")
 
     assert set(statuses(results).values()) == {"passed"}, results
@@ -2324,7 +2344,7 @@ def test_the_4871_dependent_cascade_survives_a_file_boundary(tmp_path: Path) -> 
 
     oracle = pytest_events(tmp_path)
     with isolated_worker_state():
-        results = run_files([first, second], tmp_path)
+        results = run_files([first, second], tmp_path, hooks=sessionfinish_hook(tmp_path))
         events = getattr(sys.modules["conftest"], "events")
 
     assert set(statuses(results).values()) == {"passed"}, results

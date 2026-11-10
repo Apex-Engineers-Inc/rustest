@@ -25,15 +25,14 @@
 //! `-k`/`-m` and worked out which tests that worker owns. The main thread never touches a
 //! worker's pipes; a worker thread never sees another worker's files.
 //!
-//! # Dispatch order: grouped by file
+//! # Dispatch order: selection order, one batch per module instance
 //!
-//! Within a worker, tests are dispatched **grouped by file**, groups in first-appearance
-//! order and manifest order inside each group. This is not a performance tweak, it is a
-//! correctness one: `_worker.py` detects module and class boundaries by comparing the
-//! incoming test's file against the previous one, so interleaving files across a worker
-//! would tear down and rebuild module-scoped fixtures at every switch. Grouping reproduces
-//! pytest's setup counts for a same-file run. (The report is reassembled by manifest index,
-//! so dispatch order is invisible in the output.)
+//! Within a worker, tests are dispatched in **selection order**, cut into a new
+//! `execute_batch` whenever the next test belongs to a different target (one target is one
+//! pytest module object). The worker starts every batch as a fresh module instance, so
+//! `a.py b.py a.py` sets `a.py`'s module fixtures up twice and `-x m::a n::a m::b` stops
+//! where pytest stops — both probed on pytest 8.4.2. A contiguous run of one module's tests
+//! is still one batch, so a plain run's setup counts are unchanged.
 //!
 //! # What this module refuses to re-derive
 //!
@@ -42,7 +41,6 @@
 //! against the documented six and treats anything else as protocol drift, which is the
 //! division of labour `src/engine/protocol.rs` states in `TestResult`'s field docs.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -547,10 +545,10 @@ struct WorkerRun {
     session_exit: Option<String>,
 }
 
-/// What the main thread hands one worker across the barrier: its tests, grouped by file.
+/// What the main thread hands one worker across the barrier: its tests, in batches.
 ///
-/// The outer `Vec` is one entry per **file**, and that is the unit of an `execute_batch`
-/// request; the inner is `(report slot, test id)` in manifest order.
+/// The outer `Vec` is one entry per **module instance**, and that is the unit of an
+/// `execute_batch` request; the inner is `(report slot, test id)` in selection order.
 type Assignment = Vec<Vec<(usize, String)>>;
 
 /// One worker's whole collection phase: its files' outcomes, or the failure that stopped it.
@@ -813,13 +811,7 @@ struct Staged {
     /// [`crate::engine::collect::Assembled::module_skipped`]. Never selected against — a skip
     /// with no id cannot match `-k` or `-m`, and pytest does not try either.
     module_skipped: usize,
-    /// Indexed by worker, then by **file**: `(report slot, test id)`.
-    ///
-    /// The file grouping used to be flattened away here and reconstructed nowhere, because
-    /// dispatch was per test and only the *order* mattered. `WorkerRequest::ExecuteBatch`
-    /// makes the grouping load-bearing: one batch is one file, because the worker detects
-    /// module and class boundaries by comparing consecutive tests' files, so a batch
-    /// spanning two files would rebuild module-scoped fixtures inside a single request.
+    /// Indexed by worker, then by **batch** (one module instance): `(report slot, test id)`.
     per_worker: Vec<Vec<Vec<(usize, String)>>>,
 }
 
@@ -914,25 +906,24 @@ fn stage(
         }
     }
 
-    // Group each worker's tests by file, groups in first-appearance order, manifest order
-    // inside a group. See the module docs: the worker detects module and class boundaries
-    // by comparing consecutive tests' files, so interleaving would churn module fixtures.
-    let mut groups: Vec<HashMap<PathBuf, usize>> = vec![HashMap::new(); pool_size];
-    let mut grouped: Vec<Vec<Vec<(usize, String)>>> = vec![Vec::new(); pool_size];
+    // Selection order, cut into a new batch whenever a worker's next test belongs to a
+    // different target — one target is one module object, and a batch is one module
+    // instance (see the module docs).
+    let mut batches: Vec<Vec<Vec<(usize, String)>>> = vec![Vec::new(); pool_size];
+    let mut current: Vec<Option<usize>> = vec![None; pool_size];
     let mut selected = Vec::new();
 
     for index in ordered {
         let test = assembled.tests[index].clone();
         let target = assembled.origin[index];
-        let path = &dispatch.targets[target];
         let worker = owner[target];
-        let slot = selected.len();
-        let next = grouped[worker].len();
-        let group = *groups[worker].entry(path.clone()).or_insert(next);
-        if group == next {
-            grouped[worker].push(Vec::new());
+        if current[worker] != Some(target) {
+            current[worker] = Some(target);
+            batches[worker].push(Vec::new());
         }
-        grouped[worker][group].push((slot, test.id.clone()));
+        if let Some(batch) = batches[worker].last_mut() {
+            batch.push((selected.len(), test.id.clone()));
+        }
         selected.push(test);
     }
 
@@ -941,7 +932,7 @@ fn stage(
         errors: assembled.errors,
         deselected,
         module_skipped: assembled.module_skipped,
-        per_worker: grouped,
+        per_worker: batches,
     })
 }
 
@@ -2154,7 +2145,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":8}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":9}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -2224,15 +2215,11 @@ def test_bails():
         logs
     }
 
-    /// Dispatch is **grouped by file**.  Two files on one worker, with the manifest
-    /// interleaving them, must still be executed one file at a time — the worker detects
-    /// module boundaries by comparing consecutive tests' files, so an interleaved dispatch
-    /// would rebuild module fixtures on every id.
-    ///
-    /// The interleaving comes from a duplicate file argument: `a b a` puts `a`'s tests in
-    /// two separate manifest blocks with `b`'s between them, all on one worker.
+    /// Dispatch is in **selection order**, one batch per module instance.  `a b a` is three
+    /// module objects under pytest — `a`'s module fixtures are built twice, and `b` runs
+    /// between them (probed on 8.4.2) — so the worker sees `a`, `b`, `a`, not `a` twice first.
     #[test]
-    fn one_workers_tests_are_dispatched_grouped_by_file() {
+    fn one_workers_tests_are_dispatched_in_selection_order() {
         let tmp = tree(&[("test_a.py", ""), ("test_b.py", "")]);
         let logs = TempDir::new().unwrap();
         let a = tmp.path().join("test_a.py");
@@ -2264,16 +2251,16 @@ def test_bails():
                 "test_a.py::test_1",
             ]
         );
-        // Dispatch does not: both of `a`'s blocks are executed before `b` is touched.
+        // ...and so does dispatch.
         assert_eq!(
             logged_dispatch(logs.path()),
             vec![vec![
                 "test_a.py::test_0".to_string(),
                 "test_a.py::test_1".to_string(),
-                "test_a.py::test_0".to_string(),
-                "test_a.py::test_1".to_string(),
                 "test_b.py::test_0".to_string(),
                 "test_b.py::test_1".to_string(),
+                "test_a.py::test_0".to_string(),
+                "test_a.py::test_1".to_string(),
             ]]
         );
     }

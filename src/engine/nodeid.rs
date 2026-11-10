@@ -140,12 +140,13 @@ pub(crate) fn walk_names(tests: &[Vec<String>], names: &[String]) -> NameWalk {
         if !node.is_empty() && !tests.iter().any(|test| below(&test)) {
             continue;
         }
-        let mut children: Vec<&String> = Vec::new();
-        for test in tests.iter().filter(below) {
-            if !children.contains(&&test[node.len()]) {
-                children.push(&test[node.len()]);
-            }
-        }
+        let mut seen = std::collections::HashSet::new();
+        let children: Vec<&String> = tests
+            .iter()
+            .filter(below)
+            .map(|test| &test[node.len()])
+            .filter(|child| seen.insert(*child))
+            .collect();
         let part = &names[depth];
         let mut any = false;
         // Pushed in reverse so they pop in collection order, as pytest's `reversed(subnodes)`.
