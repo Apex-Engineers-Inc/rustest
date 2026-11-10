@@ -731,7 +731,8 @@ pub(crate) fn spawn_pool(
     Ok(pool)
 }
 
-/// Put per-file outcomes back into walk order and split them into tests and errors.
+/// Per-target outcomes put into argument order ([`Dispatch::entries`]), split into tests and
+/// errors.
 ///
 /// `origin[i]` is the **target index** the i-th test came from, which the execute half
 /// needs in order to route a test back to the worker that collected its file.  Collection
@@ -779,7 +780,7 @@ pub(crate) fn assemble(
     for (index, outcome) in outcomes {
         slots[index] = Some(outcome);
     }
-    let slots = targets
+    let mut slots = targets
         .iter()
         .zip(slots)
         .map(|(path, slot)| {
@@ -788,10 +789,24 @@ pub(crate) fn assemble(
         .collect::<Result<Vec<FileOutcome>, CollectError>>()?;
     let picks = select_node_ids(dispatch, &slots, last_failed)?;
 
-    let tests = picks
+    // A whole-module target is emitted once, as one contiguous run starting at index 0, so
+    // its tests are moved; only a target narrowed by `::` names is cloned from.
+    let mut whole = vec![false; targets.len()];
+    for entry in dispatch
+        .entries
         .iter()
-        .map(|(target, index)| slots[*target].tests[*index].clone())
-        .collect();
+        .filter(|entry| entry.names.is_empty())
+    {
+        whole[entry.target] = true;
+    }
+    let mut tests = Vec::with_capacity(picks.len());
+    for &(target, index) in &picks {
+        if !whole[target] {
+            tests.push(slots[target].tests[index].clone());
+        } else if index == 0 {
+            tests.append(&mut slots[target].tests);
+        }
+    }
     let origin = picks.iter().map(|(target, _)| *target).collect();
     let module_skipped = slots.iter().filter(|slot| slot.skipped.is_some()).count();
     let errors = slots.into_iter().filter_map(|slot| slot.error).collect();

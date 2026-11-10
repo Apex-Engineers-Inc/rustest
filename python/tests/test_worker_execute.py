@@ -241,10 +241,15 @@ def sessionfinish_hook(tree: Path) -> list[str]:
     """The ``bye.hooks`` entry for a tree whose ``conftest.py`` defines ``pytest_sessionfinish``.
 
     That hook is the pytest-side ordering oracle (:func:`pytest_events`) and inert under the
-    worker, so the worker names it.  Absolute, because these tests send no ``init``: the
-    label falls back to a path relative to the cwd, which the tree is not under.
+    worker, so the worker names it.  These tests send no ``init``, so the label is relative to
+    the cwd when the tree is under it (``--basetemp=./x``) and absolute otherwise.
     """
-    return [f"{(tree / 'conftest.py').as_posix()}::pytest_sessionfinish"]
+    conftest = tree / "conftest.py"
+    try:
+        label = conftest.relative_to(Path.cwd()).as_posix()
+    except ValueError:
+        label = conftest.as_posix()
+    return [f"{label}::pytest_sessionfinish"]
 
 
 def statuses(results: list[ResultResponse]) -> dict[str, str]:

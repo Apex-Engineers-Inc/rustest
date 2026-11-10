@@ -210,8 +210,11 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 - **Node-id arguments select what pytest selects.** `rustest test_m.py::TestC::test_q[a]` runs that one case; a function id selects every parametrized case and a class id its methods; several ids run in argument order; an id that matches nothing is a usage error (exit 4) with pytest's `ERROR: not found` message. Previously everything after `::` was ignored and the whole file ran.
 - **Path arguments behave as pytest's do when they repeat or overlap.** Tests run in argument
   order, one module instance at a time: `rustest a.py b.py a.py` runs a, b, a and builds
-  `a.py`'s module-scoped fixtures twice, and `-x` stops at the first failure across
-  interleaved files. Overlapping arguments follow pytest's collection cache, so
+  `a.py`'s module-scoped fixtures twice, and with one worker (`-n 1`) `-x` stops at the
+  first failure across interleaved files. `--ff` follows the same rule: with failures in two
+  files it runs each file's failures, then each file's rest, so each module's fixtures are
+  built twice, as pytest's `failed + passed` order does. Overlapping arguments follow
+  pytest's collection cache, so
   `rustest . sub` runs only `sub`, as `pytest . sub` does; it used to run everything. A path
   is cut at its first `[`, as pytest cuts it, so a file or directory whose name contains a
   bracket (`test_x[1].py`, `d[x]/`) can no longer be named on the command line.

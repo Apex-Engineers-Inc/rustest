@@ -1037,9 +1037,10 @@ fn worker_life(
     };
 
     let mut results: Vec<(usize, TestOutcome)> = Vec::new();
-    // One request per file, not per test.  Measured at Phase 2 Task 3: the per-test round
-    // trip cost ~160 µs of orchestrator time against ~20 µs of in-worker execution, because
-    // each test meant a pipe write and a blocking line read.  A file's tests share both.
+    // One request per batch (module instance), not per test.  Measured at Phase 2 Task 3:
+    // the per-test round trip cost ~160 µs of orchestrator time against ~20 µs of in-worker
+    // execution, because each test meant a pipe write and a blocking line read.  A batch's
+    // tests share both.
     for group in assignment {
         // Checked *before* dispatch, not after: the point of `-x` is that nothing starts
         // after a failure is known.  `shutdown_run` below still happens, so the fixtures this

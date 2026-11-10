@@ -266,6 +266,9 @@ def _listed(stdout: str) -> list[str]:
         "test_m.py::test_a test_m.py",
         "test_m.py::test_a -k test_b",
         "test_m.py::test_nope",
+        # Repeated and overlapping plain paths: duplicate targets on the cached tier.
+        "test_m.py sub/test_n.py test_m.py",
+        ". sub",
     ],
 )
 def test_collect_only_lists_what_pytest_lists(tree: Path, line: str, tier: str) -> None:
@@ -307,6 +310,19 @@ def test_last_failed_applies_after_node_id_selection(tmp_path: Path, line: str) 
     assert _rustest(tree, seed)[0].returncode == 1
 
     _assert_agree(tree, line.split(), cache=True)
+
+
+def test_failed_first_rebuilds_a_module_it_returns_to(tmp_path: Path) -> None:
+    """``--ff`` with failures in two files: pytest runs ``items = failed + passed``, so each
+    module is left and re-entered, and its module fixture is built twice.  One worker, so the
+    order log is one sequence."""
+    module = "def test_pass():\n    pass\n\n\ndef test_fail():\n    assert False\n"
+    files = {"conftest.py": FILES["conftest.py"], "test_a.py": module, "test_b.py": module}
+    tree = make_tree(tmp_path, "ff", files)
+    assert _pytest(tree, [], cache=True).returncode == 1
+    assert _rustest(tree, [])[0].returncode == 1
+
+    _assert_agree(tree, ["--ff"], cache=True)
 
 
 # --------------------------------------------------------------------------------------

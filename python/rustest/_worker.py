@@ -6560,7 +6560,7 @@ def execute_batch(
     list being returned — so the orchestrator can start reading before the batch finishes,
     and so a batch of a thousand parametrized cases does not build a thousand-line string in
     memory before anything is written. The saving that motivates the op comes from the
-    **request** side (one write and one blocking read per file instead of per test) and from
+    **request** side (one write and one blocking read per batch instead of per test) and from
     flushing once at the end, not from withholding the results.
 
     ``stop_on_failure`` is ``-x`` reaching inside the batch. Checked *after* each result is
