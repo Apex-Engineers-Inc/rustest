@@ -8,10 +8,11 @@ For the full record of every change, see the [Changelog](changelog.md).
 
 ## Upgrading from an earlier rustest
 
-This release is a ground-up rewrite of rustest's engine, done to make it a genuine drop-in
-replacement for pytest: the goal was agreeing with pytest on node ids, outcomes and exit
+This release is a ground-up rewrite of rustest's engine, done so that it runs your existing
+pytest suite unchanged: the goal was agreeing with pytest on node ids, outcomes and exit
 codes, and being stable and predictable while doing it. The previous engine is deleted, not
-frozen, and there is no flag that runs it. Everything below is a change you may have to act
+frozen, and there is no flag that runs it. The boundary is pytest's plugin and hook system,
+which rustest does not support ([details](pytest-plugins.md)). Everything below is a change you may have to act
 on.
 
 ### `--pytest-compat` is gone
@@ -113,34 +114,6 @@ exists, deselecting a block with `-k`/`-m`/`--lf` no longer stops its body from 
 own top-level output is no longer captured or attached to its node. See the Changelog's
 "documentation code block execution" entry for the full nine-item list, and
 [Markdown testing](markdown-testing.md) for the mechanism itself.
-
-## Not a change, but the thing most likely to catch you out
-
-This is not new in this release, and it has always been true, but it is the one difference
-that fails *silently*, so it belongs next to the breaking changes rather than buried in a
-gap table.
-
-**A `path::node::id` argument selects the file, not the node.** rustest ignores everything
-after `::` in a path argument:
-
-```bash
-rustest tests/test_math.py::test_add    # runs EVERY test in test_math.py
-rustest tests/test_math.py::test_gone   # also runs every test; pytest says "collected 0 items"
-```
-
-Pasting a node id back as a path is pytest muscle memory, and rustest hands you the ids that
-invite it: both `short test summary info` and [`--llm`](llm-output.md)'s `id` field print
-them. Nothing warns you. A CI line aimed at one test can go **red for a neighbour**, or
-**green for a test that no longer exists**.
-
-**Action:** select with `-k`, which does understand the parametrized id:
-
-```bash
-rustest tests/test_math.py -k "test_add"
-```
-
-The node ids rustest prints are byte-identical to pytest's; it is only selection *by* them
-that is missing. See [Known gaps](pytest-compat.md#known-gaps-with-their-cost).
 
 ## Older releases
 

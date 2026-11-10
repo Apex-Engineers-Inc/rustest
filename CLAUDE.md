@@ -4,9 +4,9 @@ This file provides guidance for Claude Code when working with the rustest codeba
 
 ## Project Overview
 
-**rustest** is a Rust-powered test runner that aims to be a **drop-in replacement for
-pytest**: it runs an existing pytest suite unchanged, agreeing with pytest on node ids,
-outcomes and exit codes.
+**rustest** is a Rust-powered test runner that **runs your existing pytest suite
+unchanged**, agreeing with pytest on node ids, outcomes and exit codes. The boundary is
+pytest's plugin and hook system, which rustest does not support.
 
 **The message, and it is deliberate.** The rewrite behind 1.0 was spent on **compatibility,
 stability and reliability** — not on speed. Lead with that everywhere. rustest is still

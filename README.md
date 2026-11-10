@@ -7,7 +7,9 @@
 **rustest is a Rust-powered test runner that runs your existing pytest suite unchanged.**
 
 Point it at your tests. There is no compatibility flag, no migration step, and no plugin to
-install: `import pytest` resolves to rustest's own implementation on every run.
+install: `import pytest` resolves to rustest's own implementation on every run. The boundary
+is pytest's plugin and hook system, which rustest does not support; a conftest's fixtures
+load but its `pytest_*` hooks are not run, and a `NOTE:` on stderr names them ([details](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-plugins.html)).
 
 **[Documentation](https://apex-engineers-inc.github.io/rustest)** · [Quick Start](https://apex-engineers-inc.github.io/rustest/user-guide/quickstart.html) · [Coming from pytest](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-compat.html)
 
@@ -51,7 +53,7 @@ node ids, outcome tallies and exit codes, case by case, on every commit.
 ## What about speed?
 
 **Speed is not what this release is about.** The rewrite behind it was spent on
-compatibility, stability and reliability: on being a drop-in replacement that agrees with
+compatibility, stability and reliability: on running your pytest suite unchanged and agreeing with
 pytest, which is what the table above measures. Making it *fast* is the next body of work,
 not this one.
 
@@ -187,7 +189,7 @@ Compatibility is the default behaviour, not a mode. It is not total, and the gap
 documented rather than discovered. rustest does **not** have:
 
 - **A plugin system or hook system.** By design. A conftest's fixtures load; its hooks are
-  ignored. [Why, and what replaces the ten most popular plugins](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-plugins.html)
+  not run, and a `NOTE:` on stderr names them. [Why, and what replaces the ten most popular plugins](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-plugins.html)
 - **Nine built-in fixtures**, including `pytester`, `testdir`, `capfdbinary` and
   `record_property`. Requesting one is a loud, named error, never a silent skip
 - **`xfail_strict` ini or `--runxfail`** (the `strict=` keyword does work)

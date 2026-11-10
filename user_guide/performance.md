@@ -5,7 +5,7 @@ what conditions, and what those numbers do and do not license you to expect.
 
 ::: {.callout-note title="Speed is not this release's headline"}
 The rewrite behind this version was spent on compatibility, stability and reliability: on
-agreeing with pytest well enough to be a drop-in replacement. Performance work is the
+agreeing with pytest well enough to run your pytest suite unchanged. Performance work is the
 *next* body of work. The figures below are real and measured, but they are a report on
 where things stand, not a pitch. Earlier versions of rustest advertised much larger
 multipliers; those described an engine that has since been deleted, and they have been

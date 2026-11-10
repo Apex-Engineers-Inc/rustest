@@ -185,18 +185,22 @@ rustest README.md user_guide/*.md --codeblocks
 Markdown has to be **named**, as it is above. A directory argument collects no `.md` at
 all, because pytest walking the same tree collects none either.
 
-::: {.callout-warning title="A `path::node::id` argument selects the file, not the node"}
-Copying a node id out of a failure report and pasting it back as a path is pytest
-muscle memory, and it does not work here. Rustest ignores everything after `::` in a
-path argument, so `rustest test_mixed.py::test_a` runs **every** test in
-`test_mixed.py`. A node id that no longer exists behaves the same way, where pytest
-would answer `no tests ran`. A CI line aimed at one test can therefore go red for a
-neighbour, or green for a test that has been deleted.
+A `path::node::id` argument selects what pytest selects, so a node id copied out of a
+failure report can be pasted straight back. A function id selects every parametrized
+case, `"::test_p[1]"` one case, a class id its methods. Several ids run in argument
+order, and `-k`, `-m`, `--lf` and `--ff` then filter what the ids selected. An id that
+matches nothing is a usage error, exit 4, with pytest's `ERROR: not found: <path>::<id>`
+message. With `--codeblocks`, an id into a `.md` file works the same way: a block id
+selects every test defined in that block.
 
-Select with `-k` instead, which does understand the parametrized id:
-`rustest test_mixed.py -k "test_a"`. The node ids rustest prints are byte-identical to
-pytest's; it is only selection *by* them that is missing.
-:::
+```bash
+rustest tests/test_math.py::test_add
+rustest "tests/test_math.py::test_p[1]" tests/test_math.py::TestC::test_one
+rustest tests/test_math.py::TestC -k "one"
+```
+
+The one difference: selecting a class that contains no tests exits 4 here and 5 under
+pytest.
 
 ## Filtering tests
 
@@ -386,8 +390,7 @@ stopping after 1 failures (-x)
 ```
 
 One test ran: `--ff` put a known failure first and `-x` stopped there. This is the tightest
-loop available for iterating on a fix, and unlike pasting a node id back as a path
-argument, it actually narrows the run.
+loop available for iterating on a fix.
 
 ### Workflow use cases
 
@@ -410,7 +413,7 @@ rustest -k "integration" -x     # Stop on first integration test failure
 ```
 
 ::: {.callout-tip title="Pytest Compatibility"}
-These options work exactly like pytest's `--lf`, `--ff`, and `-x` flags, making rustest a drop-in replacement for your existing workflow.
+These options work exactly like pytest's `--lf`, `--ff`, and `-x` flags, so your existing workflow carries over.
 :::
 
 ## Output control
@@ -633,6 +636,9 @@ Anything outside that list is still a usage error, exit 4. The division is delib
 flag that changes what *runs* must never be ignored quietly, so `--doctest-modules` is
 refused rather than swallowed. Use `-o addopts=` to run a project whose ini carries such a
 flag without editing the project.
+
+A conftest's `pytest_*` hooks get a note of the same kind: they are not run, and one `NOTE:` line on
+stderr names each one found in a loaded conftest (see [pytest plugins](pytest-plugins.md)).
 
 ## Checking the version
 

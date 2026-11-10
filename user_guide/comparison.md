@@ -7,7 +7,8 @@ answer is "barely".
 
 The feature table is the part that matters. Compatibility is what this release was built
 for; the performance section at the end reports where speed happens to stand, and is not
-the reason to switch.
+the reason to switch. The boundary is pytest's plugin and hook system, which rustest does not
+support ([see why](pytest-plugins.md)).
 
 ## Feature comparison table
 
@@ -18,7 +19,7 @@ the reason to switch.
 | Test function detection (`test_*`) | ✅ | ✅ | |
 | Test class detection (`Test*`) | ✅ | ✅ | Including fixtures defined as class methods |
 | Pattern-based filtering | ✅ | ✅ | `-k`, matching pytest's keyword expression grammar against path segments, class names, the function name with its `[param]` suffix, and mark names |
-| `path::node::id` selection | ✅ | ❌ | The path is honoured and everything after `::` is ignored, so `rustest test_m.py::test_a` runs every test in the file rather than one. Select with `-k` instead — this one fails silently, see [Known gaps](pytest-compat.md#known-gaps-with-their-cost) |
+| `path::node::id` selection | ✅ | ✅ | Selects what pytest selects, in argument order; an unknown id is exit 4 with pytest's message |
 | `unittest.TestCase` | ✅ | ✅ | `setUp` / `tearDown` / `setUpClass` and unittest's own skip decorators |
 | Markdown code block testing | ✅ (`pytest-codeblocks`) | ✅ (off by default; `--codeblocks`) | Python fences in `.md` files, when the file is named as an argument rather than reached by a directory walk. Each block executes at module level, so a `def test_*` inside one collects and runs as its own node |
 | **Fixtures** |
@@ -28,7 +29,7 @@ the reason to switch.
 | Yield fixtures (setup/teardown) | ✅ | ✅ | |
 | Fixture methods within test classes | ✅ | ✅ | |
 | Fixture parametrization | ✅ | ✅ | `@fixture(params=[...])` with `request.param` |
-| `conftest.py` | ✅ | ✅ | Fixtures are used; hooks defined in the same file are ignored |
+| `conftest.py` | ✅ | ✅ | Fixtures are used; hooks defined in the same file are not run (a `NOTE:` on stderr names them) |
 | **Built-in Fixtures** |
 | `tmp_path` / `tmp_path_factory` | ✅ | ✅ | Temporary directories as `pathlib.Path` |
 | `tmpdir` / `tmpdir_factory` | ✅ | ✅ | Legacy `py.path` spelling |

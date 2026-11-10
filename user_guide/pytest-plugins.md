@@ -51,7 +51,23 @@ rustest does not implement any of the machinery a real pytest plugin needs:
 - plugin packages from PyPI, except where the behaviour has been reimplemented in the engine
 - hook wrappers and hook ordering (`tryfirst`, `trylast`)
 
-A conftest that defines `pytest_collection_modifyitems` is silently inert rather than an error.
+A conftest that defines `pytest_collection_modifyitems` is not an error: the hook is not run,
+and rustest prints one `NOTE:` line on stderr naming each hook it found in a loaded
+`conftest.py` or `pytest_plugins` module:
+
+```text
+NOTE: 3 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_configure, tests/conftest.py::pytest_addoption, tests/conftest.py::pytest_collection_modifyitems
+```
+
+The paths are relative to the rootdir, a `pytest_plugins` module is named by its dotted name,
+and each hook appears once however many workers loaded it. The note is a warning only: the
+exit code, stdout, `--report-json` and `--llm` output are unchanged.
+
+::: {.callout-note title="--collect-only can be silent"}
+`--collect-only` on a tree answered entirely by static collection starts no worker, loads no
+conftest, and so prints no note. A normal run always starts workers, so it always does.
+:::
+
 `pytest_generate_tests` is not called either; decorator metadata and fixture `params=` are the
 only sources of parametrization.
 
@@ -914,7 +930,7 @@ Do you use pytest plugins?
     ├─ Framework plugins (django, flask, etc.)
     │   └─ Use pytest or a hybrid approach
     ├─ Custom conftest.py hooks
-    │   └─ Hooks do not run; evaluate what depends on them
+    │   └─ Hooks do not run (a NOTE on stderr names them); evaluate what depends on them
     └─ Many niche plugins
         └─ Stick with pytest for now
 ```

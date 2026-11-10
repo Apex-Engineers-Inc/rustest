@@ -79,9 +79,8 @@ Rustest shows you:
   bottom, so a long red run ends with the roll-call rather than making you scroll
 
 ::: {.callout-tip title="Re-running just the failures"}
-Use `--lf` (last-failed) to re-run only what went red. Pasting the node id back as a
-path argument does *not* narrow the run, as [the CLI guide](cli.md) explains, but `--lf`
-does, and it needs no copying.
+Use `--lf` (last-failed) to re-run only what went red. It needs no copying; pasting a
+single node id back as a path argument works too, as [the CLI guide](cli.md) explains.
 :::
 
 ## Step 5: test something real

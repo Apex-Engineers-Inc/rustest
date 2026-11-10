@@ -661,7 +661,7 @@ named modules and registers their `@fixture` functions. Hooks those modules defi
 never called, because rustest has no hook system: there is no pluggy, no `pytest11`
 setuptools entry point, and no support for plugins built on hooks such as pytest-django.
 A plugin that only supplies fixtures works; one that implements
-`pytest_collection_modifyitems` is silently inert.
+`pytest_collection_modifyitems` is not run, and a `NOTE:` line on stderr says so.
 :::
 
 ::: {.callout-warning title="pytest requires this declaration at the rootdir. rustest does not."}

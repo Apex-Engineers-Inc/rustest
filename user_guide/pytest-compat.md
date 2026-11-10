@@ -4,7 +4,8 @@
 
 `rustest tests/` runs your existing pytest suite. `import pytest` inside a test module
 resolves to rustest's own implementation, always. There is no flag to turn it on, because
-there is no configuration in which it is off.
+there is no configuration in which it is off. The boundary is pytest's plugin and hook
+system, which rustest does not support; see [plugins](pytest-plugins.md).
 
 ```bash
 # no installation needed
@@ -172,7 +173,9 @@ nothing. Anything not on that list, `_pytest.fixtures` among them, does not reso
 
 **The hook system.** No `pytest_configure`, no `pytest_collection_modifyitems`, no
 `pytest_generate_tests`. A `conftest.py` that defines hooks loads fine and its **fixtures
-are used**; its hooks are ignored.
+are used**; its hooks are not run, and one `NOTE:` line on stderr names each hook found in a
+loaded `conftest.py` or `pytest_plugins` module. Exit code, stdout, `--report-json` and `--llm`
+output are unchanged.
 
 **Warning diagnostics.** `recwarn` and `pytest.warns()` record warnings in-process and both
 work. What is missing is the reporting channel that surfaces pytest's own diagnostics: the
@@ -187,7 +190,7 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 
 | gap | what happens | cost |
 | --- | --- | --- |
-| **`path::node::id` selection** | Everything after `::` in a path argument is ignored, so `rustest test_m.py::test_a` runs **every** test in `test_m.py`. A node id that no longer exists behaves identically, where pytest answers `collected 0 items`. | The failure is silent and can go either way: a CI line aimed at one test goes red for a neighbour, or green for a test that was deleted. Select with `-k` instead: `rustest test_m.py -k "test_a"`. The ids rustest *prints* are byte-identical to pytest's; only selection **by** them is missing. See [the CLI page](cli.md#running-specific-files). |
+| **Selecting a class that contains no tests** | `rustest test_m.py::TestEmpty` exits 4 (`ERROR: not found`), where pytest exits 5 (no tests collected). | Loud, and never runs the wrong tests; only the exit code differs. |
 | **`pytest.exit(returncode=N)`** | `pytest.exit()` itself stops the session and exits 2, pytest's answer. The `returncode=` payload is not honoured (the worker exit code is the whole channel), and an `exit()` at *import* time surfaces as exit 3 rather than 2. | A custom exit code is lost. Corpus case `marks/pytest-exit`. |
 | **Session fixtures across workers** | A `session`-scoped fixture is built once per **worker** process, and a worker is handed a subset of the files. At `-n 1` that is pytest's behaviour exactly; across a pool it is pytest-xdist's. | Cross-file shared state works within a worker, not across the pool. Corpus case `fixtures/session-scope`. |
 | **No item reordering** | pytest groups tests that share a higher-scoped parametrized fixture; rustest keeps source order. | A module-scoped `params=["a", "b"]` fixture costs 2 setups under pytest and 4 here. Corpus case `fixtures/module-param-reorder`. |
@@ -223,6 +226,9 @@ which takes pytest's `yes`/`no` as well as rustest's `always`/`never` and change
 because the output is not coloured, and `--ascii`, because the output is already plain
 ASCII. Both stay accepted for the same reason as the list above: `--color=never` in CI is
 near-universal.
+
+The same stderr channel carries one more `NOTE:` line, for a conftest's `pytest_*` hooks, which
+are not run; see [The hook system](#not-supported) above.
 
 `--maxfail=N` **is** implemented. With more than one worker it stops dispatching at N
 rather than mid-flight, so a parallel run can report a few more than N, which is the same

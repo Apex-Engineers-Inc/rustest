@@ -22,8 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 1.0.0 makes them permanent.
 
 This entry covers a **ground-up rewrite of rustest's engine**, and it is worth being clear
-about what the rewrite was for: **compatibility, stability and reliability** — being a
-genuine drop-in replacement for pytest rather than a fast thing that mostly agrees with it.
+about what the rewrite was for: **compatibility, stability and reliability** — running
+your existing pytest suite unchanged, and agreeing with pytest, rather than a fast thing that mostly agrees with it.
 That is what the evidence measures. The engine is validated against a conformance corpus
 that diffs rustest against real pytest case by case, and against seventeen real open-source
 pytest suites graded on every node id and every outcome count
@@ -206,6 +206,15 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
+- **A run says so when a conftest's `pytest_*` hooks are not run.** One `NOTE:` line on stderr names each hook found in a loaded `conftest.py` or `pytest_plugins` module (`tests/conftest.py::pytest_addoption`). Exit code, stdout, `--report-json` and `--llm` output are unchanged.
+- **Node-id arguments select what pytest selects.** `rustest test_m.py::TestC::test_q[a]` runs that one case; a function id selects every parametrized case and a class id its methods; several ids run in argument order; an id that matches nothing is a usage error (exit 4) with pytest's `ERROR: not found` message. Previously everything after `::` was ignored and the whole file ran.
+- **Path arguments behave as pytest's do when they repeat or overlap.** Tests run in argument
+  order, one module instance at a time: `rustest a.py b.py a.py` runs a, b, a and builds
+  `a.py`'s module-scoped fixtures twice, and `-x` stops at the first failure across
+  interleaved files. Overlapping arguments follow pytest's collection cache, so
+  `rustest . sub` runs only `sub`, as `pytest . sub` does; it used to run everything. A path
+  is cut at its first `[`, as pytest cuts it, so a file or directory whose name contains a
+  bracket (`test_x[1].py`, `d[x]/`) can no longer be named on the command line.
 - **The 0.17/0.18 regression suites, carried across.** `test_async_teardown_lifecycle.py`
   (18 tests, asserting that a *previous* test's async fixture teardown completed, an angle
   none of the six existing async suites covered), plus `test_asyncio_config.py`,
@@ -296,6 +305,8 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   monitoring tool at all).
 
 ### Fixed
+
+- **pytest's generic classes subscript as runtime annotations.** `pytest.CaptureFixture[str]`, `pytest.ExceptionInfo[E]`, `FixtureDef`, `CallInfo`, `RaisesExc`, `RaisesGroup` and `StashKey` raised `TypeError` when the annotation was evaluated.
 
 Several of these were real, shipped defects that reported **green** on a broken test,
 which is the worst answer a test runner can give.
@@ -429,19 +440,11 @@ which is the worst answer a test runner can give.
 > that was fixed, and trusts the entries that are still wrong. Every bullet below was
 > re-probed against pytest 8.4.2.
 
-- **A `path::node::id` argument selects the *file*, not the node, and does so silently.** This is the
-  gap most likely to bite, because copying a node id out of a failure report and re-running
-  it is pytest muscle memory, and `short test summary info` and `--llm`'s `id` field both
-  hand you one. Measured against pytest 8.4.2 on the same five-test file: pytest resolves
-  `test_mixed.py::test_a` to that one test, and answers a *bogus* id with
-  `collected 0 items` / `no tests ran`. rustest ignores everything after `::` in a path
-  argument and runs **all five**, including for the bogus id, so a CI line aimed at one
-  test quietly runs the file, and can go red for a neighbour or green for a test that no
-  longer exists. *Workaround:* select with `-k` instead, which does understand the
-  parametrized id: `rustest test_mixed.py -k "2-4"` deselects the other two. Node ids
-  themselves are byte-identical to pytest's; it is only *selection by* them that is missing.
+- **Selecting a class that contains no tests exits 4** (`ERROR: not found`) where pytest exits 5
+  (no tests collected). Loud, and never runs the wrong tests.
 - **No plugin system and no hook system.** By design. A `conftest.py` that defines hooks
-  loads fine and its *fixtures* are used; its hooks are ignored. See
+  loads fine and its *fixtures* are used; its hooks are not run, and a `NOTE:` line on stderr
+  names them. See
   `user_guide/pytest-plugins.md` for what replaces the ten most popular plugins.
 - **No item reordering**, and the visible symptom is a *setup-count* difference rather than
   an ordering one. pytest groups tests that share a higher-scoped parametrized fixture

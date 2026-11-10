@@ -384,7 +384,7 @@ Work through these in order.
 Both runners read the same `pythonpath` from the same files, so the usual cause is something
 pytest does through a plugin. rustest has no hook system: a module named in `pytest_plugins`
 contributes its **fixtures**, and any hook it defines, including
-`pytest_configure` code that edits `sys.path`, is inert.
+`pytest_configure` code that edits `sys.path`, is not run (a `NOTE:` line on stderr names it).
 
 `conftest.py` is imported normally, so path manipulation there does work:
 
@@ -512,7 +512,7 @@ ignored, with a line on stderr saying so.
 | `prepend` import mode | The only mode; it is pytest's default |
 | `conftest.py`, including `sys.path` edits | Imported from the rootdir down |
 | Fixtures from a `pytest_plugins` module | Registered |
-| Hooks from a `pytest_plugins` module | Inert; rustest has no hook system |
+| Hooks from a `pytest_plugins` module | Not run, with a `NOTE:` on stderr; rustest has no hook system |
 | `--import-mode=importlib` / `append` | Accepted, ignored, reported on stderr |
 | `-o pythonpath=...` | Refused; only `addopts` can be overridden |
 

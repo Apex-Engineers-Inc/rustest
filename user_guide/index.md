@@ -15,7 +15,9 @@ body-classes: "gd-homepage"
 :::
 
 There is no flag to enable pytest compatibility; it is the only behaviour. `import pytest`
-resolves to rustest's own implementation on every run, so an existing suite just runs.
+resolves to rustest's own implementation on every run, so an existing suite just runs. The
+boundary is pytest's plugin and hook system, which rustest does not support; see
+[plugins](user-guide/pytest-plugins.md).
 
 {{< termshow file="quickstart" autoplay="false" loop="false" >}}
 
@@ -134,7 +136,7 @@ The assertion is rewritten to show the values that produced it, the `FAILURES` b
 
 | | |
 |---|---|
-| **Drop-in** | `@fixture`, `@parametrize`, `@mark`, `raises`, `approx`, and `import pytest` works |
+| **Familiar** | `@fixture`, `@parametrize`, `@mark`, `raises`, `approx`, and `import pytest` works |
 | **Async built in** | `@mark.asyncio` with pytest-asyncio's loop-scope model. No plugin |
 | **Mocking built in** | The `mocker` fixture. No pytest-mock |
 | **Coverage built in** | `--cov` through `sys.monitoring`. No pytest-cov |
