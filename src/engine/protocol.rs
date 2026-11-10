@@ -94,7 +94,11 @@ use serde::{Deserialize, Serialize};
 /// cut a batch on the Nth failure rather than only on the first. Omitted when there is no
 /// limit, which is every run without the flag, so an ordinary batch line is byte-identical
 /// to v6's.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// **v8** adds `bye.hooks`: the `pytest_*` callables the worker found in the conftest and
+/// `pytest_plugins` modules it loaded, which the engine does not run. The orchestrator
+/// dedupes them across the pool and says so once on stderr. Omitted when empty, so an
+/// ordinary `bye` line is byte-identical to v7's.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The `--cov` instruction carried on [`WorkerRequest::Init`].
 ///
@@ -383,7 +387,14 @@ pub enum WorkerResponse {
     BatchDone { executed: usize, stopped: bool },
     /// Acknowledges [`WorkerRequest::Shutdown`]; the last line a worker writes before
     /// exiting 0.
-    Bye,
+    ///
+    /// `hooks` names the `pytest_*` callables found in the conftest and `pytest_plugins`
+    /// modules this worker loaded (`conftest.py::pytest_configure`), omitted when there are
+    /// none. See [`PROTOCOL_VERSION`]'s v8 note.
+    Bye {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hooks: Vec<String>,
+    },
 }
 
 #[cfg(test)]
@@ -422,9 +433,9 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -525,7 +536,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":7,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":8,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -737,7 +748,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":7}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":8}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -988,12 +999,23 @@ mod tests {
     #[test]
     fn bye_response_matches_golden_contract() {
         assert_eq!(
-            serde_json::to_string(&WorkerResponse::Bye).expect("bye serializes"),
+            serde_json::to_string(&WorkerResponse::Bye { hooks: Vec::new() })
+                .expect("bye serializes"),
             BYE_LINE
         );
 
         let decoded: WorkerResponse = serde_json::from_str(BYE_LINE).expect("bye deserializes");
-        assert_eq!(decoded, WorkerResponse::Bye);
+        assert_eq!(decoded, WorkerResponse::Bye { hooks: Vec::new() });
+    }
+
+    #[test]
+    fn bye_carries_hooks_only_when_there_are_any() {
+        let line = r#"{"op":"bye","hooks":["conftest.py::pytest_configure"]}"#;
+        let bye = WorkerResponse::Bye {
+            hooks: vec!["conftest.py::pytest_configure".to_string()],
+        };
+        assert_eq!(serde_json::to_string(&bye).unwrap(), line);
+        assert_eq!(serde_json::from_str::<WorkerResponse>(line).unwrap(), bye);
     }
 
     // --- version skew -----------------------------------------------------
@@ -1351,7 +1373,7 @@ mod tests {
                 executed: 2,
                 stopped: false,
             },
-            WorkerResponse::Bye,
+            WorkerResponse::Bye { hooks: Vec::new() },
         ];
         for response in &responses {
             let encoded = serde_json::to_string(response).expect("response serializes");

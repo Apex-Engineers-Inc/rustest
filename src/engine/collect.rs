@@ -38,7 +38,7 @@
 //!   attribute one file's tests to another);
 //! * EOF mid-protocol names the file that was in flight and surfaces the worker's stderr.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -298,6 +298,12 @@ pub struct WorkerLauncher {
     /// so putting it here keeps [`crate::engine::protocol::PROTOCOL_VERSION`] where it is.  A
     /// per-message option would have to be re-sent with every request it cannot vary across.
     envs: Vec<(String, String)>,
+    /// The `pytest_*` hooks the pool's workers reported on `bye`, deduped and sorted.
+    ///
+    /// Shared with every [`Worker`] the launcher spawns, so a run's hooks are collected
+    /// across the pool without threading a return value through both phases. A launcher is
+    /// built per run, so nothing leaks between runs.
+    hooks: Arc<Mutex<BTreeSet<String>>>,
 }
 
 /// Set in a worker's environment by [`WorkerLauncher::without_capture`]; read by
@@ -319,6 +325,7 @@ impl WorkerLauncher {
             program: python_executable.to_string(),
             args: vec!["-m".to_string(), "rustest._worker".to_string()],
             envs: vec![(RUNNING_ENV.to_string(), "1".to_string())],
+            hooks: Arc::default(),
         }
     }
 
@@ -348,6 +355,18 @@ impl WorkerLauncher {
             program: program.to_string(),
             args,
             envs: Vec::new(),
+            hooks: Arc::default(),
+        }
+    }
+
+    /// Say once, on stderr, which `pytest_*` hooks the pool found and did not run.
+    ///
+    /// Call after the pool has shut down. A warning, never an error: nothing about the
+    /// run's outcome or stdout depends on it.
+    pub(crate) fn warn_unrun_hooks(&self) {
+        let Ok(seen) = self.hooks.lock() else { return };
+        if let Some(line) = unrun_hooks_note(&seen) {
+            eprintln!("{line}");
         }
     }
 
@@ -852,6 +871,7 @@ fn collect_with_launcher(
     // Node ids select inside `assemble`, then `-k`/`-m` filter what they selected — pytest's
     // order, which is why `test_m.py::test_a -k test_b` is `1 deselected`, not 7.
     let outcomes = join_pool(results)?;
+    launcher.warn_unrun_hooks();
     let mut assembled = assemble(&dispatch, outcomes, None)?;
     let deselected = deselect_in_place(
         &mut assembled.tests,
@@ -1871,6 +1891,8 @@ pub(crate) struct Worker {
     /// The job this worker (and anything it spawns) lives in; see [`JobObject`].
     job: Option<JobObject>,
     reaped: bool,
+    /// The launcher's hook sink; see [`WorkerLauncher::hooks`].
+    hooks: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Worker {
@@ -1929,6 +1951,7 @@ impl Worker {
             stderr_done,
             job,
             reaped: false,
+            hooks: Arc::clone(&launcher.hooks),
         })
     }
 
@@ -2405,7 +2428,11 @@ impl Worker {
             Err(err) => return Err(self.shutdown_error(format!("could not read bye: {err}"))),
         };
         match serde_json::from_str::<WorkerResponse>(&line) {
-            Ok(WorkerResponse::Bye) => {}
+            Ok(WorkerResponse::Bye { hooks }) => {
+                if let Ok(mut seen) = self.hooks.lock() {
+                    seen.extend(hooks);
+                }
+            }
             Ok(other) => {
                 return Err(self.shutdown_error(format!(
                     "expected `bye`, got `{}`\n  raw line: {line}",
@@ -2502,6 +2529,23 @@ impl Drop for Worker {
     }
 }
 
+/// The stderr line for the hooks a run found and did not run, or `None` when there were none.
+fn unrun_hooks_note(hooks: &BTreeSet<String>) -> Option<String> {
+    if hooks.is_empty() {
+        return None;
+    }
+    let (count, noun) = (hooks.len(), if hooks.len() == 1 { "hook" } else { "hooks" });
+    let verb = if count == 1 { "is" } else { "are" };
+    let list = hooks
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "NOTE: {count} pytest {noun} in conftest files {verb} not run (rustest has no plugin system): {list}"
+    ))
+}
+
 /// The `op` a response would carry on the wire, for error messages.
 fn response_op(response: &WorkerResponse) -> &'static str {
     match response {
@@ -2511,7 +2555,7 @@ fn response_op(response: &WorkerResponse) -> &'static str {
         // exactly the drift this function names in the error.
         WorkerResponse::TestResult { .. } => "test_result",
         WorkerResponse::BatchDone { .. } => "batch_done",
-        WorkerResponse::Bye => "bye",
+        WorkerResponse::Bye { .. } => "bye",
     }
 }
 
@@ -2604,7 +2648,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":7}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":8}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked
@@ -4061,6 +4105,22 @@ assert True
 
     /// A worker that answers every file but then refuses to shut down cleanly is still a
     /// failure: a non-zero exit means the process did not finish the protocol.
+    #[test]
+    fn unrun_hooks_note_is_sorted_pluralised_and_absent_when_empty() {
+        let mut hooks = BTreeSet::new();
+        assert_eq!(unrun_hooks_note(&hooks), None);
+        hooks.insert("tests/conftest.py::pytest_addoption".to_string());
+        assert_eq!(
+            unrun_hooks_note(&hooks).unwrap(),
+            "NOTE: 1 pytest hook in conftest files is not run (rustest has no plugin system): tests/conftest.py::pytest_addoption"
+        );
+        hooks.insert("conftest.py::pytest_configure".to_string());
+        assert_eq!(
+            unrun_hooks_note(&hooks).unwrap(),
+            "NOTE: 2 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_configure, tests/conftest.py::pytest_addoption"
+        );
+    }
+
     #[test]
     fn a_worker_failing_shutdown_is_loud() {
         let tmp = tree(&[("test_a.py", &module("a"))]);

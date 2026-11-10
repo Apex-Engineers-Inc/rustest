@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import inspect
 import sys
+from types import GenericAlias
 from typing import TYPE_CHECKING, Any, Final, ParamSpec, TypeVar, overload, cast
 
 P = ParamSpec("P")
@@ -1355,7 +1356,14 @@ class ExceptionInfo:
     :meth:`__repr__`'s ``tblen`` is ``len(self.traceback)`` rather than a walk of the raw
     ``tb_next`` chain: after a ``cut``/``filter`` the two numbers differ, and pytest reports
     the filtered one.  See :meth:`__repr__`.
+
+    Subscriptable, as pytest's ``Generic[E]`` is, so ``ExceptionInfo[ValueError]`` evaluates as a
+    runtime annotation.
     """
+
+    @classmethod
+    def __class_getitem__(cls, item: object) -> GenericAlias:
+        return GenericAlias(cls, item)
 
     def __init__(
         self,

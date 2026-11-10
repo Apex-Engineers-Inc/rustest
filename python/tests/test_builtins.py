@@ -713,3 +713,16 @@ def test_every_registered_builtin_exists_and_is_a_fixture() -> None:
     for name in worker.BUILTIN_FIXTURES:
         func: Any = getattr(builtins_mod, name)
         assert getattr(func, "__rustest_fixture__", False), name
+
+
+def test_pytests_generic_classes_are_subscriptable_from_rustest_and_the_shim() -> None:
+    # Real annotations like `pytest.CaptureFixture[str]` are evaluated when `def` runs.
+    import rustest
+    from rustest.compat import pytest as shim
+
+    for module in (rustest, shim):
+        _ = module.CaptureFixture[str]
+        _ = module.CaptureFixture[bytes]
+        _ = module.ExceptionInfo[ValueError]
+    for name in ("FixtureDef", "CallInfo", "RaisesExc", "RaisesGroup", "StashKey"):
+        _ = getattr(shim, name)[str]

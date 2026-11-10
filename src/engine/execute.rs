@@ -734,6 +734,7 @@ fn run_with_launcher(
         if let Some(err) = failure {
             return Err(RunError::Collect(err));
         }
+        launcher.warn_unrun_hooks();
 
         // A missing slot is normally a protocol bug — a test the pool never answered — and
         // saying so is the whole reason `MissingResult` exists.  Under a fired `-x` it is
@@ -2153,7 +2154,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":7}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":8}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(

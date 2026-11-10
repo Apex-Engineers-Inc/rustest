@@ -277,7 +277,11 @@ __all__ = [
 #: v7 adds ``execute_batch.max_fail`` — ``--maxfail=N``'s **remaining** budget for that
 #: batch, so a worker can cut it on the Nth failure rather than only on the first.  Absent
 #: when there is no limit, which keeps an ordinary batch line byte-identical to v6's.
-PROTOCOL_VERSION: Final = 7
+#:
+#: v8 adds ``bye.hooks`` — the ``pytest_*`` callables this worker found in the conftest and
+#: ``pytest_plugins`` modules it loaded (:func:`unrun_hooks`).  Absent when there are none, so
+#: an ordinary ``bye`` line is byte-identical to v7's.
+PROTOCOL_VERSION: Final = 8
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -395,6 +399,7 @@ class BatchDoneResponse(TypedDict):
 
 class ByeResponse(TypedDict):
     op: str
+    hooks: NotRequired[list[str]]
 
 
 class NotInitializedError(Exception):
@@ -6379,13 +6384,36 @@ def drain_at_shutdown() -> BaseException | None:
     return None
 
 
+def unrun_hooks() -> list[str]:
+    """``pytest_*`` callables in the conftests and plugin modules this worker loaded.
+
+    The engine has no hook system, so every one of these is inert; naming them is how a suite
+    that relies on one finds out.  A conftest is labelled by its rootdir-relative posix path,
+    a ``pytest_plugins`` module by its dotted name.  The ``pytest_plugins`` variable is not
+    callable and so never matches.
+    """
+    rootdir = _state.rootdir if _state is not None else Path.cwd()
+    loaded = {_relative_posix(path, rootdir): module for path, module in _conftest_modules.items()}
+    loaded.update((name, sys.modules[name]) for name in _plugin_fixturedefs_cache)
+    return sorted(
+        f"{label}::{name}"
+        for label, module in loaded.items()
+        for name, value in vars(module).items()
+        if name.startswith("pytest_") and callable(value)
+    )
+
+
 def handle_shutdown() -> ByeResponse:
     """Handle ``shutdown``; reply ``bye`` — the last line the worker writes.
 
     Answering the protocol only.  :func:`drain_at_shutdown` does the unwinding, and
-    :func:`main` calls it first.
+    :func:`main` calls it first.  ``hooks`` rides along only when there are any
+    (:func:`unrun_hooks`).
     """
-    return {"op": "bye"}
+    response: ByeResponse = {"op": "bye"}
+    if hooks := unrun_hooks():
+        response["hooks"] = hooks
+    return response
 
 
 def _module_outcome_error_message(exc: BaseException) -> str:

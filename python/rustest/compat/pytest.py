@@ -20,6 +20,7 @@ import sys
 import warnings
 from pprint import pformat
 from re import Pattern
+from types import GenericAlias
 from typing import TYPE_CHECKING, Any, NoReturn
 
 # Import rustest's actual implementations
@@ -782,6 +783,9 @@ def __getattr__(name: str) -> Any:
         f"to allow pytest plugins to import without errors."
     )
     members["__module__"] = __name__
+    # pytest's generic classes (`FixtureDef`, `CallInfo`, `RaisesExc`, ...) are annotated
+    # subscripted; the stub must not fail the annotation it stands in for.
+    members["__class_getitem__"] = classmethod(GenericAlias)
     stub_class = type(name, bases, members)
 
     # Cache it so subsequent imports get the same class

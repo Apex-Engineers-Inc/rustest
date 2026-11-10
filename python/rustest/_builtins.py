@@ -46,6 +46,7 @@ import sys
 import warnings
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
+from types import GenericAlias
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from ._warnings import WarningsRecorder
@@ -443,7 +444,14 @@ class CaptureFixture:
     One class for ``capsys`` and ``capfd``; the difference is entirely the capture class it
     is handed, which is exactly pytest's structure and is the reason ``capfd`` here is not
     "an alias for capsys".
+
+    Subscriptable, as pytest's ``Generic[AnyStr]`` is, so ``CaptureFixture[str]`` evaluates as a
+    runtime annotation.  The parameter has no runtime meaning here.
     """
+
+    @classmethod
+    def __class_getitem__(cls, item: object) -> GenericAlias:
+        return GenericAlias(cls, item)
 
     def __init__(self, captureclass: type[SysCapture] | type[FdCapture]) -> None:
         super().__init__()
