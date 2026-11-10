@@ -86,11 +86,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::cache::CACHE_DIR;
 use crate::engine::config::ResolvedConfig;
 use crate::engine::manifest::{CollectedTest, Tier};
-
-/// Shared with v1 and with the last-failed cache: one directory to gitignore, one to delete.
-const CACHE_DIR: &str = ".rustest_cache";
 
 /// The manifest cache's own sub-directory, named for the artifact it holds.  A *directory*
 /// per artifact rather than a file per artifact, for the same reason the last-failed store is a
@@ -377,47 +375,14 @@ pub fn digest_of_chain<'a>(chain: impl IntoIterator<Item = (&'a str, Option<&'a 
 }
 
 /// The digest of an empty chain — the common case (a directory with no conftest above it).
+#[cfg(test)]
 pub fn empty_chain_digest() -> Digest {
     digest_of_chain(std::iter::empty())
 }
 
-/// Lower-case hex, without a `format!` per byte.
-///
-/// The naive `push_str(&format!("{byte:02x}"))` allocates once per *nibble pair* -- 32
-/// allocations for one key, and a 500-file warm collection computes one key per file.  It was
-/// measurable (see the task report's breakdown), which is why this is spelled out.
+/// Lower-case hex of a digest, as blake3 spells it.
 pub fn hex_digest(digest: &Digest) -> String {
-    hex(digest)
-}
-
-fn hex(digest: &Digest) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        out.push(HEX[usize::from(byte >> 4)] as char);
-        out.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    out
-}
-
-/// The inverse, for reading a stored key back into bytes.
-///
-/// Comparing `Digest`s rather than hex strings is what keeps the lookup off the formatter:
-/// a shard is decoded once, at load, and every per-file comparison after that is 32 bytes
-/// against 32 bytes.  A malformed key decodes to `None` and its entry is dropped, which is the
-/// same "damaged shard is a miss" rule the document-level parse follows.
-fn unhex(text: &str) -> Option<Digest> {
-    let bytes = text.as_bytes();
-    if bytes.len() != 64 {
-        return None;
-    }
-    let mut digest = [0u8; 32];
-    for (index, pair) in bytes.chunks_exact(2).enumerate() {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        digest[index] = (hi * 16 + lo) as u8;
-    }
-    Some(digest)
+    blake3::Hash::from_bytes(*digest).to_hex().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -540,7 +505,7 @@ impl ManifestCache {
     pub fn load_dir(&self, dir_rel: &str, chain: Digest) -> DirCache {
         let shard_path = self
             .dir
-            .join(format!("{}.json", hex(&digest_of_dir(dir_rel))));
+            .join(format!("{}.json", hex_digest(&digest_of_dir(dir_rel))));
         let loaded = std::fs::read_to_string(&shard_path)
             .ok()
             .and_then(|raw| serde_json::from_str::<Shard>(&raw).ok())
@@ -553,7 +518,7 @@ impl ManifestCache {
                         Some((
                             name,
                             LoadedEntry {
-                                key: unhex(&entry.key)?,
+                                key: *blake3::Hash::from_hex(&entry.key).ok()?.as_bytes(),
                                 tests: entry.tests,
                             },
                         ))
@@ -686,7 +651,7 @@ impl ManifestCache {
                     (
                         name,
                         ShardEntry {
-                            key: hex(&entry.key),
+                            key: hex_digest(&entry.key),
                             tests: entry.tests,
                         },
                     )
@@ -1221,7 +1186,7 @@ mod tests {
             &dir.shard_path,
             format!(
                 r#"{{"schema":1,"dir":"","entries":{{"test_a.py":{{"key":"{}","tests":[{{"id":"test_a.py::test_one","path":"test_a.py","qualname":"test_one"}}]}}}}}}"#,
-                hex(&key)
+                hex_digest(&key)
             ),
         )
         .unwrap();

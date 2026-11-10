@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -34,6 +33,8 @@ from typing import Any
 import pytest
 
 from rustest import cli
+
+from .helpers import run as _run_argv, write as _write
 from rustest._llm import CAPTURE_MAX_LINES, failing_line, render, truncate_tail
 from rustest._llm_schema import FAIL_STATUSES, SCHEMA, SCHEMA_VERSION, SKIP_STATUSES, schema_json
 
@@ -42,27 +43,8 @@ from rustest._llm_schema import FAIL_STATUSES, SCHEMA, SCHEMA_VERSION, SKIP_STAT
 # ---------------------------------------------------------------------------
 
 
-def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(text, encoding="utf-8")
-
-
-def _clean_env() -> dict[str, str]:
-    """A child environment with the ambient pytest/rustest session stripped out."""
-    env = dict(os.environ)
-    for leak in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST", "RUSTEST_RUNNING"):
-        _ = env.pop(leak, None)
-    return env
-
-
 def _run(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     return _run_argv([sys.executable, "-m", "rustest", *args], tree)
-
-
-def _run_argv(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        argv, cwd=str(cwd), capture_output=True, text=True, env=_clean_env(), check=False
-    )
 
 
 def _lines(stdout: str) -> list[dict[str, Any]]:

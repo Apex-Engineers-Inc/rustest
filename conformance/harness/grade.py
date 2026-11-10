@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from .runners import CollectResult, FullRunResult, RunOutcomes
-
-try:
-    import tomllib
-except ImportError as exc:  # pragma: no cover - guards Python < 3.12
-    raise SystemExit("conformance harness requires Python >= 3.12 (tomllib)") from exc
 
 
 @dataclass(frozen=True)
@@ -76,6 +72,20 @@ def _describe_first_id_divergence(pytest_ids: list[str], v2_ids: list[str]) -> s
     )
 
 
+def _id_problems(pytest_ids: list[str], v2_ids: list[str]) -> list[str]:
+    """Set differences (readable) plus the positional report (catches order/duplicates)."""
+    problems: list[str] = []
+    only_pytest = sorted(set(pytest_ids) - set(v2_ids))
+    only_v2 = sorted(set(v2_ids) - set(pytest_ids))
+    if only_pytest:
+        problems.append(f"missing from v2: {only_pytest}")
+    if only_v2:
+        problems.append(f"extra in v2: {only_v2}")
+    if pytest_ids != v2_ids:
+        problems.append(_describe_first_id_divergence(pytest_ids, v2_ids))
+    return problems
+
+
 def grade_collect_case(
     name: str,
     pytest_result: CollectResult,
@@ -96,15 +106,7 @@ def grade_collect_case(
     because they are the readable form of a membership defect; the positional report
     is what catches everything a set cannot see.
     """
-    problems: list[str] = []
-    only_pytest = sorted(set(pytest_result.ids) - set(v2_result.ids))
-    only_v2 = sorted(set(v2_result.ids) - set(pytest_result.ids))
-    if only_pytest:
-        problems.append(f"missing from v2: {only_pytest}")
-    if only_v2:
-        problems.append(f"extra in v2: {only_v2}")
-    if pytest_result.ids != v2_result.ids:
-        problems.append(_describe_first_id_divergence(pytest_result.ids, v2_result.ids))
+    problems = _id_problems(pytest_result.ids, v2_result.ids)
     if pytest_result.exit_code != v2_result.exit_code:
         problems.append(f"exit codes pytest={pytest_result.exit_code} v2={v2_result.exit_code}")
     return _adjudicate(name, problems, waivers)
@@ -171,15 +173,7 @@ def grade_run_case(
       sibling outright graded MATCH under ``marks/mark-filter``. ``deselected`` is the
       only field either side publishes that can tell the two apart.
     """
-    problems: list[str] = []
-    only_pytest = sorted(set(pytest_result.ids) - set(v2_result.ids))
-    only_v2 = sorted(set(v2_result.ids) - set(pytest_result.ids))
-    if only_pytest:
-        problems.append(f"missing from v2: {only_pytest}")
-    if only_v2:
-        problems.append(f"extra in v2: {only_v2}")
-    if pytest_result.ids != v2_result.ids:
-        problems.append(_describe_first_id_divergence(pytest_result.ids, v2_result.ids))
+    problems = _id_problems(pytest_result.ids, v2_result.ids)
     if pytest_result.outcomes != v2_result.outcomes:
         problems.append(
             f"outcomes ({_RUN_TALLY_LEGEND}) "

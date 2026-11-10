@@ -1,10 +1,5 @@
 //! The rustest engine core.
 //!
-//! the engine is being built alongside the v1 runner (see the architecture design spec, in git
-//! history under the removed `docs/superpowers/specs/`).  Until the
-//! conformance corpus reports parity, both trees live in this crate: everything under
-//! `src/engine/` is new code, and nothing outside it is part of the engine.
-//!
 //! The organising rule of the engine is that **collection output is data**: the
 //! collector produces a serializable [`manifest::CollectionManifest`] rather than live
 //! Python objects, and callables are resolved inside workers at execution time.  That
@@ -24,6 +19,13 @@ pub mod selection;
 pub mod static_collect;
 
 use std::path::Path;
+
+/// A path's file stem as an owned string, empty when it has none.
+pub(crate) fn file_stem_lossy(path: &Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
 
 /// Render a path with posix separators — the path convention.
 ///

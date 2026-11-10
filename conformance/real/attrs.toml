@@ -50,18 +50,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# [tool.pytest.ini_options]: addopts = ["-ra", "--strict-markers", "--strict-config",
-# "--import-mode=importlib"]; xfail_strict = true; testpaths = "tests"; filterwarnings =
-# ["once::Warning", "ignore:::pympler[.*]"]. No `markers` key at all (consistent with the
-# conftest registering none). Same mechanism as click's addopts: rustest applies `addopts`
-# itself by reading `[tool.pytest.ini_options]` out of the target's own pyproject.toml (Phase
-# 4 Task 1 port of `Config._preparse`), so both runners pick this up automatically -- nothing
-# to inject on the command line.
-configured = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = []

@@ -2,14 +2,10 @@
 
 **There is one engine.**  ``rustest <paths>`` runs the engine end to end — config
 resolution, the file walk, a worker pool that collects and then executes, pytest's exit
-codes — with the pytest compatibility shim installed unconditionally.  ``--v2`` and
-``--v2-collect-only`` were scaffolding from the rewrite, when naming the engine still
-distinguished something; both went before 1.0.0 rather than being frozen into the released
-surface.  Collect-only survives under pytest's spelling, ``--collect-only`` / ``--co``.
-
-The v1 engine, reached through ``--v1`` between the Phase 1c flip and Phase 4 Task 2, is
-deleted.  ``--v1`` is now a **removed flag**: it exits 4 naming the change rather than being
-swallowed by ``nargs="*"`` as a path, which is what ``REMOVED_FLAGS`` exists for.
+codes — with the pytest compatibility shim installed unconditionally.  Collect-only is
+pytest's spelling, ``--collect-only`` / ``--co``.  A flag that has been removed exits 4
+naming the change rather than being swallowed by ``nargs="*"`` as a path, which is what
+``REMOVED_FLAGS`` exists for.
 """
 
 from __future__ import annotations

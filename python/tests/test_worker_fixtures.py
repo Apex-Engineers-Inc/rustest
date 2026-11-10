@@ -1698,7 +1698,7 @@ def test_teardown_drains_exactly_its_scope_and_the_narrower_ones(
 
 
 def test_supported_builtins_resolve(tmp_path: Path) -> None:
-    """tmp_path / monkeypatch / capsys come from v1's `builtin_fixtures`, wrapped not forked."""
+    """tmp_path / monkeypatch / capsys come from the engine's `_builtins` (`MonkeyPatch` from `builtin_fixtures`)."""
     target = write(
         tmp_path / "test_builtins.py",
         """

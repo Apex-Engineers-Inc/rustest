@@ -133,7 +133,7 @@ rustest/
 │   ├── decorators.py             # @fixture, @parametrize, @mark, outcome exceptions
 │   ├── _worker.py             # The worker: collection and execution inside Python
 │   ├── _builtins.py           # The engine's builtin fixtures, ported from pytest
-│   ├── builtin_fixtures.py       # Public fixture types and MonkeyPatch
+│   ├── builtin_fixtures.py       # MonkeyPatch
 │   ├── cli.py                    # Command-line interface
 │   ├── core.py                   # Wrapper around the Rust layer; run() lives here
 │   ├── approx.py                 # Numeric comparison helper

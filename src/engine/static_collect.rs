@@ -182,6 +182,7 @@ pub enum Reason {
 ///   silently collect both.  Every file whose stem is shared goes to D.
 /// * **the conftest chain**, which is per directory and shared by every file in it, so it is
 ///   analysed once and cached.
+#[cfg(test)]
 pub fn static_pass(
     targets: &[PathBuf],
     rootdir: &Path,
@@ -195,7 +196,7 @@ pub fn static_pass(
 /// [`CacheMode::Off`] is the control leg, in the same sense
 /// [`crate::engine::collect::TierMode::DynamicOnly`] is: every cache test needs a way to produce
 /// the answer the cache is supposed to reproduce, and every *user* needs a way to prove a
-/// surprising result is not a stale entry.  It is also what the uncached [`static_pass`]
+/// surprising result is not a stale entry.  It is also what the uncached `static_pass`
 /// passes, which is what keeps the several dozen existing Tier S tests writing nothing to
 /// disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -231,7 +232,7 @@ pub struct StaticPass {
     pub cache: Option<ManifestCache>,
 }
 
-/// [`static_pass`], with the manifest cache.
+/// `static_pass`, with the manifest cache.
 ///
 /// The shape of a run:
 ///
@@ -255,10 +256,7 @@ pub fn static_pass_cached(
     let shadows = shadowing_names(targets, rootdir);
     let mut stems: HashMap<String, usize> = HashMap::new();
     for path in targets {
-        let stem = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let stem = crate::engine::file_stem_lossy(path);
         *stems.entry(stem).or_insert(0) += 1;
     }
 
@@ -301,10 +299,7 @@ pub fn static_pass_cached(
     let scanned: Vec<Scanned> = targets
         .par_iter()
         .map(|path| {
-            let stem = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            let stem = crate::engine::file_stem_lossy(path);
             if stems.get(&stem).copied().unwrap_or(0) > 1 {
                 return (
                     Err(Dynamic::new(
@@ -595,6 +590,7 @@ fn shadowing_names(targets: &[PathBuf], rootdir: &Path) -> HashSet<String> {
 }
 
 /// Read and scan one file.
+#[cfg(test)]
 pub fn scan_path(
     path: &Path,
     rootdir: &Path,
@@ -607,7 +603,7 @@ pub fn scan_path(
 
 /// The file's text, or the reason it is not this module's to answer.
 ///
-/// Split out of [`scan_path`] because the cached pass needs the bytes *before* it decides
+/// Split out of `scan_path` because the cached pass needs the bytes *before* it decides
 /// whether to parse them — the cache key hashes the source.
 fn read_source(path: &Path) -> Result<String, Dynamic> {
     // The markdown tier is `_worker.py::collect_markdown`: it evaluates fenced blocks and
@@ -802,6 +798,7 @@ fn callee_tail(func: &ruff_python_ast::Expr) -> Option<&str> {
     }
 }
 
+#[cfg(test)]
 pub fn conftest_chain_is_static(
     dir: &Path,
     rootdir: &Path,
@@ -1238,15 +1235,6 @@ enum Decor {
     /// A `parametrize`, already expanded into cases.
     Parametrize(Vec<Case>),
 }
-
-/// Marks whose decorator surface is a *factory* with its own signature
-/// (`decorators.py::MarkGenerator`), rather than the generic
-/// `BareOrFactoryMark(name, MarkDecorator(name, args, kwargs))`.
-///
-/// `asyncio` is the one this module refuses outright: it rewrites class members
-/// (`MarkGenerator.asyncio` walks `inspect.getmembers` and re-decorates every coroutine
-/// method), which is not a transformation an AST can predict.
-const FACTORY_MARKS: [&str; 4] = ["skipif", "xfail", "usefixtures", "asyncio"];
 
 // ---------------------------------------------------------------------------
 // The scanner
@@ -1724,8 +1712,9 @@ impl<'a> Scan<'a> {
 
     /// The `MarkSpec` `decorators.py` would store for `@mark.<name>(...)`.
     ///
-    /// The generic case is `MarkDecorator(name, args, kwargs)` verbatim.  The four names in
-    /// [`FACTORY_MARKS`] go through their own factory, which rewrites the arguments:
+    /// The generic case is `MarkDecorator(name, args, kwargs)` verbatim.  The three names
+    /// `skipif`, `xfail` and `usefixtures` go through their own factory, which rewrites the
+    /// arguments:
     ///
     /// * `skipif(condition, reason=None)` -> `MarkDecorator("skipif", (condition,), {"reason":
     ///   reason})`, and `MarkDecorator._normalize_args` then **evaluates a string condition**
@@ -1796,10 +1785,6 @@ impl<'a> Scan<'a> {
                 ));
             };
             kwargs.push((key.as_str().to_string(), value));
-        }
-
-        if !FACTORY_MARKS.contains(&name) {
-            return spec(name, args, kwargs);
         }
 
         match name {
@@ -1882,10 +1867,7 @@ impl<'a> Scan<'a> {
                 }
                 spec("usefixtures", args, Vec::new())
             }
-            _ => Err(Dynamic::new(
-                Reason::NonLiteralMark,
-                format!("@mark.{name} has a factory Tier S does not model"),
-            )),
+            _ => spec(name, args, kwargs),
         }
     }
 
@@ -2092,23 +2074,7 @@ impl<'a> Scan<'a> {
             ));
         }
 
-        // Bottom decorator first: Python applies them inside-out, and both
-        // `MarkDecorator.__call__` (append) and `parametrize` (cross `existing x new`) record
-        // that order.
-        let mut own_marks = Vec::new();
-        let mut own_cases: Option<Vec<Case>> = None;
-        for decor in decorators.iter().rev() {
-            match decor {
-                Decor::Mark(spec) => own_marks.push(spec.clone()),
-                Decor::Parametrize(cases) => {
-                    own_cases = Some(match own_cases {
-                        None => cases.clone(),
-                        Some(existing) => cross_product_cases(&existing, cases),
-                    });
-                }
-                Decor::Fixture | Decor::StaticMethod | Decor::ClassMethod => {}
-            }
-        }
+        let (own_marks, own_cases) = fold_decorators(&decorators);
 
         let mut marks = own_marks;
         marks.extend_from_slice(outer_marks);
@@ -2200,20 +2166,7 @@ impl<'a> Scan<'a> {
             return Ok(Vec::new());
         }
 
-        let mut own_marks = Vec::new();
-        let mut own_cases: Option<Vec<Case>> = None;
-        for decor in decorators.iter().rev() {
-            match decor {
-                Decor::Mark(spec) => own_marks.push(spec.clone()),
-                Decor::Parametrize(cases) => {
-                    own_cases = Some(match own_cases {
-                        None => cases.clone(),
-                        Some(existing) => cross_product_cases(&existing, cases),
-                    });
-                }
-                Decor::Fixture | Decor::StaticMethod | Decor::ClassMethod => {}
-            }
-        }
+        let (own_marks, own_cases) = fold_decorators(&decorators);
         // `_mark_specs(cls, consider_mro=True)` walks `reversed(cls.__mro__)`; with `object`
         // as the only base there is exactly one `__dict__` carrying marks — this class's — so
         // a class-body `pytestmark` precedes the decorator marks, as `_mark_specs` orders its
@@ -2732,44 +2685,47 @@ pub fn stdlib_allowlist() -> &'static [&'static str] {
     &STDLIB_ALLOWLIST
 }
 
+/// Fold a decorator list into `(marks, cases)`, bottom decorator first: Python applies them
+/// inside-out, and both `MarkDecorator.__call__` (append) and `parametrize` (cross
+/// `existing x new`) record that order.
+fn fold_decorators(decorators: &[Decor]) -> (Vec<MarkSpec>, Option<Vec<Case>>) {
+    let mut marks = Vec::new();
+    let mut cases: Option<Vec<Case>> = None;
+    for decor in decorators.iter().rev() {
+        match decor {
+            Decor::Mark(spec) => marks.push(spec.clone()),
+            Decor::Parametrize(new) => {
+                cases = Some(match cases {
+                    None => new.clone(),
+                    Some(existing) => cross_product_cases(&existing, new),
+                });
+            }
+            Decor::Fixture | Decor::StaticMethod | Decor::ClassMethod => {}
+        }
+    }
+    (marks, cases)
+}
+
 /// Which reason a refused statement kind reports.  Definitions nested in control flow are
 /// [`Reason::ConditionalDef`]; everything else is a side effect.
 fn statement_reason(statement: &Stmt) -> Reason {
-    match statement {
+    let defines = match statement {
         Stmt::If(node) => {
-            if body_defines(&node.body)
+            body_defines(&node.body)
                 || node
                     .elif_else_clauses
                     .iter()
                     .any(|clause| body_defines(&clause.body))
-            {
-                Reason::ConditionalDef
-            } else {
-                Reason::ModuleSideEffect
-            }
         }
-        Stmt::Try(node) => {
-            if body_defines(&node.body) || body_defines(&node.orelse) {
-                Reason::ConditionalDef
-            } else {
-                Reason::ModuleSideEffect
-            }
-        }
-        Stmt::For(node) => {
-            if body_defines(&node.body) {
-                Reason::ConditionalDef
-            } else {
-                Reason::ModuleSideEffect
-            }
-        }
-        Stmt::While(node) => {
-            if body_defines(&node.body) {
-                Reason::ConditionalDef
-            } else {
-                Reason::ModuleSideEffect
-            }
-        }
-        _ => Reason::ModuleSideEffect,
+        Stmt::Try(node) => body_defines(&node.body) || body_defines(&node.orelse),
+        Stmt::For(node) => body_defines(&node.body),
+        Stmt::While(node) => body_defines(&node.body),
+        _ => false,
+    };
+    if defines {
+        Reason::ConditionalDef
+    } else {
+        Reason::ModuleSideEffect
     }
 }
 
@@ -4499,7 +4455,7 @@ class TestBox:
     #[test]
     fn collect_only_does_not_compute_a_rewrite_plan() {
         assert!(
-            !crate::engine::collect::CollectOptions::new().assert_rewrite,
+            !crate::engine::collect::CollectOptions::default().assert_rewrite,
             "the default must be off; `collect::plan` turns it on for runs"
         );
     }

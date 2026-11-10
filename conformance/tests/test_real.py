@@ -33,11 +33,6 @@ test_paths = ["tests"]
 setup = []
 pythonpath = []
 
-[addopts]
-configured = []
-replay = []
-dropped = []
-
 [run]
 timeout_s = 60
 
@@ -65,9 +60,6 @@ def _target(**overrides: object) -> RealTarget:
         "venv": Path("."),
         "setup": [],
         "pythonpath": [],
-        "addopts_configured": [],
-        "addopts_replay": [],
-        "addopts_dropped": [],
         "pytest_args": [],
         "rustest_args": [],
         "timeout_s": 60,

@@ -34,6 +34,8 @@ import pytest
 from rustest import _coverage
 from rustest._coverage import LineMonitor
 
+from .helpers import clean_env, run as _run, write as _write
+
 coverage = pytest.importorskip(
     "coverage",
     reason="--cov is an optional extra (rustest[cov]); these tests measure against coverage.py",
@@ -58,27 +60,11 @@ COVERED_PY_LINES = [
 
 
 def _clean_env() -> dict[str, str]:
-    env = dict(os.environ)
-    for leak in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST", "COVERAGE_FILE"):
-        _ = env.pop(leak, None)
-    return env
-
-
-def _run(
-    argv: list[str], cwd: Path, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        argv, cwd=str(cwd), capture_output=True, text=True, env=env or _clean_env(), check=False
-    )
+    return clean_env("COVERAGE_FILE")
 
 
 def _rustest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    return _run([sys.executable, "-m", "rustest", *args], tree)
-
-
-def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(text, encoding="utf-8")
+    return _run([sys.executable, "-m", "rustest", *args], tree, _clean_env())
 
 
 def _lines(data_file: Path) -> dict[str, list[int]]:
@@ -486,7 +472,7 @@ def test_code_compiled_with_an_empty_filename_is_not_measured(tmp_path: Path) ->
 
     # ...and the file rustest wrote is still usable by coverage.py afterwards, which is the
     # half that survives the run.
-    follow_up = _run([sys.executable, "-m", "coverage", "report"], tmp_path)
+    follow_up = _run([sys.executable, "-m", "coverage", "report"], tmp_path, _clean_env())
     assert follow_up.returncode == 0, follow_up.stdout + follow_up.stderr
 
 
@@ -566,7 +552,7 @@ def test_cov_writes_a_combined_coverage_file_and_a_term_report(tmp_path: Path) -
     assert combined.exists(), sorted(p.name for p in tmp_path.iterdir())
 
     # coverage.py's own CLI reads it with no arguments -- the whole ecosystem-compat claim.
-    follow_up = _run([sys.executable, "-m", "coverage", "report"], tmp_path)
+    follow_up = _run([sys.executable, "-m", "coverage", "report"], tmp_path, _clean_env())
     assert follow_up.returncode == 0, follow_up.stdout + follow_up.stderr
     assert "lib.py" in follow_up.stdout
 

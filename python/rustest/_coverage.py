@@ -461,16 +461,6 @@ def stop_and_write() -> str | None:
     return monitor.write()
 
 
-def is_measuring() -> bool:
-    """Whether this process has a monitoring tool registered -- the overhead claim, testable.
-
-    A run without ``--cov`` must answer `False`, and that is a stronger statement than "the
-    callbacks are cheap": nothing is registered, so CPython's monitoring machinery is not
-    involved in the interpreter loop at all.
-    """
-    return _monitor is not None
-
-
 # ---------------------------------------------------------------------------
 # the orchestrator half
 # ---------------------------------------------------------------------------

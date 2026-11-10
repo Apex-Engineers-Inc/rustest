@@ -9,12 +9,13 @@ ever sees the exception. See ``python/rustest/_pytest_stub/outcomes.py``.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+
+from .helpers import clean_env as _clean_env
 
 
 def test_failed_exception_has_msg_attribute() -> None:
@@ -138,13 +139,6 @@ def test_pytest_outcomes_aliases_the_shims_own_outcome_classes() -> None:
     assert outcomes.skip is skip
     assert outcomes.fail is fail
     assert outcomes.xfail is xfail
-
-
-def _clean_env() -> dict[str, str]:
-    env = dict(os.environ)
-    for leak in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST", "RUSTEST_RUNNING"):
-        _ = env.pop(leak, None)
-    return env
 
 
 def _tree(tmp_path: Path, name: str, body: str) -> Path:

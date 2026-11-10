@@ -56,19 +56,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# tox.ini's [pytest] section (the config pytest actually resolves to, see header note):
-# addopts = --color=yes --doctest-modules. Both runners read that ini for themselves -- the
-# harness retired the addopts replay in Phase 4 Task 1 -- so what this table records is which
-# of the configured options each runner ENDS UP applying, and why they differ.
-#
-# "--color=yes" is a harmless display flag and reaches both. "--doctest-modules" reaches
-# pytest and is neutralized for rustest with the `-o addopts=` escape hatch in [run], because
-# rustest deliberately does not implement it. See the global divergence note below.
-configured = ["--color=yes", "--doctest-modules"]
-replay = ["--color=yes"]
-dropped = ["--doctest-modules"]
-
 [run]
 pytest_args = []
 # THE ESCAPE HATCH, added in Phase 4 Task 1c with the M1 fix, and the reason this target

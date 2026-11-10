@@ -46,7 +46,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::config::{
-    matches_file_pattern, normpath, resolve_config, ConfigError, ResolvedConfig,
+    absolutepath, matches_file_pattern, normpath, resolve_config, ConfigError, ResolvedConfig,
 };
 use crate::engine::execute::{TestOutcome, TestStatus, SESSION_EXIT_EXIT, SHUTDOWN_TEARDOWN_EXIT};
 use crate::engine::manifest::{
@@ -55,7 +55,7 @@ use crate::engine::manifest::{
 #[cfg(test)]
 use crate::engine::manifest_cache::ManifestCache;
 use crate::engine::protocol::{CoverageWire, WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
-use crate::engine::selection::{select_mask, SelectionError};
+use crate::engine::selection::{deselect_in_place, select_mask, SelectionError};
 use crate::engine::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
 use crate::engine::to_posix;
 
@@ -296,13 +296,11 @@ pub struct WorkerLauncher {
 /// commit**.
 pub const CAPTURE_ENV: &str = "RUSTEST_CAPTURE";
 
-/// v1's "a rustest run is in progress" flag, set for every worker.
+/// The "a rustest run is in progress" flag, set for every worker.
 ///
-/// v1 sets it around `rust.run` (`python/rustest/core.py`), and real suites branch on it —
-/// rustest's own `tests/integration/*` skip themselves under it, and
-/// `tests/test_conftest_nested/*` *enable* themselves with it.  The worker is where user
-/// code runs, so the worker process is where it has to be set; leaving it unset made every
-/// one of those files take the wrong branch the moment v2 became the default.
+/// Real suites branch on it — rustest's own `tests/integration/*` skip themselves under it,
+/// and `tests/test_conftest_nested/*` *enable* themselves with it.  The worker is where user
+/// code runs, so the worker process is where it has to be set.
 pub const RUNNING_ENV: &str = "RUSTEST_RUNNING";
 
 impl WorkerLauncher {
@@ -396,17 +394,6 @@ pub struct CollectOptions {
     /// measuring would cost every worker a `sys.monitoring` registration for data nothing
     /// reads.
     pub coverage: Option<CoverageWire>,
-}
-
-impl CollectOptions {
-    /// The production default: codeblocks **off** unless config or the CLI asks, both
-    /// tiers, cache on, no selection.
-    pub fn new() -> Self {
-        Self {
-            codeblocks: None,
-            ..Self::default()
-        }
-    }
 }
 
 /// Collect `args` (or `testpaths`, or `invocation_dir`) into a [`CollectionManifest`].
@@ -607,11 +594,8 @@ pub(crate) fn plan_with_options(
     // "skip the worker because nothing in it matches" case, and there cannot be one.
     let mut deselected = 0;
     for slot in static_tests.iter_mut().flatten() {
-        let mask = select_mask(slot, options.keyword.as_deref(), options.mark.as_deref())
+        deselected += deselect_in_place(slot, options.keyword.as_deref(), options.mark.as_deref())
             .map_err(CollectError::Selection)?;
-        deselected += mask.iter().filter(|keep| !**keep).count();
-        let mut keep = mask.into_iter();
-        slot.retain(|_| keep.next().unwrap_or(true));
     }
 
     // Only the files Tier S could **not** answer reach a worker.  Routing stays the stem hash
@@ -837,21 +821,6 @@ fn collect_with_launcher(
     let dispatch = plan_with_options(invocation_dir, args, workers, options)?;
     let mut deselected = dispatch.deselected;
 
-    // No worker has anything to do — an empty tree, or one Tier S answered in full (including
-    // one where `-k` deselected every one of its tests).  All of them reach the manifest
-    // without a single process being spawned.
-    if dispatch.assignments.is_empty() {
-        let assembled = assemble(&dispatch, Vec::new())?;
-        return Ok(CollectionManifest {
-            schema_version: MANIFEST_SCHEMA_VERSION,
-            rootdir: dispatch.rootdir,
-            tests: assembled.tests,
-            errors: assembled.errors,
-            deselected,
-            module_skipped: assembled.module_skipped,
-        });
-    }
-
     let pool = spawn_pool(&dispatch, launcher)?;
 
     let results = std::thread::scope(|scope| {
@@ -879,15 +848,12 @@ fn collect_with_launcher(
     // test, so that is the same number pytest reports for the whole list at once.
     let mut outcomes = join_pool(results)?;
     for (_, outcome) in &mut outcomes {
-        let mask = select_mask(
-            &outcome.tests,
+        deselected += deselect_in_place(
+            &mut outcome.tests,
             options.keyword.as_deref(),
             options.mark.as_deref(),
         )
         .map_err(CollectError::Selection)?;
-        deselected += mask.iter().filter(|keep| !**keep).count();
-        let mut keep = mask.into_iter();
-        outcome.tests.retain(|_| keep.next().unwrap_or(true));
     }
 
     let assembled = assemble(&dispatch, outcomes)?;
@@ -1045,16 +1011,6 @@ fn initial_paths(
     Ok(roots)
 }
 
-/// `_pytest/pathlib.py::absolutepath` — join against the invocation dir, then normalise
-/// lexically (no symlink resolution).
-fn absolutepath(invocation_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        normpath(path)
-    } else {
-        normpath(&invocation_dir.join(path))
-    }
-}
-
 /// Depth-first, name-sorted traversal.
 ///
 /// Source: `_pytest/main.py::Dir.collect` — `for direntry in scandir(self.path)` over
@@ -1181,10 +1137,7 @@ fn is_python_source(path: &Path) -> bool {
 /// A markdown file, i.e. a **code-block** target.
 ///
 /// This is the one place rustest collects something pytest would not: rustest has tested the
-/// python fences in `.md` files since v1 (`src/discovery.rs::collect_from_markdown`, reached
-/// through `build_markdown_glob` whenever `enable_codeblocks` is on — which is the default),
-/// and the project's own docs suite depends on it.  Dropping the feature at the flip would
-/// have been a silent regression for every user testing their README.
+/// python fences in `.md` files, and the project's own docs suite depends on it.
 ///
 /// Kept as a *separate* predicate rather than folded into `python_files` because the two
 /// answer different questions: `python_files` is pytest's ini-configurable pattern list and
@@ -1223,7 +1176,7 @@ fn matches_python_files(path: &Path, config: &ResolvedConfig) -> bool {
 /// **Probed** (`--collect-only -q`, tree = `test_a.py` with two tests, `pkg/test_b.py`
 /// with one):
 ///
-/// | arguments | pytest collects | v2 |
+/// | arguments | pytest collects | rustest |
 /// |---|---|---|
 /// | `test_a.py test_a.py` | `one two one two` (4) | same |
 /// | `test_a.py ./test_a.py` | `one two one two` (4) | same |
@@ -1367,10 +1320,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// pool, because `hash % workers` is not a permutation and its collisions are what left two
 /// of Pynite's sixteen workers with no files at all.
 fn worker_for(path: &Path, workers: usize) -> usize {
-    let stem = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let stem = crate::engine::file_stem_lossy(path);
     (fnv1a(stem.as_bytes()) % workers.max(1) as u64) as usize
 }
 
@@ -1422,10 +1372,7 @@ fn route(targets: &[PathBuf], dynamic: &[usize], pool_size: usize) -> Vec<Vec<(u
     let mut groups: HashMap<String, (u64, Vec<usize>)> = HashMap::new();
     for index in dynamic {
         let path = &targets[*index];
-        let stem = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let stem = crate::engine::file_stem_lossy(path);
         let weight = std::fs::metadata(path).map_or(0, |meta| meta.len()) + FILE_IMPORT_WEIGHT;
         let entry = groups.entry(stem.clone()).or_insert_with(|| {
             order.push(stem);
@@ -2802,7 +2749,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let md = tmp.path().join("notes.md");
         std::fs::write(&md, "```python\nassert True\n```\n").unwrap();
-        let options = CollectOptions::new();
+        let options = CollectOptions::default();
         let err = plan_with_options(tmp.path(), &[md], 1, &options).unwrap_err();
         // `CollectError` only derives `Debug` -- the message lives in `Display`, same as
         // the neighbouring `found no collectors for` assertion below uses.
@@ -2823,7 +2770,7 @@ mod tests {
         .unwrap();
         let md = tmp.path().join("notes.md");
         std::fs::write(&md, "```python\nassert True\n```\n").unwrap();
-        let options = CollectOptions::new(); // codeblocks: None
+        let options = CollectOptions::default(); // codeblocks: None
         let dispatch = plan_with_options(tmp.path(), &[md], 1, &options).unwrap();
         assert!(
             !dispatch.targets.is_empty(),
@@ -2845,7 +2792,7 @@ mod tests {
         std::fs::write(&md, "```python\nassert True\n```\n").unwrap();
         let options = CollectOptions {
             codeblocks: Some(false),
-            ..CollectOptions::new()
+            ..CollectOptions::default()
         };
         let err = plan_with_options(tmp.path(), &[md], 1, &options).unwrap_err();
         assert!(err.to_string().contains("found no collectors"));
@@ -2862,7 +2809,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(tmp.path().join("notes.md"), "```python\nassert True\n```\n").unwrap();
-        let options = CollectOptions::new();
+        let options = CollectOptions::default();
         let dispatch = plan_with_options(tmp.path(), &[tmp.path().to_path_buf()], 1, &options);
         // No `.py` and no walked `.md` means nothing to collect.
         assert!(dispatch.is_err() || dispatch.unwrap().targets.is_empty());
@@ -3714,7 +3661,7 @@ assert True
             &[],
             &crate::engine::test_python(),
             workers,
-            &CollectOptions::new(),
+            &CollectOptions::default(),
         )
         .expect("hybrid collection succeeds");
         let oracle = collect(
@@ -3724,7 +3671,7 @@ assert True
             workers,
             &CollectOptions {
                 tier: TierMode::DynamicOnly,
-                ..CollectOptions::new()
+                ..CollectOptions::default()
             },
         )
         .expect("Tier D collection succeeds");
@@ -3831,7 +3778,7 @@ assert True
             &[],
             &WorkerLauncher::scripted("definitely-not-an-interpreter", Vec::new()),
             2,
-            &CollectOptions::new(),
+            &CollectOptions::default(),
         )
         .expect("a fully-static tree needs no worker");
 
@@ -3861,7 +3808,7 @@ assert True
             ("test_a.py", "def test_one():\n    pass\n"),
             ("sub/test_b.py", "def test_two():\n    pass\n"),
         ]);
-        let options = CollectOptions::new();
+        let options = CollectOptions::default();
 
         let cold = collect_with_launcher(tmp.path(), &[], &unspawnable(), 2, &options)
             .expect("a fully-static tree needs no worker");
@@ -3886,8 +3833,8 @@ assert True
     fn the_store_lands_under_the_rootdirs_cache_directory() {
         let tmp = tree(&[("sub/test_a.py", "def test_one():\n    pass\n")]);
         let sub = tmp.path().join("sub");
-        let _ =
-            collect_with_launcher(&sub, &[], &unspawnable(), 1, &CollectOptions::new()).unwrap();
+        let _ = collect_with_launcher(&sub, &[], &unspawnable(), 1, &CollectOptions::default())
+            .unwrap();
 
         assert!(tmp.path().join(".rustest_cache/manifest").is_dir());
         assert!(!sub.join(".rustest_cache").exists());
@@ -3908,7 +3855,7 @@ assert True
             1,
             &CollectOptions {
                 tier: TierMode::DynamicOnly,
-                ..CollectOptions::new()
+                ..CollectOptions::default()
             },
         )
         .unwrap();
@@ -3933,7 +3880,7 @@ assert True
                 "_marker = list()\n\n\ndef test_two():\n    pass\n",
             ),
         ]);
-        let options = CollectOptions::new();
+        let options = CollectOptions::default();
 
         let cold = collect(tmp.path(), &[], &worker_python(), 2, &options).unwrap();
         let warm = collect(tmp.path(), &[], &worker_python(), 2, &options).unwrap();
@@ -3973,7 +3920,7 @@ assert True
             2,
             &CollectOptions {
                 keyword: Some("matches_nothing_at_all".to_string()),
-                ..CollectOptions::new()
+                ..CollectOptions::default()
             },
         )
         .expect("a deselected static tree needs no worker");
@@ -3999,7 +3946,7 @@ assert True
             1,
             &CollectOptions {
                 keyword: Some("keep".to_string()),
-                ..CollectOptions::new()
+                ..CollectOptions::default()
             },
         )
         .unwrap();
@@ -4025,7 +3972,7 @@ assert True
         ]);
         let selected = CollectOptions {
             keyword: Some("keep".to_string()),
-            ..CollectOptions::new()
+            ..CollectOptions::default()
         };
 
         let hybrid = collect(tmp.path(), &[], &worker_python(), 2, &selected).unwrap();
@@ -4073,7 +4020,7 @@ assert True
             1,
             &CollectOptions {
                 keyword: Some("matches_nothing_at_all".to_string()),
-                ..CollectOptions::new()
+                ..CollectOptions::default()
             },
         )
         .unwrap();
@@ -4096,7 +4043,7 @@ assert True
             1,
             &CollectOptions {
                 keyword: Some("and".to_string()),
-                ..CollectOptions::new()
+                ..CollectOptions::default()
             },
         )
         .expect_err("a malformed -k is a usage error");
@@ -4116,7 +4063,14 @@ assert True
             ),
         ]);
         // Warm the cache first, then run the whole differential against the warm state.
-        let _ = collect(tmp.path(), &[], &worker_python(), 2, &CollectOptions::new()).unwrap();
+        let _ = collect(
+            tmp.path(),
+            &[],
+            &worker_python(),
+            2,
+            &CollectOptions::default(),
+        )
+        .unwrap();
         differential(&tmp, 2);
     }
 
@@ -4319,7 +4273,7 @@ assert True
             1,
             &CollectOptions {
                 tier: TierMode::DynamicOnly,
-                ..CollectOptions::new()
+                ..CollectOptions::default()
             },
         )
         .unwrap();

@@ -360,7 +360,6 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
                 "tests": files * tests_per_file,
                 "pytest_collect_s": _time_cmd([*pytest_base, "--collect-only"], suite),
                 "pytest_run_s": _time_cmd([*pytest_base, "--tb=no"], suite),
-                # the only way left to measure the legacy engine's timing.
                 # No mode flag: the v2 default path.
                 "rustest_run_s": _time_cmd([*rustest_base, "."], suite),
                 # Cold: the cache directory is removed first, so this is a full parse of

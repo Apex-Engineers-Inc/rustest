@@ -64,7 +64,7 @@ python/rustest/               # Python package (user API)
 ├── decorators.py             # @fixture, @parametrize, @mark, outcome exceptions
 ├── _worker.py                # The worker: collection + execution inside Python
 ├── _builtins.py              # The engine's builtin fixtures (pytest ports)
-├── builtin_fixtures.py       # Public fixture TYPES + MonkeyPatch
+├── builtin_fixtures.py       # MonkeyPatch
 ├── cli.py                    # Command-line interface
 ├── core.py                   # Wrapper around the Rust layer; `run` lives here
 ├── approx.py                 # Numeric comparison helper
@@ -196,7 +196,7 @@ interpreter: the freethreaded and standard builds ship different OpenSSL builds.
 - Follow Ruff formatting and linting rules
 - Use type hints everywhere (checked by basedpyright)
 - Public API is exported from `python/rustest/__init__.py`
-- Decorators go in `decorators.py`, fixtures in `builtin_fixtures.py`
+- Decorators go in `decorators.py`, fixtures in `_builtins.py`
 
 ## Architecture Notes
 
@@ -281,9 +281,9 @@ Tests are run through multiple runners to ensure compatibility:
 4. Update type hints in `python/rustest/rust.pyi` if Rust interaction needed
 
 ### Adding a new built-in fixture
-1. Implement in `python/rustest/builtin_fixtures.py`
-2. Register in the fixtures registry
-3. Add tests in `python/tests/test_builtin_fixtures.py`
+1. Implement in `python/rustest/_builtins.py`
+2. Add its name to `BUILTIN_FIXTURES` there
+3. Add tests in `python/tests/test_builtins.py`
 
 ### Modifying Rust core
 1. Make changes in `src/`

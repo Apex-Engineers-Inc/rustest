@@ -25,9 +25,9 @@
 //!
 //! # Why a port and not a reuse
 //!
-//! `src/mark_expr.rs` is v1's evaluator and understands `and`/`or`/`not` over bare mark
-//! names only — no parentheses, no `-k` substring semantics, no keyword arguments, and no
-//! error messages that match pytest's. `-k`/`-m` errors are **usage errors (exit 4)** whose
+//! A simpler `and`/`or`/`not`-over-mark-names evaluator has no parentheses, no `-k` substring
+//! semantics, no keyword arguments, and no error messages that match pytest's.
+//! `-k`/`-m` errors are **usage errors (exit 4)** whose
 //! wording users grep for, so the port reproduces pytest's `ParseError` text and its
 //! 1-based columns exactly rather than inventing a second dialect.
 //!
@@ -677,15 +677,6 @@ impl Matcher for MarkMatcher<'_> {
 // The deselection pass
 // ---------------------------------------------------------------------------
 
-/// What selection left behind.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Selection {
-    /// The surviving tests, in manifest order.
-    pub kept: Vec<CollectedTest>,
-    /// How many were removed — pytest's `N deselected`.
-    pub deselected: usize,
-}
-
 /// Apply `-k` then `-m`, in `pytest_collection_modifyitems`' order.
 ///
 /// Both arguments are the raw option values.  Two emptiness rules, and they differ, which
@@ -696,22 +687,19 @@ pub struct Selection {
 /// * `-m` is `config.option.markexpr` with no strip at all, so `-m "   "` is truthy,
 ///   compiles to the empty expression, evaluates to `False`, and deselects **everything**
 ///   (probed: exit 5, `1 deselected`).  Only `-m ""` skips filtering.
-pub fn deselect(
-    tests: Vec<CollectedTest>,
+pub fn deselect_in_place(
+    tests: &mut Vec<CollectedTest>,
     keyword: Option<&str>,
     mark: Option<&str>,
-) -> Result<Selection, SelectionError> {
-    let mask = select_mask(&tests, keyword, mark)?;
+) -> Result<usize, SelectionError> {
+    let mask = select_mask(tests, keyword, mark)?;
     let deselected = mask.iter().filter(|keep| !**keep).count();
-    let kept = tests
-        .into_iter()
-        .zip(&mask)
-        .filter_map(|(test, keep)| keep.then_some(test))
-        .collect();
-    Ok(Selection { kept, deselected })
+    let mut keep = mask.into_iter();
+    tests.retain(|_| keep.next().unwrap_or(true));
+    Ok(deselected)
 }
 
-/// The same decision as [`deselect`], expressed as one flag per input test.
+/// The same decision as [`deselect_in_place`], expressed as one flag per input test.
 ///
 /// The execute half needs this shape rather than a filtered `Vec`: it carries a parallel
 /// array saying which *file* each test came from (so a test is dispatched to the worker
@@ -1252,6 +1240,22 @@ mod tests {
         smoke.class_name = Some("TestBox".to_string());
         smoke.marks = vec![mark("smoke")];
         vec![slow, plain, smoke]
+    }
+
+    /// What selection left behind.
+    #[derive(Debug)]
+    struct Selection {
+        kept: Vec<CollectedTest>,
+        deselected: usize,
+    }
+
+    fn deselect(
+        mut kept: Vec<CollectedTest>,
+        keyword: Option<&str>,
+        mark: Option<&str>,
+    ) -> Result<Selection, SelectionError> {
+        let deselected = deselect_in_place(&mut kept, keyword, mark)?;
+        Ok(Selection { kept, deselected })
     }
 
     fn ids(selection: &Selection) -> Vec<&str> {

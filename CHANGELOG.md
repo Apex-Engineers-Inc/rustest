@@ -38,7 +38,7 @@ Read **Breaking changes** first. Several of them will stop a working command lin
 
 ### Breaking changes
 
-Seven, in rough order of how likely they are to reach you.
+Eight, in rough order of how likely they are to reach you.
 
 1. **`--pytest-compat` is removed.** The shim it enabled is now always on, so the flag
    could only ever be a no-op or a lie. Passing it exits **4** (pytest's `USAGE_ERROR`)
@@ -92,6 +92,19 @@ Seven, in rough order of how likely they are to reach you.
    tests under `rustest tests/` that `pytest tests/` never sees. Measured on a real suite,
    where a fixtures directory contributed 13 ids pytest never sees, 4 of them failing.
    Markdown must be **named**: `rustest README.md user_guide/*.md`.
+8. **The public fixture classes are now the classes a test receives.** `rustest.Cache`,
+   `CaptureFixture`, `LogCaptureFixture`, `MockerFixture`, `TmpPathFactory`, `TmpDirFactory`
+   and `FixtureRequest` used to be the previous engine's classes, which no fixture handed
+   out any more; `isinstance(cache, rustest.Cache)` was false. They are now the engine's own,
+   so `type(request) is rustest.FixtureRequest` holds. The cost is the old classes' extra
+   members, none of which a fixture ever exposed: `Cache.makedir` and `cache["key"]`,
+   `caplog.start_capture`, and `rustest.LogRecord` (`caplog.records` holds the standard
+   library's `logging.LogRecord`). In the `pytest` shim, `pytest.Config.getoption` on an
+   unknown option now raises as pytest's does instead of returning `None`,
+   `pytest.TempPathFactory` and `pytest.TempdirFactory` are real classes instead of inert
+   placeholders, and names pytest itself never had (`pytest.capsys`, `pytest.Node`,
+   `pytest.TmpPathFactory`) are gone. `typing-extensions` is no longer a dependency.
+   *Action:* none unless you constructed these classes by hand.
 
 > ### Release note for tooling authors: `--llm` schema 2
 >

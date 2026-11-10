@@ -3,7 +3,6 @@
 This module tests the pytest compatibility features including:
 - pytest.warns() context manager
 - pytest.deprecated_call()
-- capsys and capfd fixtures
 - pytest.param() for parametrize
 - List parametrize (lists treated as tuples)
 - pytest.importorskip()
@@ -11,7 +10,9 @@ This module tests the pytest compatibility features including:
 
 from __future__ import annotations
 
+import sys
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -20,11 +21,10 @@ from rustest.compat.pytest import (
     deprecated_call,
     param,
     importorskip,
-    FixtureRequest,
 )
 from rustest.decorators import parametrize, ParameterSet, Failed, _build_cases
-from rustest.builtin_fixtures import CaptureFixture
-from rustest.fixture_registry import register_fixtures, clear_registry
+
+from .helpers import make_tree, run
 
 
 # =============================================================================
@@ -299,81 +299,6 @@ class TestPytestWarningHierarchy:
         stub = _compat.SomeUnknownPytestThing
         assert not issubclass(stub, Warning)
         assert "rustest compat stub" in repr(stub())
-
-
-# =============================================================================
-# Tests for capsys and capfd fixtures
-# =============================================================================
-
-
-class TestCaptureFixture:
-    """Tests for the CaptureFixture class."""
-
-    def test_capture_fixture_captures_stdout(self):
-        """Test that CaptureFixture captures stdout."""
-        capture = CaptureFixture()
-        capture.start_capture()
-
-        print("hello stdout")
-        out, err = capture.readouterr()
-
-        capture.stop_capture()
-
-        assert out == "hello stdout\n"
-        assert err == ""
-
-    def test_capture_fixture_captures_stderr(self):
-        """Test that CaptureFixture captures stderr."""
-        import sys
-
-        capture = CaptureFixture()
-        capture.start_capture()
-
-        print("hello stderr", file=sys.stderr)
-        out, err = capture.readouterr()
-
-        capture.stop_capture()
-
-        assert out == ""
-        assert err == "hello stderr\n"
-
-    def test_capture_fixture_resets_on_readouterr(self):
-        """Test that readouterr resets the capture buffers."""
-        capture = CaptureFixture()
-        capture.start_capture()
-
-        print("first")
-        out1, _ = capture.readouterr()
-
-        print("second")
-        out2, _ = capture.readouterr()
-
-        capture.stop_capture()
-
-        assert out1 == "first\n"
-        assert out2 == "second\n"
-
-    def test_capture_fixture_context_manager(self):
-        """Test CaptureFixture as context manager."""
-        with CaptureFixture() as capture:
-            print("in context")
-            out, err = capture.readouterr()
-
-        assert out == "in context\n"
-
-    def test_capture_fixture_restores_streams(self):
-        """Test that CaptureFixture restores original streams."""
-        import sys
-
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-
-        capture = CaptureFixture()
-        capture.start_capture()
-        capture.stop_capture()
-
-        assert sys.stdout is original_stdout
-        assert sys.stderr is original_stderr
 
 
 # =============================================================================
@@ -1070,19 +995,41 @@ class TestAsyncioDecorator:
         assert "slow" in mark_names
 
 
-class TestFixtureRequestFallback:
-    """Tests for FixtureRequest.getfixturevalue fallback resolver."""
+def test_public_fixture_classes_are_the_classes_a_test_receives(tmp_path: Path) -> None:
+    """``rustest.X`` / ``pytest.X`` are the real classes, so annotations and ``isinstance`` hold.
 
-    def test_getfixturevalue_uses_python_registry(self):
-        """Ensure fallback resolver passes the active request object."""
-
-        def needs_request(request: FixtureRequest) -> FixtureRequest:
-            return request
-
-        register_fixtures({"needs_request": needs_request})
-        try:
-            request = FixtureRequest()
-            result = request.getfixturevalue("needs_request")
-            assert result is request
-        finally:
-            clear_registry()
+    Run through ``python -m rustest``, not in-process: the worker runs as ``__main__``, and
+    ``FixtureRequest`` is only the class of ``request`` because the worker aliases itself as
+    ``rustest._worker`` -- without that, importing it builds a second, distinct ``SubRequest``.
+    Under real pytest these identities do not hold, which is why this is not a ``tests/`` case.
+    """
+    tree = make_tree(
+        tmp_path,
+        "identity",
+        {
+            "test_identity.py": (
+                "import pytest\n"
+                "import rustest\n"
+                "\n"
+                "def test_identity(\n"
+                "    request, cache, capsys, caplog, tmp_path_factory, tmpdir_factory,\n"
+                "    monkeypatch, pytestconfig, mocker,\n"
+                "):\n"
+                "    assert type(request) is rustest.FixtureRequest is pytest.FixtureRequest\n"
+                "    assert type(request) is rustest._worker.SubRequest\n"
+                "    assert type(cache) is rustest.Cache is pytest.Cache\n"
+                "    assert type(capsys) is rustest.CaptureFixture is pytest.CaptureFixture\n"
+                "    assert type(caplog) is rustest.LogCaptureFixture is pytest.LogCaptureFixture\n"
+                "    assert type(tmp_path_factory) is rustest.TmpPathFactory is pytest.TempPathFactory\n"
+                "    assert type(tmpdir_factory) is rustest.TmpDirFactory is pytest.TempdirFactory\n"
+                "    assert type(monkeypatch) is rustest.MonkeyPatch is pytest.MonkeyPatch\n"
+                "    # rustest exports no public name for `Config`; only the shim does.\n"
+                "    assert type(pytestconfig) is pytest.Config\n"
+                "    # pytest has no `MockerFixture` (pytest-mock's), so only rustest names it.\n"
+                "    assert type(mocker) is rustest.MockerFixture\n"
+            )
+        },
+    )
+    proc = run([sys.executable, "-m", "rustest", "test_identity.py"], tree)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "1 passed" in proc.stdout + proc.stderr

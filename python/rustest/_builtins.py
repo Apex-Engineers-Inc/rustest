@@ -1,20 +1,18 @@
 """The builtin fixtures the worker provides, ported from pytest's own plugins.
 
-Separate from :mod:`rustest.builtin_fixtures` — which was the deleted v1 engine's set, and
-survives only as **public API** (its fixture *types* and :class:`MonkeyPatch` are exported
-and importable) — because three of the fixtures here had to change shape rather than grow:
+Separate from :mod:`rustest.builtin_fixtures`, which holds only :class:`MonkeyPatch` (public
+API, reused by the ``monkeypatch`` fixture below), because three of the fixtures here are
+ports of pytest's own plugins rather than simple stand-ins:
 
-* ``capsys`` moved from "swap ``sys.stdout`` for a ``StringIO``" to pytest's
-  ``SysCapture``/``MultiCapture``/``CaptureFixture`` stack, so that ``capfd`` could be the
-  *same* stack over a different capture class rather than v1's "capfd is an alias for capsys"
-  (`builtin_fixtures.py` l. 443-458, whose own docstring says so);
-* ``caplog`` stopped forcing the root logger to ``DEBUG``.  pytest changes no level at all
+* ``capsys`` is pytest's ``SysCapture``/``MultiCapture``/``CaptureFixture`` stack, so that
+  ``capfd`` is the *same* stack over a different capture class, not an alias for ``capsys``;
+* ``caplog`` does not force the root logger to ``DEBUG``.  pytest changes no level at all
   unless ``log_level`` is configured (`_pytest/logging.py::LoggingPlugin._runtest_for`, which
-  passes ``level=self.log_level`` and that is ``None`` by default), so v1's version captured
-  ``INFO`` records that pytest drops — a *silently different record list*;
-* ``tmpdir`` stopped being its own temporary tree.  pytest's ``tmpdir`` **is** ``tmp_path``
-  (`_pytest/legacypath.py`: ``return legacy_path(tmp_path)``), so a test requesting both got
-  two directories here and one under pytest.
+  passes ``level=self.log_level`` and that is ``None`` by default), so ``INFO`` records that
+  pytest drops are dropped here too;
+* ``tmpdir`` is not its own temporary tree.  pytest's ``tmpdir`` **is** ``tmp_path``
+  (`_pytest/legacypath.py`: ``return legacy_path(tmp_path)``), so a test requesting both gets
+  one directory.
 
 Provenance is per class and cited there.  Everything in this module is a port of pytest
 8.4.2 except :class:`MockerFixture`, which is pytest-mock 3.15.1's.
@@ -24,9 +22,8 @@ this one's top level is on every worker's start-up path.  ``tempfile``, ``shutil
 and ``unittest.mock`` are therefore imported *inside* the objects that need them:
 ``unittest.mock`` is ~10 ms and only a suite using ``mocker`` should pay it, ``shutil``
 drags ``bz2``/``lzma``/``zlib`` behind it and only a suite using a temporary directory
-should.  It is also why this module does not import :mod:`rustest.builtin_fixtures` — the
-one class it borrows from there (``MonkeyPatch``) is imported inside the ``monkeypatch``
-fixture, so the worker's import graph no longer contains v1's fixture module at all.
+should.  :mod:`rustest.builtin_fixtures` is cheap (``inspect``, ``os``, ``sys``) and imports
+nothing from the package, so ``MonkeyPatch`` is imported at the top.
 
 ``logging`` **is** eager, and that is a measured exception rather than an oversight: 4.9 /
 4.5 / 5.6 / 5.0 / 12.3 ms marginal over five runs with ``rustest._worker`` already
@@ -52,14 +49,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from ._warnings import WarningsRecorder
+from .builtin_fixtures import MonkeyPatch
 from .decorators import fixture
-
-if TYPE_CHECKING:
-    from .builtin_fixtures import MonkeyPatch
 
 #: ``py.path.local`` at type-check time, ``Any`` at run time — the ``py`` distribution routes
 #: its submodules through ``apipkg`` shims, so there is no importable ``py/path.py`` source
-#: for a type checker to read (see ``builtin_fixtures.py``'s note on the same warning).
+#: for a type checker to read.
 PyPathLocal = Any
 
 __all__ = [
@@ -75,7 +70,7 @@ __all__ = [
     "SysCapture",
     "TempPathFactory",
     "TempdirFactory",
-    "V2_BUILTIN_FIXTURES",
+    "BUILTIN_FIXTURES",
     "WarningsRecorder",
     "cache",
     "caplog",
@@ -447,7 +442,7 @@ class CaptureFixture:
 
     One class for ``capsys`` and ``capfd``; the difference is entirely the capture class it
     is handed, which is exactly pytest's structure and is the reason ``capfd`` here is not
-    "an alias for capsys" the way v1's was.
+    "an alias for capsys".
     """
 
     def __init__(self, captureclass: type[SysCapture] | type[FdCapture]) -> None:
@@ -690,7 +685,7 @@ class LogCapture:
       worker wire, so ``level`` is always ``None`` here, which is also pytest's default.  It is
       the reason the root logger keeps its ``WARNING`` level and an unqualified
       ``logging.info(...)`` is **not** captured until a test calls
-      :meth:`LogCaptureFixture.set_level` — v1's ``caplog`` forced ``DEBUG`` and captured it.
+      :meth:`LogCaptureFixture.set_level`.
     """
 
     def __init__(self) -> None:
@@ -1048,7 +1043,7 @@ def _mk_tmp(request: Any, factory: TempPathFactory) -> Path:
     """Port of `_pytest/tmpdir.py::_mk_tmp` (l. 248-253).
 
     The directory is named after the **test**, sanitised and truncated to 30 characters, so
-    a failing run leaves a tree an operator can read.  v1 named every directory ``tmp_pathN``.
+    a failing run leaves a tree an operator can read.
     """
     name = request.node.name
     name = re.sub(r"[\W]", "_", name)
@@ -1076,14 +1071,9 @@ def monkeypatch() -> Generator[MonkeyPatch, None, None]:
     """Patch objects, dict items, environment variables, ``sys.path`` and the cwd, undone
     at the end of the test.
 
-    The class is v1's :class:`rustest.builtin_fixtures.MonkeyPatch`, borrowed rather than
-    reimplemented: it has no capture, logging or path semantics for the two engines to
-    diverge on, and one implementation is one thing to keep faithful to
-    `_pytest/monkeypatch.py`.  Imported inside the body so v1's fixture module — which pulls
-    ``shutil`` and ``py`` — stays off every worker's start-up path.
+    The class is :class:`rustest.builtin_fixtures.MonkeyPatch`, a port of
+    `_pytest/monkeypatch.py`.
     """
-    from .builtin_fixtures import MonkeyPatch
-
     patch = MonkeyPatch()
     try:
         yield patch
@@ -1097,7 +1087,7 @@ def tmpdir(tmp_path: Path) -> PyPathLocal:
 
     Port of `_pytest/legacypath.py::tmpdir` — one line, ``return legacy_path(tmp_path)``, and
     the identity is the point: a test requesting both fixtures gets one directory under
-    pytest, and got two under v1's independent ``TmpDirFactory``.
+    pytest.
     """
     return _legacy_path(tmp_path)
 
@@ -1583,7 +1573,7 @@ def recwarn() -> Generator[WarningsRecorder, None, None]:
 #: The fixtures this module contributes, in the order
 #: ``_worker._register_builtin_fixtures`` registers them.  Dependencies first, so the
 #: registration order reads like the dependency order even though the registry does not care.
-V2_BUILTIN_FIXTURES: Final[Sequence[str]] = (
+BUILTIN_FIXTURES: Final[Sequence[str]] = (
     "tmp_path_factory",
     "tmp_path",
     "tmpdir_factory",

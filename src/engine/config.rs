@@ -1066,7 +1066,7 @@ fn getini_bool(cfg: &ConfigDict, name: &str) -> Option<bool> {
 /// `_pytest/pathlib.py::absolutepath` == `Path(os.path.abspath(path))`: join against the
 /// invocation dir when relative, then normalise lexically (no symlink resolution — the
 /// docstring explicitly prefers this over `Path.resolve()`, see pytest #6523).
-fn absolutepath(invocation_dir: &Path, path: &Path) -> PathBuf {
+pub(super) fn absolutepath(invocation_dir: &Path, path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {

@@ -13,7 +13,6 @@ router forwards a flag and nothing about whether the flag works.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -24,23 +23,7 @@ import pytest
 # The compiled extension is built and installed by `python/tests/__init__.py`.
 from rustest import cli
 
-
-def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(text, encoding="utf-8")
-
-
-def _clean_env() -> dict[str, str]:
-    env = dict(os.environ)
-    for leak in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST", "RUSTEST_RUNNING"):
-        _ = env.pop(leak, None)
-    return env
-
-
-def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        argv, cwd=str(cwd), capture_output=True, text=True, env=_clean_env(), check=False
-    )
+from .helpers import make_tree as _tree, run as _run, run_pytest as _pytest
 
 
 def _rustest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -63,25 +46,6 @@ def _summary_line(stderr: str) -> str:
     there still fails.
     """
     return _DURATION_TAIL.sub("", stderr.strip().splitlines()[-1])
-
-
-def _pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    return _run(
-        [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider", *args], tree
-    )
-
-
-def _tree(tmp_path: Path, name: str, files: dict[str, str]) -> Path:
-    """An isolated tree with its own ``pytest.ini``.
-
-    Without one, both runners walk *out* of ``tmp_path`` and land on this repository's
-    ``pyproject.toml``, which makes rootdir the repo root and every node id repo-relative.
-    """
-    tree = tmp_path / name
-    _write(tree / "pytest.ini", "[pytest]\n")
-    for rel, body in files.items():
-        _write(tree / rel, body)
-    return tree
 
 
 #: Four tests, the second and third failing.  The shape every ``-x`` claim below is measured
@@ -146,39 +110,6 @@ def test_the_v2_flag_is_gone_and_is_not_a_removed_flag(tmp_path: Path) -> None:
     assert without.returncode == 0, without.stderr
     assert with_flag.returncode == 4, with_flag.stderr
     assert "unrecognized arguments: --v2" in with_flag.stderr, with_flag.stderr
-
-
-def test_the_v1_flag_is_refused_and_says_what_replaced_it(tmp_path: Path) -> None:
-    """``--v1`` selected the legacy engine until Phase 4 Task 2 deleted it.
-
-    It is a **removed flag** now, not an unrecognised one, and the difference is the whole
-    point: argparse's "unrecognized arguments: --v1" tells a reader whose CI has passed the
-    flag for months nothing about what to do. Exit 4 is pytest's ``USAGE_ERROR``; 2 already
-    means "collection error" in this CLI.
-    """
-    tree = _tree(tmp_path, "legacy", {"test_ok.py": "def test_one():\n    assert True\n"})
-
-    result = _rustest(tree, ["--v1", "--color", "never"])
-
-    assert result.returncode == 4, result.stdout + result.stderr
-    assert "--v1 has been removed" in result.stderr, result.stderr
-    assert "CHANGELOG" in result.stderr, result.stderr
-
-
-def test_pytest_compat_is_rejected_with_pytests_usage_exit(tmp_path: Path) -> None:
-    """The deleted flag exits **4**, not argparse's 2.
-
-    2 already means "collection error" in this CLI's contract, so reusing it for a usage
-    error would make a typo indistinguishable from a broken import.  4 is pytest's
-    ``ExitCode.USAGE_ERROR``.
-    """
-    tree = _tree(tmp_path, "compat", {"test_ok.py": "def test_one():\n    assert True\n"})
-
-    result = _rustest(tree, ["--pytest-compat"])
-
-    assert result.returncode == 4, result.stdout + result.stderr
-    assert "--pytest-compat has been removed" in result.stderr, result.stderr
-    assert "CHANGELOG" in result.stderr, result.stderr
 
 
 def test_pytest_compat_is_rejected_before_it_can_be_read_as_a_path(tmp_path: Path) -> None:
@@ -760,6 +691,7 @@ def test_every_removed_flag_exits_four_and_names_itself(flag: str, tmp_path: Pat
 
     assert result.returncode == 4, result.stdout + result.stderr
     assert f"{flag} has been removed" in result.stderr, result.stderr
+    assert "CHANGELOG" in result.stderr, result.stderr
 
 
 # --------------------------------------------------------------------------------------

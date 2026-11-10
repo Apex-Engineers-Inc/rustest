@@ -12,12 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.100"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
-
-[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -495,7 +489,6 @@ version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37a6df7eab65fc7bee654a421404947e10a0f7085b6951bf2ea395f4659fb0cf"
 dependencies = [
- "anyhow",
  "indoc",
  "libc",
  "memoffset",
@@ -722,11 +715,9 @@ version = "1.0.0-rc.1"
 dependencies = [
  "blake3",
  "pyo3",
- "pyo3-build-config",
  "rayon",
  "ruff_python_ast",
  "ruff_python_parser",
- "ruff_text_size",
  "serde",
  "serde_json",
  "tempfile",

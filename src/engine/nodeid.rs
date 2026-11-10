@@ -27,37 +27,12 @@
 //!   while a function parametrized with an empty-string id keeps its brackets around
 //!   nothing: `@parametrize("s", ["", "a"])` really does emit `test_strings[]`, and pytest
 //!   selects on that id.  `None` and `Some("")` are therefore **distinct, both reachable**
-//!   states, and `split_nodeid` preserves the difference.
+//!   states.
 //!
 //! No escaping happens in this module.  pytest sanitizes ids when it *generates* them
 //! (`_pytest/python.py::IdMaker`), not when it assembles the nodeid; param ids therefore
 //! arrive here pre-formed and are copied verbatim.
 //!
-//! # Why the split rule is what it is
-//!
-//! [`split_nodeid`] cuts the path at the **first** `::`, then treats the **first** `[` in
-//! what remains as the param boundary.  Two nodeids that pytest 8.4.2 really produced
-//! (captured with `pytest --collect-only -q`) rule out the obvious alternatives:
-//!
-//! * `tests/test_a.py::test_top[a::b]` — a param id may contain `::`, so "the first `[`
-//!   after the **last** `::`" finds no bracket at all and mis-splits the id.
-//! * `tests/[dir]/test_b.py::test_in_bracket_dir` — a path may contain `[`, so "the first
-//!   `[` in the whole string" (what `_pytest/main.py::resolve_collection_argument` and
-//!   `_pytest/junitxml.py::mangle_test_address` do, via `partition("[")`) swallows a
-//!   directory name.  pytest gets away with it because those helpers parse
-//!   *command-line arguments*, not collected ids; we need the inverse of [`build_nodeid`]
-//!   to be exact.
-//!
-//! Anchoring the cut to the first `::` keeps both cases whole while agreeing byte for
-//! byte with pytest on every id where the path holds no `[`.  Splitting the path at the
-//! first `::` is pytest's own convention (`_pytest/main.py::resolve_collection_argument`,
-//! `strpath, *parts = base.split("::")`; likewise `_pytest/reports.py::BaseReport.fspath`
-//! and `_pytest/cacheprovider.py`, both `nodeid.split("::")[0]`).
-//!
-//! The param id is then everything between that first `[` and the **final** character of
-//! the nodeid, which must be `]`.  Anchoring the close on the last byte rather than
-//! bracket-matching is what makes unbalanced ids work, and pytest emits those: `ids=["p]q"]`
-//! gives `test_x[p]q]` and `ids=["trail["]` gives `test_y[trail[]`.  Both round-trip here.
 
 /// Build a pytest-byte-compatible nodeid.
 ///
@@ -77,16 +52,16 @@ pub fn build_nodeid(path: &str, parts: &[&str], param_id: Option<&str>) -> Strin
         !path.contains('\\'),
         "nodeid paths must be posix-separated before reaching build_nodeid, got {path:?}"
     );
-    // `split_nodeid` finds the path by cutting at the first `::`, so a path containing one
-    // would be truncated and its tail mistaken for a class chain.
+    // `::` delimits the path from the class chain, so a path containing one would be read
+    // back with its tail mistaken for a class chain.
     debug_assert!(
         !path.contains("::"),
         "a nodeid path may not contain `::` — it delimits the path from the class chain, got {path:?}"
     );
     // pytest hangs the bracket off the *function* name (`_genfunctions`), so a param id
     // with no name to attach to is not a shape pytest can produce.  It is also not
-    // invertible: the bracket would land inside the path segment, where `split_nodeid`
-    // correctly refuses to read it as a param (paths may legitimately contain brackets).
+    // invertible: the bracket would land inside the path segment, where it cannot be read
+    // as a param (paths may legitimately contain brackets).
     debug_assert!(
         param_id.is_none() || !parts.is_empty(),
         "a param id needs a function name to attach to, got path {path:?} with {param_id:?}"
@@ -104,32 +79,6 @@ pub fn build_nodeid(path: &str, parts: &[&str], param_id: Option<&str>) -> Strin
         nodeid.push(']');
     }
     nodeid
-}
-
-/// Inverse of [`build_nodeid`], for tooling and for the conformance harness's diffing:
-/// returns `(path, parts, param_id)`.
-///
-/// The path runs to the first `::`; the param id is the first `[` in the remainder
-/// through the trailing `]`.  A nodeid with no `::` is a bare file id and yields no parts
-/// and no param, even when the path itself contains brackets.  An unterminated `[` is
-/// left in the final part rather than guessed at, so `split_nodeid` is total: it never
-/// panics and `build_nodeid(split_nodeid(id)) == id` for every id `build_nodeid` can emit.
-pub fn split_nodeid(nodeid: &str) -> (String, Vec<String>, Option<String>) {
-    let Some(sep) = nodeid.find("::") else {
-        return (nodeid.to_string(), Vec::new(), None);
-    };
-    let (path, rest) = (&nodeid[..sep], &nodeid[sep + 2..]);
-
-    let (base, param_id) = match rest.find('[') {
-        Some(open) if rest.ends_with(']') => (
-            &rest[..open],
-            Some(rest[open + 1..rest.len() - 1].to_string()),
-        ),
-        _ => (rest, None),
-    };
-
-    let parts = base.split("::").map(str::to_string).collect();
-    (path.to_string(), parts, param_id)
 }
 
 #[cfg(test)]
@@ -233,7 +182,7 @@ mod tests {
     }
 
     /// `::` delimits the path from the class chain, so a path carrying one would be
-    /// truncated by [`split_nodeid`] — the symmetric producer-bug guard to the `\` one.
+    /// read back wrongly — the symmetric producer-bug guard to the `\` one.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "may not contain")]
@@ -261,100 +210,10 @@ mod tests {
     }
 
     #[test]
-    fn split_decomposes_every_table_nodeid() {
-        for (path, parts, param, nodeid) in table() {
-            let (got_path, got_parts, got_param) = split_nodeid(nodeid);
-            assert_eq!(got_path, path, "path of {nodeid:?}");
-            assert_eq!(got_parts, parts, "parts of {nodeid:?}");
-            assert_eq!(got_param.as_deref(), param, "param of {nodeid:?}");
-        }
-    }
-
-    #[test]
-    fn split_round_trips_build_for_every_table_row() {
-        for (path, parts, param, _) in table() {
-            let nodeid = build_nodeid(path, &parts, param);
-            let (got_path, got_parts, got_param) = split_nodeid(&nodeid);
-            let refs: Vec<&str> = got_parts.iter().map(String::as_str).collect();
-            assert_eq!(
-                build_nodeid(&got_path, &refs, got_param.as_deref()),
-                nodeid,
-                "round trip of {nodeid:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn split_treats_bare_file_nodeid_as_path_only() {
-        let (path, parts, param) = split_nodeid("tests/test_a.py");
-        assert_eq!(path, "tests/test_a.py");
-        assert!(parts.is_empty());
-        assert_eq!(param, None);
-    }
-
-    #[test]
-    fn split_keeps_brackets_that_belong_to_the_path() {
-        let (path, parts, param) = split_nodeid("tests/[dir]/test_b.py::test_in_bracket_dir");
-        assert_eq!(path, "tests/[dir]/test_b.py");
-        assert_eq!(parts, vec!["test_in_bracket_dir"]);
-        assert_eq!(param, None);
-    }
-
-    #[test]
-    fn split_takes_the_first_bracket_after_the_path_so_nested_brackets_survive() {
-        let (path, parts, param) = split_nodeid("tests/test_a.py::test_top[data[0]]");
-        assert_eq!(path, "tests/test_a.py");
-        assert_eq!(parts, vec!["test_top"]);
-        assert_eq!(param.as_deref(), Some("data[0]"));
-    }
-
-    #[test]
-    fn split_keeps_double_colons_that_belong_to_the_param_id() {
-        let (path, parts, param) = split_nodeid("tests/test_a.py::test_top[a::b]");
-        assert_eq!(path, "tests/test_a.py");
-        assert_eq!(parts, vec!["test_top"]);
-        assert_eq!(param.as_deref(), Some("a::b"));
-    }
-
-    #[test]
-    fn split_ignores_an_unterminated_bracket() {
-        let (path, parts, param) = split_nodeid("tests/test_a.py::test_top[oops");
-        assert_eq!(path, "tests/test_a.py");
-        assert_eq!(parts, vec!["test_top[oops"]);
-        assert_eq!(param, None);
-    }
-
-    #[test]
     fn build_does_not_escape_param_ids() {
         assert_eq!(
             build_nodeid("t.py", &["test_x"], Some("a b/c\\d::e[f]")),
             "t.py::test_x[a b/c\\d::e[f]]"
         );
-    }
-
-    /// Nodeids observed from pytest 8.4.2 itself (`pytest --collect-only -q`).
-    #[test]
-    fn split_handles_nodeids_captured_from_pytest() {
-        let observed = [
-            "tests/[dir]/test_b.py::test_in_bracket_dir",
-            "tests/test_a.py::test_top[data[0]]",
-            "tests/test_a.py::test_top[x-1]",
-            "tests/test_a.py::test_top[a::b]",
-            "tests/test_a.py::TestBox::TestInner::test_m[data[0]]",
-            "tests/test_a.py::test_plain",
-            "test_p.py::test_strings[]",
-            "test_p.py::test_strings[a]",
-            "test_p.py::test_x[p]q]",
-            "test_p.py::test_y[trail[]",
-        ];
-        for nodeid in observed {
-            let (path, parts, param) = split_nodeid(nodeid);
-            let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-            assert_eq!(
-                build_nodeid(&path, &refs, param.as_deref()),
-                nodeid,
-                "round trip of pytest-observed {nodeid:?}"
-            );
-        }
     }
 }

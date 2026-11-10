@@ -43,12 +43,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# The repo declares no pytest config at all (no ini_options, no pytest.ini, no setup.cfg).
-configured = []
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = []

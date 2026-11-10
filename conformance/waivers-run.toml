@@ -1,42 +1,16 @@
-# Documented divergences between a real pytest run and `rustest --v2`.
+# Documented divergences between a real pytest run and `rustest` (the `--run` gate).
 #
-# This is the Phase 1b.2 full-run gate's ledger, kept separate from waivers.toml (the
-# v1 end-to-end ledger) and waivers-collect.toml (the v2 collection ledger) because
-# an entry in one says nothing about the others. `collection/unittest-basic` is waived
-# for v1 (#129: every unittest outcome graded PASSED), matches under v2-collect, and
-# matches here; `marks/xfail-strict` is waived for v1 (no xfail concept at all) and
-# matches under both v2 gates.
+# Graded: the ORDERED node ids from the schema-v2 report, the seven-value outcome tally
+# (passed/failed/skipped/xfailed/xpassed/error/deselected), and the process exit code.
+# stdout/stderr prose is not compared.
 #
-# Graded: the ORDERED node ids the schema-v2 report carries, the six-value outcome
-# tally (passed/failed/skipped/xfailed/xpassed/error), and the process exit code.
-# Nothing else -- stdout and stderr prose differ from pytest's by design, and worker
-# stderr legitimately carries boundary teardown output on a green run.
-#
-# Every entry MUST carry the mechanism and a file:line. Phase gates shrink this file;
-# a waiver whose case starts matching is reported as a STALE-WAIVER and fails the run.
+# Entry: `"<case path>" = "<mechanism, file:line, and the fix shape>"`. A waiver whose case
+# starts matching is reported as STALE-WAIVER and fails the run, so this file only shrinks;
+# `test_run_ledger_holds_only_adjudicated_waivers` (conformance/tests/test_main.py) pins the
+# set of names.
 #
 # Gate: `uv run python -m conformance --run`
-# Scoreboard at 1b.2: 23 cases -- 23 match, 0 waived, 0 stale-waivers, 0 diverged.
-# Scoreboard at 1c.2: 27 cases -- 24 match, 3 waived, 0 stale-waivers, 0 diverged.
-# Scoreboard at P3.1: 32 cases -- 28 match, 4 waived, 0 stale-waivers, 0 diverged.
-# Scoreboard at P3.2: 34 cases -- 30 match, 4 waived, 0 stale-waivers, 0 diverged.
-#   The two Phase 3 Task 2 additions (conformance/corpus/builtins/*) both MATCH: fd-level
-#   capfd and pytest-faithful caplog levels landed with the builtins they belong to.
-#   Four of the five Phase 3 Task 1 async additions MATCH; the fifth, async/mode-default,
-#   is the ONLY DELIBERATE entry in this file -- a default rustest chose differently, with
-#   every semantic rule of the option ported and matching. See its entry below.
-#
-# THIS FILE WAS EMPTY AT 1b.2 AND IS NO LONGER. All three entries below arrived with the
-# four 1c Task 2 corpus additions: they are shapes the 1b.2 corpus did not contain, not
-# regressions in anything it did. Each was adjudicated on probed evidence and names its
-# own fix shape. The fourth addition, collection/dupe-args, MATCHES.
-#
-# The 1b.2 headline it replaces is still true of the cases it was about: every execution
-# divergence the corpus found in v1 -- #129 (unittest outcomes swallowed), #130 (conftest
-# loaded twice), #131 (skipif ignored), xfail with no outcome to put it in, strict xfail,
-# and the missing exit-5 branch in two cases -- is fixed in v2.
-# `test_run_ledger_holds_only_adjudicated_waivers` in conformance/tests/test_main.py
-# enforces that a new entry still cannot appear quietly: the set is asserted by name.
+
 [cases]
 
 "fixtures/session-scope" = "PARTLY FIXED (Phase 4c). The defect this case was ADDED for -- session scope with a granularity of one FILE -- is CLOSED, and what remains is the cross-WORKER split the architecture has always owned, so the entry is rewritten rather than deleted and the case still fails the ordered-id/tally comparison at the default pool. WAS (1c Task 2): a session-scoped conftest fixture requested by two sibling files was set up TWICE EVEN AT -n 1 -- one worker, both files -- because build_registry rebuilt the conftest chain's FixtureDef objects per file while FixtureRunner._cache keys on FixtureDef IDENTITY (@dataclass(eq=False), deliberately, so it keys the way pytest keys off its own FixtureDef). Two files presented two keys for one fixture, the cache missed, and a yield teardown was queued once per file as well. NOW: python/rustest/_worker.py::conftest_fixturedefs caches each conftest's FixtureDef objects per worker, keyed by (path, sha256 of its bytes), and build_registry composes them into a fresh per-file container. MEASURED ON THIS CASE: `rustest --v2 -n 1` was 1 passed / 1 failed / exit 1 and is now 2 passed / exit 0 -- pytest's answer exactly. WHAT IS LEFT, and why the gate still sees red: a worker is handed a SUBSET of the run's files (src/engine/collect.rs routes by a hash of the file stem) and `workers` is clamped to the file count, so a TWO-file case at the default pool is split across two worker PROCESSES and no worker-level fix can make them share a Python object. This is the same residue async/session-loop-shared measures for the session event LOOP, and closing it means giving the orchestrator cross-worker session scope -- a scheduler change, not a worker change. THE CORPUS CANNOT EXPRESS THE HALF THAT IS FIXED, and that is a property of the instrument, not an excuse: a gate case is graded at the default pool, so any cross-file session assertion is a cross-worker assertion. Adding a case that passes at the default pool would certify a vacuous MATCH. The per-worker contract is therefore pinned against ONE worker in the self-suite -- python/tests/test_worker_execute.py (one instance across two files, narrower scopes still per file, LIFO teardown across the worker's whole history, the #4871 dependent cascade across a file boundary), python/tests/test_worker_fixtures.py (chain-mismatch safety in both directions, cross-chain sharing of a rootdir conftest, byte-identical-or-rebuild) and python/tests/test_worker_asyncio.py (an async session fixture across a file boundary). Seven of those eleven were confirmed to FAIL with the two caches neutralised. Pre-waiver detail: outcomes (passed/failed/skipped/xfailed/xpassed/errors/deselected) pytest=2/0/0/0/0/0/0 v2=1/1/0/0/0/0/0; exit codes pytest=0 v2=1."

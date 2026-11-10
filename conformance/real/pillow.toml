@@ -64,25 +64,9 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# pyproject.toml declares `[tool.pytest]` (addopts = ["-ra", "--color=auto"], testpaths =
-# ["Tests"]) -- NOT `[tool.pytest.ini_options]`. This is pytest 9's native TOML config table
-# (added in pytest 9.0, per direct confirmation while researching psutil's identical pattern);
-# this corpus's oracle pin, pytest==8.4.2, predates that and does not read `[tool.pytest]` at
-# all, so this whole block is silently inert to the pytest leg. tox.ini has no [pytest]
-# section as a fallback (just [testenv] deps/commands: pytest-sugar, numpy, `--dist worksteal
-# --numprocesses auto -W always`, not replayed, same treatment as more-itertools'/tabulate's
-# tox invocations). Both declared flags are cosmetic (verbosity/color) so dropping costs
-# nothing functionally; `testpaths=["Tests"]` is separately covered by `[repo].test_paths`.
-# OPEN ITEM for the implementer: confirm whether rustest's own pyproject-config reader also
-# ignores bare `[tool.pytest]` (matching pytest 8.4.2) or already supports it like pytest 9 --
-# if rustest reads it and pytest 8.4.2 doesn't, that mismatch (e.g. `--color=auto` on one side
-# only) is itself a source of divergence, not just a dropped no-op.
-configured = ["-ra", "--color=auto"]
-replay = []
-dropped = ["-ra", "--color=auto"]
-
 [run]
+# pyproject.toml declares addopts under pytest 9's native `[tool.pytest]` table; the corpus's
+# pytest==8.4.2 oracle does not read that table, so it is inert to the pytest leg.
 pytest_args = []
 rustest_args = []
 timeout_s = 1800

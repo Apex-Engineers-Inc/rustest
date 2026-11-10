@@ -1,48 +1,17 @@
+"""``pytest`` as a test module sees it under rustest.
+
+The worker installs this module as ``sys.modules["pytest"]`` before it imports anything
+(``_worker.install_pytest_shim``), so ``import pytest`` in a suite resolves here. A public
+name is one of three things:
+
+* rustest's own implementation of pytest's (``fixture``, ``mark``, ``param``, ``raises``,
+  ``approx``, ``warns``, ``skip``/``fail``/``xfail``/``exit``, ``importorskip``, ...);
+* the class of the object a builtin fixture really hands a test (``FixtureRequest``,
+  ``CaptureFixture``, ``LogCaptureFixture``, ``Cache``, ``Config``, ``MonkeyPatch``,
+  ``TempPathFactory``, ``TempdirFactory``), so annotations and ``isinstance`` agree;
+* for any other name pytest has, an inert stub class from :func:`__getattr__`, so a plugin
+  that only *imports* a pytest internal still loads.
 """
-Pytest compatibility shim for rustest.
-
-This module provides a pytest-compatible API that translates to rustest
-under the hood. It allows users to run existing pytest test suites with
-rustest by using: rustest --pytest-compat tests/
-
-Supported pytest features:
-- @pytest.fixture() with scopes (function/class/module/session)
-- @pytest.mark.* decorators
-- @pytest.mark.parametrize()
-- @pytest.mark.skip() and @pytest.mark.skipif()
-- @pytest.mark.asyncio (from pytest-asyncio plugin)
-- pytest.raises()
-- pytest.approx()
-- Type annotations: pytest.FixtureRequest, pytest.MonkeyPatch, pytest.TmpPathFactory,
-  pytest.TmpDirFactory, pytest.ExceptionInfo
-- Built-in fixtures: tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, monkeypatch, request
-
-Note: The request fixture is a basic stub with limited functionality. Many attributes
-will have default/None values. It's provided for compatibility, not full pytest features.
-
-Not supported (with clear error messages):
-- Fixture params (@pytest.fixture(params=[...]))
-- Some built-in fixtures (capsys, capfd, caplog, etc.)
-- Assertion rewriting
-- Other pytest plugins
-
-Usage:
-    # Instead of modifying your tests, just run:
-    $ rustest --pytest-compat tests/
-
-    # Your existing pytest tests will run with rustest:
-    import pytest  # This gets intercepted
-
-    @pytest.fixture
-    def database():
-        return Database()
-
-    @pytest.mark.parametrize("value", [1, 2, 3])
-    def test_values(value):
-        assert value > 0
-"""
-
-# pyright: reportMissingImports=false
 
 from __future__ import annotations
 
@@ -51,7 +20,7 @@ import sys
 import warnings
 from pprint import pformat
 from re import Pattern
-from typing import Any, Callable, NoReturn, TypeVar, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NoReturn
 
 # Import rustest's actual implementations
 from rustest.decorators import (
@@ -70,20 +39,21 @@ from rustest.decorators import (
     ExceptionInfo,
     ParameterSet,
 )
-from rustest._warnings import WarningsRecorder as _WarningsRecorder
-from rustest.approx import approx as _rustest_approx
-from rustest.builtin_fixtures import (
+from rustest._builtins import (
     Cache,
     CaptureFixture,
+    Config,
     LogCaptureFixture,
-    MonkeyPatch,
-    TmpPathFactory,
-    TmpDirFactory,
-    cache,
-    caplog,
-    capsys,
-    capfd,
+    TempdirFactory,
+    TempPathFactory,
 )
+from rustest._warnings import WarningsRecorder as _WarningsRecorder
+from rustest.approx import approx as _rustest_approx
+from rustest.builtin_fixtures import MonkeyPatch
+
+if TYPE_CHECKING:
+    # Bound at run time by `__getattr__`: `_worker` imports this module at its top level.
+    from rustest._worker import SubRequest as FixtureRequest
 
 __all__ = [
     "fixture",
@@ -117,461 +87,19 @@ __all__ = [
     "PytestUnhandledThreadExceptionWarning",
     "PytestUnknownMarkWarning",
     "PytestUnraisableExceptionWarning",
+    # The classes of what the builtin fixtures hand a test.
     "Cache",
     "CaptureFixture",
-    "LogCaptureFixture",
-    "FixtureRequest",
-    "Node",
     "Config",
+    "FixtureRequest",
+    "LogCaptureFixture",
     "MonkeyPatch",
-    "TmpPathFactory",
-    "TmpDirFactory",
+    "TempPathFactory",
+    "TempdirFactory",
     "ExceptionInfo",
-    "cache",
-    "caplog",
-    "capsys",
-    "capfd",
     # Pytest plugin decorator
     "hookimpl",
 ]
-
-# Type variable for generic functions
-F = TypeVar("F", bound=Callable[..., Any])
-
-
-class MarkerDict(TypedDict):
-    """Type definition for marker dictionaries."""
-
-    name: str
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-
-
-class Node:
-    """Pytest-compatible Node representing a test or collection node.
-
-    Supports: name, nodeid, get_closest_marker(), add_marker(), keywords, config.
-    Not implemented: parent, session (always None).
-    """
-
-    def __init__(
-        self,
-        name: str = "",
-        nodeid: str = "",
-        markers: list[MarkerDict] | None = None,
-        config: Any = None,
-    ) -> None:
-        """Initialize a Node.
-
-        Args:
-            name: Name of the test/node
-            nodeid: Full identifier for the test (e.g., "tests/test_foo.py::test_bar")
-            markers: List of marker dictionaries
-            config: Associated Config object
-        """
-        super().__init__()
-        self.name: str = name
-        self.nodeid: str = nodeid
-        self._markers: list[MarkerDict] = markers or []
-        self.config: Any = config
-        self.parent: Any = None
-        self.session: Any = None
-        # Keywords dict for pytest compatibility
-        self.keywords: dict[str, Any] = {}
-        # Add markers to keywords
-        for marker in self._markers:
-            if "name" in marker:
-                self.keywords[marker["name"]] = True
-
-    def get_closest_marker(self, name: str) -> Any:
-        """Get the closest marker with the given name, or None if not found."""
-        # Find the first marker with the given name
-        for marker in reversed(self._markers):  # Start from most recently added
-            if marker.get("name") == name:
-                # Return a simple object with args and kwargs attributes
-                return _MarkerInfo(
-                    name=name,
-                    args=marker.get("args", ()),
-                    kwargs=marker.get("kwargs", {}),
-                )
-        return None
-
-    def add_marker(self, marker: Any, append: bool = True) -> None:
-        """Add a marker to this node."""
-        marker_dict: MarkerDict
-
-        # Handle string markers
-        if isinstance(marker, str):
-            marker_dict = {"name": marker, "args": (), "kwargs": {}}
-        # Handle ParameterSet/MarkDecorator objects
-        elif hasattr(marker, "__rustest_marks__"):
-            # This is a decorated object with marks
-            marks: list[Any] = getattr(marker, "__rustest_marks__", [])
-            for mark in marks:
-                if append:
-                    self._markers.append(mark)
-                else:
-                    self._markers.insert(0, mark)
-                # Add to keywords
-                if "name" in mark and isinstance(mark.get("name"), str):
-                    name_str: str = mark["name"]
-                    self.keywords[name_str] = True
-            return
-        # Handle mark objects with name/args/kwargs
-        elif hasattr(marker, "name"):
-            marker_dict = {
-                "name": str(marker.name),
-                "args": getattr(marker, "args", ()),
-                "kwargs": getattr(marker, "kwargs", {}),
-            }
-        # Handle dict markers directly
-        elif isinstance(marker, dict):
-            # Validate and normalize the dict
-            # Type ignores needed for untyped dict from external sources
-            marker_dict = {
-                "name": str(marker.get("name", "")),  # type: ignore[arg-type]
-                "args": cast(tuple[Any, ...], marker.get("args", ())),  # type: ignore[reportUnknownMemberType]
-                "kwargs": cast(dict[str, Any], marker.get("kwargs", {})),  # type: ignore[reportUnknownMemberType]
-            }
-        else:
-            # Unknown marker type - try to extract what we can
-            marker_dict = {"name": str(marker), "args": (), "kwargs": {}}
-
-        if append:
-            self._markers.append(marker_dict)
-        else:
-            self._markers.insert(0, marker_dict)
-
-        # Add to keywords
-        name = marker_dict["name"]
-        if name:  # name is now guaranteed to be str
-            self.keywords[name] = True
-
-    def listextrakeywords(self) -> set[str]:
-        """Return a set of extra keywords/markers for this node.
-
-        Returns:
-            Set of marker/keyword names
-        """
-        return set(self.keywords.keys())
-
-
-class _MarkerInfo:
-    """Simple marker info object returned by get_closest_marker()."""
-
-    def __init__(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        super().__init__()
-        self.name = name
-        self.args = args
-        self.kwargs = kwargs
-
-    def __repr__(self) -> str:
-        return f"Mark(name={self.name!r}, args={self.args!r}, kwargs={self.kwargs!r})"
-
-
-class Config:
-    """Pytest-compatible Config for accessing test configuration.
-
-    Supports: getoption(), getini(), rootpath, inipath, pluginmanager, option.
-    """
-
-    def __init__(
-        self, options: dict[str, Any] | None = None, ini_values: dict[str, Any] | None = None
-    ) -> None:
-        """Initialize a Config.
-
-        Args:
-            options: Dictionary of command-line options
-            ini_values: Dictionary of ini configuration values
-        """
-        super().__init__()
-        self._options: dict[str, Any] = options or {}
-        self._ini_values: dict[str, Any] = ini_values or {}
-
-        # Create option namespace for compatibility
-        self.option = _OptionNamespace(self._options)
-
-        # Stub pluginmanager
-        self.pluginmanager = _PluginManagerStub()
-
-        # Paths
-        from pathlib import Path
-
-        self.rootpath: Path = Path.cwd()
-        self.inipath: Path | None = None
-
-    def getoption(self, name: str, default: Any = None, skip: bool = False) -> Any:
-        """Get command-line option value, or default if not found."""
-        # Remove leading dashes from option name
-        clean_name = name.lstrip("-")
-
-        value = self._options.get(clean_name, default)
-
-        if skip and value == default and clean_name not in self._options:
-            # Import skip function from rustest
-            from rustest.decorators import skip as skip_test
-
-            skip_test(f"Option '{name}' not found")
-
-        return value
-
-    def getini(self, name: str) -> Any:
-        """Get configuration value from pytest.ini/setup.cfg/tox.ini."""
-        value = self._ini_values.get(name)
-
-        # Return appropriate default based on common ini values
-        if value is None:
-            # Common list-type ini values
-            if name in {
-                "testpaths",
-                "python_files",
-                "python_classes",
-                "python_functions",
-                "markers",
-                "filterwarnings",
-            }:
-                return []
-            # Common string-type ini values
-            return ""
-
-        return value
-
-    def addinivalue_line(self, name: str, line: str) -> None:
-        """Add a line to an ini-file option.
-
-        This is a no-op in rustest for compatibility.
-
-        Args:
-            name: Option name
-            line: Line to add
-        """
-        # No-op for compatibility
-        pass
-
-
-class _OptionNamespace:
-    """Namespace object for accessing options as attributes."""
-
-    def __init__(self, options: dict[str, Any]) -> None:
-        super().__init__()
-        self._options = options
-
-    def __getattr__(self, name: str) -> Any:
-        return self._options.get(name)
-
-    def __repr__(self) -> str:
-        return f"Namespace({self._options})"
-
-
-class _PluginManagerStub:
-    """Stub PluginManager for basic compatibility."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._plugins: list[Any] = []
-
-    def get_plugin(self, name: str) -> Any:
-        """Get plugin by name (always returns None)."""
-        return None
-
-    def hasplugin(self, name: str) -> bool:
-        """Check if plugin is registered (always returns False)."""
-        return False
-
-    def register(self, plugin: Any, name: str | None = None) -> None:
-        """Register a plugin (no-op for compatibility)."""
-        pass
-
-    def __repr__(self) -> str:
-        return "<PluginManager (stub)>"
-
-
-class FixtureRequest:
-    """Pytest-compatible FixtureRequest for fixture parametrization.
-
-    Supports: param, scope, node, config, getfixturevalue().
-    Not implemented: function, cls, module, fixturename (always None),
-    addfinalizer() (raises NotImplementedError).
-    """
-
-    def __init__(
-        self,
-        param: Any = None,
-        node_name: str = "",
-        nodeid: str | None = None,
-        node_markers: list[MarkerDict] | None = None,
-        config_options: dict[str, Any] | None = None,
-    ) -> None:
-        """Initialize a FixtureRequest.
-
-        Args:
-            param: The parameter value for parametrized fixtures
-            node_name: Name of the current test node
-            nodeid: Fully-qualified identifier for the current test node
-            node_markers: List of markers applied to the node
-            config_options: Dictionary of configuration options
-        """
-        super().__init__()
-        self.param: Any = param
-        self.fixturename: str | None = None
-        self.scope: str = "function"
-
-        # Create Config and Node objects
-        self.config: Config = Config(options=config_options)
-        node_identifier = nodeid or node_name
-        self.node: Node = Node(
-            name=node_name,
-            nodeid=node_identifier,
-            markers=node_markers,
-            config=self.config,
-        )
-
-        # These remain unsupported
-        self.function: Any = None
-        self.cls: Any = None
-        self.module: Any = None
-
-        # Cache for executed fixtures (per-test)
-        self._executed_fixtures: dict[str, Any] = {}
-
-    def addfinalizer(self, finalizer: Callable[[], None]) -> None:
-        """Not supported — use yield-based fixture teardown instead. Always raises NotImplementedError."""
-        msg = (
-            "request.addfinalizer() is not supported in rustest pytest-compat mode.\n"
-            "\n"
-            "Workaround: Use fixture teardown with yield:\n"
-            "  @pytest.fixture\n"
-            "  def my_fixture():\n"
-            "      resource = setup()\n"
-            "      yield resource\n"
-            "      teardown(resource)  # Runs after test\n"
-            "\n"
-            "For full pytest features, use pytest directly or migrate to native rustest."
-        )
-        raise NotImplementedError(msg)
-
-    def getfixturevalue(self, name: str) -> Any:
-        """Get the value of another fixture by name, resolving dependencies recursively.
-
-        **This is not the path a rustest run takes.** The worker builds its own
-        ``FixtureRequest`` with its own ``getfixturevalue``
-        (``python/rustest/_worker.py``), backed by the real fixture graph it assembled for
-        the file. This class is the compat shim's ``pytest.FixtureRequest``, reached when the
-        shim is imported *outside* a worker -- under real pytest, or from library code --
-        so the Python-side registry is the whole resolver here.
-
-        It used to try ``rustest.rust.getfixturevalue`` first, a PyO3 function backed by v1's
-        executor thread-local. That engine is gone; the branch it fed went with it.
-        """
-        # Check cache first
-        if name in self._executed_fixtures:
-            return self._executed_fixtures[name]
-
-        # Import and use the fixture registry fallback
-        from rustest.fixture_registry import resolve_fixture
-
-        try:
-            # Resolve the fixture (handles dependencies and caching)
-            result = resolve_fixture(
-                name,
-                self._executed_fixtures,
-                request_obj=self,
-            )
-            return result
-        except ValueError as e:
-            # Fixture not found
-            raise ValueError(f"fixture '{name}' not found") from e
-        except NotImplementedError:
-            # Async fixture
-            raise
-
-    def applymarker(self, marker: Any) -> None:
-        """
-        Apply a marker to the test.
-
-        Supports skip, skipif, and xfail markers. Other markers are stored but ignored.
-
-        Args:
-            marker: Marker to apply (can be string name or marker object)
-
-        Raises:
-            Skipped: If skip or skipif marker is applied and condition is met
-
-        Example:
-            def test_dynamic_skip(request):
-                if not has_required_library():
-                    request.applymarker(pytest.mark.skip(reason="Library not available"))
-        """
-        # First, check if this is a skip decorator function (from pytest.mark.skip)
-        # These are created by skip_decorator() and have __rustest_skip__ attribute
-        if callable(marker) and hasattr(marker, "__name__") and marker.__name__ == "decorator":
-            # This might be a skip decorator - try to apply it to a dummy function
-            # to extract the skip reason
-            def dummy():
-                pass
-
-            try:
-                decorated = marker(dummy)
-                if hasattr(decorated, "__rustest_skip__"):
-                    # This is a skip decorator - extract the reason and skip
-                    reason = getattr(decorated, "__rustest_skip__", "")
-                    _rustest_skip_function(reason=reason)
-                    return
-            except (_rustest_Skipped, _rustest_XFailed, _rustest_Failed):
-                # Re-raise test control exceptions
-                raise
-            except Exception:
-                # Swallow other exceptions (e.g., if marker() fails)
-                pass
-
-        # Add the marker to the node
-        self.node.add_marker(marker)
-
-        # Handle MarkDecorator objects (have name, args, kwargs attributes)
-        if hasattr(marker, "name"):
-            marker_name = str(getattr(marker, "name"))
-
-            if marker_name == "skip":
-                # Extract reason from marker
-                reason = getattr(marker, "kwargs", {}).get("reason", "")
-                _rustest_skip_function(reason=reason)
-
-            elif marker_name == "skipif":
-                # Extract condition from args
-                args = getattr(marker, "args", ())
-                if args and len(args) > 0:
-                    condition = args[0]
-                    if condition:
-                        # Condition is met, skip the test
-                        reason = getattr(marker, "kwargs", {}).get("reason", "")
-                        _rustest_skip_function(reason=reason)
-
-            elif marker_name == "xfail":
-                # Store xfail marker for potential later handling
-                # For now, just add it to the node - the test will run normally
-                pass
-
-            # Other markers (slow, integration, etc.) are just stored on the node
-            # No action needed - they're for pytest plugins which rustest doesn't support
-
-    def raiseerror(self, msg: str | None) -> None:
-        """
-        Raise an error with the given message.
-
-        NOT SUPPORTED in rustest pytest-compat mode.
-
-        Raises:
-            NotImplementedError: Always raised with helpful message
-        """
-        error_msg = (
-            "request.raiseerror() is not supported in rustest pytest-compat mode.\n"
-            "\n"
-            "For full pytest features, use pytest directly or migrate to native rustest."
-        )
-        raise NotImplementedError(error_msg)
-
-    def __repr__(self) -> str:
-        return "<FixtureRequest (rustest compat stub - limited functionality)>"
 
 
 def hookimpl(*args: Any, **kwargs: Any) -> Any:
@@ -593,66 +121,8 @@ def hookimpl(*args: Any, **kwargs: Any) -> Any:
         return decorator
 
 
-def fixture(
-    func: F | None = None,
-    *,
-    scope: str = "function",
-    params: Any = None,
-    autouse: bool = False,
-    ids: Any = None,
-    name: str | None = None,
-) -> F | Callable[[F], F]:
-    """
-    Pytest-compatible fixture decorator.
-
-    Maps to rustest.fixture with full support for fixture parametrization.
-
-    Supported:
-        - scope: function/class/module/session
-        - autouse: True/False
-        - name: Override fixture name
-        - params: List of parameter values for fixture parametrization
-        - ids: Custom IDs for each parameter value
-
-    Examples:
-        @pytest.fixture
-        def simple_fixture():
-            return 42
-
-        @pytest.fixture(scope="module")
-        def database():
-            db = Database()
-            yield db
-            db.close()
-
-        @pytest.fixture(autouse=True)
-        def setup():
-            setup_environment()
-
-        @pytest.fixture(name="db")
-        def _database_fixture():
-            return Database()
-
-        @pytest.fixture(params=[1, 2, 3])
-        def number(request):
-            return request.param
-
-        @pytest.fixture(params=["mysql", "postgres"], ids=["MySQL", "PostgreSQL"])
-        def database_type(request):
-            return request.param
-    """
-    # Map to rustest fixture - handle both @pytest.fixture and @pytest.fixture()
-    if func is not None:
-        # Called as @pytest.fixture (without parentheses)
-        return _rustest_fixture(
-            func, scope=scope, autouse=autouse, name=name, params=params, ids=ids
-        )
-    else:
-        # Called as @pytest.fixture(...) (with parentheses)
-        return _rustest_fixture(scope=scope, autouse=autouse, name=name, params=params, ids=ids)  # type: ignore[return-value]
-
-
 # Direct mappings - these already have identical signatures
+fixture = _rustest_fixture
 parametrize = _rustest_parametrize
 raises = _rustest_raises
 approx = _rustest_approx
@@ -756,12 +226,6 @@ class _PytestMarkCompat:
         """Delegate all mark.* access to rustest.mark.*"""
         return getattr(_rustest_mark, name)
 
-    # Explicitly expose common marks for better IDE support
-    @property
-    def parametrize(self) -> Any:
-        """Alias for @pytest.mark.parametrize (same as top-level parametrize)."""
-        return _rustest_mark.parametrize
-
     @property
     def skip(self) -> Any:
         """Mark test as skipped, bare (``@pytest.mark.skip``) or called with a reason.
@@ -769,21 +233,6 @@ class _PytestMarkCompat:
         Maps to rustest's ``skip_decorator()``.
         """
         return self._skip
-
-    @property
-    def skipif(self) -> Any:
-        """Conditional skip decorator. Bare, it is an unconditional skip, as in pytest."""
-        return _rustest_mark.skipif
-
-    @property
-    def xfail(self) -> Any:
-        """Mark test as expected to fail. Usable bare or called."""
-        return _rustest_mark.xfail
-
-    @property
-    def asyncio(self) -> Any:
-        """Mark async test to run with asyncio."""
-        return _rustest_mark.asyncio
 
 
 # Create the mark instance
@@ -805,15 +254,11 @@ def param(*values: Any, id: str | None = None, marks: Any = None, **kwargs: Any)
     Args:
         *values: The parameter values for this test case
         id: Optional custom test ID for this parameter set
-        marks: Optional marks to apply (currently ignored with a warning)
+        marks: Marks applied to **this parameter set alone**, as in pytest
+            (`_pytest/mark/structures.py::ParameterSet.param`)
 
     Returns:
         A ParameterSet object that will be handled by parametrize
-
-    Note:
-        ``marks`` is applied to **that parameter set alone**, as in pytest
-        (`_pytest/mark/structures.py::ParameterSet.param`). It was accepted and ignored
-        (with a warning) until Phase 4 Task 1.
     """
     return ParameterSet(values=values, id=id, marks=marks)
 
@@ -1255,50 +700,27 @@ def importorskip(
 
 
 def install_pytest_stubs() -> None:
+    """Install the ``_pytest`` stub modules, so ``from _pytest.config import Config`` and
+    similar imports load (each stub warns that ``_pytest`` is pytest's private API).
+
+    Does nothing when the real ``_pytest`` package is already imported, i.e. when real
+    pytest is the runner.
     """
-    Install _pytest stub modules for compatibility with projects that import from _pytest.
+    if "_pytest" in sys.modules and hasattr(sys.modules["_pytest"], "__path__"):
+        return
 
-    This allows common imports like:
-      from _pytest import monkeypatch
-      from _pytest.config import Config
-      from _pytest.outcomes import Failed, Skipped
-    to work without ModuleNotFoundError, while showing deprecation warnings.
+    from rustest import _pytest_stub
 
-    This should only be called when --pytest-compat mode is explicitly enabled.
-    """
-    import sys
-
-    # Check if pytest is already imported (meaning pytest is the runner, not rustest)
-    _pytest_is_real = "_pytest" in sys.modules and hasattr(sys.modules.get("_pytest"), "__path__")
-
-    if not _pytest_is_real:
-        # Install our stub modules only if pytest is not running
-        try:
-            from rustest import _pytest_stub
-
-            sys.modules["_pytest"] = _pytest_stub
-            sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch
-            sys.modules["_pytest.config"] = _pytest_stub.config
-            sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes
-            sys.modules["_pytest.nodes"] = _pytest_stub.nodes
-            sys.modules["_pytest.mark"] = _pytest_stub.mark
-            sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures
-            sys.modules["_pytest.assertion"] = _pytest_stub.assertion
-            sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite
-            sys.modules["_pytest.main"] = _pytest_stub.main
-        except ImportError as e:
-            # _pytest_stub not available (shouldn't happen in normal operation)
-            import warnings
-
-            warnings.warn(
-                (
-                    f"Failed to install _pytest stub modules: {e}. "
-                    "Tests that import from _pytest will fail. "
-                    "This is an internal rustest error - please report it."
-                ),
-                RuntimeWarning,
-                stacklevel=2,
-            )
+    sys.modules["_pytest"] = _pytest_stub
+    sys.modules["_pytest.monkeypatch"] = _pytest_stub.monkeypatch
+    sys.modules["_pytest.config"] = _pytest_stub.config
+    sys.modules["_pytest.outcomes"] = _pytest_stub.outcomes
+    sys.modules["_pytest.nodes"] = _pytest_stub.nodes
+    sys.modules["_pytest.mark"] = _pytest_stub.mark
+    sys.modules["_pytest.mark.structures"] = _pytest_stub.mark.structures
+    sys.modules["_pytest.assertion"] = _pytest_stub.assertion
+    sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite
+    sys.modules["_pytest.main"] = _pytest_stub.main
 
 
 # Module-level version to match pytest
@@ -1317,6 +739,13 @@ def __getattr__(name: str) -> Any:
 
     This is the recommended Python 3.7+ way to handle "catch-all" module imports.
     """
+    if name == "FixtureRequest":
+        # The class of every `request` a test receives. Imported here rather than at the
+        # top because `_worker` imports this module at its own top level.
+        from rustest._worker import SubRequest
+
+        return SubRequest
+
     # Check if we've already created this stub
     if name in _dynamic_stubs:
         return _dynamic_stubs[name]

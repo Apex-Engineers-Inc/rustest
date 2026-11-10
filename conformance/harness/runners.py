@@ -67,38 +67,13 @@ _SECTION_BOUNDARY_RE = re.compile(r"^=+ .+ =+$")
 
 
 @dataclass(frozen=True)
-class Outcomes:
-    """Everything :func:`parse_pytest_summary` can read off a pytest summary line.
-
-    A *parse* result, not a graded contract: the run gate reshapes it into
-    :class:`RunOutcomes` (the seven counts it actually diffs) and drops ``exit_code`` and
-    ``collection_error``, which belong to :class:`FullRunResult`.
-
-    The three defaulted fields are defaulted for a history reason worth keeping: they were
-    appended rather than slotted in beside ``skipped`` so the v1 gate's positional
-    construction kept working. That gate is gone (Phase 4 Task 2), the defaults are now
-    merely harmless, and every caller passes all nine.
-    """
-
-    passed: int
-    failed: int
-    skipped: int
-    errors: int
-    exit_code: int
-    collection_error: bool
-    xfailed: int = 0
-    xpassed: int = 0
-    deselected: int = 0
-
-
-@dataclass(frozen=True)
 class RunOutcomes:
     """The seven graded counts schema v2 carries -- the tally half of the run gate.
 
     Field order mirrors the schema-v2 ``summary`` object's own field order, so the
     legend printed on a divergence reads like the report it came from.
 
-    Deliberately its own type rather than a reuse of :class:`Outcomes`. Six *outcome*
+    Six *outcome*
     buckets is the point: schema v1's three statuses had nowhere to put an X, which is
     exactly how ``marks/xfail`` graded as an ordinary failure and ``xpassed`` was
     invisible (Task 4 report §5.1). A tally that silently dropped either would make the
@@ -262,52 +237,29 @@ def parse_pytest_collect(text: str) -> list[str]:
     return ids
 
 
-def parse_pytest_summary(text: str, exit_code: int) -> Outcomes:
+def parse_pytest_summary(text: str) -> RunOutcomes:
     """Extract the outcome tally from a pytest terminal summary line.
 
     Six buckets, because pytest reports six: ``xfailed`` and ``xpassed`` are their own
     categories and folding either into ``skipped``/``passed`` is precisely what made an
     X invisible under schema v1. ``deselected`` rides along as a seventh count -- not an
     outcome, but the only evidence that an absent id was *chosen* against rather than
-    never seen. The v1 gate still grades only the four buckets it can represent (see
-    :class:`Outcomes`); the full-run gate grades all seven.
+    never seen.
     """
-    counts = {
-        "passed": 0,
-        "failed": 0,
-        "skipped": 0,
-        "errors": 0,
-        "xfailed": 0,
-        "xpassed": 0,
-        "deselected": 0,
-    }
     for line in reversed(text.splitlines()):
-        found: dict[str, int] = {}
-        for match in _SUMMARY_RE.finditer(line):
-            number: str = match.group(1)
-            kind: str = match.group(2)
-            found[kind] = int(number)
+        found = {m.group(2): int(m.group(1)) for m in _SUMMARY_RE.finditer(line)}
         if found:
-            counts["passed"] = found.get("passed", 0)
-            counts["failed"] = found.get("failed", 0)
-            counts["skipped"] = found.get("skipped", 0)
-            counts["xfailed"] = found.get("xfailed", 0)
-            counts["xpassed"] = found.get("xpassed", 0)
-            counts["deselected"] = found.get("deselected", 0)
-            # pytest writes "1 error" but "2 errors"; both mean the same bucket.
-            counts["errors"] = found.get("error", 0) + found.get("errors", 0)
-            break
-    return Outcomes(
-        passed=counts["passed"],
-        failed=counts["failed"],
-        skipped=counts["skipped"],
-        errors=counts["errors"],
-        exit_code=exit_code,
-        collection_error=exit_code == 2,
-        xfailed=counts["xfailed"],
-        xpassed=counts["xpassed"],
-        deselected=counts["deselected"],
-    )
+            return RunOutcomes(
+                passed=found.get("passed", 0),
+                failed=found.get("failed", 0),
+                skipped=found.get("skipped", 0),
+                xfailed=found.get("xfailed", 0),
+                xpassed=found.get("xpassed", 0),
+                # pytest writes "1 error" but "2 errors"; both mean the same bucket.
+                errors=found.get("error", 0) + found.get("errors", 0),
+                deselected=found.get("deselected", 0),
+            )
+    return RunOutcomes(0, 0, 0, 0, 0, 0, 0)
 
 
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -327,40 +279,15 @@ def _check_pytest_exit(proc: subprocess.CompletedProcess[str], phase: str) -> No
     itself could not do its job, and silently parsing an empty summary out of
     those would fabricate a 0/0/0/0 result. Raising routes them to
     ``_grade_one``'s harness-error channel instead.
+
+    The same guard serves ``--collect-only`` (``phase="collect"``), where the gradeable
+    codes are 0, 2 and 5 -- and **1**, which is reachable there: a failed collect report
+    increments ``Session.testsfailed`` and, with ``--continue-on-collection-errors``, no
+    ``Interrupted`` is raised, so pytest exits ``TESTS_FAILED``. Probed on pytest 8.4.2
+    (see ``test_runners.py``); the guard lets 1 through deliberately.
     """
     if proc.returncode >= 3 and proc.returncode != 5:
         raise RuntimeError(f"pytest {phase} failed (exit {proc.returncode}): {proc.stderr[-500:]}")
-
-
-def _check_pytest_collect_exit(proc: subprocess.CompletedProcess[str]) -> None:
-    """Raise on a pytest *collect* fault, leaving real collection outcomes alone.
-
-    Under ``--collect-only`` the gradeable codes are 0 (collected), 2 (a file failed
-    to import) and 5 (nothing collected -- an empty tree, or everything deselected by
-    ``-m``). All three are codes the ``--collect-only`` surface also produces, so
-    the grader must see them. Codes 3 (internal error) and 4 (usage error) mean pytest
-    never collected at all; parsing zero ids out of that would fabricate a divergence
-    with no explanation, so they route to ``_grade_one_collect``'s harness-error
-    channel.
-
-    **Exit 1 is reachable here and is deliberately passed through.** An earlier version of
-    this docstring claimed it "cannot occur -- no test is ever run", which is false: a
-    failed collect report increments ``Session.testsfailed``, and with
-    ``--continue-on-collection-errors`` no ``Interrupted`` is raised, so ``wrap_session``
-    falls through to ``ExitCode.TESTS_FAILED``. Probed on pytest 8.4.2 with one broken
-    import beside one healthy file::
-
-        pytest --collect-only -q                                    -> exit 2
-        pytest --collect-only -q --continue-on-collection-errors     -> exit 1
-
-    The guard already lets 1 through, so the behaviour was right and only the reasoning was
-    wrong -- which is the more dangerous of the two, because the next person to widen this
-    condition would have widened it on a false premise. No corpus case passes that flag
-    today; one that did would be graded, and would diverge on the exit code, since v2 has
-    no such option.
-    """
-    if proc.returncode >= 3 and proc.returncode != 5:
-        raise RuntimeError(f"pytest collect failed (exit {proc.returncode}): {proc.stderr[-500:]}")
 
 
 def _isolate_case(case_dir: Path, dest_parent: Path) -> Path:
@@ -435,7 +362,7 @@ def run_pytest_collect(case_dir: Path, args: list[str]) -> CollectResult:
             ],
             work,
         )
-        _check_pytest_collect_exit(proc)
+        _check_pytest_exit(proc, "collect")
     return CollectResult(ids=parse_pytest_collect(proc.stdout), exit_code=proc.returncode)
 
 
@@ -529,23 +456,14 @@ def run_pytest_full(case_dir: Path, args: list[str]) -> FullRunResult:
         work = _isolate_case(case_dir.resolve(), Path(tmp))
         base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
         collect = _run([*base, "--collect-only", "-q", *args], work)
-        _check_pytest_collect_exit(collect)
+        _check_pytest_exit(collect, "collect")
         run = _run([*base, "-q", "--tb=no", *args], work)
         _check_pytest_exit(run, "run")
-    outcomes = parse_pytest_summary(run.stdout, run.returncode)
     interrupted = collect.returncode == _PYTEST_EXIT_INTERRUPTED
     ids = [] if interrupted else parse_pytest_collect(collect.stdout)
     return FullRunResult(
         ids=ids,
-        outcomes=RunOutcomes(
-            passed=outcomes.passed,
-            failed=outcomes.failed,
-            skipped=outcomes.skipped,
-            xfailed=outcomes.xfailed,
-            xpassed=outcomes.xpassed,
-            errors=outcomes.errors,
-            deselected=outcomes.deselected,
-        ),
+        outcomes=parse_pytest_summary(run.stdout),
         exit_code=run.returncode,
     )
 

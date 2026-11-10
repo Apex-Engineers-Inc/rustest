@@ -43,6 +43,8 @@ from typing import Any, NamedTuple
 
 from rustest import rust
 
+from .helpers import write as _write
+
 # ini keys whose resolved values v2 models and pytest can report back to us. `markers` is
 # dumped too but is only subset-checked: plugins append to it via `addinivalue_line`.
 INI_KEYS = [
@@ -92,11 +94,6 @@ class PytestAnswer(NamedTuple):
     rootdir: str
     configfile: str | None
     ini: dict[str, list[str]]
-
-
-def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
 
 
 def _norm(path: str) -> str:

@@ -159,18 +159,6 @@ class TestCliEdgeCases:
         args = parser.parse_args(["--exitfirst"])
         assert args.fail_fast is True
 
-    def test_pytest_compat_flag_is_gone(self) -> None:
-        """``--pytest-compat`` was deleted at the flip; the parser must not know it.
-
-        Rejection happens *before* parsing (``cli.REMOVED_FLAGS``), so argparse having no
-        such option is the contract here and ``cli.main`` owns the message and the exit code
-        (pinned in ``tests/integration/test_pytest_fixture_detection.py``).
-        """
-        parser = cli.build_parser()
-        with pytest.raises(SystemExit):
-            _ = parser.parse_args(["--pytest-compat"])
-        assert "--pytest-compat" in cli.REMOVED_FLAGS
-
     def test_no_codeblocks_flag(self) -> None:
         """Test --no-codeblocks flag."""
         parser = cli.build_parser()

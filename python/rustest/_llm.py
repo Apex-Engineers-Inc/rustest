@@ -34,6 +34,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from ._llm_schema import FAIL_STATUSES, SCHEMA_VERSION, SKIP_STATUSES
+from ._version import package_version
 
 if TYPE_CHECKING:
     from typing import IO, Any
@@ -131,20 +132,6 @@ def _file_of(node_id: str) -> str:
     return node_id.partition("::")[0]
 
 
-def _package_version() -> str:
-    """The installed ``rustest`` version, or ``0.0.0`` from a source tree with no dist-info.
-
-    Thin alias for :func:`rustest._version.package_version`, kept under its old name because
-    that is what this module's callers and goldens spell. The body moved out when
-    ``--version`` became a second caller: the ``meta`` line's version and the one
-    ``rustest --version`` prints have to be the same string, and the only way to guarantee
-    that is for there to be one function.
-    """
-    from ._version import package_version
-
-    return package_version()
-
-
 class _Emitter:
     """Writes compact JSON objects, one per line, to a stream.
 
@@ -181,7 +168,7 @@ def _meta(report: _RunReport) -> dict[str, Any]:
         "t": "meta",
         "schema_version": SCHEMA_VERSION,
         "tool": "rustest",
-        "version": _package_version(),
+        "version": package_version(),
         "rootdir": report["rootdir"],
         "total": report["summary"]["total"],
     }

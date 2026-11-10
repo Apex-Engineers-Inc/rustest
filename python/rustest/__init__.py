@@ -45,17 +45,19 @@ from typing import TYPE_CHECKING, Any, Final
 from .approx import approx as approx
 
 if TYPE_CHECKING:
-    from .builtin_fixtures import Cache as Cache
-    from .builtin_fixtures import CaptureFixture as CaptureFixture
-    from .builtin_fixtures import CaptureResult as CaptureResult
-    from .builtin_fixtures import LogCaptureFixture as LogCaptureFixture
-    from .builtin_fixtures import LogRecord as LogRecord
-    from .builtin_fixtures import MockerFixture as MockerFixture
+    # The private modules are imported absolutely: a relative `from ._builtins import ...`
+    # makes basedpyright treat `_builtins` as this package's private name, and then report
+    # `_worker`'s own `from . import _builtins` as private usage.
+    from rustest._builtins import Cache as Cache
+    from rustest._builtins import CaptureFixture as CaptureFixture
+    from rustest._builtins import CaptureResult as CaptureResult
+    from rustest._builtins import LogCaptureFixture as LogCaptureFixture
+    from rustest._builtins import MockerFixture as MockerFixture
+    from rustest._builtins import TempdirFactory as TmpDirFactory
+    from rustest._builtins import TempPathFactory as TmpPathFactory
+    from rustest._worker import SubRequest as FixtureRequest
     from .builtin_fixtures import MonkeyPatch as MonkeyPatch
-    from .builtin_fixtures import TmpDirFactory as TmpDirFactory
-    from .builtin_fixtures import TmpPathFactory as TmpPathFactory
     from .cli import main as main
-    from .compat.pytest import FixtureRequest as FixtureRequest
     from .core import run as run
     from .decorators import ExceptionInfo as ExceptionInfo
     from .decorators import Failed as Failed
@@ -98,23 +100,18 @@ _LAZY: Final[dict[str, tuple[str, str]]] = {
     "ParameterSet": ("decorators", "ParameterSet"),
     "RaisesContext": ("decorators", "RaisesContext"),
     # (`approx` is deliberately absent: it is bound eagerly above — see the comment there.)
-    #
-    # `CollectionError`, `RunReport` and `TestResult` were exported here until Phase 4 Task 2.
-    # They were `rustest.reporting`'s dataclasses over v1's `PyRunReport`, and there is no v2
-    # object to repoint them at: the engine's report is a JSON document (schema v2, six
-    # status buckets to v1's three), written by `--report-json` and described in
-    # `src/engine/execute.rs`. Re-exporting a name backed by nothing is worse than removing it.
-    # Fixture types
-    "Cache": ("builtin_fixtures", "Cache"),
-    "CaptureFixture": ("builtin_fixtures", "CaptureFixture"),
-    "CaptureResult": ("builtin_fixtures", "CaptureResult"),
-    "LogCaptureFixture": ("builtin_fixtures", "LogCaptureFixture"),
-    "LogRecord": ("builtin_fixtures", "LogRecord"),
-    "MockerFixture": ("builtin_fixtures", "MockerFixture"),
+    # Fixture types: the classes of the objects the builtin fixtures hand a test, so
+    # `isinstance(cache, rustest.Cache)` holds. `FixtureRequest` is the worker's `SubRequest`,
+    # the class of every `request` (inside a worker, `_worker` is already imported).
+    "Cache": ("_builtins", "Cache"),
+    "CaptureFixture": ("_builtins", "CaptureFixture"),
+    "CaptureResult": ("_builtins", "CaptureResult"),
+    "LogCaptureFixture": ("_builtins", "LogCaptureFixture"),
+    "MockerFixture": ("_builtins", "MockerFixture"),
     "MonkeyPatch": ("builtin_fixtures", "MonkeyPatch"),
-    "TmpDirFactory": ("builtin_fixtures", "TmpDirFactory"),
-    "TmpPathFactory": ("builtin_fixtures", "TmpPathFactory"),
-    "FixtureRequest": ("compat.pytest", "FixtureRequest"),
+    "TmpDirFactory": ("_builtins", "TempdirFactory"),
+    "TmpPathFactory": ("_builtins", "TempPathFactory"),
+    "FixtureRequest": ("_worker", "SubRequest"),
     # Entry points
     "main": ("cli", "main"),
     "run": ("core", "run"),
@@ -131,7 +128,6 @@ __all__ = [
     "CaptureResult",
     "FixtureRequest",
     "LogCaptureFixture",
-    "LogRecord",
     "MockerFixture",
     "MonkeyPatch",
     "TmpDirFactory",

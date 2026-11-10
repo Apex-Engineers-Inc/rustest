@@ -78,15 +78,6 @@ setup = [
 # resolves `src/` from the repo's own pyproject.toml exactly as pytest does.
 pythonpath = []
 
-[addopts]
-# pyproject.toml: addopts = ["-vv", "-s"]. Recorded, not replayed: since Phase 4 Task 1
-# each runner applies the target's own `addopts` for itself, so nothing is put on either
-# command line. Both are core pytest flags rustest also accepts, so nothing is dropped.
-# (The repo's commented-out `--cov --cov-report=xml:cov.xml` line is not active.)
-configured = ["-vv", "-s"]
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 # `-n 1`, and it is the one runner flag this target carries. NOT a compensation for a

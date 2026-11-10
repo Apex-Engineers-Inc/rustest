@@ -43,15 +43,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# [tool.pytest.ini_options] declares only norecursedirs (".git .ropeproject .tox docs env venv
-# tests/mypy_test_cases") -- not an addopts key, so nothing to replay or drop here. Whether
-# rustest honors norecursedirs (tests/mypy_test_cases holds mypy-only fixture files, not real
-# tests) is unverified; check at gate time if collection counts look off by those files.
-configured = []
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = []

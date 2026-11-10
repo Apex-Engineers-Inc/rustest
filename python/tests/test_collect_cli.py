@@ -26,7 +26,6 @@ the comparison is about collection rather than about rootdir discovery.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -37,7 +36,7 @@ import pytest
 # The compiled extension is built and installed by `python/tests/__init__.py`, which runs
 # `ensure_develop_installed()` before any test module is imported -- these subprocess tests
 # exercise the real `rust.collect`, not the pure-Python fallback stub.
-from .helpers import stub_rust_module
+from .helpers import clean_env as _clean_env, run as _run, stub_rust_module, write as _write
 from rustest import cli, core
 
 PLAIN_MODULE = """\
@@ -62,35 +61,6 @@ def test_p(x):
 # Deliberately unparseable: the exception arrives at *import* time, which is the path that
 # turns into a manifest error entry rather than an orchestration failure.
 BROKEN_MODULE = "def test_x(:\n    pass\n"
-
-
-def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(text, encoding="utf-8")
-
-
-def _clean_env() -> dict[str, str]:
-    """A child environment with the ambient pytest/rustest session stripped out."""
-    env = dict(os.environ)
-    for leak in (
-        "PYTEST_ADDOPTS",
-        "PYTEST_PLUGINS",
-        "PYTEST_CURRENT_TEST",
-        "RUSTEST_RUNNING",
-    ):
-        _ = env.pop(leak, None)
-    return env
-
-
-def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        argv,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        env=_clean_env(),
-        check=False,
-    )
 
 
 def _run_bytes(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[bytes]:

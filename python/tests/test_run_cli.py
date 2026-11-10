@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -42,18 +41,18 @@ import pytest
 # The compiled extension is built and installed by `python/tests/__init__.py`, which runs
 # `ensure_develop_installed()` before any test module is imported -- these subprocess tests
 # exercise the real `rust.run`, not a pure-Python stub.
-from .helpers import stub_rust_module
+from .helpers import (
+    clean_env,
+    make_tree as _tree,
+    run,
+    stub_rust_module,
+)
 from rustest import cli, core
 
 # pytest's terminal summary line: "1 failed, 2 passed, 1 xfailed in 0.05s".
 _SUMMARY_RE = re.compile(r"(\d+) (passed|failed|skipped|deselected|xfailed|xpassed|errors|error)\b")
 
 _BUCKETS = ("passed", "failed", "skipped", "deselected", "xfailed", "xpassed", "error")
-
-
-def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(text, encoding="utf-8")
 
 
 def _clean_env() -> dict[str, str]:
@@ -74,23 +73,11 @@ def _clean_env() -> dict[str, str]:
     ``test_the_full_diff_branch_diverges_from_pytest`` in ``test_assertion_rewrite.py``
     rather than left to leak in through the environment.
     """
-    env = dict(os.environ)
-    for leak in (
-        "PYTEST_ADDOPTS",
-        "PYTEST_PLUGINS",
-        "PYTEST_CURRENT_TEST",
-        "RUSTEST_RUNNING",
-        "CI",
-        "BUILD_NUMBER",
-    ):
-        _ = env.pop(leak, None)
-    return env
+    return clean_env("CI", "BUILD_NUMBER")
 
 
 def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        argv, cwd=str(cwd), capture_output=True, text=True, env=_clean_env(), check=False
-    )
+    return run(argv, cwd, _clean_env())
 
 
 def _run_pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -102,9 +89,7 @@ def _run_pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]
 def _run_v2(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     """The **default** invocation: since the Phase 1c flip, no mode flag means v2.
 
-    ``--v2`` is still accepted but now prints a deprecation line to stderr, which the
-    stderr-reading assertions below would have to special-case for no benefit.  The alias's
-    own behaviour is pinned in ``test_flip_cli.py``.
+    ``--v2`` is no longer accepted (it exits 4 as unrecognised); see ``test_flip_cli.py``.
     """
     return _run([sys.executable, "-m", "rustest", *args], tree)
 
@@ -201,14 +186,6 @@ def _assert_matches_pytest(
         assert actual == expected, f"outcome counts diverge\n{where}\nreport={report}"
     assert ours.returncode == oracle.returncode, f"exit codes diverge\n{where}"
     return actual, report
-
-
-def _tree(tmp_path: Path, name: str, files: dict[str, str]) -> Path:
-    tree = tmp_path / name
-    _write(tree / "pytest.ini", "[pytest]\n")
-    for rel, body in files.items():
-        _write(tree / rel, body)
-    return tree
 
 
 # --------------------------------------------------------------------------------------

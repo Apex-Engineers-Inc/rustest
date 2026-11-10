@@ -150,7 +150,6 @@ nobody wrote for it.** One TOML per target in `conformance/real/`:
 | ------------------- | ------------------------------------------------------------------------------------------------------ |
 | `[repo]`            | `kind` (`oss` = shallow clone, `local` = used in place), `url`/`tag`/`rev` or `path`, and `test_paths`.  |
 | `[env]`             | `setup` — the commands that build an **isolated venv** under `_work/_venvs/<name>` — and `pythonpath`.  |
-| `[addopts]`         | The target's configured `addopts`, split into what is `replay`ed to both runners and what is `dropped`. |
 | `[run]`             | Extra per-runner args, a timeout, and `id_policy` (`exact`, the default, or `strip_params`).            |
 | `[notes]`           | Divergences the harness **compensates for**, so nothing observable is left for a ledger to describe.    |
 | `[divergence.ids]`  | node id (or glob) → mechanism, for every test whose status differs.                                     |
@@ -168,10 +167,8 @@ Rules the gate follows:
   skipped > passed`. pytest's own summary line does not: a passing body with a raising
   teardown is `1 passed, 1 error` there. Comparing that line against rustest's per-test
   report would grade a schema difference as a behavioural one.
-- **`addopts` is neutralized on the pytest side and replayed to both runners.** rustest
-  parses the key but never applies it, so letting pytest alone honour it asks the two
-  runners different questions — click's `-m 'not stress'` would mean pytest ran a strictly
-  smaller suite. Anything not replayed is listed in `dropped`, per flag.
+- **Each runner reads the target's own config, `addopts` included.** Nothing is replayed
+  or neutralized on the command line; a target's `[run]` args are the only per-runner lever.
 - **Ledger entries may be globs, and an entry that matches nothing is `STALE-LEDGER`** —
   the same rule the corpus ledgers follow, for the same reason.
 - **`id_policy = "strip_params"` is the one relaxation, and it pays for itself.** It exists
@@ -210,74 +207,6 @@ Rules the gate follows:
 `--real-setup-only` clones and provisions without running; `--real-rebuild-env` discards
 and rebuilds the venv. Everything staged lives in the gitignored `conformance/real/_work/`
 and is reproducible from the configs.
-
-## Baselines (Phase 1c, v1 + v2, Windows) — HISTORICAL
-
-> **This section is a record of measurements taken while both engines existed**, and its
-> `rustest v1 run` column can no longer be reproduced: v1 was deleted in Phase 4 Task 2 and
-> the benchmark harness no longer times it (`rustest_run_s` is gone from `BenchRow` and from
-> `conformance/baselines.json`). The prose below is kept unedited because a benchmark table
-> is only worth anything with the conditions it was taken under; re-running the harness today
-> produces the same table minus that column. Phase 4 Task 3 regenerates the published numbers
-> for the README.
-
-Recorded with `python -m conformance.bench.bench --out conformance/baselines.json`
-on Windows 11 / Python 3.14 against the generated all-passing suites, all three
-sizes run sequentially with no other conformance suite concurrent. The raw
-numbers live in the tracked `conformance/baselines.json`; `conformance/bench_results.json`
-stays gitignored scratch for ad-hoc runs.
-
-Phase 0 recorded pytest vs the v1 runner only, back when a bare `rustest` command
-*was* the v1 runner. Phase 1c Task 3 regenerated the table below after the flip: the
-v1 column now runs with an explicit `--v1`, and two columns are new —
-`rustest v2 run` (the bare, flag-less command: the default path since the flip) and
-`rustest v2 collect` (`--collect-only`, reserved since Phase 0 and filled in now).
-
-| files | tests | pytest collect | pytest run | rustest v1 run | rustest v2 run | rustest v2 collect |
-| ----- | ----- | --------------- | ---------- | --------------- | --------------- | ------------------- |
-| 10    | 100   | 0.99s           | 0.87s      | 0.51s           | 5.29s           | 5.82s               |
-| 100   | 1000  | 2.52s           | 1.77s      | 0.99s           | 8.81s           | 8.52s               |
-| 500   | 5000  | 7.86s           | 6.33s      | 3.27s           | 11.29s          | 8.51s               |
-
-Derived marginal cost per test (`derived` in the JSON):
-
-- pytest: **1140.7 us/test**
-- rustest v1: **569.1 us/test**
-- rustest v2: **618.1 us/test**
-
-The derivation subtracts the second-largest size from the largest, cancelling the
-fixed startup cost (interpreter boot, plugin loading, extension import) both runs
-pay identically:
-
-```
-overhead_us = (run_s_big - run_s_small) / (tests_big - tests_small) * 1e6
-```
-
-**Read the v2 columns as two separate numbers, not one.** The *marginal* per-test
-cost (618.1 us/test) is already in v1's neighborhood. The *wall-clock* numbers in
-the table are nonetheless far worse than v1's across every size, because v2 pays a
-large **fixed** cost on every single invocation: it spawns a fresh worker pool (up to
-one process per CPU core — 16 on the recording machine, clamped to the file count for
-the 10-file suite) with no static collection tier and no manifest cache to skip any of
-that work on a warm re-run. v1 has none of that fixed cost (no worker pool to spawn at
-all for these suite sizes). This is not a bug to chase down inside
-Phase 1c — it is exactly the gap Phase 2 (whose plan is in git history) exists to close:
-a static Rust
-collector, a manifest cache, and dispatch tuning, gated on warm collection
-**≤ 50ms** at 5k tests and per-test overhead **< 200µs**, measured against this exact
-table.
-
-**Caveat — these are indicative, not rigorous.** Each cell is a *single sample*
-taken in a *fixed command order* (pytest collect, pytest run, rustest v1 run,
-rustest v2 run, rustest v2 collect) inside one freshly generated suite, so later
-commands read a warm filesystem cache and warm `.pyc` files that the first command
-paid to populate. Phase 0 review measured that ordering bias at roughly **27-39%**
-on the original three-column table — larger than several of the gaps above, so no
-per-row ratio here should be quoted as a speedup (and the v1/v2 gap is large enough
-that the bias doesn't change its direction, only its exact size). Proper warmup
-iterations, repetition with a median/min-of-N statistic, and order randomization
-are still a **Phase 2 work item**; until then these numbers exist to catch
-order-of-magnitude regressions and to anchor the Phase 2 targets above.
 
 ## Requirements
 

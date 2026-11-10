@@ -185,14 +185,14 @@ reference:
     desc: Main classes provided by the package
     contents:
       - name: Cache
-        members: false  # 7 methods listed below
-      - CaptureFixture  # 5 method(s)
+        members: false  # 3 methods listed below
+      - CaptureFixture
       - name: ExceptionInfo
         members: false  # 6 methods listed below
       - Failed
-      - FixtureRequest  # 5 method(s)
+      - FixtureRequest
       - name: LogCaptureFixture
-        members: false  # 7 methods listed below
+        members: false  # 5 methods listed below
       - MarkDecorator  # 2 method(s)
       - name: MockerFixture
         members: false  # 6 methods listed below
@@ -201,8 +201,8 @@ reference:
       - ParameterSet  # 1 method(s)
       - RaisesContext  # 3 method(s)
       - Skipped
-      - TmpDirFactory  # 3 method(s)
-      - TmpPathFactory  # 3 method(s)
+      - TmpDirFactory
+      - TmpPathFactory
       - XFailed
       - approx.ApproxBase
       - approx.ApproxDecimal
@@ -217,10 +217,6 @@ reference:
       - Cache.get
       - Cache.set
       - Cache.mkdir
-      - Cache.makedir
-      - Cache.__contains__
-      - Cache.__getitem__
-      - Cache.__setitem__
 
   - title: ExceptionInfo Methods
     desc: Methods for the ExceptionInfo class
@@ -235,13 +231,11 @@ reference:
   - title: LogCaptureFixture Methods
     desc: Methods for the LogCaptureFixture class
     contents:
-      - LogCaptureFixture.start_capture
-      - LogCaptureFixture.stop_capture
+      - LogCaptureFixture.get_records
       - LogCaptureFixture.clear
       - LogCaptureFixture.set_level
       - LogCaptureFixture.at_level
-      - LogCaptureFixture.__enter__
-      - LogCaptureFixture.__exit__
+      - LogCaptureFixture.filtering
 
   - title: MockerFixture Methods
     desc: Methods for the MockerFixture class
@@ -271,7 +265,6 @@ reference:
     desc: Named tuple definitions
     contents:
       - CaptureResult
-      - LogRecord
 
   - title: Functions
     desc: Utility functions

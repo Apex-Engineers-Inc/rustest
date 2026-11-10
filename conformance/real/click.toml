@@ -33,17 +33,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# pyproject.toml: addopts = "-m 'not stress'". Recorded, not replayed: since Phase 4 Task 1
-# rustest applies `addopts` itself (`cli.py::main`, the port of `Config._preparse`), so both
-# runners read this value out of click's own pyproject.toml and neither gets it on the
-# command line. Through Phase 3 the value had to be neutralized on the pytest side and
-# replayed to both, because rustest parsed the key and applied it nowhere -- pytest ran
-# 1 686 tests and rustest 32 686, a "divergence" that was entirely the harness's fault.
-configured = ["-m", "not stress"]
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = []

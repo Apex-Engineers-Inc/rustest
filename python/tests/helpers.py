@@ -200,3 +200,50 @@ def run_tree(
         ids=[str(test["id"]) for test in tests],
         collection_errors=[f"{error['path']}: {error['message']}" for error in errors],
     )
+
+
+# --------------------------------------------------------------------------------------
+# Subprocess-driven CLI test helpers, shared by the *_cli / coverage / llm test modules.
+# --------------------------------------------------------------------------------------
+
+
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text(text, encoding="utf-8")
+
+
+def clean_env(*extra: str) -> dict[str, str]:
+    """A child environment with the ambient pytest/rustest session (and any *extra* names) removed."""
+    env = dict(os.environ)
+    for leak in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS",
+        "PYTEST_CURRENT_TEST",
+        "RUSTEST_RUNNING",
+        *extra,
+    ):
+        _ = env.pop(leak, None)
+    return env
+
+
+def run(
+    argv: list[str], cwd: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv, cwd=str(cwd), capture_output=True, text=True, env=env or clean_env(), check=False
+    )
+
+
+def run_pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return run(
+        [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider", *args], tree
+    )
+
+
+def make_tree(tmp_path: Path, name: str, files: dict[str, str]) -> Path:
+    """An isolated tree with its own ``pytest.ini``, so rootdir is not this repository's."""
+    tree = tmp_path / name
+    write(tree / "pytest.ini", "[pytest]\n")
+    for rel, body in files.items():
+        write(tree / rel, body)
+    return tree

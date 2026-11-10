@@ -71,29 +71,12 @@ if TYPE_CHECKING:
 # evaluated at run time; the two `cast()` calls they used to serve became annotated
 # assignments, which a type checker reads identically.
 
-# `rich` is **not** imported here, and that is a measured decision rather than a style one.
-#
-# `import rich.console` costs ~230 ms above a bare interpreter on the reference machine, and
-# it used to be paid by *every* rustest process: the v2 collect-only path, the v2 run path,
-# the `--report-json` path, and — worst — each of the N worker subprocesses a run spawns,
-# none of which render anything through rich at all. The only importers were v1's renderer
-# and its compat banner, and both went with the v1 engine in Phase 4 Task 2: nothing in this
-# module reaches `rich` at all any more, and `.renderers`, `.event_router`, `.reporting` and
-# `.json_report` — v1's rendering and report-model tree — no longer exist.
-#
-# Two stdlib modules are deferred for the same measured reason, each into the one function
-# that needs it: `datetime` (only :func:`_format_duration`) and `pathlib` (only the
-# `--report-json` write). A `--collect-only` run reaches neither, and it is the
-# latency-sensitive path.
-#
-# **`shutil` is not deferred, it is removed** — see :func:`_terminal_size`. Deferring it was
-# the first attempt and it did not work, because `argparse` imports it too (below), so every
-# rustest invocation paid it whether or not anything rendered.
-#
-# Measured, Phase 2 Task 3: warm `--collect-only` on the 5 000-test suite went from 508 ms
-# to ~285 ms with `rich` and the package's own graph made lazy, and to the figure in
-# `.superpowers/sdd/p2-task-3-report.md` §4 once `shutil` and `_colorize` were taken off the
-# argparse path as well.
+# This module is on the path of every rustest invocation, and `--collect-only` is the
+# latency-sensitive one, so its imports are measured decisions. `rich` (~230 ms) is not
+# imported: nothing here renders through it. `datetime` and `pathlib` are deferred into the
+# one function that needs each (:func:`_format_duration`, the `--report-json` write).
+# `shutil` (~50-70 ms) is not needed for the terminal width at all — see
+# :func:`terminal_columns` — and is imported only by coverage cleanup.
 
 # pytest's exit codes (`_pytest.config.ExitCode`), which the engine adopts verbatim --
 # "contracts are pytest's" is the v2 spec's rule. Verified against pytest 8.4.2 by running

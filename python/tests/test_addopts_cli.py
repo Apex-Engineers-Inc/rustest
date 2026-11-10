@@ -24,22 +24,11 @@ See the note in `cli.py::main`.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import subprocess
 import sys
 
-
-def _write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(text, encoding="utf-8")
-
-
-def _clean_env() -> dict[str, str]:
-    env = dict(os.environ)
-    for leak in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_CURRENT_TEST", "RUSTEST_RUNNING"):
-        _ = env.pop(leak, None)
-    return env
+from .helpers import run as _run, write as _write
 
 
 def _tree(tmp_path: Path, addopts: str) -> Path:
@@ -55,25 +44,11 @@ def _tree(tmp_path: Path, addopts: str) -> Path:
 
 
 def _rustest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "rustest", "-q", *args],
-        cwd=str(tree),
-        capture_output=True,
-        text=True,
-        env=_clean_env(),
-        check=False,
-    )
+    return _run([sys.executable, "-m", "rustest", "-q", *args], tree)
 
 
 def _pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args],
-        cwd=str(tree),
-        capture_output=True,
-        text=True,
-        env=_clean_env(),
-        check=False,
-    )
+    return _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args], tree)
 
 
 def test_addopts_marker_expression_is_applied(tmp_path: Path) -> None:

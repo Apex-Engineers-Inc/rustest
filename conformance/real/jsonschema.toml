@@ -60,14 +60,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# No [tool.pytest.ini_options], no pytest.ini/setup.cfg/tox.ini pytest section anywhere --
-# confirmed by direct fetch (all 404). ruff config even documents why: `[tool.ruff.lint]
-# ignore = ["PT", ...]  # We use unittest`.
-configured = []
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = ["-n", "1"]

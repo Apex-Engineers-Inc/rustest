@@ -12,7 +12,6 @@ from conformance.harness.runners import (
     CollectResult,
     FullRunResult,
     RunOutcomes,
-    _check_pytest_collect_exit,
     _run,
     _check_pytest_exit,
     _isolate_case,
@@ -166,69 +165,52 @@ def test_parse_pytest_collect_ignores_syntax_error_slice_echo_real_pytest(
 
 
 def test_parse_pytest_summary() -> None:
-    out = parse_pytest_summary("1 failed, 2 passed, 1 skipped in 0.05s\n", exit_code=1)
+    out = parse_pytest_summary("1 failed, 2 passed, 1 skipped in 0.05s\n")
     assert (out.passed, out.failed, out.skipped, out.errors) == (2, 1, 1, 0)
-    assert out.exit_code == 1
-    assert out.collection_error is False
-    err = parse_pytest_summary("no tests ran in 0.01s\n", exit_code=2)
-    assert err.collection_error is True
+    assert parse_pytest_summary("no tests ran in 0.01s\n") == RunOutcomes(0, 0, 0, 0, 0, 0, 0)
 
 
 def test_parse_pytest_summary_counts_errors() -> None:
-    singular = parse_pytest_summary("2 passed, 1 error in 0.10s\n", exit_code=1)
+    singular = parse_pytest_summary("2 passed, 1 error in 0.10s\n")
     assert (singular.passed, singular.failed, singular.skipped, singular.errors) == (2, 0, 0, 1)
-    plural = parse_pytest_summary("1 failed, 3 errors in 0.10s\n", exit_code=1)
+    plural = parse_pytest_summary("1 failed, 3 errors in 0.10s\n")
     assert (plural.passed, plural.failed, plural.skipped, plural.errors) == (0, 1, 0, 3)
-
-
-def test_parse_pytest_summary_exit_5_is_not_collection_error() -> None:
-    """Exit 5 (no tests collected) is a real outcome, distinct from the exit-2 bucket.
-
-    ``collection_error`` is keyed off exit code 2 specifically; exit 5 must not be
-    conflated with it even though both leave zero tests in the passed/failed/skipped
-    buckets.
-    """
-    out = parse_pytest_summary("no tests ran in 0.01s\n", exit_code=5)
-    assert out.exit_code == 5
-    assert out.collection_error is False
-    assert (out.passed, out.failed, out.skipped, out.errors) == (0, 0, 0, 0)
 
 
 def _completed(returncode: int) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr="boom")
 
 
-def test_check_pytest_exit_passes_through_exit_5() -> None:
-    """Exit 5 (no tests collected) is a comparable outcome, not a harness fault.
+@pytest.mark.parametrize("phase", ["run", "collect"])
+def test_check_pytest_exit_passes_through_gradeable_outcomes(phase: str) -> None:
+    """0, 1, 2 and 5 are comparable outcomes, not harness faults.
 
     ``pytest -m nosuchmark`` genuinely exits 5 while rustest exits 0 for the same
     invocation -- a real product divergence the grader must see, not one the harness
-    should mask by raising.
+    should mask by raising. Under ``--collect-only`` 0, 2 and 5 all occur too.
     """
-    _check_pytest_exit(_completed(5), "run")  # must not raise
+    for returncode in (0, 1, 2, 5):
+        _check_pytest_exit(_completed(returncode), phase)  # must not raise
 
 
+@pytest.mark.parametrize("phase", ["run", "collect"])
 @pytest.mark.parametrize("returncode", [3, 4])
-def test_check_pytest_exit_raises_on_internal_and_usage_errors(returncode: int) -> None:
-    with pytest.raises(RuntimeError, match=r"pytest run failed \(exit \d+\)"):
-        _check_pytest_exit(_completed(returncode), "run")
+def test_check_pytest_exit_raises_on_internal_and_usage_errors(returncode: int, phase: str) -> None:
+    """A pytest run that never happened must not grade as an empty result.
+
+    Exit 3 (internal error) and 4 (usage error) mean pytest could not do its job at all;
+    parsing zero ids or counts out of that would fabricate a divergence with no
+    explanation. Raising routes it to the harness-error channel instead.
+    """
+    with pytest.raises(RuntimeError, match=rf"pytest {phase} failed \(exit \d+\)"):
+        _check_pytest_exit(_completed(returncode), phase)
 
 
 def _write_mini_suite(root: Path) -> None:
     (root / "test_mini.py").write_text(MINI_SUITE, encoding="utf-8")
 
 
-def test_check_pytest_collect_exit_passes_through_collectable_outcomes() -> None:
-    """0 (collected), 2 (collection error) and 5 (nothing collected) are gradeable.
-
-    All three are outcomes the v2 ``--collect-only`` surface also produces, so the
-    grader must see them rather than have the harness raise over them.
-    """
-    for returncode in (0, 2, 5):
-        _check_pytest_collect_exit(_completed(returncode))  # must not raise
-
-
-def test_check_pytest_collect_exit_passes_through_a_real_exit_1_from_pytest(
+def test_check_pytest_exit_passes_through_a_real_collect_exit_1_from_pytest(
     tmp_path: Path,
 ) -> None:
     """Exit **1** during ``--collect-only`` is reachable, and must be graded, not raised.
@@ -252,19 +234,7 @@ def test_check_pytest_collect_exit_passes_through_a_real_exit_1_from_pytest(
 
     assert interrupted.returncode == 2, interrupted.stdout
     assert continued.returncode == 1, continued.stdout
-    _check_pytest_collect_exit(continued)  # must not raise: 1 is a gradeable outcome
-
-
-@pytest.mark.parametrize("returncode", [3, 4])
-def test_check_pytest_collect_exit_raises_on_internal_and_usage_errors(returncode: int) -> None:
-    """A pytest collect run that never happened must not grade as an empty id set.
-
-    Exit 3 (internal error) and 4 (usage error) mean pytest could not do its job at
-    all; parsing zero ids out of that would fabricate a divergence with no
-    explanation. Raising routes it to the harness-error channel instead.
-    """
-    with pytest.raises(RuntimeError, match=r"pytest collect failed \(exit \d+\)"):
-        _check_pytest_collect_exit(_completed(returncode))
+    _check_pytest_exit(continued, "collect")  # must not raise: 1 is a gradeable outcome
 
 
 def test_isolate_case_copies_and_adds_a_bare_ini(tmp_path: Path) -> None:
@@ -621,8 +591,7 @@ def test_parse_pytest_summary_reads_all_six_buckets() -> None:
     golden so the parser has a subprocess-free regression too.
     """
     out = parse_pytest_summary(
-        "1 failed, 1 passed, 1 skipped, 1 xfailed, 1 xpassed, 1 error in 0.09s\n",
-        exit_code=1,
+        "1 failed, 1 passed, 1 skipped, 1 xfailed, 1 xpassed, 1 error in 0.09s\n"
     )
 
     assert (out.passed, out.failed, out.skipped, out.errors) == (1, 1, 1, 1)
@@ -638,7 +607,7 @@ def test_parse_pytest_summary_does_not_read_xfailed_as_failed() -> None:
     the other one, though: a pattern that matched ``failed`` inside ``xfailed`` would
     turn an entirely green pytest run into ``1 failed`` and make v2 look broken.
     """
-    out = parse_pytest_summary("1 passed, 2 xfailed in 0.01s\n", exit_code=0)
+    out = parse_pytest_summary("1 passed, 2 xfailed in 0.01s\n")
 
     assert out.failed == 0
     assert out.xfailed == 2
@@ -651,7 +620,7 @@ def test_parse_pytest_summary_does_not_read_xpassed_as_passed() -> None:
     An xpass folded into ``passed`` is invisible -- both are green -- which is exactly
     why schema v2 gave it its own bucket (Task 4 §5.1).
     """
-    out = parse_pytest_summary("2 xpassed in 0.01s\n", exit_code=0)
+    out = parse_pytest_summary("2 xpassed in 0.01s\n")
 
     assert out.passed == 0
     assert out.xpassed == 2
@@ -665,7 +634,7 @@ def test_parse_pytest_summary_counts_deselected() -> None:
     resembles. The gate compares it because it is the only published field that
     distinguishes a deselected id from one that was never collected.
     """
-    out = parse_pytest_summary("1 passed, 2 deselected in 0.01s\n", exit_code=0)
+    out = parse_pytest_summary("1 passed, 2 deselected in 0.01s\n")
 
     assert out.deselected == 2
     assert out.skipped == 0

@@ -107,16 +107,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# setup.cfg `[tool:pytest]` declares NO addopts key at all. What it does declare -- and what
-# makes this target interesting -- is `python_files = test_*.py, *_test.py, *_solution.py`,
-# `xfail_strict = true`, `filterwarnings = error, error::DeprecationWarning,
-# error::PendingDeprecationWarning`, and twelve bare markers. Each runner reads all of that
-# from setup.cfg for itself; nothing is replayed and nothing is dropped.
-configured = []
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = []

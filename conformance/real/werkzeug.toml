@@ -57,16 +57,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# [tool.pytest.ini_options]: testpaths = ["tests"], filterwarnings = ["error",
-# "always::pytest.PytestUnraisableExceptionWarning"], markers = ["dev_server: ..."]. No
-# addopts key at all -- nothing to replay or drop. (filterwarnings/markers are separate ini
-# keys from addopts, same as click's and jinja2's own filterwarnings=["error"], which those
-# configs likewise don't route through this section.)
-configured = []
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = []

@@ -102,20 +102,9 @@ setup = [
 # identically here, so it is scaffolding, not a compensation for anything rustest lacks.
 pythonpath = ["docs_src"]
 
-[addopts]
-# `[tool.pytest]` -- the pytest-9-NATIVE table, not `[tool.pytest.ini_options]`. Under this
-# corpus's pytest==8.4.2 oracle the whole table is silently inert, so `--strict-config`,
-# `--strict-markers`, `--ignore=docs_src`, `strict_xfail`, `filterwarnings = ["error"]` and
-# `timeout = "20"` apply to NEITHER runner. Recorded here as what the project declares; nothing
-# is replayed and nothing is dropped. (Same shape as Pillow and psutil -- three of the five
-# batch-2 picks have already moved to the pytest-9 table.)
-configured = [
-  "--strict-config", "--strict-markers", "--ignore=docs_src",
-]
-replay = []
-dropped = []
-
 [run]
+# `[tool.pytest]` is pytest 9's native table, inert under the corpus's pytest==8.4.2 oracle:
+# its addopts (`--strict-*`, `--ignore=docs_src`) apply to the pytest leg not at all.
 # The deselection, applied IDENTICALLY to both runners -- see the header for why this spelling.
 pytest_args = ["-m", "not anyio"]
 rustest_args = ["-m", "not anyio"]

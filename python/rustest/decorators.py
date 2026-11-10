@@ -1303,9 +1303,6 @@ def _evaluate_skipif_condition(condition: Any, target: Callable[..., Any]) -> An
         raise RuntimeError(message) from exc
 
 
-_NO_EXC_INFO: tuple[type[BaseException], BaseException, Any] | None = None
-
-
 def _stringify_exception(exc: BaseException) -> str:
     """Port of `_pytest/_code/code.py::stringify_exception` (pytest 8.4.2, l. 465-490).
 
@@ -1967,9 +1964,8 @@ class XFailed(Failed):
       describes;
     * the **order** of the worker's classification tables becomes load-bearing rather than
       accidentally irrelevant. ``_worker`` checks ``XFAILED_EXCEPTIONS`` *before*
-      ``FAILED_EXCEPTIONS`` and its comment already said so ("relying on that accident would
-      break the day the hierarchy is aligned"). This is that day, and the order was already
-      right; :func:`_worker.report_for_phase` routes by ``isinstance`` in that order and
+      treating an exception as an ordinary failure, so the order is load-bearing. The
+      hierarchy is now aligned and the order is right; :func:`_worker.report_for_phase` routes by ``isinstance`` in that order and
       is re-verified by the outcome-classifier tests.
     """
 

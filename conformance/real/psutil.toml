@@ -76,35 +76,10 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# pyproject.toml declares `[tool.pytest]` (NOT `[tool.pytest.ini_options]`) with a large
-# addopts list: "--capture=no", "--instafail", "--no-header", "--strict-config",
-# "--strict-markers", "--tb=short", "--verbose", "-p instafail", "-p no:doctest", "-p
-# no:junitxml", "-p no:nose", "-p no:pastebin", "-p xdist"; plus verbosity_subtests = "0",
-# testpaths = ["tests/"], python_files = ["test_*.py"]. `[tool.pytest]` is pytest 9's native
-# TOML config table (added in pytest 9.0) -- this corpus's oracle pin, pytest==8.4.2, predates
-# that and does not read it at all, so this entire block (including the plugin-enabling `-p`
-# flags) is silently inert to the pytest leg, which is actually the SIMPLER outcome: no need
-# to install/wire pytest-instafail or pytest-xdist to match it. `testpaths`/`python_files` are
-# separately covered by `[repo].test_paths` and pytest's own `test_*.py` default respectively.
-# OPEN ITEM for the implementer, same as Pillow's: confirm whether rustest's own
-# pyproject-config reader also ignores bare `[tool.pytest]` (matching pytest 8.4.2) or already
-# supports it like pytest 9 -- if rustest reads it and pytest 8.4.2 doesn't, `--strict-markers`
-# / `--capture=no` / the `-p no:*` disables applying on one side only is itself a divergence
-# source, not just a dropped no-op.
-configured = [
-  "--capture=no", "--instafail", "--no-header", "--strict-config", "--strict-markers",
-  "--tb=short", "--verbose", "-p instafail", "-p no:doctest", "-p no:junitxml",
-  "-p no:nose", "-p no:pastebin", "-p xdist",
-]
-replay = []
-dropped = [
-  "--capture=no", "--instafail", "--no-header", "--strict-config", "--strict-markers",
-  "--tb=short", "--verbose", "-p instafail", "-p no:doctest", "-p no:junitxml",
-  "-p no:nose", "-p no:pastebin", "-p xdist",
-]
-
 [run]
+# pyproject.toml declares its addopts (incl. `-p instafail`/`-p xdist`) under pytest 9's native
+# `[tool.pytest]` table; the corpus's pytest==8.4.2 oracle does not read it, so it is inert to
+# the pytest leg.
 pytest_args = []
 rustest_args = []
 # RAISED from 1800 at Phase 4 Task 1c, and the reason is measured rather than defensive.

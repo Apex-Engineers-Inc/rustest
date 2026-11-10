@@ -40,7 +40,7 @@ classifier for both worlds.
 **What the pytest differential does and does not pin.**  The execute tests compare *status*
 per nodeid against real pytest, byte for byte.  They do **not** compare ``message`` text, and
 that is a deliberate line: a skip reason of ``"skipped via rustest.skip"`` where pytest writes
-``"unconditional skip"`` is a v1 wording inherited through ``decorators.py::skip_decorator``,
+``"unconditional skip"`` is a wording inherited through ``decorators.py::skip_decorator``,
 not an outcome defect, and pinning prose would make every upstream reword a red gate.  Message
 *shape* is pinned where it is load-bearing — ``[XPASS(strict)]``, ``[NOTRUN]``, and the
 traceback filtering — because those distinguish one outcome from another.
@@ -54,9 +54,6 @@ traceback filtering — because those distinguish one outcome from another.
 * *No ``xfail_strict`` ini and no ``--runxfail``.*  Neither is on the wire, so ``strict``
   defaults to ``False`` per mark (`_pytest/skipping.py::pytest_addoption`) and xfail is
   always honoured.  A suite setting ``xfail_strict = true`` needs a protocol field.
-* *Capture is stream-level, not fd-level.*  ``print`` and anything writing to
-  ``sys.stdout``/``sys.stderr`` is captured; a subprocess or a C extension writing to the
-  underlying descriptors is not.  Same trade-off as v1's ``capsys``; fd capture is 1c.
 * *Boundary-teardown output goes to stderr, not to a test's ``stdout``.*  Class- and
   module-scoped teardown belongs to the tests that just finished; pytest prints it under the
   *previous* test's teardown section because ``runtestprotocol`` is handed ``nextitem``.  The
@@ -71,21 +68,16 @@ traceback filtering — because those distinguish one outcome from another.
 * *No ``pytest_generate_tests`` hook.*  Decorator metadata (function **and** class level)
   and fixture ``params=`` are the only sources of parametrization; a module- or class-level
   ``pytest_generate_tests`` is not called.
-* *Async tests sharing a loop run **sequentially**, where rustest v1 batched them.*  v1's
-  ``async_executor.py::run_coroutines_parallel`` collects every async test in a loop scope
-  wider than ``function`` into one ``asyncio.gather`` (dispatched from
-  ``src/execution.rs``, l. 92-131).  That is **not** ported, and the reason is the oracle:
-  pytest-asyncio drives each coroutine through ``asyncio.Runner.run``
+* *Async tests sharing a loop run **sequentially**, never batched into one
+  ``asyncio.gather``.*  pytest-asyncio drives each coroutine through ``asyncio.Runner.run``
   (`plugin.py::_synchronize_coroutine` l. 708-723), which runs one coroutine to completion
   and cannot be re-entered — so tests sharing a loop scope never overlap under it.  Probed
   on pytest 8.4.2 + pytest-asyncio 1.2.0 with two tests each awaiting ``asyncio.sleep(0.30)``
   on one session-scoped loop: 0.613 s wall, the second starting 3 ms *after* the first
-  finished.  Batching would have been a wall-clock feature bought with a divergence in
-  execution order, output interleaving and failure attribution, on the exact axis this phase
-  exists to make faithful; a suite that wants the concurrency can still ``gather`` inside one
-  test.  The loop-scope machinery batching would need is now here (:meth:`
-  FixtureRunner.loop_runner`), so the decision is reversible behind an opt-in if a real suite
-  ever pays for it.
+  finished.  Batching would be a wall-clock feature bought with a divergence in execution
+  order, output interleaving and failure attribution; a suite that wants the concurrency can
+  still ``gather`` inside one test.  The loop-scope machinery batching would need exists
+  (:meth:`FixtureRunner.loop_runner`), so it could be added behind an opt-in.
 * *``asyncio_debug`` is not on the wire.*  pytest-asyncio builds its runner with
   ``Runner(debug=_get_asyncio_debug(config))`` (l. 809-811); this worker always uses the
   default.  Debug mode changes only the loop's own diagnostics — slow-callback warnings,
@@ -110,7 +102,7 @@ traceback filtering — because those distinguish one outcome from another.
   * three files sharing a *session*- or *package*-scoped ``params=["a","b"]`` fixture cost
     **2** under pytest and **6** here — one per file per parameter.
 
-  Both measured.  The second is the one worth naming explicitly, because the Phase 4c conftest
+  Both measured.  The second is the one worth naming explicitly, because the conftest
   cache below fixed the *unparametrized* session case and left this one exactly where it was:
   the value cache keys on ``(FixtureDef, param)``, and sharing the ``FixtureDef`` does nothing
   when the param differs on every file.  See :func:`collect_module`.  Pinned by
@@ -119,9 +111,8 @@ traceback filtering — because those distinguish one outcome from another.
 * *``session`` and ``package`` scope are **per worker**, for setup and teardown alike.*  A
   worker is handed a subset of the run's files (``src/engine/collect.rs`` routes by stem hash),
   so a session fixture is instantiated once per worker process — pytest-xdist's contract, and
-  the same boundary the asyncio loops have.  It was narrower still until Phase 4c: per
-  **file**, because the conftest chain's ``FixtureDef`` objects were rebuilt per file and the
-  value cache keys on their identity.  See :func:`conftest_fixturedefs` for the fix,
+  the same boundary the asyncio loops have.  The conftest chain's ``FixtureDef`` objects
+  are cached per conftest (the value cache keys on their identity).  See
   :data:`_SCOPE_BUCKET` for the teardown bucket, and
   ``conformance/corpus/fixtures/session-scope`` (single-worker, now MATCH) and
   ``conformance/corpus/async/session-loop-shared`` (multi-worker, still waived) for the two
@@ -146,7 +137,7 @@ from __future__ import annotations
 # no async test at all.  The two functions that need it -- `FixtureRunner.run_coroutine` and
 # `FixtureRunner._close_loop` -- import it in their own bodies, and the only module-scope
 # reference left is the annotation on `self._loop`, which `from __future__ import
-# annotations` never evaluates.  Measured, Phase 2 Task 3: worker boot 550 ms -> 300 ms.
+# annotations` never evaluates.  Measured: worker boot 550 ms -> 300 ms.
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
 import contextlib
@@ -172,6 +163,14 @@ import types
 from typing import TYPE_CHECKING, Any, Final, NoReturn, NotRequired, TextIO, TypedDict, cast
 import unittest
 import warnings
+
+# Run as `python -m rustest._worker`, this module is `__main__`; alias it so a later
+# `import rustest._worker` in this process reuses it instead of executing a second copy.
+# The import system only sets the parent package's attribute when it loads a module, not when
+# it finds one in `sys.modules`, so bind `rustest._worker` by hand or attribute access fails.
+if __name__ == "__main__":
+    sys.modules.setdefault("rustest._worker", sys.modules[__name__])
+    setattr(sys.modules["rustest"], "_worker", sys.modules[__name__])
 
 from . import _builtins as _builtins
 
@@ -445,9 +444,9 @@ DEFAULT_PYTHON_FUNCTIONS: Final = ("test",)
 class Naming:
     """The three naming patterns from ``ResolvedConfig``, passed through ``init``.
 
-    ``python_files`` is carried for completeness — file selection is the Rust
-    orchestrator's job (it decides which paths to send), so the worker never
-    consults it.
+    File selection is the Rust orchestrator's job (it decides which paths to send);
+    ``python_files`` is carried so the ini surface (``config.getini("python_files")``) can
+    answer.
     """
 
     python_files: tuple[str, ...] = DEFAULT_PYTHON_FILES
@@ -920,10 +919,8 @@ def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpec:
     uncalled ``pytest.mark.slow`` is a ``decorators.py::BareOrFactoryMark`` and
     ``pytest.mark.skipif(...)`` is a ``MarkDecorator``; both expose ``name``/``args``/
     ``kwargs``, and so does real pytest's ``MarkDecorator``, so the duck typing covers a
-    worker running without the shim too.  The ``mark_name`` fallback below is for the
-    pre-#137 ``_MarkDecoratorFactory`` shape, which carried only that attribute and made an
-    uncalled mark in ``pytestmark`` refuse the whole file.  Anything else is malformed and
-    refuses the file rather than silently dropping a mark.
+    worker running without the shim too.  Anything else is malformed and refuses the file
+    rather than silently dropping a mark.
     """
     name = _safe_getattr(entry, "name", None)
     if isinstance(name, str):
@@ -935,9 +932,6 @@ def _spec_from_pytestmark(entry: object, owner: object) -> MarkSpec:
             },
             owner,
         )
-    bare_name = _safe_getattr(entry, "mark_name", None)
-    if isinstance(bare_name, str):
-        return MarkSpec(bare_name)
     raise CollectionRefusal(
         "malformed pytestmark entry on "
         + f"{getattr(owner, '__qualname__', getattr(owner, '__name__', owner))!r}: "
@@ -1026,7 +1020,7 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
 
     Conditions are **not** evaluated here — :func:`evaluate_skip_marks` and
     :func:`evaluate_xfail_marks` do that at *execute* time, which is where pytest does it
-    (`_pytest/skipping.py::pytest_runtest_setup`).  (Note a v1-ism inherited through the
+    (`_pytest/skipping.py::pytest_runtest_setup`).  (Note a quirk inherited through the
     shim: ``decorators.py::MarkDecorator._normalize_args`` evaluates a *string*
     ``skipif`` condition at decoration time, so such a condition usually arrives already
     reduced to a bool; ``xfail`` string conditions are not normalised and reach the
@@ -1041,20 +1035,20 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
 
 
 def _parametrization(func: object) -> "list[_Case] | None":
-    """Read v1's parametrize metadata and return ``(param_id, values, marks)`` per case.
+    """Read the decorator's parametrize metadata and return ``(param_id, values, marks)`` per case.
 
-    The ids are **v1's, consumed verbatim** — not recomputed.  They are produced at
+    The ids are **consumed verbatim** — not recomputed.  They are produced at
     decoration time by ``python/rustest/decorators.py::parametrize`` ->
     ``_build_cases`` -> ``_resolve_case_id`` (explicit ``ids=``, ``pytest.param(id=)``,
     else ``_generate_param_id``), and stacked decorators are cross-producted by
     ``_cross_product_cases``.  Recomputing them here is impossible without changing
-    v1: the stored case keeps only the final id and the value mapping, so an explicit
+    the decorator: the stored case keeps only the final id and the value mapping, so an explicit
     ``ids=["one", "two"]`` is indistinguishable from a generated one.
 
-    Divergences from `_pytest/python.py::IdMaker` therefore carry over — v1 matches
+    Divergences from `_pytest/python.py::IdMaker` therefore carry over — the decorator's ids match
     pytest for int/float/bool/None/short-str values, argname-matching tuples,
-    explicit ids and ``param(id=)`` (which is every corpus case), and differs for
-    long strings (v1 truncates), non-ASCII (pytest ascii-escapes), bytes, complex,
+    explicit ids and ``param(id=)`` (which is every corpus case), and differ for
+    long strings (truncated), non-ASCII (pytest ascii-escapes), bytes, complex,
     enums, objects with ``__name__`` and container values (pytest falls back to
     ``<argname><index>``).  See the task report for the probed table.
     """
@@ -1121,11 +1115,8 @@ def _cross_product_cases(outer: list[_Case], inner: list[_Case]) -> list[_Case]:
     applied before the enclosing class's mark is unpacked. Measured on pytest 8.4.2:
     ``test_m[10-1]``.
 
-    v1 emits ``test_m[1-10]``, and this worker used to inherit that spelling because it
-    consumes v1's pre-computed ids. Phase 4 Task 1's review took the other side of that
-    trade: the id is the thing a user writes in ``-k`` and reads in CI output, matching
-    pytest is the product promise, and v1 is deleted in Task 2 — so the inherited spelling
-    would have outlived the engine it came from.
+    The id is the thing a user writes in ``-k`` and reads in CI output, so the order matches
+    pytest's rather than the decorator's own ``test_m[1-10]``.
     """
     # The **method** dimension is the outer loop as well as the leading id component: both
     # are the same fact, and pytest shows it as `[10-1], [10-2], [20-1], [20-2]`.
@@ -1165,11 +1156,11 @@ def _unique_parameterset_ids(ids: list[str]) -> list[str]:
     addressability contract outright.
 
     Faithful for a single ``parametrize`` call, which is where pytest applies it.
-    pytest de-duplicates *per call* and only then joins stacked ids with ``-``; v1
-    hands over ids already cross-producted, so for stacked decorators whose *inner*
+    pytest de-duplicates *per call* and only then joins stacked ids with ``-``; the
+    decorator hands over ids already cross-producted, so for stacked decorators whose *inner*
     call contains duplicates the suffix lands on the joined id instead of the
     component (``1-1_0`` where pytest writes ``1_0-1``).  Both are unique; only
-    pytest's is byte-exact, and the underlying stacked-duplicate id is already a v1
+    pytest's is byte-exact, and the underlying stacked-duplicate id is already a
     divergence.
     """
     if len(ids) == len(set(ids)):
@@ -1317,7 +1308,7 @@ def _requested_argnames(
     return names
 
 
-def _default_arg_names(func: object, name: str, owner: type | None) -> frozenset[str]:
+def _default_arg_names(func: object) -> frozenset[str]:
     """Parameters that carry a **default**, i.e. what `getfuncargnames` deliberately drops.
 
     Port of `_pytest/compat.py::get_default_arg_names` (l. 174-181), used by
@@ -1327,7 +1318,6 @@ def _default_arg_names(func: object, name: str, owner: type | None) -> frozenset
 
     The bound-method first argument is not stripped here because it never has a default.
     """
-    _ = name, owner
     try:
         signature = inspect.signature(cast(Any, func))
     except (TypeError, ValueError):  # pragma: no cover - builtins never reach here
@@ -1365,7 +1355,7 @@ def _validate_if_using_arg_names(
 
     All four are collection errors, exit 2, on both runners.
     """
-    defaults = _default_arg_names(func, name, owner)
+    defaults = _default_arg_names(func)
     func_name = str(_safe_getattr(func, "__name__", name))
     for arg in sorted(argnames):
         if arg in fixturenames:
@@ -1469,17 +1459,12 @@ _SCOPE_INDEX: Final[Mapping[str, int]] = {name: index for index, name in enumera
 #: last test of a package — or of the session — has run anywhere else.  A package fixture
 #: is therefore not torn down at the package boundary.
 #:
-#: **The setup granularity used to be narrower than that, and is not any more.**  Until
-#: Phase 4c a *conftest* session fixture executed once per **file**: two tests in one file
-#: shared it, two files did not.  The cause was never this table and never
-#: :meth:`FixtureRunner.teardown` — which really does leave the session bucket alone at a
-#: module boundary — but :func:`build_registry` rebuilding the conftest chain's
-#: :class:`FixtureDef` objects per file while :attr:`FixtureRunner._cache` keys on their
-#: *identity* (``eq=False``, deliberately, so it keys the way pytest's does).  Two files
-#: presented two keys for one fixture and the cache missed; a yield teardown was queued once
-#: per file as well.  :func:`conftest_fixturedefs` now caches each conftest's fixturedefs per
-#: worker, so setup and teardown are both once per worker and only the genuine cross-worker
-#: split remains.
+#: A *conftest* session fixture executes once per worker, not once per file:
+#: :func:`conftest_fixturedefs` caches each conftest's :class:`FixtureDef` objects per worker,
+#: and :attr:`FixtureRunner._cache` keys on their *identity* (``eq=False``, deliberately, so
+#: it keys the way pytest's does).  :meth:`FixtureRunner.teardown` leaves the session bucket
+#: alone at a module boundary, so setup and teardown are both once per worker and only the
+#: genuine cross-worker split remains.
 #:
 #: ``class`` has its own bucket and a real boundary, but the boundary is **caller-driven**:
 #: pytest gets it from the collection tree (`SetupState.teardown_exact` unwinds every node
@@ -1565,11 +1550,10 @@ DEFAULT_ASYNCIO_MODE: Final = "auto"
 #:
 #: pytest-asyncio's ``_get_marked_loop_scope`` (l. 763-781) allows ``{"loop_scope", "scope"}``
 #: and raises ``ValueError`` for anything else.  ``timeout`` is added because it is **rustest's
-#: own** documented extension — v1's ``decorators.py::asyncio`` accepts it and
-#: ``src/execution.rs`` (l. 825-830) applies it — and ``docs/guide/async-testing.md`` names it
-#: as the thing "pytest-asyncio lacks out of the box".  Dropping it would have broken a
-#: shipped feature to gain conformance on an error message for a keyword pytest-asyncio has no
-#: meaning for.
+#: own** documented extension — ``decorators.py::asyncio`` accepts it and
+#: :meth:`FixtureRunner.run_coroutine` applies it — and the async-testing guide names it as
+#: the thing "pytest-asyncio lacks out of the box".  Dropping it would break a shipped feature
+#: to gain conformance on an error message for a keyword pytest-asyncio has no meaning for.
 _ASYNCIO_MARK_KWARGS: Final = frozenset({"loop_scope", "scope", "timeout"})
 
 #: `plugin.py::_DUPLICATE_LOOP_SCOPE_DEFINITION_ERROR` (l. 752-755), verbatim.
@@ -1763,11 +1747,9 @@ def _asyncio_timeout(mark: MarkSpec | None) -> float | None:
     """rustest's own ``@mark.asyncio(timeout=...)``, or ``None``.
 
     **Not from the oracle** — pytest-asyncio has no timeout at all, which is exactly what
-    ``docs/guide/async-testing.md`` advertises rustest as adding.  The semantics ported are
-    v1's: ``src/execution.rs`` l. 825-830 reads the kwarg off the mark and
-    ``async_executor.py::_wrap_test_for_gather`` l. 58-60 applies it as
+    ``docs/guide/async-testing.md`` advertises rustest as adding.  It is applied as
     ``asyncio.wait_for(coro, timeout)``, so a test that overruns is *cancelled* rather than
-    left running, and the message is v1's.
+    left running.
 
     A non-numeric or non-positive value is rejected by ``decorators.py::asyncio`` at decoration
     time; this re-checks because a mark can also arrive through ``pytest.mark.asyncio``, which
@@ -1789,19 +1771,16 @@ def _asyncio_timeout(mark: MarkSpec | None) -> float | None:
 #: Builtin fixtures this worker provides — :mod:`rustest._builtins`, which owns both the
 #: implementations and the order they are registered in.  Mirrored here because it is part of
 #: this module's public surface (the "supported builtins" list a lookup failure prints).
-BUILTIN_FIXTURES: Final = tuple(_builtins.V2_BUILTIN_FIXTURES)
+BUILTIN_FIXTURES: Final = _builtins.BUILTIN_FIXTURES
 
 #: Fixtures real pytest provides that this worker does not yet.  Requesting one is an
 #: error with its own wording rather than pytest's ``not found``: "not found" would send
 #: an operator hunting for a missing ``@fixture`` that was never theirs to write.
 #:
-#: Phase 3 Task 2 emptied most of it — ``cache``, ``capfd``, ``caplog``, ``mocker``,
-#: ``pytestconfig``, ``tmpdir`` and ``tmpdir_factory`` all moved into
-#: :data:`BUILTIN_FIXTURES`; Phase 4 Task 1c moved ``recwarn`` (MECHANISM M5), whose entry
-#: here claimed it "needs a warnings channel, which the worker wire does not have" — it does
-#: not, because it records **in-process** and tells the orchestrator nothing.  What is left
-#: is genuinely unimplemented, and each entry is a distinct piece of machinery rather than a
-#: variation on one that exists:
+#: Everything else (``cache``, ``capfd``, ``caplog``, ``mocker``, ``pytestconfig``, ``tmpdir``,
+#: ``recwarn``, ...) is in :data:`BUILTIN_FIXTURES`.  What is listed here is genuinely
+#: unimplemented, and each entry is a distinct piece of machinery rather than a variation on
+#: one that exists:
 #:
 #: * the ``*binary`` capture pair and ``capteesys`` need a bytes-flavoured capture class and,
 #:   for ``capteesys``, a *tee* — output both captured and passed through;
@@ -1875,15 +1854,15 @@ class FixtureDef:
 def _fixture_param_cases(
     func: object, fixture_name: str
 ) -> tuple[tuple[str, object, tuple[MarkSpec, ...]], ...] | None:
-    """Read v1's ``__rustest_fixture_params__`` into ``(id, value)`` pairs.
+    """Read the decorator's ``__rustest_fixture_params__`` into ``(id, value)`` pairs.
 
-    The ids are v1's, consumed verbatim, exactly as :func:`_parametrization` consumes the
+    The ids are consumed verbatim, exactly as :func:`_parametrization` consumes the
     ``@parametrize`` ids — produced by ``decorators.py::_build_fixture_params`` ->
-    ``_resolve_case_id``.  The same divergence table applies (v1 matches
+    ``_resolve_case_id``.  The same divergence table applies (they match
     `_pytest/python.py::IdMaker` for int/float/bool/None/short-str and explicit ids,
     differs for long strings, non-ASCII, bytes, complex, enums and containers).
 
-    :func:`_unique_parameterset_ids` is applied here because v1 does **not** apply it to
+    :func:`_unique_parameterset_ids` is applied here because the decorator does **not** apply it to
     fixture params: pytest de-duplicates per ``parametrize`` call
     (`IdMaker.make_unique_parameterset_ids`), and ``params=[1, 1]`` would otherwise
     collect two tests sharing one nodeid.
@@ -2356,7 +2335,7 @@ class _ItemNode:
     pytest API: rustest's own ``tests/test_conftest_nested`` uses it in an autouse fixture,
     and 21 of its tests were erroring on ``'SubRequest' object has no attribute 'node'``.
 
-    What is *not* here is as deliberate as what is: no ``session``, no ``config``, no
+    What is *not* here is as deliberate as what is: no ``session``, no
     ``parent``, no ``listchain`` — each would need a tree, and returning a stub that answers
     plausibly would be worse than an ``AttributeError`` that names the missing feature.
 
@@ -2404,7 +2383,7 @@ class _ItemNode:
         """A read-only stand-in for pytest's ``Node.keywords`` chain-map.
 
         Real ``keywords`` is a `NodeKeywords` that also carries the node's name and every
-        parent's; this carries the mark names, the node name and — as of Phase 3 Task 2 —
+        parent's; this carries the mark names, the node name and
         the names of the enclosing class and module, which is what completes the answer for
         the check people actually write, ``"slow" in item.keywords``, when the mark is on the
         class.  Marks already arrive with the class and module chain folded in
@@ -2735,7 +2714,11 @@ class FixtureRunner:
         for name in plan.closure.names:
             if name in values:
                 continue
-            values[name] = self.resolve(name, plan.closure, plan.fixture_params, ())
+            # The test itself is the requester, so the requesting scope is ``function`` --
+            # pytest's ``TopRequest._scope`` (l. 690-692).
+            values[name] = self._resolve_active(
+                name, plan.closure, plan.fixture_params, (), "function"
+            )[0]
         return {name: values[name] for name in plan.argnames if name in values}
 
     @staticmethod
@@ -2848,22 +2831,6 @@ class FixtureRunner:
         if path != self._current_module:
             self.teardown("module")
         self._current_module = path
-
-    def resolve(
-        self,
-        name: str,
-        closure: FixtureClosure,
-        params: Mapping[str, object],
-        chain: tuple[FixtureDef, ...],
-    ) -> object:
-        """Return one fixture's value, executing and caching it if needed.
-
-        The test itself is the requester here, so the requesting scope is ``function`` —
-        pytest's ``TopRequest._scope`` (l. 690-692) with its ``_check_scope`` that "always
-        has function scope so always valid" (l. 701-707).
-        """
-        value, _fixturedef = self._resolve_active(name, closure, params, chain, "function")
-        return value
 
     def _resolve_active(
         self,
@@ -3139,9 +3106,8 @@ class FixtureRunner:
         `Runner.run` cannot be re-entered, so two tests sharing a loop scope do not overlap
         under pytest-asyncio.  Probed on pytest 8.4.2 + pytest-asyncio 1.2.0: two tests each
         awaiting ``asyncio.sleep(0.30)`` on one *session*-scoped loop take 0.613 s wall, with
-        the second starting 0.003 s after the first ended.  rustest v1 batched such tests into
-        one ``asyncio.gather`` (`async_executor.py::run_coroutines_parallel`); that is not
-        reproduced here — see the module docstring's scope-limit list.
+        the second starting 0.003 s after the first ended.  Batching such tests into one
+        ``asyncio.gather`` is deliberately not done — see the module docstring's scope-limit list.
 
         *timeout* is rustest's own extension (:func:`_asyncio_timeout`) and is applied
         **inside** the loop with ``asyncio.wait_for``, so an overrunning test is cancelled on
@@ -3156,8 +3122,8 @@ class FixtureRunner:
             try:
                 return runner.run(coro, context=context)
             except TimeoutError:
-                # v1's wording (`async_executor.py` l. 85), kept so a suite that greps its
-                # CI output for the phrase keeps finding it.
+                # The wording is part of the documented ``timeout`` feature; a suite may grep
+                # its CI output for it.
                 _fail(f"Test timed out after {timeout} seconds")
         return runner.run(coro, context=context)
 
@@ -3889,7 +3855,7 @@ def build_registry(path: Path, rootdir: Path) -> tuple[types.ModuleType, Fixture
     * *Conftests before the module*, as pytest loads them (they are plugins, resolved during
       ``_set_initial_conftests``, long before any test module is imported).  It is what makes
       a test module's own ``import conftest`` reach the object the registry just parsed —
-      corpus ``fixtures/autouse``, and the shape v1 got wrong by importing it twice.
+      corpus ``fixtures/autouse``, and the shape of importing it twice, which this avoids.
     * *Builtins, then each conftest rootdir-down, then the module* — registration order **is**
       the shadowing rule, so ``defs[-1]`` is the nearest definition, which is what corpus
       ``fixtures/override-nearest`` asserts.
@@ -3951,7 +3917,7 @@ def _register_declared_plugins(module: types.ModuleType, registry: FixtureRegist
     defines are not called, because the engine has no hook system.  A plugin that only supplies
     fixtures — the overwhelmingly common shape, and the one rustest's own
     ``tests/test_pytest_plugins_and_applymarker`` exercises — works; one that implements
-    ``pytest_collection_modifyitems`` is silently inert, exactly as it is under v1.
+    ``pytest_collection_modifyitems`` is silently inert.
 
     An unimportable plugin raises out of here into :func:`collect_file`, which turns it into a
     collection error entry for the file — the same treatment a broken ``import`` in the
@@ -4300,7 +4266,7 @@ def _unittest_setup_method_fixture(cls: type) -> Callable[..., Iterator[None]] |
     def unittest_setup_method_fixture(request: object) -> Iterator[None]:
         instance = _safe_getattr(request, "instance", None)
         if _is_unittest_skipped(instance):
-            raise _Skipped(_safe_getattr(instance, "__unittest_skip_why__", ""))
+            raise _Skipped(cast("str | None", _safe_getattr(instance, "__unittest_skip_why__", "")))
         function = _safe_getattr(request, "function", None)
         if setup is not None:
             cast("Callable[..., object]", setup)(instance, function)
@@ -4403,7 +4369,7 @@ def _collect_class(
     A class with an ``__init__`` or a ``__new__`` is refused — pytest emits
     ``PytestCollectionWarning("cannot collect test class ... because it has a
     __init__ constructor")`` and returns ``[]``, **without** failing the run.  The
-    protocol has no warning channel in v1, so the class is skipped silently; emitting
+    protocol has no warning channel, so the class is skipped silently; emitting
     a collection error instead would turn pytest's exit 0 into exit 2 (corpus
     ``collection/class-collection``).
 
@@ -4605,11 +4571,11 @@ def enumerate_module(
 
 
 # ---------------------------------------------------------------------------
-# markdown code blocks — rustest's own tier, ported from v1
+# markdown code blocks — rustest's own tier
 # ---------------------------------------------------------------------------
 
 #: HTML comments that mark the *next* fenced block as "do not execute".  All three spellings
-#: are v1's (`src/discovery.rs::extract_python_code_blocks`): rustest's own, pytest's, and
+#: are accepted: rustest's own, pytest's, and
 #: pytest-codeblocks', because a project migrating from either already has them in its docs.
 MARKDOWN_SKIP_MARKERS: Final = (
     "<!--rustest.mark.skip-->",
@@ -4617,16 +4583,14 @@ MARKDOWN_SKIP_MARKERS: Final = (
     "<!--pytest-codeblocks:skip-->",
 )
 
-#: What a skipped block reports as its reason — v1's wording, kept so the two engines'
-#: output reads the same.
+#: What a skipped block reports as its reason — the wording is stable.
 MARKDOWN_SKIP_REASON: Final = "Skipped via HTML comment marker"
 
 
 def extract_python_code_blocks(content: str) -> list[tuple[str, int, bool]]:
     """``(code, opening-fence line number, skip?)`` for every ```` ```python ```` block.
 
-    Line-for-line port of `src/discovery.rs::extract_python_code_blocks` (v1), including the
-    two rules that are easy to get subtly different:
+    Includes the two rules that are easy to get subtly different:
 
     * the language is the **lowercased** text after the fence, so ```` ```Python ```` counts
       and ```` ```pycon ```` does not;
@@ -4635,7 +4599,7 @@ def extract_python_code_blocks(content: str) -> list[tuple[str, int, bool]]:
       skip that fence.  Reproducing the latch matters: getting it wrong either executes
       blocks the author disabled (loud, wrong failures) or silently stops testing the docs.
 
-    The line number is 1-based and points at the opening fence, which is what v1 puts in the
+    The line number is 1-based and points at the opening fence, which is what goes in the
     test id and in the compiled block's filename.
     """
     blocks: list[tuple[str, int, bool]] = []
@@ -4702,15 +4666,13 @@ def collect_markdown(
 ) -> tuple[list[CollectedTestDict], list[ExecutionPlan]]:
     """Enumerate a ``.md`` file's python fences, executing each at module level.
 
-    **This tier has no pytest counterpart** — it is rustest's, shipped since v1
-    (`src/discovery.rs::collect_from_markdown`) and switched off by ``--no-codeblocks``.  It
-    is here rather than left behind at the flip because rustest's own README and guide are
-    tested this way, and so are its users'.
+    **This tier has no pytest counterpart** — it is rustest's, **off by
+    default** and turned on by ``--codeblocks`` or ``[tool.rustest] codeblocks = true``.
+    Rustest's own README and guide are tested this way, and so are its users'.
 
-    **A block is executed, not wrapped.**  v1 (and v2 before this) compiled a block into
-    ``def run_codeblock(): <indented body>`` and called that.  A ``def test_*`` written
-    inside a block was therefore a function nested inside that wrapper — defined when the
-    wrapper ran, then discarded, never called, its assertions never executing.  This runs
+    **A block is executed, not wrapped.**  Wrapping a block in
+    ``def run_codeblock(): <indented body>`` would turn a ``def test_*`` written inside it into
+    a function nested in that wrapper — defined, then discarded, never called.  This runs
     the block's source directly in a fresh module namespace and then feeds that module
     through :func:`collect_module`, exactly as an ordinary ``.py`` file is, so a ``def
     test_*`` in a block is found and run the same way one at the top of a file is.
@@ -4720,16 +4682,15 @@ def collect_markdown(
     its own bare ``assert`` statements, if any, already raised or didn't) during the
     ``exec`` above.
 
-    Two shapes differ from v1 and both are cosmetic, recorded rather than discovered later:
+    Two shapes worth knowing:
 
-    * the node id is ``docs/guide/fixtures.md::codeblock_0_line_15`` — v1's *test name*
-      verbatim — where v1 *displayed* ``...::codeblock_0::line_15``.  the engine's ids are
-      rootdir-relative posix and a second ``::`` would claim the block is a class member;
-    * a block marked skipped carries a real ``skip`` mark instead of v1's out-of-band
-      ``skip_reason``, so it travels on the wire and is evaluated by the same
-      :func:`evaluate_skip_marks` every other skip goes through.
+    * the node id is ``docs/guide/fixtures.md::codeblock_0_line_15``, not
+      ``...::codeblock_0::line_15``: ids are rootdir-relative posix and a second ``::``
+      would claim the block is a class member;
+    * a block marked skipped carries a real ``skip`` mark, so it travels on the wire and is
+      evaluated by the same :func:`evaluate_skip_marks` every other skip goes through.
 
-    The ``codeblock`` mark v1 attaches follows every node down to inner-test granularity —
+    The ``codeblock`` mark attached follows every node down to inner-test granularity —
     a test found *inside* a block carries it too, appended after its own marks (the same
     "own marks, then outer" order :func:`_collect_function` gives a module's ``pytestmark``)
     — so ``-m codeblock`` and ``-m "not codeblock"`` keep meaning "the documentation
@@ -4779,8 +4740,8 @@ def collect_markdown(
             block_plans: list[ExecutionPlan] = []
             block_error: BaseException | None = None
             if not skipped:
-                # A skipped block is **not compiled**.  v1 compiled every block up front, so a
-                # `<!--rustest.mark.skip-->` fence containing pseudo-code turned the whole file
+                # A skipped block is **not compiled**: a
+                # `<!--rustest.mark.skip-->` fence containing pseudo-code would otherwise turn the whole file
                 # into a collection error — which defeats the purpose of the marker, and the
                 # project's own documentation guidelines tell authors to use it for
                 # "pseudo-code or incomplete snippets".  A skip mark short-circuits before the
@@ -4826,11 +4787,7 @@ def collect_markdown(
                         compile(textwrap.dedent(code), f"{path}:L{line_number}", "exec"),
                         module.__dict__,
                     )
-                except (
-                    Exception,  # noqa: BLE001 - replayed as a failing test below
-                    *MODULE_SKIP_EXCEPTIONS,
-                    *MODULE_ERROR_EXCEPTIONS,
-                ) as exc:
+                except _BLOCK_BODY_EXCEPTIONS as exc:  # replayed as a failing test below
                     block_error = exc
 
                 # `build_registry` minus the import, in its order. The xunit hooks must be
@@ -4863,11 +4820,7 @@ def collect_markdown(
                         asyncio_config=asyncio_config,
                         block_segment=segment,
                     )
-                except (
-                    Exception,  # noqa: BLE001 - replayed as a failing test below
-                    *MODULE_SKIP_EXCEPTIONS,
-                    *MODULE_ERROR_EXCEPTIONS,
-                ) as exc:
+                except _BLOCK_BODY_EXCEPTIONS as exc:  # replayed as a failing test below
                     if block_error is None:
                         block_error = exc
 
@@ -4941,34 +4894,12 @@ STATUSES: Final = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
 _ERROR_PHASES: Final = tuple(phase for phase in PHASES if phase != "call")
 
 
-#: Exceptions that **abort the run** instead of being classified as a test outcome.
-#:
-#: Port of `_pytest/runner.py::call_runtest_hook` l. 242-244, which is the authority and is
-#: narrower than it looks::
-#:
-#:     reraise: tuple[type[BaseException], ...] = (Exit,)
-#:     if not item.config.getoption("usepdb", False):
-#:         reraise += (KeyboardInterrupt,)
-#:
-#: **``SystemExit`` is deliberately not here.**  The obvious guess is that both "process-
-#: ending" exceptions abort; probed, they do not — pytest reports ``raise SystemExit`` in a
-#: body as an ordinary ``FAILED`` and **runs the next test**, because ``CallInfo.from_call``
-#: catches ``BaseException`` and only the ``reraise`` set escapes.  ``SystemExit`` reraises
-#: during *collection* only (l. 392).  Treating it as an abort would let one ``sys.exit()``
-#: deep in a library silently truncate a run.
-#:
-#: ``Exit`` is pytest's own ``pytest.exit()`` signal; rustest has no equivalent, so
-def _import_exit_class() -> type[BaseException]:
-    """``pytest.exit()``'s exception — ``rustest.compat.pytest.Exit``.
-
-    Its own function for the same reason as :func:`_import_outcome_classes`: the class is
-    defined in the compat shim, and naming the import site makes it obvious that *this* is
-    the one exception in :data:`ABORT_EXCEPTIONS` a user's test can raise on purpose.
-    """
-    from rustest.compat.pytest import Exit
-
-    return Exit
-
+# The outcome classes this worker classifies **by type**.  ``rustest.decorators`` is the one
+# source: ``_pytest.outcomes`` aliases these very objects (pinned by
+# :func:`_assert_outcome_aliases_are_identities`), and ``Exit`` is the compat shim's class,
+# the one exception in :data:`ABORT_EXCEPTIONS` a user's test can raise on purpose.
+from rustest.compat.pytest import Exit as _Exit  # noqa: E402
+from rustest.decorators import Failed as _Failed, Skipped as _Skipped, XFailed as _XFailed  # noqa: E402
 
 #: Exceptions that end the **session** rather than the test: they are re-raised out of every
 #: phase, propagate to :func:`main`, and stop the worker — classifying one would turn it into
@@ -4980,10 +4911,9 @@ def _import_exit_class() -> type[BaseException]:
 #:   listing it here is how a plain ``Exception`` subclass (which is what pytest's ``Exit``
 #:   is) gets that treatment through this worker's own ``except Exception`` handlers.
 #:
-#: ``SystemExit`` is deliberately **absent**: pytest continues past one (1b.2 Task 3's
-#: oracle-corrected finding), so it is classified as an ordinary failure.
-_Exit: Final[type[BaseException]] = _import_exit_class()
-
+#: ``SystemExit`` is deliberately **absent**: `_pytest/runner.py::call_runtest_hook` re-raises
+#: only ``Exit`` (and ``KeyboardInterrupt``), so pytest reports ``raise SystemExit`` in a body
+#: as an ordinary ``FAILED`` and runs the next test.  It re-raises during *collection* only.
 ABORT_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (KeyboardInterrupt, _Exit)
 
 #: The worker's exit code when a test called ``pytest.exit()``.
@@ -4998,34 +4928,6 @@ ABORT_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (KeyboardInterrupt, _
 #: else, which is why ``pytest.exit(returncode=N)``'s N is not honoured (see
 #: ``compat/pytest.py::exit``).  A payload would need a wire op.
 SESSION_EXIT_EXIT: Final = 4
-
-
-def _import_outcome_classes() -> tuple[type[BaseException], ...]:
-    """The outcome exception classes this worker classifies **by type**.
-
-    Returns ``(Skipped, XFailed, Failed)`` — **one** source, and that is the point.
-
-    A real suite reaches rustest's outcomes by two different import paths:
-
-    * ``rustest.decorators`` — what ``pytest.skip()`` / ``pytest.fail()`` / ``pytest.xfail()``
-      raise through the compat shim (``compat/pytest.py`` l. 649-654 rebinds them verbatim);
-    * ``rustest._pytest_stub.outcomes`` — what ``from _pytest.outcomes import Skipped``
-      gives a suite that reaches into pytest's internals, which
-      :func:`install_pytest_shim` installs as ``sys.modules["_pytest.outcomes"]``.
-
-    Until the Phase 4 v1 deletion those were **different classes**, and this function listed
-    both so an ``isinstance`` here could not miss half the ways a suite can skip. That fixed
-    the worker's own table and nothing else: the divergence that actually cost verdicts was in
-    *user* code — ``except Skipped:`` and ``except Exception:`` around a skip resolve before
-    the worker ever sees the exception, and no table on this side can reach them. See
-    ``python/rustest/_pytest_stub/outcomes.py`` for the two probed verdict swaps.
-
-    ``_pytest.outcomes`` now aliases these very objects, so one source is the *complete*
-    source. :func:`_assert_outcome_aliases_are_identities` is the pin that keeps it that way.
-    """
-    from rustest.decorators import Failed, Skipped, XFailed
-
-    return (Skipped, XFailed, Failed)
 
 
 def _assert_outcome_aliases_are_identities() -> None:
@@ -5051,7 +4953,6 @@ def _assert_outcome_aliases_are_identities() -> None:
         )
 
 
-_Skipped, _XFailed, _Failed = _import_outcome_classes()
 _assert_outcome_aliases_are_identities()
 
 #: "The test asked not to run."  Port of `_pytest/outcomes.py::Skipped` semantics.
@@ -5106,20 +5007,22 @@ MODULE_SKIP_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Skipped,)
 #: :data:`ABORT_EXCEPTIONS`.
 MODULE_ERROR_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Failed, _XFailed)
 
+#: What :func:`collect_markdown` catches around a block's ``exec`` and its enumeration:
+#: ``Exception`` widened by the outcome signals (which are ``BaseException`` subclasses).
+_BLOCK_BODY_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
+    Exception,
+    *MODULE_SKIP_EXCEPTIONS,
+    *MODULE_ERROR_EXCEPTIONS,
+)
+
 #: "The test declared itself an expected failure while running."  Port of
 #: `_pytest/outcomes.py::XFailed`, consumed by `_pytest/skipping.py` l. 279-282, which turns
 #: it into ``outcome="skipped"`` plus ``wasxfail`` — i.e. the ``xfailed`` category —
 #: **whatever phase raised it**.
 #:
-#: Checked *before* :data:`FAILED_EXCEPTIONS`: pytest declares ``class XFailed(Failed)``, and
-#: since the Phase 4 polish wave so does rustest, so the order is load-bearing on both sides.
+#: Checked *before* the generic ``failed`` default: pytest declares ``class XFailed(Failed)``,
+#: and so does rustest, so the order is load-bearing on both sides.
 XFAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_XFailed,)
-
-#: "The test failed on purpose" — ``pytest.fail()``.  Listed for documentation and for the
-#: unittest translation (an unexpected success becomes one of these); classification does
-#: not branch on it, because :func:`report_for_phase`'s **default** is already ``failed``,
-#: which is also where a plain ``AssertionError`` and every other exception land.
-FAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_Failed,)
 
 
 def _visible_frames(exc: BaseException) -> list[bool]:
@@ -5627,8 +5530,6 @@ def _unittest_class_fixture(cls: type) -> Callable[..., Iterator[None]] | None:
 
     Not ported: ``parsefactories`` over the instance — an autouse ``@pytest.fixture``
     written inside a ``TestCase`` body is not picked up.  A recorded gap, not a silent one.
-    (``_register_unittest_setup_method_fixture`` used to be listed here too; Phase 4 Task 1c
-    ported it as :func:`_unittest_setup_method_fixture`.)
     """
     setup = _safe_getattr(cls, "setUpClass", None)
     teardown = _safe_getattr(cls, "tearDownClass", None)
@@ -5670,11 +5571,9 @@ def _unittest_class_fixture(cls: type) -> Callable[..., Iterator[None]] | None:
 class _Capture:
     """Per-test ``stdout``/``stderr``, captured at the **file-descriptor** level.
 
-    Phase 3 Task 2 replaced the stream-level redirect this used to be.  The old version was
-    v1's ``capsys`` semantics — a ``print()`` was captured and an ``os.write(1, ...)`` was
-    not — and the gap was not merely a missing feature: fd 1 *was the protocol channel*, so a
-    test writing to it emitted JSON-adjacent bytes into the orchestrator's parser.  That
-    hazard is closed twice over now.  :func:`_detach_protocol_stream` moves the protocol off
+    A stream-level redirect would miss ``os.write(1, ...)``, and fd 1 would otherwise be the
+    protocol channel: a test writing to it would emit JSON-adjacent bytes into the
+    orchestrator's parser.  That hazard is closed twice over.  :func:`_detach_protocol_stream` moves the protocol off
     fd 1 before any test module is imported, and this class redirects fd 1 into a temporary
     file for the duration of every test, so the write becomes **captured output attributed to
     the test that made it**.
@@ -5932,8 +5831,7 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
 
     An `async def` test called like a sync one returns a coroutine and raises nothing, so the
     run reports PASSED for a body that never executed. Measured before this existed:
-    ``async def test(): assert 1 == 2`` printed ``1 passed`` under v2 while both pytest and
-    rustest v1 printed ``1 failed``.
+    ``async def test(): assert 1 == 2`` printed ``1 passed`` while pytest printed ``1 failed``.
 
     The shape of the check is **pytest's**, `_pytest/python.py::pytest_pyfunc_call`
     (pytest 8.4.2, l. 150-168)::
@@ -6008,7 +5906,7 @@ def drain_boundaries(plan: ExecutionPlan, runner: FixtureRunner) -> BaseExceptio
     """Unwind the scopes the incoming test does not share, **outside its capture window**.
 
     Placement is the whole point.  Class- and module-scoped teardown belongs to the tests
-    that just *finished*, so running it inside the next test's ``redirect_stdout`` prefixes
+    that just *finished*, so running it inside the next test's capture window prefixes
     the previous module's teardown output onto an unrelated test's ``stdout`` — reviewer's
     probe: ``TEARDOWN-CLASS``/``TEARDOWN-MODULE`` appearing in ``test_two``'s capture.  That
     is not a cosmetic mix-up; it attributes one test's output to another on the wire.
@@ -6247,11 +6145,6 @@ class WorkerState:
     #: repo that builds a state by hand keeps working and states, by omission, that it is
     #: not exercising the mode.
     asyncio: AsyncioConfig = _DEFAULT_ASYNCIO
-    #: ``Config.invocation_params.dir`` — the directory the run was started from, which is
-    #: **not** rootdir whenever a run is started below its config file.  Read by
-    #: ``request.config.invocation_params.dir``; defaulted to rootdir for the hand-built
-    #: states in this repo's own tests, which never exercise the distinction.
-    invocation_dir: Path | None = None
 
 
 _state: WorkerState | None = None
@@ -6348,10 +6241,7 @@ def _apply_pythonpath(raw: object) -> list[str]:
     exists for one run and then exits, so there is no later run to keep clean.  Returned for
     the tests rather than for any caller.
 
-    This is a **regression closed**, not a new feature: v1 applied the same ini through
-    ``src/python_support.rs::read_pythonpath_from_pyproject``, and it applied more besides —
-    it also injected the project root and an auto-detected ``src/``.  Those two are *not*
-    reproduced: `_pytest/config/__init__.py` does neither, and adding directories pytest
+    The project root and an auto-detected ``src/`` are deliberately *not* added: `_pytest/config/__init__.py` does neither, and adding directories pytest
     would not add makes an import succeed under rustest that fails under pytest, which is a
     worse failure than the one being fixed.
     """
@@ -6377,10 +6267,9 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     handshake agree with any orchestrator and detect no skew at all.  Deciding what
     to do about a mismatch is the orchestrator's job (``src/engine/protocol.rs``).
 
-    ``invocation_dir`` **is** stored as of Phase 3 Task 2: ``request.config`` answers with it
-    through ``Config.invocation_params.dir``, which is the value pytest itself resolves a
-    test's relative paths against.  Nothing in the collection half uses it (paths arrive
-    absolute, nodeids are rootdir-relative).
+    ``invocation_dir`` is handed to :func:`_builtins.configure`: ``request.config`` answers
+    with it through ``Config.invocation_params.dir``.  Nothing in the collection half uses it
+    (paths arrive absolute, nodeids are rootdir-relative).
 
     ``pythonpath`` is applied **first**, before the rewrite hook and before any import, which
     is where pytest applies it: ``Config._configure_python_path`` runs from
@@ -6424,7 +6313,6 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
         rootdir=rootdir,
         naming=naming,
         asyncio=asyncio_config,
-        invocation_dir=invocation_dir,
     )
     _builtins.configure(rootdir, invocation_dir, _ini_values(naming, asyncio_config, pythonpath))
     return {"op": "ready", "protocol_version": PROTOCOL_VERSION}
@@ -6554,6 +6442,11 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
 
     file_path = Path(path)
     response: CollectedResponse = {"op": "collected", "path": path}
+
+    def fail(message: str) -> CollectedResponse:
+        response["error"] = {"path": _relative_posix(file_path, state.rootdir), "message": message}
+        return response
+
     try:
         if file_path.suffix == ".md":
             # The markdown tier: each block gets its own module, exec'd and collected in
@@ -6576,11 +6469,7 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
         for plan in plans:
             _execution_plans[plan.id] = plan
     except CollectionRefusal as exc:
-        response["error"] = {
-            "path": _relative_posix(file_path, state.rootdir),
-            "message": str(exc),
-        }
-        return response
+        return fail(str(exc))
     except ABORT_EXCEPTIONS:
         # A `pytest.exit()` at import time ends the **session**, not this file's collection.
         # `Exit` is an ordinary `Exception` (pytest's own base class), so without this arm the
@@ -6597,32 +6486,20 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
             reason = _safe_getattr(exc, "msg", None)
             response["skipped"] = reason if isinstance(reason, str) else str(exc)
             return response
-        response["error"] = {
-            "path": _relative_posix(file_path, state.rootdir),
-            "message": (
-                "Using pytest.skip outside of a test will skip the entire module. "
-                "If that's your intention, pass `allow_module_level=True`. "
-                "If you want to skip a specific test or an entire class, "
-                "use the @pytest.mark.skip or @pytest.mark.skipif decorators."
-            ),
-        }
-        return response
+        return fail(
+            "Using pytest.skip outside of a test will skip the entire module. "
+            + "If that's your intention, pass `allow_module_level=True`. "
+            + "If you want to skip a specific test or an entire class, "
+            + "use the @pytest.mark.skip or @pytest.mark.skipif decorators."
+        )
     except MODULE_ERROR_EXCEPTIONS as exc:
         # See :data:`MODULE_ERROR_EXCEPTIONS`.  Same answer as the `except Exception` arm
         # below -- one file's collection error, the run continues, exit 2 -- and it needs its
         # own arm only because these are `BaseException` subclasses, so that arm cannot see
         # them and the worker would die at exit 3 instead.
-        response["error"] = {
-            "path": _relative_posix(file_path, state.rootdir),
-            "message": _module_outcome_error_message(exc),
-        }
-        return response
+        return fail(_module_outcome_error_message(exc))
     except Exception as exc:
-        response["error"] = {
-            "path": _relative_posix(file_path, state.rootdir),
-            "message": "".join(traceback.format_exception(exc)).rstrip(),
-        }
-        return response
+        return fail("".join(traceback.format_exception(exc)).rstrip())
 
     if tests:
         response["tests"] = tests
@@ -6687,13 +6564,13 @@ def encode_response(response: Mapping[str, object]) -> str:
 def install_pytest_shim() -> None:
     """Point ``import pytest`` at rustest's compat layer, process-wide.
 
-    Mirrors ``src/discovery.rs::inject_pytest_compat_shim``.  Two reasons this is not
+    Two reasons this is not
     optional: the worker must not pull real pytest into the process, and the
     enumeration reads the ``__rustest_*`` metadata that only rustest's decorators
     attach — real pytest's ``@pytest.mark.parametrize`` would leave none.
 
-    The ``_pytest.*`` stubs go in too, mirroring what v1's CLI does alongside the
-    shim (``python/rustest/core.py`` l. 97-102 -> ``compat/pytest.py::install_pytest_stubs``).
+    The ``_pytest.*`` stubs go in too, installed through
+    ``compat/pytest.py::install_pytest_stubs``.
     Test modules and conftests that import pytest's *internal* API — ``from
     _pytest.outcomes import Failed``, ``from _pytest.monkeypatch import MonkeyPatch``
     — are common enough in real suites, and without the stubs those files would fail
@@ -6727,8 +6604,8 @@ def _detach_protocol_stream(stream: TextIO) -> TextIO:
     """Move the protocol channel off **fd 1**, and point fd 1 at the worker's stderr.
 
     This is the structural half of closing the raw-fd-write hazard, and it has to happen
-    before anything else can write.  Until Phase 3 Task 2 the protocol was ``sys.stdout``
-    itself: rebinding the *name* stopped a stray ``print``, and stopped nothing else.  A test
+    before anything else can write.  Were the protocol ``sys.stdout``
+    itself, rebinding the *name* stopped a stray ``print``, and stopped nothing else.  A test
     doing ``os.write(1, b"...")`` — or a C extension, or a subprocess inheriting the fd —
     wrote straight into the JSON-lines stream the orchestrator was parsing.
 
@@ -6760,7 +6637,7 @@ def _detach_protocol_stream(stream: TextIO) -> TextIO:
 def main() -> int:
     """Run the protocol loop: read a request per line, write a response per line.
 
-    stdout is reserved for protocol traffic, and as of Phase 3 Task 2 it is reserved at the
+    stdout is reserved for protocol traffic, and it is reserved at the
     **descriptor** level: :func:`_detach_protocol_stream` dups the real stdout onto a private
     fd and repoints fd 1 at stderr, so neither a stray ``print`` nor a raw ``os.write(1, …)``
     can reach the JSON-lines stream.  ``sys.stdout`` is rebound to stderr on top of that,
@@ -6847,10 +6724,9 @@ def main() -> int:
         # `pytest.exit()` above and a `KeyboardInterrupt` that propagates out of `main`.  A
         # batch writes its results with `emit_buffered`, so an abort mid-batch can be holding
         # results the orchestrator has *earned* — tests that ran and reported — in an 8 KB
-        # buffer.  Until Phase 3 Task 2 this was covered by accident: `protocol_out` was
-        # `sys.stdout`, which CPython flushes during interpreter shutdown.  Moving the protocol
-        # to a private descriptor (:func:`_detach_protocol_stream`) took that accident away and
-        # the loss was immediate and silent — probed: a file whose first test fails and whose
+        # buffer.  `protocol_out` is a private descriptor
+        # (:func:`_detach_protocol_stream`), so nothing flushes it at interpreter shutdown the
+        # way CPython flushes `sys.stdout`; without this the loss is silent — probed: a file whose first test fails and whose
         # second calls `pytest.exit()` reported `no tests ran` instead of `1 failed`.
         with contextlib.suppress(ValueError, OSError):
             protocol_out.flush()

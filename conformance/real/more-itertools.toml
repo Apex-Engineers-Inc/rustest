@@ -38,12 +38,6 @@ setup = [
 ]
 pythonpath = []
 
-[addopts]
-# The repo declares no pytest config at all, so there is nothing to replay or drop.
-configured = []
-replay = []
-dropped = []
-
 [run]
 pytest_args = []
 rustest_args = []

@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 /// so a suite (or a person) that knows `.pytest_cache` knows this one.  It briefly carried a
 /// `v2/` engine-version segment while two engines could both write here; there is one engine
 /// now, and the segment named nothing.
-const CACHE_DIR: &str = ".rustest_cache";
+pub(crate) const CACHE_DIR: &str = ".rustest_cache";
 
 /// pytest's own sub-directory for cached **values** (`_pytest/cacheprovider.py::Cache::
 /// _CACHE_PREFIX_VALUES`), and `cache/lastfailed` is the key it stores the last-failed set

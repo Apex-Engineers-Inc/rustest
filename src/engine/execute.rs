@@ -144,6 +144,7 @@ pub struct RunOptions {
     pub coverage: Option<CoverageWire>,
 }
 
+#[cfg(test)]
 impl RunOptions {
     /// The defaults a plain `rustest <paths>` uses: capture on, codeblocks left to config
     /// (`None`), assertion rewriting on, no `-x`, no `--lf`.  `Default::default()` cannot be
@@ -195,6 +196,7 @@ impl TestStatus {
         }
     }
 
+    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             TestStatus::Passed => "passed",

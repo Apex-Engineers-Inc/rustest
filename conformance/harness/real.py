@@ -155,9 +155,6 @@ class RealTarget:
     venv: Path
     setup: list[list[str]]
     pythonpath: list[str]
-    addopts_configured: list[str]
-    addopts_replay: list[str]
-    addopts_dropped: list[str]
     pytest_args: list[str]
     rustest_args: list[str]
     timeout_s: int
@@ -189,7 +186,6 @@ def load_target(name: str) -> RealTarget:
 
     repo_tbl = _table(data, "repo")
     env_tbl = _table(data, "env")
-    addopts_tbl = _table(data, "addopts")
     run_tbl = _table(data, "run")
     div_tbl = _table(data, "divergence")
 
@@ -219,9 +215,6 @@ def load_target(name: str) -> RealTarget:
         venv=(WORK_DIR / "_venvs" / name).resolve(),
         setup=_commands(env_tbl, "setup"),
         pythonpath=_strings(env_tbl, "pythonpath"),
-        addopts_configured=_strings(addopts_tbl, "configured"),
-        addopts_replay=_strings(addopts_tbl, "replay"),
-        addopts_dropped=_strings(addopts_tbl, "dropped"),
         pytest_args=_strings(run_tbl, "pytest_args"),
         rustest_args=_strings(run_tbl, "rustest_args"),
         timeout_s=_int(run_tbl, "timeout_s", 3600),
@@ -563,13 +556,8 @@ def _plugin_dir(tmp: Path) -> Path:
 def _env_for(target: RealTarget, extra_paths: Iterable[Path]) -> dict[str, str]:
     """``PYTHONPATH`` for one runner: the plugin directory, plus any ``[env] pythonpath``.
 
-    That second part is a **compensation lever** and no target uses it as of Phase 4 Task 1.
-    It existed for Member Designer's ``pythonpath = ["src"]``, which pytest honoured and v2
-    did not implement, so without it every one of that suite's ~285 files failed to import
-    and the sweep measured one missing ini option instead of a suite. v2 implements the ini
-    now (``_worker::_apply_pythonpath``), so the key is empty everywhere; it is kept
-    because a future target may need the same kind of scaffolding, and an empty list is a
-    visible "nothing is being compensated here".
+    ``[env] pythonpath`` is a compensation lever for a target whose ini ``pythonpath`` the
+    runners would not otherwise resolve (fastapi uses it for ``docs_src``).
     """
     env = dict(os.environ)
     parts = [str(p) for p in extra_paths]
@@ -610,9 +598,7 @@ def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
     (``cli.py::main``, the port of ``Config._preparse``), so **each runner reads the
     target's config for itself**, which is the thing the sweep is supposed to measure.
 
-    ``[addopts] replay``/``dropped`` stay in the configs as documentation of what each
-    target declares, and ``dropped`` keeps its meaning for a future target with a flag
-    rustest cannot accept -- but nothing is replayed on the command line any more.
+    Nothing is replayed on the command line.
     """
     report = tmp / "pytest-report.json"
     env = _env_for(target, [_plugin_dir(tmp)])
