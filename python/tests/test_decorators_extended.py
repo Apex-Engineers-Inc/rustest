@@ -60,8 +60,8 @@ class TestExtendedSkip:
         def test_func() -> None:
             pass
 
-        # Empty string is treated as no reason, so default is used
-        assert getattr(test_func, "__rustest_skip__") == "skipped via rustest.skip"
+        # An explicit empty reason stays empty, as `pytest.mark.skip(reason="")` does.
+        assert getattr(test_func, "__rustest_skip__") == ""
 
     def test_skip_with_multiline_reason(self) -> None:
         reason = "This is a\nmultiline\nreason"

@@ -79,7 +79,7 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
 
         def _skip(reason=None):
             """Redirect to pytest.mark.skip."""
-            return pytest.mark.skip(reason=reason or "skipped via rustest.skip")
+            return pytest.mark.skip if reason is None else pytest.mark.skip(reason=reason)
 
         # Import approx and raises from rustest.approx and rustest.decorators
         # These need to come from the real rustest package

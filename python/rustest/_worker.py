@@ -39,9 +39,7 @@ classifier for both worlds.
 
 **What the pytest differential does and does not pin.**  The execute tests compare *status*
 per nodeid against real pytest, byte for byte.  They do **not** compare ``message`` text, and
-that is a deliberate line: a skip reason of ``"skipped via rustest.skip"`` where pytest writes
-``"unconditional skip"`` is a wording inherited through ``decorators.py::skip_decorator``,
-not an outcome defect, and pinning prose would make every upstream reword a red gate.  Message
+that is a deliberate line: pinning prose would make every upstream reword a red gate.  Message
 *shape* is pinned where it is load-bearing — ``[XPASS(strict)]``, ``[NOTRUN]``, and the
 traceback filtering — because those distinguish one outcome from another.
 
@@ -1029,11 +1027,8 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
 
     Conditions are **not** evaluated here — :func:`evaluate_skip_marks` and
     :func:`evaluate_xfail_marks` do that at *execute* time, which is where pytest does it
-    (`_pytest/skipping.py::pytest_runtest_setup`).  (Note a quirk inherited through the
-    shim: ``decorators.py::MarkDecorator._normalize_args`` evaluates a *string*
-    ``skipif`` condition at decoration time, so such a condition usually arrives already
-    reduced to a bool; ``xfail`` string conditions are not normalised and reach the
-    evaluator intact.)
+    (`_pytest/skipping.py::pytest_runtest_setup`) -- string conditions included, which
+    arrive as the source text the user wrote.
     """
     specs = _pytestmark_specs(obj, consider_mro=consider_mro)
     specs.extend(_rustest_mark_specs(obj, consider_mro=consider_mro))
@@ -5127,12 +5122,10 @@ def evaluate_condition(
     the ``pytest_markeval_namespace`` hook, neither of which exists on this wire.  Anything
     else is ``bool()``-ed.
 
-    Evaluating strings is not optional even though ``decorators.py::_normalize_args``
-    already reduces *skipif* strings at decoration time: it does **not** touch ``xfail``, so
-    ``@pytest.mark.xfail("1 == 1", reason=...)`` would otherwise be judged by the truthiness
-    of the source text — always true, for every condition, including the ones meant to be
-    false.  Probed: pytest reports that test XFAIL, and reports the same test with a
-    would-be-false string condition FAILED.
+    Judging the source text by its truthiness instead would make every string condition
+    true.  Probed: pytest reports ``@pytest.mark.xfail("1 == 1", reason=...)`` XFAIL and the
+    same test with a would-be-false string condition FAILED; ``skipif`` strings likewise,
+    with ``condition: <source>`` as the default reason.
 
     Both failure shapes pytest turns into ``fail(..., pytrace=False)`` are ported, message
     included: a broken condition, and a **boolean condition with no ``reason=``** — probed,

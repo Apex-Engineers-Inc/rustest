@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import inspect
-import sys
 from types import GenericAlias
 from typing import TYPE_CHECKING, Any, Final, ParamSpec, TypeVar, overload, cast
 
@@ -41,8 +40,6 @@ def _mark_payloads(marks: Sequence[Any]) -> list[dict[str, Any]]:
 
     The same shape ``MarkDecorator.__call__`` writes into ``__rustest_marks__``, so
     ``_worker::_spec_from_mark_dict`` consumes a per-parameter mark with no new reader.
-    ``_normalize_args`` is deliberately not applied: it evaluates a *string* skipif condition
-    against a target function, and a parameter set has no target.
     """
     payloads: list[dict[str, Any]] = []
     for mark in marks:
@@ -397,10 +394,13 @@ def skip_decorator(reason: str | None = None) -> Callable[[Callable[P, R]], Call
 
     This is the decorator version used as @skip(reason="...") or via @mark.skip.
     For the function version that raises Skipped, see skip() function.
+
+    No reason means pytest's ``"unconditional skip"`` (``_pytest/skipping.py::Skip``); an
+    explicit empty reason stays empty, as it does in pytest.
     """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        setattr(func, "__rustest_skip__", reason or "skipped via rustest.skip")
+        setattr(func, "__rustest_skip__", "unconditional skip" if reason is None else reason)
         return func
 
     return decorator
@@ -743,7 +743,7 @@ class MarkDecorator:
         # Add this mark to the list
         mark_data = {
             "name": self.name,
-            "args": self._normalize_args(func),
+            "args": self.args,
             "kwargs": self.kwargs,
         }
         existing_marks.append(mark_data)
@@ -751,13 +751,6 @@ class MarkDecorator:
         # Store the marks list on the function
         setattr(func, "__rustest_marks__", existing_marks)
         return func
-
-    def _normalize_args(self, target: Callable[..., Any]) -> tuple[Any, ...]:
-        if self.name != "skipif" or not self.args:
-            return self.args
-
-        evaluated = _evaluate_skipif_condition(self.args[0], target)
-        return (evaluated, *self.args[1:])
 
     def __repr__(self) -> str:
         return f"Mark({self.name!r}, {self.args!r}, {self.kwargs!r})"
@@ -813,9 +806,7 @@ class SkipMarkDecorator(MarkDecorator):
         # would then report the same skip twice. The object is still a legal `pytestmark`
         # *value* because it is a `MarkDecorator` and answers `.name`/`.args`/`.kwargs`;
         # what changes here is only what decorating writes.
-        reason = self.kwargs.get("reason")
-        setattr(func, "__rustest_skip__", reason or "skipped via rustest.skip")
-        return func
+        return cast(TFunc, skip_decorator(self.kwargs.get("reason"))(func))
 
 
 def _mark_decoration_target(
@@ -1271,37 +1262,6 @@ class MarkGenerator:
 
 # Create a singleton instance
 mark = MarkGenerator()
-
-
-def _evaluate_skipif_condition(condition: Any, target: Callable[..., Any]) -> Any:
-    if not isinstance(condition, str):
-        return condition
-
-    # Recreate pytest's evaluation order: use the function's globals first and fall
-    # back to the module where the function is defined. This lets expressions reuse
-    # constants or helper flags defined next to the tests.
-    globals_ns = getattr(target, "__globals__", None)
-    if globals_ns is None:
-        module_name = getattr(target, "__module__", None)
-        if module_name is not None:
-            module = sys.modules.get(module_name)
-            if module is not None:
-                globals_ns = vars(module)
-    if globals_ns is None:
-        globals_ns = {}
-
-    locals_ns: dict[str, Any] = {}
-    if inspect.isclass(target):
-        locals_ns = dict(vars(target))
-
-    try:
-        return bool(eval(condition, globals_ns, locals_ns))
-    except Exception as exc:  # pragma: no cover - defensive
-        message = (
-            "Failed to evaluate skipif condition "
-            + f"'{condition}': {exc}. Fix the expression or guard it with try/except."
-        )
-        raise RuntimeError(message) from exc
 
 
 def _stringify_exception(exc: BaseException) -> str:

@@ -31,7 +31,8 @@ class TestSkipDecorator:
         def test_func() -> None:
             raise AssertionError("should not run")
 
-        assert getattr(test_func, "__rustest_skip__") == "skipped via rustest.skip"
+        # pytest's own default: `_pytest/skipping.py::Skip.reason`.
+        assert getattr(test_func, "__rustest_skip__") == "unconditional skip"
 
 
 class TestParametrizeDecorator:

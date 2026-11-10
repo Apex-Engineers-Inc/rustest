@@ -24,7 +24,7 @@ if "_pytest" in sys.modules and "rustest" not in sys.modules:
             return pytest.mark.parametrize(argnames, argvalues, ids=ids)
 
         def _skip(reason=None):
-            return pytest.mark.skip(reason=reason or "skipped via rustest.skip")
+            return pytest.mark.skip if reason is None else pytest.mark.skip(reason=reason)
 
         # Try to get run, approx, raises from real rustest
         try:
