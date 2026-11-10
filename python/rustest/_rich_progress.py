@@ -28,7 +28,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final, TextIO, cast
 
-from rich.console import Console
+from rich.cells import cell_len
+from rich.console import Console, RenderableType
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -105,13 +106,33 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
 
-class _AsciiBar(ProgressColumn):
-    """``BarColumn`` drawn with ``#`` and ``-``; rich only falls back on a non-UTF stream."""
+def _row_cap(width: int) -> int:
+    """Cells a live row's file name may take: about 40% of the terminal, less on a narrow one,
+    so the bar, percent, count and elapsed time always fit beside it."""
+    return max(10, min(width * 2 // 5, width - 36))
 
-    def render(self, task: Task) -> Text:
-        width = 40
-        filled = int(width * task.percentage / 100) if task.total else 0
-        return Text("#" * filled + "-" * (width - filled), style="bar.complete")
+
+class _Bar(ProgressColumn):
+    """The bar, sized at each refresh to what its row leaves (so a resize or a narrow
+    terminal shrinks it rather than wrapping the row), and drawn with ``#``/``-`` under
+    ``--ascii`` -- rich only switches to ASCII bars on a non-UTF stream."""
+
+    def __init__(self, console: Console, *, ascii: bool) -> None:
+        super().__init__()
+        self._console: Console = console
+        self._ascii: bool = ascii
+        self._bar: BarColumn = BarColumn()
+
+    def render(self, task: Task) -> RenderableType:
+        # The rest of the row: the (capped) file name plus about 30 cells of spinner,
+        # percent, count, elapsed time and padding.
+        width = self._console.width
+        cells = max(5, min(40, width - _row_cap(width) - 30))
+        if not self._ascii:
+            self._bar.bar_width = cells
+            return self._bar.render(task)
+        filled = int(cells * task.percentage / 100) if task.total else 0
+        return Text("#" * filled + "-" * (cells - filled), style="bar.complete")
 
 
 class _File:
@@ -159,7 +180,7 @@ class RichProgress:
                 style="cyan",
                 table_column=Column(no_wrap=True, overflow="ellipsis"),
             ),
-            _AsciiBar() if ascii else BarColumn(),
+            _Bar(out, ascii=ascii),
             TaskProgressColumn(),
             TextColumn("•"),
             MofNCompleteColumn(),
@@ -225,7 +246,9 @@ class RichProgress:
             if len(state.results) < state.total:
                 if state.task is None:
                     state.task = self._live.add_task(
-                        self._path(file), total=state.total, completed=len(state.results)
+                        self._fit(self._path(file), _row_cap(self.out.width)),
+                        total=state.total,
+                        completed=len(state.results),
                     )
                 else:
                     self._live.update(state.task, completed=len(state.results))
@@ -260,8 +283,33 @@ class RichProgress:
     def _path(self, file: str) -> str:
         path = self._paths.get(file)
         if path is None:
-            path = self._paths[file] = display_path(self._root, file, self._cwd)
+            path = self._paths[file] = self._shorter(
+                display_path(self._root, file, self._cwd), os.path.join(self._root, file)
+            )
         return path
+
+    @staticmethod
+    def _shorter(relative: str, absolute: str) -> str:
+        """*relative*, unless it climbs out of the invocation dir and *absolute* is shorter."""
+        absolute = os.path.normpath(absolute)
+        if relative.startswith(os.pardir) and cell_len(absolute) < cell_len(relative):
+            return absolute
+        return relative
+
+    def _fit(self, text: str, cells: int) -> str:
+        """*text* in at most *cells* terminal cells, cut from the left so that its end -- a
+        file name and its nearest directories -- survives: ``…\\bars\\test_slow_7.py``."""
+        if cell_len(text) <= cells:
+            return text
+        ellipsis = self._glyph("...", "…")
+        room = cells - cell_len(ellipsis)
+        kept: list[str] = []
+        for char in reversed(text):
+            room -= cell_len(char)
+            if room < 0:
+                break
+            kept.append(char)
+        return ellipsis + "".join(reversed(kept))
 
     def _file_lines(self, file: str, state: _File) -> list[Text]:
         failed = any(result[1] in ("failed", "error") for result in state.results)
@@ -272,14 +320,13 @@ class RichProgress:
             glyph, style = self._mark("skipped")
         else:
             glyph, style = self._mark("passed")
-        head = Text.assemble((glyph, style), " ", (self._path(file), style))
         # The tests' own time, summed: fixtures shared across the file are not in it.
         took = _duration(sum(result[3] for result in state.results))
-        if done < state.total:
-            head.append(f" ({done}/{state.total} run, {took})", style="dim")
-        else:
-            head.append(f" ({took})", style="dim")
-        lines = [head]
+        tail = f" ({done}/{state.total} run, {took})" if done < state.total else f" ({took})"
+        # One physical line: the path gives way, from the left, to the glyph and the time.
+        room = self.out.width - cell_len(glyph) - 1 - cell_len(tail)
+        path = self._fit(self._path(file), room)
+        lines = [Text.assemble((glyph, style), " ", (path, style), (tail, "dim"))]
         if self._verbose:
             for slot, status, reason, _ in sorted(state.results):
                 mark, mark_style = self._mark(status)
@@ -289,6 +336,7 @@ class RichProgress:
                     line.append(f" {status}", style=mark_style)
                 if reason:
                     line.append(f" ({reason.splitlines()[0]})", style="dim")
+                line.truncate(self.out.width, overflow="ellipsis")
                 lines.append(line)
         return lines
 
@@ -321,7 +369,8 @@ class RichProgress:
         self._heading(self.err, "ERRORS")
         for error in errors:
             path = str(error["path"])
-            name = Text(f"ERROR collecting {self._path(path)}", style="bold red")
+            shown = self._fit(self._path(path), max(10, (self.out.width - 19) // 2))
+            name = Text(f"ERROR collecting {shown}", style="bold red")
             self._block(self.err, name, path, str(error["message"]))
 
     def summary(self, line: Sequence[tuple[int, str]], seconds: float) -> None:
@@ -379,31 +428,36 @@ class RichProgress:
         own = os.path.join(self._root, file)
         raised = spots[-1]
         anchor = ([spot for spot in spots if _same_file(spot[0], own)] or [raised])[-1]
-        lines = [Text.assemble(name, "  ", self._location(*anchor)), self._rule()]
+        # The name stays whole; the location gives way, keeping its full path as the link.
+        room = self.out.width - name.cell_len - 2
+        lines = [Text.assemble(name, "  ", self._location(*anchor, room)), self._rule()]
         lines.append(Text.assemble((self._glyph("FAIL", "✗"), "red"), " ", (exception[0], "bold")))
         lines.extend(Text(line) for line in exception[1:])
         context = self._context(*raised)
         if context:
             lines.append(Text())
             if raised != anchor:  # a helper, a conftest fixture, a library: say which
-                lines.append(Text.assemble("  at ", self._location(*raised)))
+                lines.append(Text.assemble("  at ", self._location(*raised, self.out.width - 5)))
             lines.extend(context)
         for _, _, raw, joined in reversed(sections[:-1]):
             lines.extend([Text(), Text(_CHAINED[joined], style="dim")])
             lines.extend(Text(line) for line in raw)
         return lines
 
-    def _location(self, path: str, line: int) -> Text:
-        """``path:line`` relative to the invocation dir, linked to the file where it can be."""
+    def _location(self, path: str, line: int, cells: int) -> Text:
+        """``path:line`` in at most *cells* (the path shortened from the left), linked to the
+        whole path where it can be."""
         try:
-            shown = os.path.relpath(path, self._cwd)
+            shown = self._shorter(os.path.relpath(path, self._cwd), path)
         except ValueError:
             shown = path
+        number = f":{line}"
+        text = self._fit(shown, max(10, cells - cell_len(number))) + number
         try:
             link = Path(path).resolve().as_uri()
         except (OSError, ValueError):
-            return Text(f"{shown}:{line}", style="dim")
-        return Text(f"{shown}:{line}", style=Style(dim=True, link=link))
+            return Text(text, style="dim")
+        return Text(text, style=Style(dim=True, link=link))
 
     def _context(self, path: str, number: int) -> list[Text]:
         try:

@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 import pytest
+from rich.cells import cell_len
 from rich.console import Console
 
 from rustest._rich_progress import RichProgress, wants_ascii
@@ -44,18 +45,23 @@ def _screen(raw: str) -> list[str]:
     return [line.rstrip() for line in lines]
 
 
-def _console(*, no_color: bool = False) -> tuple[Console, io.StringIO]:
+def _console(*, no_color: bool = False, width: int = 80) -> tuple[Console, io.StringIO]:
     buffer = io.StringIO()
     console = Console(
-        file=buffer, force_terminal=True, legacy_windows=False, width=80, no_color=no_color
+        file=buffer, force_terminal=True, legacy_windows=False, width=width, no_color=no_color
     )
     return console, buffer
 
 
 def _display(
-    root: Path, *, verbosity: int = 0, ascii: bool = False, no_color: bool = False
+    root: Path,
+    *,
+    verbosity: int = 0,
+    ascii: bool = False,
+    no_color: bool = False,
+    width: int = 80,
 ) -> tuple[RichProgress, io.StringIO]:
-    console, buffer = _console(no_color=no_color)
+    console, buffer = _console(no_color=no_color, width=width)
     display = RichProgress(console, console, verbosity=verbosity, ascii=ascii, cwd=str(root))
     return display, buffer
 
@@ -420,6 +426,71 @@ def test_no_color_keeps_the_layout_and_drops_the_colour(tmp_path: Path) -> None:
     assert layout(plain_buffer) == layout(coloured_buffer)
     assert re.search(r"\x1b\[[0-9;]*3[1-3]m", coloured_buffer.getvalue())
     assert not re.search(r"\x1b\[[0-9;]*3[1-3]m", plain_buffer.getvalue())
+
+
+# -- long paths: every row stays one line ---------------------------------------------------
+
+#: Nine directories deep: a rootdir-relative file path of about 120 characters.
+_DEEP = "/".join(f"directory_{index:02d}" for index in range(9)) + "/test_slow_7.py"
+
+
+def test_a_long_path_keeps_every_row_on_one_line(tmp_path: Path) -> None:
+    ids = [f"{_DEEP}::test_{index}" for index in range(3)]
+    display, buffer = _display(tmp_path, verbosity=1, width=60)
+    display("collected", (ids, str(tmp_path)))
+    display("results", [(0, "passed", None, 0.5)])
+    display._live.refresh()  # pyright: ignore[reportPrivateUsage]  # draw the live row now
+    live = _screen(buffer.getvalue())
+    display("results", [(1, "skipped", "x" * 100, 1.0), (2, "failed", None, 1.58)])
+    display("done", False)
+    final = _screen(buffer.getvalue())
+
+    row = next(line for line in live if "test_slow_7.py" in line)
+    assert "━" in row and "1/3" in row, row  # the bar and the count survive
+    assert row.split()[1].startswith("…") and row.split()[1].endswith("test_slow_7.py"), row
+    head = next(line for line in final if line.startswith("✗"))
+    assert head.endswith(f"{os.sep}directory_08{os.sep}test_slow_7.py (3.08s)"), head
+    assert "…" in head
+    assert all(cell_len(line) <= 60 for line in live + final), [*live, *final]
+
+
+def test_a_long_failure_location_is_shortened_but_the_name_and_rerun_id_are_whole(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / _DEEP
+    source.parent.mkdir(parents=True)
+    _ = source.write_text("def test_long_name_that_stays_whole():\n    assert 0\n")
+    node_id = f"{_DEEP}::test_long_name_that_stays_whole"
+    message = (
+        "Traceback (most recent call last):\n"
+        + _frame(source, 2, "test_long_name_that_stays_whole", "assert 0")
+        + "AssertionError: assert 0\n"
+    )
+    display, buffer = _display(tmp_path, width=60)
+    display("collected", ([node_id], str(tmp_path)))
+    display("done", False)
+    display.failures([{"id": node_id, "status": "failed", "message": message}])
+    screen = _screen(buffer.getvalue())
+
+    header = screen[screen.index("FAILURES") + 2]
+    assert header.startswith("test_long_name_that_stays_whole  …"), header
+    assert header.endswith("test_slow_7.py:2") and cell_len(header) <= 60, header
+    assert source.resolve().as_uri() in buffer.getvalue(), "the link keeps the whole path"
+    assert screen[-1] == f"FAILED {node_id}", "the rerun id is never shortened"
+
+
+def test_a_path_that_climbs_out_of_cwd_is_shown_by_whichever_form_is_shorter(
+    tmp_path: Path,
+) -> None:
+    # 60 levels up is longer than the absolute path; the cwd need not exist (relpath is lexical)
+    cwd = tmp_path / "/".join(f"d{index}" for index in range(60))
+    display, buffer = _display(Path(cwd), width=200)
+    display("collected", (["test_a.py::test_x"], str(tmp_path)))
+    display("results", [(0, "passed", None, 0.0)])
+    display("done", False)
+
+    shown = _screen(buffer.getvalue())[-1]
+    assert shown == f"✓ {tmp_path / 'test_a.py'} (0ms)", shown
 
 
 # -- core.run's choice and lifecycle of the display -----------------------------------------
