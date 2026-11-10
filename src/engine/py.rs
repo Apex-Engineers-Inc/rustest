@@ -175,6 +175,7 @@ fn collect_error_to_py(err: CollectError) -> PyErr {
         CollectError::Config(_)
         | CollectError::ArgNotFound(_)
         | CollectError::NoCollectors(_)
+        | CollectError::Usage(_)
         | CollectError::Selection(_) => PyValueError::new_err(message),
         // Reachable only from the **collection** phase.  A `pytest.exit()` in a *test body*
         // is intercepted by `execute::worker_life`, which keeps the results already produced

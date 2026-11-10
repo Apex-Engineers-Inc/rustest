@@ -54,6 +54,7 @@ use crate::engine::manifest::{
 };
 #[cfg(test)]
 use crate::engine::manifest_cache::ManifestCache;
+use crate::engine::nodeid::{name_parts, split_collection_argument, walk_names};
 use crate::engine::protocol::{CoverageWire, WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
 use crate::engine::selection::{deselect_in_place, select_mask, SelectionError};
 use crate::engine::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
@@ -74,8 +75,13 @@ pub enum CollectError {
     /// Config resolution failed (pytest raises `UsageError` for these).
     Config(ConfigError),
     /// A CLI path argument does not exist.  Mirrors
-    /// `_pytest/main.py::resolve_collection_argument`'s `UsageError`.
+    /// `_pytest/main.py::resolve_collection_argument`'s `UsageError`; carries the argument
+    /// as typed, `::` parts included, because that is what pytest prints.
     ArgNotFound(PathBuf),
+    /// pytest's other node-id `UsageError`s, each message verbatim: a directory argument with
+    /// `::` parts, and `Session.perform_collect`'s `not found: ...` / `found no collectors
+    /// for ...` — several at once, one per failing argument, as pytest raises them.
+    Usage(Vec<String>),
     /// A CLI path argument exists but nothing can collect it — pytest's
     /// `_pytest/main.py::perform_collect` `found no collectors for {arg}` `UsageError`
     /// (exit 4).  See [`initial_file_target`] for which suffixes reach it.
@@ -171,6 +177,9 @@ impl std::fmt::Display for CollectError {
             CollectError::NoCollectors(path) => {
                 write!(f, "found no collectors for {}", path.display())
             }
+            // The caller prints one `ERROR: ` prefix; pytest gives every message its own,
+            // separated by the blank line `tw.line(f"ERROR: {msg}\n")` leaves.
+            CollectError::Usage(messages) => write!(f, "{}", messages.join("\n\nERROR: ")),
             CollectError::Spawn { program, message } => write!(
                 f,
                 "could not spawn the collection worker `{program}`: {message}"
@@ -470,15 +479,10 @@ pub(crate) struct Dispatch {
     /// Per target, in walk order: `Some(tests)` when Tier S answered, `None` when the file is
     /// a worker's job.  Also the tier-attribution surface the differential asserts on.
     pub(crate) static_tests: Vec<Option<Vec<CollectedTest>>>,
-    /// How many of Tier S's tests `-k`/`-m` removed **before any process was started**.
-    ///
-    /// Selection is applied to the static half here rather than to the whole manifest
-    /// afterwards, which is what lets a fully static tree answer a `-k` that matches nothing
-    /// without spawning an interpreter.  The dynamic half's share is added by
-    /// [`collect_with_launcher`] once the workers have reported, because a file nobody has
-    /// imported has no tests to deselect yet.  The sum is pytest's `N deselected` either way:
-    /// the predicate is per test, so partitioning the tests changes nothing.
-    pub(crate) deselected: usize,
+    /// Per target, in walk order: the node-id selection narrowing it, or `None` for a whole
+    /// file.  **Empty** when no argument carried `::` parts, so a plain run pays nothing.
+    /// [`assemble`] applies it.
+    pub(crate) selectors: Vec<Option<Selector>>,
     /// The manifest cache this run used, when one was enabled.
     ///
     /// `#[cfg(test)]`: production has no use for it — the pass has already read and written
@@ -565,7 +569,7 @@ pub(crate) fn plan_with_options(
     // default, pytest's own answer.  Resolved here — after the one config resolution this
     // function does, before the walk decides what a markdown argument means.
     let codeblocks = options.codeblocks.or(config.codeblocks).unwrap_or(false);
-    let targets = discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    let (targets, selectors) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
     let rootdir = to_posix(&config.rootdir);
 
     // The Tier S pass, before a single process is spawned.  It is pure computation over files
@@ -581,22 +585,14 @@ pub(crate) fn plan_with_options(
     // identical either way, and a file that fell back to a worker is not a diagnostic a user
     // asked for.  It is asserted on directly in the tests, which call `static_pass` themselves
     // — carrying it through `Dispatch` unread would be a field the compiler cannot check.
-    let mut static_tests: Vec<Option<Vec<CollectedTest>>> = scanned
+    // `-k`/`-m` are **not** applied here: node-id arguments select first and the
+    // expressions filter what they selected (`collect_with_launcher`).  Nothing is lost by
+    // waiting — a file Tier S answered spawns no worker whatever the expression says, and a
+    // file Tier D owns must be imported anyway, because `-k` never hides an import error.
+    let static_tests: Vec<Option<Vec<CollectedTest>>> = scanned
         .into_iter()
         .map(|outcome| outcome.and_then(Result::ok))
         .collect();
-
-    // Selection, applied to the static half **before** the pool is sized.  A file Tier S
-    // answered is a file whose tests are known without running anything, so `-k`/`-m` can be
-    // decided on it here; a file Tier D owns cannot be, and must not be — its tests are
-    // unknown until it is imported, and its *import error* has to be reported however
-    // aggressively the expression deselects (`-k` never hides a broken file).  So there is no
-    // "skip the worker because nothing in it matches" case, and there cannot be one.
-    let mut deselected = 0;
-    for slot in static_tests.iter_mut().flatten() {
-        deselected += deselect_in_place(slot, options.keyword.as_deref(), options.mark.as_deref())
-            .map_err(CollectError::Selection)?;
-    }
 
     // Only the files Tier S could **not** answer reach a worker.  Routing stays the stem hash
     // over that subset: same-stem files are always dynamic together (Tier S refuses a shared
@@ -658,7 +654,7 @@ pub(crate) fn plan_with_options(
     Ok(Dispatch {
         rootdir,
         static_tests,
-        deselected,
+        selectors,
         #[cfg(test)]
         cache: _cache,
         rootdir_path: config.rootdir.clone(),
@@ -733,9 +729,13 @@ pub(crate) struct Assembled {
     pub(crate) module_skipped: usize,
 }
 
+///
+/// `last_failed` is the `--lf` set, passed only when `--lf` is on and the set is non-empty:
+/// it can make a node-id argument miss (see [`select_node_ids`]).
 pub(crate) fn assemble(
     dispatch: &Dispatch,
     outcomes: Vec<(usize, FileOutcome)>,
+    last_failed: Option<&HashSet<String>>,
 ) -> Result<Assembled, CollectError> {
     let targets = &dispatch.targets;
     // Reassemble by dispatch index — NOT in completion order.  Tier S's answers seed the
@@ -761,15 +761,22 @@ pub(crate) fn assemble(
     for (index, outcome) in outcomes {
         slots[index] = Some(outcome);
     }
+    let mut slots = targets
+        .iter()
+        .zip(slots)
+        .map(|(path, slot)| {
+            slot.ok_or_else(|| CollectError::MissingResponse { path: path.clone() })
+        })
+        .collect::<Result<Vec<FileOutcome>, CollectError>>()?;
+    if !dispatch.selectors.is_empty() {
+        select_node_ids(dispatch, &mut slots, last_failed)?;
+    }
 
     let mut tests = Vec::new();
     let mut errors = Vec::new();
     let mut origin = Vec::new();
     let mut module_skipped = 0usize;
-    for (index, (path, slot)) in targets.iter().zip(slots).enumerate() {
-        let Some(outcome) = slot else {
-            return Err(CollectError::MissingResponse { path: path.clone() });
-        };
+    for (index, outcome) in slots.into_iter().enumerate() {
         origin.extend(std::iter::repeat_n(index, outcome.tests.len()));
         tests.extend(outcome.tests);
         errors.extend(outcome.error);
@@ -819,7 +826,6 @@ fn collect_with_launcher(
         .map_err(CollectError::Selection)?;
 
     let dispatch = plan_with_options(invocation_dir, args, workers, options)?;
-    let mut deselected = dispatch.deselected;
 
     let pool = spawn_pool(&dispatch, launcher)?;
 
@@ -843,20 +849,16 @@ fn collect_with_launcher(
             .collect::<Vec<_>>()
     });
 
-    // The dynamic half's selection, which could not happen before its files were imported.
-    // Applied per outcome so the count is the sum of the two halves; the predicate is per
-    // test, so that is the same number pytest reports for the whole list at once.
-    let mut outcomes = join_pool(results)?;
-    for (_, outcome) in &mut outcomes {
-        deselected += deselect_in_place(
-            &mut outcome.tests,
-            options.keyword.as_deref(),
-            options.mark.as_deref(),
-        )
-        .map_err(CollectError::Selection)?;
-    }
-
-    let assembled = assemble(&dispatch, outcomes)?;
+    // Node ids select inside `assemble`, then `-k`/`-m` filter what they selected — pytest's
+    // order, which is why `test_m.py::test_a -k test_b` is `1 deselected`, not 7.
+    let outcomes = join_pool(results)?;
+    let mut assembled = assemble(&dispatch, outcomes, None)?;
+    let deselected = deselect_in_place(
+        &mut assembled.tests,
+        options.keyword.as_deref(),
+        options.mark.as_deref(),
+    )
+    .map_err(CollectError::Selection)?;
 
     Ok(CollectionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -888,7 +890,7 @@ fn discover(
     // free of `.`/`..`; normalising here gives callers the same guarantee for free.
     let invocation_dir = normpath(invocation_dir);
     let config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
-    let targets = discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    let (targets, _) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
     Ok((config, targets))
 }
 
@@ -899,24 +901,340 @@ fn discover(
 /// decide the tri-state `codeblocks` value from CLI-or-config, and only then walk — a
 /// second config resolution here would risk drifting from the one that decision was made
 /// against.
+///
+/// Returns the targets and, only when some argument carried `::` parts, one selector per
+/// target (see [`Dispatch::selectors`]).
 fn discover_targets(
     config: &ResolvedConfig,
     invocation_dir: &Path,
     args: &[PathBuf],
     codeblocks: bool,
-) -> Result<Vec<PathBuf>, CollectError> {
+) -> Result<(Vec<PathBuf>, Vec<Option<Selector>>), CollectError> {
     let roots = initial_paths(invocation_dir, args, config)?;
+    if roots.iter().any(|root| !root.names.is_empty()) {
+        return node_cache_targets(config, &roots, codeblocks);
+    }
 
     let mut targets = Vec::new();
     let mut seen = Seen::default();
     for root in &roots {
+        let root = &root.path;
         if root.is_dir() {
             walk(root, config, &mut targets, &mut seen);
         } else if initial_file_target(root, codeblocks)? {
             seen.push_file_arg(root, &mut targets);
         }
     }
-    Ok(targets)
+    Ok((targets, Vec::new()))
+}
+
+/// One resolved command-line argument: `_pytest/main.py::CollectionArgument`.
+struct CollectionArgument {
+    /// Absolute and normalised (`absolutepath`).
+    path: PathBuf,
+    /// The `::` selection parts; empty for a plain path.
+    names: Vec<String>,
+}
+
+/// How a node-id argument narrows its target, resolved against the collected tests in
+/// [`select_node_ids`].
+#[derive(Debug, Clone)]
+pub(crate) struct Selector {
+    /// The [`NodeCache`] node of the argument's module.  Two arguments into the same file
+    /// share it unless a plain file argument between them re-collected the directory — and
+    /// sharing it is what makes `test_m.py::test_a test_m.py::test_a` run the test once.
+    module: usize,
+    names: Vec<String>,
+    /// pytest's report form, `"::".join((str(argpath), *names))`.
+    arg: String,
+}
+
+/// The objects of pytest's collection cache, reduced to the one question that decides which
+/// tests an argument list yields: **is this node the same object as that one, and has it been
+/// collected?**
+///
+/// pytest has no deduplication rule as such (see [`Seen`]).  `Session.collect` walks every
+/// argument down from its top directory, *collecting* each node it passes through
+/// (`_collect_one_node`, cached), and yields the node the argument names; only then does
+/// `genitems` expand what was yielded — and it expands a collector **only if it is not
+/// already in the cache**.  So a collector some other argument passed *through* yields
+/// nothing: `test_m.py::test_a .` runs one test, and `test_m.py test_m.py::test_a` too.  The
+/// cache's one hole is a plain file argument, which re-collects its directory with
+/// `handle_dupes=False` and so hands out fresh objects for everything in it — which is why
+/// `test_m.py::test_a test_m.py` runs `test_a` twice.  Probed on pytest 8.4.2, including
+/// `sub test_m.py sub/test_n.py::test_a` (11 tests, `test_a` twice).
+///
+/// Used only when an argument has `::` parts.  A plain-path run keeps [`Seen`], whose one
+/// recorded divergence (`. test_a.py`) this would otherwise close — a separate decision.
+#[derive(Default)]
+struct NodeCache {
+    nodes: Vec<CacheNode>,
+    /// `Session._collect_path`'s `path_cache`: one object per top path.
+    tops: HashMap<PathBuf, usize>,
+}
+
+#[derive(Default)]
+struct CacheNode {
+    collected: bool,
+    children: HashMap<PathBuf, usize>,
+}
+
+impl NodeCache {
+    fn node(&mut self) -> usize {
+        self.nodes.push(CacheNode::default());
+        self.nodes.len() - 1
+    }
+
+    fn top(&mut self, path: &Path) -> usize {
+        if let Some(node) = self.tops.get(path) {
+            return *node;
+        }
+        let node = self.node();
+        self.tops.insert(path.to_path_buf(), node);
+        node
+    }
+
+    /// Collect `parent` (fresh when `recollect`, else from the cache) and return its child
+    /// at `path`.
+    fn child(&mut self, parent: usize, path: &Path, recollect: bool) -> usize {
+        if recollect || !self.nodes[parent].collected {
+            self.nodes[parent].children.clear();
+            self.nodes[parent].collected = true;
+        }
+        if let Some(child) = self.nodes[parent].children.get(path) {
+            return *child;
+        }
+        let child = self.node();
+        self.nodes[parent]
+            .children
+            .insert(path.to_path_buf(), child);
+        child
+    }
+}
+
+/// [`discover_targets`] when some argument is a node id: `Session.collect` over a
+/// [`NodeCache`], then `genitems` over what it yielded.
+///
+/// Every node-id argument becomes a target of its own, selector attached, even when two name
+/// the same file — so a file can be collected more than once, as a repeated file argument
+/// already is.  The name half of the walk needs the collected tests and happens in
+/// [`select_node_ids`].
+fn node_cache_targets(
+    config: &ResolvedConfig,
+    args: &[CollectionArgument],
+    codeblocks: bool,
+) -> Result<(Vec<PathBuf>, Vec<Option<Selector>>), CollectError> {
+    // `Config._decide_confcutdir`: the ini file's directory, else the rootdir.
+    let confcutdir = config
+        .config_file
+        .as_ref()
+        .and_then(|file| file.parent())
+        .unwrap_or(&config.rootdir);
+    let mut cache = NodeCache::default();
+
+    // `Session.collect`: every argument, in order, before anything is expanded.
+    let mut yielded = Vec::with_capacity(args.len());
+    for arg in args {
+        // `paths`: the argument and every parent `_is_in_confcutdir` accepts, i.e. every
+        // parent that is not a strict ancestor of confcutdir.
+        let mut chain = vec![arg.path.as_path()];
+        for parent in arg.path.ancestors().skip(1) {
+            if confcutdir.ancestors().skip(1).any(|above| above == parent) {
+                break;
+            }
+            chain.insert(0, parent);
+        }
+        let plain_file = arg.names.is_empty() && arg.path.is_file();
+        let mut node = cache.top(chain[0]);
+        for (index, path) in chain.iter().enumerate().skip(1) {
+            node = cache.child(node, path, plain_file && index + 1 == chain.len());
+        }
+        if !arg.names.is_empty() {
+            node_id_file(&arg.path, &arg.names, codeblocks)?;
+            // The module is passed *through* on the way to its names.
+            cache.nodes[node].collected = true;
+        }
+        yielded.push(node);
+    }
+
+    // `genitems`: a yielded collector already in the cache expands to nothing.
+    let mut targets = Vec::new();
+    let mut selectors = Vec::new();
+    for (arg, node) in args.iter().zip(yielded) {
+        if !arg.names.is_empty() {
+            targets.push(arg.path.clone());
+            selectors.push(Some(Selector {
+                module: node,
+                names: arg.names.clone(),
+                arg: format!("{}::{}", arg.path.display(), arg.names.join("::")),
+            }));
+            continue;
+        }
+        if std::mem::replace(&mut cache.nodes[node].collected, true) {
+            continue;
+        }
+        let mut files = Vec::new();
+        if arg.path.is_dir() {
+            walk(&arg.path, config, &mut files, &mut Seen::default());
+        } else if initial_file_target(&arg.path, codeblocks)? {
+            files.push(arg.path.clone());
+        }
+        selectors.extend(files.iter().map(|_| None));
+        targets.extend(files);
+    }
+    Ok((targets, selectors))
+}
+
+/// A node-id argument's file must be one a collector claims, or the directory has no child
+/// matching it and pytest reports `not found` against the directory (probed: `<Dir name>`,
+/// and `<DoctestTextfile notes.txt>` for the doctest suffixes, which *are* claimed and then
+/// hold no names).  Raised on its own, ahead of any other argument's `not found`, where pytest
+/// would list them together.
+fn node_id_file(path: &Path, names: &[String], codeblocks: bool) -> Result<(), CollectError> {
+    if is_python_source(path) || (codeblocks && is_markdown(path)) {
+        return Ok(());
+    }
+    let name = |path: &Path| path.file_name().map(|n| n.to_string_lossy().into_owned());
+    let collector = match path.extension().and_then(|ext| ext.to_str()) {
+        Some("txt" | "rst") => format!("DoctestTextfile {}", name(path).unwrap_or_default()),
+        _ => {
+            let dir = path.parent().unwrap_or(path);
+            let kind = if dir.join("__init__.py").is_file() {
+                "Package"
+            } else {
+                "Dir"
+            };
+            format!("{kind} {}", name(dir).unwrap_or_default())
+        }
+    };
+    Err(CollectError::Usage(vec![format!(
+        "not found: {}::{}\n(no match in any of [<{collector}>])",
+        path.display(),
+        names.join("::")
+    )]))
+}
+
+/// Apply the node-id selectors to the collected outcomes, in place: the name half of
+/// `Session.collect`, `genitems`, and the duplicate-item drop.
+///
+/// * **Names.** Each selector's parts are matched with [`walk_names`] against its own
+///   target's tests.  A miss is pytest's `not found: <arg>\n(no match in any of [...])`, or
+///   `found no collectors for <arg>` when nothing was even blamed (too many parts, or a file
+///   that failed to import or skipped itself at module level).  Every miss is reported
+///   together, in argument order, as pytest does.
+/// * **Expansion.** A matched class expands to all its tests — unless some argument passed
+///   *through* it (`TestC TestC::test_one` runs one test) or an earlier one already
+///   expanded it.  Classes are per [`Selector::module`], like everything in the cache.
+/// * **Duplicates.** A test reached by name is the cached item object, so reaching it again
+///   is the same object, and pytest's `reorder_items` (`dict.fromkeys(items)`) keeps the
+///   first.  A test reached by expansion is a fresh object and is never dropped.
+/// * **`--lf`.** `LFPluginCollSkipfiles`: once a module whose direct children include a
+///   last-failed test has been collected, every later module outside the last-failed files
+///   collects as empty — so a node id into one *misses*.  Probed: `--lf test_m.py::test_b
+///   sub/test_n.py::test_a` exits 4; in the other order it runs.
+fn select_node_ids(
+    dispatch: &Dispatch,
+    slots: &mut [FileOutcome],
+    last_failed: Option<&HashSet<String>>,
+) -> Result<(), CollectError> {
+    let lf_files: HashSet<&str> = last_failed
+        .into_iter()
+        .flatten()
+        .map(|id| id.split("::").next().unwrap_or(""))
+        .collect();
+    let mut lf_skipping = false;
+    let mut empty_modules: HashMap<usize, bool> = HashMap::new();
+    let mut collected: HashSet<(usize, Vec<String>)> = HashSet::new();
+    let mut walks = Vec::new();
+    let mut errors = Vec::new();
+
+    // Pass 1, every argument before any expansion — exactly as `Session.collect` runs to
+    // completion before `genitems` starts.
+    for (target, selector) in dispatch.selectors.iter().enumerate() {
+        let Some(selector) = selector else { continue };
+        let outcome = &slots[target];
+        if outcome.error.is_some() || outcome.skipped.is_some() {
+            errors.push(format!("found no collectors for {}", selector.arg));
+            continue;
+        }
+        let names: Vec<Vec<String>> = outcome.tests.iter().map(names_below_file).collect();
+        let empty = *empty_modules.entry(selector.module).or_insert_with(|| {
+            let file = dispatch.targets[target]
+                .strip_prefix(&dispatch.rootdir_path)
+                .map(to_posix)
+                .unwrap_or_default();
+            if lf_skipping && !lf_files.contains(file.as_str()) {
+                return true;
+            }
+            lf_skipping |= lf_files.contains(file.as_str())
+                && outcome.tests.iter().zip(&names).any(|(test, names)| {
+                    names.len() == 1 && last_failed.is_some_and(|lf| lf.contains(&test.id))
+                });
+            false
+        });
+        let walk = walk_names(if empty { &[] } else { &names }, &selector.names);
+        if walk.matched.is_empty() {
+            errors.push(match walk.unmatched.as_slice() {
+                [] => format!("found no collectors for {}", selector.arg),
+                unmatched => {
+                    let file = dispatch.targets[target].file_name().unwrap_or_default();
+                    let reprs: Vec<String> = unmatched
+                        .iter()
+                        .map(|node| match node.last() {
+                            None => format!("<Module {}>", file.to_string_lossy()),
+                            Some(class) => format!("<Class {class}>"),
+                        })
+                        .collect();
+                    format!(
+                        "not found: {}\n(no match in any of [{}])",
+                        selector.arg,
+                        reprs.join(", ")
+                    )
+                }
+            });
+        }
+        for node in &walk.collected {
+            collected.insert((selector.module, node.clone()));
+        }
+        walks.push((target, selector.module, names, walk.matched));
+    }
+    if !errors.is_empty() {
+        return Err(CollectError::Usage(errors));
+    }
+
+    // Pass 2, `genitems` and the duplicate drop.
+    let mut seen_items: HashSet<(usize, Vec<String>)> = HashSet::new();
+    for (target, module, names, matched) in walks {
+        let items: HashMap<&[String], usize> = names
+            .iter()
+            .enumerate()
+            .map(|(index, names)| (names.as_slice(), index))
+            .collect();
+        let mut keep = Vec::new();
+        for node in matched {
+            if let Some(&item) = items.get(node.as_slice()) {
+                if seen_items.insert((module, node)) {
+                    keep.push(item);
+                }
+            } else if collected.insert((module, node.clone())) {
+                keep.extend((0..names.len()).filter(|index| names[*index].starts_with(&node)));
+            }
+        }
+        let tests = std::mem::take(&mut slots[target].tests);
+        slots[target].tests = keep.into_iter().map(|index| tests[index].clone()).collect();
+    }
+    Ok(())
+}
+
+/// A collected test's name path below its file: its id with the file part
+/// ([`CollectedTest::path`]) removed, split by [`name_parts`].
+fn names_below_file(test: &CollectedTest) -> Vec<String> {
+    let rest = test
+        .id
+        .strip_prefix(test.path.as_str())
+        .and_then(|rest| rest.strip_prefix("::"))
+        .unwrap_or(&test.id);
+    name_parts(rest)
 }
 
 /// What to do with an initial path that is a **file**, and the one place pytest's exit-4
@@ -967,28 +1285,30 @@ fn initial_file_target(path: &Path, codeblocks: bool) -> Result<bool, CollectErr
 /// `_pytest/main.py::resolve_collection_argument` (`::` selection parts split off) and
 /// `_pytest/config/findpaths.py::get_dirs_from_args` (option-looking args dropped).
 ///
-/// Two deliberate scope limits, both 1b.2 territory:
-/// * a `::` selection part is stripped and ignored, so `test_a.py::test_one` collects the
-///   whole file — selection lands with the execution engine;
-/// * `testpaths` entries are treated as plain paths; pytest additionally expands them as
-///   recursive globs (`glob.iglob(path, recursive=True)`).
+/// One scope limit, 1b.2 territory: `testpaths` entries are treated as plain paths; pytest
+/// additionally expands them as recursive globs (`glob.iglob(path, recursive=True)`).
 fn initial_paths(
     invocation_dir: &Path,
     args: &[PathBuf],
     config: &ResolvedConfig,
-) -> Result<Vec<PathBuf>, CollectError> {
+) -> Result<Vec<CollectionArgument>, CollectError> {
     let mut roots = Vec::new();
     for arg in args {
         let raw = arg.to_string_lossy();
         if raw.starts_with('-') {
             continue;
         }
-        let file_part = raw.split("::").next().unwrap_or("");
+        let (file_part, names) = split_collection_argument(&raw);
         let path = absolutepath(invocation_dir, Path::new(file_part));
         if !path.exists() {
-            return Err(CollectError::ArgNotFound(PathBuf::from(file_part)));
+            return Err(CollectError::ArgNotFound(PathBuf::from(raw.as_ref())));
         }
-        roots.push(path);
+        if !names.is_empty() && path.is_dir() {
+            return Err(CollectError::Usage(vec![format!(
+                "directory argument cannot contain :: selection parts: {raw}"
+            )]));
+        }
+        roots.push(CollectionArgument { path, names });
     }
     if !roots.is_empty() {
         return Ok(roots);
@@ -996,19 +1316,26 @@ fn initial_paths(
 
     // `_decide_args`: testpaths are consulted only when the invocation dir *is* the
     // rootdir, so `cd subdir && pytest` never silently re-runs the whole suite.
+    let mut paths = Vec::new();
     if invocation_dir == config.rootdir {
         for testpath in &config.testpaths {
             let path = absolutepath(invocation_dir, Path::new(testpath));
             if path.exists() {
-                roots.push(path);
+                paths.push(path);
             }
         }
     }
-    if roots.is_empty() {
+    if paths.is_empty() {
         // The `if not result:` fallback: collect from the invocation dir.
-        roots.push(invocation_dir.to_path_buf());
+        paths.push(invocation_dir.to_path_buf());
     }
-    Ok(roots)
+    Ok(paths
+        .into_iter()
+        .map(|path| CollectionArgument {
+            path,
+            names: Vec::new(),
+        })
+        .collect())
 }
 
 /// Depth-first, name-sorted traversal.
@@ -1186,19 +1513,20 @@ fn matches_python_files(path: &Path, config: &ResolvedConfig) -> bool {
 /// | `pkg pkg` | `three` (1) | same |
 /// | `. .` | 3 | same |
 /// | `. test_a.py` | `one two` (2) | **`one two three` (3)** |
+/// | `. pkg` | `three` (1) | **`one two three` (3)** |
 ///
-/// The rule that reproduces seven of those eight rows is: a **file named directly as an
+/// The rule that reproduces seven of those nine rows is: a **file named directly as an
 /// argument** is collected once per occurrence, *unless* a directory argument already
 /// emitted it; anything reached by walking is deduplicated against everything emitted so
 /// far.  One pass in argument order is enough, because both orders of the mixed case are
 /// covered by the two halves of that rule.
 ///
-/// The last row is a recorded divergence, and it is the one where pytest's mechanism
-/// leaks: re-collecting `Dir(.)` for the file argument overwrites the cache entry, so when
-/// `genitems` later walks the `Dir(.)` node it sees a cache *hit*, treats it as a duplicate
-/// and yields **nothing** — silently dropping `pkg/test_b.py::test_three`, a test the user
-/// asked for by naming `.`.  the engine keeps that test.  Reproducing the drop would mean porting
-/// the node cache, and the behaviour being ported is a bug.
+/// The last two rows are recorded divergences, and they are where pytest's mechanism
+/// leaks: the second argument walks *through* `Dir(.)`, collecting it, so when `genitems`
+/// later reaches the `Dir(.)` node it sees a cache *hit*, treats it as a duplicate and
+/// yields **nothing** — silently dropping tests the user asked for by naming `.`.  This
+/// walk keeps them.  [`NodeCache`] ports that mechanism for node-id arguments, where
+/// matching pytest is the feature; whether plain paths should follow is a separate call.
 #[derive(Default)]
 struct Seen {
     /// Every path already emitted, whatever produced it.
@@ -2689,6 +3017,155 @@ mod tests {
         assert_eq!(
             discovered(&tmp, &[root.clone(), root]),
             vec!["sub/test_a.py", "test_b.py"]
+        );
+    }
+
+    // --- node-id arguments (see `NodeCache` and `select_node_ids`) ----------
+
+    /// Targets for `args` (relative to the tree), each tagged with whether it carries a
+    /// node-id selector.
+    fn node_targets(tmp: &TempDir, args: &[&str]) -> Result<Vec<(String, bool)>, CollectError> {
+        let dir = normpath(tmp.path());
+        let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
+        let config = resolve_config(&dir, &args).unwrap();
+        let (targets, selectors) = discover_targets(&config, &dir, &args, false)?;
+        Ok(targets
+            .iter()
+            .zip(selectors)
+            .map(|(path, selector)| {
+                let rel = path.strip_prefix(&config.rootdir).unwrap();
+                (to_posix(rel), selector.is_some())
+            })
+            .collect())
+    }
+
+    /// The pytest 8.4.2 probes, file level: a collector some argument walked *through*
+    /// expands to nothing, and a plain file argument re-collects its directory, handing out
+    /// fresh objects.
+    #[test]
+    fn node_id_targets_follow_pytests_collection_cache() {
+        let tmp = tree(&[("test_m.py", &module("a")), ("sub/test_n.py", &module("n"))]);
+        let id = |path: &str| (path.to_string(), true);
+        let whole = |path: &str| (path.to_string(), false);
+        let cases: Vec<(&[&str], Vec<(String, bool)>)> = vec![
+            (&["test_m.py::test_a"], vec![id("test_m.py")]),
+            // `.` was walked through to reach test_m.py, so it yields nothing.
+            (&["test_m.py::test_a", "."], vec![id("test_m.py")]),
+            (
+                &["test_m.py::test_a", "sub"],
+                vec![id("test_m.py"), whole("sub/test_n.py")],
+            ),
+            // The file argument's module is the one the id walks through: nothing.
+            (&["test_m.py", "test_m.py::test_a"], vec![id("test_m.py")]),
+            // ...but after the id, it re-collects the directory: a fresh module, all of it.
+            (
+                &["test_m.py::test_a", "test_m.py"],
+                vec![id("test_m.py"), whole("test_m.py")],
+            ),
+            (
+                &["sub", "test_m.py", "sub/test_n.py::test_n"],
+                vec![
+                    whole("sub/test_n.py"),
+                    whole("test_m.py"),
+                    id("sub/test_n.py"),
+                ],
+            ),
+        ];
+        for (args, expected) in cases {
+            assert_eq!(node_targets(&tmp, args).unwrap(), expected, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_directory_with_selection_parts_is_pytests_usage_error() {
+        let tmp = tree(&[("sub/test_n.py", &module("n"))]);
+        let err = node_targets(&tmp, &["sub::test_n"]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "directory argument cannot contain :: selection parts: sub::test_n"
+        );
+    }
+
+    /// `ERROR: file or directory not found:` names the argument as typed, parts included.
+    #[test]
+    fn a_missing_node_id_file_is_reported_as_typed() {
+        let tmp = tree(&[("test_m.py", &module("a"))]);
+        let err = node_targets(&tmp, &["nope.py::test_a"]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "file or directory not found: nope.py::test_a"
+        );
+    }
+
+    #[test]
+    fn a_node_id_into_a_file_no_collector_claims_blames_the_directory() {
+        let tmp = tree(&[("notes.dat", "x\n")]);
+        let name = tmp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let err = node_targets(&tmp, &["notes.dat::x"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.ends_with(&format!(
+                "notes.dat::x\n(no match in any of [<Dir {name}>])"
+            )),
+            "{err}"
+        );
+    }
+
+    /// The name half, end to end through a real worker: a class some argument walked
+    /// through does not expand, the same item reached twice runs once, and every miss is
+    /// reported together in argument order.
+    #[test]
+    fn node_id_names_select_through_the_real_worker() {
+        let tmp = tree(&[(
+            "test_m.py",
+            "class TestC:\n    def test_one(self):\n        pass\n\n    def test_two(self):\n        pass\n\n\ndef test_a():\n    pass\n",
+        )]);
+        let ids_for = |args: &[&str]| {
+            let args: Vec<PathBuf> = args.iter().map(|arg| tmp.path().join(arg)).collect();
+            collect_default(tmp.path(), &args, &real_worker(), 1).map(|manifest| ids(&manifest))
+        };
+
+        assert_eq!(
+            ids_for(&["test_m.py::TestC", "test_m.py::TestC::test_one"]).unwrap(),
+            vec!["test_m.py::TestC::test_one"]
+        );
+        assert_eq!(
+            ids_for(&["test_m.py::TestC", "test_m.py::TestC"]).unwrap(),
+            vec!["test_m.py::TestC::test_one", "test_m.py::TestC::test_two"]
+        );
+        assert_eq!(
+            ids_for(&[
+                "test_m.py::test_a",
+                "test_m.py::TestC::test_two",
+                "test_m.py::test_a"
+            ])
+            .unwrap(),
+            vec!["test_m.py::test_a", "test_m.py::TestC::test_two"]
+        );
+
+        let err = ids_for(&[
+            "test_m.py::nope",
+            "test_m.py::TestC::nope",
+            "test_m.py::test_a::x",
+        ])
+        .unwrap_err()
+        .to_string();
+        let file = normpath(&tmp.path().join("test_m.py"))
+            .display()
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "not found: {file}::nope\n(no match in any of [<Module test_m.py>])\n\n\
+                 ERROR: not found: {file}::TestC::nope\n(no match in any of [<Class TestC>])\n\n\
+                 ERROR: found no collectors for {file}::test_a::x"
+            )
         );
     }
 

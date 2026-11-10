@@ -81,9 +81,201 @@ pub fn build_nodeid(path: &str, parts: &[&str], param_id: Option<&str>) -> Strin
     nodeid
 }
 
+/// Split a command-line argument into its path and its `::` selection parts.
+///
+/// Port of `_pytest/main.py::resolve_collection_argument`'s first two lines:
+/// `base, squacket, rest = arg.partition("[")`, `strpath, *parts = base.split("::")`, and the
+/// bracket tail glued back onto the last part.  So `a.py::t[x::y]` selects `t[x::y]`, and —
+/// pytest's own quirk, ported rather than fixed — a path holding a `[` before any `::` is cut
+/// at the bracket (`tests/[d]/t.py` resolves to `tests/`).
+pub(crate) fn split_collection_argument(arg: &str) -> (&str, Vec<String>) {
+    let base_end = arg.find('[').unwrap_or(arg.len());
+    match arg[..base_end].find("::") {
+        None => (&arg[..base_end], Vec::new()),
+        Some(split) => (&arg[..split], name_parts(&arg[split + 2..])),
+    }
+}
+
+/// The `::` parts of whatever follows a path: an argument's selection, or a node id's names
+/// below its file.  Same partition-on-`[` rule as [`split_collection_argument`], so an
+/// argument and the id it names decompose identically.
+pub(crate) fn name_parts(rest: &str) -> Vec<String> {
+    let base_end = rest.find('[').unwrap_or(rest.len());
+    let mut parts: Vec<String> = rest[..base_end].split("::").map(str::to_string).collect();
+    if let Some(last) = parts.last_mut() {
+        last.push_str(&rest[base_end..]);
+    }
+    parts
+}
+
+/// What one argument's selection parts matched inside one module.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct NameWalk {
+    /// The matched nodes, in collection order, each as its name path below the module.
+    pub(crate) matched: Vec<Vec<String>>,
+    /// Every collector the walk went *through* — collected, so pytest's collection cache holds
+    /// it and `genitems` will not expand it again.  `[]` is the module itself.
+    pub(crate) collected: Vec<Vec<String>>,
+    /// Collectors none of whose children matched: pytest's `notfound_collectors`.
+    pub(crate) unmatched: Vec<Vec<String>>,
+}
+
+/// The name half of `_pytest/main.py::Session.collect`: match `names` level by level against
+/// a module whose tests are `tests` (each a [`name_parts`] path), depth first.
+///
+/// A level matches on `name == part or name.split("[")[0] == part`, which is what makes
+/// `test_p` select every `test_p[...]`.  An item with parts left over is discarded without
+/// being recorded as unmatched — the source of `found no collectors` for one part too many.
+/// The module is always a collector, even with no tests; a deeper node is one when some
+/// test lies strictly below it.
+pub(crate) fn walk_names(tests: &[Vec<String>], names: &[String]) -> NameWalk {
+    let mut walk = NameWalk::default();
+    let mut work: Vec<(Vec<String>, usize)> = vec![(Vec::new(), 0)];
+    while let Some((node, depth)) = work.pop() {
+        if depth == names.len() {
+            walk.matched.push(node);
+            continue;
+        }
+        let below = |test: &&Vec<String>| test.len() > node.len() && test.starts_with(&node);
+        if !node.is_empty() && !tests.iter().any(|test| below(&test)) {
+            continue;
+        }
+        let mut children: Vec<&String> = Vec::new();
+        for test in tests.iter().filter(below) {
+            if !children.contains(&&test[node.len()]) {
+                children.push(&test[node.len()]);
+            }
+        }
+        let part = &names[depth];
+        let mut any = false;
+        // Pushed in reverse so they pop in collection order, as pytest's `reversed(subnodes)`.
+        for child in children.into_iter().rev() {
+            if child == part || child.split('[').next() == Some(part.as_str()) {
+                let mut next = node.clone();
+                next.push(child.clone());
+                work.push((next, depth + 1));
+                any = true;
+            }
+        }
+        if !any {
+            walk.unmatched.push(node.clone());
+        }
+        walk.collected.push(node);
+    }
+    walk
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parts(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    #[test]
+    fn an_argument_splits_like_resolve_collection_argument() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            ("test_m.py", "test_m.py", &[]),
+            ("test_m.py::test_a", "test_m.py", &["test_a"]),
+            (
+                "test_m.py::TestC::test_q[a]",
+                "test_m.py",
+                &["TestC", "test_q[a]"],
+            ),
+            ("test_m.py::test_p[a::b]", "test_m.py", &["test_p[a::b]"]),
+            ("test_m.py::", "test_m.py", &[""]),
+            ("test_m.py::test_a::", "test_m.py", &["test_a", ""]),
+            (r"sub\test_n.py::test_a", r"sub\test_n.py", &["test_a"]),
+            // pytest's quirk: the path is cut at the first `[`.
+            ("test_x[1].py", "test_x", &[]),
+            ("tests/[d]/t.py::test_a", "tests/", &[]),
+        ];
+        for (arg, path, names) in cases {
+            assert_eq!(
+                split_collection_argument(arg),
+                (*path, parts(names)),
+                "{arg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_node_ids_names_decompose_like_an_argument() {
+        assert_eq!(
+            name_parts("TestC::test_q[a]"),
+            parts(&["TestC", "test_q[a]"])
+        );
+        assert_eq!(name_parts("test_p[x::y]"), parts(&["test_p[x::y]"]));
+        assert_eq!(name_parts("test_a"), parts(&["test_a"]));
+    }
+
+    fn module() -> Vec<Vec<String>> {
+        [
+            "test_a",
+            "test_p[1]",
+            "test_p[2]",
+            "TestC::test_one",
+            "TestC::test_q[a]",
+            "TestC::test_q[b]",
+        ]
+        .iter()
+        .map(|id| name_parts(id))
+        .collect()
+    }
+
+    fn walk(names: &[&str]) -> NameWalk {
+        walk_names(&module(), &parts(names))
+    }
+
+    fn paths(items: &[&[&str]]) -> Vec<Vec<String>> {
+        items.iter().map(|item| parts(item)).collect()
+    }
+
+    #[test]
+    fn a_function_name_matches_every_parametrized_case() {
+        assert_eq!(
+            walk(&["test_p"]).matched,
+            paths(&[&["test_p[1]"], &["test_p[2]"]])
+        );
+        assert_eq!(walk(&["test_p[2]"]).matched, paths(&[&["test_p[2]"]]));
+    }
+
+    #[test]
+    fn a_class_matches_as_a_collector_and_is_not_collected_by_its_own_walk() {
+        let walked = walk(&["TestC"]);
+        assert_eq!(walked.matched, paths(&[&["TestC"]]));
+        assert_eq!(walked.collected, paths(&[&[]]));
+        let deeper = walk(&["TestC", "test_q"]);
+        assert_eq!(
+            deeper.matched,
+            paths(&[&["TestC", "test_q[a]"], &["TestC", "test_q[b]"]])
+        );
+        assert_eq!(deeper.collected, paths(&[&[], &["TestC"]]));
+    }
+
+    #[test]
+    fn a_miss_names_the_collector_it_happened_in() {
+        assert_eq!(walk(&["nope"]).unmatched, paths(&[&[]]));
+        assert_eq!(walk(&["TestC", "nope"]).unmatched, paths(&[&["TestC"]]));
+        assert_eq!(walk(&["test_p[9]"]).unmatched, paths(&[&[]]));
+        assert_eq!(walk(&[""]).unmatched, paths(&[&[]]));
+    }
+
+    /// An item with parts left over is dropped silently — no matched node *and* no
+    /// unmatched collector, which is pytest's `found no collectors for` shape.
+    #[test]
+    fn parts_past_an_item_match_nothing_and_blame_nothing() {
+        let walked = walk(&["TestC", "test_one", "extra"]);
+        assert!(walked.matched.is_empty());
+        assert!(walked.unmatched.is_empty());
+    }
+
+    #[test]
+    fn an_empty_module_is_still_a_collector() {
+        let walked = walk_names(&[], &parts(&["test_a"]));
+        assert_eq!(walked.unmatched, paths(&[&[]]));
+    }
 
     /// The full round-trip table.  Each row is `(path, parts, param_id, nodeid)`.
     fn table() -> Vec<(

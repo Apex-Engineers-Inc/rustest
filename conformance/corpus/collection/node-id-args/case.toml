@@ -1,0 +1,14 @@
+# Node-id arguments: argument order across files, a class id, a bracketed case, a bare
+# function id selecting every case, the same item named twice (runs once), and a directory
+# walked through by another argument (yields nothing).
+[case]
+args = [
+    "sub/test_n.py::test_z",
+    "test_ids.py::TestC",
+    "test_ids.py::test_p[2]",
+    "test_ids.py::test_b",
+    "test_ids.py::test_p",
+    "test_ids.py::test_b",
+    "sub",
+    "sub/test_n.py::test_n",
+]

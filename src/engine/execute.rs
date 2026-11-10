@@ -846,7 +846,10 @@ fn stage(
         return Err(RunError::Collect(err));
     }
 
-    let assembled = assemble(dispatch, outcomes)?;
+    // `--lf`'s set reaches node-id selection too: it can make an id miss (`select_node_ids`).
+    let lf = (last_failed == LastFailedMode::Only && !previously_failed.is_empty())
+        .then_some(previously_failed);
+    let assembled = assemble(dispatch, outcomes, lf)?;
     // Selection is compiled and applied first even when nothing will run, because pytest
     // does: `pytest_collection_modifyitems` is called from inside `perform_collect`, i.e.
     // *before* `pytest_runtestloop` can interrupt, so a malformed `-k` is a usage error (4)
