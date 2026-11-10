@@ -33,7 +33,7 @@ use serde::Serialize;
 use super::cache::LastFailedMode;
 use super::collect::{collect, CollectError, CollectOptions, TierMode};
 use super::config::{normpath, resolve_config, ResolvedConfig};
-use super::execute::{run, RunError, RunOptions};
+use super::execute::{run, LiveEvent, RunError, RunOptions};
 use super::protocol::CoverageWire;
 use super::static_collect::CacheMode;
 use super::to_posix;
@@ -283,9 +283,11 @@ pub fn py_collect(
         // asked for and every worker would pay a monitoring registration to produce.
         coverage: None,
     };
-    let manifest = py
-        .detach(|| collect(&dir, &args, python_executable, workers, &options))
-        .map_err(collect_error_to_py)?;
+    let manifest = py.detach(|| collect(&dir, &args, python_executable, workers, &options));
+    // A Ctrl-C that arrived while the GIL was released is only *pending*; raise it here as
+    // `KeyboardInterrupt`, ahead of whatever error the interrupted workers produced.
+    py.check_signals()?;
+    let manifest = manifest.map_err(collect_error_to_py)?;
 
     Ok(serde_json::to_string(&manifest)
         .expect("CollectionManifest is plain data and always serializes"))
@@ -365,6 +367,7 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
     codeblocks=None,
     assert_rewrite="auto",
     coverage=None,
+    on_event=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_run(
@@ -382,6 +385,7 @@ pub fn py_run(
     codeblocks: Option<bool>,
     assert_rewrite: &str,
     coverage: Option<&str>,
+    on_event: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
@@ -397,19 +401,51 @@ pub fn py_run(
         assert_rewrite: !matches!(assert_rewrite, "off" | "no" | "0"),
         coverage: parse_coverage(coverage)?,
     };
-    let report = py
-        .detach(|| {
-            run(
-                &dir,
-                &args,
-                python_executable,
-                workers,
-                keyword.as_deref(),
-                mark_expr.as_deref(),
-                options,
-            )
-        })
-        .map_err(run_error_to_py)?;
+    // The first exception `on_event` raised. It wins over whatever the run itself returned,
+    // a `KeyboardInterrupt` included: the run stopped *because* of it.
+    let mut raised: Option<PyErr> = None;
+    let report = py.detach(|| {
+        // Called only from this thread (see `execute::run_with_launcher`), so taking the GIL
+        // back here keeps every Python call on the thread that called `rust.run`.
+        let mut forward = on_event.as_ref().map(|callback| {
+            let raised = &mut raised;
+            move |event: LiveEvent| -> bool {
+                Python::attach(|py| {
+                    let called = match event {
+                        LiveEvent::Collected { ids, rootdir } => {
+                            callback.call1(py, ("collected", (ids, rootdir)))
+                        }
+                        LiveEvent::Results(burst) => {
+                            let burst: Vec<_> = burst
+                                .into_iter()
+                                .map(|(slot, status, reason)| (slot, status.as_str(), reason))
+                                .collect();
+                            callback.call1(py, ("results", burst))
+                        }
+                        LiveEvent::Done { stopped } => callback.call1(py, ("done", stopped)),
+                    };
+                    called.map_err(|err| *raised = Some(err)).is_ok()
+                })
+            }
+        });
+        run(
+            &dir,
+            &args,
+            python_executable,
+            workers,
+            keyword.as_deref(),
+            mark_expr.as_deref(),
+            options,
+            forward.as_mut().map(|forward| forward as _),
+        )
+    });
+    // A Ctrl-C the callback never got to see (there is none, or it came before `collected`)
+    // is only pending; it outranks both the callback's own error and the run's.
+    py.check_signals()?;
+    if let Some(err) = raised {
+        return Err(err);
+    }
+    let report = report.map_err(run_error_to_py)?;
     Ok(serde_json::to_string(&report).expect("RunReport is plain data and always serializes"))
 }
 

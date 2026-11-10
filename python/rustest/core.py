@@ -7,13 +7,13 @@ import io
 import json
 import os
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING
 
 from . import rust
 
 if TYPE_CHECKING:
-    from typing import Any, Final, NotRequired, TypedDict
+    from typing import Any, NotRequired, TypedDict
 
     class _ManifestTest(TypedDict):
         """The one manifest field the collect-only surface reads. See `src/engine/manifest.rs`."""
@@ -90,26 +90,6 @@ _EXIT_INTERRUPTED = 2
 _EXIT_INTERNAL_ERROR = 3
 _EXIT_USAGE_ERROR = 4
 _EXIT_NO_TESTS_COLLECTED = 5
-
-
-#: The word `-v` prints for each status, taken from pytest's own verbose column.  Probed
-#: (`pytest -v` on a file with one of each): `PASSED`, `FAILED`, `SKIPPED (reason)`,
-#: `XFAIL (reason)`, `XPASS (reason)`, `ERROR`.  Note `XFAIL`/`XPASS` are *not* the
-#: report-bucket spellings (`xfailed`/`xpassed`) — the summary line and the per-test column
-#: genuinely use different words, and copying one into the other is the easy mistake.
-_VERBOSE_WORD: Final[Mapping[str, str]] = {
-    "passed": "PASSED",
-    "failed": "FAILED",
-    "skipped": "SKIPPED",
-    "xfailed": "XFAIL",
-    "xpassed": "XPASS",
-    "error": "ERROR",
-}
-
-#: Statuses whose `message` is a *reason* rather than a traceback, so `-v` can append it in
-#: parentheses exactly as pytest does.  A `failed`/`error` message is a traceback and belongs
-#: in the failure section, not on the one-line column.
-_REASON_STATUSES: Final = frozenset({"skipped", "xfailed", "xpassed"})
 
 
 def _summary(collected: int, errors: int, deselected: int = 0) -> str:
@@ -439,25 +419,6 @@ def collect_only(
     return _EXIT_OK
 
 
-def _progress_line(test: _ReportTest, index: int, total: int) -> str:
-    """One ``-v`` line: ``<nodeid> WORD (reason)`` plus pytest's right-hand percent column.
-
-    pytest pads the id-and-word out and puts ``[ NN%]`` in the last columns
-    (``_pytest/terminal.py::TerminalReporter._write_progress_information_filling_space``).
-    The width is read from the terminal here for the same reason: a fixed 80 would wrap on a
-    narrow console and leave a ragged gutter on a wide one.  A line already wider than the
-    gutter gets a single space rather than a negative pad.
-    """
-    word = _VERBOSE_WORD.get(test["status"], test["status"].upper())
-    line = f"{test['id']} {word}"
-    message = test.get("message")
-    if message and test["status"] in _REASON_STATUSES:
-        line += f" ({message.splitlines()[0]})"
-    percent = (index + 1) * 100 // total
-    pad = max(1, _terminal_width() - len(line) - 8)
-    return f"{line}{' ' * pad}[{percent:3d}%]"
-
-
 def terminal_columns(fallback: int = 80) -> int:
     """``shutil.get_terminal_size().columns``, **without importing shutil**.
 
@@ -774,16 +735,20 @@ def run(
 
     Output is a three-rung ladder -- pytest's own verbosity ladder, narrowed to three rungs:
 
-    * ``verbosity < 0`` (``-q``) -- the failure report and the summary line, with the
-      per-test progress lines dropped.  **Not** "the summary line and nothing else":
+    * ``verbosity < 0`` (``-q``) -- the failure report and the summary line, with progress
+      reduced to pytest's bare letters.  **Not** "the summary line and nothing else":
       pytest's ``-q`` keeps ``FAILURES`` and ``short test summary info``, and a quiet
       run that names no failing node is undiagnosable.
     * ``verbosity == 0`` (default) -- plus pytest's failure report: an ``ERRORS`` section, a
       ``FAILURES`` section, and a ``short test summary info`` list of node ids
       (:func:`_print_failure_sections`), which is what makes a red run diagnosable from a
       terminal without ``--report-json``.
-    * ``verbosity > 0`` (``-v``) -- plus one line per test in pytest's verbose wording
+    * ``verbosity > 0`` (``-v``) -- progress is one line per test in pytest's verbose wording
       (``PASSED``/``FAILED``/``SKIPPED (reason)``/``XFAIL``/``XPASS``/``ERROR``).
+
+    Progress itself (one line per file by default, letters only under ``-q``) is written live
+    to stdout by :class:`rustest._progress.Progress` while the run is in flight, in pytest's
+    serial layout and manifest order whatever the pool size.
 
     ``llm`` replaces that ladder wholesale with JSONL (:mod:`rustest._llm`); see the argument
     notes below and ``docs/guide/llm-output.md``.
@@ -840,6 +805,22 @@ def run(
         print(f"ERROR: {exc}", file=sys.stderr)
         return _EXIT_USAGE_ERROR
 
+    # Live progress on stdout, in pytest's serial layout, fed by the engine as results
+    # arrive.  Imported here and nowhere else: `import rustest`, `--collect-only`, `--llm`
+    # (whose stdout is JSONL and nothing else) and the workers never load it.  Its closing
+    # newlines are written by the engine's `done` event, before the failure sections below.
+    on_event = None
+    if not llm:
+        from ._progress import Progress
+
+        on_event = Progress(
+            sys.stdout,
+            verbosity=verbosity,
+            width=_terminal_width(),
+            cwd=os.getcwd(),
+            capture=capture,
+        )
+
     with _escaping_unencodable_output(), coverage:
         try:
             payload = rust.run(
@@ -856,6 +837,7 @@ def run(
                 codeblocks,
                 os.environ.get(_ASSERT_REWRITE_ENV, "auto"),
                 coverage.wire,
+                on_event=on_event,
             )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -863,6 +845,17 @@ def run(
         except RuntimeError as exc:
             print(f"INTERNALERROR: {exc}", file=sys.stderr)
             return _EXIT_INTERNAL_ERROR
+        except KeyboardInterrupt:
+            # Ctrl-C reaches here either out of the progress callback (the engine stops
+            # dispatching, lets the workers finish their batch, and re-raises) or while
+            # blocked in `rust.run` with no callback (`--llm`).  No report exists, so there is
+            # nothing to render: end the half-written progress line, say so on stderr, and
+            # exit with pytest's INTERRUPTED code.
+            if on_event is not None:
+                on_event.close()
+            _flush_stdout()
+            print("Interrupted: KeyboardInterrupt", file=sys.stderr)
+            return _EXIT_INTERRUPTED
 
         report: _RunReport = json.loads(payload)
 
@@ -891,17 +884,6 @@ def run(
             # The JSONL document is stdout's; everything below this point is stderr's.
             _flush_stdout()
         else:
-            if verbosity > 0:
-                # The denominator is what the run **selected**, not what it managed to run:
-                # pytest's percent column is over `session.testscollected`, so a `-x` run that
-                # stops at the second of three prints `[ 33%]`, `[ 66%]` and never reaches
-                # 100%. Probed against pytest 8.4.2 both ways -- and `-k` selecting 2 of 4 does
-                # move the denominator to 2, which is why it is `summary.total`
-                # (post-deselection) rather than a collected count.
-                total = max(report["summary"]["total"], len(tests))
-                for index, test in enumerate(tests):
-                    print(_progress_line(test, index, total))
-
             # Printed at **every** rung, including ``-q``.  pytest's ``-q`` drops the
             # session banner and condenses progress; it does not drop the failure report
             # (probed against pytest 8.4.2: `pytest -q` on a red run still emits FAILURES

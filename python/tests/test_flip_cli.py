@@ -23,12 +23,17 @@ import pytest
 # The compiled extension is built and installed by `python/tests/__init__.py`.
 from rustest import cli
 
-from .helpers import make_tree as _tree, run as _run, run_pytest as _pytest
+from .helpers import clean_env, make_tree as _tree, run as _run, run_pytest as _pytest
 
 
-def _rustest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    """The **default** invocation — no mode flag, which is the whole point of this module."""
-    return _run([sys.executable, "-m", "rustest", *args], tree)
+def _rustest(tree: Path, args: list[str], *, columns: int = 80) -> subprocess.CompletedProcess[str]:
+    """The **default** invocation — no mode flag, which is the whole point of this module.
+
+    ``COLUMNS`` is pinned: the live progress lines are padded to the terminal width.
+    """
+    return _run(
+        [sys.executable, "-m", "rustest", *args], tree, {**clean_env(), "COLUMNS": str(columns)}
+    )
 
 
 #: pytest's ``in <n>s`` tail, in both spellings ``format_session_duration`` produces
@@ -79,15 +84,16 @@ def test_a_bare_invocation_runs_the_v2_engine(tmp_path: Path) -> None:
 
     Told apart from v1 by something only v2 does: v1's renderer prints a per-file progress
     table and a ``✓ N passed`` line, v2 prints pytest's bare ``N passed`` on **stderr** and
-    leaves stdout empty on a green run.  Asserting the empty stdout as well as the summary is
-    what makes this a positive identification rather than a substring coincidence.
+    writes only pytest's progress line (``test_ok.py .`` plus the percent column) to stdout on
+    a green run.  Asserting the exact progress bytes as well as the summary is what makes this
+    a positive identification rather than a substring coincidence.
     """
     tree = _tree(tmp_path, "flip", {"test_ok.py": "def test_one():\n    assert True\n"})
 
     result = _rustest(tree, [])
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "", f"a green v2 run writes nothing to stdout: {result.stdout!r}"
+    assert result.stdout == "test_ok.py ." + " [100%]".rjust(67) + "\n\n", result.stdout
     assert _summary_line(result.stderr) == "1 passed", result.stderr
 
 
@@ -325,25 +331,20 @@ def test_verbose_prints_one_line_per_test_in_pytests_wording(tmp_path: Path) -> 
     assert progress[-1].endswith("[100%]"), progress
 
 
-def test_quiet_keeps_the_failure_report_and_matches_the_default_rung(tmp_path: Path) -> None:
-    """``-q`` suppresses the progress lines, and rustest's default rung has none to suppress.
+def test_quiet_keeps_the_failure_report_and_drops_the_path_from_the_progress(
+    tmp_path: Path,
+) -> None:
+    """``-q`` condenses the progress to bare letters and **keeps the failure report**.
 
-    This test used to assert ``quiet.stdout == ""`` under the name
-    ``test_quiet_prints_only_the_summary``. That was the behaviour ``e0dc4a8`` deliberately
-    removed: ``_print_failure_sections`` was gated on ``verbosity >= 0``, so ``rustest -q``
-    on a red run named nothing that failed and carried no traceback. pytest's ``-q`` drops
-    the session banner and condenses progress but **keeps the failure report**, so the gate
-    went and the report now prints at every rung.
+    This test used to assert ``quiet.stdout == ""``, and later ``quiet.stdout ==
+    default.stdout``. The first was the behaviour ``e0dc4a8`` removed: ``rustest -q`` on a red
+    run named nothing that failed. The second held while the default rung printed no progress
+    at all. Progress is live now, in pytest's layout, so the rungs differ exactly where
+    pytest's do: the default prints ``test_m.py .Fsx`` plus the percent column and a blank
+    line, ``-q`` the letters alone and a single newline. What follows is the same failure
+    report either way, and that equality is what fails if the report is ever re-gated.
 
-    What is left of ``-q`` is the progress lines — and rustest's *default* rung does not
-    print any. It has no session banner, no ``collected N items`` line and no ``.F.s.x``
-    column, because there is no ``isatty`` call in either layer and the output is the same
-    piped or on a terminal. Only ``-v`` adds the per-test lines. So ``-q`` and the default
-    rung agree on stdout, and asserting that is the honest pin: it fails if the report is
-    ever re-gated, and it fails if the default rung ever grows a preamble that ``-q``
-    should have dropped.
-
-    The cross-runner half — that these section titles match a real ``pytest -q`` — is
+    The cross-runner half -- that these section titles match a real ``pytest -q`` -- is
     ``test_run_cli.py::test_quiet_still_reports_failures_like_pytest``.
     """
     tree = _tree(tmp_path, "quiet", {"test_m.py": MIXED})
@@ -351,16 +352,20 @@ def test_quiet_keeps_the_failure_report_and_matches_the_default_rung(tmp_path: P
     quiet = _rustest(tree, ["-q", "-n", "1"])
     default = _rustest(tree, ["-n", "1"])
 
+    quiet_progress = ".Fsx" + " [100%]".rjust(75) + "\n"
+    default_progress = "test_m.py .Fsx" + " [100%]".rjust(65) + "\n\n"
+    assert quiet.stdout.startswith(quiet_progress), quiet.stdout
+    assert default.stdout.startswith(default_progress), default.stdout
+
     # The diagnosis survives -q. This is the assertion e0dc4a8's fix exists for.
     assert "FAILED test_m.py::test_fail" in quiet.stdout, quiet.stdout
     assert "AssertionError: assert 0" in quiet.stdout, quiet.stdout
     assert _summary_line(quiet.stderr) == "1 failed, 1 passed, 1 skipped, 1 xfailed"
 
-    # -q and the default rung are indistinguishable on stdout: there is no preamble and no
-    # progress column at verbosity 0 for -q to take away.
-    assert quiet.stdout == default.stdout, f"-q: {quiet.stdout!r}\ndefault: {default.stdout!r}"
+    # Past the progress, -q and the default rung print the same failure report.
+    assert quiet.stdout[len(quiet_progress) :] == default.stdout[len(default_progress) :]
 
-    # ...and the rung that *does* differ is -v, or the equality above proves nothing.
+    # ...and the rung that differs by *words* is -v, or the equality above proves nothing.
     verbose = _rustest(tree, ["-v", "-n", "1"])
     assert "test_m.py::test_pass PASSED" in verbose.stdout, verbose.stdout
     assert "PASSED" not in quiet.stdout, quiet.stdout

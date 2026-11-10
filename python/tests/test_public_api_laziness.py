@@ -139,6 +139,10 @@ def test_approx_is_the_class_even_after_its_module_is_imported() -> None:
         # needed only by a suite that actually contains an async test.
         ("import rustest._worker", "rich"),
         ("import rustest._worker", "asyncio"),
+        # The live renderer is imported inside `core.run`, orchestrator process only.
+        ("import rustest", "rustest._progress"),
+        ("import rustest.cli", "rustest._progress"),
+        ("import rustest._worker", "rustest._progress"),
     ],
 )
 def test_the_hot_paths_do_not_import_the_expensive_modules(entry: str, forbidden: str) -> None:

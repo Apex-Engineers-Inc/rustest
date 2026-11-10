@@ -7,7 +7,7 @@ to be declared here belonged to the v1 engine, deleted in Phase 4 Task 2.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Callable, Sequence
 
 def resolve_config(invocation_dir: str, args: Sequence[str]) -> str:
     """Resolve the v2 rootdir + ini configuration, returned as a JSON object string.
@@ -83,6 +83,7 @@ def run(
     codeblocks: bool | None = ...,
     assert_rewrite: str = ...,
     coverage: str | None = ...,
+    on_event: Callable[[str, Any], object] | None = ...,
 ) -> str:
     """Run tests with the engine; returns a schema-v2 ``RunReport`` JSON string.
 
@@ -107,5 +108,16 @@ def run(
     every worker's ``init`` line unchanged, or ``None``. ``None`` is not "measure and discard":
     it means no worker registers a ``sys.monitoring`` tool at all. A malformed value, or one
     with an empty ``sources``, is a ``ValueError``.
+
+    ``on_event``, when given, is called as ``on_event(kind, payload)`` while the run is in
+    progress, always on the calling thread with the GIL held, never re-entrantly:
+    ``("collected", (ids, rootdir))`` once, after selection and before any result (``ids``
+    in report order -- an index into it is a *slot*; ``rootdir`` absolute posix, as in the
+    report); ``("results", [(slot, status, reason), ...])`` zero or more times, each slot
+    that produces a result exactly once, in arrival order; ``("done", stopped)`` once, after
+    the last result -- ``stopped`` is true when some selected slot never produced one. No
+    event is sent when the run fails before selection is final. If the callback raises,
+    no further work is dispatched, the workers shut down as under ``-x``, the callback is not
+    called again, and ``run`` raises that exception instead of returning the report.
     """
     ...

@@ -194,7 +194,6 @@ impl TestStatus {
         }
     }
 
-    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             TestStatus::Passed => "passed",
@@ -457,11 +456,42 @@ impl From<SelectionError> for RunError {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// One finished test as the live stream carries it: `(report slot, status, reason)`.
+/// `reason` is the outcome's raw `message` for skipped/xfailed/xpassed -- a reason, not a
+/// traceback -- and `None` for every other status.
+pub type LiveResult = (usize, TestStatus, Option<String>);
+
+/// What a run tells an [`Observer`] while it is still running.
+///
+/// The order is fixed: one `Collected`, any number of `Results`, one `Done` -- and nothing at
+/// all when the run fails before selection is final (a usage error, a collection-phase
+/// orchestration failure).
+#[derive(Debug, PartialEq)]
+pub enum LiveEvent {
+    /// The selected ids in report order (a test's index here is its slot), and the rootdir in
+    /// the report's own spelling.
+    Collected { ids: Vec<String>, rootdir: String },
+    /// A burst of finished tests, in the order they arrived from the pool. Every slot that
+    /// produces a result appears exactly once across all bursts.
+    Results(Vec<LiveResult>),
+    /// Sent after the last result. `stopped` is true when the run was cut short: some
+    /// selected slot never produced a result (a dead worker, `pytest.exit()`), or `-x` /
+    /// `--maxfail` was reached -- even on the last test, as pytest's `shouldfail` is.
+    Done { stopped: bool },
+}
+
+/// Receives [`LiveEvent`]s on the thread that called [`run`], never on a worker thread.
+/// Returning `false` stops the run: no further batch is dispatched, the workers shut down as
+/// they do under `-x`, and the observer is not called again.
+pub type Observer<'a> = &'a mut dyn FnMut(LiveEvent) -> bool;
+
 /// Collect, select and run `args`, returning the report.
 ///
 /// `python_executable` is the interpreter the workers run under, resolved by the caller so
 /// this crate never guesses one. `workers` is the pool size, clamped to `[1, files]`.
-/// `keyword` and `mark` are the raw `-k` / `-m` option values.
+/// `keyword` and `mark` are the raw `-k` / `-m` option values. `observer`, when given, is
+/// told about the run as it happens; `None` costs nothing and changes nothing.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     invocation_dir: &Path,
     args: &[PathBuf],
@@ -470,6 +500,7 @@ pub fn run(
     keyword: Option<&str>,
     mark: Option<&str>,
     options: RunOptions,
+    observer: Option<Observer<'_>>,
 ) -> Result<RunReport, RunError> {
     let launcher = WorkerLauncher::module(python_executable);
     let launcher = if options.no_capture {
@@ -485,6 +516,7 @@ pub fn run(
         keyword,
         mark,
         options,
+        observer,
     )
 }
 
@@ -579,6 +611,18 @@ type CollectInbox = Vec<Option<CollectedFiles>>;
 /// flight finish and *then* everything stops — "at most one failure" becomes "at least one
 /// failure, and no test started after it was seen".  Which extra tests ran is therefore
 /// timing-dependent under `-n >1`, and `rustest -x` is documented as sequential-exact.
+///
+/// # The live stream
+///
+/// With an `observer`, each worker thread sends every result down one unbounded channel the
+/// moment it is read, and this thread drains it between handing out the work and joining:
+/// a blocking `recv`, then whatever else is already queued, then one observer call per burst.
+/// Every `Sender` is owned by a worker thread -- the original is *moved* into the last one --
+/// so `recv` fails exactly when the last worker has returned, and the drain cannot outlive
+/// the pool. An observer that declines to continue sets `session_over`, which stops dispatch
+/// at the next batch boundary on every worker; the partial run is then assembled and its
+/// `--lf` cache written exactly as a `pytest.exit()` run's would be.
+#[allow(clippy::too_many_arguments)]
 fn run_with_launcher(
     invocation_dir: &Path,
     args: &[PathBuf],
@@ -587,6 +631,7 @@ fn run_with_launcher(
     keyword: Option<&str>,
     mark: Option<&str>,
     options: RunOptions,
+    mut observer: Option<Observer<'_>>,
 ) -> Result<RunReport, RunError> {
     let started = Instant::now();
     let dispatch = plan(
@@ -604,6 +649,13 @@ fn run_with_launcher(
         // (`_pytest/mark/__init__.py` l. 214), so `-k "and and"` is a usage error even when
         // there is nothing to match — exit 4, not a quiet exit 5.
         let _ = select_mask(&[], keyword, mark)?;
+        if let Some(watch) = observer {
+            let ids = Vec::new();
+            let rootdir = dispatch.rootdir.clone();
+            if watch(LiveEvent::Collected { ids, rootdir }) {
+                watch(LiveEvent::Done { stopped: false });
+            }
+        }
         return Ok(finish(
             dispatch.rootdir,
             Vec::new(),
@@ -649,17 +701,25 @@ fn run_with_launcher(
         session_over,
     };
 
+    let (live_tx, live_rx) = observer.is_some().then(channel::<LiveResult>).unzip();
+
     std::thread::scope(|scope| {
         let handles: Vec<_> = pool
             .into_iter()
             .zip(dispatch.assignments.iter().cloned())
             .zip(exec_rxs)
+            // `repeat_n` clones for all but the last worker and *moves* the original into
+            // it, so no live `Sender` stays on this thread -- the drain below ends because
+            // ownership says it must, not because a `drop` was remembered.
+            .zip(std::iter::repeat_n(live_tx, pool_size))
             .enumerate()
-            .map(|(index, ((worker, files), exec_rx))| {
+            .map(|(index, (((worker, files), exec_rx), live_tx))| {
                 let collect_tx = collect_tx.clone();
                 let keys = &dispatch.assert_keys;
                 scope.spawn(move || {
-                    worker_life(index, worker, files, keys, collect_tx, exec_rx, signals)
+                    worker_life(
+                        index, worker, files, keys, collect_tx, exec_rx, live_tx, signals,
+                    )
                 })
             })
             .collect();
@@ -688,14 +748,44 @@ fn run_with_launcher(
             options.last_failed,
         );
 
+        // `Collected` goes out before any work does, so an observer that declines it stops
+        // the run with nothing dispatched.
+        let mut quit = false;
+        if let (Ok(staged), Some(watch)) = (&staged, observer.as_deref_mut()) {
+            let ids = staged.selected.iter().map(|test| test.id.clone()).collect();
+            let rootdir = dispatch.rootdir.clone();
+            quit = !watch(LiveEvent::Collected { ids, rootdir });
+        }
+
         // Hand out the work — or drop every sender, which unblocks the workers to shut
         // down — *before* joining, or the join deadlocks on threads still at the barrier.
-        if let Ok(staged) = &staged {
+        if let (Ok(staged), false) = (&staged, quit) {
             for (tx, assignment) in exec_txs.iter().zip(&staged.per_worker) {
                 let _ = tx.send(assignment.clone());
             }
         }
         drop(exec_txs);
+
+        // The drain. Nothing is locked while blocked here (the GIL included): the observer
+        // is only ever called between `recv`s, on this thread.
+        let mut delivered = 0usize;
+        if let (Ok(_), Some(watch), Some(live_rx), false) =
+            (&staged, observer.as_deref_mut(), live_rx, quit)
+        {
+            while let Ok(first) = live_rx.recv() {
+                let mut burst = vec![first];
+                burst.extend(live_rx.try_iter());
+                delivered += burst.len();
+                if !watch(LiveEvent::Results(burst)) {
+                    quit = true;
+                    // Read by every worker before each batch, whether or not `-x` was given.
+                    session_over.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+            // `live_rx` drops here; a worker still finishing its batch sends into a closed
+            // channel, which it ignores.
+        }
 
         let runs: Vec<Result<WorkerRun, CollectError>> = handles
             .into_iter()
@@ -708,6 +798,15 @@ fn run_with_launcher(
             .collect();
 
         let staged = staged?;
+
+        // After the join and before anything else is reported -- including the error a
+        // dead worker turns into, and `warn_unrun_hooks`'s stderr line -- so a renderer can
+        // finish its line first.
+        if let (Some(watch), false) = (observer, quit) {
+            watch(LiveEvent::Done {
+                stopped: delivered < staged.selected.len() || stop.load(Ordering::SeqCst),
+            });
+        }
 
         let mut slots: Vec<Option<TestOutcome>> = staged.selected.iter().map(|_| None).collect();
         let mut residue = WorkerResidue::default();
@@ -732,7 +831,10 @@ fn run_with_launcher(
         if let Some(err) = failure {
             return Err(RunError::Collect(err));
         }
-        launcher.warn_unrun_hooks();
+        // A declined run sent no `Done`, so a renderer may still be mid-line.
+        if !quit {
+            launcher.warn_unrun_hooks();
+        }
 
         // A missing slot is normally a protocol bug — a test the pool never answered — and
         // saying so is the whole reason `MissingResult` exists.  Under a fired `-x` it is
@@ -746,7 +848,7 @@ fn run_with_launcher(
         for (test, slot) in staged.selected.iter().zip(slots) {
             match slot {
                 Some(outcome) => outcomes.push(outcome),
-                None if stopped_early || session_ended => {}
+                None if stopped_early || session_ended || quit => {}
                 None => {
                     return Err(RunError::Collect(CollectError::MissingResult {
                         id: test.id.clone(),
@@ -1001,6 +1103,9 @@ fn finish(
 }
 
 /// Collect, wait at the barrier, execute, shut down.
+///
+/// `live`, when present, gets every result the moment the worker answers it.
+#[allow(clippy::too_many_arguments)]
 fn worker_life(
     index: usize,
     mut worker: Worker,
@@ -1008,6 +1113,7 @@ fn worker_life(
     assert_keys: &[Option<String>],
     collect_tx: Sender<CollectMessage>,
     exec_rx: Receiver<Assignment>,
+    live: Option<Sender<LiveResult>>,
     signals: StopSignals<'_>,
 ) -> Result<WorkerRun, CollectError> {
     let mut outcomes = Vec::with_capacity(files.len());
@@ -1067,7 +1173,20 @@ fn worker_life(
         // is left. `None` is "no limit"; a budget that has already been spent sends `Some(0)`
         // and the batch is never dispatched, because `should_stop` fired first.
         let budget = signals.remaining_budget();
-        let batch = worker.execute_batch(&ids, signals.fail_fast, budget, &mut outcomes);
+        let mut forward = |position: usize, outcome: &TestOutcome| {
+            if let Some(live) = &live {
+                // A closed channel means the observer quit; the run is stopping anyway.
+                let reason = matches!(
+                    outcome.status,
+                    TestStatus::Skipped | TestStatus::XFailed | TestStatus::XPassed
+                )
+                .then(|| outcome.message.clone())
+                .flatten();
+                let _ = live.send((group[position].0, outcome.status, reason));
+            }
+        };
+        let batch =
+            worker.execute_batch(&ids, signals.fail_fast, budget, &mut outcomes, &mut forward);
         // The results are folded in **before** the batch's own outcome is inspected, so the
         // `SessionExit` arm below returns with them already recorded.
         for ((slot, _), outcome) in group.iter().zip(outcomes) {
@@ -1507,6 +1626,7 @@ mod tests {
             keyword,
             mark,
             RunOptions::defaults(),
+            None,
         )
     }
 
@@ -1818,6 +1938,7 @@ def test_d():
             None,
             None,
             options,
+            None,
         )
         .expect("the run completes")
     }
@@ -2116,6 +2237,7 @@ def test_bails():
                 last_failed: LastFailedMode::Only,
                 ..RunOptions::defaults()
             },
+            None,
         )
         .expect("the run completes");
 
@@ -2743,5 +2865,239 @@ def test_bails():
             message.contains(&format!("requires {PROTOCOL_VERSION}")),
             "{message}"
         );
+    }
+
+    // =====================================================================
+    // The live stream
+    // =====================================================================
+
+    /// Run on a separate thread with an observer that records every event and answers with
+    /// `decide`, and **fail rather than hang** if the run does not return: the drain-then-join
+    /// order is exactly the thing that would turn a regression into a hang.
+    fn run_observed(
+        dir: &Path,
+        launcher: WorkerLauncher,
+        workers: usize,
+        keyword: Option<&'static str>,
+        options: RunOptions,
+        mut decide: impl FnMut(&LiveEvent) -> bool + Send + 'static,
+    ) -> (Result<RunReport, RunError>, Vec<LiveEvent>) {
+        let dir = dir.to_path_buf();
+        let (done_tx, done_rx) = channel();
+        std::thread::spawn(move || {
+            let mut events = Vec::new();
+            let mut observer = |event: LiveEvent| {
+                let more = decide(&event);
+                events.push(event);
+                more
+            };
+            let result = run_with_launcher(
+                &dir,
+                &[],
+                &launcher,
+                workers,
+                keyword,
+                None,
+                options,
+                Some(&mut observer),
+            );
+            let _ = done_tx.send((result, events));
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("the observed run returned instead of hanging")
+    }
+
+    /// Every `(slot, status)` the `Results` events carried, in delivery order.
+    fn delivered(events: &[LiveEvent]) -> Vec<(usize, TestStatus)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                LiveEvent::Results(burst) => Some(burst),
+                _ => None,
+            })
+            .flatten()
+            .map(|(slot, status, _)| (*slot, *status))
+            .collect()
+    }
+
+    /// A stand-in that refuses to answer a test until the observer has been shown an earlier
+    /// one: before `test_a.py::test_1` it waits for the observer to have written `seen-0`, and
+    /// before `test_b.py::test_0` for `seen-1`. Waiting gives up after 20 s and reports the
+    /// test as **failed**, so a pool that forwarded per batch (or a drain that waited for the
+    /// join) shows up as a wrong answer, not a hang.
+    fn gated_worker(markers: &Path) -> WorkerLauncher {
+        let script = format!(
+            "import json, os, sys, time\n\
+             gates = {{'test_a.py::test_1': 'seen-0', 'test_b.py::test_0': 'seen-1'}}\n\
+             def wait(name):\n\
+             \x20   deadline = time.monotonic() + 20\n\
+             \x20   while time.monotonic() < deadline:\n\
+             \x20       if os.path.exists(os.path.join('{markers}', name)):\n\
+             \x20           return True\n\
+             \x20       time.sleep(0.01)\n\
+             \x20   return False\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       rel = path.rsplit('/', 1)[-1]\n\
+             \x20       tests = [{{'id': '%s::test_%d' % (rel, i), 'path': rel,\n\
+             \x20                  'qualname': 'test_%d' % i}} for i in range(2)]\n\
+             \x20       sys.stdout.write(json.dumps(\n\
+             \x20           {{'op': 'collected', 'path': path, 'tests': tests}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       for test_id in message['ids']:\n\
+             \x20           ok = test_id not in gates or wait(gates[test_id])\n\
+             \x20           sys.stdout.write(json.dumps(\n\
+             \x20               {{'op': 'test_result', 'id': test_id,\n\
+             \x20                'status': 'passed' if ok else 'failed',\n\
+             \x20                'duration_s': 0.0}}) + chr(10))\n\
+             \x20           sys.stdout.flush()\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
+             \x20           'executed': len(message['ids']), 'stopped': False}}) + chr(10))\n\
+             \x20   elif op == 'shutdown':\n\
+             \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       break\n\
+             \x20   sys.stdout.flush()\n",
+            markers = crate::engine::to_posix(markers),
+        );
+        scripted(&script)
+    }
+
+    /// Results reach the observer **per test, as they arrive**: within one batch (`a1` waits
+    /// for `a0` to have been observed) and across workers (`b`'s worker waits for `a1`).
+    #[test]
+    fn results_are_forwarded_as_each_one_arrives() {
+        let tmp = tree(&[("test_a.py", ""), ("test_b.py", "")]);
+        let markers = TempDir::new().unwrap();
+        let dir = markers.path().to_path_buf();
+
+        let (result, events) = run_observed(
+            tmp.path(),
+            gated_worker(markers.path()),
+            2,
+            None,
+            RunOptions::defaults(),
+            move |event| {
+                if let LiveEvent::Results(burst) = event {
+                    for (slot, _, _) in burst {
+                        fs::write(dir.join(format!("seen-{slot}")), "").unwrap();
+                    }
+                }
+                true
+            },
+        );
+        let report = result.expect("the run completes");
+
+        assert_eq!(report.summary.passed, 4, "a gate timed out: {report:?}");
+        let order: Vec<usize> = delivered(&events).iter().map(|(slot, _)| *slot).collect();
+        assert_eq!(order[..2], [0, 1], "{events:?}");
+        assert_eq!(events.last(), Some(&LiveEvent::Done { stopped: false }));
+    }
+
+    /// Declining `Collected` dispatches nothing at all.
+    #[test]
+    fn an_observer_that_declines_collected_runs_nothing() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let logs = TempDir::new().unwrap();
+
+        let (result, events) = run_observed(
+            tmp.path(),
+            recording_worker(logs.path(), 2),
+            1,
+            None,
+            RunOptions::defaults(),
+            |_| false,
+        );
+        let report = result.expect("a declined run still assembles its report");
+
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(report.tests.is_empty());
+        assert!(logged_dispatch(logs.path()).is_empty());
+    }
+
+    /// A worker that dies mid-batch still ends the stream: what it answered is delivered,
+    /// `Done` says the run stopped, and the run's own error is unchanged.
+    #[test]
+    fn a_worker_dying_mid_batch_still_ends_with_done_stopped() {
+        let tmp = tree(&[("test_a.py", "")]);
+        let script = format!(
+            "import json, sys\n\
+             while True:\n\
+             \x20   line = sys.stdin.readline()\n\
+             \x20   if not line:\n\
+             \x20       break\n\
+             \x20   message = json.loads(line)\n\
+             \x20   op = message['op']\n\
+             \x20   if op == 'init':\n\
+             \x20       {READY}\n\
+             \x20   elif op == 'collect_file':\n\
+             \x20       path = message['path']\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'collected', 'path': path,\n\
+             \x20           'tests': [{{'id': 'test_a.py::test_one', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_one'}},\n\
+             \x20                     {{'id': 'test_a.py::test_two', 'path': 'test_a.py',\n\
+             \x20                      'qualname': 'test_two'}}]}}) + chr(10))\n\
+             \x20   elif op == 'execute_batch':\n\
+             \x20       sys.stdout.write(json.dumps({{'op': 'test_result',\n\
+             \x20           'id': message['ids'][0], 'status': 'passed',\n\
+             \x20           'duration_s': 0.0}}) + chr(10))\n\
+             \x20       sys.stdout.flush()\n\
+             \x20       sys.exit(7)\n\
+             \x20   sys.stdout.flush()\n"
+        );
+
+        let (result, events) = run_observed(
+            tmp.path(),
+            scripted(&script),
+            1,
+            None,
+            RunOptions::defaults(),
+            |_| true,
+        );
+
+        let err = result.expect_err("a dead worker is fatal");
+        assert!(err.to_string().contains("test_a.py::test_two"), "{err}");
+        assert_eq!(delivered(&events), vec![(0, TestStatus::Passed)]);
+        assert_eq!(events.last(), Some(&LiveEvent::Done { stopped: true }));
+    }
+
+    /// An empty selection is still bracketed: `Collected` with no ids, then `Done`. Both
+    /// shapes -- a tree with no test files (no pool at all) and `-k` deselecting everything.
+    #[test]
+    fn an_empty_selection_still_gets_collected_and_done() {
+        let empty = tree(&[]);
+        let tmp = tree(&[("test_a.py", "")]);
+        let logs = TempDir::new().unwrap();
+        for (dir, keyword) in [(empty.path(), None), (tmp.path(), Some("nomatch"))] {
+            let (result, events) = run_observed(
+                dir,
+                recording_worker(logs.path(), 2),
+                2,
+                keyword,
+                RunOptions::defaults(),
+                |_| true,
+            );
+            let report = result.expect("the run completes");
+            assert_eq!(
+                events,
+                vec![
+                    LiveEvent::Collected {
+                        ids: Vec::new(),
+                        rootdir: report.rootdir.clone(),
+                    },
+                    LiveEvent::Done { stopped: false },
+                ],
+                "{keyword:?}"
+            );
+        }
     }
 }

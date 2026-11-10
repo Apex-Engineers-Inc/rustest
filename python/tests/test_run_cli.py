@@ -86,12 +86,17 @@ def _run_pytest(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]
     )
 
 
-def _run_v2(tree: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_v2(
+    tree: Path, args: list[str], *, columns: int | None = None
+) -> subprocess.CompletedProcess[str]:
     """The **default** invocation: since the Phase 1c flip, no mode flag means v2.
 
     ``--v2`` is no longer accepted (it exits 4 as unrecognised); see ``test_flip_cli.py``.
     """
-    return _run([sys.executable, "-m", "rustest", *args], tree)
+    env = _clean_env()
+    if columns is not None:
+        env["COLUMNS"] = str(columns)
+    return run([sys.executable, "-m", "rustest", *args], tree, env)
 
 
 def _pytest_counts(stdout: str) -> dict[str, int]:
@@ -777,14 +782,15 @@ def test_the_json_report_records_deselection_and_collection_errors(tmp_path: Pat
     assert report["tests"] == []
 
 
-def test_a_clean_run_prints_nothing_on_stdout(tmp_path: Path) -> None:
-    """stdout is reserved for failure detail, so a green run is silent there and the summary
-    goes to stderr -- the same stdout/stderr split ``--collect-only`` uses."""
+def test_a_clean_run_prints_only_its_progress_on_stdout(tmp_path: Path) -> None:
+    """stdout carries the live progress (pytest's serial layout) and failure detail; a green
+    run has the former only, and the summary goes to stderr -- the same stdout/stderr split
+    ``--collect-only`` uses."""
     tree = _tree(tmp_path, "quiet", {"test_a.py": "def test_one():\n    pass\n"})
 
-    proc = _run_v2(tree, [])
+    proc = _run_v2(tree, [], columns=80)
     assert proc.returncode == 0
-    assert proc.stdout == "", _context("v2", proc)
+    assert proc.stdout == "test_a.py ." + " [100%]".rjust(68) + "\n\n", _context("v2", proc)
     assert "1 passed" in proc.stderr
 
 
@@ -873,6 +879,7 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         codeblocks: bool | None,
         assert_rewrite: str,
         coverage: str | None,
+        on_event: object = None,
     ) -> str:
         del invocation_dir, python, fail_fast, last_failed_mode, no_capture, codeblocks
         del assert_rewrite, coverage, max_fail
@@ -923,10 +930,11 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         codeblocks: bool | None,
         assert_rewrite: str,
         coverage: str | None,
+        on_event: object = None,
     ) -> str:
         del invocation_dir, python, workers, keyword, mark_expr
         del fail_fast, max_fail, last_failed_mode, no_capture, codeblocks, assert_rewrite
-        del coverage
+        del coverage, on_event
         seen.append(list(args))
         return json.dumps(
             {
@@ -975,10 +983,11 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         codeblocks: bool | None,
         assert_rewrite: str,
         coverage: str | None,
+        on_event: object = None,
     ) -> str:
         del invocation_dir, args, python, workers, keyword, mark_expr
         del fail_fast, max_fail, last_failed_mode, no_capture, codeblocks, assert_rewrite
-        del coverage
+        del coverage, on_event
         raise RuntimeError("could not spawn the collection worker `nope -m rustest._worker`")
 
     with stub_rust_module(run=boom):
@@ -1869,3 +1878,39 @@ def test_quiet_still_reports_failures_like_pytest(tmp_path: Path) -> None:
         "FAILURES",
         "short test summary info",
     ], _context("v2", ours)
+
+
+def _interrupting_run(*, announce: bool):
+    """A fake ``rust.run`` that is interrupted mid-run, as the engine does on Ctrl-C."""
+
+    def fake_run(*args: object, on_event: object = None, **kwargs: object) -> str:
+        del args, kwargs
+        if announce:
+            assert callable(on_event)
+            on_event("collected", (["t.py::a", "t.py::b"], str(Path.cwd())))
+            on_event("results", [(0, "passed", None)])
+        raise KeyboardInterrupt
+
+    return fake_run
+
+
+def test_ctrl_c_ends_the_progress_line_and_exits_2_without_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """pytest answers Ctrl-C with exit 2 (INTERRUPTED); so does the live run, with the
+    half-written line terminated and one stderr line, not a Python traceback."""
+    with stub_rust_module(run=_interrupting_run(announce=True)):
+        assert core.run(paths=[]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == "t.py .\n"
+    assert captured.err == "Interrupted: KeyboardInterrupt\n"
+
+
+def test_ctrl_c_under_llm_keeps_stdout_empty(capsys: pytest.CaptureFixture[str]) -> None:
+    with stub_rust_module(run=_interrupting_run(announce=False)):
+        assert core.run(paths=[], llm=True) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Interrupted: KeyboardInterrupt\n"

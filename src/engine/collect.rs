@@ -2148,12 +2148,16 @@ impl Worker {
     /// results already received are attributed and correct, so the id a reader needs is the
     /// one the stream stalled on. When the batch is complete and the terminator itself is
     /// the problem, it falls back to the first id, which is the only one still in scope.
+    ///
+    /// `on_result` sees each outcome the moment it is accepted, with its position in `ids` --
+    /// before the batch ends, which is what lets a run report progress per test.
     pub(crate) fn execute_batch(
         &mut self,
         ids: &[String],
         stop_on_failure: bool,
         max_fail: Option<usize>,
         out: &mut Vec<TestOutcome>,
+        on_result: &mut dyn FnMut(usize, &TestOutcome),
     ) -> Result<bool, CollectError> {
         let first = ids.first().map(String::as_str).unwrap_or("<empty batch>");
         let base = out.len();
@@ -2228,14 +2232,16 @@ impl Worker {
                             line,
                         ));
                     };
-                    out.push(TestOutcome {
+                    let outcome = TestOutcome {
                         id: echoed,
                         status,
                         duration_s,
                         message,
                         stdout,
                         stderr,
-                    });
+                    };
+                    on_result(seen, &outcome);
+                    out.push(outcome);
                 }
                 WorkerResponse::BatchDone { executed, stopped } => {
                     if executed != seen {

@@ -222,7 +222,7 @@ def _attach_captures(obj: dict[str, Any], test: _ReportTest, *, full: bool) -> N
 def _skip_object(test: _ReportTest) -> dict[str, Any]:
     """One ``skip`` line.  ``message`` is a *reason* for these three statuses, never a traceback.
 
-    Guaranteed by the engine, not assumed: ``core._REASON_STATUSES`` is the same set, and it is
+    Guaranteed by the engine, not assumed: ``rustest._progress._REASON_STATUSES`` is the same set, and it is
     what lets ``-v`` print ``SKIPPED (not ready)`` on the human ladder.
     """
     return {
