@@ -620,14 +620,16 @@ def test_flaky_api():
 
 **What it does**: Prettier pytest output with progress bar
 
-**Migration strategy**: Not supported. rustest has its own output, which does not match
-pytest-sugar's styling but does provide pass/fail markers, per-test progress percentages,
-and failure detail with filtered tracebacks.
+**Migration strategy**: Not needed for what most people install it for. In a terminal,
+rustest draws its own live display: a progress bar, a row per file in flight, a `✓`/`✗`
+line per finished file, failures with the source around the failing line, and a glyph
+summary. Piped, it writes pytest's plain progress lines instead. See
+[CLI usage](cli.md#output-control).
 
-The output is **not coloured**, and there is no flag that makes it so: `--color` and
-`--ascii` are accepted and inert, so an `addopts` line carrying `--color=never` still runs
-rather than failing on an unknown flag. `-v` and `-q` set verbosity, and `--tb` is accepted
-and ignored because traceback style is rustest's own.
+Colour follows pytest's rule (`--color`, `PY_COLORS`, `NO_COLOR`, `FORCE_COLOR`, then
+whether the stream is a terminal), and `--ascii` draws the terminal display with ASCII only.
+`-v` and `-q` set verbosity, and `--tb` is accepted and ignored because traceback style is
+rustest's own.
 
 ---
 

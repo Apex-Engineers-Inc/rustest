@@ -19,10 +19,11 @@ an interactive shell session rather than a named command -- so a recording made 
 would differ every time it was made and could not be regenerated in CI. This records a
 declared command list instead, which is reproducible on any platform.
 
-**Why no PTY at all, on any platform.** rustest's output carries no color: ``--color`` is
-accepted and inert, documented as such in ``cli.py``. There is nothing a terminal would
-add that a pipe drops, so a pipe with ``PYTHONUNBUFFERED`` set -- which is what preserves
-the chunk timing -- captures the same bytes.
+**Why no PTY at all, on any platform.** A recording is of the piped form on purpose:
+rustest picks its display by whether stdout is a terminal, and through a pipe it writes
+pytest's own progress lines, uncoloured, which is the stable, documented format and the one
+a CI log shows. A pipe with ``PYTHONUNBUFFERED`` set -- which is what preserves the chunk
+timing -- captures exactly those bytes. The live terminal display is not recorded.
 """
 
 from __future__ import annotations

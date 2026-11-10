@@ -1888,7 +1888,7 @@ def _interrupting_run(*, announce: bool):
         if announce:
             assert callable(on_event)
             on_event("collected", (["t.py::a", "t.py::b"], str(Path.cwd())))
-            on_event("results", [(0, "passed", None)])
+            on_event("results", [(0, "passed", None, 0.0)])
         raise KeyboardInterrupt
 
     return fake_run

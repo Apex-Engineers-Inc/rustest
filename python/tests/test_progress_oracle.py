@@ -91,7 +91,8 @@ def _pytest(tree: Path, columns: int, args: list[str], report: Path | None = Non
 #: Where the progress ends, for either runner: a ruled section (``=== FAILURES ===``,
 #: ``!!! stopping ... !!!``) or, under ``-q``, pytest's bare stats line.
 _END = re.compile(
-    r"^(?:[=!]|\d+ (?:failed|passed|skipped|xfailed|xpassed|errors?)\b.* in \d)", re.MULTILINE
+    r"^(?:\x1b\[[\d;]*m)*(?:[=!]|\d+ (?:failed|passed|skipped|xfailed|xpassed|errors?)\b.* in \d)",
+    re.MULTILINE,
 )
 
 
@@ -111,10 +112,15 @@ def _events(
     ids: list[str], statuses: dict[str, str], rootdir: Path, shuffle_seed: int | None
 ) -> list[tuple[str, object]]:
     results = [
-        (ids.index(node), status, _REASONS.get(node) if status in _REASON_STATUSES else None)
+        (
+            ids.index(node),
+            status,
+            _REASONS.get(node) if status in _REASON_STATUSES else None,
+            0.0,
+        )
         for node, status in statuses.items()
     ]
-    bursts: list[list[tuple[int, str, str | None]]]
+    bursts: list[list[tuple[int, str, str | None, float]]]
     if shuffle_seed is None:
         bursts = [[r] for r in results]
     else:
@@ -252,3 +258,25 @@ def test_a_collection_error_leaves_both_runners_with_no_progress_lines(
     # progress line, and rustest writes nothing for a session that ran no tests.
     assert expected.strip() == got == ""
     assert code == 2
+
+
+@pytest.mark.parametrize("columns", [80, 50])
+@pytest.mark.parametrize("mode", ["default", "v", "q"])
+def test_coloured_renderer_matches_pytest_color_yes(
+    tree: Path, ids: list[str], tmp_path: Path, mode: str, columns: int
+):
+    """The escape bytes too: per-letter colours, and the padding plus percent as one run in
+    the main colour (which pytest computes once and refreshes at the last test)."""
+    flags, verbosity, capture, _ = _MODES[mode]
+    report = tmp_path / "report.json"
+    proc = _pytest(tree, columns, ["--color=yes", "--tb=no", "--no-summary", *flags], report)
+    statuses: dict[str, str] = json.loads(report.read_text(encoding="utf-8"))["statuses"]
+    expected = _progress_section(proc.stdout)
+    assert "\x1b[32m" in expected
+
+    out = io.StringIO()
+    renderer = Progress(out, verbosity=verbosity, width=columns, cwd=str(tree), color=True)
+    for event in _events(ids, statuses, tree, None):
+        renderer(*event)
+    renderer("done", False)
+    assert out.getvalue() == expected

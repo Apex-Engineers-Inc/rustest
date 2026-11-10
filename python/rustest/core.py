@@ -7,13 +7,16 @@ import io
 import json
 import os
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING
 
 from . import rust
 
 if TYPE_CHECKING:
     from typing import Any, NotRequired, TypedDict
+
+    from ._progress import Progress
+    from ._rich_progress import RichProgress
 
     class _ManifestTest(TypedDict):
         """The one manifest field the collect-only surface reads. See `src/engine/manifest.rs`."""
@@ -131,6 +134,12 @@ def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
     table because ``_ReportSummary`` is a ``TypedDict``, whose keys must be literals for the
     type checker to see them at all.
     """
+    parts = [f"{count} {label}" for count, label in _summary_counts(summary, collection_errors)]
+    return ", ".join(parts) if parts else "no tests ran"
+
+
+def _summary_counts(summary: _ReportSummary, collection_errors: int) -> list[tuple[int, str]]:
+    """The non-zero ``(count, label)`` buckets of :func:`_run_summary`, in its order."""
     errors = summary["error"] + collection_errors
     counts = (
         (summary["failed"], "failed"),
@@ -141,8 +150,7 @@ def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
         (summary["xpassed"], "xpassed"),
         (errors, "error" if errors == 1 else "errors"),
     )
-    parts = [f"{count} {label}" for count, label in counts if count]
-    return ", ".join(parts) if parts else "no tests ran"
+    return [(count, label) for count, label in counts if count]
 
 
 @contextlib.contextmanager
@@ -692,6 +700,28 @@ class _CoverageRun:
         self.cleanup()
 
 
+class _DisplayError(Exception):
+    """A progress display raised: a bug in rustest, never the user's usage error."""
+
+
+def _guarded(display: Callable[[str, object], None]) -> Callable[[str, object], None]:
+    """*display* as the engine's callback, with its exceptions kept apart from ``rust.run``'s.
+
+    ``rust.run`` re-raises whatever the callback raised, and ``core.run`` maps ``ValueError``
+    to a usage error and ``RuntimeError`` to an internal one. A display bug must not borrow
+    either meaning, so it arrives as :class:`_DisplayError` and surfaces as a traceback.
+    ``KeyboardInterrupt`` is not an ``Exception`` and passes through untouched.
+    """
+
+    def on_event(kind: str, payload: object) -> None:
+        try:
+            display(kind, payload)
+        except Exception as exc:
+            raise _DisplayError(f"the progress display failed on {kind!r}") from exc
+
+    return on_event
+
+
 def _posix(path: str) -> str:
     """Absolute path with forward slashes -- the spelling every worker wire field uses."""
     return os.path.abspath(path).replace("\\", "/")
@@ -726,6 +756,8 @@ def run(
     cov_report: Sequence[str] | None = None,
     llm: bool = False,
     llm_full: bool = False,
+    color: str = "auto",
+    ascii: bool = False,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
@@ -746,9 +778,13 @@ def run(
     * ``verbosity > 0`` (``-v``) -- progress is one line per test in pytest's verbose wording
       (``PASSED``/``FAILED``/``SKIPPED (reason)``/``XFAIL``/``XPASS``/``ERROR``).
 
-    Progress itself (one line per file by default, letters only under ``-q``) is written live
-    to stdout by :class:`rustest._progress.Progress` while the run is in flight, in pytest's
-    serial layout and manifest order whatever the pool size.
+    Progress is written live to stdout while the run is in flight, by one of two displays.
+    On a terminal, :class:`rustest._rich_progress.RichProgress`: a ``rich`` live region with a
+    row per file in flight, each finished file as a ``✓``/``✗`` line, failures with source
+    context, and a glyph summary (``-v`` lists every test, ``-q`` keeps only the overall bar).
+    Anywhere else (a pipe, a file, CI), :class:`rustest._progress.Progress`: pytest's serial
+    progress lines, byte for byte, in manifest order whatever the pool size -- the format
+    tools parse. ``--llm`` uses neither.
 
     ``llm`` replaces that ladder wholesale with JSONL (:mod:`rustest._llm`); see the argument
     notes below and ``docs/guide/llm-output.md``.
@@ -788,6 +824,10 @@ def run(
             captures, ``-v`` adds skip lines.  Everything that has no JSONL representation --
             the workers' own stderr, a ``pytest.exit()`` banner, a coverage table -- moves to
             **stderr**, so stdout is JSONL and nothing else.
+        color: ``--color`` -- ``auto``, ``yes``/``always`` or ``no``/``never``; pytest's rule
+            (then ``PY_COLORS``, ``NO_COLOR``, ``FORCE_COLOR``, a terminal) when ``auto``.
+        ascii: ``--ascii`` -- draw the terminal display with ASCII only. Also chosen when
+            stdout's encoding cannot carry the display's glyphs.
         llm_full: ``--llm-full`` -- with *llm*, keep captures whole instead of truncating
             them to the last :data:`rustest._llm.CAPTURE_MAX_LINES` lines.  Inert without it,
             which is why the CLI refuses the combination rather than accepting it silently.
@@ -805,40 +845,62 @@ def run(
         print(f"ERROR: {exc}", file=sys.stderr)
         return _EXIT_USAGE_ERROR
 
-    # Live progress on stdout, in pytest's serial layout, fed by the engine as results
-    # arrive.  Imported here and nowhere else: `import rustest`, `--collect-only`, `--llm`
-    # (whose stdout is JSONL and nothing else) and the workers never load it.  Its closing
-    # newlines are written by the engine's `done` event, before the failure sections below.
-    on_event = None
-    if not llm:
-        from ._progress import Progress
-
-        on_event = Progress(
-            sys.stdout,
-            verbosity=verbosity,
-            width=_terminal_width(),
-            cwd=os.getcwd(),
-            capture=capture,
-        )
-
     with _escaping_unencodable_output(), coverage:
+        # Live progress on stdout, fed by the engine as results arrive: the `rich` display on
+        # a terminal, pytest's lines anywhere else.  Built inside the escaping scope, so the
+        # streams `rich` captures are the reconfigured ones.  Imported here and nowhere else:
+        # `import rustest`, `--collect-only`, `--llm` (whose stdout is JSONL and nothing else)
+        # and the workers never load either, and a piped run never loads `rich`.  Both finish
+        # their output on the engine's `done` event, before the failure sections below.
+        display: Progress | RichProgress | None = None
+        rich: RichProgress | None = None
+        if not llm:
+            from ._progress import is_terminal
+
+            if is_terminal(sys.stdout):
+                from ._rich_progress import RichProgress, make_console, wants_ascii
+
+                display = rich = RichProgress(
+                    make_console(sys.stdout, color),
+                    make_console(sys.stderr, color),
+                    verbosity=verbosity,
+                    ascii=wants_ascii(sys.stdout, ascii),
+                    cwd=os.getcwd(),
+                )
+            else:
+                from ._progress import Progress, use_color
+
+                display = Progress(
+                    sys.stdout,
+                    verbosity=verbosity,
+                    width=_terminal_width(),
+                    cwd=os.getcwd(),
+                    capture=capture,
+                    color=use_color(sys.stdout, color),
+                )
         try:
-            payload = rust.run(
-                os.getcwd(),
-                list(paths),
-                sys.executable,
-                _pool_size(workers),
-                keyword,
-                mark_expr,
-                fail_fast,
-                max_fail,
-                last_failed_mode,
-                not capture,
-                codeblocks,
-                os.environ.get(_ASSERT_REWRITE_ENV, "auto"),
-                coverage.wire,
-                on_event=on_event,
-            )
+            try:
+                payload = rust.run(
+                    os.getcwd(),
+                    list(paths),
+                    sys.executable,
+                    _pool_size(workers),
+                    keyword,
+                    mark_expr,
+                    fail_fast,
+                    max_fail,
+                    last_failed_mode,
+                    not capture,
+                    codeblocks,
+                    os.environ.get(_ASSERT_REWRITE_ENV, "auto"),
+                    coverage.wire,
+                    on_event=None if display is None else _guarded(display),
+                )
+            finally:
+                # Before anything below prints, on every way out -- a live region left
+                # running would keep the cursor hidden after the process exits.
+                if display is not None:
+                    display.close()
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return _EXIT_USAGE_ERROR
@@ -849,10 +911,7 @@ def run(
             # Ctrl-C reaches here either out of the progress callback (the engine stops
             # dispatching, lets the workers finish their batch, and re-raises) or while
             # blocked in `rust.run` with no callback (`--llm`).  No report exists, so there is
-            # nothing to render: end the half-written progress line, say so on stderr, and
-            # exit with pytest's INTERRUPTED code.
-            if on_event is not None:
-                on_event.close()
+            # nothing to render: say so on stderr and exit with pytest's INTERRUPTED code.
             _flush_stdout()
             print("Interrupted: KeyboardInterrupt", file=sys.stderr)
             return _EXIT_INTERRUPTED
@@ -892,16 +951,22 @@ def run(
             # named no node and carried no traceback -- undiagnosable without re-running at
             # a different verbosity, and a divergence from the oracle on the one rung a CI
             # pipeline is most likely to use.
-            _print_failure_sections(tests)
+            if rich is not None:
+                rich.failures(tests)
+            else:
+                _print_failure_sections(tests)
 
             # Last stdout write of the human renderer; the collection errors immediately
             # below, and every diagnostic after them, are stderr's.
             _flush_stdout()
 
-            for error in report["collection_errors"]:
-                print(f"ERROR collecting {error['path']}", file=sys.stderr)
-                for line in error["message"].splitlines():
-                    print(f"  {line}", file=sys.stderr)
+            if rich is not None:
+                rich.collection_errors(report["collection_errors"])
+            else:
+                for error in report["collection_errors"]:
+                    print(f"ERROR collecting {error['path']}", file=sys.stderr)
+                    for line in error["message"].splitlines():
+                        print(f"  {line}", file=sys.stderr)
 
         # Never graded, never discarded: boundary teardown output lands here on runs that
         # are entirely green -- and, under ``-s``, so does every test's own output.  It stays
@@ -969,8 +1034,20 @@ def run(
             #
             # What the choice costs is that the ordering has to be maintained by hand, which
             # is the `_flush_stdout()` calls above.
+            if rich is not None:
+                counts = _summary_counts(report["summary"], len(report["collection_errors"]))
+                rich.summary(counts, report["summary"]["duration"])
+                return report["exit_code"]
             summary_line = _run_summary(report["summary"], len(report["collection_errors"]))
             tail = _format_duration(report["summary"]["duration"])
-            print(f"{summary_line} in {tail}", file=sys.stderr)
+            text = f"{summary_line} in {tail}"
+            from ._progress import main_color, paint, use_color
+
+            if use_color(sys.stderr, color):
+                seen = {name for name, count in report["summary"].items() if count}
+                if report["collection_errors"]:
+                    seen.add("error")
+                text = paint(text, main_color(seen, last=True))
+            print(text, file=sys.stderr)
 
     return report["exit_code"]

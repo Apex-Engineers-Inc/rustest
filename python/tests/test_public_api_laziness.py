@@ -132,7 +132,7 @@ def test_approx_is_the_class_even_after_its_module_is_imported() -> None:
 @pytest.mark.parametrize(
     ("entry", "forbidden"),
     [
-        # `rich` is ~230 ms and renders nothing on any v2 path.
+        # `rich` is ~230 ms and only the terminal display uses it.
         ("import rustest", "rich"),
         ("import rustest.cli", "rich"),
         # The worker pays its import graph N times per run; `asyncio` is ~240 ms of it and is
@@ -143,6 +143,12 @@ def test_approx_is_the_class_even_after_its_module_is_imported() -> None:
         ("import rustest", "rustest._progress"),
         ("import rustest.cli", "rustest._progress"),
         ("import rustest._worker", "rustest._progress"),
+        ("import rustest", "rustest._rich_progress"),
+        ("import rustest.cli", "rustest._rich_progress"),
+        ("import rustest._worker", "rustest._rich_progress"),
+        ("import rustest", "ctypes"),
+        ("import rustest.cli", "ctypes"),
+        ("import rustest", "shutil"),
     ],
 )
 def test_the_hot_paths_do_not_import_the_expensive_modules(entry: str, forbidden: str) -> None:
@@ -152,6 +158,20 @@ def test_the_hot_paths_do_not_import_the_expensive_modules(entry: str, forbidden
         f"print(any(m == {forbidden!r} or m.startswith({forbidden!r} + '.') for m in sys.modules))"
     )
     assert out == "False", f"{entry!r} pulled in {forbidden!r}"
+
+
+def test_a_piped_run_never_imports_rich(tmp_path: Path) -> None:
+    """``rich`` is the terminal display's alone: a run whose stdout is a pipe -- CI, a log
+    file, anything parsing pytest's lines -- pays nothing for it."""
+    _ = (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    _ = (tmp_path / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    out = _in_fresh_interpreter(
+        "import sys\n"
+        "from rustest import core\n"
+        f"_ = core.run(paths=[{str(tmp_path)!r}], workers=1)\n"
+        "print('rich-imported', 'rich' in sys.modules)"
+    )
+    assert out.splitlines()[-1] == "rich-imported False"
 
 
 def test_importing_the_package_does_not_pull_in_the_cli_or_the_engine() -> None:

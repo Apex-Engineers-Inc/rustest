@@ -91,7 +91,7 @@ support ([see why](pytest-plugins.md)).
 | Coverage | ✅ (`pytest-cov`) | ✅ | `--cov` with `term` and `xml` reports, line coverage only |
 | JUnit XML output | ✅ | ❌ | Not implemented |
 | HTML reports | ✅ (`pytest-html`) | ❌ | Not implemented |
-| Colored output | ✅ | ❌ | `--color` is accepted for compatibility and has no effect |
+| Colored output | ✅ | ✅ | `--color` with pytest's precedence: a live display in a terminal, pytest's coloured progress lines when piped |
 | **Advanced Features** |
 | Plugins | ✅ | ❌ | Not supported by design ([see why](pytest-plugins.md)) |
 | Hooks | ✅ | ❌ | Not supported by design |

@@ -34,7 +34,7 @@ def render(
     p = Progress(out, verbosity=verbosity, width=width, cwd=CWD, capture=capture)
     p("collected", (ids, ROOT))
     for burst in bursts if bursts is not None else [[r] for r in results]:
-        p("results", burst)
+        p("results", [(*result, 0.0) for result in burst])
     p("done", stopped)
     return out.getvalue()
 
@@ -151,7 +151,7 @@ def test_paths_are_relative_to_the_cwd_with_the_os_separator():
     out = io.StringIO()
     p = Progress(out, verbosity=0, width=80, cwd=os.path.join(ROOT, "pkg"))
     p("collected", (["pkg/sub/test_a.py::t", "other/test_b.py::t"], ROOT))
-    p("results", [(0, "passed", None), (1, "passed", None)])
+    p("results", [(0, "passed", None, 0.0), (1, "passed", None, 0.0)])
     p("done", False)
     lines = out.getvalue().split("\n")
     assert lines[0].startswith(os.path.join("sub", "test_a.py") + " .")
@@ -162,7 +162,7 @@ def test_verbose_ids_are_cwd_relative_only_when_cwd_is_not_the_rootdir():
     out = io.StringIO()
     p = Progress(out, verbosity=1, width=80, cwd=os.path.join(ROOT, "pkg"))
     p("collected", (["pkg/test_a.py::T::t[1]"], ROOT))
-    p("results", [(0, "passed", None)])
+    p("results", [(0, "passed", None, 0.0)])
     assert out.getvalue().startswith("test_a.py::T::t[1] PASSED")
 
 
@@ -202,9 +202,9 @@ def test_a_later_slot_waits_for_the_earlier_one():
     out = io.StringIO()
     p = Progress(out, verbosity=0, width=40, cwd=CWD)
     p("collected", (["a.py::0", "a.py::1"], ROOT))
-    p("results", [(1, "passed", None)])
+    p("results", [(1, "passed", None, 0.0)])
     assert out.getvalue() == ""
-    p("results", [(0, "passed", None)])
+    p("results", [(0, "passed", None, 0.0)])
     assert out.getvalue() == "a.py .."
 
 

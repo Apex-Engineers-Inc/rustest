@@ -45,14 +45,13 @@ options:
                         Number of worker processes to use (default: 4, capped
                         by CPU count).
   -s, --no-capture      Do not capture stdout/stderr during test execution.
-  -v, --verbose         Print one PASSED/FAILED line per test.
-  -q, --quiet           Drop the per-test progress lines. Failures are still
-                        reported.
-  --ascii               Accepted and ignored: the default engine's output is
-                        already plain ASCII.
+  -v, --verbose         List every test with its outcome (one PASSED/FAILED
+                        line per test when piped).
+  -q, --quiet           Show only the overall progress bar (bare letters when
+                        piped). Failures are still reported.
+  --ascii               Draw the terminal display with ASCII characters only.
   --color {auto,always,never,yes,no}
-                        Accepted and ignored: the default engine's output is
-                        not colored.
+                        Colorize the output (default: auto).
   -o, --override-ini OPTION=VALUE
                         Override an ini option, e.g. -o addopts=. Supported
                         key: addopts. Registered here for --help and usage
@@ -418,79 +417,51 @@ These options work exactly like pytest's `--lf`, `--ff`, and `-x` flags, so your
 
 ## Output control
 
-### Collection feedback
+Rustest has two displays, and picks one by where its output goes.
 
-There isn't any, and that is deliberate. Rustest prints no spinner and no collection
-banner, because collection is fast enough (a warm collect over 5,000 tests is roughly
-230 ms) that a progress indicator would flash past. The first thing you see is the result.
+### In a terminal
 
-If nothing is found, you get pytest's line and pytest's exit code:
+When stdout is a terminal, the run is drawn live:
 
-```
-no tests ran in 0.02s
-```
+- a spinner while tests are collected, then `✓ Collected N tests from M files` with the time
+  it took;
+- an overall progress bar, plus one row per file that is still unfinished (a spinner, the
+  path, a bar, `done/total` and elapsed time), which is usually one per worker;
+- each file, the moment its last test finishes, becomes a permanent `✓ path` (green) or
+  `✗ path` (red) line above the live area, with the summed time of its tests;
+- after the run, each failure as a header (`test_name (path)`), a rule, `✗ Type: message`
+  with any assertion explanation, the source lines around the failing line with `→`
+  marking it, and `Expected:` / `Received:` for a failed `==` assertion;
+- a summary line led by `✓ passed`, `✗ failed` and `⊘ skipped`, followed by every other
+  bucket pytest counts (deselected, xfailed, xpassed, errors) and the duration.
 
-```bash
-echo $?    # 5, pytest's EXIT_NOTESTSCOLLECTED
-```
+`-v` lists every test under its file line, with its outcome and any skip or xfail reason.
+`-q` keeps only the overall bar, the failures and the summary.
 
-::: {.callout-note title="Piping changes the width, and nothing else"}
-Rustest never varies its *content* by whether stdout is a terminal. There are no
-colour codes to strip out of a CI log, no progress frames to filter, and no
-`--no-progress` flag to remember. The one thing that does vary is the line width:
-separator rules and the `-v` percent column are laid out against the terminal's
-column count, and a redirected stdout has none, so they fall back to 80 columns.
-Set `COLUMNS` if you want a redirected run to match a particular width.
-:::
+### When stdout is not a terminal
 
-### Verbose mode
+Piped, redirected, or in a CI job without a terminal, rustest writes pytest's own progress
+lines instead (a CI runner that allocates a pseudo-terminal gets the live display):
+one line per file by default (`test_a.py ..F.s  [ 34%]`), one `PASSED`/`FAILED` line per
+test under `-v`, and bare letters under `-q`, followed by pytest's `FAILURES` section and
+summary. Results print in file order whatever `-n` is, and the progress section is
+byte-identical to serial pytest's, so anything that parses pytest output keeps working.
+Separator rules and the `-v` percent column are laid out against the terminal's column
+count; a redirected stdout has none, so they fall back to 80 columns unless `COLUMNS` is set.
 
-Rustest has pytest's verbosity ladder, narrowed to three rungs:
+If nothing is found, either display reports pytest's `no tests ran` and the run exits 5
+(pytest's `EXIT_NOTESTSCOLLECTED`).
 
-```bash
-rustest -q          # summary line only
-rustest             # + ERRORS/FAILURES blocks + short test summary info
-rustest -v          # + one line per test
-rustest --verbose   # same as -v
-```
+### Colour and characters
 
-**Quiet (`-q`):**
-```
-1 failed, 3 passed, 1 skipped in 0.44s
-```
+`--color` takes pytest's `yes`/`no`/`auto` as well as rustest's `always`/`never`. `yes`
+and `no` override everything; `auto` follows pytest's rule: `PY_COLORS`, then `NO_COLOR`,
+then `FORCE_COLOR`, then whether the stream is a terminal. With colour off, a terminal
+still gets the live display, uncoloured.
 
-**Default:**
-```
-================================== FAILURES ===================================
-_____________________________ test_broken_feature _____________________________
-Traceback (most recent call last):
-  File "/path/to/test_example.py", line 12, in test_broken_feature
-    assert result == 5
-AssertionError: assert 4 == 5
-=========================== short test summary info ===========================
-FAILED test_example.py::test_broken_feature
-
-1 failed, 3 passed, 1 skipped in 0.44s
-```
-
-**Verbose (`-v`):**
-```
-test_example.py::test_basic_assertion PASSED                            [ 20%]
-test_example.py::test_string_operations PASSED                          [ 40%]
-test_example.py::test_list_operations PASSED                            [ 60%]
-test_example.py::test_future_feature SKIPPED (not implemented yet)      [ 80%]
-test_example.py::test_broken_feature FAILED                             [100%]
-================================== FAILURES ===================================
-... as above ...
-
-1 failed, 3 passed, 1 skipped in 0.40s
-```
-
-::: {.callout-tip title="Outcome words"}
-`PASSED`, `FAILED`, `SKIPPED (reason)`, `XFAIL`, `XPASS`, `ERROR`. These are pytest's
-wording, so anything that greps your CI logs keeps working. Skip *reasons* appear only
-at `-v`.
-:::
+`--ascii` draws the terminal display with ASCII only: `[OK]`, `PASS`/`FAIL`/`SKIP`,
+`#`/`-` bars and `-` rules. It is chosen automatically when the terminal's encoding cannot
+show the glyphs. Piped output is pytest's and is unaffected.
 
 ### Capture mode
 
@@ -594,12 +565,12 @@ rustest [OPTIONS] [PATHS...]
 | `-m MARK_EXPR, --marks MARK_EXPR` | Run tests matching mark expression (e.g., "slow", "not slow") |
 | `-n WORKERS, --workers WORKERS` | Number of worker processes (default 4, capped by CPU count) |
 | `-s, --no-capture` | Don't capture stdout/stderr during test execution. Output reaches **stderr**, because a worker's stdout is the orchestrator protocol channel |
-| `-v, --verbose` | One `PASSED`/`FAILED` line per test, with pytest's wording and percent column |
-| `-q, --quiet` | Drop the per-test progress lines. The failure report is still printed, as it is under pytest's own `-q`. `-v` and `-q` cancel out, as they do under pytest |
+| `-v, --verbose` | List every test with its outcome: under its file line in a terminal, as pytest's `PASSED`/`FAILED` lines with the percent column when piped |
+| `-q, --quiet` | Show only the overall progress bar in a terminal, bare letters when piped. The failure report is still printed, as it is under pytest's own `-q`. `-v` and `-q` cancel out, as they do under pytest |
 | `-o, --override-ini OPTION=VALUE` | Override an ini option, e.g. `-o addopts=`. Supported key: `addopts` |
 | `--maxfail NUM` | Exit after the first `NUM` failures or errors (`0` means no limit) |
-| `--ascii` | Accepted and ignored: the output is already plain ASCII |
-| `--color {auto,always,never,yes,no}` | Accepted and ignored: the output is not colored |
+| `--ascii` | Draw the terminal display with ASCII only (`[OK]`, `PASS`/`FAIL`/`SKIP`, `#`/`-` bars). Chosen automatically when the terminal cannot encode the glyphs; piped output is unaffected |
+| `--color {auto,always,never,yes,no}` | Colorize the output. `yes`/`always` and `no`/`never` override everything; `auto` follows pytest's rule (`PY_COLORS`, `NO_COLOR`, `FORCE_COLOR`, then a terminal). Piped output is coloured as pytest colours it; failure sections there stay plain |
 | `--codeblocks` | Collect and run python code blocks in markdown files named as arguments. Off by default; see [Markdown Testing](markdown-testing.md) |
 | `--no-codeblocks` | Do not collect code blocks, overriding any config setting that turned them on |
 | `--lf, --last-failed` | Rerun only tests that failed in the last run |

@@ -48,11 +48,12 @@ When you ran `rustest`, it:
 2. **Found your test function** (`test_addition`)
 3. **Ran the function**
 4. **Checked the assertion**, and `result == 4` was true, so the test passed
-5. **Reported the results**, in one line, because nothing went wrong
+5. **Reported the results**: how many tests it found, a `✓` line for the file, then the
+   count and how long it took
 
-A green run is deliberately boring: no ticks, no progress bar, just the count and how long
-it took. Everything rustest has to say about a run appears *above* that line, so when the
-summary is the only output, there was nothing to say.
+A green run is deliberately short. Anything that went wrong appears *above* the summary
+line, with the failing line of your test marked. (Piped into a file or a CI log, the same
+run prints pytest's progress line, `test_math.py .`, instead.)
 
 ## Step 4: see a failing test
 

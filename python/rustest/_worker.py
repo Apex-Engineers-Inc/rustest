@@ -4943,6 +4943,11 @@ ABORT_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (KeyboardInterrupt, _
 #: ``compat/pytest.py::exit``).  A payload would need a wire op.
 SESSION_EXIT_EXIT: Final = 4
 
+#: Inside a batch, a result is flushed once this long has passed since the last flush, so a
+#: slow test reaches the orchestrator's live display as it finishes while a batch of fast
+#: ones still costs one write.
+LIVE_FLUSH_SECONDS: Final = 0.1
+
 
 def _assert_outcome_aliases_are_identities() -> None:
     """Fail loudly at import if ``_pytest.outcomes`` ever re-forks the outcome classes.
@@ -6554,7 +6559,9 @@ def execute_batch(
     and so a batch of a thousand parametrized cases does not build a thousand-line string in
     memory before anything is written. The saving that motivates the op comes from the
     **request** side (one write and one blocking read per batch instead of per test) and from
-    flushing once at the end, not from withholding the results.
+    flushing rarely: ``emit`` here is ``emit_buffered``, which flushes only when
+    :data:`LIVE_FLUSH_SECONDS` have passed, so fast tests share one write and a slow one is
+    seen as it finishes.
 
     ``stop_on_failure`` is ``-x`` reaching inside the batch. Checked *after* each result is
     emitted, because pytest reports the failing test and then stops: the failure is data the
@@ -6709,28 +6716,37 @@ def main() -> int:
     protocol_out = _detach_protocol_stream(sys.stdout)
     sys.stdout = sys.stderr
 
+    flushed_at = time.monotonic()
+
+    def flush() -> None:
+        nonlocal flushed_at
+        protocol_out.flush()
+        flushed_at = time.monotonic()
+
     def emit(response: Mapping[str, object]) -> None:
         """Write one response line and flush, so the orchestrator sees it immediately."""
         _ = protocol_out.write(encode_response(response) + "\n")
-        protocol_out.flush()
+        flush()
 
     def emit_buffered(response: Mapping[str, object]) -> None:
-        """Write one response line **without** flushing.
+        """Write one response line, flushing only if :data:`LIVE_FLUSH_SECONDS` have passed.
 
-        Used inside a batch only, and it is where the batch op's saving actually lands: N
-        flushes become one, so a 10-test file costs one pipe write-through instead of ten.
-        The line still reaches the pipe when the wrapper's buffer fills, and
-        :func:`_protocol_loop` flushes unconditionally after ``batch_done`` — so a batch
-        larger than the buffer streams as it goes and a small one arrives in a single write.
+        Used inside a batch only, and it is where the batch op's saving actually lands: a
+        file of fast tests costs one pipe write-through instead of one per test. A test that
+        took longer than the interval is flushed as it finishes, so the live display moves
+        with the run rather than a file at a time. The line also reaches the pipe when the
+        wrapper's buffer fills, and :func:`_protocol_loop` flushes after ``batch_done``.
 
         There is no deadlock in the "worker fills the pipe" case: the orchestrator is
         already blocked reading this batch's results and drains as they arrive.
         """
         _ = protocol_out.write(encode_response(response) + "\n")
+        if time.monotonic() - flushed_at >= LIVE_FLUSH_SECONDS:
+            flush()
 
     try:
         try:
-            return _protocol_loop(emit, emit_buffered, protocol_out.flush)
+            return _protocol_loop(emit, emit_buffered, flush)
         except _Exit as exc:
             # `pytest.exit()`.  The banner is pytest's own wording
             # (`_pytest/main.py::wrap_session`:
@@ -6778,8 +6794,8 @@ def _protocol_loop(
 
     The three writers are separate arguments rather than one object because they are used at
     different granularities and confusing them is silent: ``emit`` flushes (every op outside
-    a batch), ``emit_buffered`` does not (results inside a batch), and ``flush`` closes a
-    batch.  A batch that used ``emit`` would work and buy nothing; one that never called
+    a batch), ``emit_buffered`` flushes only once :data:`LIVE_FLUSH_SECONDS` have passed
+    (results inside a batch), and ``flush`` closes a batch.  A batch that used ``emit`` would work and buy nothing; one that never called
     ``flush`` would hang."""
     while True:
         line = sys.stdin.readline()

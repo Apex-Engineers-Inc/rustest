@@ -300,35 +300,29 @@ def build_parser() -> _Parser:
         "-v",
         "--verbose",
         action="store_true",
-        help="Print one PASSED/FAILED line per test.",
+        help="List every test with its outcome (one PASSED/FAILED line per test when piped).",
     )
     _ = parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
-        help="Drop the per-test progress lines. Failures are still reported.",
+        help=(
+            "Show only the overall progress bar (bare letters when piped). Failures are still"
+            " reported."
+        ),
     )
-    # `--ascii` and `--color` are **accepted and inert**, and that is deliberate rather than
-    # lazy. Both were v1 renderer options; the engine's output is not coloured and uses no box-drawing
-    # characters, so neither can change what a run does. They stay on the parser because they
-    # are exactly the kind of flag that lives in a project's `addopts` or a Makefile forever
-    # (`--color=never` in CI is near-universal), and erroring on a *cosmetic* option would
-    # refuse a run rustest can do perfectly well. Anything that changes what RUNS is still
-    # exit 4 -- see `_Parser.error` and `REMOVED_FLAGS`.
     _ = parser.add_argument(
         "--ascii",
         action="store_true",
-        help="Accepted and ignored: the default engine's output is already plain ASCII.",
+        help="Draw the terminal display with ASCII characters only.",
     )
     _ = parser.add_argument(
         "--color",
         # pytest spells these `yes`/`no`/`auto` (`_pytest/terminal.py::pytest_addoption`);
-        # rustest shipped `always`/`never`/`auto`. Both spellings are accepted. Before Phase 4
-        # Task 1's review a repo with `addopts = --color=yes` -- humanize, today -- hit
-        # `invalid choice` and exited 4 on a flag rustest *has*.
+        # rustest shipped `always`/`never`/`auto`. Both spellings are accepted.
         choices=["auto", "always", "never", "yes", "no"],
         default="auto",
-        help="Accepted and ignored: the default engine's output is not colored.",
+        help="Colorize the output (default: auto).",
     )
     _ = parser.add_argument(
         "-o",
@@ -825,4 +819,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         cov_report=args.cov_report,
         llm=args.llm,
         llm_full=args.llm_full,
+        color=args.color,
+        ascii=args.ascii,
     )

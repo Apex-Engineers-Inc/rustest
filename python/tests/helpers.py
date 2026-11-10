@@ -220,6 +220,10 @@ def clean_env(*extra: str) -> dict[str, str]:
         "PYTEST_PLUGINS",
         "PYTEST_CURRENT_TEST",
         "RUSTEST_RUNNING",
+        # Colour changes the bytes the byte-exact output tests compare.
+        "PY_COLORS",
+        "NO_COLOR",
+        "FORCE_COLOR",
         *extra,
     ):
         _ = env.pop(leak, None)

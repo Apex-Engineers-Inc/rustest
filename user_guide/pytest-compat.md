@@ -221,11 +221,12 @@ that changes what runs must never be ignored quietly.
 | `--import-mode=...` | Import mode is not configurable. |
 | `--showlocals` / `-l`, `--full-trace` | Traceback detail is not configurable. |
 
-Two more are on the parser rather than in that table, and are equally inert: `--color`,
-which takes pytest's `yes`/`no` as well as rustest's `always`/`never` and changes nothing
-because the output is not coloured, and `--ascii`, because the output is already plain
-ASCII. Both stay accepted for the same reason as the list above: `--color=never` in CI is
-near-universal.
+`--color` takes pytest's `yes`/`no` as well as rustest's `always`/`never`, with pytest's
+precedence. In a terminal rustest draws its own live display rather than pytest's lines;
+piped, it writes pytest's progress section and colours it as pytest does, with the summary
+line coloured as a whole in the run's main colour (pytest colours each count separately) and
+failure sections plain. `--ascii` draws the terminal display with ASCII only. See
+[CLI usage](cli.md#output-control).
 
 The same stderr channel carries one more `NOTE:` line, for a conftest's `pytest_*` hooks, which
 are not run; see [The hook system](#not-supported) above.

@@ -418,7 +418,9 @@ pub fn py_run(
                         LiveEvent::Results(burst) => {
                             let burst: Vec<_> = burst
                                 .into_iter()
-                                .map(|(slot, status, reason)| (slot, status.as_str(), reason))
+                                .map(|(slot, status, reason, duration)| {
+                                    (slot, status.as_str(), reason, duration)
+                                })
                                 .collect();
                             callback.call1(py, ("results", burst))
                         }

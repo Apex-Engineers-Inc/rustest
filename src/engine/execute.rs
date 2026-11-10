@@ -456,10 +456,11 @@ impl From<SelectionError> for RunError {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// One finished test as the live stream carries it: `(report slot, status, reason)`.
+/// One finished test as the live stream carries it: `(report slot, status, reason, duration)`.
 /// `reason` is the outcome's raw `message` for skipped/xfailed/xpassed -- a reason, not a
-/// traceback -- and `None` for every other status.
-pub type LiveResult = (usize, TestStatus, Option<String>);
+/// traceback -- and `None` for every other status; `duration` is the report's own
+/// `duration` for that test, in seconds.
+pub type LiveResult = (usize, TestStatus, Option<String>, f64);
 
 /// What a run tells an [`Observer`] while it is still running.
 ///
@@ -1182,7 +1183,12 @@ fn worker_life(
                 )
                 .then(|| outcome.message.clone())
                 .flatten();
-                let _ = live.send((group[position].0, outcome.status, reason));
+                let _ = live.send((
+                    group[position].0,
+                    outcome.status,
+                    reason,
+                    outcome.duration_s,
+                ));
             }
         };
         let batch =
@@ -2917,7 +2923,7 @@ def test_bails():
                 _ => None,
             })
             .flatten()
-            .map(|(slot, status, _)| (*slot, *status))
+            .map(|(slot, status, _, _)| (*slot, *status))
             .collect()
     }
 
@@ -2988,7 +2994,7 @@ def test_bails():
             RunOptions::defaults(),
             move |event| {
                 if let LiveEvent::Results(burst) = event {
-                    for (slot, _, _) in burst {
+                    for (slot, _, _, _) in burst {
                         fs::write(dir.join(format!("seen-{slot}")), "").unwrap();
                     }
                 }

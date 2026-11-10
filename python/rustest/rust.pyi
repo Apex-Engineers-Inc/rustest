@@ -113,9 +113,11 @@ def run(
     progress, always on the calling thread with the GIL held, never re-entrantly:
     ``("collected", (ids, rootdir))`` once, after selection and before any result (``ids``
     in report order -- an index into it is a *slot*; ``rootdir`` absolute posix, as in the
-    report); ``("results", [(slot, status, reason), ...])`` zero or more times, each slot
-    that produces a result exactly once, in arrival order; ``("done", stopped)`` once, after
-    the last result -- ``stopped`` is true when some selected slot never produced one. No
+    report); ``("results", [(slot, status, reason, duration), ...])`` zero or more times,
+    each slot that produces a result exactly once, in arrival order (``reason`` is the raw
+    message of a skipped/xfailed/xpassed test, else ``None``; ``duration`` is the report's,
+    in seconds); ``("done", stopped)`` once, after the last result -- ``stopped`` is true
+    when some selected slot never produced one, or ``-x``/``--maxfail`` was reached. No
     event is sent when the run fails before selection is final. If the callback raises,
     no further work is dispatched, the workers shut down as under ``-x``, the callback is not
     called again, and ``run`` raises that exception instead of returning the report.

@@ -16,9 +16,8 @@ rustest tests/ --llm
 
 **stdout is JSONL and nothing else.** Every diagnostic that has no line type (the
 workers' own stderr, a `pytest.exit()` banner, a `--cov` table) goes to stderr, so
-`rustest --llm > results.jsonl` is a valid document with nothing to strip. `--ascii`
-and `--color` are accepted and inert, because rustest's output is already plain ASCII,
-so there is nothing to override.
+`rustest --llm > results.jsonl` is a valid document with nothing to strip. There is no live
+progress and no colour under `--llm`; `--color` and `--ascii` have nothing to change.
 
 `--llm` **never changes the exit code**. 0 clean, 1 failures, 2 collection errors,
 5 nothing collected, the same codes the human renderer returns for the same run.

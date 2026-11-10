@@ -68,7 +68,7 @@ Eight, in rough order of how likely they are to reach you.
    |---|---|
    | `capture_output=` | `capture=` |
    | `pytest_compat=` | gone; the shim is unconditional |
-   | `ascii=`, `no_color=` | gone; the output is plain and uncolored |
+   | `no_color=` | `color="never"` |
    | `verbose=` (bool) | `verbosity=` (`-1`/`0`/`1`) |
    | `enable_codeblocks=` | `codeblocks=` |
    | `pattern=` | `keyword=` |
@@ -206,6 +206,29 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
+- **Live progress, drawn for a terminal and written as pytest's lines everywhere else.**
+  Results show as tests finish rather than after the last one; a test that runs longer than
+  100 ms is reported as it finishes, not with the rest of its file.
+  - *In a terminal*, 0.18's `rich` display, now on the new engine: a spinner while
+    collecting, `✓ Collected N tests from M files`, an overall bar with a live row per file
+    in flight, a `✓`/`✗` line per finished file with its tests' time, each failure with the source around the
+    failing line (`→`) and `Expected`/`Received` for an `==` assertion, and a summary led by
+    `✓ passed, ✗ failed, ⊘ skipped` that also counts deselected, xfailed, xpassed and errors.
+    `-v` lists every test with its outcome and reason; `-q` keeps only the bar.
+  - *When stdout is not a terminal* (piped, redirected, most CI), pytest's own progress section: one line per file
+    (`test_a.py ..F.s  [ 34%]`), one line per test under `-v`, bare letters under `-q`, with
+    pytest's wrapping, percent column and `-x`/`-s` rules, in file order whatever `-n` is and
+    byte-identical to serial pytest's (`test_progress_oracle.py` diffs it against real pytest).
+- **`--color` and `--ascii` work.** `--color=yes|no|auto` follows pytest's rule (then
+  `PY_COLORS`, `NO_COLOR`, `FORCE_COLOR`, then whether the stream is a terminal) in both
+  displays; a terminal with colour turned off still gets the live display, uncoloured. When
+  colour is forced on output that is not a terminal, the progress letters, `-v` words and
+  percent column are coloured exactly as pytest colours them; the summary line is coloured as
+  a whole in the run's main colour, and failure sections stay plain. `--ascii` draws the terminal display with
+  ASCII only, and is chosen automatically when the terminal cannot encode the glyphs.
+- **Ctrl-C ends a run cleanly.** The live display is cleared (or the half-written progress
+  line ended), one `Interrupted: KeyboardInterrupt` line goes to stderr and the exit code is
+  2 (pytest's INTERRUPTED), instead of a Python traceback.
 - **A run says so when a conftest's `pytest_*` hooks are not run.** One `NOTE:` line on stderr names each hook found in a loaded `conftest.py` or `pytest_plugins` module (`tests/conftest.py::pytest_addoption`). Exit code, stdout, `--report-json` and `--llm` output are unchanged.
 - **Node-id arguments select what pytest selects.** `rustest test_m.py::TestC::test_q[a]` runs that one case; a function id selects every parametrized case and a class id its methods; several ids run in argument order; an id that matches nothing is a usage error (exit 4) with pytest's `ERROR: not found` message. Previously everything after `::` was ignored and the whole file ran.
 - **Path arguments behave as pytest's do when they repeat or overlap.** Tests run in argument

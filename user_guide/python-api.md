@@ -4,9 +4,10 @@
 same entry point the `rustest` command uses: the CLI parses arguments and calls this.
 
 ::: {.callout-warning title="This function changed shape in this release"}
-`run()` used to take arguments including `capture_output`, `pytest_compat`, `ascii`,
-`no_color` and `verbose`, and it returned a `rustest.reporting.RunReport` object. It is
-now **keyword-only**, takes a different set of arguments, and returns an **`int`**.
+`run()` used to take arguments including `capture_output`, `pytest_compat`, `no_color`
+and `verbose`, and it returned a `rustest.reporting.RunReport` object. It is now
+**keyword-only**, takes a different set of arguments (`ascii` is still one of them;
+`color="never"` replaces `no_color`), and returns an **`int`**.
 
 It is the engine entry point directly rather than a translating wrapper, and that is
 deliberate. A shim would have accepted `pytest_compat=False` and silently done the
@@ -75,6 +76,8 @@ All keyword-only.
 | `cov_report` | `Sequence[str] \| None` | `None` | `--cov-report` |
 | `llm` | `bool` | `False` | `--llm` |
 | `llm_full` | `bool` | `False` | `--llm-full` |
+| `color` | `"auto"` / `"yes"` / `"no"` (or `"always"` / `"never"`) | `"auto"` | `--color` |
+| `ascii` | `bool` | `False` | `--ascii` |
 
 `cov=None` and `cov=[""]` are not the same thing. `None` means no coverage at all, and is the
 only value that leaves the workers with no `sys.monitoring` tool registered. `[""]`, which is
@@ -187,9 +190,11 @@ Needs the `cov` extra (`pip install 'rustest[cov]'`). See [Coverage](coverage.md
 
 ### Quieting the run
 
-`verbosity=-1` is `-q`: the summary line and nothing else. The human output always goes to
+`verbosity=-1` is `-q`: only the overall progress bar on a terminal (bare progress letters
+when stdout is not one), then the failures and the summary. The human output always goes to
 the process's streams, and `run()` never returns it as a string, so if you need it captured,
-capture the streams or use `report_json`.
+capture the streams or use `report_json`. Captured streams are not terminals, so they get
+pytest's plain progress lines, not the live display.
 
 ## What is not here
 

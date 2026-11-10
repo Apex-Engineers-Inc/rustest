@@ -12,6 +12,7 @@ import os
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -119,22 +120,24 @@ def test_the_stream_is_bracketed_and_agrees_with_the_report(tmp_path: Path, work
     assert events[-1] == ("done", False)
     assert all(kind == "results" for kind, _ in events[1:-1])
 
-    delivered: list[tuple[int, str, str | None]] = [
+    delivered: list[tuple[int, str, str | None, float]] = [
         item
         for _, burst in events[1:-1]
         for item in burst  # pyright: ignore[reportGeneralTypeIssues]
     ]
-    slots = [slot for slot, _, _ in delivered]
+    slots = [slot for slot, _, _, _ in delivered]
     assert sorted(slots) == list(range(len(ids))), "every slot exactly once"
-    assert Counter((ids[slot], status) for slot, status, _ in delivered) == Counter(
+    assert Counter((ids[slot], status) for slot, status, _, _ in delivered) == Counter(
         (test["id"], test["status"]) for test in tests
     )
 
-    # The reason is the report's raw message for the three reason statuses, else nothing.
-    for slot, status, reason in delivered:
+    # The reason is the report's raw message for the three reason statuses, else nothing;
+    # the duration is the report's own.
+    for slot, status, reason, duration in delivered:
         expected = tests[slot].get("message") if status in _REASON_STATUSES else None
         assert reason == expected, (ids[slot], status)
-    reasons = {ids[slot]: reason for slot, _, reason in delivered}
+        assert duration == tests[slot]["duration"], ids[slot]
+    reasons = {ids[slot]: reason for slot, _, reason, _ in delivered}
     assert reasons["test_mixed.py::test_skip"] == "nope\nsecond line"
     assert reasons["test_mixed.py::test_fail"] is None
 
@@ -151,6 +154,35 @@ def test_fail_fast_ends_with_done_stopped(tmp_path: Path) -> None:
     assert events[-1] == ("done", True)
     assert len(delivered) < len(ids)
     assert len(delivered) == len(report["tests"])  # pyright: ignore[reportArgumentType]
+
+
+def test_a_slow_test_is_delivered_while_its_file_is_still_running(tmp_path: Path) -> None:
+    """The worker flushes a result once ``LIVE_FLUSH_SECONDS`` have passed since its last flush,
+    so a slow test reaches the callback before the rest of its file has run. ``test_b`` waits
+    for the callback to have seen ``test_a``; were results held until the end of the file, it
+    would wait in vain and fail."""
+    marker = tmp_path / "seen-test_a"
+    write(tmp_path / "pytest.ini", "[pytest]\n")
+    write(
+        tmp_path / "test_slow.py",
+        "import pathlib\nimport time\n\n\n"
+        "def test_a():\n    time.sleep(0.15)\n\n\n"
+        "def test_b():\n"
+        "    deadline = time.monotonic() + 20\n"
+        f"    while not pathlib.Path({str(marker)!r}).exists():\n"
+        "        assert time.monotonic() < deadline, 'test_a was not delivered while the file ran'\n"
+        "        time.sleep(0.01)\n",
+    )
+
+    def on_event(kind: str, payload: object) -> None:
+        if kind == "results" and any(
+            result[0] == 0 for result in cast("list[tuple[int, str, str | None, float]]", payload)
+        ):
+            marker.touch()
+
+    report = _run(tmp_path, 1, on_event)
+    tests: list[dict[str, str]] = report["tests"]  # pyright: ignore[reportAssignmentType]
+    assert [test["status"] for test in tests] == ["passed", "passed"], tests
 
 
 def test_fail_fast_on_the_last_test_still_ends_with_done_stopped(tmp_path: Path) -> None:

@@ -44,7 +44,7 @@ def update_cli_docs(help_text: str) -> None:
     pattern = r"(## Quick Reference\n\n```bash\nrustest --help\n```\n\n```\n)(.*?)(```\n\n## Basic Commands)"
 
     # Replace the help output
-    new_content = re.sub(pattern, f"\\1{help_text}\n\\3", content, flags=re.DOTALL)
+    new_content = re.sub(pattern, f"\\1{help_text}\n\\3", content, flags=re.DOTALL | re.IGNORECASE)
 
     if new_content == content:
         print("Warning: No changes made. Pattern might not match.")

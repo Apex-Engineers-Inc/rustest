@@ -22,17 +22,19 @@ Run your tests with the `rustest` command, then again with `-v`:
 
 {{< termshow file="first-run" autoplay="false" loop="false" >}}
 
-That first line is the whole of a green run. Rustest's output is pytest's, so a quiet run is
-quiet: there is no spinner, no progress bar and no per-test tick at the default verbosity,
-just the summary line. Anything that went wrong prints above it.
+The recording is the piped form, which is pytest's own progress section: one line per file
+at the default verbosity, one per test under `-v`, written as the tests finish. In a
+terminal the same run is drawn live instead, with a progress bar, a `✓`/`✗` line per file
+and each failure shown with the source around the failing line; see
+[CLI usage](cli.md#output-control). Anything that went wrong prints above the summary.
 
 The verbosity ladder has three rungs:
 
 | Rung | You get |
 |---|---|
-| `-q` | The summary line and nothing else |
-| *default* | Plus `ERRORS` / `FAILURES` blocks and a `short test summary info` list of node ids |
-| `-v` | Plus one line per test, in pytest's wording |
+| `-q` | Only the overall bar in a terminal (bare letters when piped), then the failures and the summary |
+| *default* | A `✓`/`✗` line per file in a terminal (pytest's one line per file when piped), then the failures and the summary |
+| `-v` | Every test listed with its outcome (pytest's `PASSED`/`FAILED` lines when piped) |
 
 ::: {.callout-note title="Which stream is which"}
 **stdout** carries the payload: the per-test lines and the failure blocks. **stderr**
