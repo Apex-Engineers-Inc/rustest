@@ -18,6 +18,7 @@ the reason to switch.
 | Test function detection (`test_*`) | ✅ | ✅ | |
 | Test class detection (`Test*`) | ✅ | ✅ | Including fixtures defined as class methods |
 | Pattern-based filtering | ✅ | ✅ | `-k`, matching pytest's keyword expression grammar against path segments, class names, the function name with its `[param]` suffix, and mark names |
+| `path::node::id` selection | ✅ | ❌ | The path is honoured and everything after `::` is ignored, so `rustest test_m.py::test_a` runs every test in the file rather than one. Select with `-k` instead — this one fails silently, see [Known gaps](pytest-compat.md#known-gaps-with-their-cost) |
 | `unittest.TestCase` | ✅ | ✅ | `setUp` / `tearDown` / `setUpClass` and unittest's own skip decorators |
 | Markdown code block testing | ✅ (`pytest-codeblocks`) | ✅ (off by default; `--codeblocks`) | Python fences in `.md` files, when the file is named as an argument rather than reached by a directory walk. Each block executes at module level, so a `def test_*` inside one collects and runs as its own node |
 | **Fixtures** |
@@ -43,7 +44,7 @@ the reason to switch.
 | **The `request` object** |
 | `request.param` | ✅ | ✅ | Parameter value for parametrized fixtures |
 | `request.node` | ✅ | ✅ | A façade over the execution plan: `name`, `nodeid`, `path`, `cls`, `module`, `function`, `instance`, `keywords`, `own_markers`, `iter_markers`, `get_closest_marker`, `add_marker`, `config`. No `session`, `parent` or `listchain` |
-| `request.config` | ✅ | ⚠️ | `rootpath`, `inipath`, `invocation_params.dir`, `cache`, `getini` for six carried values, and `getoption` that returns your default or raises |
+| `request.config` | ✅ | ⚠️ | `rootpath`, `rootdir`, `invocation_params.dir`, `cache`, `getini` for six carried values, and `getoption` that returns your default or raises. `inipath` exists but is always `None` — the worker is not told which config file was found |
 | `request.session` | ✅ | ❌ | There is no session object; the collection tree it belongs to does not exist |
 | **Test Utilities** |
 | `pytest.raises()` | ✅ | ✅ | Exception assertion context manager |
@@ -56,9 +57,9 @@ the reason to switch.
 | `pytest.importorskip()` | ✅ | ✅ | Skip if module unavailable |
 | `pytest.exit()` | ✅ | ⚠️ | Stops the session and exits 2; the `returncode=` argument is not honoured |
 | **Async Support** |
-| `@pytest.mark.asyncio` | ✅ (plugin) | ✅ | Built in, no plugin needed |
-| Async fixtures | ✅ (plugin) | ✅ | |
-| Event loop scopes | ✅ (plugin) | ✅ | `loop_scope` for function, module and session |
+| `@pytest.mark.asyncio` | ✅ (`pytest-asyncio`) | ✅ | Built in, no plugin needed |
+| Async fixtures | ✅ (`pytest-asyncio`) | ✅ | |
+| Event loop scopes | ✅ (`pytest-asyncio`) | ✅ | `loop_scope` for function, module and session |
 | **Parametrization** |
 | `@parametrize` decorator | ✅ | ✅ | Including stacking and `pytest.param(..., id=...)` |
 | Multiple parameter sets | ✅ | ✅ | |
@@ -85,7 +86,7 @@ the reason to switch.
 | Pass/fail/skip summary | ✅ | ✅ | |
 | Failure tracebacks | ✅ | ✅ | Full Python tracebacks |
 | Duration reporting | ✅ | ⚠️ | Per-test timing is in the JSON report; `--durations` is accepted and ignored |
-| JSON report | ❌ (plugin) | ✅ | `--report-json`, and `--llm` for JSONL |
+| JSON report | ✅ (`pytest-json-report`) | ✅ | `--report-json`, and `--llm` for JSONL |
 | Coverage | ✅ (`pytest-cov`) | ✅ | `--cov` with `term` and `xml` reports, line coverage only |
 | JUnit XML output | ✅ | ❌ | Not implemented |
 | HTML reports | ✅ (`pytest-html`) | ❌ | Not implemented |
@@ -103,24 +104,27 @@ the reason to switch.
 ## Philosophy
 
 Rustest implements the pytest surface that ordinary suites depend on and leaves out the
-extension machinery. That trade is what makes the speed possible: no plugin manager, no
-hook dispatch, and no collection tree to walk.
+extension machinery. That trade is what makes a faithful core tractable: a smaller surface
+is a surface that can be pinned case by case against real pytest. It also costs less at run
+time — no plugin manager, no hook dispatch, no collection tree to walk — but that is the
+consequence, not the goal.
 
 ### When to use rustest
 
-- Your suite spends a meaningful share of its wall clock in the framework rather than in
-  your own test bodies. That share is the ceiling on any speedup, it is measurable, and
-  [Performance](performance.md) shows you how to estimate yours before you migrate.
-- You want faster collection in particular. Collection is where the gap is widest.
 - You use standard pytest features: fixtures, parametrization, marks, `conftest.py`.
 - You want the Python examples in your markdown documentation to genuinely execute as
   tests, `def test_*` functions included, with no `pytest-codeblocks` to add. Off by
   default; see [Markdown Testing](markdown-testing.md).
+- Your suite spends a meaningful share of its wall clock in the framework rather than in
+  your own test bodies. That share is the ceiling on any speedup, it is measurable, and
+  [Performance](performance.md) shows you how to estimate yours before you migrate.
+- You want faster collection in particular. Collection is where the gap is widest.
 
 ### When to use pytest
 
-- You need pytest plugins such as pytest-django or pytest-cov. See the
-  [plugin migration guide](pytest-plugins.md).
+- You need pytest plugins such as pytest-django or pytest-html. See the
+  [plugin migration guide](pytest-plugins.md) — coverage, parallelism, mocking and asyncio
+  are built in and need no plugin.
 - Your suite defines hooks or custom collectors.
 - You need JUnit XML or HTML reports.
 - Your test bodies dominate the wall clock. A runner cannot make your own code faster, and

@@ -15,8 +15,7 @@ Two different things share the name "plugin", and only one of them works.
 ### Fixture modules (SUPPORTED)
 
 A `pytest_plugins` declaration names Python modules whose `@fixture` functions get registered
-globally. rustest honours it in a `conftest.py` and in a test module, the same two places
-pytest reads it:
+globally. rustest honours it in any `conftest.py` and in a test module:
 
 <!--rustest.mark.skip-->
 ```python
@@ -31,6 +30,14 @@ The named module is imported and its fixtures are registered with an empty base 
 are visible to the whole run rather than only below the conftest that named them. That is all
 that happens: it is a module import, not a plugin registration. Hooks defined in the named
 module are not called.
+
+**pytest is stricter about where you may declare it.** pytest accepts `pytest_plugins` only
+in the *rootdir* `conftest.py` and raises a collection error anywhere below it; rustest
+accepts it in any conftest. A suite that puts the declaration in a nested conftest therefore
+runs clean under rustest and fails under pytest. If both runners have to stay green, keep the
+declaration in the rootdir conftest — moving it up costs nothing, because the fixtures were
+already registered run-wide. See
+[where rustest is more permissive](pytest-compat.md#where-rustest-is-more-permissive-than-pytest).
 
 See [Loading fixtures from external modules](fixtures.md#loading-fixtures-from-external-modules)
 for details.
@@ -90,7 +97,7 @@ into private pytest APIs that have no stable equivalent to port.
 ### The philosophical reasons
 
 rustest implements the parts of pytest that most suites actually use, and leaves the rest to
-pytest. The goal is a fast runner with a faithful core, not a pytest clone.
+pytest. The goal is a faithful core, not a pytest clone.
 
 What that buys: a codebase without plugin infrastructure, and a collection and execution path
 that stays in Rust. What it costs: niche features, and any plugin whose behaviour has not been
@@ -134,31 +141,37 @@ Download figures are from October 2025.
 **Migration strategy**: rustest has its own `--cov`, and it writes coverage.py's own data
 format. See [Coverage](coverage.md) for the whole surface.
 
-=== "With pytest-cov"
-    ```bash
-    pytest --cov=myproject --cov-report=html --cov-report=term tests/
-    ```
+::: {.panel-tabset}
 
-=== "With rustest"
-    ```bash
-    pip install 'rustest[cov]'
+#### With pytest-cov
 
-    # `term` and `xml` are built in
-    rustest --cov=myproject --cov-report=term tests/
+```bash
+pytest --cov=myproject --cov-report=html --cov-report=term tests/
+```
 
-    # ...and every other report is one `coverage` command away, because the run wrote
-    # an ordinary `.coverage` file
-    rustest --cov=myproject tests/
-    coverage html
-    ```
+#### With rustest
 
-    Branch coverage is not implemented yet. `--cov-branch` is refused rather than
-    silently downgraded to lines. For branches, run rustest under coverage.py instead:
+```bash
+pip install 'rustest[cov]'
 
-    ```bash
-    coverage run --branch --source=myproject -m rustest tests/
-    coverage html
-    ```
+# `term` and `xml` are built in
+rustest --cov=myproject --cov-report=term tests/
+
+# ...and every other report is one `coverage` command away, because the run wrote
+# an ordinary `.coverage` file
+rustest --cov=myproject tests/
+coverage html
+```
+
+Branch coverage is not implemented yet. `--cov-branch` is refused rather than
+silently downgraded to lines. For branches, run rustest under coverage.py instead:
+
+```bash
+coverage run --branch --source=myproject -m rustest tests/
+coverage html
+```
+
+:::
 
 **Configuration**: Create a `.coveragerc` or `pyproject.toml` config:
 
@@ -243,39 +256,45 @@ Loop scopes, the three `asyncio_*` ini options, `@mark.asyncio(loop_scope=...)`,
 fixtures and the `event_loop_policy` fixture all work. `import pytest_asyncio` resolves to
 rustest's compatibility module, so `@pytest_asyncio.fixture` keeps working unchanged.
 
-=== "With pytest-asyncio"
-    ```python
-    import asyncio
-    import pytest
+::: {.panel-tabset}
 
-    async def some_async_operation():
-        await asyncio.sleep(0)
-        return "expected"
+#### With pytest-asyncio
 
-    expected = "expected"
+```python
+import asyncio
+import pytest
 
-    @pytest.mark.asyncio
-    async def test_async_function():
-        result = await some_async_operation()
-        assert result == expected
-    ```
+async def some_async_operation():
+    await asyncio.sleep(0)
+    return "expected"
 
-=== "With rustest"
-    ```python
-    import asyncio
-    from rustest import mark
+expected = "expected"
 
-    async def some_async_operation():
-        await asyncio.sleep(0)
-        return "expected"
+@pytest.mark.asyncio
+async def test_async_function():
+    result = await some_async_operation()
+    assert result == expected
+```
 
-    expected = "expected"
+#### With rustest
 
-    @mark.asyncio
-    async def test_async_function():
-        result = await some_async_operation()
-        assert result == expected
-    ```
+```python
+import asyncio
+from rustest import mark
+
+async def some_async_operation():
+    await asyncio.sleep(0)
+    return "expected"
+
+expected = "expected"
+
+@mark.asyncio
+async def test_async_function():
+    result = await some_async_operation()
+    assert result == expected
+```
+
+:::
 
 rustest's default `asyncio_mode` is `auto`, where pytest-asyncio's is `strict`, so the marker
 is optional:
@@ -495,103 +514,20 @@ async def test_slow_async_operation():
     await slow_operation()
 ```
 
-For a synchronous test:
+**Synchronous tests have no timeout at all**, and this is the trap: `@mark.timeout(5)` is
+accepted as an ordinary mark, so it can be selected with `-m` and it never errors — but it
+does not bound how long the test may run. A suite that relied on pytest-timeout to kill a
+hung test will hang instead of failing.
 
-=== "With pytest-timeout"
-    ```python
-    import pytest
+If you need one, wrap the test yourself rather than reaching for the mark:
 
-    def slow_operation():
-        return "done"
-
-    @pytest.mark.timeout(5)  # 5 second timeout
-    def test_slow_function():
-        slow_operation()
-    ```
-
-=== "With rustest (Unix/Linux)"
-    ```python
-    # In conftest.py
-    from rustest import mark
-    import signal
-    from contextlib import contextmanager
-
-    def slow_operation():
-        return "done"
-
-    class TimeoutError(Exception):
-        pass
-
-    @contextmanager
-    def timeout(seconds):
-        def timeout_handler(signum, frame):
-            raise TimeoutError(f"Test timed out after {seconds} seconds")
-
-        # Set the signal handler
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(seconds)
-        try:
-            yield
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-
-    # In test file. `signal.SIGALRM` and `signal.alarm` do not exist on Windows, which is
-    # what this tab's title means -- the guard states it in code rather than only in prose.
-    @mark.skipif(not hasattr(signal, "SIGALRM"), reason="signal.SIGALRM is Unix-only")
-    def test_slow_function():
-        with timeout(5):
-            slow_operation()
-    ```
-
-=== "With rustest (Cross-platform)"
-    ```python
-    # In conftest.py
-    from rustest import fixture
-    import threading
-
-    def slow_operation():
-        return "done"
-
-    class TimeoutError(Exception):
-        pass
-
-    def timeout(seconds):
-        def decorator(func):
-            def wrapper(*args, **kwargs):
-                result = [TimeoutError(f"Test timed out after {seconds}s")]
-
-                def target():
-                    try:
-                        result[0] = func(*args, **kwargs)
-                    except Exception as e:
-                        result[0] = e
-
-                thread = threading.Thread(target=target)
-                thread.daemon = True
-                thread.start()
-                thread.join(seconds)
-
-                if thread.is_alive():
-                    raise TimeoutError(f"Test timed out after {seconds}s")
-                if isinstance(result[0], Exception):
-                    raise result[0]
-                return result[0]
-            return wrapper
-        return decorator
-
-    # In test file
-    @timeout(5)
-    def test_slow_function():
-        slow_operation()
-    ```
-
-::: {.callout-warning title="Platform differences"}
-The `signal` module approach only works on Unix/Linux. For Windows compatibility, use the threading approach or a third-party library like `timeout-decorator`.
-:::
-
-`@mark.timeout(...)` is accepted as an ordinary mark, so it can be selected with `-m`, but it
-has no effect on how long a test may run.
+- On Unix, `signal.SIGALRM` plus `signal.alarm()` in a context manager. `SIGALRM` does not
+  exist on Windows.
+- Cross-platform, run the body in a `threading.Thread` and `join(seconds)`, treating a
+  still-alive thread as the timeout. This cannot interrupt the thread — it only stops
+  waiting on it.
+- Or use [`timeout-decorator`](https://pypi.org/project/timeout-decorator/), which packages
+  both strategies behind one decorator.
 
 ---
 
@@ -601,23 +537,29 @@ has no effect on how long a test may run.
 
 **Migration strategy**: Not supported. Retry outside the runner, or inside the test.
 
-=== "With pytest-rerunfailures"
-    ```bash
-    pytest --reruns 3 --reruns-delay 1 tests/
-    ```
+::: {.panel-tabset}
 
-=== "With rustest"
-    ```bash
-    # Option 1: Simple bash retry loop
-    for i in {1..3}; do
-        rustest tests/ && break
-        echo "Retry $i failed, attempting again..."
-        sleep 1
-    done
+#### With pytest-rerunfailures
 
-    # Option 2: rerun only what failed, using rustest's own cache
-    rustest tests/ || rustest --lf tests/
-    ```
+```bash
+pytest --reruns 3 --reruns-delay 1 tests/
+```
+
+#### With rustest
+
+```bash
+# Option 1: Simple bash retry loop
+for i in {1..3}; do
+    rustest tests/ && break
+    echo "Retry $i failed, attempting again..."
+    sleep 1
+done
+
+# Option 2: rerun only what failed, using rustest's own cache
+rustest tests/ || rustest --lf tests/
+```
+
+:::
 
 `--lf` / `--last-failed` and `--ff` / `--failed-first` are built in, which covers the common
 case of re-running only what broke without re-running the whole suite.
@@ -664,10 +606,12 @@ def test_flaky_api():
 
 **Migration strategy**: Not supported. rustest has its own output, which does not match
 pytest-sugar's styling but does provide pass/fail markers, per-test progress percentages,
-colour, and failure detail with filtered tracebacks.
+and failure detail with filtered tracebacks.
 
-Colour is controlled by `--color` and `--ascii`; `-v` and `-q` set verbosity, and `--tb` is
-accepted and ignored because traceback style is rustest's own.
+The output is **not coloured**, and there is no flag that makes it so: `--color` and
+`--ascii` are accepted and inert, so an `addopts` line carrying `--color=never` still runs
+rather than failing on an unknown flag. `-v` and `-q` set verbosity, and `--tb` is accepted
+and ignored because traceback style is rustest's own.
 
 ---
 
@@ -737,49 +681,55 @@ rustest does not have full Django integration. For Django projects with complex 
 **Migration strategy**: Not supported. There is no `benchmark` fixture. Use `timeit` or time
 the operation yourself.
 
-=== "With pytest-benchmark"
-    <!--rustest.mark.skip-->
-    ```python
-    def expensive_function(a, b):
-        return a + b
+::: {.panel-tabset}
 
-    arg1, arg2 = 1, 2
-    expected = 3
+#### With pytest-benchmark
 
-    def test_benchmark(benchmark):
-        result = benchmark(expensive_function, arg1, arg2)
-        assert result == expected
-    ```
+<!--rustest.mark.skip-->
+```python
+def expensive_function(a, b):
+    return a + b
 
-=== "With rustest"
-    ```python
-    import time
+arg1, arg2 = 1, 2
+expected = 3
 
-    def expensive_function(a, b):
-        return a + b
+def test_benchmark(benchmark):
+    result = benchmark(expensive_function, arg1, arg2)
+    assert result == expected
+```
 
-    arg1, arg2 = 1, 2
-    expected = 3
+#### With rustest
 
-    def test_performance():
-        start = time.perf_counter()
-        result = expensive_function(arg1, arg2)
-        duration = time.perf_counter() - start
+```python
+import time
 
-        assert result == expected
-        assert duration < 1.0  # Should complete in under 1 second
+def expensive_function(a, b):
+    return a + b
 
-    # Or use timeit for more accurate results
-    import timeit
+arg1, arg2 = 1, 2
+expected = 3
 
-    def test_with_timeit():
-        duration = timeit.timeit(
-            lambda: expensive_function(arg1, arg2),
-            number=100
-        )
-        average = duration / 100
-        assert average < 0.01  # Average under 10ms
-    ```
+def test_performance():
+    start = time.perf_counter()
+    result = expensive_function(arg1, arg2)
+    duration = time.perf_counter() - start
+
+    assert result == expected
+    assert duration < 1.0  # Should complete in under 1 second
+
+# Or use timeit for more accurate results
+import timeit
+
+def test_with_timeit():
+    duration = timeit.timeit(
+        lambda: expensive_function(arg1, arg2),
+        number=100
+    )
+    average = duration / 100
+    assert average < 0.01  # Average under 10ms
+```
+
+:::
 
 Neither approach gives you the statistical analysis pytest-benchmark does. For that, run those
 benchmarks under pytest with the plugin, or use `py-spy` / `pyinstrument` for profiling and
@@ -832,7 +782,10 @@ carrying one does not break the run.
 - **pytest-pycharm**: PyCharm integration (use IDE's test runner)
 - **pytest-vscode**: VS Code integration (use test explorer)
 
-Most IDEs can run rustest tests via Python's unittest discovery or by configuring rustest as a custom test runner.
+Configure rustest as a custom test runner in your IDE's settings. Node ids are
+byte-identical to pytest's, so any tooling that shells out to a test command and parses ids
+works unchanged; tooling that imports pytest as a library and hooks its internals has nothing
+to hook.
 
 ---
 
@@ -1027,8 +980,8 @@ migration.
 ## See also
 
 - [Comparison with pytest](comparison.md) - Feature-by-feature comparison
-- [Migration Guide](migration-guide.md) - General pytest to rustest migration
+- [Upgrade guide](migration-guide.md) - breaking changes if you are coming from an older rustest
 - [Performance](performance.md) - Detailed performance benchmarks
-- [Fixtures](intro-fixtures.md) - rustest fixture documentation
+- [Fixtures](fixtures.md) - the full fixture surface
 - [Async testing](async-testing.md) - The asyncio surface in full
 - [Coverage](coverage.md) - `--cov` and coverage.py integration

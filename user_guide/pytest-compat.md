@@ -198,6 +198,7 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 | **Reporting-only flags** | Accepted and ignored, with a note on stderr naming each one. | See the table below. |
 | **`capsys` is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors, exactly as pytest's `capsys` is. | Use `capfd` for a subprocess or a C extension; it redirects the descriptors and does catch them (probed both ways). |
 | **`xfail_strict` ini, `--runxfail`** | Not implemented. The `strict=` *keyword* works. | Set `strict=` on the mark. |
+| **Unknown `pytest.*` attributes** | `pytest.Item`, `pytest.Collector` and any other public name this shim does not define return an inert generated stub class rather than raising `AttributeError`. The catch-all exists so a module that *imports* a pytest internal still loads — the `pytest_asyncio` shim depends on it. | An `isinstance()` or `issubclass()` check against one of these is silently false rather than loudly wrong. This is the one place the shim answers plausibly instead of refusing; `request.node`'s missing attributes go the other way, and deliberately. Not yet a conformance corpus case. |
 
 ### Reporting flags rustest accepts and ignores
 
@@ -376,5 +377,5 @@ The flag is gone; drop it. `rustest tests/` already does what it used to ask for
 ## See also
 
 - [Plugin Compatibility Guide](pytest-plugins.md), alternatives to popular pytest plugins
-- [Migration Guide](migration-guide.md)
+- [Upgrade guide](migration-guide.md), breaking changes if you are coming from an older rustest
 - [Comparison with pytest](comparison.md)

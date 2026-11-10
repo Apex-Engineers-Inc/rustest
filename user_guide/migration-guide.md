@@ -142,57 +142,6 @@ rustest tests/test_math.py -k "test_add"
 The node ids rustest prints are byte-identical to pytest's; it is only selection *by* them
 that is missing. See [Known gaps](pytest-compat.md#known-gaps-with-their-cost).
 
-## Migrating from pytest
-
-Most pytest suites need no changes at all: run `rustest tests/` and the shim does the rest.
-If you want to write against rustest's own API instead, the decorators have the same names:
-
-```python
-from rustest import fixture, parametrize, mark, approx, raises
-
-
-@fixture
-def account():
-    return {"balance": 100}
-
-
-@parametrize("amount,expected", [(10, 110), (25, 125)])
-def test_deposit(account, amount, expected):
-    account["balance"] += amount
-    assert account["balance"] == expected
-
-
-def test_overdraft(account):
-    with raises(KeyError):
-        account["overdraft"]
-```
-
-**Using pytest plugins?** rustest supports none by design. See the
-[plugin migration guide](pytest-plugins.md) for what replaces the ten most popular ones,
-several of which are built in (`--cov` for pytest-cov, `@mark.asyncio` for pytest-asyncio,
-the `mocker` fixture for pytest-mock).
-
-See [Comparison with pytest](comparison.md) for the feature-by-feature table.
-
-## On the roadmap
-
-Not yet implemented, and tracked rather than promised:
-
-- **JUnit XML output.** `--report-json` exists today; JUnit does not.
-- **HTML reports.**
-- **General test timeouts.** `@mark.timeout()` is accepted as a mark but enforces nothing.
-  Async tests are the exception: `@mark.asyncio(timeout=N)` is rustest's own extension and is
-  enforced with `asyncio.wait_for`.
-
-Three entries that used to sit on this list have shipped. **Parallel execution control** is
-`-n` / `--workers` (never `-j`, which this page once listed and rustest has never had).
-**Coverage integration** is `--cov` / `--cov-report`, which needs the `cov` extra. And
-**better error messages** arrived as assertion rewriting, so a failed `assert` now reports
-the values (`AssertionError: assert 41 == 42`).
-
-See the [GitHub issues](https://github.com/Apex-Engineers-Inc/rustest/issues) for the live
-roadmap.
-
 ## Older releases
 
 The 0.3 to 0.4 to 0.5 upgrade notes that used to live here have been removed. They described
