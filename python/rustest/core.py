@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         tests: list[_ManifestTest]
         errors: NotRequired[list[_ManifestError]]
         deselected: NotRequired[int]
+        pytest_fallback: NotRequired[list[str]]
 
     class _ReportSummary(TypedDict):
         """The schema-v2 summary. Six status buckets, not v1's three. See `src/engine/execute.rs`."""
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
         worker_stderr: NotRequired[list[str]]
         stopped_early: NotRequired[bool]
         session_exit: NotRequired[str]
+        pytest_fallback: NotRequired[list[str]]
 
 # The `TypedDict`s above live under `TYPE_CHECKING`, and that is a latency decision like the
 # ones below rather than a style one: on CPython 3.14 `typing` pulls `annotationlib` and
@@ -307,6 +309,18 @@ _MANIFEST_CACHE_ENV = "RUSTEST_MANIFEST_CACHE"
 _ASSERT_REWRITE_ENV = "RUSTEST_ASSERT_REWRITE"
 
 
+class NeedsPytest(Exception):
+    """The session uses pytest hooks rustest does not run; *reasons* names them.
+
+    Raised by :func:`run` and :func:`collect_only` only when asked to (``pytest_fallback``),
+    after the engine stopped at the collection barrier: nothing ran and nothing was printed.
+    """
+
+    def __init__(self, labels: Sequence[str]) -> None:
+        super().__init__(", ".join(labels))
+        self.reasons = [f"{label} is a pytest hook rustest does not run" for label in labels]
+
+
 def collect_only(
     *,
     paths: Sequence[str],
@@ -314,6 +328,7 @@ def collect_only(
     keyword: str | None = None,
     mark_expr: str | None = None,
     codeblocks: bool | None = None,
+    pytest_fallback: bool = False,
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
@@ -353,6 +368,9 @@ def collect_only(
         codeblocks: Collect python fences from ``.md`` files named as arguments. Tri-state:
             ``None`` means neither ``--codeblocks`` nor ``--no-codeblocks`` was passed, so
             ``[tool.rustest] codeblocks`` decides, off by default.
+        pytest_fallback: Stop at the collection barrier and raise :class:`NeedsPytest` if a
+            conftest or plugin defines a hook that can change what runs.  The CLI sets it;
+            the library default is ``False``, which runs and prints the ``NOTE``.
 
     Returns:
         0 with tests, 5 with none (including "everything was deselected"), 2 when any file
@@ -374,6 +392,7 @@ def collect_only(
                 codeblocks,
                 os.environ.get(_COLLECT_TIER_ENV, "auto"),
                 os.environ.get(_MANIFEST_CACHE_ENV, "auto"),
+                pytest_fallback=pytest_fallback,
             )
         except ValueError as exc:
             # pytest's UsageError shape, including its `ERROR: file or directory not
@@ -389,6 +408,8 @@ def collect_only(
             return _EXIT_INTERNAL_ERROR
 
         manifest: _Manifest = json.loads(payload)
+        if labels := manifest.get("pytest_fallback"):
+            raise NeedsPytest(labels)
         tests = manifest["tests"]
         errors = manifest.get("errors", [])
         deselected = manifest.get("deselected", 0)
@@ -758,6 +779,7 @@ def run(
     llm_full: bool = False,
     color: str = "auto",
     ascii: bool = False,
+    pytest_fallback: bool = False,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
@@ -828,6 +850,10 @@ def run(
             (then ``PY_COLORS``, ``NO_COLOR``, ``FORCE_COLOR``, a terminal) when ``auto``.
         ascii: ``--ascii`` -- draw the terminal display with ASCII only. Also chosen when
             stdout's encoding cannot carry the display's glyphs.
+        pytest_fallback: Stop at the collection barrier and raise :class:`NeedsPytest` if a
+            conftest or plugin defines a hook that can change what runs (nothing has run
+            and nothing is printed).  The CLI sets it; the library default is ``False``,
+            which runs and prints the ``NOTE``.
         llm_full: ``--llm-full`` -- with *llm*, keep captures whole instead of truncating
             them to the last :data:`rustest._llm.CAPTURE_MAX_LINES` lines.  Inert without it,
             which is why the CLI refuses the combination rather than accepting it silently.
@@ -895,6 +921,7 @@ def run(
                     os.environ.get(_ASSERT_REWRITE_ENV, "auto"),
                     coverage.wire,
                     on_event=None if display is None else _guarded(display),
+                    pytest_fallback=pytest_fallback,
                 )
             finally:
                 # Before anything below prints, on every way out -- a live region left
@@ -917,6 +944,8 @@ def run(
             return _EXIT_INTERRUPTED
 
         report: _RunReport = json.loads(payload)
+        if labels := report.get("pytest_fallback"):
+            raise NeedsPytest(labels)
 
         # Written before anything is printed, so a report exists even if rendering the
         # summary somehow fails -- the conformance harness treats a missing report as a

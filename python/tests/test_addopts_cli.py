@@ -258,11 +258,21 @@ def test_a_collection_changing_flag_in_addopts_is_still_refused(tmp_path: Path) 
     relaxation.
     """
     tree = _doctest_tree(tmp_path)
-    result = _rustest(tree, ["."])
+    result = _rustest(tree, ["--no-pytest-fallback", "."])
     assert result.returncode == 4, result.stderr
     assert "unrecognized arguments: --doctest-modules" in result.stderr
     # ...and it still names the file to edit.
     assert "inifile:" in result.stderr
+
+
+def test_a_collection_changing_flag_in_addopts_hands_the_session_to_pytest(
+    tmp_path: Path,
+) -> None:
+    """By default pytest, which honours the flag, runs the session; rustest says so."""
+    result = _rustest(_doctest_tree(tmp_path), ["."])
+    assert result.returncode == 0, result.stderr
+    assert "--doctest-modules is not a rustest option" in result.stderr
+    assert "1 passed" in result.stdout
 
 
 def test_override_ini_neutralizes_addopts(tmp_path: Path) -> None:

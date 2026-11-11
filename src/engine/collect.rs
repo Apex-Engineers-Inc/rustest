@@ -43,7 +43,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::engine::config::{
     absolutepath, matches_file_pattern, normpath, resolve_config, ConfigError, ResolvedConfig,
@@ -359,6 +359,22 @@ impl WorkerLauncher {
         }
     }
 
+    /// The hooks the pool found that only pytest can honour: every one but
+    /// [`SKIPPABLE_HOOKS`], in the same labelled, sorted form as the stderr note.
+    ///
+    /// Complete at the collection barrier: a worker reports the hooks a file brought in on
+    /// that file's `collected` line, before it answers the barrier.
+    pub(crate) fn hooks_needing_pytest(&self) -> Vec<String> {
+        let seen = self.hooks.lock().unwrap_or_else(PoisonError::into_inner);
+        seen.iter()
+            .filter(|label| {
+                let name = label.rsplit("::").next().unwrap_or(label);
+                !SKIPPABLE_HOOKS.contains(&name)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Say once, on stderr, which `pytest_*` hooks the pool found and did not run.
     ///
     /// Call after the pool has shut down. A warning, never an error: nothing about the
@@ -422,6 +438,11 @@ pub struct CollectOptions {
     /// measuring would cost every worker a `sys.monitoring` registration for data nothing
     /// reads.
     pub coverage: Option<CoverageWire>,
+    /// Hand the session to pytest when a conftest or `pytest_plugins` module defines a hook
+    /// only pytest can honour (anything but [`SKIPPABLE_HOOKS`]): the manifest then carries
+    /// those hooks in `pytest_fallback` and nothing else. Off means today's behaviour, which
+    /// collects anyway and names the hooks in a stderr note.
+    pub pytest_fallback: bool,
 }
 
 /// Collect `args` (or `testpaths`, or `invocation_dir`) into a [`CollectionManifest`].
@@ -879,6 +900,22 @@ fn collect_with_launcher(
     // Node ids select inside `assemble`, then `-k`/`-m` filter what they selected — pytest's
     // order, which is why `test_m.py::test_a -k test_b` is `1 deselected`, not 7.
     let outcomes = join_pool(results)?;
+    // The pool's own failures win (above); past them, a hook only pytest can run means
+    // nothing rustest collected is the answer, so none of it is offered.
+    if options.pytest_fallback {
+        let hooks = launcher.hooks_needing_pytest();
+        if !hooks.is_empty() {
+            return Ok(CollectionManifest {
+                schema_version: MANIFEST_SCHEMA_VERSION,
+                rootdir: dispatch.rootdir,
+                tests: Vec::new(),
+                errors: Vec::new(),
+                deselected: 0,
+                module_skipped: 0,
+                pytest_fallback: hooks,
+            });
+        }
+    }
     launcher.warn_unrun_hooks();
     let mut assembled = assemble(&dispatch, outcomes, None)?;
     let deselected = deselect_in_place(
@@ -895,6 +932,7 @@ fn collect_with_launcher(
         errors: assembled.errors,
         deselected,
         module_skipped: assembled.module_skipped,
+        pytest_fallback: Vec::new(),
     })
 }
 
@@ -2483,6 +2521,22 @@ impl Drop for Worker {
         self.reap_tree();
     }
 }
+
+/// The hooks a session may run without, because their only effect is on pytest's terminal
+/// text: no item, no report, no session state, no exit status. Every other `pytest_*` name
+/// -- including one this list has never heard of -- needs pytest when
+/// [`CollectOptions::pytest_fallback`] is on. A false positive costs speed, never an answer.
+///
+/// `pytest_addoption` is here because its only reach is `getoption`/`getini`, which return
+/// pytest's default when the flag is absent and fail loudly otherwise; an unknown flag is the
+/// CLI's trigger, not this one.
+pub const SKIPPABLE_HOOKS: [&str; 5] = [
+    "pytest_addoption",
+    "pytest_report_header",
+    "pytest_report_collectionfinish",
+    "pytest_terminal_summary",
+    "pytest_assertrepr_compare",
+];
 
 /// The stderr line for the hooks a run found and did not run, or `None` when there were none.
 fn unrun_hooks_note(hooks: &BTreeSet<String>) -> Option<String> {
@@ -4822,5 +4876,45 @@ assert True
             .tests
             .iter()
             .all(|test| test.tier == crate::engine::manifest::Tier::Dynamic));
+    }
+
+    // --- pytest fallback ----------------------------------------------------
+
+    /// `--collect-only` with the option on, through the default tier: Tier S sends the
+    /// hook conftest's directory to a worker, the worker names the hook, and the manifest
+    /// is the fallback alone. A skippable hook is not enough.
+    #[test]
+    fn collection_falls_back_on_a_hook_only_pytest_can_run() {
+        let options = CollectOptions {
+            cache: CacheMode::Off,
+            pytest_fallback: true,
+            ..CollectOptions::default()
+        };
+        let hooked = tree(&[
+            (
+                "conftest.py",
+                "def pytest_collection_modifyitems(config, items):\n    items[:] = []\n",
+            ),
+            ("test_a.py", &module("a")),
+        ]);
+        let manifest =
+            collect_with_launcher(hooked.path(), &[], &real_worker(), 1, &options).unwrap();
+        assert_eq!(
+            manifest.pytest_fallback,
+            vec!["conftest.py::pytest_collection_modifyitems".to_string()]
+        );
+        assert!(manifest.tests.is_empty());
+
+        let harmless = tree(&[
+            (
+                "conftest.py",
+                "def pytest_report_header(config):\n    return 'x'\n",
+            ),
+            ("test_a.py", &module("a")),
+        ]);
+        let manifest =
+            collect_with_launcher(harmless.path(), &[], &real_worker(), 1, &options).unwrap();
+        assert!(manifest.pytest_fallback.is_empty());
+        assert_eq!(manifest.tests.len(), 1);
     }
 }

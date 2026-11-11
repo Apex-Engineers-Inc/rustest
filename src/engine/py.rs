@@ -250,7 +250,7 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// `RUSTEST_MANIFEST_CACHE`; see [`CacheMode`].
 #[pyfunction]
 #[pyo3(name = "collect")]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto"))]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto", pytest_fallback=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_collect(
     py: Python<'_>,
@@ -263,6 +263,7 @@ pub fn py_collect(
     codeblocks: Option<bool>,
     collect_tier: &str,
     cache_mode: &str,
+    pytest_fallback: bool,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
@@ -282,6 +283,7 @@ pub fn py_collect(
         // collect-only run could report are the import-time ones, which is a number nobody
         // asked for and every worker would pay a monitoring registration to produce.
         coverage: None,
+        pytest_fallback,
     };
     let manifest = py.detach(|| collect(&dir, &args, python_executable, workers, &options));
     // A Ctrl-C that arrived while the GIL was released is only *pending*; raise it here as
@@ -368,6 +370,7 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
     assert_rewrite="auto",
     coverage=None,
     on_event=None,
+    pytest_fallback=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_run(
@@ -386,6 +389,7 @@ pub fn py_run(
     assert_rewrite: &str,
     coverage: Option<&str>,
     on_event: Option<Py<PyAny>>,
+    pytest_fallback: bool,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
@@ -400,6 +404,7 @@ pub fn py_run(
         // into a usage error.
         assert_rewrite: !matches!(assert_rewrite, "off" | "no" | "0"),
         coverage: parse_coverage(coverage)?,
+        pytest_fallback,
     };
     // The first exception `on_event` raised. It wins over whatever the run itself returned,
     // a `KeyboardInterrupt` included: the run stopped *because* of it.
@@ -704,6 +709,7 @@ mod tests {
                 Some(true),
                 "auto",
                 "off",
+                false,
             )
         })
         .unwrap();
@@ -794,6 +800,7 @@ mod tests {
                 Some(true),
                 "auto",
                 "off",
+                false,
             )
         })
         .unwrap_err();
@@ -832,6 +839,7 @@ mod tests {
                 Some(true),
                 "d",
                 "off",
+                false,
             )
         })
         .unwrap_err();
@@ -864,6 +872,7 @@ mod tests {
                 Some(true),
                 "auto",
                 "off",
+                false,
             )
         })
         .unwrap_err();
@@ -895,6 +904,7 @@ mod tests {
                 Some(true),
                 "auto",
                 "off",
+                false,
             )
         })
         .unwrap();

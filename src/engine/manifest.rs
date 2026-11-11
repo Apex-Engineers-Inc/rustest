@@ -150,6 +150,12 @@ pub struct CollectionManifest {
     /// [`MANIFEST_SCHEMA_VERSION`] does not move.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub module_skipped: usize,
+    /// The hooks that need pytest, when collection was asked to fall back
+    /// (`CollectOptions::pytest_fallback`) and found some: then this is the whole answer and
+    /// `tests`, `errors` and the counts are empty. Omitted when empty, so every other
+    /// manifest is byte-identical to the frozen schema.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pytest_fallback: Vec<String>,
 }
 
 fn is_zero(count: &usize) -> bool {
@@ -229,6 +235,7 @@ mod tests {
             }],
             deselected: 0,
             module_skipped: 0,
+            pytest_fallback: Vec::new(),
         }
     }
 
@@ -337,6 +344,7 @@ mod tests {
             errors: Vec::new(),
             deselected: 0,
             module_skipped: 0,
+            pytest_fallback: Vec::new(),
         };
 
         let encoded = serde_json::to_string(&manifest).expect("manifest serializes");
@@ -363,6 +371,7 @@ mod tests {
             errors: Vec::new(),
             deselected: 3,
             module_skipped: 0,
+            pytest_fallback: Vec::new(),
         };
 
         let encoded = serde_json::to_string(&manifest).expect("manifest serializes");

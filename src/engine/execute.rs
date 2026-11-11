@@ -140,6 +140,10 @@ pub struct RunOptions {
     /// `sys.monitoring` tool at all**, which is what keeps a plain run's per-test cost exactly
     /// what it was before this option existed (`python/rustest/_coverage.py`).
     pub coverage: Option<CoverageWire>,
+    /// Stop at the collection barrier and hand the session to pytest when a conftest or
+    /// `pytest_plugins` module defines a hook only pytest can honour (anything but
+    /// [`crate::engine::collect::SKIPPABLE_HOOKS`]). See [`RunReport::pytest_fallback`].
+    pub pytest_fallback: bool,
 }
 
 #[cfg(test)]
@@ -157,6 +161,7 @@ impl RunOptions {
             codeblocks: None,
             assert_rewrite: true,
             coverage: None,
+            pytest_fallback: false,
         }
     }
 }
@@ -340,6 +345,13 @@ pub struct RunReport {
     /// document is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_exit: Option<String>,
+    /// The hooks that need pytest (`conftest.py::pytest_configure`), when the run was asked
+    /// to fall back ([`RunOptions::pytest_fallback`]) and found some. Then the run stopped at
+    /// the collection barrier: nothing was dispatched, no live `collected` event was sent, the
+    /// `--lf` cache was not written, and the rest of the report describes nothing. Omitted
+    /// when empty, so every other run's document is unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pytest_fallback: Vec<String>,
 }
 
 /// `skip_serializing_if` needs a predicate over a reference; `bool::not` is not one.
@@ -740,6 +752,32 @@ fn run_with_launcher(
             inbox[index] = Some(result);
         }
 
+        // `pytest_fallback`: decided here, where every worker has imported its conftests and
+        // nothing has been selected, dispatched or cached. A worker's own failure wins and
+        // is reported as one (through `stage` below), as it is for `--collect-only`.
+        if options.pytest_fallback && inbox.iter().all(|slot| matches!(slot, Some(Ok(_)))) {
+            let hooks = launcher.hooks_needing_pytest();
+            if !hooks.is_empty() {
+                // Dropping every sender lets the workers leave the barrier and shut down;
+                // each is joined so a panic surfaces here rather than out of the scope.
+                drop(exec_txs);
+                for handle in handles {
+                    let _ = handle.join();
+                }
+                let mut report = finish(
+                    dispatch.rootdir.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    Selection::default(),
+                    WorkerResidue::default(),
+                    false,
+                    started,
+                );
+                report.pytest_fallback = hooks;
+                return Ok(report);
+            }
+        }
+
         let staged = stage(
             &dispatch,
             inbox,
@@ -1100,6 +1138,7 @@ fn finish(
         worker_stderr: residue.stderr,
         stopped_early,
         session_exit: residue.session_exit,
+        pytest_fallback: Vec::new(),
     }
 }
 
@@ -1581,6 +1620,7 @@ mod tests {
             worker_stderr: Vec::new(),
             stopped_early: false,
             session_exit: None,
+            pytest_fallback: Vec::new(),
         };
 
         assert_eq!(
@@ -3105,5 +3145,97 @@ def test_bails():
                 "{keyword:?}"
             );
         }
+    }
+
+    // =====================================================================
+    // pytest fallback
+    // =====================================================================
+
+    /// pytest's `--runslow` recipe: one hook only pytest can run (`modifyitems`) and one
+    /// that is skippable (`addoption`).
+    const RUNSLOW_CONFTEST: &str = "\
+def pytest_addoption(parser):
+    parser.addoption('--runslow', action='store_true')
+
+
+def pytest_collection_modifyitems(config, items):
+    pass
+";
+
+    /// With the option on, the run stops at the barrier: the report names only the hook that
+    /// needs pytest, nothing ran, no live event was sent and the `--lf` cache was not written
+    /// (the test fails, so a run that executed it would have written one).
+    #[test]
+    fn a_hook_only_pytest_can_run_stops_the_run_at_the_barrier() {
+        let tmp = tree(&[
+            ("conftest.py", RUNSLOW_CONFTEST),
+            ("test_a.py", "def test_a():\n    assert 0\n"),
+        ]);
+        let mut events = Vec::new();
+        let report = {
+            let mut observer = |event: LiveEvent| {
+                events.push(event);
+                true
+            };
+            run_with_launcher(
+                tmp.path(),
+                &[],
+                &real_worker(),
+                1,
+                None,
+                None,
+                RunOptions {
+                    pytest_fallback: true,
+                    ..RunOptions::defaults()
+                },
+                Some(&mut observer),
+            )
+            .expect("the run returns a fallback report")
+        };
+
+        assert_eq!(
+            report.pytest_fallback,
+            vec!["conftest.py::pytest_collection_modifyitems".to_string()]
+        );
+        assert!(report.tests.is_empty());
+        assert!(
+            events.is_empty(),
+            "no `collected`, so no display draws: {events:?}"
+        );
+        assert!(crate::engine::cache::read_last_failed(tmp.path()).is_empty());
+
+        // ...and with the option off, the same tree runs as it always has.
+        let ran = run_tree(&tmp, 1);
+        assert!(ran.pytest_fallback.is_empty());
+        assert_eq!(
+            statuses(&ran),
+            vec![("test_a.py::test_a".to_string(), "failed")]
+        );
+    }
+
+    /// A hook whose only effect is on pytest's terminal text does not need pytest.
+    #[test]
+    fn a_skippable_hook_does_not_stop_the_run() {
+        let tmp = tree(&[
+            (
+                "conftest.py",
+                "def pytest_report_header(config):\n    return 'x'\n",
+            ),
+            ("test_a.py", "def test_a():\n    pass\n"),
+        ]);
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                pytest_fallback: true,
+                ..RunOptions::defaults()
+            },
+        );
+
+        assert!(report.pytest_fallback.is_empty());
+        assert_eq!(
+            statuses(&report),
+            vec![("test_a.py::test_a".to_string(), "passed")]
+        );
     }
 }

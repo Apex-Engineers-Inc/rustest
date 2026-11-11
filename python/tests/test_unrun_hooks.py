@@ -19,7 +19,8 @@ _HOOK = "def pytest_configure(config):\n    pass\n"
 
 
 def _rustest(tree: Path, *args: str, env: dict[str, str] | None = None):
-    return _run([sys.executable, "-m", "rustest", *args], tree, env)
+    # These pin the NOTE rustest prints when it runs anyway, so they opt out of the fallback.
+    return _run([sys.executable, "-m", "rustest", "--no-pytest-fallback", *args], tree, env)
 
 
 def _notes(stderr: str) -> list[str]:

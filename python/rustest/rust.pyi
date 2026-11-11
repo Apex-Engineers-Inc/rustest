@@ -31,6 +31,7 @@ def collect(
     codeblocks: bool | None = ...,
     collect_tier: str = ...,
     cache_mode: str = ...,
+    pytest_fallback: bool = ...,
 ) -> str:
     """Collect tests with the engine; returns a ``CollectionManifest`` JSON string.
 
@@ -62,6 +63,14 @@ def collect(
     optional ``class_name``/``param_id``/``marks``/``fixtures``/``tier``), ``errors`` (omitted when
     empty; each with ``path`` and ``message``) and ``deselected`` (omitted when zero).
 
+    ``pytest_fallback`` (default off) hands the session to pytest when a conftest or
+    ``pytest_plugins`` module defines a hook only pytest can honour -- anything but
+    ``pytest_addoption``, ``pytest_report_header``, ``pytest_report_collectionfinish``,
+    ``pytest_terminal_summary`` and ``pytest_assertrepr_compare``. The manifest then carries
+    those hooks as ``pytest_fallback`` (``["conftest.py::pytest_configure", ...]``) and
+    ``tests``/``errors`` are empty; the stderr note is not printed. Off, or with no such hook,
+    the key is absent and the manifest is unchanged.
+
     Raises ``ValueError`` for a usage error (a bad ``invocation_dir``, a path argument that
     does not exist, an unusable config file, or a malformed ``-k``/``-m`` expression) and
     ``RuntimeError`` for an orchestration failure. A test file that fails to import raises
@@ -84,6 +93,7 @@ def run(
     assert_rewrite: str = ...,
     coverage: str | None = ...,
     on_event: Callable[[str, Any], object] | None = ...,
+    pytest_fallback: bool = ...,
 ) -> str:
     """Run tests with the engine; returns a schema-v2 ``RunReport`` JSON string.
 
@@ -121,5 +131,11 @@ def run(
     event is sent when the run fails before selection is final. If the callback raises,
     no further work is dispatched, the workers shut down as under ``-x``, the callback is not
     called again, and ``run`` raises that exception instead of returning the report.
+
+    ``pytest_fallback`` (default off) is ``collect``'s: when a conftest or ``pytest_plugins``
+    module defines a hook only pytest can honour, the run stops at the collection barrier --
+    nothing is dispatched, ``on_event`` receives no event at all, the ``--lf`` cache is not
+    written, the stderr note is not printed -- and the report carries the hooks as
+    ``pytest_fallback``, with every other field describing nothing (``tests`` empty).
     """
     ...
