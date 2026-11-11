@@ -313,7 +313,7 @@ def test_corpus_case_count_is_pinned() -> None:
     # a test from another, which only the whole-session pytest fallback gets right.
     # `builtins/tmpdir-legacy` (+1): `tmpdir`/`tmpdir_factory` (`py.path`), which errored when the
     # `_pytest` stub hid the `_pytest._py` that pytest's `py.py` imports.
-    assert len(discover_cases()) == 56
+    assert len(discover_cases()) == 59
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

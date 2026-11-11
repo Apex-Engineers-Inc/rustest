@@ -88,7 +88,7 @@ def test_xfail_mark_no_condition():
     assert marks[0]["name"] == "xfail"
     assert marks[0]["args"] == ()
     assert marks[0]["kwargs"]["reason"] == "Known bug"
-    assert marks[0]["kwargs"]["strict"] is False
+    assert "strict" not in marks[0]["kwargs"]  # as pytest: unset, so xfail_strict decides
     assert marks[0]["kwargs"]["run"] is True
 
 
@@ -240,7 +240,7 @@ def test_xfail_default_values():
     assert marks[0]["kwargs"]["reason"] is None
     assert marks[0]["kwargs"]["raises"] is None
     assert marks[0]["kwargs"]["run"] is True
-    assert marks[0]["kwargs"]["strict"] is False
+    assert "strict" not in marks[0]["kwargs"]  # as pytest: unset, so xfail_strict decides
 
 
 def test_skipif_keeps_a_string_condition_as_written():

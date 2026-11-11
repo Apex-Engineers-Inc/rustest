@@ -469,3 +469,77 @@ def test_core_passes_sys_executable_to_the_worker_pool() -> None:
         assert core.collect_only(paths=[], workers=None) == 5
 
     assert seen == [sys.executable]
+
+
+# --------------------------------------------------------------------------------------
+# `--collect-only --lf` / `--ff`: what pytest lists, with a remembered failure
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--lf"],
+        ["--ff"],
+        ["--lf", "-k", "test_a"],
+        ["--lf", "-k", "test_b"],
+        ["--ff", "-k", "test_c or test_d"],
+    ],
+)
+def test_lf_and_ff_list_what_pytest_lists(tmp_path: Path, extra: list[str]) -> None:
+    """``--collect-only --lf/--ff`` is handed to pytest, so it lists exactly what pytest lists."""
+    tree = tmp_path / "lf_tree"
+    _write(tree / "pytest.ini", "[pytest]\n")
+    _write(tree / "test_x.py", "def test_a(): pass\ndef test_b(): assert 0\ndef test_c(): pass\n")
+    _write(tree / "test_y.py", "def test_d(): pass\n")
+    _ = _run([sys.executable, "-m", "pytest", "-q"], tree)  # each runner remembers the failure
+    _ = _run([sys.executable, "-m", "rustest", "--no-pytest-fallback", "-q"], tree)
+
+    oracle = _run([sys.executable, "-m", "pytest", "--collect-only", "-q", *extra], tree)
+    ours = _run([sys.executable, "-m", "rustest", "--collect-only", *extra], tree)
+
+    assert ours.returncode == oracle.returncode, _context("v2", ours)
+    assert ours.stdout.splitlines() == _pytest_nodeids(oracle.stdout), _context("v2", ours)
+    assert "pytest" in ours.stderr and "--lf/--ff" in ours.stderr  # says why it was handed over
+
+
+def test_lf_collect_only_matches_pytest_where_a_plain_filter_would_not(tmp_path: Path) -> None:
+    """The shapes a Python reimplementation got wrong: a class-only failure (the collection
+    filter stays off, ``-k`` keeps its selection) and an unrelated file that no longer imports
+    (pytest skips it under ``--lf``)."""
+    klass = tmp_path / "class_only"
+    _write(klass / "pytest.ini", "[pytest]\n")
+    _write(
+        klass / "test_x.py",
+        "class TestC:\n    def test_a(self): pass\n    def test_b(self): assert 0\n",
+    )
+    _write(klass / "test_y.py", "def test_y(): pass\n")
+    _ = _run([sys.executable, "-m", "pytest", "-q"], klass)
+    _ = _run([sys.executable, "-m", "rustest", "--no-pytest-fallback", "-q"], klass)
+    for extra in (["--lf"], ["--lf", "-k", "test_y"]):
+        oracle = _run([sys.executable, "-m", "pytest", "--collect-only", "-q", *extra], klass)
+        ours = _run([sys.executable, "-m", "rustest", "--collect-only", *extra], klass)
+        assert ours.returncode == oracle.returncode, (extra, _context("v2", ours))
+        assert ours.stdout.splitlines() == _pytest_nodeids(oracle.stdout), extra
+
+    broken = tmp_path / "broken_other"
+    _write(broken / "pytest.ini", "[pytest]\n")
+    _write(broken / "test_x.py", "def test_a(): pass\ndef test_b(): assert 0\n")
+    _write(broken / "test_y.py", "def test_y(): pass\n")
+    _ = _run([sys.executable, "-m", "pytest", "-q"], broken)
+    _ = _run([sys.executable, "-m", "rustest", "--no-pytest-fallback", "-q"], broken)
+    _write(broken / "test_y.py", "import no_such_module_zz\n")
+    oracle = _run([sys.executable, "-m", "pytest", "--collect-only", "-q", "--lf"], broken)
+    ours = _run([sys.executable, "-m", "rustest", "--collect-only", "--lf"], broken)
+    assert ours.returncode == oracle.returncode == 0
+    assert ours.stdout.splitlines() == _pytest_nodeids(oracle.stdout) == ["test_x.py::test_b"]
+
+
+def test_lf_collect_only_without_the_fallback_refuses_instead_of_guessing(tmp_path: Path) -> None:
+    tree = tmp_path / "lf_refuse"
+    _write(tree / "pytest.ini", "[pytest]\n")
+    _write(tree / "test_x.py", "def test_a(): pass\n")
+    ours = _run(
+        [sys.executable, "-m", "rustest", "--no-pytest-fallback", "--collect-only", "--ff"], tree
+    )
+    assert ours.returncode == 4 and "--lf/--ff" in ours.stderr and ours.stdout == ""

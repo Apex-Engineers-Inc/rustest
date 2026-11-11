@@ -111,7 +111,7 @@ const DOMAIN: &[u8] = b"rustest/manifest-cache\x00";
 /// differential is the backstop — its Tier D leg never touches this cache, so a stale Tier S
 /// answer fails the comparison — but the backstop only runs when someone runs it, and this
 /// constant costs one line.
-const TIER_S_EPOCH: u32 = 2;
+const TIER_S_EPOCH: u32 = 3;
 
 /// A 32-byte blake3 digest.
 pub type Digest = [u8; 32];
@@ -251,6 +251,8 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
         addopts,
         pythonpath,
         markers,
+        filterwarnings,
+        xfail_strict,
         asyncio_mode,
         asyncio_default_fixture_loop_scope,
         asyncio_default_test_loop_scope,
@@ -289,6 +291,8 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
             .collect::<Vec<String>>(),
     );
     field("markers", markers);
+    field("filterwarnings", filterwarnings);
+    field("xfail_strict", &[xfail_strict.to_string()]);
     // `asyncio_mode` is a **collection** input, not only an execution one: in `auto` mode an
     // `async def` + `yield` test acquires a synthesised `xfail(run=False)` mark
     // (`_worker.py::_async_generator_xfail`) that it does not get in `strict` mode, and the
@@ -752,6 +756,8 @@ mod tests {
             addopts: Vec::new(),
             pythonpath: Vec::new(),
             markers: Vec::new(),
+            filterwarnings: Vec::new(),
+            xfail_strict: false,
             asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
             asyncio_default_fixture_loop_scope: None,
             asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),

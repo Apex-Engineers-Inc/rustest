@@ -1177,7 +1177,7 @@ class MarkGenerator:
         reason: str | None = None,
         raises: type[BaseException] | tuple[type[BaseException], ...] | None = None,
         run: bool = True,
-        strict: bool = False,
+        strict: bool | None = None,
     ) -> MarkDecorator:
         """The factory half of ``mark.xfail`` — see :class:`BareOrFactoryMark`.
 
@@ -1186,7 +1186,8 @@ class MarkGenerator:
             reason: Explanation for why the test is expected to fail
             raises: Expected exception type(s)
             run: Whether to run the test (False means skip it)
-            strict: If True, passing test will fail the suite
+            strict: If True, passing test will fail the suite. Left out of the mark when not
+                given, as pytest leaves it, so the ``xfail_strict`` ini decides.
 
         Usage:
             @mark.xfail(reason="Known bug in backend")
@@ -1202,12 +1203,13 @@ class MarkGenerator:
             def test_known_broken():
                 assert False
         """
-        kwargs = {
+        kwargs: dict[str, object] = {
             "reason": reason,
             "raises": raises,
             "run": run,
-            "strict": strict,
         }
+        if strict is not None:
+            kwargs["strict"] = strict
         args = () if condition is None else (condition,)
         return MarkDecorator("xfail", args, kwargs)
 

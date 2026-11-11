@@ -104,23 +104,36 @@ __all__ = [
 ]
 
 
-def hookimpl(*args: Any, **kwargs: Any) -> Any:
-    """
-    Stub for pytest.hookimpl decorator - used by pytest plugins.
+def hookimpl(
+    function: Any = None,
+    *,
+    hookwrapper: bool = False,
+    optionalhook: bool = False,
+    tryfirst: bool = False,
+    trylast: bool = False,
+    specname: str | None = None,
+    wrapper: bool = False,
+) -> Any:
+    """``pytest.hookimpl``: records its options on the function, as pluggy does.
 
-    NOT FUNCTIONAL in rustest pytest-compat mode. Returns a no-op decorator
-    that simply returns the function unchanged.
+    rustest does not run pluggy, but it does run a few conftest hooks itself
+    (``rustest._hookshim``), and those need ``tryfirst``/``trylast`` to order them and
+    ``hookwrapper``/``wrapper``/``specname`` to refuse what they cannot run.  The marker is the
+    same ``pytest_impl`` attribute pluggy's ``HookimplMarker("pytest")`` sets.
     """
 
-    def decorator(func: Any) -> Any:
+    def mark(func: Any) -> Any:
+        func.pytest_impl = {
+            "hookwrapper": hookwrapper,
+            "optionalhook": optionalhook,
+            "tryfirst": tryfirst,
+            "trylast": trylast,
+            "specname": specname,
+            "wrapper": wrapper,
+        }
         return func
 
-    if len(args) == 1 and callable(args[0]) and not kwargs:
-        # Called as @hookimpl without parentheses
-        return args[0]
-    else:
-        # Called as @hookimpl(...) with arguments
-        return decorator
+    return mark if function is None else mark(function)
 
 
 # Direct mappings - these already have identical signatures
@@ -290,8 +303,8 @@ class PytestWarning(UserWarning):
     *interpreter's* ``-W``/``PYTHONWARNINGS`` resolve a dotted category at startup, long
     before anything installs ``sys.modules["pytest"]``, so the filter is discarded with
     ``Invalid -W option ignored: invalid module name: 'pytest'`` whether or not the class is
-    a ``Warning``. pytest's ``filterwarnings`` ini is not read either
-    (``_worker.py::_ini_values`` refuses it by name rather than fabricating a value).
+    a ``Warning``. The ``filterwarnings`` ini *is* applied (``_worker.py::warnings_window``),
+    and a dotted category in it resolves against this module.
     All four probed.
 
     The bases are pytest's exactly, and the two multiple-inheritance ones are the reason this

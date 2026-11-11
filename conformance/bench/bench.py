@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import TypedDict
 
-from .gen import generate_suite
+from .gen import generate_lf_suite, generate_suite
 
 DEFAULT_SIZES = [(10, 10), (100, 10), (500, 10)]
 
@@ -154,6 +154,49 @@ def _time_cmd(cmd: list[str], cwd: Path) -> float:
             f"benchmark command failed (exit {proc.returncode}): {cmd} :: {proc.stderr[-300:]}"
         )
     return elapsed
+
+
+#: The two trees ``--lf`` is timed on: 200 files of 10 tests (2 000 tests) with one remembered
+#: failure, laid out flat and over 20 directories that each hold a ``conftest.py``.
+LF_LAYOUTS = ("flat", "dirs")
+LF_REPETITIONS = 5
+
+
+class LfRow(TypedDict):
+    layout: str
+    files: int
+    tests: int
+    full_s: float
+    lf_s: float
+
+
+def _time_expecting(cmd: list[str], cwd: Path, code: int) -> float:
+    """Time *cmd*, which must exit *code*: these trees have one failing test by design."""
+    start = time.perf_counter()
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
+    elapsed = time.perf_counter() - start
+    if proc.returncode != code:
+        raise RuntimeError(f"{cmd} exited {proc.returncode}, not {code}: {proc.stderr[-300:]}")
+    return elapsed
+
+
+def measure_lf(layout: str, repetitions: int = LF_REPETITIONS) -> LfRow:
+    """Median wall time of a full run and of ``--lf`` on one tree (``-n 4``, fresh process)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        suite = Path(tmp) / "suite"
+        generate_lf_suite(suite, layout)
+        # `--no-pytest-fallback`: the engine is what is measured, not a hand-off to pytest.
+        rustest = [sys.executable, "-m", "rustest", "--no-pytest-fallback", "-n", "4"]
+        _ = _time_expecting(rustest, suite, 1)  # seeds .rustest_cache/v/cache/lastfailed
+        full = [_time_expecting(rustest, suite, 1) for _ in range(repetitions)]
+        lf = [_time_expecting([*rustest, "--lf"], suite, 1) for _ in range(repetitions)]
+        return {
+            "layout": layout,
+            "files": 200,
+            "tests": 2000,
+            "full_s": statistics.median(full),
+            "lf_s": statistics.median(lf),
+        }
 
 
 def _time_cold_collect(rustest_base: list[str], suite: Path) -> float:
@@ -400,8 +443,22 @@ def _fmt_per_file(value: float | None) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="conformance-bench")
     parser.add_argument("--quick", action="store_true", help="Smallest size only")
+    parser.add_argument(
+        "--lf",
+        action="store_true",
+        help="Time `rustest --lf` against a full run on the two 200-file trees, and stop",
+    )
     parser.add_argument("--out", default="conformance/bench_results.json")
     args = parser.parse_args()
+    if args.lf:
+        print("| layout | files | tests | full run | --lf |\n|---|---|---|---|---|")
+        for layout in LF_LAYOUTS:
+            row = measure_lf(layout, 1 if args.quick else LF_REPETITIONS)
+            print(
+                f"| {row['layout']} | {row['files']} | {row['tests']} "
+                + f"| {row['full_s']:.2f}s | {row['lf_s']:.2f}s |"
+            )
+        return 0
     report = run_benchmarks(DEFAULT_SIZES[:1] if args.quick else DEFAULT_SIZES, args.quick)
     # Trailing newline: baselines.json is a tracked file and the end-of-file-fixer
     # pre-commit hook would otherwise rewrite it after every run.

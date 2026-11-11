@@ -45,13 +45,7 @@ traceback filtering — because those distinguish one outcome from another.
 
 **Known scope limits of this worker** (each deliberate, none silent):
 
-* *No warning channel.*  pytest reports a class with ``__init__``/``__new__`` via
-  ``PytestCollectionWarning`` and still exits 0.  The protocol has no warnings field,
-  so such a class is skipped and **no error entry is emitted** — emitting one would
-  turn pytest's exit 0 into the orchestrator's exit 2 and diverge from the oracle.
-* *No ``xfail_strict`` ini and no ``--runxfail``.*  Neither is on the wire, so ``strict``
-  defaults to ``False`` per mark (`_pytest/skipping.py::pytest_addoption`) and xfail is
-  always honoured.  A suite setting ``xfail_strict = true`` needs a protocol field.
+* *No ``--runxfail``.*  It is not on the wire, so xfail is always honoured.
 * *Boundary-teardown output goes to stderr, not to a test's ``stdout``.*  Class- and
   module-scoped teardown belongs to the tests that just finished; pytest prints it under the
   *previous* test's teardown section because ``runtestprotocol`` is handed ``nextitem``.  The
@@ -158,7 +152,17 @@ import textwrap
 import time
 import traceback
 import types
-from typing import TYPE_CHECKING, Any, Final, NoReturn, NotRequired, TextIO, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Literal,
+    NoReturn,
+    NotRequired,
+    TextIO,
+    TypedDict,
+    cast,
+)
 import unittest
 import warnings
 
@@ -294,7 +298,10 @@ __all__ = [
 #: v11 adds ``import_conftests`` -> ``conftests_imported``: import the conftest chains of
 #: directories whose test files ``--lf`` skips, as pytest's collection still does, without
 #: importing those files. The reply names the hooks (and import failures) they brought in.
-PROTOCOL_VERSION: Final = 11
+#:
+#: v12 carries the ``filterwarnings`` and ``xfail_strict`` inis on ``init`` and the warnings
+#: recorded during a file's collection or a test on ``collected`` / ``test_result``.
+PROTOCOL_VERSION: Final = 12
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -374,6 +381,7 @@ class CollectedResponse(TypedDict):
     error: NotRequired[CollectionErrorDict]
     skipped: NotRequired[str]
     hooks: NotRequired[list[str]]
+    warnings: NotRequired[list[RecordedWarningDict]]
 
 
 class ResultResponse(TypedDict):
@@ -394,6 +402,7 @@ class ResultResponse(TypedDict):
     message: NotRequired[str]
     stdout: NotRequired[str]
     stderr: NotRequired[str]
+    warnings: NotRequired[list[RecordedWarningDict]]
 
 
 class BatchDoneResponse(TypedDict):
@@ -1262,7 +1271,20 @@ def _async_generator_xfail(func: object, name: str, is_asyncio_test: bool) -> Ma
     if not is_asyncio_test or not inspect.isasyncgenfunction(func):
         return None
     reason = f"Tests based on asynchronous generators are not supported. {name} will be ignored."
+    from .compat.pytest import PytestCollectionWarning
+
+    warn_at_node(func, PytestCollectionWarning(reason))
     return MarkSpec(name="xfail", kwargs={"run": False, "reason": reason})
+
+
+def warn_at_node(obj: object, warning: Warning) -> None:
+    """`_pytest/nodes.py::Node.warn`: ``warn_explicit`` at the object's own source line."""
+    try:
+        filename = inspect.getsourcefile(cast("Callable[..., object]", obj)) or "<unknown>"
+        lineno = inspect.findsource(cast("Callable[..., object]", obj))[1]
+    except (OSError, TypeError):
+        filename, lineno = "<unknown>", -1
+    warnings.warn_explicit(warning, category=None, filename=filename, lineno=lineno + 1)
 
 
 def _requested_argnames(
@@ -2377,9 +2399,6 @@ class _ItemNode:
         self.name: Final = plan.id.rsplit("::", 1)[-1]
         self.nodeid: Final = plan.id
         self.path: Final = plan.path
-        #: ``fspath`` is pytest's deprecated ``py.path`` spelling, kept as the same value so
-        #: an old conftest reading it gets a path rather than an ``AttributeError``.
-        self.fspath: Final = plan.path
         self.cls: Final = plan.owner
         self.module: Final = plan.module
         #: pytest's ``Function.function`` is ``self.obj``, which for a ``TestCaseFunction``
@@ -2447,6 +2466,14 @@ class _ItemNode:
             self.own_markers.append(spec)
         else:
             self.own_markers.insert(0, spec)
+
+    @property
+    def fspath(self) -> object:
+        """`_pytest/legacypath.py::Node_fspath`: the path as a ``py.path.local``.
+
+        A property, so ``py`` is imported only by a suite that reads it.
+        """
+        return _builtins.legacy_path(self.path)
 
     def iter_markers(self, name: str | None = None) -> Iterator[MarkSpec]:
         """Port of `Node.iter_markers` — closest first, which is the order
@@ -2581,6 +2608,11 @@ class SubRequest:
     @property
     def path(self) -> Path:
         return self.node.path
+
+    @property
+    def fspath(self) -> object:
+        """`_pytest/legacypath.py::FixtureRequest_fspath`: ``legacy_path(self.path)``."""
+        return self.node.fspath
 
     @property
     def keywords(self) -> Mapping[str, object]:
@@ -4421,10 +4453,9 @@ def _collect_class(
 
     A class with an ``__init__`` or a ``__new__`` is refused — pytest emits
     ``PytestCollectionWarning("cannot collect test class ... because it has a
-    __init__ constructor")`` and returns ``[]``, **without** failing the run.  The
-    protocol has no warning channel, so the class is skipped silently; emitting
-    a collection error instead would turn pytest's exit 0 into exit 2 (corpus
-    ``collection/class-collection``).
+    __init__ constructor")`` and returns ``[]``, **without** failing the run (corpus
+    ``collection/class-collection``) -- unless a ``filterwarnings`` ``error`` turns the
+    warning into the collection error it then is.
 
     Fixtures defined in the class body are registered into a **child** registry
     (`_pytest/python.py::Class.collect` l. 772: ``parsefactories(self.newinstance(),
@@ -4437,6 +4468,17 @@ def _collect_class(
     if _safe_getattr(cls, "__test__", True) is False:
         return []
     if _hasinit(cls) or _hasnew(cls):
+        from .compat.pytest import PytestCollectionWarning
+
+        constructor = "__init__" if _hasinit(cls) else "__new__"
+        parent = "::".join((context.rel_path, *parts))
+        warn_at_node(
+            cls,
+            PytestCollectionWarning(
+                f"cannot collect test class {cls.__name__!r} because it has a "
+                + f"{constructor} constructor (from: {parent})"
+            ),
+        )
         return []
 
     class_marks = _mark_specs(cls, consider_mro=True) + outer_marks
@@ -5340,16 +5382,15 @@ def evaluate_xfail_marks(
 ) -> Xfail | None:
     """Port of `_pytest/skipping.py::evaluate_xfail_marks` (l. 213-235).
 
-    ``strict`` defaults to pytest's ``xfail_strict`` ini, which is ``False``
-    (`skipping.py::pytest_addoption` l. 40-46).  The ini is **not on this wire**, so a suite
-    that sets ``xfail_strict = true`` gets non-strict behaviour here; closing that needs a
-    protocol field, and is recorded as such rather than guessed.
+    ``strict`` defaults to pytest's ``xfail_strict`` ini (`skipping.py::pytest_addoption`
+    l. 40-46, default ``False``), which ``init`` carries; the mark's own ``strict=`` wins.
     """
+    xfail_strict = _state.xfail_strict if _state is not None else False
     for mark in marks:
         if mark.name != "xfail":
             continue
         run = bool(mark.kwargs.get("run", True))
-        strict = bool(mark.kwargs.get("strict", False))
+        strict = bool(mark.kwargs.get("strict", xfail_strict))
         raises = _as_raises(mark.kwargs.get("raises", None))
         conditions = _conditions(mark)
         if not conditions:
@@ -5917,8 +5958,7 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
     gets pytest's own failure with pytest's own message.
 
     The third branch — a test that ``return``s a non-``None`` value — is pytest's
-    ``PytestReturnNotNoneWarning``. the engine has no warnings channel, so it is silently ignored,
-    exactly as before; the outcome is identical either way.
+    ``PytestReturnNotNoneWarning``, which a ``filterwarnings = error`` turns into a failure.
 
     **A fresh ``contextvars.Context`` per test body, and it is isolation, not tidiness.**
     pytest-asyncio builds one per item — ``context = contextvars.copy_context()`` in
@@ -5956,6 +5996,17 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
         )
     elif hasattr(result, "__aiter__"):
         _fail(ASYNC_NOT_SUPPORTED_MESSAGE)
+    elif result is not None:
+        from .compat.pytest import PytestReturnNotNoneWarning
+
+        warnings.warn(
+            PytestReturnNotNoneWarning(
+                f"Test functions should return None, but {plan.id} returned {type(result)!r}.\n"
+                + "Did you mean to use `assert` instead of `return`?\n"
+                + "See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none"
+                + " for more information."
+            )
+        )
 
 
 def drain_boundaries(plan: ExecutionPlan, runner: FixtureRunner) -> BaseException | None:
@@ -6160,12 +6211,21 @@ def execute_test(test_id: str) -> ResultResponse:
     except KeyError as exc:
         raise UnknownTestError(str(exc.args[0]) if exc.args else test_id) from None
 
+    global _previous_plan
     runner = _execution_runner()
-    boundary_exc = drain_boundaries(plan, runner)
+    recorded: list[RecordedWarningDict] = []
+    previous = _previous_plan
+    with warnings_window(
+        previous.id if previous is not None else None,
+        previous.marks if previous is not None else (),
+        recorded,
+    ):
+        boundary_exc = drain_boundaries(plan, runner)
+    _previous_plan = plan
 
     capture = _worker_capture()
     started = time.perf_counter()
-    with capture.window():
+    with capture.window(), warnings_window(plan.id, plan.marks, recorded):
         reports = _run_phases(plan, runner, capture, boundary_exc)
     duration = time.perf_counter() - started
 
@@ -6183,6 +6243,8 @@ def execute_test(test_id: str) -> ResultResponse:
         result["stdout"] = captured_out
     if captured_err:
         result["stderr"] = captured_err
+    if recorded:
+        result["warnings"] = recorded
     return result
 
 
@@ -6201,9 +6263,207 @@ class WorkerState:
     #: repo that builds a state by hand keeps working and states, by omission, that it is
     #: not exercising the mode.
     asyncio: AsyncioConfig = _DEFAULT_ASYNCIO
+    #: The ``xfail_strict`` ini (protocol v12).
+    xfail_strict: bool = False
+    #: Where warnings outside a test are located from (``WarningReport.get_location``).
+    invocation_dir: Path | None = None
 
 
 _state: WorkerState | None = None
+
+# -- warnings: `_pytest/warnings.py`, ported ------------------------------------------
+
+
+class RecordedWarningDict(TypedDict):
+    """``RecordedWarning`` (``src/engine/protocol.rs``): pytest's ``WarningReport``, as text."""
+
+    location: str
+    message: str
+
+
+WarningAction = Literal["default", "always", "all", "ignore", "module", "once", "error"]
+#: ``warnings.filterwarnings``'s positional arguments, as `parse_warning_filter` returns them.
+WarningFilter = tuple[WarningAction, str, type[Warning], str, int]
+
+#: ``init``'s ``filterwarnings`` ini, parsed once (pytest parses it once per window; the
+#: answer cannot change within a session).
+_warning_filters: tuple[WarningFilter, ...] = ()
+
+#: The test the last ``execute_test`` ran, whose scopes the next one's boundary drain tears
+#: down -- under *its* marks, since pytest runs that teardown inside the previous item's
+#: ``runtest`` window.
+_previous_plan: ExecutionPlan | None = None
+
+#: The session's warning filters, entered at ``init`` and left at ``shutdown``.
+_session_warnings: warnings.catch_warnings[None] | None = None
+
+
+_WARNING_ACTIONS: Final[tuple[WarningAction, ...]] = (
+    "default",
+    "always",
+    "all",
+    "ignore",
+    "module",
+    "once",
+    "error",
+)
+
+
+def parse_warning_filter(arg: str) -> WarningFilter:
+    """Port of `_pytest/config/__init__.py::parse_warning_filter` with ``escape=False``.
+
+    ``escape=True`` is ``-W``'s, which rustest does not take (an unknown flag hands the session
+    to pytest). Raises ``ValueError`` (or the category's import error) where pytest raises
+    ``UsageError``.
+    """
+    parts = arg.split(":")
+    if len(parts) > 5:
+        raise ValueError(
+            f"Too many fields ({len(parts)}), expected at most 5 separated by colons:"
+            + " action:message:category:module:line"
+        )
+    parts += [""] * (5 - len(parts))
+    action_, message, category_, module, lineno_ = (part.strip() for part in parts)
+    # `warnings._getaction`: a prefix of a known action, and an empty one is `default`.
+    action: WarningAction | None = (
+        next((a for a in _WARNING_ACTIONS if a.startswith(action_)), None) if action_ else "default"
+    )
+    if action is None:
+        raise ValueError(f"invalid action: {action_!r}")
+    category = _resolve_warning_category(category_)
+    lineno = 0
+    if lineno_:
+        lineno = int(lineno_)
+        if lineno < 0:
+            raise ValueError(f"invalid lineno {lineno_!r}: number is negative")
+    import re
+
+    _ = re.compile(message)
+    _ = re.compile(module)
+    return action, message, category, module, lineno
+
+
+def _resolve_warning_category(category: str) -> type[Warning]:
+    """Port of `_pytest/config/__init__.py::_resolve_warning_category`: imports propagate."""
+    if not category:
+        return Warning
+    if "." not in category:
+        import builtins
+
+        found: object = getattr(builtins, category)
+    else:
+        module, _, klass = category.rpartition(".")
+        found = getattr(__import__(module, None, None, [klass]), klass)
+    if not (isinstance(found, type) and issubclass(found, Warning)):
+        raise ValueError(f"{found} is not a Warning subclass")
+    return found
+
+
+def apply_session_warning_filters() -> None:
+    """The filters every one of pytest's windows starts from (`catch_warnings_for_item`).
+
+    ``always`` for the two deprecation categories unless the interpreter was given
+    ``-W``/``PYTHONWARNINGS``, then the ini lines in order, each inserted at the front, so a
+    later line wins.
+    """
+    if not sys.warnoptions:
+        warnings.filterwarnings("always", category=DeprecationWarning)
+        warnings.filterwarnings("always", category=PendingDeprecationWarning)
+    for spec in _warning_filters:
+        warnings.filterwarnings(*spec)
+
+
+def _warning_text(record: warnings.WarningMessage) -> str:
+    """`_pytest/warnings.py::warning_record_to_str`, `tracemalloc_message` included."""
+    text = warnings.formatwarning(
+        str(record.message), record.category, record.filename, record.lineno, record.line
+    )
+    if record.source is None:
+        return text
+    import tracemalloc
+
+    if not tracemalloc.is_tracing():
+        return (
+            text
+            + "Enable tracemalloc to get traceback where the object was allocated.\n"
+            + "See https://docs.pytest.org/en/stable/how-to/capture-warnings.html"
+            + "#resource-warnings for more info."
+        )
+    traceback_ = tracemalloc.get_object_traceback(record.source)
+    if traceback_ is None:
+        return text
+    return text + "Object allocated at:\n" + "\n".join(traceback_.format())
+
+
+def _fs_location(record: warnings.WarningMessage) -> str:
+    """`WarningReport.get_location` for a warning outside any test: `path:line`, relative to
+    the invocation directory when they share an ancestor (``bestrelpath``)."""
+    filename = os.path.abspath(record.filename)
+    base = _state.invocation_dir if _state is not None else None
+    try:
+        relative = os.path.relpath(filename, base) if base is not None else filename
+    except ValueError:  # another drive: no common ancestor
+        relative = filename
+    return f"{relative}:{record.lineno}"
+
+
+@contextlib.contextmanager
+def warnings_window(
+    location: str | None, marks: Sequence[MarkSpec], out: list[RecordedWarningDict]
+) -> Iterator[None]:
+    """Port of `_pytest/warnings.py::catch_warnings_for_item`, recording into *out*.
+
+    *location* is the node id the warnings belong to, or ``None`` during collection, where
+    pytest's ``nodeid`` is empty and each warning is located by its own ``path:line``.
+    *marks* are the item's, closest first (``iter_markers``); each ``filterwarnings`` mark's
+    arguments are inserted in turn, so the **farthest** mark, and within one mark the last
+    argument, wins -- probed on pytest 8.4.2: a class's ``ignore`` beats its method's
+    ``error``, a module's ``error`` beats a function's ``ignore``.
+    """
+    with warnings.catch_warnings(record=True) as log:
+        apply_session_warning_filters()
+        for mark in marks:
+            if mark.name == "filterwarnings":
+                for arg in mark.args:
+                    warnings.filterwarnings(*parse_warning_filter(str(arg)))
+        try:
+            yield
+        finally:
+            for record in log:
+                out.append(
+                    {
+                        "location": location if location is not None else _fs_location(record),
+                        "message": _warning_text(record),
+                    }
+                )
+
+
+def _install_warning_filters(lines: Sequence[str]) -> None:
+    """Parse the ``filterwarnings`` ini and install it for the whole session, as pytest's
+    ``pytest_configure`` does; everything outside a test or a collection runs under it.
+
+    A line that does not parse is pytest's usage error. Named as a reason instead, on the
+    channel a conftest that will not import uses, so a session that can be handed to pytest
+    is, and pytest reports it.
+    """
+    global _warning_filters, _session_warnings
+    parsed: list[WarningFilter] = []
+    for line in lines:
+        try:
+            parsed.append(parse_warning_filter(line))
+        except Exception as exc:  # noqa: BLE001 - recorded as a reason, never dropped
+            reason = traceback.format_exception_only(type(exc), exc)[-1].strip()
+            _conftest_import_failures.add(
+                f"rustest could not import the warning filter {line!r}: {reason}"
+            )
+    _warning_filters = tuple(parsed)
+    # Undone at `shutdown`, as pytest's `config.add_cleanup` undoes it: an `error` filter left
+    # in place would turn the interpreter's own exit-time ResourceWarnings into noise.
+    if _session_warnings is None:
+        _session_warnings = warnings.catch_warnings()
+        _ = _session_warnings.__enter__()
+    apply_session_warning_filters()
+
 
 #: Whether ``init`` carried a ``coverage`` object and :func:`rustest._coverage.start`
 #: succeeded.
@@ -6369,8 +6629,17 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
         rootdir=rootdir,
         naming=naming,
         asyncio=asyncio_config,
+        xfail_strict=bool(message.get("xfail_strict", False)),
+        invocation_dir=invocation_dir,
     )
-    _builtins.configure(rootdir, invocation_dir, _ini_values(naming, asyncio_config, pythonpath))
+    raw_filters = cast("Sequence[object]", message.get("filterwarnings") or ())
+    filter_lines = [str(line) for line in raw_filters]
+    ini = _ini_values(naming, asyncio_config, pythonpath)
+    # `linelist` and `bool`, as pytest's own `getini` answers them.
+    ini["filterwarnings"] = filter_lines
+    ini["xfail_strict"] = _state.xfail_strict
+    _builtins.configure(rootdir, invocation_dir, ini)
+    _install_warning_filters(filter_lines)
     return {"op": "ready", "protocol_version": PROTOCOL_VERSION}
 
 
@@ -6379,9 +6648,9 @@ def _ini_values(
 ) -> dict[str, object]:
     """The ini values ``request.config.getini`` can answer — exactly what ``init`` carries.
 
-    Seven names, and the list is deliberately not padded.  ``markers``, ``xfail_strict``,
-    ``filterwarnings`` and the rest are real pytest inis whose values this worker does not
-    have; :class:`rustest._builtins.Config` refuses them by name rather than returning a
+    Seven names here, plus ``filterwarnings`` and ``xfail_strict``, which :func:`handle_init`
+    adds, and the list is deliberately not padded.  ``markers`` and the rest are real pytest
+    inis whose values this worker does not have; :class:`rustest._builtins.Config` refuses them by name rather than returning a
     plausible default, because a suite branching on a fabricated ``getini`` result reports a
     green run about a mode it never ran in.
 
@@ -6532,6 +6801,10 @@ def handle_shutdown() -> ByeResponse:
     Answering the protocol only.  :func:`drain_at_shutdown` does the unwinding, and
     :func:`main` calls it first.
     """
+    global _session_warnings
+    if _session_warnings is not None:
+        _session_warnings.__exit__(None, None, None)
+        _session_warnings = None
     return {"op": "bye"}
 
 
@@ -6590,29 +6863,39 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
     file_path = Path(path)
     response: CollectedResponse = {"op": "collected", "path": path}
 
-    def fail(message: str) -> CollectedResponse:
-        response["error"] = {"path": _relative_posix(file_path, state.rootdir), "message": message}
+    #: The collection window's warnings (`_pytest/warnings.py::pytest_collection`), filled
+    #: when the window closes, which is before any arm below answers.
+    recorded: list[RecordedWarningDict] = []
+
+    def answer() -> CollectedResponse:
+        if recorded:
+            response["warnings"] = recorded
         return response
 
+    def fail(message: str) -> CollectedResponse:
+        response["error"] = {"path": _relative_posix(file_path, state.rootdir), "message": message}
+        return answer()
+
     try:
-        if file_path.suffix == ".md":
-            # The markdown tier: each block gets its own module, exec'd and collected in
-            # `collect_markdown` itself, so the conftest chain is loaded per block rather
-            # than once here. An autouse fixture reaches the tests a block defines but not
-            # the block's own top-level statements -- see `collect_markdown`'s docstring.
-            # The orchestrator only ever sends a `.md` path when code blocks are enabled
-            # (`src/engine/collect.rs::is_markdown`).
-            tests, plans = collect_markdown(
-                file_path,
-                state.rootdir,
-                state.naming,
-                state.asyncio,
-            )
-        else:
-            module, registry = build_registry(file_path, state.rootdir)
-            tests, plans = collect_module(
-                module, file_path, state.rootdir, state.naming, registry, state.asyncio
-            )
+        with warnings_window(None, (), recorded):
+            if file_path.suffix == ".md":
+                # The markdown tier: each block gets its own module, exec'd and collected in
+                # `collect_markdown` itself, so the conftest chain is loaded per block rather
+                # than once here. An autouse fixture reaches the tests a block defines but not
+                # the block's own top-level statements -- see `collect_markdown`'s docstring.
+                # The orchestrator only ever sends a `.md` path when code blocks are enabled
+                # (`src/engine/collect.rs::is_markdown`).
+                tests, plans = collect_markdown(
+                    file_path,
+                    state.rootdir,
+                    state.naming,
+                    state.asyncio,
+                )
+            else:
+                module, registry = build_registry(file_path, state.rootdir)
+                tests, plans = collect_module(
+                    module, file_path, state.rootdir, state.naming, registry, state.asyncio
+                )
         for plan in plans:
             _execution_plans[plan.id] = plan
     except CollectionRefusal as exc:
@@ -6632,7 +6915,7 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
         if _safe_getattr(exc, "allow_module_level", False):
             reason = _safe_getattr(exc, "msg", None)
             response["skipped"] = reason if isinstance(reason, str) else str(exc)
-            return response
+            return answer()
         return fail(
             "Using pytest.skip outside of a test will skip the entire module. "
             + "If that's your intention, pass `allow_module_level=True`. "
@@ -6650,7 +6933,7 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
 
     if tests:
         response["tests"] = tests
-    return response
+    return answer()
 
 
 def execute_batch(

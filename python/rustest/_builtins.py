@@ -1017,13 +1017,13 @@ class TempdirFactory:
         self._factory: Final = path_factory
 
     def mktemp(self, basename: str, numbered: bool = True) -> PyPathLocal:
-        return _legacy_path(self._factory.mktemp(basename, numbered).resolve())
+        return legacy_path(self._factory.mktemp(basename, numbered).resolve())
 
     def getbasetemp(self) -> PyPathLocal:
-        return _legacy_path(self._factory.getbasetemp().resolve())
+        return legacy_path(self._factory.getbasetemp().resolve())
 
 
-def _legacy_path(path: Path) -> PyPathLocal:
+def legacy_path(path: Path) -> PyPathLocal:
     """``py.path.local(path)`` — `_pytest/legacypath.py::legacy_path`.
 
     ``py`` is imported here rather than at module level, so a worker running a suite that never
@@ -1100,7 +1100,7 @@ def tmpdir(tmp_path: Path) -> PyPathLocal:
     the identity is the point: a test requesting both fixtures gets one directory under
     pytest.
     """
-    return _legacy_path(tmp_path)
+    return legacy_path(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1445,7 +1445,6 @@ _UNCARRIED_INI: Final = frozenset(
         "doctest_optionflags",
         "empty_parameter_set_mark",
         "faulthandler_timeout",
-        "filterwarnings",
         "junit_family",
         "log_cli",
         "log_cli_level",
@@ -1461,7 +1460,6 @@ _UNCARRIED_INI: Final = frozenset(
         "tmp_path_retention_count",
         "tmp_path_retention_policy",
         "usefixtures",
-        "xfail_strict",
     }
 )
 
@@ -1488,7 +1486,7 @@ class Config:
     @property
     def rootdir(self) -> PyPathLocal:
         """pytest's deprecated ``py.path`` spelling of :attr:`rootpath`."""
-        return _legacy_path(self.rootpath)
+        return legacy_path(self.rootpath)
 
     @property
     def cache(self) -> Cache:

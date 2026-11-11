@@ -55,7 +55,9 @@ use crate::engine::manifest::{
 #[cfg(test)]
 use crate::engine::manifest_cache::ManifestCache;
 use crate::engine::nodeid::{name_parts, split_collection_argument, walk_names};
-use crate::engine::protocol::{CoverageWire, WorkerRequest, WorkerResponse, PROTOCOL_VERSION};
+use crate::engine::protocol::{
+    CoverageWire, RecordedWarning, WorkerRequest, WorkerResponse, PROTOCOL_VERSION,
+};
 use crate::engine::selection::{deselect_in_place, select_mask, SelectionError};
 use crate::engine::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
 use crate::engine::to_posix;
@@ -503,6 +505,9 @@ pub(crate) struct FileOutcome {
     /// `importorskip`). Mutually exclusive with both other fields; contributes one
     /// `skipped` to the tally and no ids.
     pub(crate) skipped: Option<String>,
+    /// Warnings recorded while the file was collected; a run reports them, a collection
+    /// does not.
+    pub(crate) warnings: Vec<RecordedWarning>,
 }
 
 /// Everything a run needs before a single process is spawned: the files, the pool size,
@@ -737,6 +742,8 @@ pub(crate) fn plan_with_options(
         // Cloned rather than moved because `options` is borrowed; `None` here is what makes a
         // run without `--cov` register no monitoring tool in any worker.
         coverage: options.coverage.clone(),
+        filterwarnings: config.filterwarnings.clone(),
+        xfail_strict: config.xfail_strict,
     };
 
     Ok(Dispatch {
@@ -847,6 +854,7 @@ pub(crate) fn assemble(
                 // skip is raised *by running* the module, which Tier S does not do. A file
                 // whose top level calls anything is refused as dynamic long before this.
                 skipped: None,
+                warnings: Vec::new(),
             })
         })
         .collect();
@@ -2151,6 +2159,7 @@ impl Worker {
                 error,
                 skipped,
                 hooks,
+                warnings,
             } => {
                 if echoed != posix {
                     return Err(self.protocol(
@@ -2184,6 +2193,7 @@ impl Worker {
                     tests,
                     error,
                     skipped,
+                    warnings,
                 })
             }
             other => Err(self.protocol(
@@ -2349,6 +2359,7 @@ impl Worker {
                     message,
                     stdout,
                     stderr,
+                    warnings,
                 } => {
                     let Some(wanted) = ids.get(seen) else {
                         return Err(self.execute_protocol(
@@ -2378,6 +2389,7 @@ impl Worker {
                         message,
                         stdout,
                         stderr,
+                        warnings,
                     };
                     on_result(seen, &outcome);
                     out.push(outcome);
@@ -2765,7 +2777,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":11}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":12}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

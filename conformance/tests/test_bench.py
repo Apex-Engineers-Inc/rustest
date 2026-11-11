@@ -231,3 +231,31 @@ def test_derive_overhead_needs_two_distinct_cells() -> None:
     assert derive_per_file([_per_file_row(100, 0.5, 0.4)]) == none
     assert derive_per_file([]) == none
     assert derive_per_file([_per_file_row(100, 0.5, 0.4), _per_file_row(100, 0.9, 0.7)]) == none
+
+
+def test_the_lf_trees_have_one_failure_and_the_shapes_performance_md_describes(
+    tmp_path: Path,
+) -> None:
+    from conformance.bench.gen import generate_lf_suite
+
+    flat = tmp_path / "flat"
+    failing = generate_lf_suite(flat, "flat")
+    assert len(list(flat.glob("test_gen_*.py"))) == 200
+    assert "assert 0 + 1 == 2" in failing.read_text(encoding="utf-8")
+    assert (
+        sum(
+            "== 2" in p.read_text(encoding="utf-8")
+            and "assert 0 + 1 == 2" in p.read_text(encoding="utf-8")
+            for p in flat.glob("test_gen_*.py")
+        )
+        == 1
+    )
+
+    dirs = tmp_path / "dirs"
+    failing = generate_lf_suite(dirs, "dirs")
+    assert len(list(dirs.glob("pkg_*/conftest.py"))) == 20
+    assert len(list(dirs.glob("pkg_*/test_*.py"))) == 200
+    assert failing == dirs / "pkg_00" / "test_00_m00.py"
+
+    with pytest.raises(ValueError):
+        _ = generate_lf_suite(tmp_path / "x", "nested")

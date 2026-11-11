@@ -291,8 +291,7 @@ yet look for them:
 
 - **Plugins that load themselves** through a `pytest11` entry point (pytest-randomly,
   pytest-rerunfailures, pytest-timeout, pytest-django and so on).
-- **Ini keys rustest does not honour**, plugin keys (`timeout`, `reruns`) and core ones such as
-  `xfail_strict`.
+- **Ini keys rustest does not honour**, such as plugin keys (`timeout`, `reruns`).
 - **Plugin marks**, such as `@pytest.mark.timeout`.
 - **A `conftest.py` in a directory with no test files**: rustest only follows the conftests above
   directories that hold tests, so its session-wide hooks are not seen. (pytest registers it
@@ -315,7 +314,8 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 | **Markdown code blocks** | Off by default; `--codeblocks`, or `[tool.rustest] codeblocks = true`, turns it on. With it off, a `.md` argument is a usage error and rustest's answer matches pytest's **exactly**, so this is no longer a divergence. With it on, rustest collects python fences out of a `.md` file **named as an argument**; a *directory* walk still collects none. | `rustest user_guide/` runs nothing either way, so name the files once enabled: `rustest user_guide/*.md --codeblocks`. pytest has no equivalent without a plugin, which is why the walk does not, even with the tier on. |
 | **Reporting-only flags** | Accepted and ignored, with a note on stderr naming each one. | See the table below. |
 | **`capsys` is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors, exactly as pytest's `capsys` is. | Use `capfd` for a subprocess or a C extension; it redirects the descriptors and does catch them (probed both ways). |
-| **`xfail_strict` ini, `--runxfail`** | Not implemented. The `strict=` *keyword* works. | Set `strict=` on the mark. |
+| **`--runxfail`** | Not implemented. | Remove the `xfail` mark to see the test's own result. |
+| **Warnings** | The `filterwarnings` ini and `@pytest.mark.filterwarnings` are applied as pytest applies them, around collection and around each test, so `filterwarnings = error` fails the same tests. Warnings that are not errors are listed in a warnings summary, and counted in the summary line, as pytest does. `-W` on the command line, and `-p no:warnings`, hand the session to pytest. | None. |
 | **Unknown `pytest.*` attributes** | `pytest.Item`, `pytest.Collector` and any other public name this shim does not define return an inert generated stub class rather than raising `AttributeError`. The catch-all exists so a module that *imports* a pytest internal still loads — the `pytest_asyncio` shim depends on it. | An `isinstance()` or `issubclass()` check against one of these is silently false rather than loudly wrong. This is the one place the shim answers plausibly instead of refusing; `request.node`'s missing attributes go the other way, and deliberately. Not yet a conformance corpus case. |
 
 ### Reporting flags rustest accepts and ignores

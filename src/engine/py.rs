@@ -495,6 +495,8 @@ mod tests {
             asyncio_default_fixture_loop_scope: None,
             asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
             codeblocks: None,
+            filterwarnings: Vec::new(),
+            xfail_strict: false,
         }
     }
 

@@ -151,6 +151,12 @@ pub struct ResolvedConfig {
     /// Defaults to `function` (`plugin.py` l. 123-128) — unlike the fixture option above,
     /// this one has a real default in the oracle, so `None` never reaches the worker.
     pub asyncio_default_test_loop_scope: String,
+    /// The `filterwarnings` ini (`_pytest/warnings.py`, `linelist`), applied by the worker
+    /// around collection and around each test, as `catch_warnings_for_item` applies it.
+    pub filterwarnings: Vec<String>,
+    /// The `xfail_strict` ini (`_pytest/skipping.py`, `bool`, default `False`): the `strict`
+    /// an `xfail` mark gets when it does not say.
+    pub xfail_strict: bool,
     /// `[tool.rustest] codeblocks`, or the pytest-ini-section spelling, or `None` when
     /// neither is set.  `None` is not `false`: it means "no config opinion", so the CLI
     /// flag and then the built-in default decide.
@@ -250,6 +256,10 @@ pub fn resolve_config(
         )?,
         // `_pytest/mark/__init__.py::pytest_addoption` — addini("markers", ..., "linelist").
         markers: getini_linelist(&inicfg, "markers"),
+        filterwarnings: getini_linelist(&inicfg, "filterwarnings"),
+        // pytest's `_strtobool` raises on an unrecognised value, when the first xfail mark is
+        // evaluated; this reads it as the default instead.
+        xfail_strict: getini_bool(&inicfg, "xfail_strict").unwrap_or(false),
         // The three asyncio inis are `type=None`/`type="string"`, so they are taken raw
         // rather than shlex-split (`plugin.py::pytest_addoption` l. 106-128).
         asyncio_mode: getini_asyncio_mode(&inicfg, &err_path)?,

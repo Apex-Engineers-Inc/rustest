@@ -113,7 +113,20 @@ use serde::{Deserialize, Serialize};
 /// `--lf` skips whole files without importing them, but pytest still collects their
 /// directories, which imports those directories' conftests. The orchestrator asks one worker
 /// to do the same, and the reply names the hooks and import failures that brought in.
-pub const PROTOCOL_VERSION: u32 = 11;
+/// **v12** carries the `filterwarnings` and `xfail_strict` inis on `init`, and the warnings a
+/// file's collection or a test recorded on `collected` and `test_result`; each is omitted
+/// when empty (or false), so a run that sets neither and warns nowhere is byte-identical to
+/// v11's.
+pub const PROTOCOL_VERSION: u32 = 12;
+
+/// One warning a worker recorded, as pytest's `WarningReport` carries it: where (a node id,
+/// or `path:line` relative to the invocation directory for a warning outside any test) and
+/// the text `warnings.formatwarning` gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedWarning {
+    pub location: String,
+    pub message: String,
+}
 
 /// The `--cov` instruction carried on [`WorkerRequest::Init`].
 ///
@@ -211,6 +224,12 @@ pub enum WorkerRequest {
         /// start measuring at execution time would miss every one of them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         coverage: Option<CoverageWire>,
+        /// The `filterwarnings` ini lines, verbatim; see [`PROTOCOL_VERSION`]'s v12 note.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        filterwarnings: Vec<String>,
+        /// The `xfail_strict` ini, omitted when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        xfail_strict: bool,
     },
     /// Collect one file. path: absolute posix.
     CollectFile {
@@ -332,6 +351,9 @@ pub enum WorkerResponse {
         /// them. Omitted when empty; see [`PROTOCOL_VERSION`]'s v10 note.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         hooks: Vec<String>,
+        /// Warnings recorded while the file was collected (v12). Omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<RecordedWarning>,
     },
     /// Outcome of one [`WorkerRequest::ExecuteTest`], one line per executed test.
     ///
@@ -393,6 +415,10 @@ pub enum WorkerResponse {
         stdout: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stderr: Option<String>,
+        /// Warnings recorded while the test ran (v12), including the scope teardown drained
+        /// before it, which carries the previous test's id. Omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<RecordedWarning>,
     },
     /// Terminates the result stream of one [`WorkerRequest::ExecuteBatch`].
     ///
@@ -453,12 +479,14 @@ mod tests {
             // form is what has to stay byte-identical to v5's line bar the version number.
             // `init_request_carries_the_pythonpath_ini` pins the present form.
             pythonpath: Vec::new(),
+            filterwarnings: Vec::new(),
+            xfail_strict: false,
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -559,7 +587,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -771,7 +799,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":11}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":12}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -801,6 +829,7 @@ mod tests {
             error: None,
             skipped: None,
             hooks: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -814,6 +843,7 @@ mod tests {
             }),
             skipped: None,
             hooks: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -825,6 +855,7 @@ mod tests {
             message: None,
             stdout: None,
             stderr: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -836,6 +867,7 @@ mod tests {
             message: Some("assert 1 == 2".to_string()),
             stdout: Some("computing\n".to_string()),
             stderr: Some("deprecated\n".to_string()),
+            warnings: Vec::new(),
         }
     }
 
@@ -965,6 +997,7 @@ mod tests {
                 message: None,
                 stdout: None,
                 stderr: None,
+                warnings: Vec::new(),
             };
 
             let encoded = serde_json::to_string(&response).expect("test_result serializes");
@@ -1042,6 +1075,7 @@ mod tests {
             error: None,
             skipped: None,
             hooks: vec!["conftest.py::pytest_configure".to_string()],
+            warnings: Vec::new(),
         };
         assert_eq!(serde_json::to_string(&collected).unwrap(), line);
         assert_eq!(
@@ -1055,6 +1089,56 @@ mod tests {
             panic!("expected a Collected response");
         };
         assert!(hooks.is_empty());
+    }
+
+    /// v12: the two inis ride on `init` and recorded warnings on `test_result`, each only
+    /// when there is something to say -- `sample_init` and every golden line above pin the
+    /// omission.
+    #[test]
+    fn warnings_and_their_inis_are_on_the_wire_only_when_set() {
+        let WorkerRequest::Init {
+            filterwarnings,
+            xfail_strict,
+            ..
+        } = sample_init()
+        else {
+            panic!("expected init");
+        };
+        assert!(filterwarnings.is_empty() && !xfail_strict);
+        let init = serde_json::to_string(&WorkerRequest::Init {
+            protocol_version: PROTOCOL_VERSION,
+            rootdir: "/r".to_string(),
+            invocation_dir: "/r".to_string(),
+            python_files: Vec::new(),
+            python_classes: Vec::new(),
+            python_functions: Vec::new(),
+            asyncio_mode: "auto".to_string(),
+            asyncio_default_fixture_loop_scope: None,
+            asyncio_default_test_loop_scope: "function".to_string(),
+            pythonpath: Vec::new(),
+            coverage: None,
+            filterwarnings: vec!["error".to_string()],
+            xfail_strict: true,
+        })
+        .unwrap();
+        assert!(
+            init.ends_with(r#""filterwarnings":["error"],"xfail_strict":true}"#),
+            "{init}"
+        );
+
+        let line = r#"{"op":"test_result","id":"t.py::test_a","status":"passed","duration_s":0.0,"warnings":[{"location":"t.py::test_a","message":"t.py:3: UserWarning: w\n"}]}"#;
+        let WorkerResponse::TestResult { warnings, .. } =
+            serde_json::from_str::<WorkerResponse>(line).unwrap()
+        else {
+            panic!("expected a test_result");
+        };
+        assert_eq!(
+            warnings,
+            vec![RecordedWarning {
+                location: "t.py::test_a".to_string(),
+                message: "t.py:3: UserWarning: w\n".to_string(),
+            }]
+        );
     }
 
     // --- version skew -----------------------------------------------------
@@ -1386,6 +1470,7 @@ mod tests {
             }),
             skipped: None,
             hooks: Vec::new(),
+            warnings: Vec::new(),
         };
 
         let multi_line_result = WorkerResponse::TestResult {
@@ -1398,6 +1483,7 @@ mod tests {
             ),
             stdout: Some("first\nsecond\n".to_string()),
             stderr: Some("warning: one\nwarning: two\n".to_string()),
+            warnings: Vec::new(),
         };
 
         let responses = [

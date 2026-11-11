@@ -1,16 +1,16 @@
 {
   "suite": "dateutil",
-  "date": "2026-11-10 21:47",
+  "date": "2026-11-11 00:50",
   "mode": "handed off",
   "reasons": [
-    "tests/conftest.py::pytest_collection_modifyitems is a pytest hook rustest does not run"
+    "the pytest plugin hypothesispytest (hypothesis-6.163.0) is installed and rustest does not run it (`-p no:hypothesispytest` disables it)"
   ],
   "verdict": "MATCH",
   "tests": 2095,
-  "pytest_s": 6.27,
-  "xdist_s": 7.03,
-  "rustest_s": 8.2,
-  "engine_s": 2.36,
+  "pytest_s": 6.36,
+  "xdist_s": 6.84,
+  "rustest_s": 7.68,
+  "engine_s": 2.58,
   "engine_verdict": "MATCH",
   "xdist_status_diffs": 0,
   "xdist_error": "",

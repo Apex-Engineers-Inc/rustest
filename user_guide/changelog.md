@@ -211,6 +211,13 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
+- **`rustest --watch`.** Runs the tests, then reruns on every save: a changed test file runs
+  again with last time's failures, a changed source file, conftest or config runs everything
+  selected. Polls modification times (nothing to install), debounces a burst of saves into one
+  run, clears the screen per run, and reads keys without Enter: `a` all, `f` failed only,
+  `p` file filter (substring or glob of the path), `t` name filter, `h` help, `q` quit. Only
+  test files inside the selection rerun. Needs a terminal; refuses `--llm`,
+  `--collect-only` and a session that needs pytest (exit 4).
 - **A session rustest cannot run correctly is handed to pytest, whole.** A conftest (or
   `pytest_plugins` module) hook that changes what runs, `-p PLUGIN`, an option rustest does
   not have (`--runslow`, `--doctest-modules`, `--timeout=5`), an unsupported `-o KEY=`, a
@@ -356,6 +363,11 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Fixed
 
+- **`--collect-only --lf` and `--ff` list what pytest lists.** `--lf` printed the whole
+  collection. pytest's last-failed filter acts in two places and depends on whether a
+  failure was recorded at module level, so a reimplementation was wrong in three probed
+  shapes; the session is now handed to pytest (with the reason on stderr), or refused with
+  exit 4 under `--no-pytest-fallback`, until the engine applies its own last-failed logic.
 - **String `skipif` conditions skip, and a bare `skip` says what pytest says.**
   `@pytest.mark.skipif("sys.platform == 'win32'")` was evaluated when the decorator ran and
   stored as a bare boolean, which the worker then rejected for having no reason. Marks now keep

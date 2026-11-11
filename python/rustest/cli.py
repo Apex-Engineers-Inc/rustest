@@ -336,6 +336,15 @@ def build_parser() -> _Parser:
         help="Colorize the output (default: auto).",
     )
     _ = parser.add_argument(
+        "--watch",
+        action="store_true",
+        help=(
+            "Run the tests, then rerun on every save (changed test files plus last time's"
+            " failures; everything when a source file changes). Keys: Enter rerun, a all,"
+            " f failed, p file filter, t name filter, q quit. Needs a terminal."
+        ),
+    )
+    _ = parser.add_argument(
         "--no-pytest-fallback",
         dest="pytest_fallback",
         action="store_false",
@@ -512,6 +521,101 @@ def build_parser() -> _Parser:
     return parser
 
 
+def _run_with(
+    args: argparse.Namespace, paths: list[str], *, keyword: str | None, report_json: str | None
+) -> int:
+    """:func:`rustest.core.run` with everything from the parsed command line, but for the
+    paths, the ``-k`` expression and the report path, which ``--watch`` varies per run."""
+    return run(
+        paths=paths,
+        workers=args.workers,
+        keyword=keyword,
+        mark_expr=args.mark_expr,
+        report_json=report_json,
+        # `-x` is `--maxfail=1`, which is how pytest defines it
+        # (`_pytest/main.py::pytest_addoption`: `-x` is `--maxfail=1`'s alias). Passing both
+        # is not an error there either; the stricter of the two wins.
+        max_fail=1 if args.fail_fast else args.maxfail,
+        fail_fast=args.fail_fast or args.maxfail == 1,
+        last_failed_mode=_last_failed_mode(args),
+        capture=args.capture_output,
+        codeblocks=args.enable_codeblocks,
+        verbosity=_verbosity(args),
+        cov=args.cov,
+        cov_report=args.cov_report,
+        llm=args.llm,
+        llm_full=args.llm_full,
+        color=args.color,
+        ascii=args.ascii,
+        pytest_fallback=args.pytest_fallback,
+    )
+
+
+def _watch_main(args: argparse.Namespace, paths: list[str], resolved: dict[str, Any]) -> int:
+    """``--watch``: the engine behind :func:`rustest._watch.watch`, wired to this CLI's run."""
+    import json
+    import tempfile
+
+    from . import _progress, _watch
+
+    problem = _watch.refusal(
+        llm=args.llm,
+        collect_only=args.collect_only,
+        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+    )
+    if problem:
+        print(f"ERROR: {problem}", file=sys.stderr)
+        return 4
+    color = _progress.use_color(sys.stdout, args.color)  # switches ANSI on for a Windows console
+    # the screen clear needs escape codes even when colour is off (a legacy console may lack them)
+    escapes = color or sys.platform != "win32" or _progress._enable_vt(sys.stdout)
+    cwd = os.getcwd()
+    rootdir = str(resolved.get("rootdir") or cwd)
+    norecursedirs = [str(p) for p in resolved.get("norecursedirs", [])]
+    roots = _watch.choose_roots(rootdir, paths, cwd)
+    report = args.report_json
+    temporary = None
+    if report is None:
+        handle, temporary = tempfile.mkstemp(prefix="rustest-watch-", suffix=".json")
+        os.close(handle)
+        report = temporary
+
+    def run_spec(spec: _watch.RunSpec) -> tuple[int, list[str]]:
+        code = _run_with(args, spec.paths, keyword=spec.keyword, report_json=report)
+        try:
+            with open(report, encoding="utf-8") as handle:
+                failed = _watch.failed_ids(json.load(handle))
+        except (OSError, ValueError):
+            failed = []
+        return code, failed
+
+    try:
+        return _watch.watch(
+            run=run_spec,
+            scan_files=lambda: _watch.scan(roots, norecursedirs),
+            is_test_file=_watch.test_file_matcher(
+                [str(p) for p in resolved.get("python_files", [])]
+            ),
+            paths=paths,
+            rootdir=rootdir,
+            cwd=cwd,
+            keyword=args.pattern,
+            keys=_watch.TerminalKeys(),
+            out=sys.stdout,
+            selected=_watch.selection(
+                rootdir, paths, [str(p) for p in resolved.get("testpaths", [])], cwd
+            ),
+            clear=escapes,
+            dim=color,
+        )
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
 def _last_failed_mode(args: argparse.Namespace) -> str:
     """``--lf`` / ``--ff`` as the one string the core takes.
 
@@ -662,7 +766,13 @@ def _hand_to_pytest(
             collect_only=False,
             verbose=False,
             quiet=False,
+            watch=False,
         )
+    if known.watch:
+        from ._watch import needs_pytest
+
+        print(needs_pytest(reasons), file=sys.stderr)
+        return 4
     return _fallback.run(
         user_argv,
         reasons,
@@ -903,6 +1013,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             for name in plugin_names
         ]
         + ["PYTEST_PLUGINS is set, and rustest ignores it"] * bool(os.environ.get("PYTEST_PLUGINS"))
+        # rustest applies `filterwarnings` itself, so turning pytest's warnings plugin off
+        # is a request only pytest can honour.
+        + ["-p no:warnings turns off the warning filters rustest applies"]
+        * ("warnings" in blocked_plugins)
         + _autoloaded_plugins(blocked_plugins)
         if parser.fallback
         else []
@@ -950,6 +1064,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     # every `testpaths` project.
     paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
 
+    if args.watch:
+        try:
+            return _watch_main(args, paths, resolved)
+        except NeedsPytest as needs:
+            from ._watch import needs_pytest
+
+            print(needs_pytest(needs.reasons), file=sys.stderr)
+            return 4
+
     if args.collect_only:
         if args.llm:
             # Collect-only's stdout is already a machine format -- one node id per line -- and
@@ -972,6 +1095,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 4
+        if _last_failed_mode(args) != "none":
+            # pytest's `--lf` filters at collection time in a way that depends on whether any
+            # failure was recorded at module level (probed: three shapes differ from a plain
+            # filter).  Until the engine applies its own last-failed logic to a collect, the
+            # honest answer is pytest's.
+            reason = (
+                "--collect-only with --lf/--ff lists what pytest's last-failed filter keeps,"
+                + " which rustest's collection does not reproduce yet"
+            )
+            if not args.pytest_fallback:
+                print(
+                    f"ERROR: {reason}. Drop --no-pytest-fallback to let pytest answer it.",
+                    file=sys.stderr,
+                )
+                return 4
+            return _hand_to_pytest(
+                parser, raw, user_argv, [reason], "the last-failed option would be ignored"
+            )
         try:
             return finish(
                 collect_only(
@@ -987,29 +1128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _hand_to_pytest(parser, raw, user_argv, needs.reasons, needs.optout)
 
     try:
-        code = run(
-            paths=paths,
-            workers=args.workers,
-            keyword=args.pattern,
-            mark_expr=args.mark_expr,
-            report_json=args.report_json,
-            # `-x` is `--maxfail=1`, which is how pytest defines it
-            # (`_pytest/main.py::pytest_addoption`: `-x` is `--maxfail=1`'s alias). Passing both
-            # is not an error there either; the stricter of the two wins.
-            max_fail=1 if args.fail_fast else args.maxfail,
-            fail_fast=args.fail_fast or args.maxfail == 1,
-            last_failed_mode=_last_failed_mode(args),
-            capture=args.capture_output,
-            codeblocks=args.enable_codeblocks,
-            verbosity=_verbosity(args),
-            cov=args.cov,
-            cov_report=args.cov_report,
-            llm=args.llm,
-            llm_full=args.llm_full,
-            color=args.color,
-            ascii=args.ascii,
-            pytest_fallback=args.pytest_fallback,
-        )
+        code = _run_with(args, paths, keyword=args.pattern, report_json=args.report_json)
     except NeedsPytest as needs:
         return _hand_to_pytest(parser, raw, user_argv, needs.reasons, needs.optout)
     return finish(code)

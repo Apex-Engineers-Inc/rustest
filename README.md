@@ -193,9 +193,8 @@ documented rather than discovered. rustest does **not** have:
   not run, and a `NOTE:` on stderr names them. [Why, and what replaces the ten most popular plugins](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-plugins.html)
 - **Nine built-in fixtures**, including `pytester`, `testdir`, `capfdbinary` and
   `record_property`. Requesting one is a loud, named error, never a silent skip
-- **`xfail_strict` ini or `--runxfail`** (the `strict=` keyword does work)
+- **`--runxfail`**
 - **Item reordering** for shared higher-scoped parametrized fixtures
-- **A warnings channel.** Behaviour matches pytest; the diagnostic message does not
 
 The complete, current list is
 **[pytest compatibility](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-compat.html)**.

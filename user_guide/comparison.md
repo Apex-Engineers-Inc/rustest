@@ -70,7 +70,7 @@ is handed to pytest whole and runs at pytest's speed
 | `indirect=` | ✅ | ✅ | Routed through a fixture of the same name, as pytest's is |
 | **Marks** |
 | `@mark.skip` / `@mark.skipif` | ✅ | ✅ | Called and bare |
-| `@mark.xfail` | ✅ | ✅ | Including `strict=`, `raises=` and `run=False`. The `xfail_strict` ini and `--runxfail` are not implemented |
+| `@mark.xfail` | ✅ | ✅ | Including `strict=`, `raises=`, `run=False` and the `xfail_strict` ini. `--runxfail` is not implemented |
 | Custom marks (`@mark.slow`, etc.) | ✅ | ✅ | Including module-level `pytestmark` and class-level marks |
 | Mark with arguments | ✅ | ✅ | `@mark.timeout(30)` |
 | Selecting tests by mark (`-m`) | ✅ | ✅ | Full boolean expressions: `and` / `or` / `not`, parentheses, mark kwargs |

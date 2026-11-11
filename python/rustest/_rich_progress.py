@@ -363,6 +363,19 @@ class RichProgress:
                         Text.assemble((word, "red"), " ", str(test["id"])), soft_wrap=True
                     )
 
+    def warnings(self, groups: Sequence[tuple[str, str]]) -> None:
+        """pytest's warnings summary (`core._warning_groups`), on stdout after the failures."""
+        if not groups:
+            return
+        self._heading(self.out, "WARNINGS", style="bold yellow")
+        for where, message in groups:
+            self.out.print()
+            self.out.print(Text(where, style="yellow"), soft_wrap=True)
+            self.out.print(
+                Text("\n".join("  " + line for line in message.splitlines()).rstrip()),
+                soft_wrap=True,
+            )
+
     def collection_errors(self, errors: Sequence[Mapping[str, object]]) -> None:
         if not errors:
             return
@@ -395,10 +408,10 @@ class RichProgress:
         summary = Text(", ").join(parts) + Text(f" in {_duration(seconds)}", style="dim")
         self.err.print(summary, soft_wrap=True)
 
-    def _heading(self, console: Console, title: str) -> None:
+    def _heading(self, console: Console, title: str, style: str = "bold red") -> None:
         if self._spoke:
             console.print()
-        console.print(title, style="bold red")
+        console.print(title, style=style)
         self._spoke = True
 
     def _block(self, console: Console, name: Text, file: str, message: str) -> None:

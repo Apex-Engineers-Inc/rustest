@@ -32,6 +32,9 @@ invocation onto a surviving gate would answer a question nobody asked, so it ref
   suite under pytest, then under flagless `rustest`, and diff. `<name>` is a config in
   `conformance/real/` (`member-designer`, `more-itertools`, `click`, `jinja2`) or `all`.
   See "The `--real` protocol" below.
+- `python -m conformance.bench.bench --lf [--quick]` — `rustest --lf` against a full run on
+  two 200-file trees with one remembered failure (flat, and over 20 directories with
+  conftests); the numbers `performance.md` quotes for `--lf`.
 - `python -m conformance.bench.bench [--quick]` — pytest collect / pytest run /
   rustest run / rustest collect-only (cold and warm). The `rustest v1 run` column
   was dropped in Phase 4 Task 2 along with the engine it timed.

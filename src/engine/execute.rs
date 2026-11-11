@@ -58,7 +58,7 @@ use crate::engine::collect::{
     IMPORT_FAILURE_PREFIX,
 };
 use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
-use crate::engine::protocol::CoverageWire;
+use crate::engine::protocol::{CoverageWire, RecordedWarning};
 use crate::engine::selection::{select_mask, SelectionError};
 
 /// `_worker.py::SHUTDOWN_TEARDOWN_EXIT`.
@@ -253,6 +253,9 @@ pub struct TestOutcome {
     pub stdout: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    /// The warnings recorded while this test ran, in order. Omitted when there were none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<RecordedWarning>,
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +277,15 @@ pub struct RunSummary {
     pub xpassed: usize,
     pub error: usize,
     pub deselected: usize,
+    /// pytest's `N warnings`: every warning recorded, during collection or by a test.
+    /// Omitted when zero, so a run that warns nowhere keeps the schema-v2 shape it had.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub warnings: usize,
     pub duration: f64,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 impl RunSummary {
@@ -336,6 +347,10 @@ pub struct RunReport {
     /// `print` from a teardown; treating it as a failure signal would fail green runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worker_stderr: Vec<String>,
+    /// Warnings recorded while collecting, in walk order; each test's own are on its entry.
+    /// Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<RecordedWarning>,
     /// `-x` fired: dispatch stopped after a failure and the selection is only partly run.
     ///
     /// Omitted when false, so the schema-v2 golden document is byte-unchanged for every run
@@ -945,7 +960,7 @@ fn run_attempt(
             })
             .collect();
 
-        let staged = staged?;
+        let mut staged = staged?;
 
         // After the join and before anything else is reported -- including the error a
         // dead worker turns into, and `warn_unrun_hooks`'s stderr line -- so a renderer can
@@ -957,7 +972,10 @@ fn run_attempt(
         }
 
         let mut slots: Vec<Option<TestOutcome>> = staged.selected.iter().map(|_| None).collect();
-        let mut residue = WorkerResidue::default();
+        let mut residue = WorkerResidue {
+            warnings: std::mem::take(&mut staged.warnings),
+            ..WorkerResidue::default()
+        };
         let mut failure: Option<CollectError> = None;
         for run in runs {
             match run {
@@ -1083,6 +1101,8 @@ struct Staged {
     module_skipped: usize,
     /// Indexed by worker, then by **batch** (one module instance): `(report slot, test id)`.
     per_worker: Vec<Vec<Vec<(usize, String)>>>,
+    /// Warnings recorded during collection, in walk order.
+    warnings: Vec<RecordedWarning>,
 }
 
 /// Assemble, select, and work out who runs what — the whole of the main thread's job at the
@@ -1109,6 +1129,12 @@ fn stage(
     if let Some(err) = failure {
         return Err(RunError::Collect(err));
     }
+    let mut by_target: Vec<(usize, Vec<RecordedWarning>)> = outcomes
+        .iter_mut()
+        .map(|(target, outcome)| (*target, std::mem::take(&mut outcome.warnings)))
+        .collect();
+    by_target.sort_by_key(|(target, _)| *target);
+    let warnings = by_target.into_iter().flat_map(|(_, found)| found).collect();
 
     // `--lf`'s set reaches node-id selection too: it can make an id miss (`select_node_ids`).
     let lf = (last_failed == LastFailedMode::Only && !previously_failed.is_empty())
@@ -1187,6 +1213,7 @@ fn stage(
             // prints `2 skipped, 1 error` — the skips survive the interrupt.
             module_skipped: assembled.module_skipped,
             per_worker: vec![Vec::new(); pool_size],
+            warnings,
         });
     }
 
@@ -1229,6 +1256,7 @@ fn stage(
         deselected,
         module_skipped: assembled.module_skipped,
         per_worker: batches,
+        warnings,
     })
 }
 
@@ -1243,6 +1271,8 @@ struct WorkerResidue {
     teardown_errors: Vec<String>,
     /// Whatever the workers wrote to stderr. Carried, never graded.
     stderr: Vec<String>,
+    /// Warnings recorded during collection, in walk order.
+    warnings: Vec<RecordedWarning>,
     /// The first `pytest.exit()` banner, if a test ended the session.
     session_exit: Option<String>,
 }
@@ -1271,7 +1301,9 @@ fn finish(
     stopped_early: bool,
     started: Instant,
 ) -> RunReport {
-    let summary = RunSummary::tally(&tests, selection, started.elapsed().as_secs_f64());
+    let mut summary = RunSummary::tally(&tests, selection, started.elapsed().as_secs_f64());
+    summary.warnings =
+        residue.warnings.len() + tests.iter().map(|test| test.warnings.len()).sum::<usize>();
     // A teardown failure that belongs to no test is still a failure: pytest reports the
     // same shape (`1 passed, 1 error`) and exits 1.
     let failures = tests.iter().filter(|test| test.status.is_failure()).count()
@@ -1291,6 +1323,7 @@ fn finish(
         collection_errors,
         teardown_errors: residue.teardown_errors,
         worker_stderr: residue.stderr,
+        warnings: residue.warnings,
         stopped_early,
         session_exit: residue.session_exit,
         pytest_fallback: Vec::new(),
@@ -1455,6 +1488,7 @@ mod tests {
             message: None,
             stdout: None,
             stderr: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -1478,6 +1512,7 @@ mod tests {
                 teardown_errors: teardown,
                 stderr,
                 session_exit: None,
+                warnings: Vec::new(),
             },
             false,
             Instant::now(),
@@ -1758,6 +1793,7 @@ mod tests {
                 error: 0,
                 deselected: 3,
                 duration: 0.25,
+                warnings: 0,
             },
             tests: vec![
                 outcome("tests/test_a.py::test_ok", TestStatus::Passed),
@@ -1768,6 +1804,7 @@ mod tests {
                     message: Some("assert 1 == 2".to_string()),
                     stdout: Some("computing\n".to_string()),
                     stderr: None,
+                    warnings: Vec::new(),
                 },
             ],
             collection_errors: Vec::new(),
@@ -1776,6 +1813,7 @@ mod tests {
             stopped_early: false,
             session_exit: None,
             pytest_fallback: Vec::new(),
+            warnings: Vec::new(),
         };
 
         assert_eq!(
@@ -2466,7 +2504,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":11}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":12}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(

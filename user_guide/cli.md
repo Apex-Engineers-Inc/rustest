@@ -22,7 +22,7 @@ rustest --help
 
 ```
 usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [-s] [-v] [-q]
-               [--ascii] [--color {auto,always,never,yes,no}]
+               [--ascii] [--color {auto,always,never,yes,no}] [--watch]
                [--no-pytest-fallback] [-o OPTION=VALUE] [--maxfail NUM]
                [--codeblocks] [--no-codeblocks] [--lf] [--ff] [-x]
                [--report-json PATH] [--cov [SOURCE]] [--cov-report TYPE]
@@ -53,6 +53,11 @@ options:
   --ascii               Draw the terminal display with ASCII characters only.
   --color {auto,always,never,yes,no}
                         Colorize the output (default: auto).
+  --watch               Run the tests, then rerun on every save (changed test
+                        files plus last time's failures; everything when a
+                        source file changes). Keys: Enter rerun, a all, f
+                        failed, p file filter, t name filter, q quit. Needs a
+                        terminal.
   --no-pytest-fallback  Run with rustest even when the session needs pytest (a
                         conftest hook that changes what runs, -p PLUGIN, or an
                         option rustest does not have). Without it such a
@@ -397,6 +402,54 @@ stopping after 1 failures (-x)
 One test ran: `--ff` put a known failure first and `-x` stopped there. This is the tightest
 loop available for iterating on a fix.
 
+### Watch mode (--watch)
+
+`rustest --watch` runs the tests, then waits and reruns them every time you save:
+
+```bash
+rustest --watch
+rustest tests/ --watch -k database
+```
+
+What it watches: every `.py` file, plus `pytest.ini`, `pyproject.toml`, `setup.cfg` and `tox.ini`,
+under the project's rootdir (and under any path you named outside it). Hidden directories
+(`.git`, `.venv`, `.rustest_cache` and the like), `__pycache__`, `node_modules`, `*.egg-info` and
+the project's `norecursedirs` are left out, as is any directory holding a `pyvenv.cfg` (a
+virtual environment, whatever it is called). It polls the files' modification times, so there is
+nothing to install and it behaves the same on every platform; a save is picked up within about
+half a second, and a burst of saves becomes one run.
+
+What a rerun runs, for now: a changed **test file** runs again together with the tests that failed
+last time (by node id); a changed **source file**, `conftest.py` or config file runs everything
+selected, and the line under the run says so. rustest does not yet track which tests depend
+on which source files. Only test files inside what a normal run would collect (your path
+arguments, else `testpaths`, else the rootdir) rerun: saving a test file outside the
+selection does nothing, and the `p` filter narrows the selection, it never widens it.
+
+Keys, read without pressing Enter after them:
+
+| Key | Does |
+|---|---|
+| `Enter` | Rerun everything selected (under the current filters) |
+| `a` | Run all tests, and clear the filters (the header says so) |
+| `f` | Rerun only the tests that failed last time |
+| `p` | Filter by file name: asks for a substring or a glob of the path relative to the rootdir, empty clears it |
+| `t` | Filter by test name (`-k`): asks for an expression, empty clears it |
+| `h` | Show this list of keys |
+| `q` or Ctrl-C | Quit |
+
+The screen is cleared before each run and a header line says what triggered it; keys typed while
+a run is in progress are discarded, and an arrow or function key is ignored. Ctrl-D (or
+Ctrl-C) at a prompt cancels it. Ctrl-C during a run stops that run and keeps watching. The
+terminal is restored if the watch is terminated or suspended (Ctrl-Z). A failing run never
+ends the watch, and quitting exits `0`.
+
+`--watch` needs a terminal (stdin and stdout), and refuses `--llm` and `--collect-only`, with exit
+code `4`. A session that needs pytest (see
+[When rustest hands a session to pytest](pytest-compat.md#when-rustest-hands-a-session-to-pytest))
+is refused too, rather than rerun under pytest; pass `--no-pytest-fallback` to watch it with
+rustest.
+
 ### Workflow use cases
 
 ```bash
@@ -575,6 +628,7 @@ rustest [OPTIONS] [PATHS...]
 | `-q, --quiet` | Show only the overall progress bar in a terminal, bare letters when piped. The failure report is still printed, as it is under pytest's own `-q`. `-v` and `-q` cancel out, as they do under pytest |
 | `-o, --override-ini OPTION=VALUE` | Override an ini option, e.g. `-o addopts=`. Supported key: `addopts` |
 | `--maxfail NUM` | Exit after the first `NUM` failures or errors (`0` means no limit) |
+| `--watch` | Run, then rerun on every save: changed test files plus last time's failures, everything when a source file changes. Needs a terminal; see [Watch mode](#watch-mode---watch) |
 | `--no-pytest-fallback` | Run with rustest even when the session needs pytest (a conftest hook that changes what runs, `-p PLUGIN`, an option rustest does not have). Without it such a session is handed to pytest; see [When rustest hands a session to pytest](pytest-compat.md#when-rustest-hands-a-session-to-pytest) |
 | `--ascii` | Draw the terminal display with ASCII only (`[OK]`, `PASS`/`FAIL`/`SKIP`, `#`/`-` bars). Chosen automatically when the terminal cannot encode the glyphs; piped output is unaffected |
 | `--color {auto,always,never,yes,no}` | Colorize the output. `yes`/`always` and `no`/`never` override everything; `auto` follows pytest's rule (`PY_COLORS`, `NO_COLOR`, `FORCE_COLOR`, then a terminal). Piped output is coloured as pytest colours it; failure sections there stay plain |
@@ -591,7 +645,7 @@ rustest [OPTIONS] [PATHS...]
 | `--llm-full` | With `--llm`: attach captured output whole instead of the last 50 lines. Refused on its own |
 | `--llm-schema` | Print the JSON Schema for `--llm` output and exit 0 |
 | `--version` | Print the installed version (`rustest 1.0.0rc1`) and exit 0. Runs nothing |
-| `--collect-only`, `--co` | Collect and print node ids, one per line, without running anything. Honours `-k`, `-m` and `-n`; refuses `--llm` and `--cov`, since a run that executes nothing has no result to report or measure |
+| `--collect-only`, `--co` | Collect and print node ids, one per line, without running anything. Honours `-k`, `-m` and `-n`; refuses `--llm` and `--cov`, since a run that executes nothing has no result to report or measure. With `--lf`/`--ff` the session is handed to pytest, which answers exactly (exit 4 under `--no-pytest-fallback`) |
 | `-h, --help` | Show help message and exit |
 
 ### pytest flags that are accepted and ignored

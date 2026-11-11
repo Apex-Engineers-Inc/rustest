@@ -46,7 +46,12 @@ if TYPE_CHECKING:
         xpassed: int
         error: int
         deselected: int
+        warnings: NotRequired[int]
         duration: float
+
+    class _ReportWarning(TypedDict):
+        location: str
+        message: str
 
     class _ReportTest(TypedDict):
         id: str
@@ -56,6 +61,7 @@ if TYPE_CHECKING:
         line: NotRequired[int]
         stdout: NotRequired[str]
         stderr: NotRequired[str]
+        warnings: NotRequired[list[_ReportWarning]]
 
     class _RunReport(TypedDict):
         version: int
@@ -66,6 +72,7 @@ if TYPE_CHECKING:
         collection_errors: list[_ManifestError]
         teardown_errors: NotRequired[list[str]]
         worker_stderr: NotRequired[list[str]]
+        warnings: NotRequired[list[_ReportWarning]]
         stopped_early: NotRequired[bool]
         session_exit: NotRequired[str]
         pytest_fallback: NotRequired[list[str]]
@@ -117,8 +124,8 @@ def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
 
     Probed rather than transcribed: a run with one of each prints
     ``1 failed, 1 passed, 1 skipped, 1 deselected, 1 xfailed, 1 xpassed, 1 error``.
-    ``warnings`` is absent here because the engine has no warnings channel yet; every other bucket
-    keeps its position, so adding one later does not reshuffle the line.
+    ``warnings`` sits where pytest puts it, after ``xpassed`` and before ``error``, spelled
+    by count like ``error`` (``1 warning``, ``2 warnings``).
 
     Zero buckets are omitted, exactly as pytest omits them -- a run with no xfails should
     not have to say ``0 xfailed``. An entirely empty tally becomes ``no tests ran``, which
@@ -144,6 +151,7 @@ def _run_summary(summary: _ReportSummary, collection_errors: int = 0) -> str:
 def _summary_counts(summary: _ReportSummary, collection_errors: int) -> list[tuple[int, str]]:
     """The non-zero ``(count, label)`` buckets of :func:`_run_summary`, in its order."""
     errors = summary["error"] + collection_errors
+    warned = summary.get("warnings", 0)
     counts = (
         (summary["failed"], "failed"),
         (summary["passed"], "passed"),
@@ -151,9 +159,57 @@ def _summary_counts(summary: _ReportSummary, collection_errors: int) -> list[tup
         (summary["deselected"], "deselected"),
         (summary["xfailed"], "xfailed"),
         (summary["xpassed"], "xpassed"),
+        (warned, "warning" if warned == 1 else "warnings"),
         (errors, "error" if errors == 1 else "errors"),
     )
     return [(count, label) for count, label in counts if count]
+
+
+def _warning_groups(report: _RunReport) -> list[tuple[str, str]]:
+    """pytest's ``warnings summary``: ``(locations, message)`` per distinct message.
+
+    Port of `_pytest/terminal.py::TerminalReporter.summary_warnings`: grouped by message in
+    the order first seen, the locations listed one per line, or, from ten of them, collapsed
+    into ``<file>: N warnings`` per file. Collection's warnings come first, as they are
+    recorded first.
+    """
+    from collections import Counter
+
+    entries = [
+        *report.get("warnings", []),
+        *(entry for test in report["tests"] for entry in test.get("warnings", [])),
+    ]
+    grouped: dict[str, list[str]] = {}
+    for entry in entries:
+        grouped.setdefault(entry["message"], []).append(entry["location"])
+    groups: list[tuple[str, str]] = []
+    for message, locations in grouped.items():
+        if len(locations) < 10:
+            where = "\n".join(locations)
+        else:
+            per_file = Counter(location.split("::", 1)[0] for location in locations)
+            where = "\n".join(
+                f"{file}: {count} warning{'s' if count > 1 else ''}"
+                for file, count in per_file.items()
+            )
+        groups.append((where, message))
+    return groups
+
+
+#: The line pytest closes its warnings summary with.
+WARNINGS_DOCS = "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html"
+
+
+def _print_warnings_summary(groups: Sequence[tuple[str, str]]) -> None:
+    """pytest's ``=== warnings summary ===`` section, on stdout like the failure sections."""
+    if not groups:
+        return
+    print(_sep("=", "warnings summary"))
+    for where, message in groups:
+        print(where)
+        print("\n".join("  " + line for line in message.splitlines()).rstrip())
+        print()
+    print(WARNINGS_DOCS)
 
 
 @contextlib.contextmanager
@@ -392,23 +448,33 @@ def collect_only(
         failed to import, 4 for a usage error (a missing path argument, an unusable config
         file, or a malformed ``-k``/``-m`` expression) and 3 for an orchestration failure.
     """
+
     # Everything that writes is inside the escaping scope, not just the node ids: a file
     # path or a traceback in an error message can be just as unencodable as an id, and a
     # crash while *reporting* a failure would be the worst place to leave one.
+    def fetch(keyword: str | None, mark_expr: str | None) -> _Manifest:
+        payload = rust.collect(
+            os.getcwd(),
+            list(paths),
+            sys.executable,
+            _pool_size(workers),
+            keyword,
+            mark_expr,
+            codeblocks,
+            os.environ.get(_COLLECT_TIER_ENV, "auto"),
+            os.environ.get(_MANIFEST_CACHE_ENV, "auto"),
+            pytest_fallback=pytest_fallback,
+        )
+        manifest: _Manifest = json.loads(payload)
+        return manifest
+
     with _escaping_unencodable_output():
         try:
-            payload = rust.collect(
-                os.getcwd(),
-                list(paths),
-                sys.executable,
-                _pool_size(workers),
-                keyword,
-                mark_expr,
-                codeblocks,
-                os.environ.get(_COLLECT_TIER_ENV, "auto"),
-                os.environ.get(_MANIFEST_CACHE_ENV, "auto"),
-                pytest_fallback=pytest_fallback,
-            )
+            manifest = fetch(keyword, mark_expr)
+            if labels := manifest.get("pytest_fallback"):
+                raise NeedsPytest(labels)
+            ids = [test["id"] for test in manifest["tests"]]
+            deselected = manifest.get("deselected", 0)
         except ValueError as exc:
             # pytest's UsageError shape, including its `ERROR: file or directory not
             # found: x` and `ERROR: Wrong expression passed to '-k': ...` wording, which
@@ -422,14 +488,7 @@ def collect_only(
             print(f"INTERNALERROR: {exc}", file=sys.stderr)
             return _EXIT_INTERNAL_ERROR
 
-        manifest: _Manifest = json.loads(payload)
-        if labels := manifest.get("pytest_fallback"):
-            raise NeedsPytest(labels)
-        return report_collection(
-            [test["id"] for test in manifest["tests"]],
-            manifest.get("errors", []),
-            manifest.get("deselected", 0),
-        )
+        return report_collection(ids, manifest.get("errors", []), deselected)
 
 
 def report_collection(
@@ -577,7 +636,9 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds:.2f}s ({datetime.timedelta(seconds=int(seconds))})"
 
 
-def _print_failure_sections(tests: Sequence[_ReportTest]) -> None:
+def _print_failure_sections(
+    tests: Sequence[_ReportTest], warnings: Sequence[tuple[str, str]] = ()
+) -> None:
     """pytest's failure report: ``ERRORS``, then ``FAILURES``, then the short summary.
 
     Structural parity, not byte parity. Each block carries the ``message`` the worker sent,
@@ -597,11 +658,12 @@ def _print_failure_sections(tests: Sequence[_ReportTest]) -> None:
     ``ERROR at setup of <domain>``. The wire carries one *reduced* status per test and not
     the phase that produced it, so naming a phase here would be a guess; ``at setup of`` is
     right far more often than not, which is precisely what makes guessing it a bad idea.
+
+    *warnings* (:func:`_warning_groups`) are printed between ``FAILURES`` and the short
+    summary, which is where pytest's ``warnings summary`` falls.
     """
     failed = [test for test in tests if test["status"] == "failed"]
     errored = [test for test in tests if test["status"] == "error"]
-    if not failed and not errored:
-        return
     for title, group, prefix in (("ERRORS", errored, "ERROR "), ("FAILURES", failed, "")):
         if not group:
             continue
@@ -611,6 +673,9 @@ def _print_failure_sections(tests: Sequence[_ReportTest]) -> None:
             message = test.get("message")
             if message:
                 print(message.rstrip("\n"))
+    _print_warnings_summary(warnings)
+    if not failed and not errored:
+        return
     print(_sep("=", "short test summary info"))
     for test in (*failed, *errored):
         print(f"{test['status'].upper()} {test['id']}")
@@ -1007,10 +1072,12 @@ def run(
             # named no node and carried no traceback -- undiagnosable without re-running at
             # a different verbosity, and a divergence from the oracle on the one rung a CI
             # pipeline is most likely to use.
+            warning_groups = _warning_groups(report)
             if rich is not None:
                 rich.failures(tests)
+                rich.warnings(warning_groups)
             else:
-                _print_failure_sections(tests)
+                _print_failure_sections(tests, warning_groups)
 
             # Last stdout write of the human renderer; the collection errors immediately
             # below, and every diagnostic after them, are stderr's.

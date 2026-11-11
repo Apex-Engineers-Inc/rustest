@@ -165,6 +165,9 @@ pub enum Reason {
     /// Two collection targets share a file stem, so the second import may be pytest's
     /// `import file mismatch` collection error.
     StemCollision,
+    /// A shape pytest warns about at collection (a test class with a constructor), under a
+    /// `filterwarnings` ini, which can turn the warning into a collection error.
+    CollectionWarning,
 }
 
 // ---------------------------------------------------------------------------
@@ -1875,12 +1878,13 @@ impl<'a> Scan<'a> {
                 };
                 let mut reason = Lit::None;
                 let mut run = Lit::Bool(true);
-                let mut strict = Lit::Bool(false);
+                // Absent unless given, as on pytest's own mark: the `xfail_strict` ini decides.
+                let mut strict = None;
                 for (key, value) in &kwargs {
                     match key.as_str() {
                         "reason" => reason = value.clone(),
                         "run" => run = value.clone(),
-                        "strict" => strict = value.clone(),
+                        "strict" => strict = Some(value.clone()),
                         // `raises=ValueError` is a *class*, never a literal; it must reach the
                         // execute half as an object, so a static answer cannot produce it.
                         other => {
@@ -1894,12 +1898,14 @@ impl<'a> Scan<'a> {
                 spec(
                     "xfail",
                     condition.into_iter().collect(),
-                    vec![
+                    [
                         ("reason".to_string(), reason),
                         ("raises".to_string(), Lit::None),
                         ("run".to_string(), run),
-                        ("strict".to_string(), strict),
-                    ],
+                    ]
+                    .into_iter()
+                    .chain(strict.map(|strict| ("strict".to_string(), strict)))
+                    .collect(),
                 )
             }
             "usefixtures" => {
@@ -2207,6 +2213,12 @@ impl<'a> Scan<'a> {
             )
         });
         if has_constructor {
+            if !self.config.filterwarnings.is_empty() {
+                return Err(Dynamic::new(
+                    Reason::CollectionWarning,
+                    format!("class {name} has a constructor, which pytest warns about"),
+                ));
+            }
             return Ok(Vec::new());
         }
 
@@ -2844,6 +2856,8 @@ fn conftest_scan_config() -> ResolvedConfig {
         asyncio_default_fixture_loop_scope: None,
         asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
         codeblocks: None,
+        filterwarnings: Vec::new(),
+        xfail_strict: false,
     }
 }
 
@@ -3230,7 +3244,10 @@ class TestBox:
         assert_eq!(mark.kwargs["reason"], serde_json::json!("known broken"));
         assert_eq!(mark.kwargs["raises"], serde_json::Value::Null);
         assert_eq!(mark.kwargs["run"], serde_json::json!(true));
-        assert_eq!(mark.kwargs["strict"], serde_json::json!(false));
+        assert!(
+            !mark.kwargs.contains_key("strict"),
+            "unset, as on pytest's mark"
+        );
     }
 
     /// The bare form is `MarkDecorator(name, (), {})` for **every** mark, factory or not —

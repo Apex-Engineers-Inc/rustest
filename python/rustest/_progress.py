@@ -60,7 +60,7 @@ def main_color(seen: Container[str], *, last: bool) -> str:
     """pytest's ``_determine_main_color`` over the statuses seen so far."""
     if "failed" in seen or "error" in seen:
         return "red"
-    if "xpassed" in seen:
+    if "xpassed" in seen or "warnings" in seen:
         return "yellow"
     return "green" if "passed" in seen or not last else "yellow"
 
