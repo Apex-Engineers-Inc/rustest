@@ -21,13 +21,13 @@ Natively (:data:`NATIVE_HOOKS`): ``pytest_addoption``, ``pytest_configure``,
 lands **before any test has executed**.  That is the whole reason for the set: a violation is
 answered by handing the session to pytest, which is only free while nothing has run yet.
 
-Handed off at registration (:data:`HANDED_OFF_HOOKS`): ``pytest_runtest_setup``,
-``pytest_sessionfinish``, ``pytest_unconfigure``, ``pytest_itemcollected``.  A module that
-defines one is a violation.  (Their effects arrive during or after execution, where a hand-off
-would run the tests twice; and ``sessionfinish`` would get a per-worker ``exitstatus``.)  Also
-handed off: hook wrappers, generator and coroutine hooks, ``specname=``, and an argument name
-outside the hook's specification (pluggy raises ``PluginValidationError`` for that).  Hooks are
-called exactly as pluggy calls them: only the parameters *without* defaults, positionally.
+Every other ``pytest_*`` name (``pytest_runtest_setup``, ``pytest_sessionfinish``,
+``pytest_generate_tests``, ...) is ignored here: the worker names it as a hook rustest does not
+run, which is itself a hand-off reason, and the hooks above still run beside it (so
+``--no-pytest-fallback`` keeps them).  Refused, as violations: a native hook as a hook wrapper,
+generator or coroutine, through ``specname=``, or asking for an argument outside its
+specification (pluggy raises ``PluginValidationError`` for that).  Hooks are called exactly as
+pluggy calls them: only the parameters *without* defaults, positionally.
 
 What the shim objects are
 =========================
@@ -69,9 +69,7 @@ growth outside any test is an internal error.
 
 What *survives* a hook is data, exported by the runner and applied by the worker to **its own**
 objects: :attr:`~HookRunner.user_attributes` (``config.backend = ...``; copy each onto the
-``Config`` the fixtures' ``request.config`` / ``pytestconfig`` returns, after every call),
-:attr:`~HookRunner.option_values` and :attr:`~HookRunner.option_flags` (declared options by
-``dest`` and the flag -> ``dest`` map), :attr:`~HookRunner.ini_declarations` and
+``Config`` the fixtures' ``request.config`` / ``pytestconfig`` returns, after every call) and
 :attr:`~HookRunner.markers`.  ``request.config`` is the worker's own config object, never a shim,
 and for a *declared* option it must answer exactly as pytest and the shim do: with the declared
 value, **ignoring a call-site ``default=``** (:meth:`HookRunner.lookup_option`;
@@ -88,19 +86,20 @@ What the caller must guarantee
    sets it for the whole run) and ``sys.argv`` as pytest's would be (``--runslow`` in
    ``sys.argv`` is a real pattern).  Neither is something a shim can supply.
 3. **Options.**  ``builtin_options`` holds the *effective* values after ``addopts`` and
-   ``PYTEST_ADDOPTS``, keyed by flag and by ``dest``, **and names every option string the loaded
-   plugins register** (``--cov*``, ``-n``, ``--asyncio-mode``, ...): pytest's own core set is frozen
-   in this module (:data:`_PYTEST_CORE_FLAGS`), a plugin's is only the worker's to know, and a
-   conftest declaring a name pytest rejects must be refused here too.  ``ini`` already includes
+   ``PYTEST_ADDOPTS``, keyed by flag and by ``dest``.  ``plugins`` names the loaded ``pytest11``
+   plugins, because a conftest declaring an option string pytest or a plugin already registers
+   (``--lf``, ``--cov``, ``-n``, ``--asyncio-mode``, ...) must be refused here as argparse refuses
+   it: pytest's own set is frozen in :data:`_PYTEST_CORE_FLAGS`, each allowed plugin's in
+   :data:`_PLUGIN_FLAGS`.  ``ini`` already includes
    ``-o`` overrides.
 4. **Registration order.**  Conftests in pytest's order: the initial ones (the argument paths'
    conftests and ``anchor/test*/conftest.py``, which decides LIFO order) with ``initial=True``,
    ``pytest_plugins`` modules after their conftest, later conftests (the collection walk) with
    ``initial=False``.  Call :meth:`HookRunner.configure` once the initial ones are registered.
 5. **The hook set.**  The Rust side's "this session needs the hook runtime" trigger must cover
-   ``NATIVE_HOOKS | HANDED_OFF_HOOKS`` -- and **every other ``pytest_*`` name must stay a direct
-   hand-off trigger** (``pytest_generate_tests``, ``pytest_collect_file``, ...).  The runner ignores
-   names it does not know, so a name no side acts on would be silently ignored by both.
+   ``NATIVE_HOOKS`` -- and **every other ``pytest_*`` name must stay a direct hand-off trigger**
+   (``pytest_generate_tests``, ``pytest_sessionfinish``, ...).  The runner ignores names it does
+   not know, so a name no side acts on would be silently ignored by both.
 6. **After every call** check :attr:`HookRunner.reasons`; a non-empty list means hand the session
    to pytest, and the effects returned alongside it are empty.
 7. **Once per what.**  ``configure`` and ``sessionstart`` run in *every worker process*, before
@@ -176,7 +175,6 @@ from pathlib import Path
 from typing import Any, Final, NoReturn, cast
 
 __all__ = [
-    "HANDED_OFF_HOOKS",
     "NATIVE_HOOKS",
     "CollectionEffects",
     "HookRunner",
@@ -240,6 +238,74 @@ class ItemRecord:
     function_attrs: frozenset[str] = frozenset()
     param_id: str | None = None
     kind: str = "function"
+    #: The test is parametrized.  pytest's ``iter_markers`` then holds a ``parametrize`` mark at
+    #: the position of each decorator, which the worker cannot rebuild: reading every marker, or
+    #: the ``parametrize`` one, from such an item is a violation.
+    parametrized: bool = False
+    #: The test draws a parameter of a fixture wider than function scope, so pytest's
+    #: ``FixtureManager`` (a plain hook registered at ``pytest_sessionstart``) may reorder it
+    #: before later-run hooks see the list.  ponytail: shown to such a hook it is a violation;
+    #: porting ``_pytest/fixtures.py::reorder_items`` between those impls is the upgrade.
+    reordered: bool = False
+
+    def to_wire(self) -> dict[str, Any]:
+        """The JSON-able form the worker sends and receives (see :func:`wire_exact`)."""
+        return {
+            "nodeid": self.nodeid,
+            "name": self.name,
+            "path": self.path,
+            "markers": [[m.name, list(m.args), dict(m.kwargs)] for m in self.markers],
+            "own_marker_count": self.own_marker_count,
+            "rootdir_name": self.rootdir_name,
+            "dir_names": list(self.dir_names),
+            "module_name": self.module_name,
+            "class_names": list(self.class_names),
+            "function_attrs": sorted(self.function_attrs),
+            "param_id": self.param_id,
+            "kind": self.kind,
+            "parametrized": self.parametrized,
+            "reordered": self.reordered,
+        }
+
+    @staticmethod
+    def from_wire(data: Mapping[str, Any]) -> ItemRecord:
+        return ItemRecord(
+            nodeid=str(data["nodeid"]),
+            name=str(data["name"]),
+            path=str(data["path"]),
+            markers=tuple(Mark(str(n), tuple(a), dict(k)) for n, a, k in data["markers"]),
+            own_marker_count=data["own_marker_count"],
+            rootdir_name=str(data["rootdir_name"]),
+            dir_names=tuple(data["dir_names"]),
+            module_name=str(data["module_name"]),
+            class_names=tuple(data["class_names"]),
+            function_attrs=frozenset(data["function_attrs"]),
+            param_id=data["param_id"],
+            kind=str(data["kind"]),
+            parametrized=bool(data["parametrized"]),
+            reordered=bool(data["reordered"]),
+        )
+
+
+def wire_exact(value: object) -> bool:
+    """Does *value* survive JSON unchanged?  ``None``, bool, int, float, str, and lists and dicts
+    (string keys) of those.  A tuple, a class or anything else would come back as something
+    else, which a hook must not be shown: such a mark makes the record unusable."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return True
+    if isinstance(value, list):
+        return all(wire_exact(v) for v in cast("list[object]", value))
+    if isinstance(value, dict):
+        return all(
+            isinstance(k, str) and wire_exact(v)
+            for k, v in cast("dict[object, object]", value).items()
+        )
+    return False
+
+
+def mark_is_wire_exact(mark: Mark) -> bool:
+    """A mark whose arguments reach a hook in another process exactly as they are here."""
+    return all(wire_exact(a) for a in mark.args) and wire_exact(dict(mark.kwargs))
 
 
 @dataclass(frozen=True)
@@ -278,16 +344,6 @@ _HOOKS: Final = {
     "pytest_collection_modifyitems": ("session", "config", "items"),
 }
 NATIVE_HOOKS: Final = frozenset(_HOOKS)
-
-#: Hooks whose effects land during or after execution: defining one hands the session off.
-HANDED_OFF_HOOKS: Final = frozenset(
-    {
-        "pytest_runtest_setup",
-        "pytest_sessionfinish",
-        "pytest_unconfigure",
-        "pytest_itemcollected",
-    }
-)
 
 #: Absent on an xdist controller and on a serial run, which is what a conftest checks for.
 _ABSENT_CONFIG_ATTRS: Final = frozenset({"workerinput", "workeroutput", "slaveinput"})
@@ -464,7 +520,106 @@ _PYTEST_CORE_FLAGS: Final = frozenset(
     }
 )
 
-#: The ``dest`` of each of those.
+#: The option strings each ``pytest11`` plugin a native session can have loaded registers (the
+#: hand-off allowlist, ``rustest._fallback.SAFE_PLUGINS``): a conftest declaring one is the same
+#: argparse conflict.  Frozen from the installed versions (pytest-xdist 3.8, pytest-cov,
+#: pytest-asyncio 1.2, pytest-icdiff, pytest-rich, pytest-codeblocks 0.17, pytest-mock: none);
+#: ``test_every_option_string_an_allowed_plugin_registers_is_a_conflict`` re-checks what is
+#: installed.
+_PLUGIN_FLAGS: Final[Mapping[str, frozenset[str]]] = {
+    "xdist": frozenset(
+        {
+            "--dist",
+            "--loadscope-reorder",
+            "--max-worker-restart",
+            "--maxprocesses",
+            "--maxschedchunk",
+            "--no-loadscope-reorder",
+            "--numprocesses",
+            "--px",
+            "--rsyncdir",
+            "--rsyncignore",
+            "--testrunuid",
+            "--tx",
+            "-d",
+            "-n",
+        }
+    ),
+    "xdist.looponfail": frozenset({"--looponfail", "-f"}),
+    "pytest_cov": frozenset(
+        {
+            "--cov",
+            "--cov-append",
+            "--cov-branch",
+            "--cov-config",
+            "--cov-context",
+            "--cov-fail-under",
+            "--cov-precision",
+            "--cov-report",
+            "--cov-reset",
+            "--no-cov",
+            "--no-cov-on-fail",
+        }
+    ),
+    "asyncio": frozenset({"--asyncio-debug", "--asyncio-mode"}),
+    "icdiff": frozenset(
+        {
+            "--icdiff-cols",
+            "--icdiff-highlight",
+            "--icdiff-line-numbers",
+            "--icdiff-show-all-spaces",
+            "--icdiff-strip-trailing-cr",
+            "--icdiff-tabsize",
+            "--icdiff-truncate",
+        }
+    ),
+    "rich": frozenset({"--rich", "--rich-capture"}),
+    "codeblocks": frozenset({"--codeblocks"}),
+    "pytest_mock": frozenset(),
+}
+
+#: The ``markers`` lines pytest 8.4.2's own plugins add in their ``pytest_configure``, in the
+#: order ``getini("markers")`` lists them (after the ini's, a conftest's and the plugins').
+_PYTEST_MARKER_LINES: Final = (
+    "filterwarnings(warning): add a warning filter to the given test. see "
+    + "https://docs.pytest.org/en/stable/how-to/capture-warnings.html#pytest-mark-filterwarnings ",
+    "skip(reason=None): skip the given test function with an optional reason. Example: "
+    + 'skip(reason="no way of currently testing this") skips the test.',
+    "skipif(condition, ..., *, reason=...): skip the given test function if any of the conditions"
+    + " evaluate to True. Example: skipif(sys.platform == 'win32') skips the test if we are on the"
+    + " win32 platform. See https://docs.pytest.org/en/stable/reference/reference.html"
+    + "#pytest-mark-skipif",
+    "xfail(condition, ..., *, reason=..., run=True, raises=None, strict=xfail_strict): mark the"
+    + " test function as an expected failure if any of the conditions evaluate to True. Optionally"
+    + " specify a reason for better reporting and run=False if you don't even want to execute the"
+    + " test function. If only specific exception(s) are expected, you can list them in raises,"
+    + " and if the test fails in other ways, it will be reported as a true failure. See"
+    + " https://docs.pytest.org/en/stable/reference/reference.html#pytest-mark-xfail",
+    "parametrize(argnames, argvalues): call a test function multiple times passing in different"
+    + " arguments in turn. argvalues generally needs to be a list of values if argnames specifies"
+    + " only one name or a list of tuples of values if argnames specifies multiple names. Example:"
+    + " @parametrize('arg1', [1,2]) would lead to two calls of the decorated test function, one"
+    + " with arg1=1 and another with arg1=2.see"
+    + " https://docs.pytest.org/en/stable/how-to/parametrize.html for more info and examples.",
+    "usefixtures(fixturename1, fixturename2, ...): mark tests as needing all of the specified"
+    + " fixtures. see https://docs.pytest.org/en/stable/explanation/fixtures.html#usefixtures ",
+    "tryfirst: mark a hook implementation function such that the plugin machinery will try to"
+    + " call it first/as early as possible. DEPRECATED, use @pytest.hookimpl(tryfirst=True)"
+    + " instead.",
+    "trylast: mark a hook implementation function such that the plugin machinery will try to"
+    + " call it last/as late as possible. DEPRECATED, use @pytest.hookimpl(trylast=True) instead.",
+)
+
+#: The ``markers`` line each allowed plugin adds (the rest add none).  With two of them loaded,
+#: the order between them is pluggy's registration order, which is not known here.
+_PLUGIN_MARKER_LINES: Final[Mapping[str, str]] = {
+    "xdist": "xdist_group: specify group for tests should run in same session.in relation to one"
+    + " another. Provided by pytest-xdist.",
+    "pytest_cov": "no_cover: disable coverage for this test.",
+    "asyncio": "asyncio: mark the test as a coroutine, it will be run using an asyncio event loop",
+}
+
+#: The ``dest`` of each of pytest's core options (:data:`_PYTEST_CORE_FLAGS`).
 _PYTEST_CORE_DESTS: Final = frozenset(
     {
         "assertmode",
@@ -620,6 +775,7 @@ class _State:
     ini: Mapping[str, object]
     builtin: Mapping[str, object]
     invocation_dir: Path | None = None
+    reserved: frozenset[str] = _PYTEST_CORE_FLAGS  # option strings pytest and its plugins own
     where: str = ""  # "<label>::<hook>" of the call in progress, or the last one
     active: bool = False  # a hook is running: the shims are valid only now
     violations: list[str] = field(default_factory=list[str])
@@ -634,6 +790,8 @@ class _State:
     deselected: list[object] = field(default_factory=list[object])
     marks: list[MarkAdded] = field(default_factory=list[MarkAdded])
     added: dict[str, list[MarkAdded]] = field(default_factory=dict[str, list[MarkAdded]])
+    duplicates: set[str] = field(default_factory=set[str])  # node ids the stage's list repeats
+    markers_unknown: bool = False  # the plugins' `markers` lines cannot be ordered
     after_argparse: bool = False  # options declared now were declared after argparse ran
     phase: int = 0  # bumped per registration / configure / sessionstart / modifyitems stage
     born: list[weakref.ref[_Shim]] = field(default_factory=list[weakref.ref["_Shim"]])
@@ -750,7 +908,7 @@ def _declare(st: _State, names: Sequence[str], attrs: Mapping[str, Any]) -> None
         problem = _bad_option_name(name)
         if problem:
             st.violate(f"declares {problem}")
-        if name in st.opt2dest or name in st.builtin or name in _PYTEST_CORE_FLAGS:
+        if name in st.opt2dest or name in st.builtin or name in st.reserved:
             st.violate(f"declares {name}, which is already an option")
     unknown = sorted(set(attrs) - _OPTION_KEYS)
     if unknown:
@@ -935,6 +1093,8 @@ class _Config(_Shim):
     def getini(self, name: str) -> object:
         st = self._st
         if name == "markers":
+            if st.markers_unknown:
+                st.violate("reads config.getini('markers') with two plugins adding markers")
             return st.markers
         if name not in st.ini_decl:
             st.violate(f"asks config.getini({name!r}) for an ini key no conftest declared")
@@ -1130,6 +1290,7 @@ class _Item(_Shim):
         "_rs_names",
         "_rs_own",
         "_rs_marks",
+        "_rs_param",
         "_rs_views",
         "config",
         "keywords",
@@ -1139,6 +1300,7 @@ class _Item(_Shim):
     )
     _rs_names: set[str]
     _rs_own: int | None
+    _rs_param: bool
     _rs_marks: list[Mark]
     _rs_views: list[_MarkView]
     config: _Config
@@ -1148,6 +1310,10 @@ class _Item(_Shim):
     path: Path
 
     def iter_markers(self, name: str | None = None) -> Iterator[_MarkView]:
+        if self._rs_param and (name is None or name == "parametrize"):
+            self._st.violate(
+                "reads the markers of a parametrized test, including its parametrize mark"
+            )
         for view in list(self._rs_views):
             if name is None or view.name == name:
                 yield view
@@ -1157,6 +1323,8 @@ class _Item(_Shim):
 
     def add_marker(self, marker: object, append: bool = True) -> None:
         st = self._st
+        if self.nodeid in st.duplicates:  # the worker keeps one plan per node id
+            st.violate(f"adds a mark to {self.nodeid}, which the item list holds more than once")
         mark = _mark_of(st, marker)
         index = (
             0 if not append else (self._rs_own if self._rs_own is not None else len(self._rs_marks))
@@ -1203,6 +1371,8 @@ def _new_item(st: _State, config: _Config, record: ItemRecord) -> _Item:
     }
     if record.param_id is not None:
         names.add(record.param_id)
+    if record.parametrized:  # the `parametrize` mark the record leaves out
+        names.add("parametrize")
     markers = list(record.markers)
     for slot, value in (
         ("nodeid", record.nodeid),
@@ -1213,6 +1383,7 @@ def _new_item(st: _State, config: _Config, record: ItemRecord) -> _Item:
         ("_rs_names", names),
         ("_rs_own", record.own_marker_count),
         ("_rs_marks", markers),
+        ("_rs_param", record.parametrized),
         ("_rs_views", [_MarkView(st, mark) for mark in markers]),
     ):
         object.__setattr__(item, slot, value)
@@ -1232,6 +1403,7 @@ class _Impl:
     argnames: tuple[str, ...]
     tryfirst: bool
     trylast: bool
+    initial: bool = True  # registered before `pytest_sessionstart` (so before FixtureManager)
 
 
 @dataclass
@@ -1287,14 +1459,34 @@ class HookRunner:
         ini: Mapping[str, object] | None = None,
         builtin_options: Mapping[str, object] | None = None,
         invocation_dir: str | Path | None = None,
+        plugins: Iterable[str] = (),
     ) -> None:
+        """*plugins* are the ``pytest11`` entry-point names pytest would load: their option
+        strings (:data:`_PLUGIN_FLAGS`) are as taken as pytest's own, and their ``markers``
+        lines follow the conftests' in ``getini("markers")``."""
         super().__init__()
+        plugins = tuple(plugins)
         self._st = _State(
             Path(rootpath),
             ini or {},
             builtin_options or {},
             None if invocation_dir is None else Path(invocation_dir),
+            _PYTEST_CORE_FLAGS.union(*(_PLUGIN_FLAGS.get(name, ()) for name in plugins)),
         )
+        plugin_lines = [_PLUGIN_MARKER_LINES[n] for n in plugins if n in _PLUGIN_MARKER_LINES]
+        self._marker_tail: tuple[str, ...] | None = (
+            (*plugin_lines, *_PYTEST_MARKER_LINES)
+            if len(plugin_lines) <= 1 and all(n in _PLUGIN_FLAGS for n in plugins)
+            else None
+        )
+        if not getattr(sys, "_is_gil_enabled", lambda: True)():
+            # ponytail: `_kept` and `_items_released` compare `sys.getrefcount`, which deferred
+            # and biased reference counting make unreliable without the GIL; decline rather
+            # than guess. Upgrade: a retention check that does not count references.
+            self._st.violations.append(
+                "this is a free-threaded build, where rustest's hook runtime cannot tell what a"
+                + " hook keeps"
+            )
         lines = _coerce_ini(self._st, "markers", "linelist", (ini or {}).get("markers", []))
         if isinstance(lines, list):
             self._st.markers.extend(str(line) for line in cast("list[object]", lines))
@@ -1326,20 +1518,6 @@ class HookRunner:
         """The attributes hooks stored on ``config``; copy them onto the worker's own config."""
         return dict(self._st.user)
 
-    @property
-    def option_values(self) -> dict[str, object]:
-        """Declared option ``dest`` -> value (late declarations without a default are absent)."""
-        return {
-            dest: option.value
-            for dest, option in self._st.options.items()
-            if option.value is not _MISSING
-        }
-
-    @property
-    def option_flags(self) -> dict[str, str]:
-        """Flag -> ``dest`` for every declared option (``--db-url`` -> ``url``)."""
-        return dict(self._st.opt2dest)
-
     def lookup_option(self, name: str) -> tuple[bool, object]:
         """``(declared, value)`` for a flag or ``dest``.  A declared option answers with its value
         and **ignores a call-site ``default=``**, exactly as pytest (and the shim) does; the
@@ -1356,6 +1534,8 @@ class HookRunner:
         converts it.  A type this runtime does not model raises :class:`HookUnsupported` (late)."""
         st = self._st
         if name == "markers":
+            if st.markers_unknown:
+                st.violate("reads config.getini('markers') with two plugins adding markers")
             return True, list(st.markers)
         if name not in st.ini_decl:
             return False, None
@@ -1364,10 +1544,13 @@ class HookRunner:
             return True, default
         return True, _coerce_ini(st, name, kind, st.ini[name])
 
-    @property
-    def ini_declarations(self) -> dict[str, tuple[str | None, object]]:
-        """``addini`` declarations: name -> (type, default)."""
-        return dict(self._st.ini_decl)
+    def note_violation(self, what: str) -> None:
+        """Record a reason the session must go to pytest (for a problem found outside a hook)."""
+        self._violate_quietly(what)
+
+    def implements(self, hook: str) -> bool:
+        """Does any registered module define *hook* (one of :data:`NATIVE_HOOKS`)?"""
+        return any(hook in plugin.impls for plugin in self._plugins)
 
     # -- registration -------------------------------------------------------------------
 
@@ -1389,11 +1572,8 @@ class HookRunner:
             if options.get("specname"):
                 self._refuse(label, name, "implements a hook through specname=")
                 return
-            if (name not in _HOOKS and name not in HANDED_OFF_HOOKS) or not callable(value):
+            if name not in _HOOKS or not callable(value):
                 continue
-            if name in HANDED_OFF_HOOKS:
-                self._refuse(label, name, "is a hook that runs during or after test execution")
-                return
             if options.get("hookwrapper") or options.get("wrapper"):
                 self._refuse(label, name, "is a hook wrapper")
                 return
@@ -1416,6 +1596,7 @@ class HookRunner:
                 argnames,
                 bool(options.get("tryfirst")),
                 bool(options.get("trylast")),
+                initial,
             )
         plugin = _Plugin(label, impls)
         self._plugins.append(plugin)
@@ -1442,6 +1623,11 @@ class HookRunner:
         self._configured = True
         self._st.phase += 1
         self._run_all("pytest_configure", config=self._config)
+        # The plugins' and pytest's own `pytest_configure` run after every conftest's (LIFO).
+        if self._marker_tail is None:
+            self._st.markers_unknown = True
+        else:
+            self._st.markers.extend(self._marker_tail)
 
     def sessionstart(self) -> None:
         self._st.phase += 1
@@ -1473,8 +1659,23 @@ class HookRunner:
             return empty if st.violations else self._unchanged(records)
         for record in records:
             if record.kind not in ("function", "unittest"):
-                self._violate_quietly(f"collected a {record.kind} item")
+                self._violate_quietly(
+                    f"collected an item the hook runtime cannot model ({record.kind})"
+                )
                 return empty
+        if any(record.reordered for record in records):
+            # pytest's FixtureManager reorders by fixture scope between the plain impls
+            # registered after sessionstart and those before it; see `ItemRecord.reordered`.
+            for impl in chain:
+                if impl.trylast or (impl.initial and not impl.tryfirst):
+                    st.where = f"{impl.label}::{impl.hook}"
+                    self._violate_quietly(
+                        "would be shown the items in the order pytest's fixture-scope"
+                        + " reordering gives them (a parametrized fixture wider than function)"
+                    )
+                    return empty
+        counts = Counter(record.nodeid for record in records)
+        st.duplicates = {nodeid for nodeid, count in counts.items() if count > 1}
         prepared = [self._with_earlier_marks(record) for record in records]
         items = [_new_item(st, self._config, record) for record in prepared]
         ids = {id(item): record.nodeid for item, record in zip(items, records, strict=True)}

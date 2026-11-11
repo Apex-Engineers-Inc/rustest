@@ -881,6 +881,7 @@ def test_the_cli_forwards_selection_pool_size_and_the_report_path() -> None:
         coverage: str | None,
         on_event: object = None,
         pytest_fallback: bool = False,
+        **_: object,  # hook_context, strict_markers
     ) -> str:
         del invocation_dir, python, fail_fast, last_failed_mode, no_capture, codeblocks
         del assert_rewrite, coverage, max_fail
@@ -933,6 +934,7 @@ def test_an_absent_path_argument_is_not_forwarded_as_a_dot() -> None:
         coverage: str | None,
         on_event: object = None,
         pytest_fallback: bool = False,
+        **_: object,  # hook_context, strict_markers
     ) -> str:
         del invocation_dir, python, workers, keyword, mark_expr
         del fail_fast, max_fail, last_failed_mode, no_capture, codeblocks, assert_rewrite
@@ -987,6 +989,7 @@ def test_an_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) ->
         coverage: str | None,
         on_event: object = None,
         pytest_fallback: bool = False,
+        **_: object,  # hook_context, strict_markers
     ) -> str:
         del invocation_dir, args, python, workers, keyword, mark_expr
         del fail_fast, max_fail, last_failed_mode, no_capture, codeblocks, assert_rewrite

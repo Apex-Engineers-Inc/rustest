@@ -15,7 +15,7 @@ from .helpers import make_tree as _tree, run as _run
 
 _NOTE = "NOTE: "
 _TEST = "def test_ok():\n    pass\n"
-_HOOK = "def pytest_configure(config):\n    pass\n"
+_HOOK = "def pytest_sessionfinish(session):\n    pass\n"
 
 
 def _rustest(tree: Path, *args: str, env: dict[str, str] | None = None):
@@ -37,7 +37,7 @@ def test_one_hook_is_named_once_and_changes_nothing_else(tmp_path: Path) -> None
     assert _notes(with_hook.stderr) == [
         _NOTE
         + "1 pytest hook in conftest files is not run (rustest has no plugin system):"
-        + " conftest.py::pytest_configure"
+        + " conftest.py::pytest_sessionfinish"
     ]
     assert _notes(without.stderr) == []
     assert (with_hook.returncode, with_hook.stdout) == (without.returncode, without.stdout)
@@ -45,9 +45,11 @@ def test_one_hook_is_named_once_and_changes_nothing_else(tmp_path: Path) -> None
 
 def test_nested_conftests_across_workers_are_deduped_and_sorted(tmp_path: Path) -> None:
     files = {
-        "conftest.py": "def pytest_configure(config):\n    pass\n",
+        "conftest.py": "def pytest_sessionfinish(session):\n    pass\n",
         "tests/conftest.py": (
-            "def pytest_collection_modifyitems(items):\n    pass\n"
+            "def pytest_runtest_setup(item):\n    pass\n"
+            "def pytest_generate_tests(metafunc):\n    pass\n"
+            # run natively, so not named
             "def pytest_addoption(parser):\n    pass\n"
             "pytest_plugins = []\n"
         ),
@@ -64,9 +66,9 @@ def test_nested_conftests_across_workers_are_deduped_and_sorted(tmp_path: Path) 
     assert _notes(result.stderr) == [
         _NOTE
         + "3 pytest hooks in conftest files are not run (rustest has no plugin system):"
-        + " conftest.py::pytest_configure,"
-        + " tests/conftest.py::pytest_addoption,"
-        + " tests/conftest.py::pytest_collection_modifyitems"
+        + " conftest.py::pytest_sessionfinish,"
+        + " tests/conftest.py::pytest_generate_tests,"
+        + " tests/conftest.py::pytest_runtest_setup"
     ]
 
 
@@ -76,7 +78,7 @@ def test_a_pytest_plugins_module_is_named_by_its_dotted_name(tmp_path: Path) -> 
         "plugin",
         {
             "conftest.py": 'pytest_plugins = ["myplug"]\n',
-            "myplug.py": "def pytest_sessionstart(session):\n    pass\n",
+            "myplug.py": "def pytest_runtest_teardown(item):\n    pass\n",
             "test_a.py": _TEST,
         },
     )
@@ -84,7 +86,7 @@ def test_a_pytest_plugins_module_is_named_by_its_dotted_name(tmp_path: Path) -> 
     result = _rustest(tree)
 
     assert result.returncode == 0
-    assert "myplug::pytest_sessionstart" in "".join(_notes(result.stderr))
+    assert "myplug::pytest_runtest_teardown" in "".join(_notes(result.stderr))
 
 
 def test_hooks_in_nested_pytest_plugins_are_named_and_their_fixtures_visible(
@@ -100,7 +102,7 @@ def test_hooks_in_nested_pytest_plugins_are_named_and_their_fixtures_visible(
             "conftest.py": 'pytest_plugins = ["plugins"]\n',
             "plugins.py": 'pytest_plugins = ["shard"]\n',
             "shard.py": "import pytest\n\n\n@pytest.fixture\ndef shard_value():\n    return 7\n\n\n"
-            "def pytest_collection_modifyitems(config, items):\n    pass\n",
+            "def pytest_runtest_setup(item):\n    pass\n",
             "test_a.py": "def test_uses_nested(shard_value):\n    assert shard_value == 7\n",
         },
     )
@@ -108,7 +110,7 @@ def test_hooks_in_nested_pytest_plugins_are_named_and_their_fixtures_visible(
     result = _rustest(tree)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "shard::pytest_collection_modifyitems" in "".join(_notes(result.stderr))
+    assert "shard::pytest_runtest_setup" in "".join(_notes(result.stderr))
 
 
 def test_hooks_that_stay_with_rustest_are_still_named(tmp_path: Path) -> None:
@@ -136,10 +138,9 @@ def test_hooks_that_stay_with_rustest_are_still_named(tmp_path: Path) -> None:
     ]
 
 
-def test_a_declared_option_default_gets_pytests_answer(tmp_path: Path) -> None:
-    """``pytest_addoption`` changes outcomes: a declared option answers ``getoption`` with its
-    declared default under pytest. The CLI's default therefore hands this session to pytest,
-    and the test passes; forced to stay with rustest it sees the call-site default instead."""
+def test_a_declared_option_default_is_answered_natively(tmp_path: Path) -> None:
+    """``pytest_addoption`` runs in the hook runtime: a declared option answers ``getoption``
+    with its declared default, so the session needs no hand-off to pytest and agrees with it."""
     tree = _tree(
         tmp_path,
         "option",
@@ -152,7 +153,54 @@ def test_a_declared_option_default_gets_pytests_answer(tmp_path: Path) -> None:
     )
 
     assert _run([sys.executable, "-m", "rustest", "-n", "1"], tree).returncode == 0
-    assert _rustest(tree, "-n", "1").returncode == 1
+    assert _rustest(tree, "-n", "1").returncode == 0
+
+
+def test_without_fallback_the_supported_hooks_still_run_beside_an_unrun_one(
+    tmp_path: Path,
+) -> None:
+    """``--no-pytest-fallback`` skips only the hand-off: the ``modifyitems`` deselection still
+    happens, and the NOTE names just the hook that did not run."""
+    tree = _tree(
+        tmp_path,
+        "beside",
+        {
+            "conftest.py": "def pytest_collection_modifyitems(config, items):\n"
+            "    keep = [i for i in items if i.name != 'test_gone']\n"
+            "    config.hook.pytest_deselected(items=[i for i in items if i not in keep])\n"
+            "    items[:] = keep\n" + _HOOK,
+            "test_a.py": _TEST + "def test_gone():\n    assert 0\n",
+        },
+    )
+
+    result = _rustest(tree, "-n", "2")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed, 1 deselected" in result.stderr
+    assert _notes(result.stderr) == [
+        _NOTE
+        + "1 pytest hook in conftest files is not run (rustest has no plugin system):"
+        + " conftest.py::pytest_sessionfinish"
+    ]
+
+
+def test_collect_only_without_fallback_says_modifyitems_was_not_applied(tmp_path: Path) -> None:
+    """Review S3: the listing is the unmodified collection, and the NOTE says so."""
+    tree = _tree(
+        tmp_path,
+        "co_modify",
+        {
+            "conftest.py": "def pytest_collection_modifyitems(items):\n    items[:] = items[:1]\n",
+            "test_a.py": _TEST + "def test_b():\n    pass\n",
+        },
+    )
+
+    result = _rustest(tree, "--collect-only", "-q")
+
+    assert any(
+        "changes what --collect-only lists" in line and "its effects were not applied" in line
+        for line in result.stderr.splitlines()
+    ), result.stderr
 
 
 def test_collect_only_names_hooks_of_conftests_it_loaded(tmp_path: Path) -> None:

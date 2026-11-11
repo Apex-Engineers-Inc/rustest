@@ -165,8 +165,9 @@ pub enum Reason {
     /// Two collection targets share a file stem, so the second import may be pytest's
     /// `import file mismatch` collection error.
     StemCollision,
-    /// A shape pytest warns about at collection (a test class with a constructor), under a
-    /// `filterwarnings` ini, which can turn the warning into a collection error.
+    /// A shape pytest warns about at collection (a test class with a constructor) under a
+    /// `filterwarnings` ini, or any module under an `error` filter: the warning can be a
+    /// collection error.
     CollectionWarning,
 }
 
@@ -999,12 +1000,31 @@ fn conftest_chain(dir: &Path, rootdir: &Path) -> Vec<PathBuf> {
 }
 
 /// Scan one module's source and return its tests, or the reason it is dynamic.
+/// Whether a `filterwarnings` line's action is `error` (`warnings._getaction` accepts any
+/// prefix of an action name).
+fn is_error_filter(line: &str) -> bool {
+    let action = line.split(':').next().unwrap_or("").trim();
+    !action.is_empty() && "error".starts_with(action)
+}
+
 pub fn scan_module(
     source: &str,
     rel_path: &str,
     config: &ResolvedConfig,
     shadows: &HashSet<String>,
 ) -> Result<Vec<CollectedTest>, Dynamic> {
+    // Under an `error` warning filter any import -- an allowlisted stdlib one included, such as
+    // a deprecated name -- can fail collection, which only importing the module can show.
+    if config
+        .filterwarnings
+        .iter()
+        .any(|line| is_error_filter(line))
+    {
+        return Err(Dynamic::new(
+            Reason::CollectionWarning,
+            "an `error` warning filter can fail an import".to_string(),
+        ));
+    }
     if let Some(encoding) = declares_non_utf8_encoding(source) {
         return Err(Dynamic::new(
             Reason::EncodingCookie,
@@ -1768,9 +1788,9 @@ impl<'a> Scan<'a> {
     ///   against the test's module globals — genuinely dynamic, so only a `True`/`False`
     ///   literal is admitted;
     /// * `xfail(condition=None, *, reason, raises, run, strict)` ->
-    ///   `MarkDecorator("xfail", (condition,) or (), {reason, raises, run, strict})`, i.e. the
-    ///   four keywords are **always present** with their defaults, which is why a naive
-    ///   "copy the kwargs the user wrote" would produce the wrong wire form;
+    ///   `MarkDecorator("xfail", (condition,) or (), {...})` holding only the keywords whose
+    ///   value is not the default (`reason=None`, `run=True`, `strict=None` are left out, as
+    ///   pytest leaves out what was not given), in that order;
     /// * `usefixtures(*names)` -> `MarkDecorator("usefixtures", names, {})`;
     /// * `asyncio` re-decorates class members and is refused.
     ///
@@ -1879,12 +1899,12 @@ impl<'a> Scan<'a> {
                 let mut reason = Lit::None;
                 let mut run = Lit::Bool(true);
                 // Absent unless given, as on pytest's own mark: the `xfail_strict` ini decides.
-                let mut strict = None;
+                let mut strict = Lit::None;
                 for (key, value) in &kwargs {
                     match key.as_str() {
                         "reason" => reason = value.clone(),
                         "run" => run = value.clone(),
-                        "strict" => strict = Some(value.clone()),
+                        "strict" => strict = value.clone(),
                         // `raises=ValueError` is a *class*, never a literal; it must reach the
                         // execute half as an object, so a static answer cannot produce it.
                         other => {
@@ -1895,17 +1915,21 @@ impl<'a> Scan<'a> {
                         }
                     }
                 }
+                // `decorators.py::MarkGenerator._xfail` keeps a keyword whose value `is not`
+                // its default.
+                let given = [
+                    ("reason", reason, Lit::None),
+                    ("run", run, Lit::Bool(true)),
+                    ("strict", strict, Lit::None),
+                ];
                 spec(
                     "xfail",
                     condition.into_iter().collect(),
-                    [
-                        ("reason".to_string(), reason),
-                        ("raises".to_string(), Lit::None),
-                        ("run".to_string(), run),
-                    ]
-                    .into_iter()
-                    .chain(strict.map(|strict| ("strict".to_string(), strict)))
-                    .collect(),
+                    given
+                        .into_iter()
+                        .filter(|(_, value, default)| value != default)
+                        .map(|(key, value, _)| (key.to_string(), value))
+                        .collect(),
                 )
             }
             "usefixtures" => {
@@ -2162,6 +2186,7 @@ impl<'a> Scan<'a> {
                 .cloned()
                 .collect(),
             tier: Tier::Static,
+            record: None,
         };
 
         Ok(Some(match cases {
@@ -2857,7 +2882,7 @@ fn conftest_scan_config() -> ResolvedConfig {
         asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
         codeblocks: None,
         filterwarnings: Vec::new(),
-        xfail_strict: false,
+        xfail_strict: None,
     }
 }
 
@@ -3227,10 +3252,9 @@ class TestBox:
         assert_eq!(names, ["bottom", "top", "inner", "outer", "mod"]);
     }
 
-    /// `_xfail` always fills all four keywords, whatever the user wrote — the wire form is the
-    /// factory's output, not the call's arguments.
+    /// `_xfail` keeps only the keywords given a non-default value, as pytest's mark does.
     #[test]
-    fn xfail_carries_the_factorys_default_keywords() {
+    fn xfail_carries_only_the_keywords_given() {
         let tests = scan_module(
             "import pytest\n\n\n@pytest.mark.xfail(reason=\"known broken\")\ndef test_x():\n    pass\n",
             "test_a.py",
@@ -3241,12 +3265,9 @@ class TestBox:
         let mark = &tests[0].marks[0];
         assert_eq!(mark.name, "xfail");
         assert!(mark.args.is_empty());
-        assert_eq!(mark.kwargs["reason"], serde_json::json!("known broken"));
-        assert_eq!(mark.kwargs["raises"], serde_json::Value::Null);
-        assert_eq!(mark.kwargs["run"], serde_json::json!(true));
-        assert!(
-            !mark.kwargs.contains_key("strict"),
-            "unset, as on pytest's mark"
+        assert_eq!(
+            serde_json::Value::Object(mark.kwargs.clone()),
+            serde_json::json!({"reason": "known broken"})
         );
     }
 
@@ -4538,5 +4559,33 @@ class TestBox:
             !crate::engine::collect::CollectOptions::default().assert_rewrite,
             "the default must be off; `collect::plan` turns it on for runs"
         );
+    }
+
+    /// Under an `error` warning filter every module goes to Tier D: an import Tier S trusts
+    /// (a deprecated stdlib name) can warn, and the warning is then a collection error.
+    #[test]
+    fn an_error_warning_filter_sends_every_module_to_tier_d() {
+        let mut config = config();
+        config.filterwarnings = vec!["ignore::DeprecationWarning".to_string()];
+        assert!(scan_module(
+            "def test_a():
+    pass
+",
+            "test_a.py",
+            &config,
+            &no_shadows()
+        )
+        .is_ok());
+        config.filterwarnings.push("error".to_string());
+        let err = scan_module(
+            "def test_a():
+    pass
+",
+            "test_a.py",
+            &config,
+            &no_shadows(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason, Reason::CollectionWarning);
     }
 }

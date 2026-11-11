@@ -47,7 +47,7 @@ import warnings
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import GenericAlias
-from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
 
 from ._warnings import WarningsRecorder
 from .builtin_fixtures import MonkeyPatch
@@ -123,8 +123,36 @@ _log_capture: LogCapture | None = None
 
 def configure(rootdir: Path, invocation_dir: Path, ini: Mapping[str, object]) -> None:
     """Record what ``init`` established.  Called once per worker."""
-    global _context
+    global _context, _config
     _context = _WorkerContext(rootdir=rootdir, invocation_dir=invocation_dir, ini=dict(ini))
+    _config = None
+
+
+class HookBridge(Protocol):
+    """What the worker's hook runtime (``rustest._hookwire``) answers for ``request.config``.
+
+    Everything a conftest's ``pytest_addoption`` / ``pytest_configure`` declared or stored: the
+    options it declared (and the core options the CLI carried), the ``addini`` keys, and the
+    attributes it set on ``config``.  ``request.config`` is *this module's* :class:`Config`,
+    never a hook shim, and answers from here.
+    """
+
+    def lookup_option(self, name: str) -> tuple[bool, object]: ...
+
+    def lookup_ini(self, name: str) -> tuple[bool, object]: ...
+
+    def user_attribute(self, name: str) -> tuple[bool, object]: ...
+
+
+_hooks: HookBridge | None = None
+_config: Config | None = None
+
+
+def set_hooks(bridge: HookBridge | None) -> None:
+    """Attach (or detach) the hook runtime's answers; ``request.config`` consults them first."""
+    global _hooks, _config
+    _hooks = bridge
+    _config = None
 
 
 def _worker_context() -> _WorkerContext:
@@ -1500,6 +1528,10 @@ class Config:
         options.  Anything else raises — see :data:`_UNCARRIED_INI` for why the two refusals
         are worded differently.
         """
+        if _hooks is not None:
+            found, value = _hooks.lookup_ini(name)
+            if found:
+                return value
         if name in self._ini:
             return self._ini[name]
         if name in _UNCARRIED_INI:
@@ -1519,6 +1551,14 @@ class Config:
         Reporting the flags this run was actually invoked with needs them on the wire; a
         fabricated ``verbose=0`` would let a suite report on a mode it never ran in.
         """
+        if _hooks is not None:
+            found, value = _hooks.lookup_option(name)
+            if found:  # a declared option wins over a call-site default, as in pytest
+                if value is None and skip:
+                    from rustest.compat.pytest import skip as _skip
+
+                    _skip(f"no {name!r} option found")
+                return value
         if default is not _NOTSET:
             return default
         if skip:
@@ -1526,6 +1566,32 @@ class Config:
 
             _skip(f"no {name!r} option found")
         raise ValueError(f"no option named {name!r}")
+
+    @property
+    def option(self) -> _OptionNamespace:
+        """``config.option``: the declared options by ``dest`` (nothing else is carried)."""
+        return _OptionNamespace()
+
+    def __getattr__(self, name: str) -> object:
+        """Attributes a conftest's ``pytest_configure`` stored on ``config`` (networkx's
+        ``config.backend``); anything else is the ``AttributeError`` it always was."""
+        if _hooks is not None and not name.startswith("_"):
+            found, value = _hooks.user_attribute(name)
+            if found:
+                return value
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+
+class _OptionNamespace:
+    """`config.option`: ``config.option.runslow``.  A name nobody declared is an ``AttributeError``,
+    so ``getattr(config.option, "tx", None)`` works."""
+
+    def __getattr__(self, name: str) -> object:
+        if _hooks is not None and not name.startswith("_"):
+            found, value = _hooks.lookup_option(name)
+            if found:
+                return value
+        raise AttributeError(name)
 
 
 class _InvocationParams(NamedTuple):
@@ -1536,8 +1602,11 @@ class _InvocationParams(NamedTuple):
 
 def current_config() -> Config:
     """The worker's :class:`Config`, built from what ``init`` established."""
+    global _config
     context = _worker_context()
-    return Config(context.rootdir, context.invocation_dir, context.ini)
+    if _config is None:  # one object: what a fixture sets on it, the next one reads
+        _config = Config(context.rootdir, context.invocation_dir, context.ini)
+    return _config
 
 
 @fixture(scope="session")

@@ -32,6 +32,8 @@ def collect(
     collect_tier: str = ...,
     cache_mode: str = ...,
     pytest_fallback: bool = ...,
+    hook_context: str | None = ...,
+    strict_markers: bool = ...,
 ) -> str:
     """Collect tests with the engine; returns a ``CollectionManifest`` JSON string.
 
@@ -94,6 +96,8 @@ def run(
     coverage: str | None = ...,
     on_event: Callable[[str, Any], object] | None = ...,
     pytest_fallback: bool = ...,
+    hook_context: str | None = ...,
+    strict_markers: bool = ...,
 ) -> str:
     """Run tests with the engine; returns a schema-v2 ``RunReport`` JSON string.
 

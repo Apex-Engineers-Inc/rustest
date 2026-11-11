@@ -1,5 +1,5 @@
 # A conftest hook in a/ removes a test from b/. pytest runs session hooks on every directory's items,
-# so only a whole-session hand-off to pytest agrees; rustest run flagless falls back, and
-# `--no-pytest-fallback` diverges (it collects and runs b/test_b.py::test_b).
+# and so does the hook runtime: the barrier shows the hook the whole collection, so this runs
+# natively (no hand-off) and still agrees.
 [case]
 args = ["."]

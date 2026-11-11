@@ -351,6 +351,7 @@ def test_orchestration_failure_exits_3(capsys: pytest.CaptureFixture[str]) -> No
         collect_tier: str,
         cache_mode: str,
         pytest_fallback: bool = False,
+        **_: object,  # hook_context, strict_markers
     ) -> str:
         del invocation_dir, args, python, workers, keyword, mark_expr
         del codeblocks, collect_tier, cache_mode, pytest_fallback
@@ -430,6 +431,7 @@ def test_absent_path_arguments_are_passed_through_as_none_given() -> None:
         collect_tier: str,
         cache_mode: str,
         pytest_fallback: bool = False,
+        **_: object,  # hook_context, strict_markers
     ) -> str:
         del invocation_dir, python, workers, keyword, mark_expr
         del codeblocks, collect_tier, cache_mode, pytest_fallback
@@ -458,6 +460,7 @@ def test_core_passes_sys_executable_to_the_worker_pool() -> None:
         collect_tier: str,
         cache_mode: str,
         pytest_fallback: bool = False,
+        **_: object,  # hook_context, strict_markers
     ) -> str:
         del invocation_dir, args, keyword, mark_expr, codeblocks, collect_tier, cache_mode
         del pytest_fallback

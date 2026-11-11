@@ -187,7 +187,21 @@ def _three_way(
 
 #: Cases only the whole-session pytest fallback gets right: a plain `rust.collect` (what this
 #: file drives) keeps the two-tier comparison and drops the pytest leg, as for a waived case.
-_NEEDS_FALLBACK = frozenset({"collection/hook-modifyitems-cross-dir"})
+#: A plain `rust.collect` does not run `pytest_collection_modifyitems` (the CLI's two-stage exchange
+#: does), so the cases whose hook changes the item list are compared without the pytest leg.
+_NEEDS_FALLBACK = frozenset(
+    {
+        "collection/hook-modifyitems-cross-dir",
+        "collection/hook-modifyitems-deselect",
+        "collection/hook-modifyitems-reorder",
+        "collection/hook-modifyitems-trylast-k",
+        "collection/hook-runslow",
+        # hands off (pytest reorders by fixture scope before the hook)
+        "collection/hook-modifyitems-fixture-reorder",
+        # `addopts` is the CLI's to splice, so a plain `rust.collect` never sees the flags
+        "marks/strict-markers-blocked-plugin",
+    }
+)
 
 _CASES = sorted(
     (
@@ -586,12 +600,14 @@ def test_a_hook_conftest_makes_collection_hand_the_session_to_pytest(tmp_path: P
     root = tmp_path / "suite"
     root.mkdir()
     (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
-    (root / "conftest.py").write_text("def pytest_configure(config):\n    pass\n", encoding="utf-8")
+    (root / "conftest.py").write_text(
+        "def pytest_runtest_setup(item):\n    pass\n", encoding="utf-8"
+    )
     (root / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
 
     manifest = json.loads(rust.collect(str(root), [], sys.executable, 1, pytest_fallback=True))
 
-    assert manifest["pytest_fallback"] == ["conftest.py::pytest_configure"]
+    assert any("pytest_runtest_setup" in r for r in manifest["pytest_fallback"])
     assert manifest["tests"] == []
 
 

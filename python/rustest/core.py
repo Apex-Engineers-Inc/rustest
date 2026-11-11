@@ -7,8 +7,8 @@ import io
 import json
 import os
 import sys
-from collections.abc import Callable, Iterator, Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Final
 
 from . import rust
 
@@ -366,6 +366,11 @@ _MANIFEST_CACHE_ENV = "RUSTEST_MANIFEST_CACHE"
 _ASSERT_REWRITE_ENV = "RUSTEST_ASSERT_REWRITE"
 
 
+#: Labels a worker reports that are already whole reasons: a conftest that did not import, and the
+#: native hook runtime's (``rustest._hookwire.REASON_PREFIX``, pinned equal by a test).
+_WHOLE_REASONS: Final = ("rustest could not import ", "rustest's hook runtime: ")
+
+
 class NeedsPytest(Exception):
     """The session uses pytest hooks rustest does not run; *reasons* names them.
 
@@ -379,7 +384,7 @@ class NeedsPytest(Exception):
         super().__init__(", ".join(labels))
         self.reasons = [
             label
-            if label.startswith("rustest could not import ")  # already a whole reason
+            if label.startswith(_WHOLE_REASONS)  # already a whole reason
             else f"{label} is a pytest hook rustest does not run"
             for label in labels
         ]
@@ -400,6 +405,8 @@ def collect_only(
     mark_expr: str | None = None,
     codeblocks: bool | None = None,
     pytest_fallback: bool = False,
+    hook_context: Mapping[str, object] | None = None,
+    strict_markers: bool = False,
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
@@ -464,6 +471,8 @@ def collect_only(
             os.environ.get(_COLLECT_TIER_ENV, "auto"),
             os.environ.get(_MANIFEST_CACHE_ENV, "auto"),
             pytest_fallback=pytest_fallback,
+            hook_context=_hook_context_json(hook_context),
+            strict_markers=strict_markers,
         )
         manifest: _Manifest = json.loads(payload)
         return manifest
@@ -489,6 +498,12 @@ def collect_only(
             return _EXIT_INTERNAL_ERROR
 
         return report_collection(ids, manifest.get("errors", []), deselected)
+
+
+def _hook_context_json(context: Mapping[str, object] | None) -> str | None:
+    """What the CLI knows that a conftest's hook may ask (``args``, ``options``, ``ini``), as the
+    JSON ``rust.run`` / ``rust.collect`` carry to every worker's ``init`` unread."""
+    return None if context is None else json.dumps(context, default=str)
 
 
 def report_collection(
@@ -872,6 +887,8 @@ def run(
     color: str = "auto",
     ascii: bool = False,
     pytest_fallback: bool = False,
+    hook_context: Mapping[str, object] | None = None,
+    strict_markers: bool = False,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
@@ -1014,6 +1031,8 @@ def run(
                     coverage.wire,
                     on_event=None if display is None else _guarded(display),
                     pytest_fallback=pytest_fallback,
+                    hook_context=_hook_context_json(hook_context),
+                    strict_markers=strict_markers,
                 )
             finally:
                 # Before anything below prints, on every way out -- a live region left

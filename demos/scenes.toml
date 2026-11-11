@@ -189,10 +189,9 @@ markers =
 import pytest
 
 
-def pytest_collection_modifyitems(items):
-    for item in items:
-        if "slow" in item.keywords:
-            item.add_marker(pytest.mark.skip(reason="slow"))
+def pytest_runtest_setup(item):
+    if "slow" in item.keywords:
+        pytest.skip("slow")
 '''
 "test_shop.py" = '''
 import pytest

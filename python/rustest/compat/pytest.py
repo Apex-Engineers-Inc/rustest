@@ -22,6 +22,7 @@ import warnings
 from pprint import pformat
 from re import Pattern
 from types import GenericAlias
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, NoReturn
 
 # Import rustest's actual implementations
@@ -228,17 +229,39 @@ class _PytestMarkCompat:
         # The compat surface therefore keeps its own routing to `skip_decorator`, wrapped in
         # the same bare-or-factory discrimination as the rest -- being a plain *method* is
         # what made the bare `@pytest.mark.skip` replace the test with a closure (#136).
-        def _skip_factory(reason: str | None = None) -> _SkipMarkDecorator:
-            return _SkipMarkDecorator("skip", (), {"reason": reason})
+        def _skip_factory(*args: object, **kwargs: object) -> _SkipMarkDecorator:
+            return _SkipMarkDecorator("skip", args, kwargs)  # as written, as pytest stores it
 
         self._skip = _BareOrFactoryMark(
             "skip",
             _skip_factory,
-            bare=_SkipMarkDecorator("skip", (), {"reason": None}),
+            bare=_SkipMarkDecorator("skip", (), {}),
         )
 
     def __getattr__(self, name: str) -> Any:
-        """Delegate all mark.* access to rustest.mark.*"""
+        """Delegate all mark.* access to rustest.mark.*, checking the name first.
+
+        Port of the check in `_pytest/mark/structures.py::MarkGenerator.__getattr__`: an
+        unregistered name is ``PytestUnknownMarkWarning`` (stacklevel 2, the caller's line),
+        an error under ``--strict-markers``, and ``parameterize`` and its spellings always
+        fail. Checked only once the worker has a complete registry (:func:`set_mark_registry`).
+        """
+        if name[0] == "_":
+            raise AttributeError("Marker name must NOT start with underscore")
+        if _mark_registry is not None and name not in _mark_registry and not _from_conftest():
+            if _strict_markers:
+                _rustest_fail(
+                    f"{name!r} not found in `markers` configuration option", pytrace=False
+                )
+            if name in ("parameterize", "parametrise", "parameterise"):
+                _rustest_fail(f"Unknown '{name}' mark, did you mean 'parametrize'?")
+            warnings.warn(
+                f"Unknown pytest.mark.{name} - is this a typo?  You can register "
+                + "custom marks to avoid this warning - for details, see "
+                + "https://docs.pytest.org/en/stable/how-to/mark.html",
+                PytestUnknownMarkWarning,
+                2,
+            )
         return getattr(_rustest_mark, name)
 
     @property
@@ -248,6 +271,55 @@ class _PytestMarkCompat:
         Maps to rustest's ``skip_decorator()``.
         """
         return self._skip
+
+
+#: The marks pytest registers itself (``addinivalue_line("markers", ...)`` in its own plugins).
+BUILTIN_MARKS: frozenset[str] = frozenset(
+    {
+        "filterwarnings",
+        "parametrize",
+        "skip",
+        "skipif",
+        "tryfirst",
+        "trylast",
+        "usefixtures",
+        "xfail",
+    }
+)
+
+#: The registered mark names, or ``None`` while the registry is not known to be complete --
+#: then nothing is checked, because a false ``PytestUnknownMarkWarning`` is a false error
+#: under ``filterwarnings = error``.
+_mark_registry: set[str] | None = None
+_strict_markers = False
+
+
+def _marker_name(line: str) -> str:
+    """``MarkGenerator.__getattr__``'s parse of one ``markers`` line: ``name(args): help``."""
+    return line.split(":")[0].split("(")[0].strip()
+
+
+def set_mark_registry(lines: Iterable[str] | None, *, strict: bool) -> None:
+    """Install the registry: :data:`BUILTIN_MARKS` plus *lines* (``markers`` ini syntax), or
+    ``None`` to check nothing. *strict* is ``--strict-markers``."""
+    global _mark_registry, _strict_markers
+    _strict_markers = strict
+    _mark_registry = None if lines is None else {*BUILTIN_MARKS, *map(_marker_name, lines)}
+
+
+def add_registered_markers(lines: Iterable[str]) -> None:
+    """``config.addinivalue_line("markers", ...)`` from a hook the runtime ran natively."""
+    if _mark_registry is not None:
+        _mark_registry.update(map(_marker_name, lines))
+
+
+def _from_conftest() -> bool:
+    """Whether the mark is named in a conftest. pytest checks only once ``pytest_configure``
+    has run, after the *initial* conftests are imported; telling those apart from later ones
+    needs the collection tree, so no conftest is checked (a missed warning, never a false one).
+    """
+    frame = sys._getframe(2)  # pyright: ignore[reportPrivateUsage]
+    return frame.f_code.co_filename.endswith("conftest.py")
 
 
 # Create the mark instance

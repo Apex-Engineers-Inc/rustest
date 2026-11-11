@@ -285,8 +285,8 @@ Both runners filter on these with `-m`, and rustest implements pytest's full exp
 grammar: `-m "slow and not integration"`, parentheses, and keyword matching on mark
 arguments. See [CLI Usage](cli.md).
 
-Unknown marks are never an error in rustest, and `--strict-markers` is accepted and
-ignored.
+An unregistered mark is a warning, and an error under `--strict-markers` (or `--strict`),
+as in pytest.
 
 ### Assertion helpers
 

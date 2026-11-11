@@ -194,7 +194,8 @@ fn collect_error_to_py(err: CollectError) -> PyErr {
         | CollectError::Shutdown { .. }
         | CollectError::WorkerPanicked { .. }
         | CollectError::MissingResponse { .. }
-        | CollectError::MissingResult { .. } => PyRuntimeError::new_err(message),
+        | CollectError::MissingResult { .. }
+        | CollectError::HandOff(_) => PyRuntimeError::new_err(message),
     }
 }
 
@@ -250,7 +251,7 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// `RUSTEST_MANIFEST_CACHE`; see [`CacheMode`].
 #[pyfunction]
 #[pyo3(name = "collect")]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto", pytest_fallback=false))]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto", pytest_fallback=false, hook_context=None, strict_markers=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_collect(
     py: Python<'_>,
@@ -264,8 +265,11 @@ pub fn py_collect(
     collect_tier: &str,
     cache_mode: &str,
     pytest_fallback: bool,
+    hook_context: Option<&str>,
+    strict_markers: bool,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
+    let hook_context = parse_hook_context(hook_context)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
     let options = CollectOptions {
         // `None` (neither `--codeblocks` nor `--no-codeblocks` on the CLI) is forwarded
@@ -284,6 +288,8 @@ pub fn py_collect(
         // asked for and every worker would pay a monitoring registration to produce.
         coverage: None,
         pytest_fallback,
+        hook_context,
+        strict_markers,
     };
     let manifest = py.detach(|| collect(&dir, &args, python_executable, workers, &options));
     // A Ctrl-C that arrived while the GIL was released is only *pending*; raise it here as
@@ -353,6 +359,15 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
     Ok(Some(wire))
 }
 
+/// Decode `hook_context`: a JSON value the CLI builds for the hook runtime, which travels to
+/// every worker's `init` unread (protocol v13). Malformed JSON can only come from this
+/// repository's own CLI, so it is a usage error rather than something to drop.
+fn parse_hook_context(raw: Option<&str>) -> PyResult<Option<serde_json::Value>> {
+    raw.map(serde_json::from_str)
+        .transpose()
+        .map_err(|err| PyValueError::new_err(format!("malformed hook_context argument: {err}")))
+}
+
 #[pyfunction]
 #[pyo3(name = "run")]
 #[pyo3(signature = (
@@ -371,6 +386,8 @@ fn parse_coverage(coverage: Option<&str>) -> PyResult<Option<CoverageWire>> {
     coverage=None,
     on_event=None,
     pytest_fallback=false,
+    hook_context=None,
+    strict_markers=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_run(
@@ -390,6 +407,8 @@ pub fn py_run(
     coverage: Option<&str>,
     on_event: Option<Py<PyAny>>,
     pytest_fallback: bool,
+    hook_context: Option<&str>,
+    strict_markers: bool,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
@@ -405,6 +424,8 @@ pub fn py_run(
         assert_rewrite: !matches!(assert_rewrite, "off" | "no" | "0"),
         coverage: parse_coverage(coverage)?,
         pytest_fallback,
+        hook_context: parse_hook_context(hook_context)?,
+        strict_markers,
     };
     // The first exception `on_event` raised. It wins over whatever the run itself returned,
     // a `KeyboardInterrupt` included: the run stopped *because* of it.
@@ -496,7 +517,7 @@ mod tests {
             asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
             codeblocks: None,
             filterwarnings: Vec::new(),
-            xfail_strict: false,
+            xfail_strict: None,
         }
     }
 
@@ -712,6 +733,8 @@ mod tests {
                 "auto",
                 "off",
                 false,
+                None,
+                false,
             )
         })
         .unwrap();
@@ -803,6 +826,8 @@ mod tests {
                 "auto",
                 "off",
                 false,
+                None,
+                false,
             )
         })
         .unwrap_err();
@@ -842,6 +867,8 @@ mod tests {
                 "d",
                 "off",
                 false,
+                None,
+                false,
             )
         })
         .unwrap_err();
@@ -875,6 +902,8 @@ mod tests {
                 "auto",
                 "off",
                 false,
+                None,
+                false,
             )
         })
         .unwrap_err();
@@ -906,6 +935,8 @@ mod tests {
                 Some(true),
                 "auto",
                 "off",
+                false,
+                None,
                 false,
             )
         })

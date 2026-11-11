@@ -13,8 +13,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .core import NeedsPytest, terminal_columns, collect_only, run
 
@@ -194,9 +195,7 @@ IGNORED_PYTEST_FLAGS: dict[str, int] = {
     "--durations": 1,
     "--durations-min": 1,
     "--import-mode": 1,
-    "--strict-markers": 0,
     "--strict-config": 0,
-    "--strict": 0,
     "-p": 1,
     "--showlocals": 0,
     "-l": 0,
@@ -343,6 +342,13 @@ def build_parser() -> _Parser:
             " failures; everything when a source file changes). Keys: Enter rerun, a all,"
             " f failed, p file filter, t name filter, q quit. Needs a terminal."
         ),
+    )
+    _ = parser.add_argument(
+        "--strict-markers",
+        "--strict",
+        dest="strict_markers",
+        action="store_true",
+        help="An unregistered mark is an error (a PytestUnknownMarkWarning otherwise).",
     )
     _ = parser.add_argument(
         "--no-pytest-fallback",
@@ -548,6 +554,8 @@ def _run_with(
         color=args.color,
         ascii=args.ascii,
         pytest_fallback=args.pytest_fallback,
+        hook_context=getattr(args, "hook_context", None),
+        strict_markers=args.strict_markers,
     )
 
 
@@ -614,6 +622,87 @@ def _watch_main(args: argparse.Namespace, paths: list[str], resolved: dict[str, 
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def _raw_ini(config_file: object) -> dict[str, object]:
+    """The ``pytest`` section of the ini file rustest found, as strings: what a conftest's
+    ``addini`` keys are read from.  Empty when there is none, or it cannot be read."""
+    import configparser
+
+    if not config_file:
+        return {}
+    path = Path(str(config_file))
+    try:
+        if path.name == "pyproject.toml":
+            import tomllib
+
+            table = tomllib.loads(path.read_text(encoding="utf-8"))
+            options = table.get("tool", {}).get("pytest", {}).get("ini_options", {})
+            # `findpaths.load_config_dict_from_file`'s `make_scalar`: a list stays a list
+            return {
+                str(key): value if isinstance(value, list) else str(value)
+                for key, value in options.items()
+            }
+        parser = configparser.RawConfigParser()
+        parser.optionxform = str  # pyright: ignore[reportAttributeAccessIssue]
+        _ = parser.read(path, encoding="utf-8")
+        section = "tool:pytest" if path.name == "setup.cfg" else "pytest"
+        return dict(parser[section]) if parser.has_section(section) else {}
+    except (OSError, ValueError, configparser.Error):
+        return {}
+
+
+def _verbose_count(argv: Sequence[str]) -> int:
+    """pytest's ``config.option.verbose``: each ``-v`` adds one and each ``-q`` takes one away
+    (``-vv`` is 2, which this CLI's own ``store_true`` flags cannot say)."""
+    total = 0
+    for token in argv:
+        if token == "--verbose":
+            total += 1
+        elif token == "--quiet":
+            total -= 1
+        elif token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"v", "q"}:
+            total += token.count("v") - token.count("q")
+    return total
+
+
+def _hook_context(
+    args: argparse.Namespace,
+    user_argv: Sequence[str],
+    resolved: Mapping[str, Any],
+    parsed_argv: Sequence[str],
+    blocked_plugins: Sequence[str],
+) -> dict[str, object]:
+    """What a conftest's hooks may ask that only the command line knows: ``sys.argv``, the core
+    option values (by flag and by ``dest``, as ``config.getoption`` takes either), the raw ini,
+    and the ``-p no:NAME`` plugins (which the worker's plugin-derived tables must leave out).
+    *parsed_argv* is what was parsed (``addopts`` + ``PYTEST_ADDOPTS`` + the command line).
+
+    Only options whose value this CLI really has are listed; a hook that reads any other core
+    option is a hand-off, not a guess.
+    """
+    mode = _last_failed_mode(args)
+    maxfail = 1 if args.fail_fast else args.maxfail
+    declared: list[tuple[str, tuple[str, ...], object]] = [
+        ("verbose", ("-v", "--verbose"), _verbose_count(parsed_argv)),
+        ("keyword", ("-k",), args.pattern or ""),
+        ("markexpr", ("-m",), args.mark_expr or ""),
+        ("maxfail", ("--maxfail",), maxfail),
+        ("collectonly", ("--collect-only", "--collectonly", "--co"), bool(args.collect_only)),
+        ("lf", ("--lf", "--last-failed"), mode == "only"),
+        ("failedfirst", ("--ff", "--failed-first"), mode == "first"),
+    ]
+    options: dict[str, object] = {}
+    for dest, flags, value in declared:
+        options[dest] = value
+        for flag in flags:
+            options[flag] = value
+    return {
+        "args": list(user_argv),
+        "options": options,
+        "ini": _raw_ini(resolved.get("config_file")),
+        "blocked_plugins": list(blocked_plugins),
+    }
 
 
 def _last_failed_mode(args: argparse.Namespace) -> str:
@@ -1063,6 +1152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Forwarding the default would erase that distinction and quietly diverge from pytest on
     # every `testpaths` project.
     paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
+    args.hook_context = _hook_context(args, user_argv, resolved, raw, blocked_plugins)
 
     if args.watch:
         try:
@@ -1122,6 +1212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     mark_expr=args.mark_expr,
                     codeblocks=args.enable_codeblocks,
                     pytest_fallback=args.pytest_fallback,
+                    hook_context=getattr(args, "hook_context", None),
+                    strict_markers=args.strict_markers,
                 )
             )
         except NeedsPytest as needs:

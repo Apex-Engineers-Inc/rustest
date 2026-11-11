@@ -149,6 +149,7 @@ from pathlib import Path
 import platform
 import sys
 import textwrap
+import threading
 import time
 import traceback
 import types
@@ -301,7 +302,19 @@ __all__ = [
 #:
 #: v12 carries the ``filterwarnings`` and ``xfail_strict`` inis on ``init`` and the warnings
 #: recorded during a file's collection or a test on ``collected`` / ``test_result``.
-PROTOCOL_VERSION: Final = 12
+#:
+#: v13 is the native hook runtime: ``init`` carries ``conftests`` (registration order) and an
+#: opaque ``hook_context``; ``ready`` carries ``hooks`` (hand-off reasons) and
+#: ``modify_items``; ``collected`` tests carry ``record``; the barrier sends ``modify_items``
+#: once per stage, answered by ``items_modified``. All omitted when unused.
+#:
+#: v14 carries the ``markers`` ini and ``--strict-markers`` on ``init`` and ``xfail_strict`` as its
+#: raw text; ``bye`` carries the shutdown teardown's warnings.
+PROTOCOL_VERSION: Final = 14
+
+#: The pytest the compat layer emulates: what ``PYTEST_VERSION`` says, which pytest sets for
+#: the whole run (:func:`handle_init`).
+PYTEST_VERSION: Final = "8.4.2"
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -343,6 +356,9 @@ class CollectedTestDict(TypedDict):
     param_id: NotRequired[str]
     marks: NotRequired[list[MarkSpecDict]]
     fixtures: NotRequired[list[str]]
+    #: The ``_hookshim.ItemRecord`` as JSON (protocol v13): what a ``pytest_collection_modifyitems``
+    #: hook is shown of this test (``_hookwire.build_record``); only when such a hook is registered.
+    record: NotRequired[dict[str, Any]]
 
 
 class CollectionErrorDict(TypedDict):
@@ -355,6 +371,27 @@ class CollectionErrorDict(TypedDict):
 class ReadyResponse(TypedDict):
     op: str
     protocol_version: int
+    hooks: NotRequired[list[str]]
+    modify_items: NotRequired[bool]
+
+
+class AddedMarkDict(TypedDict):
+    """``AddedMark`` (``src/engine/protocol.rs``): one ``_hookshim.MarkAdded``."""
+
+    nodeid: str
+    mark: MarkSpecDict
+    append: bool
+
+
+class ItemsModifiedResponse(TypedDict):
+    """``WorkerResponse::ItemsModified``: one ``_hookshim.CollectionEffects`` stage."""
+
+    op: str
+    order: list[str]
+    deselected: NotRequired[list[str]]
+    vanished: NotRequired[list[str]]
+    marks: NotRequired[list[AddedMarkDict]]
+    hooks: NotRequired[list[str]]
 
 
 class CollectedResponse(TypedDict):
@@ -422,6 +459,8 @@ class BatchDoneResponse(TypedDict):
 
 class ByeResponse(TypedDict):
     op: str
+    #: The shutdown teardown's warnings, located at the last test (protocol v14).
+    warnings: NotRequired[list[RecordedWarningDict]]
 
 
 class ConftestsImportedResponse(TypedDict):
@@ -429,6 +468,7 @@ class ConftestsImportedResponse(TypedDict):
 
     op: str
     hooks: NotRequired[list[str]]
+    modify_items: NotRequired[bool]
 
 
 class NotInitializedError(Exception):
@@ -1059,8 +1099,12 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
     """
     specs = _pytestmark_specs(obj, consider_mro=consider_mro)
     specs.extend(_rustest_mark_specs(obj, consider_mro=consider_mro))
+    raw_skip = _safe_getattr(obj, "__rustest_skip_mark__", None)  # compat `pytest.mark.skip`
     skip_reason = _safe_getattr(obj, "__rustest_skip__", None)
-    if skip_reason is not None:
+    if isinstance(raw_skip, tuple) and len(cast("tuple[object, ...]", raw_skip)) == 2:
+        skip_args, skip_kwargs = cast("tuple[tuple[object, ...], dict[str, object]]", raw_skip)
+        specs.append(MarkSpec("skip", tuple(skip_args), dict(skip_kwargs)))
+    elif skip_reason is not None:
         specs.append(MarkSpec("skip", kwargs={"reason": skip_reason}))
     return specs
 
@@ -2358,6 +2402,18 @@ class ExecutionPlan:
     #: excluded from :attr:`class_name` below, for the same reason `_build_entry` excludes
     #: it from the wire ``class_name``.
     block_segment: str | None = None
+    #: What a ``pytest_collection_modifyitems`` hook is shown (``_hookwire.build_record``): the
+    #: marks in pytest's ``iter_markers`` order *minus* the ``parametrize`` marks, how many of
+    #: them are the item's own (``None``: unknown), and whether the test is parametrized.
+    #: ``record_kind`` is ``"function"``, ``"unittest"`` or ``"markdown"`` (not modelled).
+    record_marks: tuple[MarkSpec, ...] = ()
+    record_own: int | None = None
+    record_kind: str = "function"
+    parametrized: bool = False
+    #: How many of :attr:`marks` are the item's own (the function's, then the callspec's):
+    #: where ``add_marker`` inserts.
+    func_mark_count: int = 0
+    has_function_marks: bool = False
 
     @property
     def class_name(self) -> str | None:
@@ -2607,12 +2663,15 @@ class SubRequest:
 
     @property
     def path(self) -> Path:
+        """`FixtureRequest.path`: absent from a session-scoped fixture's request, as in pytest."""
+        if self.scope not in ("function", "class", "module", "package"):
+            raise AttributeError(f"path not available in {self.scope}-scoped context")
         return self.node.path
 
     @property
     def fspath(self) -> object:
         """`_pytest/legacypath.py::FixtureRequest_fspath`: ``legacy_path(self.path)``."""
-        return self.node.fspath
+        return _builtins.legacy_path(self.path)
 
     @property
     def keywords(self) -> Mapping[str, object]:
@@ -2863,6 +2922,11 @@ class FixtureRunner:
         if class_name is None or class_name != self._current_class:
             self.teardown("class")
         self._current_class = class_name
+
+    def has_wide_finalizers(self) -> bool:
+        """Whether a class- or module-scoped finalizer is pending, i.e. whether the boundary
+        drain before the next test could run user code."""
+        return bool(self._finalizers["class"] or self._finalizers["module"])
 
     def note_module_boundary(self, path: Path) -> None:
         """Tear down module scope when the incoming test belongs to a different file.
@@ -3720,6 +3784,8 @@ def import_conftest(path: Path, rootdir: Path) -> types.ModuleType:
         _ = sys.modules.pop(path.stem, None)
     module = import_test_module(path, rootdir)
     _conftest_modules[path] = module
+    if _hookwire_mod is not None:
+        _hookwire_mod.on_module(_relative_posix(path, rootdir), module, conftest=path)
     return module
 
 
@@ -3837,6 +3903,8 @@ def _plugin_fixturedefs(name: str) -> tuple[FixtureDef, ...]:
     if cached is not None:
         return cached
     module = importlib.import_module(name)
+    if _hookwire_mod is not None:
+        _hookwire_mod.on_module(name, module)
     # A placeholder first, so a plugin that names itself (or a cycle) ends here, as pytest's
     # registry ends it at an already-registered name.
     _plugin_fixturedefs_cache[name] = ()
@@ -4122,7 +4190,8 @@ def _collect_function(
             f"'yield' keyword is allowed in fixtures, but not in tests ({name})"
         )
 
-    marks = _mark_specs(func) + outer_marks
+    func_marks = _mark_specs(func)
+    marks = func_marks + outer_marks
     # `plugin.py` l. 609-613: auto mode marks every async function, and only a marked item is
     # converted into the plugin's own item class.  The two together are "is this an asyncio
     # test", and that is the only thing collection needs the mode for.
@@ -4131,6 +4200,7 @@ def _collect_function(
     if async_generator_mark is not None:
         marks = [async_generator_mark, *marks]
     full_parts = (*parts, name)
+    func_mark_total = len(func_marks) + (1 if async_generator_mark is not None else 0)
     own_cases = _parametrization(func)
     if outer_cases:
         cases = (
@@ -4191,10 +4261,15 @@ def _collect_function(
         for case_id, case_values, case_marks in direct_cases:
             id_parts = [*fixture_ids, *([] if case_id is None else [case_id])]
             param_id = "-".join(id_parts) if id_parts else None
-            # A parameter set's own marks come **last**, so a per-case `xfail` is evaluated
-            # after (and can override the effect of) anything the function or module
-            # declared -- which is the order pytest builds `own_markers` in for the item.
-            case_all_marks = [*marks, *fixture_marks, *case_marks]
+            # `iter_markers` order: the item's own marks (the function's, then the callspec's
+            # -- fixture params', then the parameter set's) before the class's and module's,
+            # so a per-case `xfail` is closer than a module `pytestmark` one, as in pytest.
+            case_all_marks = [
+                *marks[:func_mark_total],
+                *fixture_marks,
+                *case_marks,
+                *marks[func_mark_total:],
+            ]
             entry = _build_entry(
                 context.rel_path,
                 full_parts,
@@ -4228,6 +4303,12 @@ def _collect_function(
                     },
                     argnames=tuple(argnames),
                     marks=tuple(case_all_marks),
+                    record_marks=(*func_marks, *fixture_marks, *case_marks, *outer_marks),
+                    record_own=len(func_marks) + len(fixture_marks) + len(case_marks),
+                    record_kind="markdown" if context.block_segment else "function",
+                    parametrized=cases is not None,
+                    func_mark_count=func_mark_total + len(fixture_marks) + len(case_marks),
+                    has_function_marks=bool(func_marks) or cases is not None,
                 )
             )
     return entries
@@ -4425,6 +4506,10 @@ def _collect_unittest_class(
                 unittest_case=cls,
                 unittest_method=method_name,
                 block_segment=context.block_segment,
+                record_marks=tuple(marks),
+                record_own=None,
+                record_kind="unittest",
+                func_mark_count=0,
             )
         )
 
@@ -4961,6 +5046,7 @@ def collect_markdown(
                         direct_params={},
                         argnames=(),
                         marks=tuple(marks),
+                        record_kind="markdown",
                     )
                 )
     finally:
@@ -5377,6 +5463,16 @@ def _as_raises(raw: object) -> tuple[type[BaseException], ...] | None:
     return cast(tuple[type[BaseException], ...], candidates)
 
 
+def _strtobool(value: str) -> bool:
+    """`_pytest/config/__init__.py::_strtobool` on ``str(value).strip()``, as ``getini`` calls it."""
+    text = value.strip().lower()
+    if text in ("y", "yes", "t", "true", "on", "1"):
+        return True
+    if text in ("n", "no", "f", "false", "off", "0"):
+        return False
+    raise ValueError(f"invalid truth value {text!r}")
+
+
 def evaluate_xfail_marks(
     marks: Sequence[MarkSpec], namespace: Mapping[str, object]
 ) -> Xfail | None:
@@ -5385,12 +5481,15 @@ def evaluate_xfail_marks(
     ``strict`` defaults to pytest's ``xfail_strict`` ini (`skipping.py::pytest_addoption`
     l. 40-46, default ``False``), which ``init`` carries; the mark's own ``strict=`` wins.
     """
-    xfail_strict = _state.xfail_strict if _state is not None else False
+    raw = _state.xfail_strict if _state is not None else None
     for mark in marks:
         if mark.name != "xfail":
             continue
         run = bool(mark.kwargs.get("run", True))
-        strict = bool(mark.kwargs.get("strict", xfail_strict))
+        # pytest evaluates `getini("xfail_strict")` as the default argument, so an
+        # unparseable value errors every xfail-marked test, given `strict=` or not.
+        default = _strtobool(raw) if raw is not None else False
+        strict = bool(mark.kwargs.get("strict", default))
         raises = _as_raises(mark.kwargs.get("raises", None))
         conditions = _conditions(mark)
         if not conditions:
@@ -6145,6 +6244,7 @@ def _phases(
                 if xfailed is not None and not xfailed.run:
                     raise _XFailed("[NOTRUN] " + xfailed.reason)
                 kwargs = runner.setup(plan)
+                collect_unraisable_exceptions()
         except ABORT_EXCEPTIONS:
             raise
         except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
@@ -6157,6 +6257,7 @@ def _phases(
         try:
             with phase("call"):
                 _run_call(plan, runner, kwargs)
+                collect_unraisable_exceptions()
         except ABORT_EXCEPTIONS:
             raise
         except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
@@ -6167,6 +6268,7 @@ def _phases(
     try:
         with phase("teardown"):
             runner.teardown("function")
+            collect_unraisable_exceptions()
     except ABORT_EXCEPTIONS:
         raise
     except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
@@ -6214,12 +6316,21 @@ def execute_test(test_id: str) -> ResultResponse:
     global _previous_plan
     runner = _execution_runner()
     recorded: list[RecordedWarningDict] = []
+    late_before = _hookwire_mod.late_count() if _hookwire_mod is not None else 0
     previous = _previous_plan
-    with warnings_window(
-        previous.id if previous is not None else None,
-        previous.marks if previous is not None else (),
-        recorded,
-    ):
+    if previous is not None and runner.has_wide_finalizers():
+        with warnings_window(previous.id, previous.marks, recorded):
+            boundary_exc = drain_boundaries(plan, runner)
+            if boundary_exc is None:
+                try:
+                    collect_unraisable_exceptions()
+                except ABORT_EXCEPTIONS:
+                    raise
+                except BaseException as exc:  # noqa: BLE001 - this test's setup failure
+                    boundary_exc = exc
+    else:
+        # Nothing class- or module-scoped is open, so the drain cannot run user code: no
+        # window needed (two `catch_warnings` per test were measurable).
         boundary_exc = drain_boundaries(plan, runner)
     _previous_plan = plan
 
@@ -6230,14 +6341,22 @@ def execute_test(test_id: str) -> ResultResponse:
     duration = time.perf_counter() - started
 
     report = reduce_reports(reports)
+    status, message = report.status, report.message
+    if _hookwire_mod is not None and (late := _hookwire_mod.late_reasons_since(late_before)):
+        # A shim a hook kept was used while this test ran.  The user may have swallowed the
+        # exception it raised (`except BaseException`, a `__del__`): the test is an error anyway.
+        status = "error"
+        message = "\n".join(
+            [*([message] if message else []), *(_hookwire_mod.REASON_PREFIX + r for r in late)]
+        )
     result: ResultResponse = {
         "op": "test_result",
         "id": plan.id,
-        "status": report.status,
+        "status": status,
         "duration_s": duration,
     }
-    if report.message:
-        result["message"] = report.message
+    if message:
+        result["message"] = message
     captured_out, captured_err = capture.drain()
     if captured_out:
         result["stdout"] = captured_out
@@ -6263,8 +6382,8 @@ class WorkerState:
     #: repo that builds a state by hand keeps working and states, by omission, that it is
     #: not exercising the mode.
     asyncio: AsyncioConfig = _DEFAULT_ASYNCIO
-    #: The ``xfail_strict`` ini (protocol v12).
-    xfail_strict: bool = False
+    #: The ``xfail_strict`` ini's raw text, or ``None`` when unset (protocol v14).
+    xfail_strict: str | None = None
     #: Where warnings outside a test are located from (``WarningReport.get_location``).
     invocation_dir: Path | None = None
 
@@ -6294,27 +6413,21 @@ _warning_filters: tuple[WarningFilter, ...] = ()
 #: ``runtest`` window.
 _previous_plan: ExecutionPlan | None = None
 
+#: The warnings the shutdown teardown recorded, for ``bye``.
+_shutdown_warnings: list[RecordedWarningDict] = []
+
 #: The session's warning filters, entered at ``init`` and left at ``shutdown``.
 _session_warnings: warnings.catch_warnings[None] | None = None
 
 
-_WARNING_ACTIONS: Final[tuple[WarningAction, ...]] = (
-    "default",
-    "always",
-    "all",
-    "ignore",
-    "module",
-    "once",
-    "error",
-)
-
-
+@functools.cache
 def parse_warning_filter(arg: str) -> WarningFilter:
     """Port of `_pytest/config/__init__.py::parse_warning_filter` with ``escape=False``.
 
     ``escape=True`` is ``-W``'s, which rustest does not take (an unknown flag hands the session
     to pytest). Raises ``ValueError`` (or the category's import error) where pytest raises
-    ``UsageError``.
+    ``UsageError``. Cached: a mark's filters are parsed once, not once per test, and the
+    category import is done once.
     """
     parts = arg.split(":")
     if len(parts) > 5:
@@ -6324,12 +6437,14 @@ def parse_warning_filter(arg: str) -> WarningFilter:
         )
     parts += [""] * (5 - len(parts))
     action_, message, category_, module, lineno_ = (part.strip() for part in parts)
-    # `warnings._getaction`: a prefix of a known action, and an empty one is `default`.
-    action: WarningAction | None = (
-        next((a for a in _WARNING_ACTIONS if a.startswith(action_)), None) if action_ else "default"
-    )
-    if action is None:
-        raise ValueError(f"invalid action: {action_!r}")
+    # pytest calls the interpreter's own `warnings._getaction`, so the accepted actions are
+    # this Python's (`all` exists from 3.14 only).
+    getaction = cast("Callable[[str], str]", getattr(warnings, "_getaction"))
+    option_error = cast("type[Exception]", getattr(warnings, "_OptionError"))
+    try:
+        action = cast("WarningAction", getaction(action_))
+    except option_error as exc:
+        raise ValueError(str(exc)) from None
     category = _resolve_warning_category(category_)
     lineno = 0
     if lineno_:
@@ -6373,26 +6488,145 @@ def apply_session_warning_filters() -> None:
         warnings.filterwarnings(*spec)
 
 
-def _warning_text(record: warnings.WarningMessage) -> str:
-    """`_pytest/warnings.py::warning_record_to_str`, `tracemalloc_message` included."""
-    text = warnings.formatwarning(
-        str(record.message), record.category, record.filename, record.lineno, record.line
-    )
-    if record.source is None:
-        return text
+def _tracemalloc_message(source: object) -> str:
+    """Port of `_pytest/tracemalloc.py::tracemalloc_message`."""
+    if source is None:
+        return ""
     import tracemalloc
 
-    if not tracemalloc.is_tracing():
-        return (
-            text
-            + "Enable tracemalloc to get traceback where the object was allocated.\n"
-            + "See https://docs.pytest.org/en/stable/how-to/capture-warnings.html"
-            + "#resource-warnings for more info."
+    allocated = tracemalloc.get_object_traceback(source)
+    if allocated is not None:
+        return "\nObject allocated at:\n" + "\n".join(allocated.format())
+    url = "https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings"
+    return (
+        "Enable tracemalloc to get traceback where the object was allocated.\n"
+        + f"See {url} for more info."
+    )
+
+
+def _warning_text(record: warnings.WarningMessage) -> str:
+    """`_pytest/warnings.py::warning_record_to_str`."""
+    return warnings.formatwarning(
+        str(record.message), record.category, record.filename, record.lineno, record.line
+    ) + _tracemalloc_message(record.source)
+
+
+# -- unraisable and thread exceptions: `_pytest/unraisableexception.py`, `threadexception.py`
+
+
+@dataclass(frozen=True)
+class _Unraised:
+    """``UnraisableMeta`` / ``ThreadExceptionMeta``: the text, computed when it happened."""
+
+    msg: str
+    cause_msg: str
+    exc_value: BaseException | None
+
+
+#: What ``sys.unraisablehook`` and ``threading.excepthook`` received since the last collection.
+#: A ``BaseException`` entry is the hook itself failing (pytest's ``hook_error``).
+_unraisable: list[_Unraised | BaseException] = []
+_thread_exceptions: list[_Unraised | BaseException] = []
+_previous_hooks: tuple[Callable[..., object], Callable[..., object]] | None = None
+
+
+def _record_unraisable(unraisable: sys.UnraisableHookArgs, /) -> None:
+    """``unraisable_hook``: the strings are computed now, while the object still exists."""
+    try:
+        err_msg = "Exception ignored in" if unraisable.err_msg is None else unraisable.err_msg
+        summary = f"{err_msg}: {unraisable.object!r}"
+        trace = "\n\n" + "".join(
+            traceback.format_exception(
+                unraisable.exc_type, unraisable.exc_value, unraisable.exc_traceback
+            )
         )
-    traceback_ = tracemalloc.get_object_traceback(record.source)
-    if traceback_ is None:
-        return text
-    return text + "Object allocated at:\n" + "\n".join(traceback_.format())
+        tail = "\n" + _tracemalloc_message(unraisable.object)
+        _unraisable.append(_Unraised(summary + trace + tail, summary + tail, unraisable.exc_value))
+    except BaseException as exc:
+        _unraisable.append(exc)
+        raise
+
+
+def _record_thread_exception(args: threading.ExceptHookArgs, /) -> None:
+    """``thread_exception_hook``."""
+    try:
+        name = "<unknown>" if args.thread is None else args.thread.name
+        summary = f"Exception in thread {name}"
+        trace = "\n\n" + "".join(
+            traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+        )
+        tail = "\n" + _tracemalloc_message(args.thread)
+        _thread_exceptions.append(_Unraised(summary + trace + tail, summary + tail, args.exc_value))
+    except BaseException as exc:
+        _thread_exceptions.append(exc)
+        raise
+
+
+def install_exception_hooks() -> None:
+    """Both plugins' ``pytest_configure``: install the hooks for the whole session."""
+    global _previous_hooks
+    if _previous_hooks is None:
+        _previous_hooks = (sys.unraisablehook, threading.excepthook)
+        sys.unraisablehook = _record_unraisable
+        threading.excepthook = _record_thread_exception
+
+
+def _collect(found: list[_Unraised | BaseException], category: type[Warning], what: str) -> None:
+    """``collect_unraisable`` / ``collect_thread_exception``: warn each, raise the errors."""
+    errors: list[BaseException] = []
+    while found:
+        meta = found.pop()
+        if isinstance(meta, BaseException):
+            hook_error = RuntimeError(f"Failed to process {what}")
+            hook_error.__cause__ = meta
+            errors.append(hook_error)
+            continue
+        try:
+            warnings.warn(category(meta.msg))
+        except category as exc:  # the warning is an error (`filterwarnings = error`)
+            if meta.exc_value is not None:
+                exc.args = (meta.cause_msg,)
+                exc.__cause__ = meta.exc_value
+            errors.append(exc)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup(f"multiple {what} warnings", errors)
+
+
+def collect_unraisable_exceptions() -> None:
+    """The two plugins' ``trylast`` ``pytest_runtest_setup/call/teardown``: called at the end
+    of a phase that otherwise succeeded, thread exceptions first (pluggy runs the
+    later-registered ``threadexception`` first), so a warning raised as an error is that
+    phase's failure."""
+    from .compat.pytest import (
+        PytestUnhandledThreadExceptionWarning,
+        PytestUnraisableExceptionWarning,
+    )
+
+    _collect(_thread_exceptions, PytestUnhandledThreadExceptionWarning, "thread exception")
+    _collect(_unraisable, PytestUnraisableExceptionWarning, "unraisable exception")
+
+
+def _finish_exception_hooks() -> BaseException | None:
+    """Both plugins' ``cleanup``: collect garbage five times (the Trio-tuned constant), report
+    what that unearthed, and put the previous hooks back."""
+    global _previous_hooks
+    import gc
+
+    try:
+        for _ in range(5):
+            _ = gc.collect()
+        collect_unraisable_exceptions()
+    except ABORT_EXCEPTIONS:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - returned to the shutdown path
+        return exc
+    finally:
+        if _previous_hooks is not None:
+            sys.unraisablehook, threading.excepthook = _previous_hooks
+            _previous_hooks = None
+    return None
 
 
 def _fs_location(record: warnings.WarningMessage) -> str:
@@ -6425,7 +6659,9 @@ def warnings_window(
         for mark in marks:
             if mark.name == "filterwarnings":
                 for arg in mark.args:
-                    warnings.filterwarnings(*parse_warning_filter(str(arg)))
+                    # one that does not parse was reported at collection (_check_mark_filters)
+                    with contextlib.suppress(Exception):
+                        warnings.filterwarnings(*parse_warning_filter(str(arg)))
         try:
             yield
         finally:
@@ -6436,6 +6672,59 @@ def warnings_window(
                         "message": _warning_text(record),
                     }
                 )
+
+
+#: The marks each ``pytest11`` plugin registers in its ``pytest_configure``, read from the
+#: plugins' own source as installed in the ``--real`` target venvs. A plugin missing from this
+#: table makes the registry unknown, so nothing is checked: a false ``PytestUnknownMarkWarning``
+#: would be a false error under ``filterwarnings = error``.
+_PLUGIN_MARKS: Final[Mapping[str, tuple[str, ...]]] = {
+    "xdist": ("xdist_group",),
+    "xdist.looponfail": (),
+    "pytest_cov": ("no_cover",),
+    "asyncio": ("asyncio",),
+    "pytest_mock": (),
+    "icdiff": (),
+    "rich": (),
+    "codeblocks": (),
+    "hypothesispytest": ("hypothesis",),
+    "anyio": ("anyio",),
+    "timeout": ("timeout",),
+}
+
+
+def _install_mark_registry(message: Mapping[str, object], plugins: Sequence[str]) -> None:
+    """Seed the ``PytestUnknownMarkWarning`` registry (protocol v14): pytest's own marks, the
+    ``markers`` ini, and the marks of the *plugins* pytest loads here (:func:`_loaded_plugins`).
+    The hook runtime adds what a native ``pytest_configure`` registers."""
+    from .compat.pytest import set_mark_registry
+
+    strict = bool(message.get("strict_markers", False))
+    lines = [str(line) for line in cast("Sequence[object]", message.get("markers") or ())]
+    if any(name not in _PLUGIN_MARKS for name in plugins):
+        set_mark_registry(None, strict=strict)
+        return
+    set_mark_registry(
+        [*lines, *(mark for name in plugins for mark in _PLUGIN_MARKS[name])], strict=strict
+    )
+
+
+def _check_mark_filters(plans: Sequence[ExecutionPlan]) -> None:
+    """A ``filterwarnings`` mark pytest cannot parse is its usage error (exit 4) when the test
+    runs. Found here, at collection, it is a hand-off reason on the channel an ini line that
+    will not parse uses, so pytest reports it."""
+    for plan in plans:
+        for mark in plan.marks:
+            if mark.name != "filterwarnings":
+                continue
+            for arg in mark.args:
+                try:
+                    _ = parse_warning_filter(str(arg))
+                except Exception as exc:  # noqa: BLE001 - recorded as a reason, never dropped
+                    reason = traceback.format_exception_only(type(exc), exc)[-1].strip()
+                    _conftest_import_failures.add(
+                        f"rustest could not import the warning filter {str(arg)!r}: {reason}"
+                    )
 
 
 def _install_warning_filters(lines: Sequence[str]) -> None:
@@ -6463,6 +6752,7 @@ def _install_warning_filters(lines: Sequence[str]) -> None:
         _session_warnings = warnings.catch_warnings()
         _ = _session_warnings.__enter__()
     apply_session_warning_filters()
+    install_exception_hooks()
 
 
 #: Whether ``init`` carried a ``coverage`` object and :func:`rustest._coverage.start`
@@ -6597,6 +6887,20 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     invocation_dir = rootdir if raw_invocation_dir is None else Path(str(raw_invocation_dir))
 
     pythonpath = _apply_pythonpath(message.get("pythonpath"))
+    # What pytest sets for the whole run before it imports a conftest: `PYTEST_VERSION`
+    # (`if os.environ.get("PYTEST_VERSION")` is a real pattern) and the user's `sys.argv`.
+    raw_context = message.get("hook_context")
+    context: Mapping[str, object] = (
+        cast("Mapping[str, object]", raw_context) if isinstance(raw_context, dict) else {}
+    )
+    os.environ["PYTEST_VERSION"] = PYTEST_VERSION
+    argv = context.get("args")
+    if isinstance(argv, list):
+        sys.argv = ["pytest", *(str(arg) for arg in cast("list[object]", argv))]
+    blocked = context.get("blocked_plugins")
+    plugins = _loaded_plugins(
+        [str(name) for name in cast("list[object]", blocked)] if isinstance(blocked, list) else []
+    )
 
     # The assertion-rewriting hook goes on `sys.meta_path` here rather than in `main`,
     # because its bytecode cache lives under the *rootdir* and `init` is the first moment
@@ -6629,7 +6933,7 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
         rootdir=rootdir,
         naming=naming,
         asyncio=asyncio_config,
-        xfail_strict=bool(message.get("xfail_strict", False)),
+        xfail_strict=None if message.get("xfail_strict") is None else str(message["xfail_strict"]),
         invocation_dir=invocation_dir,
     )
     raw_filters = cast("Sequence[object]", message.get("filterwarnings") or ())
@@ -6637,10 +6941,62 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     ini = _ini_values(naming, asyncio_config, pythonpath)
     # `linelist` and `bool`, as pytest's own `getini` answers them.
     ini["filterwarnings"] = filter_lines
-    ini["xfail_strict"] = _state.xfail_strict
+    with contextlib.suppress(ValueError):  # unparseable: getini raises, as pytest's does
+        ini["xfail_strict"] = (
+            _strtobool(_state.xfail_strict) if _state.xfail_strict is not None else False
+        )
     _builtins.configure(rootdir, invocation_dir, ini)
     _install_warning_filters(filter_lines)
-    return {"op": "ready", "protocol_version": PROTOCOL_VERSION}
+    _install_mark_registry(message, plugins)
+    _start_hook_runtime(message, rootdir, invocation_dir, plugins)
+    ready: ReadyResponse = {"op": "ready", "protocol_version": PROTOCOL_VERSION}
+    if _hookwire_mod is not None:
+        if reasons := _hookwire_mod.pending_reasons():
+            ready["hooks"] = reasons
+        if _hookwire_mod.wants_records():
+            ready["modify_items"] = True
+    return ready
+
+
+def _start_hook_runtime(
+    message: Mapping[str, object], rootdir: Path, invocation_dir: Path, plugins: Sequence[str]
+) -> None:
+    """Start the native hook runtime when ``init`` carries ``conftests`` (protocol v13).
+
+    The **initial** conftests are imported here, in pytest's order, before any test module:
+    ``pytest_configure`` has to precede the imports it configures, in every worker.  The others
+    arrive through ``import_conftests`` in walk order, so the registration order (which decides
+    the order hooks run in) is the same in every worker.  A conftest that fails to import is
+    recorded as an import failure by :func:`conftest_registry` and the rest are still imported.
+    """
+    global _hookwire_mod
+    if not message.get("conftests"):
+        return
+    from . import _hookwire
+
+    _hookwire_mod = _hookwire
+
+    def load(path: Path) -> None:
+        _ = conftest_registry(path, rootdir)
+
+    _ = _hookwire.start(
+        message, rootdir=rootdir, invocation_dir=invocation_dir, plugins=plugins, load=load
+    )
+
+
+def _loaded_plugins(blocked: Sequence[str]) -> list[str]:
+    """The ``pytest11`` entry points pytest would load here: none under
+    ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``, and not the ones ``-p no:NAME`` blocks (by ``NAME`` or
+    ``pytest_NAME``, as ``_fallback.autoload_reasons`` reads it)."""
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
+        return []
+    from ._fallback import installed_plugins
+
+    return [
+        name
+        for name, _ in installed_plugins()
+        if name not in blocked and not (name.startswith("pytest_") and name[7:] in blocked)
+    ]
 
 
 def _ini_values(
@@ -6689,9 +7045,21 @@ def drain_at_shutdown() -> BaseException | None:
     global _runner
     runner, _runner = _runner, None
     if runner is None:
-        return None
+        return _finish_exception_hooks()
+    last = _previous_plan
     try:
-        runner.teardown_all()
+        # Under the last test's window, as pytest's `nextitem=None` teardown runs inside the
+        # last item's `runtest_protocol`: its marks apply and its warnings are counted.
+        with warnings_window(
+            last.id if last is not None else None,
+            last.marks if last is not None else (),
+            _shutdown_warnings,
+        ):
+            runner.teardown_all()
+            collect_unraisable_exceptions()
+        failure = _finish_exception_hooks()
+        if failure is not None:
+            raise failure
     except ABORT_EXCEPTIONS:
         raise
     except BaseException as exc:  # noqa: BLE001 - returned to main, never dropped
@@ -6715,16 +7083,30 @@ def unrun_hooks() -> list[str]:
     rootdir = _state.rootdir if _state is not None else Path.cwd()
     loaded = {_relative_posix(path, rootdir): module for path, module in _conftest_modules.items()}
     loaded.update((name, sys.modules[name]) for name in _plugin_fixturedefs_cache)
+    native: frozenset[str] = frozenset()
+    if _hookwire_mod is not None:
+        from ._hookshim import NATIVE_HOOKS
+
+        native = NATIVE_HOOKS
     return sorted(
         f"{label}::{name}"
         for label, module in loaded.items()
         for name, value in vars(module).items()
-        if name.startswith("pytest_") and callable(value)
+        if name.startswith("pytest_")
+        and callable(value)
+        # a hook the runtime took over is not inert; if it could not run it, its reason says so
+        and not (
+            name in native and _hookwire_mod is not None and _hookwire_mod.native_module(module)
+        )
     )
 
 
 #: Every hook this worker has already named on a ``collected`` line.
 _reported_hooks: set[str] = set()
+
+#: ``rustest._hookwire`` once ``init`` started the native hook runtime, else ``None`` (so a run
+#: that does not use it never imports it).
+_hookwire_mod: types.ModuleType | None = None
 
 #: Conftests (or modules their ``pytest_plugins`` name) that raised while this worker imported
 #: them, as ``rustest could not import <path>: <exception line>`` --
@@ -6741,6 +7123,8 @@ def new_hooks() -> list[str]:
     collected, so its hooks are known by the time its ``collected`` line is written.
     """
     labels = [*unrun_hooks(), *sorted(_conftest_import_failures)]
+    if _hookwire_mod is not None:
+        labels.extend(_hookwire_mod.pending_reasons())
     fresh = [label for label in labels if label not in _reported_hooks]
     _reported_hooks.update(fresh)
     return fresh
@@ -6792,7 +7176,52 @@ def import_conftests(dirs: Sequence[str]) -> ConftestsImportedResponse:
     response: ConftestsImportedResponse = {"op": "conftests_imported"}
     if hooks := new_hooks():
         response["hooks"] = hooks
+    if _hookwire_mod is not None and _hookwire_mod.wants_records():
+        response["modify_items"] = True
     return response
+
+
+#: The marks the last ``modify_items`` stage added, held until the orchestrator says it accepted
+#: that stage (``commit``): a stage it rejects (workers disagreed, a reason) must leave no mark.
+_pending_marks: list[Mapping[str, Any]] = []
+
+
+def modify_items(
+    stage: int, records: Sequence[Mapping[str, Any]], commit: bool = False
+) -> dict[str, Any]:
+    """Run one ``pytest_collection_modifyitems`` stage (1: before the orchestrator's ``-k`` /
+    ``-m`` selection, 2: after) over *records*. The marks the hooks add wait in
+    :data:`_pending_marks`; *commit* applies the previous stage's first (else drops them)."""
+    if _hookwire_mod is None:
+        raise NotInitializedError("modify_items received but init started no hook runtime")
+    commit_marks(commit)
+    reply = _hookwire_mod.modify_items(stage, records)
+    _pending_marks.extend(reply.get("marks", []))
+    return reply
+
+
+def commit_marks(accepted: bool) -> None:
+    """Apply the held marks to this worker's own plans, where skip / xfail evaluation will find
+    them -- or drop them, for a stage the orchestrator rejected."""
+    pending = list(_pending_marks)
+    _pending_marks.clear()
+    if not accepted:
+        return
+    for added in pending:
+        plan = _execution_plans.get(str(added["nodeid"]))
+        if plan is None:
+            continue  # another worker owns it, and applies the same mark there
+        wire = cast("Mapping[str, Any]", added["mark"])
+        spec = MarkSpec(
+            str(wire["name"]),
+            tuple(wire.get("args", ())),
+            cast("Mapping[str, object]", wire.get("kwargs", {})),
+        )
+        position = plan.func_mark_count if added["append"] else 0
+        marks = [*plan.marks[:position], spec, *plan.marks[position:]]
+        _execution_plans[plan.id] = replace(
+            plan, marks=tuple(marks), func_mark_count=plan.func_mark_count + 1
+        )
 
 
 def handle_shutdown() -> ByeResponse:
@@ -6805,7 +7234,10 @@ def handle_shutdown() -> ByeResponse:
     if _session_warnings is not None:
         _session_warnings.__exit__(None, None, None)
         _session_warnings = None
-    return {"op": "bye"}
+    bye: ByeResponse = {"op": "bye"}
+    if _shutdown_warnings:
+        bye["warnings"] = list(_shutdown_warnings)
+    return bye
 
 
 def _module_outcome_error_message(exc: BaseException) -> str:
@@ -6898,6 +7330,7 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
                 )
         for plan in plans:
             _execution_plans[plan.id] = plan
+        _check_mark_filters(plans)
     except CollectionRefusal as exc:
         return fail(str(exc))
     except ABORT_EXCEPTIONS:
@@ -6932,8 +7365,46 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
         return fail("".join(traceback.format_exception(exc)).rstrip())
 
     if tests:
+        if _hookwire_mod is not None:  # a later conftest may still register modifyitems
+            _attach_records(tests, plans, state.rootdir)
         response["tests"] = tests
     return answer()
+
+
+def _attach_records(
+    tests: Sequence[CollectedTestDict], plans: Sequence[ExecutionPlan], rootdir: Path
+) -> None:
+    """Give each collected test the ``ItemRecord`` a ``pytest_collection_modifyitems`` hook is
+    shown (``_hookwire.build_record``), built from the plan collection already made."""
+    assert _hookwire_mod is not None
+    by_id = {plan.id: plan for plan in plans}
+    for entry in tests:
+        plan = by_id.get(entry["id"])
+        if plan is None:
+            continue
+        entry["record"] = _hookwire_mod.build_record(
+            nodeid=plan.id,
+            path=plan.path,
+            rootdir=rootdir,
+            parts=plan.parts,
+            func=plan.func,
+            marks=plan.record_marks,
+            own_count=plan.record_own,
+            parametrized=plan.parametrized,
+            reordered=_reordered_by_fixtures(plan),
+            kind=plan.record_kind,
+            has_function_marks=plan.has_function_marks,
+        )
+
+
+def _reordered_by_fixtures(plan: ExecutionPlan) -> bool:
+    """Does the test draw a parameter of a fixture wider than function scope? Then pytest's
+    ``reorder_items`` may move it (``_hookshim.ItemRecord.reordered``)."""
+    for name in plan.fixture_params:
+        defs = plan.closure.arg2defs.get(name)
+        if defs and defs[-1].scope != "function":
+            return True
+    return False
 
 
 def execute_batch(
@@ -7248,6 +7719,26 @@ def _protocol_loop(
             except NotInitializedError as exc:
                 print(f"rustest worker: {exc}", file=sys.stderr)
                 return 2
+        elif op == "modify_items":
+            stage = request.get("stage")
+            records = request.get("records")
+            if stage not in (1, 2) or not isinstance(records, list):
+                print(
+                    f"rustest worker: modify_items without a stage and records: {line!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                emit(
+                    modify_items(
+                        int(cast(int, stage)),
+                        cast("list[Mapping[str, Any]]", records),
+                        request.get("commit") is True,
+                    )
+                )
+            except NotInitializedError as exc:
+                print(f"rustest worker: {exc}", file=sys.stderr)
+                return 2
         elif op == "execute_test":
             test_id = request.get("id")
             if not isinstance(test_id, str):
@@ -7281,6 +7772,7 @@ def _protocol_loop(
                     file=sys.stderr,
                 )
                 return 2
+            commit_marks(request.get("commit_marks") is True)
             try:
                 raw_max_fail = request.get("max_fail")
                 done = execute_batch(

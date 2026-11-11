@@ -93,6 +93,11 @@ pub struct CollectedTest {
     /// Direct fixture parameter names in signature order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixtures: Vec<String>,
+    /// The hook runtime's record of this item (`_hookshim.ItemRecord`, protocol v13), sent
+    /// only when a `pytest_collection_modifyitems` is registered. Forwarded to the workers
+    /// verbatim at the barrier; never read here and never written to a manifest or a cache.
+    #[serde(default, skip_serializing)]
+    pub record: Option<serde_json::Value>,
     /// Which tier produced this entry.  Omitted when [`Tier::Dynamic`]; see [`Tier`].
     ///
     /// Last field on purpose: every byte before it is unchanged from the schema-v2 form the
@@ -196,6 +201,7 @@ mod tests {
                     marks: Vec::new(),
                     fixtures: Vec::new(),
                     tier: Tier::Dynamic,
+                    record: None,
                 },
                 CollectedTest {
                     id: "tests/test_math.py::TestBox::test_method[x-1]".to_string(),
@@ -217,6 +223,7 @@ mod tests {
                     ],
                     fixtures: vec!["tmp_path".to_string(), "capsys".to_string()],
                     tier: Tier::Dynamic,
+                    record: None,
                 },
                 CollectedTest {
                     id: "tests/test_static.py::test_parsed".to_string(),
@@ -227,6 +234,7 @@ mod tests {
                     marks: Vec::new(),
                     fixtures: Vec::new(),
                     tier: Tier::Static,
+                    record: None,
                 },
             ],
             errors: vec![CollectionErrorEntry {
@@ -290,6 +298,7 @@ mod tests {
             marks: Vec::new(),
             fixtures: Vec::new(),
             tier: Tier::Static,
+            record: None,
         };
 
         let encoded = serde_json::to_string(&test).expect("test serializes");

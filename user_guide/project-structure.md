@@ -382,9 +382,9 @@ Work through these in order.
 ### Imports work in pytest but not rustest
 
 Both runners read the same `pythonpath` from the same files, so the usual cause is something
-pytest does through a plugin. rustest has no hook system: a module named in `pytest_plugins`
-contributes its **fixtures**, and any hook it defines, including
-`pytest_configure` code that edits `sys.path`, is not run (a `NOTE:` line on stderr names it).
+pytest does through a plugin, an installed one rustest does not emulate (a session with one
+installed goes to pytest). A conftest's or `pytest_plugins` module's own `pytest_configure`
+does run, so `sys.path` edits there take effect.
 
 `conftest.py` is imported normally, so path manipulation there does work:
 

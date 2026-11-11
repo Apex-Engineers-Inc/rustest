@@ -171,12 +171,27 @@ rustest's own implementations, which is what makes `from _pytest.outcomes import
 catch the exception `pytest.skip()` actually raises. Others satisfy the import and do
 nothing. Anything not on that list, `_pytest.fixtures` among them, does not resolve at all.
 
-**The hook system, in rustest itself.** rustest does not run `pytest_configure`,
-`pytest_collection_modifyitems`, `pytest_generate_tests` or any other hook. A session that
-needs them is handed to pytest whole, see
-[When rustest hands a session to pytest](#when-rustest-hands-a-session-to-pytest). With
-`--no-pytest-fallback` a `conftest.py` that defines hooks loads, its **fixtures are used**,
-its hooks are not run, and one `NOTE:` line on stderr names each one.
+**The hook system, in rustest itself.** A conftest's hooks run **natively** when they are
+ones rustest's hook runtime models: `pytest_addoption`, `pytest_configure`,
+`pytest_sessionstart` and `pytest_collection_modifyitems` (including `trylast`/`tryfirst`
+ordering around `-k` and `-m`, `item.add_marker`, reordering, and
+`config.hook.pytest_deselected`). `config.getoption`, `config.getini`, `config.option` and
+attributes a `pytest_configure` sets on `config` answer from what those hooks declared.
+Everything else (`pytest_generate_tests`, `pytest_runtest_*`, `pytest_sessionfinish`, ...), and
+any use of `config`, `item` or `session` that the runtime does not provide, is handed to
+pytest whole, see
+[When rustest hands a session to pytest](#when-rustest-hands-a-session-to-pytest). The hand-off
+also happens when a hook swallows the runtime's refusal in an `except Exception`: the refusal
+is recorded first. With `--no-pytest-fallback` the supported hooks still run natively, the
+others are not run, and one `NOTE:` line on stderr names each one.
+
+rustest runs `pytest_configure` and `pytest_sessionstart` once per worker process, as
+pytest-xdist does: the first worker runs them before any other starts, and a session that has
+to go to pytest goes then. A hook whose side effect only works once (creating a directory, say)
+therefore fails in the second worker, and the session ends with pytest's configure error
+(exit 3) rather than being handed to pytest to run the hook yet again; `-n 1` runs it once.
+When a `pytest_collection_modifyitems` hook runs with more than one worker, every worker first
+imports every test module the session collected, as each pytest-xdist worker does.
 
 **Warning diagnostics.** `recwarn` and `pytest.warns()` record warnings in-process and both
 work. What is missing is the reporting channel that surfaces pytest's own diagnostics: the
@@ -186,8 +201,8 @@ missing.
 
 ## When rustest hands a session to pytest
 
-Some things only pytest can do correctly. A hook such as `pytest_collection_modifyitems`
-in one directory's `conftest.py` sees the items of *every* directory, so running part of a
+Some things only pytest can do correctly. A hook such as `pytest_runtest_setup`
+in one directory's `conftest.py` runs for the items of *every* directory, so running part of a
 session under rustest and part under pytest would be wrong, not just awkward. Instead the
 session is **whole-run, one runner or the other**: when rustest finds something it cannot
 honour, it runs `python -m pytest` with your own arguments, streams pytest's output
@@ -198,7 +213,8 @@ turns it off.
 
 | What rustest finds | Why |
 |---|---|
-| A `conftest.py`, or a module a `pytest_plugins` assignment names, defines a `pytest_*` hook other than the four below. **`pytest_addoption` is one of them.** `pytest_configure`, `pytest_collection_modifyitems`, `pytest_generate_tests`, `pytest_sessionfinish` and `pytest_runtest_*` all are | They change what runs, how it is reported, or the exit status. rustest's `getoption` cannot know what an `addoption` declared, so a fixture's `getoption("--db", default=...)` would quietly answer differently |
+| A `conftest.py`, or a module a `pytest_plugins` assignment names, defines a `pytest_*` hook that is neither one rustest runs natively (`pytest_addoption`, `pytest_configure`, `pytest_sessionstart`, `pytest_collection_modifyitems`) nor one of the four terminal-text hooks below: `pytest_generate_tests`, `pytest_sessionfinish`, `pytest_runtest_*` and the rest | They change what runs, how it is reported, or the exit status |
+| A native hook uses something the hook runtime does not provide (for example `config.pluginmanager.register`, or reading a parametrized item's markers) | The runtime cannot answer it the way pytest would, so the session goes to pytest rather than guess |
 | A conftest, or a module it names, raises when rustest's worker imports it (`rustest could not import tests/conftest.py: ...`) | Conftests that import `_pytest` internals rustest does not provide are exactly the hook-writing ones |
 | `-p NAME` (not `-p no:NAME`) | Loads a pytest plugin |
 | `-o KEY=VALUE` arriving through `addopts` or `PYTEST_ADDOPTS` (rustest reads only the command line's `-o`) | pytest applies it |
@@ -225,7 +241,7 @@ output is pytest's own, live, and the exit code is pytest's.
 {{< termshow file="fallback" autoplay="false" loop="false" >}}
 
 That is a recorded run of a project whose `conftest.py` skips every `slow` test in
-`pytest_collection_modifyitems`: only pytest can honour that, so the session goes to pytest
+`pytest_runtest_setup`: only pytest can honour that, so the session goes to pytest
 (here with `-q`, so pytest prints its bare letters and summary).
 
 pytest's cache is pointed at `.rustest_cache` (`-o cache_dir=.rustest_cache`), the directory
@@ -315,7 +331,7 @@ in the corpus, so none of them can regress unnoticed or be quietly forgotten.
 | **Reporting-only flags** | Accepted and ignored, with a note on stderr naming each one. | See the table below. |
 | **`capsys` is stream-level** | `sys.stdout`/`sys.stderr` are redirected, not the file descriptors, exactly as pytest's `capsys` is. | Use `capfd` for a subprocess or a C extension; it redirects the descriptors and does catch them (probed both ways). |
 | **`--runxfail`** | Not implemented. | Remove the `xfail` mark to see the test's own result. |
-| **Warnings** | The `filterwarnings` ini and `@pytest.mark.filterwarnings` are applied as pytest applies them, around collection and around each test, so `filterwarnings = error` fails the same tests. Warnings that are not errors are listed in a warnings summary, and counted in the summary line, as pytest does. `-W` on the command line, and `-p no:warnings`, hand the session to pytest. | None. |
+| **Warnings** | The `filterwarnings` ini and `@pytest.mark.filterwarnings` are applied as pytest applies them, around collection and around each test, so `filterwarnings = error` fails the same tests. Unraisable exceptions (a `__del__` that raises, an unclosed file) and exceptions in threads become `PytestUnraisableExceptionWarning` / `PytestUnhandledThreadExceptionWarning`, and an unregistered mark is `PytestUnknownMarkWarning`, as in pytest. Warnings that are not errors are listed in a warnings summary and counted in the summary line. `-W` on the command line, and `-p no:warnings`, hand the session to pytest. | Four counts differ: `--collect-only` lists no warnings; a warning raised while a skipped directory's `conftest.py` is imported under `--lf` is applied but not counted; with `-n` above 1 a warning raised while a conftest or a library is imported is counted once per worker, and a `once` filter means once per worker; a mark used inside a `conftest.py` is never checked against the registry (pytest checks the ones imported after `pytest_configure`). |
 | **Unknown `pytest.*` attributes** | `pytest.Item`, `pytest.Collector` and any other public name this shim does not define return an inert generated stub class rather than raising `AttributeError`. The catch-all exists so a module that *imports* a pytest internal still loads — the `pytest_asyncio` shim depends on it. | An `isinstance()` or `issubclass()` check against one of these is silently false rather than loudly wrong. This is the one place the shim answers plausibly instead of refusing; `request.node`'s missing attributes go the other way, and deliberately. Not yet a conformance corpus case. |
 
 ### Reporting flags rustest accepts and ignores
@@ -331,7 +347,7 @@ that changes what runs must never be ignored quietly.
 | `-ra`, `-rfE`, any `-r<chars>` | rustest's summary is always the full one. |
 | `--tb=...` | Tracebacks are rendered rustest's way. |
 | `--durations=...`, `--durations-min=...` | No timing table. Per-test durations are in `--report-json`. |
-| `--strict-markers`, `--strict-config`, `--strict` | Unknown marks are never an error here. |
+| `--strict-config` | Unknown ini keys are never an error here. |
 | `-p <plugin>` / `-p no:<plugin>` | rustest has no plugin manager to load or disable. |
 | `--import-mode=...` | Import mode is not configurable. |
 | `--showlocals` / `-l`, `--full-trace` | Traceback detail is not configurable. |

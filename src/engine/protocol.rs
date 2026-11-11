@@ -30,7 +30,7 @@
 //! field names, the tag key, and the omit-when-empty rules on `Collected` are pinned by
 //! golden-string tests below, and any incompatible change must bump [`PROTOCOL_VERSION`].
 
-use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
+use crate::engine::manifest::{CollectedTest, CollectionErrorEntry, MarkSpec};
 use serde::{Deserialize, Serialize};
 
 /// Version of the worker wire protocol.  Bump on any incompatible change.
@@ -117,7 +117,34 @@ use serde::{Deserialize, Serialize};
 /// file's collection or a test recorded on `collected` and `test_result`; each is omitted
 /// when empty (or false), so a run that sets neither and warns nowhere is byte-identical to
 /// v11's.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// **v13** is the native hook runtime (`python/rustest/_hookshim.py`): `init` carries the
+/// session's conftests in pytest's registration order and an opaque `hook_context`, `ready`
+/// names init-time hand-off reasons and whether any `pytest_collection_modifyitems` is
+/// registered, `collected` tests carry that hook's item `record`, and the barrier sends
+/// [`WorkerRequest::ModifyItems`] once per stage. All omitted when unused, so a hook-free
+/// session's lines are v12's.
+/// **v14** carries the `markers` ini on `init` (the registry `PytestUnknownMarkWarning` checks
+/// against) and `xfail_strict` as the ini's raw text (pytest parses it where it is used, and
+/// an unparseable value is that test's error); `bye` carries the warnings the shutdown
+/// teardown recorded under the last test's window.
+pub const PROTOCOL_VERSION: u32 = 14;
+
+/// One conftest on [`WorkerRequest::Init`]: absolute posix path, and whether pytest loads it
+/// before `pytest_configure` (an argument's chain, or `anchor/test*/conftest.py`) or during
+/// the collection walk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConftestWire {
+    pub path: String,
+    pub initial: bool,
+}
+
+/// One `item.add_marker(...)` a `pytest_collection_modifyitems` made (`_hookshim.MarkAdded`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AddedMark {
+    pub nodeid: String,
+    pub mark: MarkSpec,
+    pub append: bool,
+}
 
 /// One warning a worker recorded, as pytest's `WarningReport` carries it: where (a node id,
 /// or `path:line` relative to the invocation directory for a warning outside any test) and
@@ -227,9 +254,26 @@ pub enum WorkerRequest {
         /// The `filterwarnings` ini lines, verbatim; see [`PROTOCOL_VERSION`]'s v12 note.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         filterwarnings: Vec<String>,
-        /// The `xfail_strict` ini, omitted when false.
+        /// The `xfail_strict` ini's raw text, omitted when unset (v14).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        xfail_strict: Option<String>,
+        /// The `markers` ini lines, omitted when empty (v14).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        markers: Vec<String>,
+        /// `--strict-markers` / `--strict` (v14): an unregistered mark is an error, not a
+        /// warning. Omitted when false.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        xfail_strict: bool,
+        strict_markers: bool,
+        /// Every conftest of the session, in pytest's registration order (v13). Sent only
+        /// when one of them may define a hook; the worker then imports and registers the
+        /// `initial` ones at `init`, and the rest arrive through
+        /// [`WorkerRequest::ImportConftests`] in walk order, as pytest imports them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        conftests: Vec<ConftestWire>,
+        /// What the CLI knows that a hook may ask (argv, option values), passed through
+        /// unread. `None` from an API caller with nothing to say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hook_context: Option<serde_json::Value>,
     },
     /// Collect one file. path: absolute posix.
     CollectFile {
@@ -310,11 +354,28 @@ pub enum WorkerRequest {
         /// batch boundary, which is `pytest-xdist`'s.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_fail: Option<usize>,
+        /// Apply the marks the last `pytest_collection_modifyitems` stage added: the
+        /// orchestrator accepted it (v14). Without it the worker drops them. Sent on a
+        /// worker's first batch only; omitted when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        commit_marks: bool,
     },
     /// Import the conftest chain of each directory (absolute posix) and nothing else; the
     /// worker replies [`WorkerResponse::ConftestsImported`]. See [`PROTOCOL_VERSION`]'s v11
     /// note.
     ImportConftests { dirs: Vec<String> },
+    /// Run one `pytest_collection_modifyitems` stage over the whole collection (v13): `stage`
+    /// 1 is the `tryfirst` and plain implementations, before `-k`/`-m`; 2 is the `trylast`
+    /// ones, over what selection kept. `records` are the `collected` items' records, in the
+    /// current collection order. Answered by [`WorkerResponse::ItemsModified`].
+    ModifyItems {
+        stage: u8,
+        records: Vec<serde_json::Value>,
+        /// The previous stage was accepted: apply its marks before this one runs (else they
+        /// are dropped). Omitted when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        commit: bool,
+    },
     /// Graceful shutdown; worker replies Bye then exits 0.
     Shutdown,
 }
@@ -325,7 +386,16 @@ pub enum WorkerRequest {
 pub enum WorkerResponse {
     /// Handshake reply. `protocol_version` declares the protocol the worker **speaks** —
     /// never an echo of what [`WorkerRequest::Init`] asked for.
-    Ready { protocol_version: u32 },
+    Ready {
+        protocol_version: u32,
+        /// Hand-off reasons found while `init` registered conftests and ran `configure` /
+        /// `sessionstart` (v13). Omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hooks: Vec<String>,
+        /// Whether a registered module implements `pytest_collection_modifyitems` (v13).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        modify_items: bool,
+    },
     /// Per-file result. Either tests or an error entry (import/syntax failure).
     ///
     /// The two shapes are exclusive by contract but not by type: a line carrying both is
@@ -436,11 +506,33 @@ pub enum WorkerResponse {
     /// the first truncates the report legitimately, the second is a bug.
     BatchDone { executed: usize, stopped: bool },
     /// Acknowledges [`WorkerRequest::Shutdown`]; the last line a worker writes before
-    /// exiting 0.
-    Bye,
+    /// exiting 0. `warnings` are the shutdown teardown's (v14), located at the last test.
+    Bye {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        warnings: Vec<RecordedWarning>,
+    },
     /// Answers [`WorkerRequest::ImportConftests`]: the hooks (and `rustest could not import`
     /// labels) those conftests brought in that this worker had not named before.
     ConftestsImported {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hooks: Vec<String>,
+        /// A `pytest_collection_modifyitems` is registered now (a later conftest may bring
+        /// the first one). Omitted when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        modify_items: bool,
+    },
+    /// Answers [`WorkerRequest::ModifyItems`] (`_hookshim.CollectionEffects`): the surviving
+    /// ids in their new order, the removed ones reported through `pytest_deselected`
+    /// (counted) and the ones removed without it (not counted), the marks added, and any
+    /// hand-off reason, in which case the rest is not to be used.
+    ItemsModified {
+        order: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        deselected: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        vanished: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        marks: Vec<AddedMark>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         hooks: Vec<String>,
     },
@@ -480,13 +572,17 @@ mod tests {
             // `init_request_carries_the_pythonpath_ini` pins the present form.
             pythonpath: Vec::new(),
             filterwarnings: Vec::new(),
-            xfail_strict: false,
+            xfail_strict: None,
+            markers: Vec::new(),
+            strict_markers: false,
+            conftests: Vec::new(),
+            hook_context: None,
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":14,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":14,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":14,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -587,7 +683,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":12,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":14,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -732,6 +828,7 @@ mod tests {
             ],
             stop_on_failure: false,
             max_fail: None,
+            commit_marks: false,
         };
 
         assert_eq!(
@@ -799,7 +896,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":12}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":14}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -825,6 +922,7 @@ mod tests {
                 marks: Vec::new(),
                 fixtures: Vec::new(),
                 tier: crate::engine::manifest::Tier::Dynamic,
+                record: None,
             }],
             error: None,
             skipped: None,
@@ -875,6 +973,8 @@ mod tests {
     fn ready_response_matches_golden_contract() {
         let response = WorkerResponse::Ready {
             protocol_version: PROTOCOL_VERSION,
+            hooks: Vec::new(),
+            modify_items: false,
         };
 
         assert_eq!(
@@ -1057,12 +1157,20 @@ mod tests {
     #[test]
     fn bye_response_matches_golden_contract() {
         assert_eq!(
-            serde_json::to_string(&WorkerResponse::Bye).expect("bye serializes"),
+            serde_json::to_string(&WorkerResponse::Bye {
+                warnings: Vec::new()
+            })
+            .expect("bye serializes"),
             BYE_LINE
         );
 
         let decoded: WorkerResponse = serde_json::from_str(BYE_LINE).expect("bye deserializes");
-        assert_eq!(decoded, WorkerResponse::Bye);
+        assert_eq!(
+            decoded,
+            WorkerResponse::Bye {
+                warnings: Vec::new()
+            }
+        );
     }
 
     #[test]
@@ -1104,7 +1212,7 @@ mod tests {
         else {
             panic!("expected init");
         };
-        assert!(filterwarnings.is_empty() && !xfail_strict);
+        assert!(filterwarnings.is_empty() && xfail_strict.is_none());
         let init = serde_json::to_string(&WorkerRequest::Init {
             protocol_version: PROTOCOL_VERSION,
             rootdir: "/r".to_string(),
@@ -1118,11 +1226,15 @@ mod tests {
             pythonpath: Vec::new(),
             coverage: None,
             filterwarnings: vec!["error".to_string()],
-            xfail_strict: true,
+            xfail_strict: Some("true".to_string()),
+            markers: Vec::new(),
+            strict_markers: false,
+            conftests: Vec::new(),
+            hook_context: None,
         })
         .unwrap();
         assert!(
-            init.ends_with(r#""filterwarnings":["error"],"xfail_strict":true}"#),
+            init.ends_with(r#""filterwarnings":["error"],"xfail_strict":"true"}"#),
             "{init}"
         );
 
@@ -1453,6 +1565,7 @@ mod tests {
                 ],
                 stop_on_failure: true,
                 max_fail: None,
+                commit_marks: false,
             },
             WorkerRequest::Shutdown,
         ];
@@ -1489,6 +1602,8 @@ mod tests {
         let responses = [
             WorkerResponse::Ready {
                 protocol_version: PROTOCOL_VERSION,
+                hooks: Vec::new(),
+                modify_items: false,
             },
             sample_collected_with_tests(),
             sample_collected_with_error(),
@@ -1499,7 +1614,9 @@ mod tests {
                 executed: 2,
                 stopped: false,
             },
-            WorkerResponse::Bye,
+            WorkerResponse::Bye {
+                warnings: Vec::new(),
+            },
         ];
         for response in &responses {
             let encoded = serde_json::to_string(response).expect("response serializes");

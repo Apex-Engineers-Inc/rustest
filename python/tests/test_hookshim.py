@@ -26,8 +26,8 @@ The supported surface, and the real suite that exercises each piece:
 | ``items[:] = ...`` | member-designer ``shards.py`` |
 | ``session.config`` | pytest's documented ``Session`` contract |
 
-Hooks that run during or after execution (``runtest_setup``, ``sessionfinish``, ``unconfigure``,
-``itemcollected``) are not run natively: defining one hands the session off.
+Any other ``pytest_*`` name (``runtest_setup``, ``sessionfinish``, ...) is ignored by the runner,
+which keeps running the native ones beside it; the worker names it as a hook rustest does not run.
 
 Everything else hands off, which the second half of the file pins one attribute at a time.
 """
@@ -50,7 +50,6 @@ from typing import Any
 import pytest
 
 from rustest._hookshim import (
-    HANDED_OFF_HOOKS,
     NATIVE_HOOKS,
     CollectionEffects,
     HookRunner,
@@ -207,7 +206,8 @@ def test_pillow_configure_registers_the_markers_real_pytest_registers(tmp_path: 
     runner.configure()
 
     assert runner.reasons == []
-    assert runner.markers == [
+    ours = runner.markers[:3]  # then pytest's own lines (`test_getini_markers_is_pytests_list`)
+    assert ours == [
         "slow: a slow test",
         "pil_noop_mark: A conditional mark where nothing special happens",
         "valgrind_known_error: Tests that have known issues with valgrind",
@@ -222,9 +222,47 @@ def test_pillow_configure_registers_the_markers_real_pytest_registers(tmp_path: 
         },
     )
     shown = _real_pytest(tree, ["--markers"]).stdout
-    for line in runner.markers:
+    for line in ours:
         name, _, description = line.partition(": ")
         assert f"@pytest.mark.{name}: {description}" in shown
+
+
+@pytest.mark.parametrize("autoload", [True, False], ids=["plugins", "no-plugins"])
+def test_getini_markers_is_pytests_list(tmp_path: Path, autoload: bool) -> None:
+    """The ini's lines, a conftest's, then the loaded plugins' and pytest's own, in real
+    pytest's order (review S5); with two marker-adding plugins the order is not known here."""
+    from rustest._fallback import installed_plugins
+
+    source = """
+import json, os
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "conf: c")
+
+def pytest_sessionstart(session):
+    with open(os.environ["OUT"], "w") as handle:
+        json.dump(session.config.getini("markers"), handle)
+"""
+    out = tmp_path / "markers.json"
+    tree = make_tree(
+        tmp_path,
+        "markers_tree",
+        {
+            "conftest.py": source,
+            "pytest.ini": "[pytest]\nmarkers =\n    mine: m\n",
+            "test_x.py": "def test_x(): pass\n",
+        },
+    )
+    env = (
+        {"OUT": str(out)} if autoload else {"OUT": str(out), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+    )
+    _ = _real_pytest(tree, ["-q"], env)
+    plugins = [name for name, _ in installed_plugins()] if autoload else []
+    runner = HookRunner(rootpath=tree, ini={"markers": "\nmine: m"}, plugins=plugins)
+    runner.register("conftest.py", _module(tmp_path, "markers_conftest", source))
+    runner.configure()
+    assert runner.reasons == []
+    assert runner.lookup_ini("markers") == (True, json.loads(out.read_text(encoding="utf-8")))
 
 
 # --------------------------------------------------------------------------------------
@@ -398,7 +436,7 @@ def test_networkx_conftest_skips_slow_tests_as_pytest_does(tmp_path: Path) -> No
     effects = _modify(runner, records)
 
     assert runner.reasons == []
-    assert runner.markers == ["slow: mark test as slow to run"]
+    assert runner.markers[0] == "slow: mark test as slow to run"
     skipped = [(m.nodeid, m.mark.name, dict(m.mark.kwargs)) for m in effects.marks]
     assert skipped == [
         ("test_n.py::test_slow", "skip", {"reason": "need --runslow option to run"}),
@@ -1048,22 +1086,37 @@ def test_a_hook_that_does_anything_else_to_the_list_hands_off(tmp_path: Path, bo
     assert runner.reasons and effects.order == []
 
 
-@pytest.mark.parametrize("hook", sorted(HANDED_OFF_HOOKS))
-def test_a_hook_that_runs_during_or_after_execution_hands_the_session_off(
-    tmp_path: Path, hook: str
-) -> None:
-    """Their effects land after tests have run, where a hand-off would run them twice."""
-    module = _module(tmp_path, "late_hook", f"def {hook}(*args):\n    pass\n")
+def test_a_hook_it_does_not_run_is_ignored_and_the_native_ones_still_run(tmp_path: Path) -> None:
+    """``pytest_sessionfinish`` is the worker's to name (a hand-off reason of its own); the
+    runner neither refuses it nor stops running ``pytest_configure`` beside it, which is what
+    ``--no-pytest-fallback`` relies on."""
+    module = _module(
+        tmp_path,
+        "late_hook",
+        """
+        def pytest_sessionfinish(session):
+            pass
+
+        def pytest_configure(config):
+            config.seen = True
+        """,
+    )
     runner = _runner()
     runner.register("conftest.py", module)
-    assert runner.reasons == [
-        f"conftest.py::{hook} is a hook that runs during or after test execution, "
-        "which rustest's hook runtime does not support"
-    ]
+    runner.configure()
+    assert runner.reasons == [] and runner.user_attributes == {"seen": True}
+    assert not runner.implements("pytest_sessionfinish")
 
 
-def test_the_hook_sets_do_not_overlap() -> None:
-    assert not NATIVE_HOOKS & HANDED_OFF_HOOKS
+def test_a_free_threaded_build_declines_rather_than_trust_reference_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: False, raising=False)
+    runner = _runner()
+    assert runner.reasons and "free-threaded build" in runner.reasons[0]
+
+
+def test_the_native_hooks_are_the_four_whose_effects_precede_execution() -> None:
     assert NATIVE_HOOKS == {
         "pytest_addoption",
         "pytest_configure",
@@ -1424,7 +1477,6 @@ def test_the_runners_option_lookups_answer_as_pytest_does_for_the_workers_config
     runner = _runner(ini={"lines": "a\n b"})
     runner.register("conftest.py", module)
 
-    assert runner.option_flags == {"--db-url": "url", "--plain": "plain"}
     assert runner.lookup_option("--db-url") == (True, "sqlite://")
     assert runner.lookup_option("url") == (True, "sqlite://")
     assert runner.lookup_option("--plain") == (True, None)
@@ -1493,6 +1545,46 @@ def pytest_configure(config):
     assert runner.reasons and "--lf, which is already an option" in runner.reasons[0]
 
 
+def test_every_option_string_an_allowed_plugin_registers_is_a_conflict(tmp_path: Path) -> None:
+    """The allowed plugins installed here, loaded by real pytest, register exactly the option
+    strings :data:`_PLUGIN_FLAGS` lists for them, and declaring one is refused."""
+    from rustest._fallback import SAFE_PLUGINS, installed_plugins
+    from rustest._hookshim import (  # pyright: ignore[reportPrivateUsage]
+        _PLUGIN_FLAGS,
+        _PYTEST_CORE_FLAGS,
+    )
+
+    assert set(_PLUGIN_FLAGS) == SAFE_PLUGINS
+    loaded = [name for name, _ in installed_plugins() if name in _PLUGIN_FLAGS]
+    out = tmp_path / "opts.json"
+    source = """
+import json, os
+
+def pytest_configure(config):
+    parser = config._parser
+    flags = set()
+    for group in [parser._anonymous, *parser._groups]:
+        for opt in group.options:
+            flags.update(opt.names())
+    with open(os.environ["OUT"], "w") as handle:
+        json.dump(sorted(flags), handle)
+"""
+    tree = make_tree(tmp_path, "opts", {"conftest.py": source, "test_x.py": "def test_x(): pass\n"})
+    _ = _real_pytest(tree, ["-q"], {"OUT": str(out)}, cache=True)
+    plugin_flags = set(json.loads(out.read_text(encoding="utf-8"))) - _PYTEST_CORE_FLAGS
+    assert plugin_flags == set().union(*(_PLUGIN_FLAGS[name] for name in loaded))
+    if loaded:
+        flag = sorted(_PLUGIN_FLAGS[loaded[0]])[0]
+        module = _module(
+            tmp_path,
+            "plugin_conflict",
+            f"def pytest_addoption(parser):\n    parser.addoption({flag!r})\n",
+        )
+        runner = HookRunner(rootpath="/root", plugins=loaded)
+        runner.register("conftest.py", module)
+        assert runner.reasons and f"{flag}, which is already an option" in runner.reasons[0]
+
+
 @pytest.mark.parametrize(
     "runner_kwargs",
     [
@@ -1548,9 +1640,10 @@ def test_the_data_a_hook_leaves_behind_is_exported_for_the_workers_own_config(
     runner.sessionstart()
     assert runner.reasons == []
     assert runner.user_attributes == {"backend": "nx", "second": [1]}
-    assert runner.option_values == {"flag": False, "level": 2}
-    assert runner.ini_declarations == {"lines": ("linelist", [])}
-    assert runner.markers == ["a: first", "slow: s"]
+    assert runner.lookup_option("flag") == (True, False)
+    assert runner.lookup_option("--level") == (True, 2)
+    assert runner.lookup_ini("lines") == (True, [])
+    assert runner.markers[:2] == ["a: first", "slow: s"]
 
 
 def test_invocation_dir_is_offered_only_when_the_worker_supplied_it(tmp_path: Path) -> None:
@@ -1869,7 +1962,10 @@ def test_an_item_kind_the_shim_cannot_be_hands_off(tmp_path: Path) -> None:
     runner = _runner()
     runner.register("conftest.py", module)
     _ = _modify(runner, [_record("README.md::block", kind="doctest")])
-    assert runner.reasons and "collected a doctest item" in runner.reasons[0]
+    assert (
+        runner.reasons
+        and "collected an item the hook runtime cannot model (doctest)" in runner.reasons[0]
+    )
 
 
 _KEYS_TESTS = {
@@ -2291,3 +2387,79 @@ def test_hooks_run_in_the_order_pluggy_and_pytest_give_them(
 
     assert runner.reasons == []
     assert shim_log.read_text(encoding="utf-8").split() == expected
+
+
+# --------------------------------------------------------------------------------------
+# the wire form of a record, and what the worker cannot rebuild
+# --------------------------------------------------------------------------------------
+
+
+def test_a_record_round_trips_through_json() -> None:
+    record = ItemRecord(
+        "sub/test_k.py::TestC::test_p[a-1]",
+        "test_p[a-1]",
+        "/root/sub/test_k.py",
+        markers=(Mark("slow", (), {}), Mark("xfail", (True,), {"reason": "r", "strict": False})),
+        own_marker_count=1,
+        rootdir_name="root",
+        dir_names=("sub",),
+        module_name="test_k.py",
+        class_names=("TestC",),
+        function_attrs=frozenset({"fattr", "pytestmark"}),
+        param_id="a-1",
+        kind="function",
+        parametrized=True,
+    )
+    assert ItemRecord.from_wire(json.loads(json.dumps(record.to_wire()))) == record
+
+
+@pytest.mark.parametrize(
+    ("value", "exact"),
+    [
+        (None, True),
+        ("x", True),
+        (3, True),
+        (1.5, True),
+        ([1, "a", None, [True]], True),
+        ({"a": [1, {"b": 2}]}, True),
+        ((1, 2), False),  # a tuple comes back a list
+        ({1: "a"}, False),  # an int key comes back a string
+        (ValueError, False),
+        (object(), False),
+        ({"k": (1,)}, False),
+    ],
+)
+def test_only_values_that_survive_json_unchanged_are_wire_exact(value: object, exact: bool) -> None:
+    from rustest._hookshim import wire_exact
+
+    assert wire_exact(value) is exact
+
+
+def test_the_markers_of_a_parametrized_test_cannot_be_read_whole(tmp_path: Path) -> None:
+    """pytest's list holds a ``parametrize`` mark per decorator, which the worker cannot place."""
+    reads = {
+        "all": "list(items[0].iter_markers())",
+        "parametrize": "items[0].get_closest_marker('parametrize')",
+    }
+    for label, expression in reads.items():
+        module = _module(
+            tmp_path,
+            f"param_{label}",
+            f"def pytest_collection_modifyitems(items):\n    {expression}\n",
+        )
+        runner = _runner()
+        runner.register("conftest.py", module)
+        _ = _modify(runner, [_record("a.py::t[1]", Mark("slow"), parametrized=True)])
+        assert runner.reasons and "parametrized test" in runner.reasons[0], label
+
+    module = _module(
+        tmp_path,
+        "param_named",
+        "seen = []\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    seen.append(items[0].get_closest_marker('slow') is not None)\n",
+    )
+    runner = _runner()
+    runner.register("conftest.py", module)
+    _ = _modify(runner, [_record("a.py::t[1]", Mark("slow"), parametrized=True)])
+    assert runner.reasons == [] and module.seen == [True]  # pyright: ignore[reportAttributeAccessIssue]

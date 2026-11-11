@@ -44,6 +44,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -54,8 +55,8 @@ use crate::engine::cache::{
     write_last_failed, LastFailedSkip,
 };
 use crate::engine::collect::{
-    assemble, plan, spawn_pool, CollectError, Dispatch, FileOutcome, Worker, WorkerLauncher,
-    IMPORT_FAILURE_PREFIX,
+    assemble, modify_items_line, plan, spawn_pool, CollectError, Dispatch, FileOutcome,
+    ItemEffects, Worker, WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
 };
 use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
 use crate::engine::protocol::{CoverageWire, RecordedWarning};
@@ -146,6 +147,10 @@ pub struct RunOptions {
     /// `pytest_plugins` module defines a hook only pytest can honour (anything but
     /// [`crate::engine::collect::SKIPPABLE_HOOKS`]). See [`RunReport::pytest_fallback`].
     pub pytest_fallback: bool,
+    /// What the CLI tells the hook runtime, onto every worker's `init` unread (protocol v13).
+    pub hook_context: Option<serde_json::Value>,
+    /// `--strict-markers` / `--strict` (protocol v14).
+    pub strict_markers: bool,
 }
 
 #[cfg(test)]
@@ -164,6 +169,8 @@ impl RunOptions {
             assert_rewrite: true,
             coverage: None,
             pytest_fallback: false,
+            hook_context: None,
+            strict_markers: false,
         }
     }
 }
@@ -613,6 +620,174 @@ struct WorkerRun {
 /// `execute_batch` request; the inner is `(report slot, test id)` in selection order.
 type Assignment = Vec<Vec<(usize, String)>>;
 
+/// What the main thread sends a worker thread across the barrier: a
+/// `pytest_collection_modifyitems` stage to run and answer (any number, in order), then its
+/// assignment.
+enum ToWorker {
+    /// One stage's `modify_items` request, serialised once for the whole pool.
+    Modify {
+        line: Arc<str>,
+        reply: Sender<Result<ItemEffects, CollectError>>,
+    },
+    /// Import these test modules, which another worker owns, before stage 1 (xdist's model:
+    /// every worker has imported everything a `pytest_collection_modifyitems` may look at).
+    Import {
+        files: Vec<PathBuf>,
+        reply: Sender<Result<(), CollectError>>,
+    },
+    /// The assignment, and whether the last `modify_items` stage was accepted (its marks are
+    /// then applied by the worker).
+    Run(Assignment, bool),
+}
+
+/// One `pytest_collection_modifyitems` stage as [`stage`] sees it.
+enum Modified {
+    /// No hook ran, or none may be applied: the list is as it was.
+    Unchanged,
+    Effects(ItemEffects),
+    /// A hook the runtime cannot answer for: hand the session to pytest.
+    HandOff(Vec<String>),
+}
+
+/// The callback [`stage`] runs each `pytest_collection_modifyitems` stage through.
+type Modify<'a> = dyn FnMut(u8, &[CollectedTest]) -> Result<Modified, RunError> + 'a;
+
+/// Run one `pytest_collection_modifyitems` stage on **every** worker, over the same list, and
+/// demand one answer (DESIGN-2 §1.3): that is serial pytest's single list and xdist's
+/// every-worker hook at once, and a hook that sets process state (networkx's `nx.config`)
+/// leaves it in each process. `txs` is `None` when no module registered the hook.
+///
+/// A reason in any answer, or two different answers, hands the session to pytest when it may
+/// be handed off; otherwise the hooks' effects are dropped, the list stays as collected, and
+/// the reasons reach the stderr note -- the same contract a hook the engine never runs has.
+fn modify_items(
+    stage_number: u8,
+    tests: &[CollectedTest],
+    txs: Option<&Vec<Sender<ToWorker>>>,
+    launcher: &WorkerLauncher,
+    options: &RunOptions,
+    commit: bool,
+) -> Result<Modified, RunError> {
+    let Some(txs) = txs else {
+        return Ok(Modified::Unchanged);
+    };
+    let records: Vec<serde_json::Value> = tests
+        .iter()
+        .map(|test| test.record.clone().unwrap_or(serde_json::Value::Null))
+        .collect();
+    let line: Arc<str> = modify_items_line(stage_number, records, commit).into();
+    let mut pending = Vec::with_capacity(txs.len());
+    for tx in txs {
+        let (reply, answer) = channel();
+        let _ = tx.send(ToWorker::Modify {
+            line: Arc::clone(&line),
+            reply,
+        });
+        pending.push(answer);
+    }
+    let mut answers = Vec::with_capacity(pending.len());
+    for (worker, answer) in pending.into_iter().enumerate() {
+        match answer.recv() {
+            Ok(Ok(effects)) => answers.push(effects),
+            Ok(Err(err)) => return Err(RunError::Collect(err)),
+            Err(_) => return Err(RunError::Collect(CollectError::WorkerPanicked { worker })),
+        }
+    }
+    let mut reasons: Vec<String> = answers
+        .iter()
+        .flat_map(|answer| answer.reasons.iter().cloned())
+        .collect();
+    reasons.sort();
+    reasons.dedup();
+    if reasons.is_empty() && answers.windows(2).any(|pair| pair[0] != pair[1]) {
+        reasons.push(MODIFY_ITEMS_DISAGREE.to_string());
+    }
+    if !reasons.is_empty() {
+        launcher.note_hooks(&reasons);
+        return Ok(if options.pytest_fallback {
+            Modified::HandOff(reasons)
+        } else {
+            Modified::Unchanged
+        });
+    }
+    Ok(answers
+        .into_iter()
+        .next()
+        .map_or(Modified::Unchanged, Modified::Effects))
+}
+
+/// Have every worker import the files the others own ([`ToWorker::Import`]), and wait.
+fn import_everywhere(
+    txs: &[Sender<ToWorker>],
+    assignments: &[Vec<(usize, PathBuf)>],
+) -> Result<(), CollectError> {
+    let mut pending = Vec::with_capacity(txs.len());
+    for (worker, tx) in txs.iter().enumerate() {
+        let files = assignments
+            .iter()
+            .enumerate()
+            .filter(|(owner, _)| *owner != worker)
+            .flat_map(|(_, files)| files.iter().map(|(_, path)| path.clone()))
+            .collect();
+        let (reply, answer) = channel();
+        let _ = tx.send(ToWorker::Import { files, reply });
+        pending.push(answer);
+    }
+    for (worker, answer) in pending.into_iter().enumerate() {
+        answer
+            .recv()
+            .map_err(|_| CollectError::WorkerPanicked { worker })??;
+    }
+    Ok(())
+}
+
+/// Apply one stage's effects to `order` (indices into `tests`, the list the hooks saw, in its
+/// order): the survivors in the hooks' new order, and how many pytest counts as deselected.
+/// Marks go onto `tests` themselves, where `-k`/`-m` read them.
+///
+/// Ids can repeat (a file named twice is collected twice), so each id is matched to the
+/// earliest unclaimed position holding it. An id the hooks name that was not offered is a
+/// protocol error: the worker answered about a list it was not given.
+fn apply_effects(
+    tests: &mut [CollectedTest],
+    order: &[usize],
+    effects: &ItemEffects,
+) -> Result<(Vec<usize>, usize), RunError> {
+    let mut positions: std::collections::HashMap<&str, std::collections::VecDeque<usize>> =
+        std::collections::HashMap::new();
+    for &index in order {
+        positions
+            .entry(tests[index].id.as_str())
+            .or_default()
+            .push_back(index);
+    }
+    let mut kept = Vec::with_capacity(effects.order.len());
+    for id in &effects.order {
+        let Some(index) = positions
+            .get_mut(id.as_str())
+            .and_then(|queue| queue.pop_front())
+        else {
+            return Err(RunError::Collect(CollectError::Protocol {
+                worker: 0,
+                path: PathBuf::from("<pytest_collection_modifyitems>"),
+                detail: format!("the hooks kept `{id}`, which was not in the list they were given"),
+                line: String::new(),
+            }));
+        };
+        kept.push(index);
+    }
+    for added in &effects.marks {
+        for test in tests.iter_mut().filter(|test| test.id == added.nodeid) {
+            if added.append {
+                test.marks.push(added.mark.clone());
+            } else {
+                test.marks.insert(0, added.mark.clone());
+            }
+        }
+    }
+    Ok((kept, effects.deselected.len()))
+}
+
 /// One worker's whole collection phase: its files' outcomes, or the failure that stopped it.
 type CollectedFiles = Result<Vec<(usize, FileOutcome)>, CollectError>;
 /// What a worker thread reports across the barrier: which worker, and what it collected.
@@ -722,6 +897,8 @@ fn run_attempt(
         options.codeblocks,
         options.assert_rewrite,
         options.coverage.clone(),
+        options.hook_context.clone(),
+        options.strict_markers,
     )?;
     let previously_failed = read_last_failed(&dispatch.rootdir_path);
 
@@ -759,7 +936,22 @@ fn run_attempt(
         dispatch.skip_targets(&plan.collect, workers);
     }
 
-    let mut pool = spawn_pool(&dispatch, launcher)?;
+    let mut pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback) {
+        Err(CollectError::HandOff(reasons)) => {
+            let mut report = finish(
+                dispatch.rootdir.clone(),
+                Vec::new(),
+                Vec::new(),
+                Selection::default(),
+                WorkerResidue::default(),
+                false,
+                started,
+            );
+            report.pytest_fallback = reasons;
+            return Ok(Attempt::Report(report));
+        }
+        pool => pool?,
+    };
     let pool_size = pool.len();
 
     // pytest still collects the directories of the files it skips, which imports their
@@ -784,8 +976,8 @@ fn run_attempt(
     }
 
     let (collect_tx, collect_rx) = channel::<CollectMessage>();
-    let mut exec_txs: Vec<Sender<Assignment>> = Vec::with_capacity(pool_size);
-    let mut exec_rxs: Vec<Receiver<Assignment>> = Vec::with_capacity(pool_size);
+    let mut exec_txs: Vec<Sender<ToWorker>> = Vec::with_capacity(pool_size);
+    let mut exec_rxs: Vec<Receiver<ToWorker>> = Vec::with_capacity(pool_size);
     for _ in 0..pool_size {
         let (tx, rx) = channel();
         exec_txs.push(tx);
@@ -829,9 +1021,10 @@ fn run_attempt(
             .map(|(index, (((worker, files), exec_rx), live_tx))| {
                 let collect_tx = collect_tx.clone();
                 let keys = &dispatch.assert_keys;
+                let late = &dispatch.late_conftests;
                 scope.spawn(move || {
                     worker_life(
-                        index, worker, files, keys, collect_tx, exec_rx, live_tx, signals,
+                        index, worker, files, keys, late, collect_tx, exec_rx, live_tx, signals,
                     )
                 })
             })
@@ -901,15 +1094,66 @@ fn run_attempt(
             }
         }
 
-        let staged = stage(
-            &dispatch,
-            inbox,
-            keyword,
-            mark,
-            &previously_failed,
-            options.last_failed,
-            skip.as_ref(),
-        );
+        let modifies = launcher.modifies_items();
+        // xdist's model when a `pytest_collection_modifyitems` will run in several workers:
+        // each imports every collected module first, so a hook reading import-time state
+        // (a registry the test modules fill) sees what pytest's single process would.
+        // Ownership of who runs what does not change.
+        let imported = if modifies && pool_size > 1 {
+            import_everywhere(&exec_txs, &dispatch.assignments)
+        } else {
+            Ok(())
+        };
+        let mut accepted = false;
+        let staged = {
+            let txs = &exec_txs;
+            let mut modify = |stage_number: u8, tests: &[CollectedTest]| {
+                let modified = modify_items(
+                    stage_number,
+                    tests,
+                    modifies.then_some(txs),
+                    launcher,
+                    options,
+                    accepted,
+                )?;
+                accepted = matches!(modified, Modified::Effects(_));
+                Ok(modified)
+            };
+            imported.map_err(RunError::Collect).and_then(|()| {
+                stage(
+                    &dispatch,
+                    inbox,
+                    keyword,
+                    mark,
+                    &previously_failed,
+                    options.last_failed,
+                    skip.as_ref(),
+                    &mut modify,
+                )
+            })
+        };
+
+        // A `pytest_collection_modifyitems` stage the runtime could not answer: the same
+        // hand-off as the hooks check above, one step later, still before anything runs.
+        if let Ok(staged) = &staged {
+            if !staged.handoff.is_empty() {
+                drop(exec_txs);
+                for handle in handles {
+                    let _ = handle.join();
+                }
+                let mut report = finish(
+                    dispatch.rootdir.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    Selection::default(),
+                    WorkerResidue::default(),
+                    false,
+                    started,
+                );
+                report.pytest_fallback = staged.handoff.clone();
+                return Ok(Attempt::Report(report));
+            }
+        }
 
         // `Collected` goes out before any work does, so an observer that declines it stops
         // the run with nothing dispatched.
@@ -924,7 +1168,7 @@ fn run_attempt(
         // down — *before* joining, or the join deadlocks on threads still at the barrier.
         if let (Ok(staged), false) = (&staged, quit) {
             for (tx, assignment) in exec_txs.iter().zip(&staged.per_worker) {
-                let _ = tx.send(assignment.clone());
+                let _ = tx.send(ToWorker::Run(assignment.clone(), accepted));
             }
         }
         drop(exec_txs);
@@ -1103,10 +1347,28 @@ struct Staged {
     per_worker: Vec<Vec<Vec<(usize, String)>>>,
     /// Warnings recorded during collection, in walk order.
     warnings: Vec<RecordedWarning>,
+    /// Non-empty: a `pytest_collection_modifyitems` stage could not be answered natively,
+    /// and the session goes to pytest with these reasons (nothing else here is used).
+    handoff: Vec<String>,
+}
+
+impl Staged {
+    fn handed_off(reasons: Vec<String>, pool_size: usize) -> Self {
+        Staged {
+            selected: Vec::new(),
+            errors: Vec::new(),
+            deselected: 0,
+            module_skipped: 0,
+            per_worker: vec![Vec::new(); pool_size],
+            warnings: Vec::new(),
+            handoff: reasons,
+        }
+    }
 }
 
 /// Assemble, select, and work out who runs what — the whole of the main thread's job at the
 /// barrier.
+#[allow(clippy::too_many_arguments)]
 fn stage(
     dispatch: &Dispatch,
     inbox: CollectInbox,
@@ -1115,6 +1377,7 @@ fn stage(
     previously_failed: &std::collections::HashSet<String>,
     last_failed: LastFailedMode,
     lf_skip: Option<&LastFailedSkip>,
+    modify: &mut Modify<'_>,
 ) -> Result<Staged, RunError> {
     let pool_size = inbox.len();
     let mut outcomes = Vec::new();
@@ -1165,21 +1428,56 @@ fn stage(
             .origin
             .retain(|_| flags.next().copied().unwrap_or(true));
     }
+    // The hook runtime's `pytest_collection_modifyitems`, around `-k`/`-m` exactly as pluggy
+    // orders it (`_hookshim.py`'s order contract): stage 1, the `tryfirst` and plain
+    // implementations, sees what the `--lf` filter above left; pytest's own selection is a
+    // plain implementation registered before any conftest, so it runs next; stage 2, the
+    // `trylast` ones, sees what selection kept; `--lf`/`--ff` wrap them all.
+    let mut deselected = 0;
+    let everything: Vec<usize> = (0..assembled.tests.len()).collect();
+    match modify(1, &assembled.tests)? {
+        Modified::Unchanged => {}
+        Modified::HandOff(reasons) => return Ok(Staged::handed_off(reasons, pool_size)),
+        Modified::Effects(effects) => {
+            let (kept, removed) = apply_effects(&mut assembled.tests, &everything, &effects)?;
+            deselected += removed;
+            assembled.tests = kept
+                .iter()
+                .map(|&index| assembled.tests[index].clone())
+                .collect();
+            assembled.origin = kept.iter().map(|&index| assembled.origin[index]).collect();
+        }
+    }
+
     // Selection is compiled and applied first even when nothing will run, because pytest
     // does: `pytest_collection_modifyitems` is called from inside `perform_collect`, i.e.
     // *before* `pytest_runtestloop` can interrupt, so a malformed `-k` is a usage error (4)
     // that outranks the collection error (2).
     let keep = select_mask(&assembled.tests, keyword, mark)?;
-    let mut deselected = keep.iter().filter(|keep| !**keep).count();
+    deselected += keep.iter().filter(|keep| !**keep).count();
 
     // `--lf`/`--ff` run **after** `-k`/`-m`.  `LFPlugin.pytest_collection_modifyitems` is a
     // `wrapper=True, tryfirst=True` hookimpl whose body is *after* the `yield`, so it sees
     // the item list every other `pytest_collection_modifyitems` — the mark plugin's keyword
     // and mark deselection among them — has already filtered.  Applying it first would let
     // `--lf -k something-else` resurrect deselected tests.
-    let surviving: Vec<usize> = (0..assembled.tests.len())
+    let mut surviving: Vec<usize> = (0..assembled.tests.len())
         .filter(|index| keep[*index])
         .collect();
+    let offered: Vec<CollectedTest> = surviving
+        .iter()
+        .map(|&index| assembled.tests[index].clone())
+        .collect();
+    match modify(2, &offered)? {
+        Modified::Unchanged => {}
+        Modified::HandOff(reasons) => return Ok(Staged::handed_off(reasons, pool_size)),
+        Modified::Effects(effects) => {
+            let (kept, removed) = apply_effects(&mut assembled.tests, &surviving, &effects)?;
+            deselected += removed;
+            surviving = kept;
+        }
+    }
+    let kept_by_selection = surviving.len();
     let order = last_failed_order(
         surviving
             .iter()
@@ -1194,7 +1492,7 @@ fn stage(
         Some(order) => order.iter().map(|slot| surviving[*slot]).collect(),
         None => surviving,
     };
-    deselected += keep.iter().filter(|keep| **keep).count() - ordered.len();
+    deselected += kept_by_selection - ordered.len();
 
     // `_pytest/main.py::pytest_runtestloop`: `if session.testsfailed and not
     // continue_on_collection_errors: raise session.Interrupted(...)`.  A single unimportable
@@ -1214,6 +1512,7 @@ fn stage(
             module_skipped: assembled.module_skipped,
             per_worker: vec![Vec::new(); pool_size],
             warnings,
+            handoff: Vec::new(),
         });
     }
 
@@ -1257,6 +1556,7 @@ fn stage(
         module_skipped: assembled.module_skipped,
         per_worker: batches,
         warnings,
+        handoff: Vec::new(),
     })
 }
 
@@ -1339,8 +1639,9 @@ fn worker_life(
     mut worker: Worker,
     files: Vec<(usize, PathBuf)>,
     assert_keys: &[Option<String>],
+    late_conftests: &[(usize, PathBuf)],
     collect_tx: Sender<CollectMessage>,
-    exec_rx: Receiver<Assignment>,
+    exec_rx: Receiver<ToWorker>,
     live: Option<Sender<LiveResult>>,
     signals: StopSignals<'_>,
 ) -> Result<WorkerRun, CollectError> {
@@ -1349,7 +1650,10 @@ fn worker_life(
         // Indexed by target, not by this worker's position in its own file list — see
         // `collect::run_worker`.
         let key = assert_keys.get(*target).and_then(Option::as_deref);
-        match worker.collect_one(path, key) {
+        let collected = worker
+            .import_late_conftests(late_conftests, *target)
+            .and_then(|()| worker.collect_one(path, key));
+        match collected {
             Ok(outcome) => outcomes.push((*target, outcome)),
             Err(err) => {
                 // The error travels to the main thread, which owns the "first failure in
@@ -1360,11 +1664,38 @@ fn worker_life(
             }
         }
     }
+    // Every conftest is registered in every worker before the barrier, as in pytest by the
+    // time any test runs: a later directory's options and hooks reach this worker's tests.
+    if let Err(err) = worker.import_late_conftests(late_conftests, usize::MAX) {
+        let _ = collect_tx.send((index, Err(err)));
+        return Ok(WorkerRun::default());
+    }
     if collect_tx.send((index, Ok(outcomes))).is_err() {
         return Ok(WorkerRun::default());
     }
 
-    let Ok(assignment) = exec_rx.recv() else {
+    // `modify_items` stages arrive here first, while the main thread holds the barrier; the
+    // assignment ends the wait.
+    let assignment = loop {
+        match exec_rx.recv() {
+            Ok(ToWorker::Modify { line, reply }) => {
+                let _ = reply.send(worker.modify_items(&line));
+            }
+            Ok(ToWorker::Import { files, reply }) => {
+                // Import only: the outcome (and any collection error) is the owner's to report.
+                let imported = files
+                    .iter()
+                    .try_for_each(|path| worker.collect_one(path, None).map(|_| ()));
+                let _ = reply.send(imported);
+            }
+            Ok(ToWorker::Run(assignment, commit)) => {
+                worker.commit_marks = commit;
+                break Some(assignment);
+            }
+            Err(_) => break None,
+        }
+    };
+    let Some(assignment) = assignment else {
         // The run was abandoned at the barrier (another worker failed, or selection was
         // rejected). Nothing to execute and nothing to say; `Worker::drop` reaps.
         return Ok(WorkerRun::default());
@@ -1464,6 +1795,12 @@ fn worker_life(
 
     let teardown = worker.shutdown_run()?;
     let stderr = worker.take_stderr();
+    // The shutdown teardown ran under the last test's warnings window (as pytest's
+    // `nextitem=None` teardown does), so what it recorded is that test's.
+    let late = worker.take_bye_warnings();
+    if let Some((_, outcome)) = results.last_mut() {
+        outcome.warnings.extend(late);
+    }
     Ok(WorkerRun {
         results,
         teardown,
@@ -2504,7 +2841,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":12}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":14}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -3343,11 +3680,24 @@ def test_bails():
 
     /// pytest's `--runslow` recipe: two hooks only pytest can honour.
     const RUNSLOW_CONFTEST: &str = "\
+import pytest
+
+
 def pytest_addoption(parser):
-    parser.addoption('--runslow', action='store_true')
+    parser.addoption('--runslow', action='store_true', default=False)
 
 
 def pytest_collection_modifyitems(config, items):
+    if config.getoption('--runslow'):
+        return
+    for item in items:
+        if 'slow' in item.keywords:
+            item.add_marker(pytest.mark.skip(reason='need --runslow'))
+";
+
+    /// A hook the runtime never runs natively (`pytest_generate_tests`).
+    const GENERATE_TESTS_CONFTEST: &str = "\
+def pytest_generate_tests(metafunc):
     pass
 ";
 
@@ -3357,7 +3707,7 @@ def pytest_collection_modifyitems(config, items):
     #[test]
     fn a_hook_only_pytest_can_run_stops_the_run_at_the_barrier() {
         let tmp = tree(&[
-            ("conftest.py", RUNSLOW_CONFTEST),
+            ("conftest.py", GENERATE_TESTS_CONFTEST),
             ("test_a.py", "def test_a():\n    assert 0\n"),
         ]);
         let mut events = Vec::new();
@@ -3384,10 +3734,7 @@ def pytest_collection_modifyitems(config, items):
 
         assert_eq!(
             report.pytest_fallback,
-            vec![
-                "conftest.py::pytest_addoption".to_string(),
-                "conftest.py::pytest_collection_modifyitems".to_string(),
-            ]
+            vec!["conftest.py::pytest_generate_tests".to_string()]
         );
         assert!(report.tests.is_empty());
         assert!(
@@ -3405,17 +3752,19 @@ def pytest_collection_modifyitems(config, items):
         );
     }
 
-    /// `pytest_addoption` alone needs pytest: under pytest a declared option answers
-    /// `getoption(name, default=x)` and `getoption(name, skip=True)` with its declared
-    /// default, and the engine, which never runs the declaration, cannot.
+    /// `pytest_addoption` alone stays native (protocol v13): the hook runtime records the
+    /// declaration, and `request.config.getoption` answers with the declared default.
     #[test]
-    fn an_option_declaring_conftest_needs_pytest() {
+    fn an_option_declaring_conftest_stays_native() {
         let tmp = tree(&[
             (
                 "conftest.py",
                 "def pytest_addoption(parser):\n    parser.addoption('--env', default='dev')\n",
             ),
-            ("test_a.py", "def test_a():\n    pass\n"),
+            (
+                "test_a.py",
+                "def test_a(request):\n    assert request.config.getoption('--env') == 'dev'\n",
+            ),
         ]);
         let report = run_options(
             &tmp,
@@ -3425,10 +3774,98 @@ def pytest_collection_modifyitems(config, items):
                 ..RunOptions::defaults()
             },
         );
-        assert_eq!(
-            report.pytest_fallback,
-            vec!["conftest.py::pytest_addoption".to_string()]
+        assert!(
+            report.pytest_fallback.is_empty(),
+            "{:?}",
+            report.pytest_fallback
         );
+        assert_eq!(
+            statuses(&report),
+            vec![("test_a.py::test_a".to_string(), "passed")]
+        );
+    }
+
+    /// The `--runslow` recipe runs natively: `pytest_collection_modifyitems` marks the slow
+    /// test at the barrier, in every worker, and the owning worker skips it.
+    #[test]
+    fn the_runslow_recipe_runs_natively() {
+        let tmp = tree(&[
+            ("conftest.py", RUNSLOW_CONFTEST),
+            ("test_a.py", "def test_fast():\n    pass\n"),
+            (
+                "test_b.py",
+                "import pytest\n\n\n@pytest.mark.slow\ndef test_slow():\n    pass\n",
+            ),
+        ]);
+        let report = run_options(
+            &tmp,
+            2,
+            RunOptions {
+                pytest_fallback: true,
+                ..RunOptions::defaults()
+            },
+        );
+        assert!(
+            report.pytest_fallback.is_empty(),
+            "{:?}",
+            report.pytest_fallback
+        );
+        assert_eq!(
+            statuses(&report),
+            vec![
+                ("test_a.py::test_fast".to_string(), "passed"),
+                ("test_b.py::test_slow".to_string(), "skipped"),
+            ]
+        );
+    }
+
+    /// A hook that deselects through `config.hook.pytest_deselected` is counted, and `-m`
+    /// sees a mark a stage-1 hook added.
+    #[test]
+    fn modifyitems_deselection_is_counted_and_its_marks_reach_dash_m() {
+        let conftest = "\
+import pytest
+
+
+def pytest_collection_modifyitems(config, items):
+    dropped = [item for item in items if item.name == 'test_drop']
+    items[:] = [item for item in items if item.name != 'test_drop']
+    config.hook.pytest_deselected(items=dropped)
+    for item in items:
+        if item.name == 'test_marked':
+            item.add_marker(pytest.mark.picked)
+";
+        let tmp = tree(&[
+            ("conftest.py", conftest),
+            (
+                "test_a.py",
+                "def test_drop():\n    pass\n\n\ndef test_marked():\n    pass\n\n\ndef test_other():\n    pass\n",
+            ),
+        ]);
+        let report = run_with_launcher(
+            tmp.path(),
+            &[],
+            &real_worker(),
+            1,
+            None,
+            Some("picked"),
+            RunOptions {
+                pytest_fallback: true,
+                ..RunOptions::defaults()
+            },
+            None,
+        )
+        .expect("the run completes");
+        assert!(
+            report.pytest_fallback.is_empty(),
+            "{:?}",
+            report.pytest_fallback
+        );
+        assert_eq!(
+            statuses(&report),
+            vec![("test_a.py::test_marked".to_string(), "passed")]
+        );
+        assert_eq!(report.summary.deselected, 2);
     }
 
     /// A conftest the worker cannot import -- usually one reaching into `_pytest` internals the
@@ -3606,7 +4043,7 @@ def pytest_collection_modifyitems(config, items):
 
     /// pytest still collects a skipped file's directory, importing its conftest (probe t4: a
     /// hook nested under `if` empties the run). So the conftest is imported -- its side effect
-    /// happens and its hook is named -- while the test file is not.
+    /// happens and its hook runs -- while the test file is not.
     #[test]
     fn lf_imports_the_conftests_of_skipped_directories() {
         let conftest = "import pathlib\npathlib.Path(__file__).with_name('conftest_imported').touch()\nif True:\n    def pytest_collection_modifyitems(config, items):\n        items[:] = []\n";
@@ -3628,10 +4065,16 @@ def pytest_collection_modifyitems(config, items):
 
         assert!(tmp.path().join("sub/conftest_imported").exists());
         assert!(!tmp.path().join("sub/c_imported").exists());
-        assert_eq!(
-            report.pytest_fallback,
-            vec!["sub/conftest.py::pytest_collection_modifyitems".to_string()]
+        // The hook runtime runs it, as pytest does: `items[:] = []` empties the session
+        // without a deselection, so `no tests ran`, exit 5 (probe t4).
+        assert!(
+            report.pytest_fallback.is_empty(),
+            "{:?}",
+            report.pytest_fallback
         );
+        assert!(report.tests.is_empty());
+        assert_eq!(report.summary.deselected, 0);
+        assert_eq!(report.exit_code, 5);
     }
 
     /// A broken conftest in a skipped directory is pytest's collection error, exit 2 (probe
@@ -3690,5 +4133,66 @@ def pytest_collection_modifyitems(config, items):
         assert_eq!(report.exit_code, 1);
         assert_eq!(report.summary.deselected, 0);
         assert!(!tmp.path().join("b_imported").exists());
+    }
+
+    // =====================================================================
+    // pytest_collection_modifyitems effects (protocol v13)
+    // =====================================================================
+
+    fn bare(id: &str) -> CollectedTest {
+        CollectedTest {
+            id: id.to_string(),
+            path: "t.py".to_string(),
+            qualname: id.to_string(),
+            class_name: None,
+            param_id: None,
+            marks: Vec::new(),
+            fixtures: Vec::new(),
+            tier: crate::engine::manifest::Tier::Dynamic,
+            record: None,
+        }
+    }
+
+    /// Survivors in the hooks' order, a repeated id matched to the earliest copy, `deselected`
+    /// counted and `vanished` not, marks onto every copy of their id.
+    #[test]
+    fn modifyitems_effects_reorder_remove_and_mark() {
+        let mut tests = vec![
+            bare("t.py::a"),
+            bare("t.py::b"),
+            bare("t.py::a"),
+            bare("t.py::c"),
+        ];
+        let effects = ItemEffects {
+            order: vec![
+                "t.py::c".to_string(),
+                "t.py::a".to_string(),
+                "t.py::a".to_string(),
+            ],
+            deselected: vec!["t.py::b".to_string()],
+            vanished: Vec::new(),
+            marks: vec![crate::engine::protocol::AddedMark {
+                nodeid: "t.py::a".to_string(),
+                mark: crate::engine::manifest::MarkSpec {
+                    name: "slow".to_string(),
+                    args: Vec::new(),
+                    kwargs: serde_json::Map::new(),
+                },
+                append: true,
+            }],
+            reasons: Vec::new(),
+        };
+        let (kept, deselected) = apply_effects(&mut tests, &[0, 1, 2, 3], &effects).unwrap();
+        assert_eq!(kept, vec![3, 0, 2]);
+        assert_eq!(deselected, 1);
+        assert_eq!(tests[0].marks[0].name, "slow");
+        assert_eq!(tests[2].marks[0].name, "slow");
+        assert!(tests[1].marks.is_empty());
+
+        let unknown = ItemEffects {
+            order: vec!["t.py::zzz".to_string()],
+            ..effects
+        };
+        assert!(apply_effects(&mut tests, &[0], &unknown).is_err());
     }
 }

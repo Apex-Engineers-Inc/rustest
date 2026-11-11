@@ -42,6 +42,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -56,7 +57,8 @@ use crate::engine::manifest::{
 use crate::engine::manifest_cache::ManifestCache;
 use crate::engine::nodeid::{name_parts, split_collection_argument, walk_names};
 use crate::engine::protocol::{
-    CoverageWire, RecordedWarning, WorkerRequest, WorkerResponse, PROTOCOL_VERSION,
+    AddedMark, ConftestWire, CoverageWire, RecordedWarning, WorkerRequest, WorkerResponse,
+    PROTOCOL_VERSION,
 };
 use crate::engine::selection::{deselect_in_place, select_mask, SelectionError};
 use crate::engine::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
@@ -159,6 +161,9 @@ pub enum CollectError {
     /// construction too, and loud for the same reason — a silently missing test is a
     /// shorter report that still exits 0.
     MissingResult { id: String },
+    /// Not a failure: worker 0's native hooks named a reason the session must go to pytest,
+    /// found at `init` and acted on before any other worker ran them ([`spawn_pool`]).
+    HandOff(Vec<String>),
     /// A malformed `-k`/`-m` expression.
     ///
     /// Collection owns this now because selection *runs* here: `-k` is applied to the static
@@ -264,6 +269,7 @@ impl std::fmt::Display for CollectError {
                 write!(f, "no worker returned a result for the test {id}")
             }
             CollectError::Selection(err) => write!(f, "{err}"),
+            CollectError::HandOff(reasons) => write!(f, "handed to pytest: {}", reasons.join(", ")),
         }
     }
 }
@@ -306,7 +312,20 @@ pub struct WorkerLauncher {
     /// across the pool without threading a return value through both phases. A launcher is
     /// built per run, so nothing leaks between runs.
     hooks: Arc<Mutex<BTreeSet<String>>>,
+    /// Set when any worker's `ready` says a `pytest_collection_modifyitems` is registered
+    /// (protocol v13): the barrier then runs [`Worker::modify_items`] on every worker.
+    modify_items: Arc<AtomicBool>,
 }
+
+/// The hand-off reason for `--collect-only` on a session with a `pytest_collection_modifyitems`
+/// (a whole reason, [`HOOK_RUNTIME_PREFIX`]).
+pub const MODIFY_ITEMS_IN_COLLECT_ONLY: &str = "rustest's hook runtime: \
+    pytest_collection_modifyitems changes what --collect-only lists, and rustest applies it only \
+    to a run";
+
+/// The hand-off reason when two workers' `pytest_collection_modifyitems` disagree.
+pub const MODIFY_ITEMS_DISAGREE: &str =
+    "rustest's hook runtime: pytest_collection_modifyitems gave different answers in two workers";
 
 /// Set in a worker's environment by [`WorkerLauncher::without_capture`]; read by
 /// `python/rustest/_worker.py`.  Mirrored there and **must be renamed in the same
@@ -328,6 +347,7 @@ impl WorkerLauncher {
             args: vec!["-m".to_string(), "rustest._worker".to_string()],
             envs: vec![(RUNNING_ENV.to_string(), "1".to_string())],
             hooks: Arc::default(),
+            modify_items: Arc::default(),
         }
     }
 
@@ -358,6 +378,7 @@ impl WorkerLauncher {
             args,
             envs: Vec::new(),
             hooks: Arc::default(),
+            modify_items: Arc::default(),
         }
     }
 
@@ -375,6 +396,19 @@ impl WorkerLauncher {
             })
             .cloned()
             .collect()
+    }
+
+    /// Add hand-off reasons found outside a `collected` line (the barrier's own), so the
+    /// stderr note names them on a run that may not hand off.
+    pub(crate) fn note_hooks(&self, reasons: &[String]) {
+        if let Ok(mut seen) = self.hooks.lock() {
+            seen.extend(reasons.iter().cloned());
+        }
+    }
+
+    /// Whether the session has a `pytest_collection_modifyitems` for the barrier to run.
+    pub(crate) fn modifies_items(&self) -> bool {
+        self.modify_items.load(Ordering::SeqCst)
     }
 
     /// Say once, on stderr, which `pytest_*` hooks the pool found and did not run.
@@ -416,6 +450,10 @@ pub struct CollectOptions {
     pub codeblocks: Option<bool>,
     pub tier: TierMode,
     pub cache: CacheMode,
+    /// What the CLI tells the hook runtime (protocol v13), passed onto `init` unread.
+    pub hook_context: Option<serde_json::Value>,
+    /// `--strict-markers` / `--strict`, onto `init` (protocol v14).
+    pub strict_markers: bool,
     /// The raw `-k` expression.
     pub keyword: Option<String>,
     /// The raw `-m` expression.
@@ -510,6 +548,34 @@ pub(crate) struct FileOutcome {
     pub(crate) warnings: Vec<RecordedWarning>,
 }
 
+/// What one `pytest_collection_modifyitems` stage did ([`Worker::modify_items`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ItemEffects {
+    pub(crate) order: Vec<String>,
+    pub(crate) deselected: Vec<String>,
+    pub(crate) vanished: Vec<String>,
+    pub(crate) marks: Vec<AddedMark>,
+    /// Non-empty: hand the session to pytest, and use nothing else here.
+    pub(crate) reasons: Vec<String>,
+}
+
+/// The `modify_items` request line every worker is sent, serialised once (records can be
+/// thousands): `commit` says the previous stage was accepted.
+pub(crate) fn modify_items_line(
+    stage: u8,
+    records: Vec<serde_json::Value>,
+    commit: bool,
+) -> String {
+    let mut line = serde_json::to_string(&WorkerRequest::ModifyItems {
+        stage,
+        records,
+        commit,
+    })
+    .expect("a WorkerRequest always serializes");
+    line.push('\n');
+    line
+}
+
 /// Everything a run needs before a single process is spawned: the files, the pool size,
 /// which worker owns which file, and the handshake payload.
 ///
@@ -554,6 +620,9 @@ pub(crate) struct Dispatch {
     /// Per target: the file was named as an argument (a path or a node id), pytest's
     /// `Session.isinitpath`. `--lf` never filters such a file's tests at collection.
     pub(crate) initpath: Vec<bool>,
+    /// The hook runtime's non-initial conftests, in walk order, each with the first target
+    /// index the walk reaches after it ([`session_conftests`]). Empty without the runtime.
+    pub(crate) late_conftests: LateConftests,
     init: WorkerRequest,
 }
 
@@ -604,6 +673,7 @@ impl Dispatch {
 /// its tests and every one of them would come back `unknown test`.  Tier S therefore belongs
 /// to [`collect`] — the `--collect-only` surface, and from Task 2 the manifest cache — and
 /// [`crate::engine::execute`] keeps calling this.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan(
     invocation_dir: &Path,
     args: &[PathBuf],
@@ -611,6 +681,8 @@ pub(crate) fn plan(
     codeblocks: Option<bool>,
     assert_rewrite: bool,
     coverage: Option<CoverageWire>,
+    hook_context: Option<serde_json::Value>,
+    strict_markers: bool,
 ) -> Result<Dispatch, CollectError> {
     plan_with_options(
         invocation_dir,
@@ -633,6 +705,8 @@ pub(crate) fn plan(
             // manifest still comes from the workers — so it does not weaken the
             // `DynamicOnly` rule above; see `static_collect::rewrite_plan`.
             assert_rewrite,
+            hook_context,
+            strict_markers,
             ..CollectOptions::default()
         },
     )
@@ -654,7 +728,10 @@ pub(crate) fn plan_with_options(
     // default, pytest's own answer.  Resolved here — after the one config resolution this
     // function does, before the walk decides what a markdown argument means.
     let codeblocks = options.codeblocks.or(config.codeblocks).unwrap_or(false);
-    let (targets, entries) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    let (targets, entries, walked_conftests) =
+        discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    let (conftests, late_conftests) =
+        session_conftests(&config, &invocation_dir, args, &walked_conftests)?;
     let rootdir = to_posix(&config.rootdir);
     let named: Vec<PathBuf> = initial_paths(&invocation_dir, args, &config)?
         .into_iter()
@@ -668,8 +745,13 @@ pub(crate) fn plan_with_options(
 
     // The Tier S pass, before a single process is spawned.  It is pure computation over files
     // already on disk (plus the manifest cache), so it parallelises and shares nothing.
+    // `--strict-markers` makes an unregistered mark a collection error, which only an import
+    // (the worker's mark registry) can raise; Tier S would list the tests.
     let (scanned, _cache) = match options.tier {
         TierMode::DynamicOnly => (targets.iter().map(|_| None).collect::<Vec<_>>(), None),
+        TierMode::Auto if options.strict_markers => {
+            (targets.iter().map(|_| None).collect::<Vec<_>>(), None)
+        }
         TierMode::Auto => {
             let pass = static_pass_cached(&targets, &config.rootdir, &config, options.cache);
             (pass.outcomes.into_iter().map(Some).collect(), pass.cache)
@@ -743,7 +825,11 @@ pub(crate) fn plan_with_options(
         // run without `--cov` register no monitoring tool in any worker.
         coverage: options.coverage.clone(),
         filterwarnings: config.filterwarnings.clone(),
-        xfail_strict: config.xfail_strict,
+        xfail_strict: config.xfail_strict.clone(),
+        markers: config.markers.clone(),
+        strict_markers: options.strict_markers,
+        conftests,
+        hook_context: options.hook_context.clone(),
     };
 
     Ok(Dispatch {
@@ -757,6 +843,7 @@ pub(crate) fn plan_with_options(
         assert_keys,
         assignments,
         initpath,
+        late_conftests,
         init,
     })
 }
@@ -783,9 +870,18 @@ pub(crate) fn plan_with_options(
 /// order — is still the one whose error the user sees.  Only the overlap changed.
 ///
 /// [`handle_init`]: python/rustest/_worker.py
+///
+/// **With the hook runtime on** (`init` carries conftests), worker 0 answers `init` alone
+/// first: its `pytest_configure` and `pytest_sessionstart` run once before any other worker's,
+/// so a session that must go to pytest (worker 0 named a reason, and `pytest_fallback`) is
+/// [`CollectError::HandOff`] before the hooks' side effects (a directory made, a file written)
+/// are repeated N times; the other interpreters keep booting meanwhile. A later worker whose
+/// hooks then fail where worker 0's did not is pytest's configure error (exit 3): a hand-off
+/// would run those hooks a further time.
 pub(crate) fn spawn_pool(
     dispatch: &Dispatch,
     launcher: &WorkerLauncher,
+    pytest_fallback: bool,
 ) -> Result<Vec<Worker>, CollectError> {
     // Phase 1 — every `CreateProcess`, back to back.  `?` drops the vector, and
     // `Worker::drop` kills whatever had already started.
@@ -793,11 +889,23 @@ pub(crate) fn spawn_pool(
     for index in 0..dispatch.assignments.len() {
         pool.push(Worker::spawn(index, launcher)?);
     }
+    let hooks_run =
+        matches!(&dispatch.init, WorkerRequest::Init { conftests, .. } if !conftests.is_empty());
+    let first = usize::from(hooks_run);
+    if hooks_run {
+        let worker = &mut pool[0];
+        if let Err(err) = worker.send(&dispatch.init) {
+            return Err(worker.handshake_error(format!("could not send init: {err}")));
+        }
+        if !worker.await_ready()?.is_empty() && pytest_fallback {
+            return Err(CollectError::HandOff(launcher.hooks_needing_pytest()));
+        }
+    }
 
     // Phase 2 — every `init` on the wire.  A worker still booting has not read its pipe
     // yet; the write lands in the pipe buffer and the worker picks it up when it gets
     // there, so this loop does not wait for anybody.
-    for worker in &mut pool {
+    for worker in &mut pool[first..] {
         if let Err(err) = worker.send(&dispatch.init) {
             return Err(worker.handshake_error(format!("could not send init: {err}")));
         }
@@ -805,8 +913,17 @@ pub(crate) fn spawn_pool(
 
     // Phase 3 — collect the `ready` lines, in index order, so the diagnosis a user gets
     // for a broken pool is the same one the serial loop gave.
-    for worker in &mut pool {
-        worker.await_ready()?;
+    let clean = launcher.hooks_needing_pytest().is_empty();
+    for worker in &mut pool[first..] {
+        let reasons = worker.await_ready()?;
+        if hooks_run && clean && !reasons.is_empty() {
+            let detail = format!(
+                "{}; worker 0 ran the same hooks without it (rustest runs pytest_configure once \
+                 per worker process, as pytest-xdist does)",
+                reasons.join("; ")
+            );
+            return Err(worker.handshake_error(detail));
+        }
     }
     Ok(pool)
 }
@@ -935,7 +1052,20 @@ fn collect_with_launcher(
 
     let dispatch = plan_with_options(invocation_dir, args, workers, options)?;
 
-    let pool = spawn_pool(&dispatch, launcher)?;
+    let pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback) {
+        Err(CollectError::HandOff(reasons)) => {
+            return Ok(CollectionManifest {
+                schema_version: MANIFEST_SCHEMA_VERSION,
+                rootdir: dispatch.rootdir,
+                tests: Vec::new(),
+                errors: Vec::new(),
+                deselected: 0,
+                module_skipped: 0,
+                pytest_fallback: reasons,
+            })
+        }
+        pool => pool?,
+    };
 
     let results = std::thread::scope(|scope| {
         let handles: Vec<_> = pool
@@ -943,7 +1073,8 @@ fn collect_with_launcher(
             .zip(dispatch.assignments.iter().cloned())
             .map(|(worker, files)| {
                 let keys = &dispatch.assert_keys;
-                scope.spawn(move || run_worker(worker, files, keys))
+                let late = &dispatch.late_conftests;
+                scope.spawn(move || run_worker(worker, files, keys, late))
             })
             .collect();
         handles
@@ -962,8 +1093,20 @@ fn collect_with_launcher(
     let outcomes = join_pool(results)?;
     // The pool's own failures win (above); past them, a hook only pytest can run means
     // nothing rustest collected is the answer, so none of it is offered.
+    // The hook runtime applies `pytest_collection_modifyitems` at a run's barrier only; a
+    // listing that ignored it would be a silently different answer.
+    let modifies = launcher
+        .modifies_items()
+        .then(|| MODIFY_ITEMS_IN_COLLECT_ONLY.to_string());
+    if !options.pytest_fallback {
+        launcher.note_hooks(modifies.as_slice());
+    }
     if options.pytest_fallback {
-        let hooks = launcher.hooks_needing_pytest();
+        let hooks: Vec<String> = launcher
+            .hooks_needing_pytest()
+            .into_iter()
+            .chain(modifies)
+            .collect();
         if !hooks.is_empty() {
             return Ok(CollectionManifest {
                 schema_version: MANIFEST_SCHEMA_VERSION,
@@ -1016,7 +1159,7 @@ fn discover(
     // free of `.`/`..`; normalising here gives callers the same guarantee for free.
     let invocation_dir = normpath(invocation_dir);
     let config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
-    let (targets, _) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    let (targets, _, _) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
     Ok((config, targets))
 }
 
@@ -1038,7 +1181,7 @@ fn discover_targets(
     invocation_dir: &Path,
     args: &[PathBuf],
     codeblocks: bool,
-) -> Result<(Vec<PathBuf>, Vec<Entry>), CollectError> {
+) -> Result<Discovered, CollectError> {
     let args = initial_paths(invocation_dir, args, config)?;
     // `Config._decide_confcutdir`: the ini file's directory, else the rootdir.
     let confcutdir = config
@@ -1076,6 +1219,7 @@ fn discover_targets(
     // `genitems`: a yielded collector already in the cache expands to nothing.
     let mut targets = Vec::new();
     let mut entries = Vec::new();
+    let mut walked_conftests = Vec::new();
     let mut module_targets: HashMap<usize, usize> = HashMap::new();
     for (arg, node) in args.iter().zip(yielded) {
         if !arg.names.is_empty() {
@@ -1095,7 +1239,11 @@ fn discover_targets(
         }
         let mut files = Vec::new();
         if arg.path.is_dir() {
-            walk(&arg.path, config, &mut files);
+            let from = walked_conftests.len();
+            walk(&arg.path, config, &mut files, &mut walked_conftests);
+            for (_, at) in &mut walked_conftests[from..] {
+                *at += targets.len();
+            }
         } else if initial_file_target(&arg.path, codeblocks)? {
             files.push(arg.path.clone());
         }
@@ -1108,8 +1256,124 @@ fn discover_targets(
             targets.push(file);
         }
     }
-    Ok((targets, entries))
+    Ok((targets, entries, walked_conftests))
 }
+
+/// The session's conftests in pytest's registration order, for `init` (protocol v13) -- or
+/// none, when none of them may define a hook and the worker's lazy import is pytest's answer.
+///
+/// First the **initial** ones, `PytestPluginManager._set_initial_conftests`: for each argument
+/// (node-id suffix dropped), its directory's chain from `confcutdir` down, then the chain of
+/// every `test*` subdirectory of a directory argument (`_try_load_conftest`; sorted here, where
+/// `Path.glob` follows the directory listing). Then every directory the walk entered, in walk
+/// order. A file is listed once, at its first position. The second list is the non-initial
+/// ones with the index of the first target the walk reaches after each: pytest imports such a
+/// conftest when its walk enters the directory, so a worker imports it before collecting that
+/// target ([`Worker::import_late_conftests`]).
+///
+/// "May define a hook" is textual and generous: the file mentions `pytest_` at all (a hook,
+/// `pytest_plugins`, an import of either). Over-approximating costs every worker importing
+/// every conftest, which pytest-xdist does anyway; missing one would leave a hook the runtime
+/// never registered, which the worker's lazy import still reports and hands off.
+fn session_conftests(
+    config: &ResolvedConfig,
+    invocation_dir: &Path,
+    args: &[PathBuf],
+    walked: &[(PathBuf, usize)],
+) -> Result<(Vec<ConftestWire>, LateConftests), CollectError> {
+    let confcutdir = config
+        .config_file
+        .as_ref()
+        .and_then(|file| file.parent())
+        .unwrap_or(&config.rootdir);
+    let chain = |directory: &Path| -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = directory
+            .ancestors()
+            .take_while(|parent| !confcutdir.ancestors().skip(1).any(|above| above == *parent))
+            .map(|parent| parent.join("conftest.py"))
+            .filter(|conftest| conftest.is_file())
+            .collect();
+        found.reverse();
+        found
+    };
+    let mut initial: Vec<PathBuf> = Vec::new();
+    for arg in initial_paths(invocation_dir, args, config)? {
+        let anchor = if arg.path.is_dir() {
+            arg.path.clone()
+        } else {
+            arg.path
+                .parent()
+                .map_or_else(|| arg.path.clone(), Path::to_path_buf)
+        };
+        initial.extend(chain(&anchor));
+        if arg.path.is_dir() {
+            let mut subdirs: Vec<PathBuf> = std::fs::read_dir(&arg.path)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| is_test_glob(&entry.file_name().to_string_lossy()))
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect();
+            // `Path.glob` lists in directory order: NTFS's is case-insensitive.
+            if cfg!(windows) {
+                subdirs.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+            } else {
+                subdirs.sort();
+            }
+            for subdir in subdirs {
+                initial.extend(chain(&subdir));
+            }
+        }
+    }
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut ordered = Vec::new();
+    let mut late = Vec::new();
+    for (path, at) in initial
+        .into_iter()
+        .map(|path| (path, None))
+        .chain(walked.iter().map(|(path, at)| (path.clone(), Some(*at))))
+    {
+        if seen.insert(path.clone()) {
+            ordered.push(ConftestWire {
+                path: to_posix(&path),
+                initial: at.is_none(),
+            });
+            if let Some(at) = at {
+                late.push((at, path));
+            }
+        }
+    }
+    let may_define_hooks = seen.iter().any(|path| {
+        std::fs::read(path).map_or(true, |source| {
+            source
+                .windows(b"pytest_".len())
+                .any(|window| window == b"pytest_")
+        })
+    });
+    Ok(if may_define_hooks {
+        (ordered, late)
+    } else {
+        (Vec::new(), Vec::new())
+    })
+}
+
+/// pytest's `anchor.glob("test*")` match, which is case-insensitive on Windows.
+fn is_test_glob(name: &str) -> bool {
+    if cfg!(windows) {
+        name.to_lowercase().starts_with("test")
+    } else {
+        name.starts_with("test")
+    }
+}
+
+/// The hook runtime's non-initial conftests, each after the index of the first target the walk
+/// reaches after it ([`session_conftests`]).
+pub(crate) type LateConftests = Vec<(usize, PathBuf)>;
+
+/// What the walk found: the targets, the argument entries, and the conftests of every
+/// directory it entered, in walk order, each with the index of the next target after it.
+type Discovered = (Vec<PathBuf>, Vec<Entry>, Vec<(PathBuf, usize)>);
 
 /// One resolved command-line argument: `_pytest/main.py::CollectionArgument`.
 struct CollectionArgument {
@@ -1489,11 +1753,22 @@ fn initial_paths(
 /// key ("always collect `__init__.py` first").  Applying it unconditionally is equivalent:
 /// a directory holding an `__init__.py` *is* a Package, and in any other directory the
 /// first tuple element is constant.
-fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>) {
+fn walk(
+    dir: &Path,
+    config: &ResolvedConfig,
+    out: &mut Vec<PathBuf>,
+    conftests: &mut Vec<(PathBuf, usize)>,
+) {
     // `scandir` returns `[]` for a directory that cannot be opened, rather than raising.
     let Ok(reader) = std::fs::read_dir(dir) else {
         return;
     };
+    // `Dir.collect` loads the directory's conftest before collecting anything in it, so a
+    // directory with no test file still contributes one (protocol v13's `conftests`).
+    let conftest = dir.join("conftest.py");
+    if conftest.is_file() {
+        conftests.push((conftest, out.len()));
+    }
     let mut entries: Vec<(bool, String, PathBuf, Option<std::fs::FileType>)> = reader
         .flatten()
         .map(|entry| {
@@ -1523,7 +1798,7 @@ fn walk(dir: &Path, config: &ResolvedConfig, out: &mut Vec<PathBuf>) {
             if should_prune(&name, &path, config) {
                 continue;
             }
-            walk(&path, config, out);
+            walk(&path, config, out, conftests);
         } else if is_file(&path, file_type)
             && is_python_source(&path)
             && matches_python_files(&path, config)
@@ -1938,6 +2213,15 @@ pub(crate) struct Worker {
     reaped: bool,
     /// The launcher's hook sink; see [`WorkerLauncher::hooks`].
     hooks: Arc<Mutex<BTreeSet<String>>>,
+    /// See [`WorkerLauncher::modify_items`].
+    modify_items: Arc<AtomicBool>,
+    /// What `bye` carried: the shutdown teardown's warnings (protocol v14).
+    bye_warnings: Vec<RecordedWarning>,
+    /// How many of [`Dispatch::late_conftests`] this worker has imported.
+    late_done: usize,
+    /// The next `execute_batch` tells the worker to apply the marks of the last
+    /// `pytest_collection_modifyitems` stage, which the barrier accepted.
+    pub(crate) commit_marks: bool,
 }
 
 impl Worker {
@@ -1997,6 +2281,10 @@ impl Worker {
             job,
             reaped: false,
             hooks: Arc::clone(&launcher.hooks),
+            modify_items: Arc::clone(&launcher.modify_items),
+            bye_warnings: Vec::new(),
+            late_done: 0,
+            commit_marks: false,
         })
     }
 
@@ -2010,6 +2298,12 @@ impl Worker {
     fn send(&mut self, request: &WorkerRequest) -> std::io::Result<()> {
         let mut line = serde_json::to_string(request).expect("a WorkerRequest always serializes");
         line.push('\n');
+        self.send_line(&line)
+    }
+
+    /// Write one already-serialised request line (newline included): what a request sent to
+    /// every worker unchanged is, so it is serialised once ([`modify_items_line`]).
+    fn send_line(&mut self, line: &str) -> std::io::Result<()> {
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.flush()
     }
@@ -2079,7 +2373,7 @@ impl Worker {
     /// A `ready` declares the protocol the worker *speaks*, so a mismatch here is real skew
     /// and is fatal.  Separate from the `init` write because [`spawn_pool`] puts every
     /// worker's `init` on the wire before it waits for anybody's answer.
-    fn await_ready(&mut self) -> Result<(), CollectError> {
+    fn await_ready(&mut self) -> Result<Vec<String>, CollectError> {
         let line = match self.receive() {
             Ok(Some(line)) => line,
             Ok(None) => {
@@ -2096,10 +2390,24 @@ impl Worker {
             }
         };
         match response {
-            WorkerResponse::Ready { protocol_version } if protocol_version == PROTOCOL_VERSION => {
-                Ok(())
+            WorkerResponse::Ready {
+                protocol_version,
+                hooks,
+                modify_items,
+            } if protocol_version == PROTOCOL_VERSION => {
+                if !hooks.is_empty() {
+                    if let Ok(mut seen) = self.hooks.lock() {
+                        seen.extend(hooks.iter().cloned());
+                    }
+                }
+                if modify_items {
+                    self.modify_items.store(true, Ordering::SeqCst);
+                }
+                Ok(hooks)
             }
-            WorkerResponse::Ready { protocol_version } => Err(self.handshake_error(format!(
+            WorkerResponse::Ready {
+                protocol_version, ..
+            } => Err(self.handshake_error(format!(
                 "the worker speaks protocol {protocol_version}, this build requires {PROTOCOL_VERSION}"
             ))),
             other => Err(self.handshake_error(format!(
@@ -2229,9 +2537,15 @@ impl Worker {
             }
         };
         match serde_json::from_str(&line) {
-            Ok(WorkerResponse::ConftestsImported { hooks }) => {
+            Ok(WorkerResponse::ConftestsImported {
+                hooks,
+                modify_items,
+            }) => {
                 if let Ok(mut seen) = self.hooks.lock() {
                     seen.extend(hooks.iter().cloned());
+                }
+                if modify_items {
+                    self.modify_items.store(true, Ordering::SeqCst);
                 }
                 Ok(hooks)
             }
@@ -2244,6 +2558,68 @@ impl Worker {
                 line,
             )),
             Err(err) => Err(self.protocol(first, format!("undecodable response: {err}"), line)),
+        }
+    }
+
+    /// Import, in walk order, the non-initial conftests pytest has imported by the time its walk
+    /// reaches target `upto` (`usize::MAX`: every one left), so registration order (and import
+    /// side effects) are pytest's in every worker, whichever files it owns.
+    pub(crate) fn import_late_conftests(
+        &mut self,
+        late: &[(usize, PathBuf)],
+        upto: usize,
+    ) -> Result<(), CollectError> {
+        let due = late[self.late_done..]
+            .iter()
+            .take_while(|(at, _)| *at <= upto)
+            .count();
+        let dirs: Vec<&Path> = late[self.late_done..self.late_done + due]
+            .iter()
+            .filter_map(|(_, conftest)| conftest.parent())
+            .collect();
+        self.late_done += due;
+        self.import_conftests(&dirs).map(|_| ())
+    }
+
+    /// `modify_items` -> `items_modified`: one `pytest_collection_modifyitems` stage over the
+    /// whole collection (protocol v13). Hand-off reasons in the answer are returned, not
+    /// raised; the caller decides.
+    pub(crate) fn modify_items(&mut self, line: &str) -> Result<ItemEffects, CollectError> {
+        let here = Path::new("<pytest_collection_modifyitems>");
+        if let Err(err) = self.send_line(line) {
+            return Err(self.died(here, format!("could not send modify_items: {err}")));
+        }
+        let line = match self.receive() {
+            Ok(Some(line)) => line,
+            Ok(None) => return Err(self.died(here, "the worker exited without answering".into())),
+            Err(err) => {
+                return Err(CollectError::Io {
+                    worker: self.index,
+                    context: "reading the response to modify_items".into(),
+                    message: err.to_string(),
+                })
+            }
+        };
+        match serde_json::from_str(&line) {
+            Ok(WorkerResponse::ItemsModified {
+                order,
+                deselected,
+                vanished,
+                marks,
+                hooks,
+            }) => Ok(ItemEffects {
+                order,
+                deselected,
+                vanished,
+                marks,
+                reasons: hooks,
+            }),
+            Ok(other) => Err(self.protocol(
+                here,
+                format!("expected `items_modified`, got `{}`", response_op(&other)),
+                line,
+            )),
+            Err(err) => Err(self.protocol(here, format!("undecodable response: {err}"), line)),
         }
     }
 
@@ -2314,6 +2690,7 @@ impl Worker {
             ids: ids.to_vec(),
             stop_on_failure,
             max_fail,
+            commit_marks: std::mem::take(&mut self.commit_marks),
         };
         if let Err(err) = self.send(&request) {
             return Err(self.execute_died(first, format!("could not send execute_batch: {err}")));
@@ -2532,7 +2909,7 @@ impl Worker {
             Err(err) => return Err(self.shutdown_error(format!("could not read bye: {err}"))),
         };
         match serde_json::from_str::<WorkerResponse>(&line) {
-            Ok(WorkerResponse::Bye) => {}
+            Ok(WorkerResponse::Bye { warnings }) => self.bye_warnings = warnings,
             Ok(other) => {
                 return Err(self.shutdown_error(format!(
                     "expected `bye`, got `{}`\n  raw line: {line}",
@@ -2600,6 +2977,11 @@ impl Worker {
     /// module-scoped teardown output is drained at a boundary, outside the per-test capture
     /// window, so a *successful* run's stderr can carry legitimate user output (see the
     /// 1b.2 Task 3 divergence note).  The run surfaces it; it never grades it.
+    /// The warnings `bye` carried, which belong to the last test this worker ran.
+    pub(crate) fn take_bye_warnings(&mut self) -> Vec<RecordedWarning> {
+        std::mem::take(&mut self.bye_warnings)
+    }
+
     pub(crate) fn take_stderr(&mut self) -> String {
         self.diagnostics()
     }
@@ -2656,22 +3038,49 @@ pub const SKIPPABLE_HOOKS: [&str; 4] = [
 /// collection error otherwise, so the stderr note leaves these out.
 pub const IMPORT_FAILURE_PREFIX: &str = "rustest could not import ";
 
-/// The stderr line for the hooks a run found and did not run, or `None` when there were none.
+/// How a worker labels what its native hook runtime refused (`rustest._hookwire.REASON_PREFIX`):
+/// a whole reason naming the hook. The runtime runs nothing after its first refusal.
+pub const HOOK_RUNTIME_PREFIX: &str = "rustest's hook runtime: ";
+
+/// The import-failure label of a `filterwarnings` line or mark that does not parse (pytest's
+/// usage error). Unlike a conftest it is no collection error, so the note names it.
+const WARNING_FILTER_PREFIX: &str = "rustest could not import the warning filter ";
+
+/// The stderr lines for the hooks a run found and did not run, or `None` when there were none:
+/// the hooks rustest never runs, then what the hook runtime refused (after which it stopped),
+/// then the warning filters it ignored.
 fn unrun_hooks_note(hooks: &BTreeSet<String>) -> Option<String> {
-    let hooks: Vec<&str> = hooks
+    let filters = hooks
+        .iter()
+        .filter(|label| label.starts_with(WARNING_FILTER_PREFIX))
+        .map(|label| format!("NOTE: {label}; it was ignored"));
+    let (refused, hooks): (Vec<&str>, Vec<&str>) = hooks
         .iter()
         .map(String::as_str)
         .filter(|label| !label.starts_with(IMPORT_FAILURE_PREFIX))
-        .collect();
-    if hooks.is_empty() {
-        return None;
+        .partition(|label| label.starts_with(HOOK_RUNTIME_PREFIX));
+    let mut lines = Vec::new();
+    if !hooks.is_empty() {
+        let (count, noun) = (hooks.len(), if hooks.len() == 1 { "hook" } else { "hooks" });
+        let verb = if count == 1 { "is" } else { "are" };
+        let list = hooks.join(", ");
+        lines.push(format!(
+            "NOTE: {count} pytest {noun} in conftest files {verb} not run (rustest has no plugin system): {list}"
+        ));
     }
-    let (count, noun) = (hooks.len(), if hooks.len() == 1 { "hook" } else { "hooks" });
-    let verb = if count == 1 { "is" } else { "are" };
-    let list = hooks.join(", ");
-    Some(format!(
-        "NOTE: {count} pytest {noun} in conftest files {verb} not run (rustest has no plugin system): {list}"
-    ))
+    lines.extend(refused.iter().map(|reason| {
+        if [MODIFY_ITEMS_IN_COLLECT_ONLY, MODIFY_ITEMS_DISAGREE].contains(reason) {
+            format!("NOTE: {reason}; its effects were not applied")
+        } else {
+            // the runtime stops at its first refusal, and the mark registry with it
+            format!(
+                "NOTE: {reason}; no conftest hook ran after it, and unregistered marks are not \
+                 checked"
+            )
+        }
+    }));
+    lines.extend(filters);
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// The `op` a response would carry on the wire, for error messages.
@@ -2683,8 +3092,9 @@ fn response_op(response: &WorkerResponse) -> &'static str {
         // exactly the drift this function names in the error.
         WorkerResponse::TestResult { .. } => "test_result",
         WorkerResponse::BatchDone { .. } => "batch_done",
-        WorkerResponse::Bye => "bye",
+        WorkerResponse::Bye { .. } => "bye",
         WorkerResponse::ConftestsImported { .. } => "conftests_imported",
+        WorkerResponse::ItemsModified { .. } => "items_modified",
     }
 }
 
@@ -2698,12 +3108,15 @@ fn run_worker(
     mut worker: Worker,
     files: Vec<(usize, PathBuf)>,
     assert_keys: &[Option<String>],
+    late_conftests: &[(usize, PathBuf)],
 ) -> Result<Vec<(usize, FileOutcome)>, CollectError> {
     let mut outcomes = Vec::with_capacity(files.len());
     for (index, path) in &files {
+        worker.import_late_conftests(late_conftests, *index)?;
         let key = assert_keys.get(*index).and_then(Option::as_deref);
         outcomes.push((*index, worker.collect_one(path, key)?));
     }
+    worker.import_late_conftests(late_conftests, usize::MAX)?;
     worker.shutdown()?;
     Ok(outcomes)
 }
@@ -2777,7 +3190,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":12}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":14}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked
@@ -3201,7 +3614,7 @@ mod tests {
         let dir = normpath(tmp.path());
         let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
         let config = resolve_config(&dir, &args).unwrap();
-        let (targets, entries) = discover_targets(&config, &dir, &args, false)?;
+        let (targets, entries, _) = discover_targets(&config, &dir, &args, false)?;
         Ok(entries
             .iter()
             .map(|entry| {
@@ -4301,6 +4714,30 @@ assert True
             unrun_hooks_note(&hooks).unwrap(),
             "NOTE: 2 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_configure, tests/conftest.py::pytest_addoption"
         );
+        // What the hook runtime refused is a reason of its own, never listed as a hook.
+        hooks.insert(format!("{HOOK_RUNTIME_PREFIX}conftest.py::pytest_configure is a hook wrapper, which rustest's hook runtime does not support"));
+        assert_eq!(
+            unrun_hooks_note(&hooks).unwrap().lines().collect::<Vec<_>>(),
+            [
+                "NOTE: 2 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_configure, tests/conftest.py::pytest_addoption",
+                "NOTE: rustest's hook runtime: conftest.py::pytest_configure is a hook wrapper, which rustest's hook runtime does not support; no conftest hook ran after it, and unregistered marks are not checked",
+            ]
+        );
+        // A stage the barrier dropped is a whole reason too, and says what it cost.
+        let dropped = BTreeSet::from([MODIFY_ITEMS_DISAGREE.to_string()]);
+        assert_eq!(
+            unrun_hooks_note(&dropped).unwrap(),
+            format!("NOTE: {MODIFY_ITEMS_DISAGREE}; its effects were not applied")
+        );
+        // A warning filter that does not parse is no collection error, so it is named.
+        let mut filters = BTreeSet::new();
+        filters.insert(format!(
+            "{WARNING_FILTER_PREFIX}'bogus': ValueError: invalid action: 'bogus'"
+        ));
+        assert_eq!(
+            unrun_hooks_note(&filters).unwrap(),
+            "NOTE: rustest could not import the warning filter 'bogus': ValueError: invalid action: 'bogus'; it was ignored"
+        );
     }
 
     #[test]
@@ -5026,7 +5463,7 @@ assert True
             collect_with_launcher(hooked.path(), &[], &real_worker(), 1, &options).unwrap();
         assert_eq!(
             manifest.pytest_fallback,
-            vec!["conftest.py::pytest_collection_modifyitems".to_string()]
+            vec![MODIFY_ITEMS_IN_COLLECT_ONLY.to_string()]
         );
         assert!(manifest.tests.is_empty());
 
@@ -5041,5 +5478,117 @@ assert True
             collect_with_launcher(harmless.path(), &[], &real_worker(), 1, &options).unwrap();
         assert!(manifest.pytest_fallback.is_empty());
         assert_eq!(manifest.tests.len(), 1);
+    }
+
+    // =====================================================================
+    // the hook runtime's conftest list (protocol v13)
+    // =====================================================================
+
+    fn conftest_paths(dir: &Path, args: &[&str]) -> Vec<(String, bool)> {
+        let dir = normpath(dir);
+        let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
+        let config = resolve_config(&dir, &args).unwrap();
+        let (_, _, walked) = discover_targets(&config, &dir, &args, false).unwrap();
+        let root = to_posix(&config.rootdir);
+        session_conftests(&config, &dir, &args, &walked)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|wire| (wire.path[root.len() + 1..].to_string(), wire.initial))
+            .collect()
+    }
+
+    /// pytest's order: the argument's chain and its `test*` subdirectories first (initial),
+    /// then the walk, which reaches a directory with no test file too.
+    #[test]
+    fn the_conftest_list_is_initial_then_walk_order() {
+        let tmp = tree(&[
+            ("conftest.py", "def pytest_configure(config):\n    pass\n"),
+            ("a/conftest.py", "X = 1\n"),
+            ("a/test_a.py", &module("a")),
+            ("helpers/conftest.py", "Y = 1\n"),
+            ("tests/conftest.py", "Z = 1\n"),
+            ("tests/test_t.py", &module("t")),
+        ]);
+        assert_eq!(
+            conftest_paths(tmp.path(), &[]),
+            vec![
+                ("conftest.py".to_string(), true),
+                ("tests/conftest.py".to_string(), true),
+                ("a/conftest.py".to_string(), false),
+                ("helpers/conftest.py".to_string(), false),
+            ]
+        );
+    }
+
+    /// A later conftest is due before the first target the walk reaches after its directory:
+    /// `helpers/` holds no test file, so its conftest waits for `zz/test_z.py` (target 1).
+    #[test]
+    fn a_later_conftest_is_due_at_the_next_target_in_walk_order() {
+        let tmp = tree(&[
+            ("conftest.py", "def pytest_configure(config):\n    pass\n"),
+            ("a/conftest.py", "X = 1\n"),
+            ("a/test_a.py", &module("a")),
+            ("helpers/conftest.py", "Y = 1\n"),
+            ("zz/conftest.py", "Z = 1\n"),
+            ("zz/test_z.py", &module("z")),
+        ]);
+        let dir = normpath(tmp.path());
+        let config = resolve_config(&dir, &[]).unwrap();
+        let (_, _, walked) = discover_targets(&config, &dir, &[], false).unwrap();
+        let (_, late) = session_conftests(&config, &dir, &[], &walked).unwrap();
+        let names: Vec<(usize, String)> = late
+            .iter()
+            .map(|(at, path)| {
+                (
+                    *at,
+                    path.parent()
+                        .unwrap()
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                (0, "a".to_string()),
+                (1, "helpers".to_string()),
+                (1, "zz".to_string())
+            ]
+        );
+    }
+
+    /// pytest's `anchor.glob("test*")` is case-insensitive on Windows: `TestSuite/conftest.py`
+    /// is initial there, so its `pytest_sessionstart` runs (review p31).
+    #[cfg(windows)]
+    #[test]
+    fn a_capitalised_test_directory_is_initial_on_windows() {
+        let tmp = tree(&[
+            (
+                "TestSuite/conftest.py",
+                "def pytest_sessionstart(session):\n    pass\n",
+            ),
+            ("TestSuite/test_s.py", &module("s")),
+        ]);
+        assert_eq!(
+            conftest_paths(tmp.path(), &[]),
+            vec![("TestSuite/conftest.py".to_string(), true)]
+        );
+    }
+
+    /// No conftest mentions `pytest_`: nothing is sent, and the worker imports lazily.
+    #[test]
+    fn a_hook_free_session_sends_no_conftest_list() {
+        let tmp = tree(&[
+            (
+                "conftest.py",
+                "import pytest\n\n@pytest.fixture\ndef f():\n    return 1\n",
+            ),
+            ("test_a.py", &module("a")),
+        ]);
+        assert!(conftest_paths(tmp.path(), &[]).is_empty());
     }
 }

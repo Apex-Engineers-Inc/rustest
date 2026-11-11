@@ -490,6 +490,18 @@ _P1 = {
 }
 
 
+#: The same recipe through a hook rustest does not run: `pytest_runtest_setup` skips.
+_P1_SETUP = {
+    "conftest.py": (
+        "import pytest\n\n\n"
+        "def pytest_runtest_setup(item):\n"
+        '    if "slow" in item.keywords:\n'
+        '        pytest.skip("need --runslow")\n'
+    ),
+    "test_p1.py": _P1["test_p1.py"],
+}
+
+
 def _rustest(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = clean_env()
     env["COLUMNS"] = "80"
@@ -554,7 +566,7 @@ def test_a_typo_gets_pytests_own_usage_error(tmp_path: Path):
 def test_the_failures_of_a_fallen_back_run_feed_lf_in_a_rustest_run(tmp_path: Path):
     """One cache: pytest runs under `-o cache_dir=.rustest_cache`, which rustest also reads."""
     files = {
-        "conftest.py": "def pytest_collection_modifyitems(config, items):\n    pass\n",
+        "conftest.py": "def pytest_runtest_setup(item):\n    pass\n",
         "test_a.py": "def test_ok():\n    pass\n\n\ndef test_bad():\n    assert 0\n",
     }
     tree = make_tree(tmp_path, "lf_across", files)
@@ -568,19 +580,94 @@ def test_the_failures_of_a_fallen_back_run_feed_lf_in_a_rustest_run(tmp_path: Pa
 
 
 def test_a_hook_that_changes_what_runs_hands_the_session_to_pytest(tmp_path: Path):
-    tree = make_tree(tmp_path, "p1_hook", _P1)
+    tree = make_tree(tmp_path, "p1_hook", _P1_SETUP)
 
     result = _rustest(tree)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed, 1 skipped" in result.stdout
-    assert "conftest.py::pytest_collection_modifyitems" in result.stderr
+    assert "conftest.py::pytest_runtest_setup" in result.stderr
     assert result.stderr.count("handing this session to pytest") == 1
     assert "(those hooks will not run)" in result.stderr
 
 
+def test_verbose_from_addopts_reaches_a_hook_as_it_does_under_pytest(tmp_path: Path):
+    """`addopts = -v` makes `config.getoption("verbose")` 1 (review M6): both runners skip."""
+    files = {
+        "pytest.ini": "[pytest]\naddopts = -v\n",
+        "conftest.py": (
+            "import pytest\n\n\n"
+            "def pytest_collection_modifyitems(config, items):\n"
+            '    if config.getoption("verbose") > 0:\n'
+            "        for item in items:\n"
+            '            item.add_marker(pytest.mark.skip(reason="verbose run"))\n'
+        ),
+        "test_a.py": "def test_a():\n    pass\n",
+    }
+    tree = make_tree(tmp_path, "verbose_addopts", files)
+
+    oracle = run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider"], tree, clean_env())
+    ours = _rustest(tree)
+
+    assert "1 skipped" in oracle.stdout
+    assert "1 skipped" in ours.stderr and "handing" not in ours.stderr, ours.stderr
+
+
+def test_configure_runs_once_per_worker_and_a_later_worker_failure_is_exit_3(tmp_path: Path):
+    """Review M8: worker 0 runs `pytest_configure` first. A hook that fails only the second time
+    (it makes a directory) fails the session as pytest reports a configure error, naming the
+    per-worker execution, rather than handing a second runner the state it left."""
+    files = {
+        "conftest.py": "import os\n\n\ndef pytest_configure(config):\n    os.mkdir('made_once')\n",
+        "test_a.py": "def test_a():\n    pass\n",
+        "test_b.py": "def test_b():\n    pass\n",
+    }
+    tree = make_tree(tmp_path, "configure_twice", files)
+
+    result = _rustest(tree, "-n", "2")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "once per worker process, as pytest-xdist does" in result.stderr
+    assert "handing this session to pytest" not in result.stderr
+
+
+def test_a_reason_in_worker_0_hands_off_before_any_other_worker_runs_configure(tmp_path: Path):
+    """Review M8: with a reason found at `init`, the other workers never start their hooks, so
+    `pytest_configure` runs once in rustest and once in pytest -- not once per worker first."""
+    files = {
+        "conftest.py": (
+            "def pytest_configure(config):\n"
+            "    with open('configured.log', 'a') as handle:\n"
+            "        handle.write('x')\n"
+            "    config.pluginmanager.register(object(), 'probe')\n"
+        ),
+        "test_a.py": "def test_a():\n    pass\n",
+        "test_b.py": "def test_b():\n    pass\n",
+        "test_c.py": "def test_c():\n    pass\n",
+    }
+    tree = make_tree(tmp_path, "configure_reason", files)
+
+    result = _rustest(tree, "-n", "3")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "handing this session to pytest" in result.stderr
+    assert (tree / "configured.log").read_text(encoding="utf-8") == "xx"
+
+
+def test_the_runslow_recipe_without_the_flag_runs_natively(tmp_path: Path):
+    """``pytest_addoption`` + ``pytest_collection_modifyitems`` run in the hook runtime."""
+    tree = make_tree(tmp_path, "p1_native", _P1)
+
+    result = _rustest(tree)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed, 1 skipped" in result.stderr  # rustest's summary line is on stderr
+    assert "handing this session to pytest" not in result.stderr
+    assert "NOTE" not in result.stderr
+
+
 def test_no_pytest_fallback_runs_rustest_with_the_note(tmp_path: Path):
-    tree = make_tree(tmp_path, "p1_optout", _P1)
+    tree = make_tree(tmp_path, "p1_optout", _P1_SETUP)
 
     result = _rustest(tree, "--no-pytest-fallback")
 
@@ -605,7 +692,7 @@ def test_an_import_failure_label_is_a_whole_reason_and_has_no_opt_out_sentence()
 # -- machine outputs from a pytest run -----------------------------------------------------
 
 _MIXED = {
-    "conftest.py": "def pytest_collection_modifyitems(config, items):\n    pass\n",
+    "conftest.py": "def pytest_runtest_setup(item):\n    pass\n",
     "test_m.py": (
         "import pytest\n\n\n"
         "@pytest.fixture\ndef boom():\n    raise RuntimeError('fixture broke')\n\n\n"
@@ -686,6 +773,7 @@ def _report_module():
     import rustest._pytest_report as plugin
 
     plugin._tests.clear()
+    plugin._open.clear()
     plugin._errors.clear()
     plugin._collected.clear()
     plugin._deselected = 0
@@ -716,7 +804,7 @@ def _status_of(*reports: object) -> dict[str, object]:
     plugin = _report_module()
     for report in reports:
         plugin.pytest_runtest_logreport(report)  # pyright: ignore[reportArgumentType]
-    (entry,) = plugin._tests.values()
+    (entry,) = plugin._tests
     return entry
 
 

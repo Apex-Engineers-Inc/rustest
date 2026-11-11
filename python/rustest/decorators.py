@@ -806,7 +806,13 @@ class SkipMarkDecorator(MarkDecorator):
         # would then report the same skip twice. The object is still a legal `pytestmark`
         # *value* because it is a `MarkDecorator` and answers `.name`/`.args`/`.kwargs`;
         # what changes here is only what decorating writes.
-        return cast(TFunc, skip_decorator(self.kwargs.get("reason"))(func))
+        args, kwargs = self.args, dict(self.kwargs)
+        reason = kwargs.get("reason", args[0] if args else None)
+        decorated = skip_decorator(None if reason is None else str(reason))(func)
+        # The mark exactly as written (pytest stores `skip("x")` as args, a bare skip as no
+        # kwargs at all): what a `pytest_collection_modifyitems` hook reads back.
+        setattr(decorated, "__rustest_skip_mark__", (args, kwargs))
+        return cast(TFunc, decorated)
 
 
 def _mark_decoration_target(
@@ -1203,13 +1209,18 @@ class MarkGenerator:
             def test_known_broken():
                 assert False
         """
+        # Only what was given, as pytest stores it (a hook reads `mark.kwargs`); passing a
+        # default explicitly (`run=True`) is the one spelling stored differently.
         kwargs: dict[str, object] = {
-            "reason": reason,
-            "raises": raises,
-            "run": run,
+            key: value
+            for key, value, default in (
+                ("reason", reason, None),
+                ("raises", raises, None),
+                ("run", run, True),
+                ("strict", strict, None),
+            )
+            if value is not default
         }
-        if strict is not None:
-            kwargs["strict"] = strict
         args = () if condition is None else (condition,)
         return MarkDecorator("xfail", args, kwargs)
 

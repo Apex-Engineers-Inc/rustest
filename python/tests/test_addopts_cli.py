@@ -164,25 +164,22 @@ def test_reporting_flags_in_addopts_are_dropped_with_a_note(tmp_path: Path) -> N
         assert f"NOTE: {flag} is a pytest reporting option" in ours.stderr, ours.stderr
 
 
-def test_strict_markers_is_ignored_and_that_is_a_real_divergence(tmp_path: Path) -> None:
-    """`--strict-markers` is on the ignore list, and unlike the rest it is **not** cosmetic.
-
-    pytest turns an unregistered mark into a collection error under it; rustest has no mark
-    registry, so it ignores the flag and the run proceeds. Measured on the same tree, whose
-    `@pytest.mark.slow` is not declared: pytest exits **2**, rustest exits **0**.
-
-    Ignored rather than refused because the alternative is exit 4 on a flag half the
-    ecosystem has in `addopts`, and refusing to run is worse than running without a check
-    rustest cannot perform. The stderr note is what keeps it from being silent.
-    """
+def test_strict_markers_turns_an_unregistered_mark_into_a_collection_error(tmp_path: Path) -> None:
+    """`--strict-markers` is honoured (protocol v14): the worker holds the mark registry, so an
+    undeclared `@pytest.mark.slow` is a collection error, exit **2**, as under pytest."""
     tree = _tree(tmp_path, "--strict-markers")
 
     oracle = _pytest(tree, [])
     ours = _rustest(tree, [])
 
     assert oracle.returncode == 2, oracle.stdout
-    assert ours.returncode == 0, ours.stdout + ours.stderr
-    assert "NOTE: --strict-markers is a pytest reporting option" in ours.stderr, ours.stderr
+    assert ours.returncode == 2, ours.stdout + ours.stderr
+    assert "'slow' not found in `markers` configuration option" in ours.stdout + ours.stderr
+
+    # `--collect-only` too: Tier S never imports, so strict markers send it to the workers.
+    oracle = _pytest(tree, ["--collect-only"])
+    ours = _rustest(tree, ["--collect-only"])
+    assert (oracle.returncode, ours.returncode) == (2, 2), ours.stdout + ours.stderr
 
 
 def test_a_separately_written_value_is_dropped_with_its_flag(tmp_path: Path) -> None:

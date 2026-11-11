@@ -46,17 +46,20 @@ for details.
 
 rustest does not implement any of the machinery a real pytest plugin needs:
 
-- the pluggy hook system (`pytest_configure`, `pytest_collection_modifyitems`, and the rest)
+- the pluggy hook system, beyond the four conftest hooks rustest runs itself
+  (`pytest_addoption`, `pytest_configure`, `pytest_sessionstart`,
+  `pytest_collection_modifyitems`; see [pytest compatibility](pytest-compat.md))
 - setuptools entry points (`pytest11`)
 - plugin packages from PyPI, except where the behaviour has been reimplemented in the engine
-- hook wrappers and hook ordering (`tryfirst`, `trylast`)
+- hook wrappers
 
-A conftest that defines `pytest_collection_modifyitems` is not an error: the hook is not run,
-and rustest prints one `NOTE:` line on stderr naming each hook it found in a loaded
+A conftest that defines any other hook (`pytest_runtest_setup`, `pytest_sessionfinish`, ...)
+hands the session to pytest. With `--no-pytest-fallback` it is not an error: the hook is not
+run, and rustest prints one `NOTE:` line on stderr naming each such hook it found in a loaded
 `conftest.py` or `pytest_plugins` module:
 
 ```text
-NOTE: 3 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_configure, tests/conftest.py::pytest_addoption, tests/conftest.py::pytest_collection_modifyitems
+NOTE: 2 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_sessionfinish, tests/conftest.py::pytest_runtest_setup
 ```
 
 The paths are relative to the rootdir, a `pytest_plugins` module is named by its dotted name,
@@ -139,7 +142,7 @@ Requesting one of pytest's remaining built-in fixtures is an error naming the ga
 
 Cosmetic pytest flags are accepted and ignored rather than rejected, so an `addopts` line that
 carries them still runs. Each one prints a line on stderr naming what was dropped: `--tb`,
-`--durations`, `--durations-min`, `--import-mode`, `--strict`, `--strict-markers`,
+`--durations`, `--durations-min`, `--import-mode`,
 `--strict-config`, `-p`, `--showlocals`, `-l`, `--full-trace` and the `-r` report characters.
 Anything not on that list is still an error, because a flag that changes what runs must never
 be silently ignored.

@@ -1,0 +1,4 @@
+# `-k "not test_a"` leaves test_b and test_c; the trylast hook skips the first of those. A hook run
+# before selection would skip test_a (not selected) and leave both of these to pass.
+[case]
+args = ["-k", "not test_a"]

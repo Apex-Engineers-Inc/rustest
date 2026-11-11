@@ -659,7 +659,7 @@ NOTE: --tb=short is a pytest reporting option rustest does not implement; it was
 ```
 
 The full list: `--tb`, `--durations`, `--durations-min`, `--import-mode`,
-`--strict-markers`, `--strict-config`, `--strict`, `-p`, `--showlocals`, `-l`,
+`--strict-config`, `-p`, `--showlocals`, `-l`,
 `--full-trace`, and `-r` with any report characters attached (`-ra`, `-rfE`). Each is
 accepted in both spellings, `--tb=short` and `--tb short`, and the value is dropped with
 the flag rather than left behind to be read as a path.

@@ -313,7 +313,20 @@ def test_corpus_case_count_is_pinned() -> None:
     # a test from another, which only the whole-session pytest fallback gets right.
     # `builtins/tmpdir-legacy` (+1): `tmpdir`/`tmpdir_factory` (`py.path`), which errored when the
     # `_pytest` stub hid the `_pytest._py` that pytest's `py.py` imports.
-    assert len(discover_cases()) == 59
+    # `collection/hook-runslow`, `collection/hook-shim-gap` (+2): the native hook runtime's
+    # `--runslow` recipe, and a shim gap an `except Exception` cannot hide.
+    # `collection/hook-sessionstart`, `hook-configure-attribute`, `hook-addoption-defaults`,
+    # `hook-modifyitems-trylast-k`, `hook-modifyitems-reorder`, `hook-modifyitems-deselect` (+6):
+    # one per natively supported hook, and the order contract of `trylast` around `-k`.
+    # `marks/filterwarnings-unraisable` (+1): unraisable exceptions become warnings, as pytest's
+    # unraisableexception plugin makes them.
+    # `marks/unknown-mark-error` (+1): `PytestUnknownMarkWarning` against the ini's registry.
+    # The hook runtime review's must-fixes (+9): `collection/hook-late-conftest-import`,
+    # `marks/hook-late-marker`, `collection/hook-parametrize-keyword`,
+    # `collection/hook-modifyitems-import-state`, `collection/hook-modifyitems-fixture-reorder`,
+    # `marks/hook-mark-after-param-marks`, `marks/param-mark-before-module-mark`,
+    # `marks/strict-markers-blocked-plugin`, `collection/hook-duplicate-nodeid`.
+    assert len(discover_cases()) == 78
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

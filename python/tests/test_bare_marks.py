@@ -146,15 +146,16 @@ def test_bare_xfail_does_not_bind_the_test_function_as_a_condition() -> None:
     assert all(victim not in entry["args"] for entry in recorded)
 
 
-def test_called_xfail_is_still_a_factory_with_full_kwargs() -> None:
-    """The control. rustest normalises absent keywords to ``None``/defaults; unchanged."""
+def test_called_xfail_is_still_a_factory_with_the_given_kwargs() -> None:
+    """The control. Only the keywords given are stored, as pytest stores them (a
+    ``pytest_collection_modifyitems`` hook reads ``mark.kwargs``)."""
 
     decorator = compat_pytest.mark.xfail(reason="known", strict=True)
 
     assert isinstance(decorator, MarkDecorator)
     assert decorator.name == "xfail"
     assert decorator.args == ()
-    assert decorator.kwargs == {"reason": "known", "raises": None, "run": True, "strict": True}
+    assert decorator.kwargs == {"reason": "known", "strict": True}
 
 
 def test_bare_skipif_is_an_unconditional_skip_like_pytests() -> None:

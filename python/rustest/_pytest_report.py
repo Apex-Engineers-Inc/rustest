@@ -32,7 +32,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: Strongest first; a test's status is the strongest any of its phases produced.
 _PRECEDENCE: Final = ("error", "failed", "xpassed", "xfailed", "skipped", "passed")
 
-_tests: dict[str, dict[str, Any]] = {}
+#: One entry per item run, in order: a node id collected twice (`pytest a.py a.py`) is two.
+_tests: list[dict[str, Any]] = []
+_open: dict[str, dict[str, Any]] = {}  # node id -> the entry its current run fills
 _collected: list[str] = []
 _errors: list[dict[str, str]] = []
 _deselected = 0
@@ -83,7 +85,10 @@ def pytest_collection_finish(session: Session) -> None:
 
 def pytest_runtest_logreport(report: TestReport) -> None:
     status = _status(report)
-    entry = _tests.setdefault(report.nodeid, {"id": report.nodeid, "status": None, "duration": 0.0})
+    if report.when == "setup" or report.nodeid not in _open:
+        _open[report.nodeid] = {"id": report.nodeid, "status": None, "duration": 0.0}
+        _tests.append(_open[report.nodeid])
+    entry = _open[report.nodeid]
     entry["duration"] += float(report.duration)
     for stream in ("stdout", "stderr"):
         text: str = getattr(report, "cap" + stream)
@@ -111,7 +116,7 @@ def pytest_sessionfinish(session: Session, exitstatus: int) -> None:
     path = os.environ.get("RUSTEST_PYTEST_REPORT")
     if not path or hasattr(session.config, "workerinput"):  # an xdist worker: not the controller
         return
-    tests = [t for t in _tests.values() if t["status"] is not None]  # a phase that never reported
+    tests = [t for t in _tests if t["status"] is not None]  # a phase that never reported
     counts = {name: sum(t["status"] == name for t in tests) for name in _PRECEDENCE}
     counts["skipped"] += _module_skips
     report = {

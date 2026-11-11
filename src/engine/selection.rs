@@ -785,6 +785,7 @@ mod tests {
             marks: Vec::new(),
             fixtures: Vec::new(),
             tier: crate::engine::manifest::Tier::Dynamic,
+            record: None,
         }
     }
 

@@ -88,8 +88,7 @@ def test_xfail_mark_no_condition():
     assert marks[0]["name"] == "xfail"
     assert marks[0]["args"] == ()
     assert marks[0]["kwargs"]["reason"] == "Known bug"
-    assert "strict" not in marks[0]["kwargs"]  # as pytest: unset, so xfail_strict decides
-    assert marks[0]["kwargs"]["run"] is True
+    assert marks[0]["kwargs"] == {"reason": "Known bug"}  # as pytest: only what was given
 
 
 def test_xfail_mark_with_condition():
@@ -230,17 +229,15 @@ def test_mark_with_positional_and_keyword_args():
 
 
 def test_xfail_default_values():
-    """Test that xfail mark has correct default values."""
+    """An xfail called with nothing stores nothing, as pytest's does: the evaluation supplies
+    the defaults (``run=True``, no ``raises``, ``xfail_strict`` for ``strict``)."""
 
     @mark.xfail()
     def test_defaults():
         pass
 
     marks = test_defaults.__rustest_marks__
-    assert marks[0]["kwargs"]["reason"] is None
-    assert marks[0]["kwargs"]["raises"] is None
-    assert marks[0]["kwargs"]["run"] is True
-    assert "strict" not in marks[0]["kwargs"]  # as pytest: unset, so xfail_strict decides
+    assert marks[0]["kwargs"] == {}
 
 
 def test_skipif_keeps_a_string_condition_as_written():
