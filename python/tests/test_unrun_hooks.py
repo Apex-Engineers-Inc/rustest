@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from .helpers import clean_env, make_tree as _tree, run as _run
+from .helpers import make_tree as _tree, run as _run
 
 _NOTE = "NOTE: "
 _TEST = "def test_ok():\n    pass\n"
@@ -88,11 +88,10 @@ def test_a_pytest_plugins_module_is_named_by_its_dotted_name(tmp_path: Path) -> 
 
 def test_collect_only_names_hooks_of_conftests_it_loaded(tmp_path: Path) -> None:
     tree = _tree(tmp_path, "collect", {"conftest.py": _HOOK, "test_a.py": _TEST})
-    # Tier S answers a plain tree without starting a worker, so no conftest is loaded; the
-    # dynamic tier is the one that imports.
-    env = {**clean_env(), "RUSTEST_COLLECT_TIER": "d"}
 
-    result = _rustest(tree, "--collect-only", "-q", env=env)
+    # The default tier: a statically answerable tree, except that Tier S routes a directory
+    # whose conftest defines a hook to a worker, which imports it and names the hook.
+    result = _rustest(tree, "--collect-only", "-q")
 
     assert result.stdout.strip().splitlines()[0] == "test_a.py::test_ok"
     assert len(_notes(result.stderr)) == 1

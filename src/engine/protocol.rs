@@ -104,7 +104,12 @@ use serde::{Deserialize, Serialize};
 /// order (`a.py b.py a.py`, interleaved node ids), so two batches of one file reach a worker,
 /// and a v8 worker would silently share one module fixture across both where pytest builds
 /// it twice.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// **v10** moves `hooks` from `bye` to `collected`: each `collected` line names the hooks
+/// that file's conftest chain and `pytest_plugins` modules brought in and this worker has not
+/// named before, so the complete set is known at the collection barrier instead of at
+/// shutdown. Omitted when empty, so an ordinary `collected` line is byte-identical to v9's;
+/// `bye` carries nothing again.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The `--cov` instruction carried on [`WorkerRequest::Init`].
 ///
@@ -314,6 +319,11 @@ pub enum WorkerResponse {
         /// [`crate::engine::manifest::CollectionManifest::module_skipped`] for the probe.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         skipped: Option<String>,
+        /// `pytest_*` callables first seen while collecting this file, in a conftest or a
+        /// `pytest_plugins` module (`conftest.py::pytest_configure`). The engine runs none of
+        /// them. Omitted when empty; see [`PROTOCOL_VERSION`]'s v10 note.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hooks: Vec<String>,
     },
     /// Outcome of one [`WorkerRequest::ExecuteTest`], one line per executed test.
     ///
@@ -393,14 +403,7 @@ pub enum WorkerResponse {
     BatchDone { executed: usize, stopped: bool },
     /// Acknowledges [`WorkerRequest::Shutdown`]; the last line a worker writes before
     /// exiting 0.
-    ///
-    /// `hooks` names the `pytest_*` callables found in the conftest and `pytest_plugins`
-    /// modules this worker loaded (`conftest.py::pytest_configure`), omitted when there are
-    /// none. See [`PROTOCOL_VERSION`]'s v8 note.
-    Bye {
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        hooks: Vec<String>,
-    },
+    Bye,
 }
 
 #[cfg(test)]
@@ -439,9 +442,9 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -542,7 +545,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":9,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -754,7 +757,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":9}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":10}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -783,6 +786,7 @@ mod tests {
             }],
             error: None,
             skipped: None,
+            hooks: Vec::new(),
         }
     }
 
@@ -795,6 +799,7 @@ mod tests {
                 message: "ImportError: No module named 'nope'".to_string(),
             }),
             skipped: None,
+            hooks: Vec::new(),
         }
     }
 
@@ -1005,23 +1010,37 @@ mod tests {
     #[test]
     fn bye_response_matches_golden_contract() {
         assert_eq!(
-            serde_json::to_string(&WorkerResponse::Bye { hooks: Vec::new() })
-                .expect("bye serializes"),
+            serde_json::to_string(&WorkerResponse::Bye).expect("bye serializes"),
             BYE_LINE
         );
 
         let decoded: WorkerResponse = serde_json::from_str(BYE_LINE).expect("bye deserializes");
-        assert_eq!(decoded, WorkerResponse::Bye { hooks: Vec::new() });
+        assert_eq!(decoded, WorkerResponse::Bye);
     }
 
     #[test]
-    fn bye_carries_hooks_only_when_there_are_any() {
-        let line = r#"{"op":"bye","hooks":["conftest.py::pytest_configure"]}"#;
-        let bye = WorkerResponse::Bye {
+    fn collected_carries_hooks_only_when_there_are_any() {
+        let line =
+            r#"{"op":"collected","path":"/repo/t.py","hooks":["conftest.py::pytest_configure"]}"#;
+        let collected = WorkerResponse::Collected {
+            path: "/repo/t.py".to_string(),
+            tests: Vec::new(),
+            error: None,
+            skipped: None,
             hooks: vec!["conftest.py::pytest_configure".to_string()],
         };
-        assert_eq!(serde_json::to_string(&bye).unwrap(), line);
-        assert_eq!(serde_json::from_str::<WorkerResponse>(line).unwrap(), bye);
+        assert_eq!(serde_json::to_string(&collected).unwrap(), line);
+        assert_eq!(
+            serde_json::from_str::<WorkerResponse>(line).unwrap(),
+            collected
+        );
+        // ...and an ordinary line is v9's, byte for byte.
+        let WorkerResponse::Collected { hooks, .. } =
+            serde_json::from_str(r#"{"op":"collected","path":"/repo/t.py"}"#).unwrap()
+        else {
+            panic!("expected a Collected response");
+        };
+        assert!(hooks.is_empty());
     }
 
     // --- version skew -----------------------------------------------------
@@ -1352,6 +1371,7 @@ mod tests {
                 message: "Traceback (most recent call last):\n  File \"t.py\", line 1\n    import nope\nModuleNotFoundError: No module named 'nope'".to_string(),
             }),
             skipped: None,
+            hooks: Vec::new(),
         };
 
         let multi_line_result = WorkerResponse::TestResult {
@@ -1379,7 +1399,7 @@ mod tests {
                 executed: 2,
                 stopped: false,
             },
-            WorkerResponse::Bye { hooks: Vec::new() },
+            WorkerResponse::Bye,
         ];
         for response in &responses {
             let encoded = serde_json::to_string(response).expect("response serializes");

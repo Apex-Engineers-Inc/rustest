@@ -147,6 +147,10 @@ pub enum Reason {
     ConftestChain,
     /// `pytest_plugins` — plugins can register parametrized and autouse fixtures.
     PytestPlugins,
+    /// A conftest binds a `pytest_*` hook name. The engine runs no hooks, and only a worker
+    /// that imports the conftest can name the ones it found; a hook may also change which
+    /// tests exist (`pytest_collection_modifyitems`), which no static answer can know.
+    Hooks,
     /// A top-level name bound twice: `vars(module)` keeps the first *position* and the last
     /// *value*, which is not a shape worth modelling.
     DuplicateName,
@@ -917,6 +921,12 @@ fn chain_is_static(
                 format!("{}: {detail}", conftest.display()),
             ));
         }
+        if let Some(hook) = defined_hook(&parsed.syntax().body) {
+            return Err(Dynamic::new(
+                Reason::Hooks,
+                format!("{} defines the pytest hook {hook}", conftest.display()),
+            ));
+        }
         // A conftest defines fixtures, not tests, so only the import-safety half applies —
         // but it applies in full, decorators included.
         let config = conftest_scan_config();
@@ -930,6 +940,40 @@ fn chain_is_static(
             })?;
     }
     Ok(())
+}
+
+/// The first top-level name a conftest binds to a `pytest_*` hook -- by `def`, assignment or
+/// import -- with `pytest_plugins` aside, which is refused under its own reason.
+///
+/// Any `pytest_*` name, harmless or not: a false positive only costs `--collect-only` the
+/// speed of Tier S, while a miss would hide the hook from the worker that names it.
+fn defined_hook(body: &[Stmt]) -> Option<String> {
+    let alias_names = |names: &[ruff_python_ast::Alias]| -> Vec<String> {
+        names
+            .iter()
+            .map(|alias| alias.asname.as_ref().unwrap_or(&alias.name).to_string())
+            .collect()
+    };
+    body.iter()
+        .flat_map(|stmt| match stmt {
+            Stmt::FunctionDef(func) => vec![func.name.to_string()],
+            Stmt::Assign(assign) => assign
+                .targets
+                .iter()
+                .filter_map(|target| match target {
+                    Expr::Name(name) => Some(name.id.to_string()),
+                    _ => None,
+                })
+                .collect(),
+            Stmt::AnnAssign(assign) => match assign.target.as_ref() {
+                Expr::Name(name) => vec![name.id.to_string()],
+                _ => Vec::new(),
+            },
+            Stmt::Import(import) => alias_names(&import.names),
+            Stmt::ImportFrom(import) => alias_names(&import.names),
+            _ => Vec::new(),
+        })
+        .find(|name| name.starts_with("pytest_") && name != "pytest_plugins")
 }
 
 /// `_worker.py::conftest_chain`, outermost first (order is irrelevant here — every entry
@@ -3640,6 +3684,25 @@ class TestBox:
 
         let err = conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).unwrap_err();
         assert_eq!(err.reason, Reason::ConftestChain);
+    }
+
+    /// A conftest hook can change which tests exist, and only a worker that imports the
+    /// conftest can name it -- so the directory goes to Tier D, `pytest_*` name by name.
+    #[test]
+    fn a_conftest_defining_a_pytest_hook_flags_the_whole_directory() {
+        for source in [
+            "def pytest_collection_modifyitems(config, items):\n    items[:] = []\n",
+            "def pytest_report_header(config):\n    return 'x'\n",
+            "async def pytest_configure(config):\n    pass\n",
+            "def _configure(config):\n    pass\n\n\npytest_configure = _configure\n",
+        ] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("conftest.py"), source).unwrap();
+
+            let err =
+                conftest_chain_is_static(tmp.path(), tmp.path(), &no_shadows()).expect_err(source);
+            assert_eq!(err.reason, Reason::Hooks, "{source}");
+        }
     }
 
     #[test]

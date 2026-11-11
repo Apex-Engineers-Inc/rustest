@@ -111,7 +111,7 @@ const DOMAIN: &[u8] = b"rustest/manifest-cache\x00";
 /// differential is the backstop — its Tier D leg never touches this cache, so a stale Tier S
 /// answer fails the comparison — but the backstop only runs when someone runs it, and this
 /// constant costs one line.
-const TIER_S_EPOCH: u32 = 1;
+const TIER_S_EPOCH: u32 = 2;
 
 /// A 32-byte blake3 digest.
 pub type Digest = [u8; 32];

@@ -177,7 +177,7 @@ def run_files(
     :class:`FixtureRunner` across all of them, so a test that drives one file at a time
     against fresh state cannot see a session fixture leak — or fail to be shared.
 
-    ``hooks`` is what the ``bye`` must name; see :func:`shutdown`.
+    ``hooks`` is what the loaded conftests must name; see :func:`shutdown`.
     """
     results: list[ResultResponse] = []
     for target in targets:
@@ -226,14 +226,13 @@ def shutdown(*, hooks: Sequence[str] = ()) -> BaseException | None:
     contract — answering ``shutdown`` without draining leaks every module- and session-scoped
     fixture — and a test that only called the second half would not notice.
 
-    ``hooks`` is the exact ``bye.hooks`` list the loaded conftests should produce
-    (:func:`worker.unrun_hooks`): none of them is run, so a tree defining one is named.
+    ``hooks`` is the exact list the loaded conftests should produce
+    (:func:`worker.unrun_hooks`, which ``collected`` lines carry): none of them is run, so a
+    tree defining one is named.
     """
     failure = worker.drain_at_shutdown()
-    expected: dict[str, object] = {"op": "bye"}
-    if hooks:
-        expected["hooks"] = list(hooks)
-    assert worker.handle_shutdown() == expected
+    assert worker.unrun_hooks() == list(hooks)
+    assert worker.handle_shutdown() == {"op": "bye"}
     return failure
 
 

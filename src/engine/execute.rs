@@ -2274,7 +2274,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":9}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":10}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(

@@ -283,7 +283,13 @@ __all__ = [
 #: v9 makes every ``execute_batch`` one **module instance**: :func:`execute_batch` tears
 #: module scope down before its first test even when the file is the previous batch's, as
 #: pytest does on reaching a different ``Module`` object of the same file.
-PROTOCOL_VERSION: Final = 9
+#:
+#: v10 moves ``hooks`` from ``bye`` to ``collected``: each ``collected`` line names the hooks
+#: its file's conftest chain (and ``pytest_plugins`` modules) brought in that this worker has
+#: not named before, so the orchestrator has the complete set at the collection barrier
+#: rather than at shutdown.  Absent when there are none, so an ordinary ``collected`` line is
+#: byte-identical to v9's, and ``bye`` is ``{"op":"bye"}`` again.
+PROTOCOL_VERSION: Final = 10
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -362,6 +368,7 @@ class CollectedResponse(TypedDict):
     tests: NotRequired[list[CollectedTestDict]]
     error: NotRequired[CollectionErrorDict]
     skipped: NotRequired[str]
+    hooks: NotRequired[list[str]]
 
 
 class ResultResponse(TypedDict):
@@ -401,7 +408,6 @@ class BatchDoneResponse(TypedDict):
 
 class ByeResponse(TypedDict):
     op: str
-    hooks: NotRequired[list[str]]
 
 
 class NotInitializedError(Exception):
@@ -6415,17 +6421,52 @@ def unrun_hooks() -> list[str]:
     )
 
 
+#: Every hook this worker has already named on a ``collected`` line.
+_reported_hooks: set[str] = set()
+
+
+def new_hooks() -> list[str]:
+    """:func:`unrun_hooks` this worker has not reported yet, and mark them reported.
+
+    Called after each ``collect_file``: a file's conftest chain is imported while it is
+    collected, so its hooks are known by the time its ``collected`` line is written.
+    """
+    fresh = [hook for hook in unrun_hooks() if hook not in _reported_hooks]
+    _reported_hooks.update(fresh)
+    return fresh
+
+
+def keyboard_interrupt_banner(exc: KeyboardInterrupt) -> str:
+    """pytest's report of a session ended by ``KeyboardInterrupt``.
+
+    `_pytest/terminal.py::TerminalReporter._report_keyboardinterrupt`: the exception in a
+    ``!`` rule, the ``path:line`` that raised it, and pytest's hint. Probed on pytest 8.4.2
+    with a test body that raises it: exactly these three lines, at the terminal's width less
+    one on Windows (`TerminalWriter.sep`), 80 columns when not a terminal.
+    """
+    import shutil
+
+    message = traceback.format_exception_only(type(exc), exc)[-1].strip()
+    width = shutil.get_terminal_size().columns - (1 if sys.platform == "win32" else 0)
+    fill = "!" * max((width - len(message) - 2) // 2, 1)
+    rule = f"{fill} {message} {fill}"
+    if len(rule) + 1 <= width:
+        rule += "!"
+    lines = [rule]
+    frames = traceback.extract_tb(exc.__traceback__)
+    if frames:
+        lines.append(f"{frames[-1].filename}:{frames[-1].lineno}: {message}")
+    lines.append("(to show a full traceback on KeyboardInterrupt use --full-trace)")
+    return "\n".join(lines)
+
+
 def handle_shutdown() -> ByeResponse:
     """Handle ``shutdown``; reply ``bye`` — the last line the worker writes.
 
     Answering the protocol only.  :func:`drain_at_shutdown` does the unwinding, and
-    :func:`main` calls it first.  ``hooks`` rides along only when there are any
-    (:func:`unrun_hooks`).
+    :func:`main` calls it first.
     """
-    response: ByeResponse = {"op": "bye"}
-    if hooks := unrun_hooks():
-        response["hooks"] = hooks
-    return response
+    return {"op": "bye"}
 
 
 def _module_outcome_error_message(exc: BaseException) -> str:
@@ -6634,10 +6675,12 @@ def install_pytest_shim() -> None:
 
 
 def _reconfigure(stream: object) -> None:
-    """Force UTF-8 and ``\\n`` line endings on a protocol stream.
+    """Force UTF-8 and ``\\n`` line endings on a stream the orchestrator reads.
 
     Windows would otherwise encode with the console codepage and translate ``\\n`` to
-    ``\\r\\n``, corrupting the framing for any orchestrator that does not strip it.
+    ``\\r\\n``: on the protocol streams that corrupts the framing, and on stderr, which the
+    orchestrator decodes as UTF-8 and prints again, it garbles non-ASCII text and turns every
+    forwarded line ending into ``\\r\\r\\n``.
     """
     if isinstance(stream, io.TextIOWrapper):
         stream.reconfigure(encoding="utf-8", newline="\n")
@@ -6699,20 +6742,19 @@ def main() -> int:
     * **3** (:data:`SHUTDOWN_TEARDOWN_EXIT`) — every response was written, ``bye`` included,
       but a fixture teardown failed in :func:`drain_at_shutdown`.  Not drift, and not green:
       see the constant.
-    * **4** (:data:`SESSION_EXIT_EXIT`) — a test called ``pytest.exit()``.  The session is
-      over *by request*; the orchestrator keeps every result already reported and exits 2,
-      which is pytest's answer (probed: ``1 passed``, exit 2, the exiting test unreported and
-      the tests after it never run).
+    * **4** (:data:`SESSION_EXIT_EXIT`) — a test called ``pytest.exit()`` or raised
+      ``KeyboardInterrupt``.  The session is over; the orchestrator keeps every result
+      already reported and exits 2, which is pytest's answer for both (probed: ``1 passed``,
+      exit 2, the test that ended it unreported and the tests after it never run).
 
-    A ``KeyboardInterrupt`` from a test body still propagates out of this loop uncaught and
-    ends the process, which is pytest aborting the session.  In every abort case the test
-    that raised gets no ``test_result``, on purpose: the run did not finish, and reporting it
-    as a failure would imply the rest ran.
+    In every abort case the test that raised gets no ``test_result``, on purpose: the run did
+    not finish, and reporting it as a failure would imply the rest ran.
     """
     install_pytest_shim()
 
     _reconfigure(sys.stdout)
     _reconfigure(sys.stdin)
+    _reconfigure(sys.stderr)
     protocol_out = _detach_protocol_stream(sys.stdout)
     sys.stdout = sys.stderr
 
@@ -6755,6 +6797,12 @@ def main() -> int:
             # emitted for the test that called it — the run did not finish, and a fabricated
             # outcome is exactly the false green this replaces.
             print(f"Exit: {exc}", file=sys.stderr)
+            return SESSION_EXIT_EXIT
+        except KeyboardInterrupt as exc:
+            # A test raised it, or Ctrl-C reached this worker; pytest does not tell the two
+            # apart.  The session ends exactly as for `pytest.exit()`: the results so far are
+            # kept, nothing after the test runs, the run exits 2 -- with pytest's banner.
+            print(keyboard_interrupt_banner(exc), file=sys.stderr)
             return SESSION_EXIT_EXIT
     finally:
         # Coverage is stopped and written on **every** exit path, for the same reason the
@@ -6833,6 +6881,8 @@ def _protocol_loop(
             except NotInitializedError as exc:
                 print(f"rustest worker: {exc}", file=sys.stderr)
                 return 2
+            if hooks := new_hooks():
+                response["hooks"] = hooks
             emit(response)
         elif op == "execute_test":
             test_id = request.get("id")

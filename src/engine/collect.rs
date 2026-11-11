@@ -298,7 +298,7 @@ pub struct WorkerLauncher {
     /// so putting it here keeps [`crate::engine::protocol::PROTOCOL_VERSION`] where it is.  A
     /// per-message option would have to be re-sent with every request it cannot vary across.
     envs: Vec<(String, String)>,
-    /// The `pytest_*` hooks the pool's workers reported on `bye`, deduped and sorted.
+    /// The `pytest_*` hooks the pool's workers reported on `collected`, deduped and sorted.
     ///
     /// Shared with every [`Worker`] the launcher spawns, so a run's hooks are collected
     /// across the pool without threading a return value through both phases. A launcher is
@@ -2060,6 +2060,7 @@ impl Worker {
                 tests,
                 error,
                 skipped,
+                hooks,
             } => {
                 if echoed != posix {
                     return Err(self.protocol(
@@ -2083,6 +2084,11 @@ impl Worker {
                             .to_string(),
                         line,
                     ));
+                }
+                if !hooks.is_empty() {
+                    if let Ok(mut seen) = self.hooks.lock() {
+                        seen.extend(hooks);
+                    }
                 }
                 Ok(FileOutcome {
                     tests,
@@ -2381,11 +2387,7 @@ impl Worker {
             Err(err) => return Err(self.shutdown_error(format!("could not read bye: {err}"))),
         };
         match serde_json::from_str::<WorkerResponse>(&line) {
-            Ok(WorkerResponse::Bye { hooks }) => {
-                if let Ok(mut seen) = self.hooks.lock() {
-                    seen.extend(hooks);
-                }
-            }
+            Ok(WorkerResponse::Bye) => {}
             Ok(other) => {
                 return Err(self.shutdown_error(format!(
                     "expected `bye`, got `{}`\n  raw line: {line}",
@@ -2508,7 +2510,7 @@ fn response_op(response: &WorkerResponse) -> &'static str {
         // exactly the drift this function names in the error.
         WorkerResponse::TestResult { .. } => "test_result",
         WorkerResponse::BatchDone { .. } => "batch_done",
-        WorkerResponse::Bye { .. } => "bye",
+        WorkerResponse::Bye => "bye",
     }
 }
 
@@ -2601,7 +2603,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":9}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":10}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked
