@@ -5,6 +5,148 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking changes
+
+1. **The public fixture classes are now the classes a test receives.** `rustest.Cache`,
+   `CaptureFixture`, `LogCaptureFixture`, `MockerFixture`, `TmpPathFactory`, `TmpDirFactory`
+   and `FixtureRequest` used to be the previous engine's classes, which no fixture handed
+   out any more; `isinstance(cache, rustest.Cache)` was false. They are now the engine's own,
+   so `type(request) is rustest.FixtureRequest` holds. The cost is the old classes' extra
+   members, none of which a fixture ever exposed: `Cache.makedir` and `cache["key"]`,
+   `caplog.start_capture`, and `rustest.LogRecord` (`caplog.records` holds the standard
+   library's `logging.LogRecord`). In the `pytest` shim, `pytest.Config.getoption` on an
+   unknown option now raises as pytest's does instead of returning `None`,
+   `pytest.TempPathFactory` and `pytest.TempdirFactory` are real classes instead of inert
+   placeholders, and names pytest itself never had (`pytest.capsys`, `pytest.Node`,
+   `pytest.TmpPathFactory`) are gone. `typing-extensions` is no longer a dependency.
+   *Action:* none unless you constructed these classes by hand.
+2. **Option abbreviations are no longer accepted.** `--work 4`, `--no-cap` and `--report=x`
+   used to be read as `--workers`, `--no-capture` and `--report-json`, because argparse
+   abbreviates by default; pytest's parser does not, and an abbreviation would swallow a
+   conftest option that happens to be a prefix of a rustest flag. They are now unrecognized
+   arguments, which hand the session to pytest. *Action:* spell the flag in full.
+3. **`--llm` output is schema 3.** An `error` line with `scope: "teardown"` now carries `id`,
+   the test whose teardown raised; nothing else changed from schema 2. The published schema
+   marks `schema_version` as `const: 3`, so a consumer pinned to 2 can refuse the stream.
+
+### Added
+
+- **`rustest --watch`.** Runs the tests, then reruns on every save: a changed test file runs
+  again with last time's failures, a changed source file, conftest or config runs everything
+  selected. Polls modification times (nothing to install), debounces a burst of saves into one
+  run, clears the screen per run, and reads keys without Enter: `a` all, `f` failed only,
+  `p` file filter (substring or glob of the path), `t` name filter, `h` help, `q` quit. Only
+  test files inside the selection rerun. Needs a terminal; refuses `--llm`,
+  `--collect-only` and a session that needs pytest (exit 4).
+- **A session rustest cannot run correctly is handed to pytest, whole.** A conftest (or
+  `pytest_plugins` module) hook that changes what runs, `-p PLUGIN`, an option rustest does
+  not have (`--doctest-modules`, `--timeout=5`), an unsupported `-o KEY=`, a
+  conftest rustest cannot import, `PYTEST_PLUGINS`, or a `PYTEST_ADDOPTS` rustest does not
+  understand (a CI value such as `--junitxml=...` now hands every run in that environment
+  to pytest; `-ra --tb=short` is read as `addopts` is, and noted as ignored) now runs under `python -m pytest` with your own arguments: one stderr line says
+  why, pytest's output is streamed unmodified and its exit code is returned. It is on by
+  default and runs at pytest's speed; `--no-pytest-fallback` keeps the engine's behaviour (the
+  conformance `--real` gate and the benchmarks pass it). `pytest_addoption` counts as a hook
+  that changes what runs unless the hook runtime runs it (below); `pytest_report_header`, `pytest_report_collectionfinish`,
+  `pytest_terminal_summary` and `pytest_assertrepr_compare` do not. `--lf`/`--ff` share
+  `.rustest_cache` between the runners. `--report-json`, `--llm` and `--collect-only` work
+  under it (the report names the fallback in a top-level `pytest_fallback` key, and the
+  `--llm` `meta` line carries the same array); a `.md`
+  argument is refused. `--collect-only` now notices a conftest hook on a tree it used to answer
+  without importing anything. See *When rustest hands a session to pytest* on the compatibility
+  page for the full list, and what is still not detected.
+- **Conftest hooks run natively.** `pytest_addoption`, `pytest_configure`,
+  `pytest_sessionstart` and `pytest_collection_modifyitems` in a conftest (or a module its
+  `pytest_plugins` names) run in rustest's own hook runtime, in pytest's registration order,
+  with `config.getoption`/`getini`, `item.add_marker`, `item.keywords` and deselection
+  answered as pytest answers them. A hook that asks for anything the runtime does not provide
+  hands the session to pytest rather than guess.
+- **A conftest's own command-line options run natively.** `rustest --runslow tests/`,
+  `--db-url x`, `--level=3`, `nargs=2` and `action="append"` options are parsed by their
+  declarations, after pytest's two-pass rules: the first pass decides which conftests are
+  initial (a value word counts as a path there, and drops `testpaths`, as in pytest), the
+  second gives each option the words its declaration takes.
+- **hypothesis's pytest plugin is emulated.** With hypothesis 6.140 to 6.170 installed (or a
+  later release whose plugin's code is unchanged), a hypothesis suite stays native: the
+  `hypothesis` mark on every `@given` test, the function-scoped-fixture health check, the
+  usage errors for `@example`/`@settings`/`@seed` without `@given`, the `@pytest.fixture` ban,
+  marks and `@parametrize` below `@given`, `async` `@given` tests under pytest-asyncio, and the
+  initialization-window warning. `--hypothesis-*` options and an unverified release go to
+  pytest.
+- **Teardown errors, attributed as pytest attributes them.** A fixture teardown that raises is
+  `ERROR at teardown of <test>` for the test whose teardown ran it, the test it ended with
+  for a class-, module- or session-scoped fixture, an error beside that test's own status
+  (`1 passed, 1 error`, exit 1). `--report-json` adds `teardown_error` to that test (version 2,
+  an additive field); `--llm`'s `error` line gains `id` (schema 3).
+- **Warnings, as pytest reports them.** The `filterwarnings` ini and mark, a warnings
+  summary, `PytestUnknownMarkWarning` against the registered markers (`--strict-markers`
+  makes it an error), and the `xfail_strict` ini.
+- **Live progress, drawn for a terminal and written as pytest's lines everywhere else.**
+  Results show as tests finish rather than after the last one; a test that runs longer than
+  100 ms is reported as it finishes, not with the rest of its file.
+  - *In a terminal*, 0.18's `rich` display, now on the new engine: a spinner while
+    collecting, `✓ Collected N tests from M files`, an overall bar with a live row per file
+    in flight, a `✓`/`✗` line per finished file with its tests' time, each failure with the source around the
+    failing line (`→`) and `Expected`/`Received` for an `==` assertion, and a summary led by
+    `✓ passed, ✗ failed, ⊘ skipped` that also counts deselected, xfailed, xpassed and errors.
+    `-v` lists every test with its outcome and reason; `-q` keeps only the bar.
+  - *When stdout is not a terminal* (piped, redirected, most CI), pytest's own progress section: one line per file
+    (`test_a.py ..F.s  [ 34%]`), one line per test under `-v`, bare letters under `-q`, with
+    pytest's wrapping, percent column and `-x`/`-s` rules, in file order whatever `-n` is and
+    byte-identical to serial pytest's (`test_progress_oracle.py` diffs it against real pytest).
+- **`--color` and `--ascii` work.** `--color=yes|no|auto` follows pytest's rule (then
+  `PY_COLORS`, `NO_COLOR`, `FORCE_COLOR`, then whether the stream is a terminal) in both
+  displays; a terminal with colour turned off still gets the live display, uncoloured. When
+  colour is forced on output that is not a terminal, the progress letters, `-v` words and
+  percent column are coloured exactly as pytest colours them; the summary line is coloured as
+  a whole in the run's main colour, and failure sections stay plain. `--ascii` draws the terminal display with
+  ASCII only, and is chosen automatically when the terminal cannot encode the glyphs.
+- **A test that raises `KeyboardInterrupt` exits 2, as under pytest.** It used to kill its
+  worker and end the run with an `INTERNALERROR` (exit 3).
+- **Ctrl-C ends a run cleanly.** The live display is cleared (or the half-written progress
+  line ended), one `Interrupted: KeyboardInterrupt` line goes to stderr and the exit code is
+  2 (pytest's INTERRUPTED), instead of a Python traceback.
+- **A run says so when a conftest's `pytest_*` hooks are not run.** One `NOTE:` line on stderr names each hook found in a loaded `conftest.py` or `pytest_plugins` module (`tests/conftest.py::pytest_addoption`). Exit code, stdout, `--report-json` and `--llm` output are unchanged.
+- **Node-id arguments select what pytest selects.** `rustest test_m.py::TestC::test_q[a]` runs that one case; a function id selects every parametrized case and a class id its methods; several ids run in argument order; an id that matches nothing is a usage error (exit 4) with pytest's `ERROR: not found` message. Previously everything after `::` was ignored and the whole file ran.
+- **Path arguments behave as pytest's do when they repeat or overlap.** Tests run in argument
+  order, one module instance at a time: `rustest a.py b.py a.py` runs a, b, a and builds
+  `a.py`'s module-scoped fixtures twice, and with one worker (`-n 1`) `-x` stops at the
+  first failure across interleaved files. `--ff` follows the same rule: with failures in two
+  files it runs each file's failures, then each file's rest, so each module's fixtures are
+  built twice, as pytest's `failed + passed` order does. Overlapping arguments follow
+  pytest's collection cache, so
+  `rustest . sub` runs only `sub`, as `pytest . sub` does; it used to run everything. A path
+  is cut at its first `[`, as pytest cuts it, so a file or directory whose name contains a
+  bracket (`test_x[1].py`, `d[x]/`) can no longer be named on the command line.
+
+### Fixed
+
+- **`--collect-only --lf` and `--ff` list what pytest lists.** `--lf` printed the whole
+  collection. pytest's last-failed filter acts in two places and depends on whether a
+  failure was recorded at module level, so a reimplementation was wrong in three probed
+  shapes; the session is now handed to pytest (with the reason on stderr), or refused with
+  exit 4 under `--no-pytest-fallback`, until the engine applies its own last-failed logic.
+- **String `skipif` conditions skip, and a bare `skip` says what pytest says.**
+  `@pytest.mark.skipif("sys.platform == 'win32'")` was evaluated when the decorator ran and
+  stored as a bare boolean, which the worker then rejected for having no reason. Marks now keep
+  their arguments as written and the worker evaluates them at run time. A bare `@pytest.mark.skip`
+  reports `unconditional skip`. A string condition on a class no longer sees the class's own
+  attributes, as in pytest.
+- **pytest's generic classes subscript as runtime annotations.** `pytest.CaptureFixture[str]`, `pytest.ExceptionInfo[E]`, `FixtureDef`, `CallInfo`, `RaisesExc`, `RaisesGroup` and `StashKey` raised `TypeError` when the annotation was evaluated.
+
+### Known gaps
+
+- **Selecting a class that contains no tests exits 4** (`ERROR: not found`) where pytest exits 5
+  (no tests collected). Loud, and never runs the wrong tests.
+- **Gaps rc1 listed that are closed.** Conftest hooks: `pytest_addoption`,
+  `pytest_configure`, `pytest_sessionstart` and `pytest_collection_modifyitems` run natively,
+  and any other hook hands the session to pytest (rc1 ignored them). A `path::node::id`
+  argument selects the node. The `xfail_strict` ini, the `filterwarnings` ini and mark, a
+  warnings summary, `PYTEST_ADDOPTS` and `--strict-markers` are honoured.
+  `pytest_generate_tests`, `-p NAME`, `--runxfail` and `-W` hand the session to pytest.
+
 ## [1.0.0rc1] - 2026-08-06
 
 > **This is a release candidate, not the 1.0.0 release.** It is published to PyPI so the v2
@@ -17,7 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > pip install "rustest==1.0.0rc1"        # or: pip install --pre rustest
 > ```
 >
-> The nine breaking changes below are the one-time cleanup taken before committing to
+> The seven breaking changes below are the one-time cleanup taken before committing to
 > semver discipline. They are what this candidate exists to get wrong in public, before
 > 1.0.0 makes them permanent.
 
@@ -38,7 +180,7 @@ Read **Breaking changes** first. Several of them will stop a working command lin
 
 ### Breaking changes
 
-Eight, in rough order of how likely they are to reach you.
+Seven, in rough order of how likely they are to reach you.
 
 1. **`--pytest-compat` is removed.** The shim it enabled is now always on, so the flag
    could only ever be a no-op or a lie. Passing it exits **4** (pytest's `USAGE_ERROR`)
@@ -68,7 +210,7 @@ Eight, in rough order of how likely they are to reach you.
    |---|---|
    | `capture_output=` | `capture=` |
    | `pytest_compat=` | gone; the shim is unconditional |
-   | `no_color=` | `color="never"` |
+   | `ascii=`, `no_color=` | gone; the output is plain and uncolored |
    | `verbose=` (bool) | `verbosity=` (`-1`/`0`/`1`) |
    | `enable_codeblocks=` | `codeblocks=` |
    | `pattern=` | `keyword=` |
@@ -92,24 +234,6 @@ Eight, in rough order of how likely they are to reach you.
    tests under `rustest tests/` that `pytest tests/` never sees. Measured on a real suite,
    where a fixtures directory contributed 13 ids pytest never sees, 4 of them failing.
    Markdown must be **named**: `rustest README.md user_guide/*.md`.
-8. **The public fixture classes are now the classes a test receives.** `rustest.Cache`,
-   `CaptureFixture`, `LogCaptureFixture`, `MockerFixture`, `TmpPathFactory`, `TmpDirFactory`
-   and `FixtureRequest` used to be the previous engine's classes, which no fixture handed
-   out any more; `isinstance(cache, rustest.Cache)` was false. They are now the engine's own,
-   so `type(request) is rustest.FixtureRequest` holds. The cost is the old classes' extra
-   members, none of which a fixture ever exposed: `Cache.makedir` and `cache["key"]`,
-   `caplog.start_capture`, and `rustest.LogRecord` (`caplog.records` holds the standard
-   library's `logging.LogRecord`). In the `pytest` shim, `pytest.Config.getoption` on an
-   unknown option now raises as pytest's does instead of returning `None`,
-   `pytest.TempPathFactory` and `pytest.TempdirFactory` are real classes instead of inert
-   placeholders, and names pytest itself never had (`pytest.capsys`, `pytest.Node`,
-   `pytest.TmpPathFactory`) are gone. `typing-extensions` is no longer a dependency.
-   *Action:* none unless you constructed these classes by hand.
-9. **Option abbreviations are no longer accepted.** `--work 4`, `--no-cap` and `--report=x`
-   used to be read as `--workers`, `--no-capture` and `--report-json`, because argparse
-   abbreviates by default; pytest's parser does not, and an abbreviation would swallow a
-   conftest option that happens to be a prefix of a rustest flag. They are now unrecognized
-   arguments, which hand the session to pytest. *Action:* spell the flag in full.
 
 > ### Release note for tooling authors: `--llm` schema 2
 >
@@ -211,67 +335,6 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
-- **`rustest --watch`.** Runs the tests, then reruns on every save: a changed test file runs
-  again with last time's failures, a changed source file, conftest or config runs everything
-  selected. Polls modification times (nothing to install), debounces a burst of saves into one
-  run, clears the screen per run, and reads keys without Enter: `a` all, `f` failed only,
-  `p` file filter (substring or glob of the path), `t` name filter, `h` help, `q` quit. Only
-  test files inside the selection rerun. Needs a terminal; refuses `--llm`,
-  `--collect-only` and a session that needs pytest (exit 4).
-- **A session rustest cannot run correctly is handed to pytest, whole.** A conftest (or
-  `pytest_plugins` module) hook that changes what runs, `-p PLUGIN`, an option rustest does
-  not have (`--runslow`, `--doctest-modules`, `--timeout=5`), an unsupported `-o KEY=`, a
-  conftest rustest cannot import, `PYTEST_PLUGINS`, or a `PYTEST_ADDOPTS` rustest does not
-  understand (a CI value such as `--junitxml=...` now hands every run in that environment
-  to pytest; `-ra --tb=short` is read as `addopts` is, and noted as ignored) now runs under `python -m pytest` with your own arguments: one stderr line says
-  why, pytest's output is streamed unmodified and its exit code is returned. It is on by
-  default and runs at pytest's speed; `--no-pytest-fallback` keeps the engine's behaviour (the
-  conformance `--real` gate and the benchmarks pass it). `pytest_addoption` counts as a hook
-  that changes what runs; `pytest_report_header`, `pytest_report_collectionfinish`,
-  `pytest_terminal_summary` and `pytest_assertrepr_compare` do not. `--lf`/`--ff` share
-  `.rustest_cache` between the runners. `--report-json`, `--llm` and `--collect-only` work
-  under it (the report names the fallback in a top-level `pytest_fallback` key, and the
-  `--llm` `meta` line carries the same array); a `.md`
-  argument is refused. `--collect-only` now notices a conftest hook on a tree it used to answer
-  without importing anything. See *When rustest hands a session to pytest* on the compatibility
-  page for the full list, and what is still not detected.
-- **Live progress, drawn for a terminal and written as pytest's lines everywhere else.**
-  Results show as tests finish rather than after the last one; a test that runs longer than
-  100 ms is reported as it finishes, not with the rest of its file.
-  - *In a terminal*, 0.18's `rich` display, now on the new engine: a spinner while
-    collecting, `✓ Collected N tests from M files`, an overall bar with a live row per file
-    in flight, a `✓`/`✗` line per finished file with its tests' time, each failure with the source around the
-    failing line (`→`) and `Expected`/`Received` for an `==` assertion, and a summary led by
-    `✓ passed, ✗ failed, ⊘ skipped` that also counts deselected, xfailed, xpassed and errors.
-    `-v` lists every test with its outcome and reason; `-q` keeps only the bar.
-  - *When stdout is not a terminal* (piped, redirected, most CI), pytest's own progress section: one line per file
-    (`test_a.py ..F.s  [ 34%]`), one line per test under `-v`, bare letters under `-q`, with
-    pytest's wrapping, percent column and `-x`/`-s` rules, in file order whatever `-n` is and
-    byte-identical to serial pytest's (`test_progress_oracle.py` diffs it against real pytest).
-- **`--color` and `--ascii` work.** `--color=yes|no|auto` follows pytest's rule (then
-  `PY_COLORS`, `NO_COLOR`, `FORCE_COLOR`, then whether the stream is a terminal) in both
-  displays; a terminal with colour turned off still gets the live display, uncoloured. When
-  colour is forced on output that is not a terminal, the progress letters, `-v` words and
-  percent column are coloured exactly as pytest colours them; the summary line is coloured as
-  a whole in the run's main colour, and failure sections stay plain. `--ascii` draws the terminal display with
-  ASCII only, and is chosen automatically when the terminal cannot encode the glyphs.
-- **A test that raises `KeyboardInterrupt` exits 2, as under pytest.** It used to kill its
-  worker and end the run with an `INTERNALERROR` (exit 3).
-- **Ctrl-C ends a run cleanly.** The live display is cleared (or the half-written progress
-  line ended), one `Interrupted: KeyboardInterrupt` line goes to stderr and the exit code is
-  2 (pytest's INTERRUPTED), instead of a Python traceback.
-- **A run says so when a conftest's `pytest_*` hooks are not run.** One `NOTE:` line on stderr names each hook found in a loaded `conftest.py` or `pytest_plugins` module (`tests/conftest.py::pytest_addoption`). Exit code, stdout, `--report-json` and `--llm` output are unchanged.
-- **Node-id arguments select what pytest selects.** `rustest test_m.py::TestC::test_q[a]` runs that one case; a function id selects every parametrized case and a class id its methods; several ids run in argument order; an id that matches nothing is a usage error (exit 4) with pytest's `ERROR: not found` message. Previously everything after `::` was ignored and the whole file ran.
-- **Path arguments behave as pytest's do when they repeat or overlap.** Tests run in argument
-  order, one module instance at a time: `rustest a.py b.py a.py` runs a, b, a and builds
-  `a.py`'s module-scoped fixtures twice, and with one worker (`-n 1`) `-x` stops at the
-  first failure across interleaved files. `--ff` follows the same rule: with failures in two
-  files it runs each file's failures, then each file's rest, so each module's fixtures are
-  built twice, as pytest's `failed + passed` order does. Overlapping arguments follow
-  pytest's collection cache, so
-  `rustest . sub` runs only `sub`, as `pytest . sub` does; it used to run everything. A path
-  is cut at its first `[`, as pytest cuts it, so a file or directory whose name contains a
-  bracket (`test_x[1].py`, `d[x]/`) can no longer be named on the command line.
 - **The 0.17/0.18 regression suites, carried across.** `test_async_teardown_lifecycle.py`
   (18 tests, asserting that a *previous* test's async fixture teardown completed, an angle
   none of the six existing async suites covered), plus `test_asyncio_config.py`,
@@ -362,19 +425,6 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   monitoring tool at all).
 
 ### Fixed
-
-- **`--collect-only --lf` and `--ff` list what pytest lists.** `--lf` printed the whole
-  collection. pytest's last-failed filter acts in two places and depends on whether a
-  failure was recorded at module level, so a reimplementation was wrong in three probed
-  shapes; the session is now handed to pytest (with the reason on stderr), or refused with
-  exit 4 under `--no-pytest-fallback`, until the engine applies its own last-failed logic.
-- **String `skipif` conditions skip, and a bare `skip` says what pytest says.**
-  `@pytest.mark.skipif("sys.platform == 'win32'")` was evaluated when the decorator ran and
-  stored as a bare boolean, which the worker then rejected for having no reason. Marks now keep
-  their arguments as written and the worker evaluates them at run time. A bare `@pytest.mark.skip`
-  reports `unconditional skip`. A string condition on a class no longer sees the class's own
-  attributes, as in pytest.
-- **pytest's generic classes subscript as runtime annotations.** `pytest.CaptureFixture[str]`, `pytest.ExceptionInfo[E]`, `FixtureDef`, `CallInfo`, `RaisesExc`, `RaisesGroup` and `StashKey` raised `TypeError` when the annotation was evaluated.
 
 Several of these were real, shipped defects that reported **green** on a broken test,
 which is the worst answer a test runner can give.
@@ -508,11 +558,19 @@ which is the worst answer a test runner can give.
 > that was fixed, and trusts the entries that are still wrong. Every bullet below was
 > re-probed against pytest 8.4.2.
 
-- **Selecting a class that contains no tests exits 4** (`ERROR: not found`) where pytest exits 5
-  (no tests collected). Loud, and never runs the wrong tests.
+- **A `path::node::id` argument selects the *file*, not the node, and does so silently.** This is the
+  gap most likely to bite, because copying a node id out of a failure report and re-running
+  it is pytest muscle memory, and `short test summary info` and `--llm`'s `id` field both
+  hand you one. Measured against pytest 8.4.2 on the same five-test file: pytest resolves
+  `test_mixed.py::test_a` to that one test, and answers a *bogus* id with
+  `collected 0 items` / `no tests ran`. rustest ignores everything after `::` in a path
+  argument and runs **all five**, including for the bogus id, so a CI line aimed at one
+  test quietly runs the file, and can go red for a neighbour or green for a test that no
+  longer exists. *Workaround:* select with `-k` instead, which does understand the
+  parametrized id: `rustest test_mixed.py -k "2-4"` deselects the other two. Node ids
+  themselves are byte-identical to pytest's; it is only *selection by* them that is missing.
 - **No plugin system and no hook system.** By design. A `conftest.py` that defines hooks
-  loads fine and its *fixtures* are used; its hooks are not run, and a `NOTE:` line on stderr
-  names them. See
+  loads fine and its *fixtures* are used; its hooks are ignored. See
   `user_guide/pytest-plugins.md` for what replaces the ten most popular plugins.
 - **No item reordering**, and the visible symptom is a *setup-count* difference rather than
   an ordering one. pytest groups tests that share a higher-scoped parametrized fixture

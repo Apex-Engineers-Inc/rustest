@@ -326,7 +326,12 @@ def test_corpus_case_count_is_pinned() -> None:
     # `collection/hook-modifyitems-import-state`, `collection/hook-modifyitems-fixture-reorder`,
     # `marks/hook-mark-after-param-marks`, `marks/param-mark-before-module-mark`,
     # `marks/strict-markers-blocked-plugin`, `collection/hook-duplicate-nodeid`.
-    assert len(discover_cases()) == 78
+    # `hypothesis/*` (+5): the port of hypothesis's pytest plugin (`_hypothesis.py`): the health
+    # check, the usage errors, the `hypothesis` mark, the fixture ban, parametrized methods.
+    # `fixtures/teardown-error-*` (+5): a fixture teardown that raises is an error of the test
+    # whose teardown ran it, beside its own outcome (function, class and module mid-run, module
+    # and session at shutdown).
+    assert len(discover_cases()) == 93
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

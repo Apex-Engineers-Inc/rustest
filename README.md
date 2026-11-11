@@ -216,7 +216,7 @@ uv add "rustest==1.0.0rc1"
 
 `--pytest-compat` and `--v1` are removed and now exit 4; `rustest.run()` is keyword-only and
 returns an exit code rather than a `RunReport`; `indirect=` parametrization follows pytest's
-semantics; and `--llm` output is schema 2. See the
+semantics; and `--llm` output is schema 3. See the
 **[upgrade guide](https://apex-engineers-inc.github.io/rustest/user-guide/migration-guide.html)**
 and the **[changelog](https://apex-engineers-inc.github.io/rustest/user-guide/changelog.html)**.
 

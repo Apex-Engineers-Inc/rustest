@@ -251,7 +251,7 @@ fn run_error_to_py(err: RunError) -> PyErr {
 /// `RUSTEST_MANIFEST_CACHE`; see [`CacheMode`].
 #[pyfunction]
 #[pyo3(name = "collect")]
-#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto", pytest_fallback=false, hook_context=None, strict_markers=false))]
+#[pyo3(signature = (invocation_dir, args, python_executable, workers, keyword=None, mark_expr=None, codeblocks=None, collect_tier="auto", cache_mode="auto", pytest_fallback=false, hook_context=None, strict_markers=false, conftest_args=Vec::new()))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_collect(
     py: Python<'_>,
@@ -267,6 +267,7 @@ pub fn py_collect(
     pytest_fallback: bool,
     hook_context: Option<&str>,
     strict_markers: bool,
+    conftest_args: Vec<String>,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let hook_context = parse_hook_context(hook_context)?;
@@ -290,6 +291,7 @@ pub fn py_collect(
         pytest_fallback,
         hook_context,
         strict_markers,
+        conftest_args: conftest_args.into_iter().map(PathBuf::from).collect(),
     };
     let manifest = py.detach(|| collect(&dir, &args, python_executable, workers, &options));
     // A Ctrl-C that arrived while the GIL was released is only *pending*; raise it here as
@@ -388,6 +390,7 @@ fn parse_hook_context(raw: Option<&str>) -> PyResult<Option<serde_json::Value>> 
     pytest_fallback=false,
     hook_context=None,
     strict_markers=false,
+    conftest_args=Vec::new(),
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_run(
@@ -409,6 +412,7 @@ pub fn py_run(
     pytest_fallback: bool,
     hook_context: Option<&str>,
     strict_markers: bool,
+    conftest_args: Vec<String>,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
@@ -426,6 +430,7 @@ pub fn py_run(
         pytest_fallback,
         hook_context: parse_hook_context(hook_context)?,
         strict_markers,
+        conftest_args: conftest_args.into_iter().map(PathBuf::from).collect(),
     };
     // The first exception `on_event` raised. It wins over whatever the run itself returned,
     // a `KeyboardInterrupt` included: the run stopped *because* of it.
@@ -735,6 +740,7 @@ mod tests {
                 false,
                 None,
                 false,
+                Vec::new(),
             )
         })
         .unwrap();
@@ -828,6 +834,7 @@ mod tests {
                 false,
                 None,
                 false,
+                Vec::new(),
             )
         })
         .unwrap_err();
@@ -869,6 +876,7 @@ mod tests {
                 false,
                 None,
                 false,
+                Vec::new(),
             )
         })
         .unwrap_err();
@@ -904,6 +912,7 @@ mod tests {
                 false,
                 None,
                 false,
+                Vec::new(),
             )
         })
         .unwrap_err();
@@ -938,6 +947,7 @@ mod tests {
                 false,
                 None,
                 false,
+                Vec::new(),
             )
         })
         .unwrap();

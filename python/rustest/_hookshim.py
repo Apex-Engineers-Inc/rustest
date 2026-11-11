@@ -254,7 +254,14 @@ class ItemRecord:
             "nodeid": self.nodeid,
             "name": self.name,
             "path": self.path,
-            "markers": [[m.name, list(m.args), dict(m.kwargs)] for m in self.markers],
+            "markers": [
+                [
+                    m.name,
+                    [_to_wire(a) for a in m.args],
+                    {k: _to_wire(v) for k, v in m.kwargs.items()},
+                ]
+                for m in self.markers
+            ],
             "own_marker_count": self.own_marker_count,
             "rootdir_name": self.rootdir_name,
             "dir_names": list(self.dir_names),
@@ -273,7 +280,12 @@ class ItemRecord:
             nodeid=str(data["nodeid"]),
             name=str(data["name"]),
             path=str(data["path"]),
-            markers=tuple(Mark(str(n), tuple(a), dict(k)) for n, a, k in data["markers"]),
+            markers=tuple(
+                Mark(
+                    str(n), tuple(map(_from_wire, a)), {key: _from_wire(v) for key, v in k.items()}
+                )
+                for n, a, k in data["markers"]
+            ),
             own_marker_count=data["own_marker_count"],
             rootdir_name=str(data["rootdir_name"]),
             dir_names=tuple(data["dir_names"]),
@@ -301,6 +313,35 @@ def wire_exact(value: object) -> bool:
             for k, v in cast("dict[object, object]", value).items()
         )
     return False
+
+
+#: The key a mark argument JSON cannot carry is sent under (``xfail(raises=KeyError)``).
+_OPAQUE_KEY: Final = "__rustest_opaque__"
+
+
+class _Opaque:
+    """A mark argument the record could not carry exactly: reading it is a violation (a hook
+    that only reads the mark's other arguments, or its name, still runs natively)."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+    def __repr__(self) -> str:
+        return self.text
+
+
+def _to_wire(value: object) -> object:
+    return value if wire_exact(value) else {_OPAQUE_KEY: repr(value)}
+
+
+def _from_wire(value: object) -> object:
+    data = cast("dict[str, object]", value) if isinstance(value, dict) else None
+    if data is not None and set(data) == {_OPAQUE_KEY}:
+        return _Opaque(str(data[_OPAQUE_KEY]))
+    return cast(object, value)
 
 
 def mark_is_wire_exact(mark: Mark) -> bool:
@@ -576,6 +617,27 @@ _PLUGIN_FLAGS: Final[Mapping[str, frozenset[str]]] = {
     "rich": frozenset({"--rich", "--rich-capture"}),
     "codeblocks": frozenset({"--codeblocks"}),
     "pytest_mock": frozenset(),
+    "hypothesispytest": frozenset(
+        {
+            "--hypothesis-explain",
+            "--hypothesis-profile",
+            "--hypothesis-seed",
+            "--hypothesis-show-statistics",
+            "--hypothesis-verbosity",
+        }
+    ),
+}
+
+#: What ``getoption`` answers for an emulated plugin's options: their defaults, since the CLI
+#: hands a session that sets one to pytest. Keyed by option string; the dest is derived.
+_PLUGIN_OPTION_DEFAULTS: Final[Mapping[str, Mapping[str, object]]] = {
+    "hypothesispytest": {
+        "--hypothesis-profile": None,
+        "--hypothesis-verbosity": None,
+        "--hypothesis-show-statistics": False,
+        "--hypothesis-seed": None,
+        "--hypothesis-explain": False,
+    },
 }
 
 #: The ``markers`` lines pytest 8.4.2's own plugins add in their ``pytest_configure``, in the
@@ -610,13 +672,14 @@ _PYTEST_MARKER_LINES: Final = (
     + " call it last/as late as possible. DEPRECATED, use @pytest.hookimpl(trylast=True) instead.",
 )
 
-#: The ``markers`` line each allowed plugin adds (the rest add none).  With two of them loaded,
-#: the order between them is pluggy's registration order, which is not known here.
+#: The ``markers`` line each allowed plugin adds (the rest add none), in reverse registration
+#: order when several are loaded (``_fallback.installed_plugins`` gives that order).
 _PLUGIN_MARKER_LINES: Final[Mapping[str, str]] = {
     "xdist": "xdist_group: specify group for tests should run in same session.in relation to one"
     + " another. Provided by pytest-xdist.",
     "pytest_cov": "no_cover: disable coverage for this test.",
     "asyncio": "asyncio: mark the test as a coroutine, it will be run using an asyncio event loop",
+    "hypothesispytest": "hypothesis: Tests which use hypothesis.",
 }
 
 #: The ``dest`` of each of pytest's core options (:data:`_PYTEST_CORE_FLAGS`).
@@ -765,6 +828,8 @@ class _Option:
     names: tuple[str, ...]
     dest: str
     value: object  # `_MISSING` for an option declared late with no default
+    attrs: Mapping[str, Any] = field(default_factory=dict[str, Any])  # `addoption`'s keywords
+    initial: bool = True  # declared before argparse ran: the command line may set it
 
 
 @dataclass
@@ -933,7 +998,7 @@ def _declare(st: _State, names: Sequence[str], attrs: Mapping[str, Any]) -> None
         value = _MISSING
     else:
         value = _ACTION_DEFAULTS[action]
-    st.options[dest] = _Option(tuple(names), dest, value)
+    st.options[dest] = _Option(tuple(names), dest, value, dict(attrs), not st.after_argparse)
     for name in names:
         st.opt2dest[name] = dest
 
@@ -1094,7 +1159,9 @@ class _Config(_Shim):
         st = self._st
         if name == "markers":
             if st.markers_unknown:
-                st.violate("reads config.getini('markers') with two plugins adding markers")
+                st.violate(
+                    "reads config.getini('markers') with a plugin loaded whose lines are not known"
+                )
             return st.markers
         if name not in st.ini_decl:
             st.violate(f"asks config.getini({name!r}) for an ini key no conftest declared")
@@ -1176,7 +1243,10 @@ class _Kwargs(Mapping[str, Any]):
         self._data = dict(data)
 
     def __getitem__(self, key: str) -> Any:
-        return self._data[key]
+        value = self._data[key]
+        if isinstance(value, _Opaque):
+            self._st.violate(f"reads a mark's {key}= that cannot be sent between processes exactly")
+        return value
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._data)
@@ -1197,13 +1267,22 @@ class _Kwargs(Mapping[str, Any]):
 class _MarkView:
     """What ``get_closest_marker`` / ``iter_markers`` return: pytest's ``Mark``, read-only."""
 
-    __slots__ = ("args", "kwargs", "name")
+    __slots__ = ("_args", "kwargs", "name")
 
     def __init__(self, st: _State, mark: Mark) -> None:
         super().__init__()
         object.__setattr__(self, "name", mark.name)
-        object.__setattr__(self, "args", tuple(mark.args))
+        object.__setattr__(self, "_args", tuple(mark.args))
         object.__setattr__(self, "kwargs", _Kwargs(st, mark.kwargs))
+
+    @property
+    def args(self) -> tuple[object, ...]:
+        args = cast("tuple[object, ...]", _getattribute(self, "_args"))
+        if any(isinstance(arg, _Opaque) for arg in args):
+            self.kwargs._st.violate(
+                f"reads the arguments of a {self.name!r} mark that cannot be sent between processes exactly"
+            )
+        return args
 
     def __getattr__(self, name: str) -> object:
         self.kwargs._st.violate(f"uses a mark's .{name}")
@@ -1217,16 +1296,15 @@ class _MarkView:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _MarkView):
             return NotImplemented
-        return (self.name, self.args, dict(self.kwargs)) == (
-            other.name,
-            other.args,
-            dict(other.kwargs),
-        )
+        if (self.name, dict(self.kwargs)) != (other.name, dict(other.kwargs)):
+            return False
+        return self.args == other.args  # an opaque argument decides it only here
 
     __hash__ = None  # pyright: ignore[reportAssignmentType]
 
     def __repr__(self) -> str:
-        return f"Mark(name={self.name!r}, args={self.args!r}, kwargs={dict(self.kwargs)!r})"
+        args = _getattribute(self, "_args")  # an opaque argument's repr is the original's
+        return f"Mark(name={self.name!r}, args={args!r}, kwargs={dict(self.kwargs)!r})"
 
 
 def _strict_markers(st: _State) -> bool:
@@ -1466,17 +1544,24 @@ class HookRunner:
         lines follow the conftests' in ``getini("markers")``."""
         super().__init__()
         plugins = tuple(plugins)
+        defaults = {
+            key: value
+            for name in plugins
+            for flag, value in _PLUGIN_OPTION_DEFAULTS.get(name, {}).items()
+            for key in (flag, flag[2:].replace("-", "_"))
+        }
         self._st = _State(
             Path(rootpath),
             ini or {},
-            builtin_options or {},
+            {**defaults, **(builtin_options or {})},
             None if invocation_dir is None else Path(invocation_dir),
             _PYTEST_CORE_FLAGS.union(*(_PLUGIN_FLAGS.get(name, ()) for name in plugins)),
         )
+        # each plugin's `pytest_configure` adds its line, last-registered first (pluggy's LIFO)
         plugin_lines = [_PLUGIN_MARKER_LINES[n] for n in plugins if n in _PLUGIN_MARKER_LINES]
         self._marker_tail: tuple[str, ...] | None = (
-            (*plugin_lines, *_PYTEST_MARKER_LINES)
-            if len(plugin_lines) <= 1 and all(n in _PLUGIN_FLAGS for n in plugins)
+            (*reversed(plugin_lines), *_PYTEST_MARKER_LINES)
+            if all(n in _PLUGIN_FLAGS for n in plugins)
             else None
         )
         if not getattr(sys, "_is_gil_enabled", lambda: True)():
@@ -1535,7 +1620,9 @@ class HookRunner:
         st = self._st
         if name == "markers":
             if st.markers_unknown:
-                st.violate("reads config.getini('markers') with two plugins adding markers")
+                st.violate(
+                    "reads config.getini('markers') with a plugin loaded whose lines are not known"
+                )
             return True, list(st.markers)
         if name not in st.ini_decl:
             return False, None
@@ -1615,6 +1702,60 @@ class HookRunner:
         self._st.violations.append(reason)
 
     # -- the calls ----------------------------------------------------------------------
+
+    def parse_args(self, segments: Sequence[Mapping[str, Any]]) -> None:
+        """pytest's second argparse pass over what rustest's CLI did not know, against the
+        options the initial conftests declared (after ``pytest_addoption``, before
+        ``pytest_configure``), with ``argparse`` itself, so ``nargs``, types, ``choices`` and
+        every action behave as under pytest, which does not abbreviate.
+
+        Each segment is an unknown option and the words after it (``tokens``), each marked as
+        the CLI took it: a value (``values``) or a path it collects. pytest gives the option
+        the words its declaration takes and collects the rest, so the two must agree; where
+        they do not, or an option is nobody's, that is a violation and pytest decides.
+        """
+        import argparse
+
+        st = self._st
+        if st.violations or not segments:
+            return
+        parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+        _ = parser.add_argument("_rustest_words", nargs="*")
+        namespace = argparse.Namespace()
+        for option in st.options.values():
+            if option.initial:
+                _ = parser.add_argument(
+                    *option.names,
+                    dest=option.dest,
+                    **{k: v for k, v in option.attrs.items() if k != "dest"},
+                )
+                setattr(namespace, option.dest, option.value)
+        for segment in segments:
+            tokens = [str(token) for token in segment["tokens"]]
+            values = [bool(value) for value in segment["values"]]
+            try:
+                _, extras = parser.parse_known_args(tokens, namespace)
+            except (argparse.ArgumentError, ValueError, TypeError, SystemExit) as exc:
+                st.violations.append(f"the command line does not parse ({exc}); pytest says why")
+                return
+            if extras:
+                st.violations.append(f"{extras[0]} is not an option rustest or a conftest declares")
+                return
+            rest = list(getattr(namespace, "_rustest_words") or [])
+            taken = len(values) - len(rest)
+            if values != [True] * taken + [False] * len(rest):
+                word = next(
+                    w for w, v, t in zip(tokens[1:], values, range(len(values))) if v != (t < taken)
+                )
+                st.violations.append(
+                    f"pytest reads {word} after {tokens[0]} as "
+                    + ("a path" if word in rest else "its value")
+                    + ", where rustest's command line took the other"
+                )
+                return
+        for option in st.options.values():
+            if option.initial:
+                option.value = getattr(namespace, option.dest)
 
     def configure(self) -> None:
         """``pytest_configure`` over everything registered so far."""

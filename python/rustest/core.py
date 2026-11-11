@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         stdout: NotRequired[str]
         stderr: NotRequired[str]
         warnings: NotRequired[list[_ReportWarning]]
+        teardown_error: NotRequired[str]
 
     class _RunReport(TypedDict):
         version: int
@@ -407,6 +408,7 @@ def collect_only(
     pytest_fallback: bool = False,
     hook_context: Mapping[str, object] | None = None,
     strict_markers: bool = False,
+    conftest_args: Sequence[str] = (),
 ) -> int:
     """Collect with the **v2** engine, print node ids, and return pytest's exit code.
 
@@ -473,6 +475,7 @@ def collect_only(
             pytest_fallback=pytest_fallback,
             hook_context=_hook_context_json(hook_context),
             strict_markers=strict_markers,
+            conftest_args=list(conftest_args),
         )
         manifest: _Manifest = json.loads(payload)
         return manifest
@@ -679,21 +682,33 @@ def _print_failure_sections(
     """
     failed = [test for test in tests if test["status"] == "failed"]
     errored = [test for test in tests if test["status"] == "error"]
-    for title, group, prefix in (("ERRORS", errored, "ERROR "), ("FAILURES", failed, "")):
+    # A teardown that failed is an error of its own, beside the test's status, and pytest's
+    # block says so: `ERROR at teardown of test_a`.
+    torn = [test for test in tests if "teardown_error" in test]
+    blocks = [
+        (
+            "ERRORS",
+            [("ERROR ", test, test.get("message")) for test in errored]
+            + [("ERROR at teardown of ", test, test.get("teardown_error")) for test in torn],
+        ),
+        ("FAILURES", [("", test, test.get("message")) for test in failed]),
+    ]
+    for title, group in blocks:
         if not group:
             continue
         print(_sep("=", title))
-        for test in group:
+        for prefix, test, message in group:
             print(_sep("_", f"{prefix}{_headline(test)}"))
-            message = test.get("message")
             if message:
                 print(message.rstrip("\n"))
     _print_warnings_summary(warnings)
-    if not failed and not errored:
+    if not failed and not errored and not torn:
         return
     print(_sep("=", "short test summary info"))
     for test in (*failed, *errored):
         print(f"{test['status'].upper()} {test['id']}")
+    for test in torn:
+        print(f"ERROR {test['id']}")
 
 
 class _CoverageRun:
@@ -889,6 +904,7 @@ def run(
     pytest_fallback: bool = False,
     hook_context: Mapping[str, object] | None = None,
     strict_markers: bool = False,
+    conftest_args: Sequence[str] = (),
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
@@ -1033,6 +1049,7 @@ def run(
                     pytest_fallback=pytest_fallback,
                     hook_context=_hook_context_json(hook_context),
                     strict_markers=strict_markers,
+                    conftest_args=list(conftest_args),
                 )
             finally:
                 # Before anything below prints, on every way out -- a live region left

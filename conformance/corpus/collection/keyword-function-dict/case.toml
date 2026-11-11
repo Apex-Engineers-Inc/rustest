@@ -1,0 +1,4 @@
+# `-k` matches `pytestmark` and `parametrize` on a decorated test, and a
+# function's own attributes, as pytest's KeywordMatcher does.
+[case]
+args = ["-k", "pytestmark or parametrize or custom_flag or __wrapped__"]

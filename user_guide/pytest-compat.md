@@ -217,8 +217,9 @@ turns it off.
 | A native hook uses something the hook runtime does not provide (for example `config.pluginmanager.register`, or reading a parametrized item's markers) | The runtime cannot answer it the way pytest would, so the session goes to pytest rather than guess |
 | A conftest, or a module it names, raises when rustest's worker imports it (`rustest could not import tests/conftest.py: ...`) | Conftests that import `_pytest` internals rustest does not provide are exactly the hook-writing ones |
 | `-p NAME` (not `-p no:NAME`) | Loads a pytest plugin |
+| A pytest plugin is installed and auto-loads (`pytest11`) that rustest does not run. Allowed, because running without them changes no outcome: pytest-xdist, pytest-cov, pytest-asyncio, pytest-mock, pytest-icdiff, pytest-rich, pytest-codeblocks; and hypothesis 6.140 to 6.170 and later releases whose plugin is unchanged, which rustest emulates (the function-scoped-fixture health check, the usage errors, the `hypothesis` mark, the fixture ban and the initialization-window warning; its `--hypothesis-*` options, a side-effect warning while conftests import, and an unpruned `.hypothesis` directory go to pytest) | The plugin may change outcomes. `-p no:NAME` or `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` opts out, as for pytest |
 | `-o KEY=VALUE` arriving through `addopts` or `PYTEST_ADDOPTS` (rustest reads only the command line's `-o`) | pytest applies it |
-| An argument rustest does not have: `--runslow`, `--doctest-modules`, `--timeout=5`, `-n auto`. Abbreviations count: `--report=html` is not `--report-json` | pytest may know it. A typo gets pytest's own usage error, exit 4 |
+| An argument neither rustest nor an initial conftest's `pytest_addoption` declares: `--doctest-modules`, `--timeout=5`, `-n auto`, a typo. Abbreviations count: `--report=html` is not `--report-json`. A conftest's own option (`--runslow tests/`, `--db-url x`, `--pair 1 2`) runs natively, parsed by its declaration as pytest's second pass parses it; it goes to pytest when the declaration takes the words after it differently from how rustest's command line split them (an existing path taken as a value, a `nargs="+"` swallowing a path), when only a later conftest declares it, or when it does not parse | pytest may know it. A typo gets pytest's own usage error, exit 4 |
 | `-o KEY=VALUE` for any key other than `addopts` | pytest accepts any ini key |
 | `PYTEST_PLUGINS` is set, or `PYTEST_ADDOPTS` contains something rustest does not understand | pytest applies them; rustest does not |
 
@@ -283,9 +284,9 @@ them:
 - A failure's `message` is pytest's rendering of the traceback, so its wording differs from the
   engine's, and under `--report-json` it follows your own `--tb`. The `line` of a failure is
   pytest's own, recorded by the plugin.
-- Each test has one reduced status. A body that passes or fails with a teardown that raises is
-  one `error` in the report; pytest's own summary counts it as `1 passed, 1 error` or
-  `1 failed, 1 error`. A module that skips itself at import counts as one skip, as it does in
+- Each test has one reduced status. A teardown that raises leaves that status as it was and
+  adds the test's `teardown_error` (the traceback), counted in `summary.error`, as pytest's own
+  summary counts `1 passed, 1 error`; the engine's report carries the same field. A module that skips itself at import counts as one skip, as it does in
   the engine. An outcome other than passed, failed or skipped (pytest-rerunfailures' `rerun`) is
   ignored.
 - Under pytest-xdist only the controller writes the report, and the workers' deselection counts

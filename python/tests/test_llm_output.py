@@ -163,7 +163,7 @@ def _shape(objs: list[dict[str, Any]], tree: Path) -> list[dict[str, Any]]:
 _GOLDEN_VERBOSE: list[dict[str, Any]] = [
     {
         "t": "meta",
-        "schema_version": 2,
+        "schema_version": 3,
         "tool": "rustest",
         "version": "<version>",
         "rootdir": "<rootdir>",
@@ -538,6 +538,19 @@ def test_render_emits_the_five_line_types_in_the_contracted_order() -> None:
         _validate(obj)
 
 
+def test_a_tests_teardown_error_is_an_error_line_with_its_id() -> None:
+    """pytest's ``1 passed, 1 error``: the test keeps its status, the teardown is an error."""
+    report = _synthetic_report()
+    report["tests"][2]["teardown_error"] = "RuntimeError: module teardown"
+    stream = io.StringIO()
+    render(report, verbosity=0, output=stream)  # pyright: ignore[reportArgumentType]
+    objs = [json.loads(line) for line in stream.getvalue().splitlines()]
+    teardown = {"t": "error", "scope": "teardown", "id": "a.py::test_x"}
+    assert {**teardown, "msg": "RuntimeError: module teardown"} in objs
+    for obj in objs:
+        _validate(obj)
+
+
 def test_render_at_the_default_rung_omits_skip_lines_but_not_error_lines() -> None:
     """``skip`` is the only line type ``-v`` gates.  Errors and failures are never optional."""
     stream = io.StringIO()
@@ -687,7 +700,7 @@ def test_the_schema_is_a_stable_golden() -> None:
     fields = {name: sorted(body["properties"]) for name, body in defs.items()}
     assert fields == {
         "meta": ["pytest_fallback", "rootdir", "schema_version", "t", "tool", "total", "version"],
-        "error": ["file", "msg", "scope", "t"],
+        "error": ["file", "id", "msg", "scope", "t"],
         "fail": [
             "file",
             "id",

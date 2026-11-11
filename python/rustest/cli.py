@@ -452,7 +452,7 @@ def build_parser() -> _Parser:
     )
     # `--llm` and its two satellites. The flag *surface* is 0.18's, deliberately -- a project
     # that already scripts `rustest --llm`, `--llm-full` or `--llm-schema` keeps working -- while
-    # the JSONL the first of them emits is schema 2 and shaped to the v2 report. See
+    # the JSONL the first of them emits is schema 3 and shaped to the v2 report. See
     # `docs/guide/llm-output.md` for the contract and `_llm_schema.SCHEMA_VERSION` for why the
     # major version moved.
     _ = parser.add_argument(
@@ -556,6 +556,7 @@ def _run_with(
         pytest_fallback=args.pytest_fallback,
         hook_context=getattr(args, "hook_context", None),
         strict_markers=args.strict_markers,
+        conftest_args=getattr(args, "conftest_args", ()),
     )
 
 
@@ -903,6 +904,72 @@ def _rejected(
     return _hand_to_pytest(parser, raw, user_argv, reasons)
 
 
+def _conftest_args(
+    parser: _Parser, raw: Sequence[str]
+) -> tuple[list[str], list[dict[str, object]], list[str]]:
+    """pytest's two argparse passes, as far as the CLI can take them: ``(rustest's arguments,
+    the segments the workers parse, pass one's positionals)``.
+
+    **Pass one** (``Config._preparse``) knows only the options loaded before any conftest, so
+    an unknown option goes to the extras and the words around it are positionals: they choose
+    the initial conftests and suppress ``testpaths`` (``_decide_args``). That is argparse's
+    ``parse_known_args`` over rustest's own options, returned third (empty: no positional).
+
+    **Pass two** runs after ``pytest_addoption`` and knows the conftests' options, so a word
+    after one may be its value instead (``--db-url x``) -- by the declaration's ``nargs``,
+    which only the workers see. Each unknown option is forwarded with the words up to the next
+    option, each marked a value (it does not exist as a path, ``::`` stripped) or a path; the
+    paths stay in rustest's arguments. The worker re-parses the segment
+    (``_hookshim.HookRunner.parse_args``) and hands off where the declaration disagrees.
+    """
+    known = parser._option_string_actions
+    # pytest's own options and the allowed plugins' cannot be a conftest's (argparse refuses
+    # the declaration), so rustest's parser rejects them here and pytest gets them at once.
+    from ._hookshim import _PLUGIN_FLAGS, _PYTEST_CORE_FLAGS  # pyright: ignore[reportPrivateUsage]
+
+    owned = _PYTEST_CORE_FLAGS.union(*_PLUGIN_FLAGS.values())
+    kept: list[str] = []
+    segments: list[dict[str, object]] = []
+    index = 0
+    while index < len(raw):
+        token = raw[index]
+        index += 1
+        if token == "--":
+            kept.extend(raw[index - 1 :])
+            break
+        if not token.startswith("-") or token == "-":
+            kept.append(token)
+            continue
+        name = token.split("=", 1)[0]
+        action = known.get(name) or (None if token.startswith("--") else known.get(token[:2]))
+        if action is None and name in owned:
+            kept.append(token)
+            continue
+        if action is not None:
+            kept.append(token)
+            attached = "=" in token or (not token.startswith("--") and len(token) > 2)
+            if not attached and index < len(raw) and action.nargs in (None, "?"):
+                if action.nargs is None or not raw[index].startswith("-"):
+                    kept.append(raw[index])
+                    index += 1
+            continue
+        words: list[str] = []
+        while index < len(raw) and not raw[index].startswith("-"):
+            words.append(raw[index])
+            index += 1
+        values = [not os.path.exists(word.split("::", 1)[0]) for word in words]
+        kept.extend(word for word, value in zip(words, values, strict=True) if not value)
+        segments.append({"tokens": [token, *words], "values": values})
+    if not segments:
+        return list(raw), [], []
+    try:
+        first, _ = parser.parse_known_args(list(raw))
+    except _ArgError:  # a bad value of rustest's own: its own usage error, from parse_args
+        return list(raw), [], []
+    paths = first.paths
+    return kept, segments, [] if paths is parser.get_default("paths") else list(paths)
+
+
 def _autoloaded_plugins(blocked: Sequence[str]) -> list[str]:
     from . import _fallback
 
@@ -1113,6 +1180,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if handoff:
         return _hand_to_pytest(parser, raw, user_argv, handoff, "they will be ignored")
 
+    # A conftest's own options (`--runslow`, `--db-url x`) go to the workers, which parse them
+    # against the declarations (`_hookshim.HookRunner.parse_args`); what nobody declares is
+    # handed to pytest from there. Only while the session may still go to pytest, and not
+    # under `--watch`, which refuses such a session up front (`_watch.needs_pytest`).
+    unknown_args: list[dict[str, object]] = []
+    conftest_args: list[str] = []
+    if parser.fallback and "--watch" not in raw:
+        kept, segments, first_pass = _conftest_args(parser, raw)
+        from . import _fallback
+
+        if segments and _fallback.pytest_available():
+            raw, unknown_args, conftest_args = kept, segments, first_pass
+
     try:
         args = parser.parse_args(raw)
     except _ArgError as exc:
@@ -1153,6 +1233,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # every `testpaths` project.
     paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
     args.hook_context = _hook_context(args, user_argv, resolved, raw, blocked_plugins)
+    args.hook_context["unknown_args"] = unknown_args
+    args.conftest_args = conftest_args
 
     if args.watch:
         try:
@@ -1214,6 +1296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     pytest_fallback=args.pytest_fallback,
                     hook_context=getattr(args, "hook_context", None),
                     strict_markers=args.strict_markers,
+                    conftest_args=getattr(args, "conftest_args", ()),
                 )
             )
         except NeedsPytest as needs:

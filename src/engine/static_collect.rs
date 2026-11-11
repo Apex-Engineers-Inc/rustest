@@ -2149,6 +2149,10 @@ impl<'a> Scan<'a> {
         }
 
         let (own_marks, own_cases) = fold_decorators(&decorators);
+        // `_worker.py::_function_keywords`: a decorator mark puts `pytestmark` in the
+        // function's `__dict__` (nothing else can, statically), and a parametrized test
+        // carries the `parametrize` mark name.
+        let marked = !own_marks.is_empty() || own_cases.is_some();
 
         let mut marks = own_marks;
         marks.extend_from_slice(outer_marks);
@@ -2160,6 +2164,13 @@ impl<'a> Scan<'a> {
             (false, None) => Some(outer_cases.to_vec()),
             (false, Some(own)) => Some(cross_class_and_method_cases(outer_cases, &own)),
         };
+        let mut keywords: Vec<String> = Vec::new();
+        if cases.is_some() {
+            keywords.push("parametrize".to_string());
+        }
+        if marked {
+            keywords.push("pytestmark".to_string());
+        }
 
         let is_static_method = decorators.contains(&Decor::StaticMethod);
         let requested = requested_argnames(func, owner.is_some(), is_static_method);
@@ -2185,6 +2196,7 @@ impl<'a> Scan<'a> {
                 .filter(|name| !bound.contains(name))
                 .cloned()
                 .collect(),
+            keywords: keywords.clone(),
             tier: Tier::Static,
             record: None,
         };

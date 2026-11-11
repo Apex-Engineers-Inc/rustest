@@ -45,6 +45,14 @@ dev = [
     # pytest-cov, which is deliberately NOT installed), so its presence changes nothing about
     # what the pytest leg of the conformance gates loads.
     "coverage>=7.6",
+    # `python/rustest/_hypothesis.py` ports hypothesis's pytest plugin, and the corpus's
+    # `hypothesis/*` cases grade that port against the real one. Unlike numpy, hypothesis
+    # DOES register a pytest plugin, so the pytest leg of every gate loads it: it marks
+    # `@given` tests, checks `@pytest.fixture` against them, registers the `hypothesis`
+    # marker and warns of an unpruned `.hypothesis` directory, and its other hooks act only
+    # where a test imports hypothesis. No ceiling: `python/tests/test_fallback.py`
+    # fails when the installed release is one `_hypothesis.supported` does not accept.
+    "hypothesis>=6.140",
     "maturin>=1.4,<2",
     # `conformance/corpus/builtins/approx-numpy` grades `ndarray == approx(...)` -- the
     # dispatch mechanism (`__array_ufunc__ = None` / `__array_priority__ = 100`) that cost

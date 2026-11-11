@@ -59,7 +59,7 @@ use crate::engine::collect::{
     ItemEffects, Worker, WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
 };
 use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
-use crate::engine::protocol::{CoverageWire, RecordedWarning};
+use crate::engine::protocol::{CoverageWire, LateTeardown, RecordedWarning};
 use crate::engine::selection::{select_mask, SelectionError};
 
 /// `_worker.py::SHUTDOWN_TEARDOWN_EXIT`.
@@ -151,6 +151,9 @@ pub struct RunOptions {
     pub hook_context: Option<serde_json::Value>,
     /// `--strict-markers` / `--strict` (protocol v14).
     pub strict_markers: bool,
+    /// pytest's first-pass positionals when they differ from `args` (a conftest option's
+    /// value word): what chooses the initial conftests. Empty: `args` does.
+    pub conftest_args: Vec<PathBuf>,
 }
 
 #[cfg(test)]
@@ -171,6 +174,7 @@ impl RunOptions {
             pytest_fallback: false,
             hook_context: None,
             strict_markers: false,
+            conftest_args: Vec::new(),
         }
     }
 }
@@ -263,6 +267,11 @@ pub struct TestOutcome {
     /// The warnings recorded while this test ran, in order. Omitted when there were none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<RecordedWarning>,
+    /// A fixture teardown this test's teardown ran failed: an **error of its own**, counted
+    /// in `summary.error` beside the test's `status`, as pytest counts `1 passed, 1 error`.
+    /// Omitted when there was none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown_error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +333,7 @@ impl RunSummary {
                 TestStatus::XPassed => summary.xpassed += 1,
                 TestStatus::Error => summary.error += 1,
             }
+            summary.error += usize::from(outcome.teardown_error.is_some());
         }
         summary
     }
@@ -716,6 +726,20 @@ fn modify_items(
         .map_or(Modified::Unchanged, Modified::Effects))
 }
 
+/// Give each late teardown error (a scope drained after its test's result went out) to the
+/// test that owns it: the last result with its id, as pytest reports the error in that test's
+/// teardown. Two in one teardown are one error, as pytest's teardown raises them together.
+fn attach_late_teardowns(results: &mut [(usize, TestOutcome)], late: Vec<LateTeardown>) {
+    for LateTeardown { id, message } in late {
+        if let Some((_, outcome)) = results.iter_mut().rev().find(|(_, test)| test.id == id) {
+            outcome.teardown_error = Some(match outcome.teardown_error.take() {
+                Some(earlier) => format!("{earlier}\n{message}"),
+                None => message,
+            });
+        }
+    }
+}
+
 /// Have every worker import the files the others own ([`ToWorker::Import`]), and wait.
 fn import_everywhere(
     txs: &[Sender<ToWorker>],
@@ -899,6 +923,7 @@ fn run_attempt(
         options.coverage.clone(),
         options.hook_context.clone(),
         options.strict_markers,
+        options.conftest_args.clone(),
     )?;
     let previously_failed = read_last_failed(&dispatch.rootdir_path);
 
@@ -1317,10 +1342,10 @@ fn record_last_failed(
     previous: &std::collections::HashSet<String>,
     report: &RunReport,
 ) {
-    let outcomes = report
-        .tests
-        .iter()
-        .map(|test| (test.id.clone(), test.status.is_failure()));
+    let outcomes = report.tests.iter().map(|test| {
+        let failed = test.status.is_failure() || test.teardown_error.is_some();
+        (test.id.clone(), failed)
+    });
     let errors = report
         .collection_errors
         .iter()
@@ -1606,7 +1631,10 @@ fn finish(
         residue.warnings.len() + tests.iter().map(|test| test.warnings.len()).sum::<usize>();
     // A teardown failure that belongs to no test is still a failure: pytest reports the
     // same shape (`1 passed, 1 error`) and exits 1.
-    let failures = tests.iter().filter(|test| test.status.is_failure()).count()
+    let failures = tests
+        .iter()
+        .filter(|test| test.status.is_failure() || test.teardown_error.is_some())
+        .count()
         + residue.teardown_errors.len();
     let exit = exit_code(
         tests.len(),
@@ -1766,6 +1794,7 @@ fn worker_life(
             }
             results.push((*slot, outcome));
         }
+        attach_late_teardowns(&mut results, worker.take_late_teardowns());
         let stopped_in_batch = match batch {
             Ok(stopped) => stopped,
             // `pytest.exit()`.  The worker is gone and the test that called it gets no
@@ -1794,6 +1823,7 @@ fn worker_life(
     }
 
     let teardown = worker.shutdown_run()?;
+    attach_late_teardowns(&mut results, worker.take_late_teardowns());
     let stderr = worker.take_stderr();
     // The shutdown teardown ran under the last test's warnings window (as pytest's
     // `nextitem=None` teardown does), so what it recorded is that test's.
@@ -1826,6 +1856,7 @@ mod tests {
             stdout: None,
             stderr: None,
             warnings: Vec::new(),
+            teardown_error: None,
         }
     }
 
@@ -2142,6 +2173,7 @@ mod tests {
                     stdout: Some("computing\n".to_string()),
                     stderr: None,
                     warnings: Vec::new(),
+                    teardown_error: None,
                 },
             ],
             collection_errors: Vec::new(),
@@ -2432,12 +2464,11 @@ def test_error(boom):
         assert_eq!(report.exit_code, 0);
     }
 
-    /// A module-scoped fixture whose teardown raises has no test left to own it once the
-    /// last test is answered: the worker says `bye` and exits 3.  The run must be **red**,
-    /// at exit **1** (a broken teardown is pytest's `1 passed, 1 error`), and must not be
-    /// mistaken for the internal error that exit 3 means at process level.
+    /// A module-scoped fixture whose teardown raises at shutdown, after the last test was
+    /// answered: `bye` names that test, which keeps its status and gains the error, as pytest's
+    /// `nextitem=None` teardown gives it (`1 passed, 1 error`, exit **1**).
     #[test]
-    fn a_shutdown_teardown_failure_reaches_the_report_and_reddens_the_run() {
+    fn a_shutdown_teardown_failure_is_the_last_tests_error() {
         let tmp = tree(&[(
             "test_td.py",
             "import pytest\n\n\n@pytest.fixture(scope='module')\ndef broken():\n    yield 1\n    raise ValueError('teardown boom')\n\n\ndef test_one(broken):\n    assert broken == 1\n",
@@ -2449,12 +2480,13 @@ def test_error(boom):
             statuses(&report),
             vec![("test_td.py::test_one".to_string(), "passed")]
         );
-        assert_eq!(report.teardown_errors.len(), 1, "{:?}", report);
-        assert!(
-            report.teardown_errors[0].contains("teardown"),
-            "{:?}",
-            report
-        );
+        assert!(report.teardown_errors.is_empty(), "{:?}", report);
+        let error = report.tests[0]
+            .teardown_error
+            .as_deref()
+            .unwrap_or_default();
+        assert!(error.contains("teardown boom"), "{:?}", report);
+        assert_eq!((report.summary.passed, report.summary.error), (1, 1));
         assert_eq!(report.exit_code, 1);
     }
 
@@ -2841,7 +2873,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":14}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":15}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -4148,6 +4180,7 @@ def pytest_collection_modifyitems(config, items):
             param_id: None,
             marks: Vec::new(),
             fixtures: Vec::new(),
+            keywords: Vec::new(),
             tier: crate::engine::manifest::Tier::Dynamic,
             record: None,
         }

@@ -314,21 +314,41 @@ def test_the_machine_outputs_asked_for_travel_with_the_handoff(
     ]
 
 
-def test_an_unknown_flag_is_handed_over_and_an_abbreviation_is_unknown(
+def _forwarded(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """What the CLI hands the workers to parse against the conftests' declarations."""
+    seen: list[object] = []
+
+    def fake_run(*args: object, hook_context: str | None = None, **kwargs: object) -> str:
+        seen.append(json.loads(hook_context or "{}").get("unknown_args"))
+        return _report()
+
+    monkeypatch.setattr("rustest.core.rust", type("R", (), {"run": staticmethod(fake_run)}))
+    return seen
+
+
+def test_an_unknown_flag_goes_to_the_workers_and_an_abbreviation_is_unknown(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     """``--report=html`` could be a conftest option; rustest must not read it as
-    ``--report-json`` (argparse abbreviation), exactly as pytest's own parser does not."""
+    ``--report-json`` (argparse abbreviation), exactly as pytest's own parser does not. Both
+    go to the workers, which parse them against the conftests' declarations."""
+    seen = _handoff(monkeypatch)
+    forwarded = _forwarded(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["--report=html", "--runslow"]) == 0
+    assert seen == [] and forwarded == [
+        [{"tokens": ["--report=html"], "values": []}, {"tokens": ["--runslow"], "values": []}]
+    ]
+
+
+def test_a_pytest_option_rustest_does_not_have_is_handed_over_at_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """No conftest can declare ``--doctest-modules`` (pytest owns it), so nothing is forwarded."""
     seen = _handoff(monkeypatch)
     monkeypatch.chdir(tmp_path)
-    assert cli.main(["--report=html", "--runslow"]) == 17
-    assert seen == [
-        (
-            ["--report=html", "--runslow"],
-            ["--report=html is not a rustest option", "--runslow is not a rustest option"],
-            None,
-        )
-    ]
+    assert cli.main(["--doctest-modules"]) == 17
+    assert seen == [(["--doctest-modules"], ["--doctest-modules is not a rustest option"], None)]
 
 
 def test_a_reason_that_came_from_addopts_names_the_ini(
@@ -410,14 +430,15 @@ def test_pytest_addopts_is_spliced_between_addopts_and_the_command_line(
     assert keywords == ["env k", "cli"] and seen == []
 
 
-def test_an_option_rustest_does_not_know_in_pytest_addopts_is_handed_over_and_named(
+def test_a_conftest_option_in_pytest_addopts_goes_to_the_workers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     seen = _handoff(monkeypatch)
+    forwarded = _forwarded(monkeypatch)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTEST_ADDOPTS", "--runslow")
-    assert cli.main(["-x"]) == 17
-    assert seen == [(["-x"], ["--runslow is not a rustest option (from PYTEST_ADDOPTS)"], None)]
+    assert cli.main(["-x"]) == 0
+    assert seen == [] and forwarded == [[{"tokens": ["--runslow"], "values": []}]]
 
 
 def test_pytest_addopts_is_ignored_as_before_under_no_pytest_fallback(
@@ -508,18 +529,46 @@ def _rustest(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return run([sys.executable, "-m", "rustest", *args], tree, env)
 
 
-def test_an_option_only_a_conftest_defines_runs_the_whole_session_under_pytest(tmp_path: Path):
-    """``--runslow`` is not a rustest option; pytest knows it from the conftest."""
+def test_an_option_only_a_conftest_defines_runs_natively(tmp_path: Path):
+    """``--runslow`` is not a rustest option; the conftest declares it, so the workers parse
+    it as pytest's second argparse pass would (see test_conftest_args.py)."""
     tree = make_tree(tmp_path, "p1_flag", _P1)
 
     result = _rustest(tree, "--runslow")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    # pytest's own banner and summary, on stdout: rustest prints neither, so this is the real one
-    assert "test session starts" in result.stdout and "2 passed" in result.stdout
-    assert result.stderr.startswith("rustest: handing this session to pytest: ")
-    assert "--runslow is not a rustest option" in result.stderr
-    assert "--no-pytest-fallback" not in result.stderr  # with it, --runslow is a usage error
+    assert "2 passed" in result.stderr  # rustest's summary line
+    assert "handing this session to pytest" not in result.stderr
+
+
+_SIDE_EFFECT = (
+    "from hypothesis import strategies as st\n\nst.deferred(st.integers).wrapped_strategy\n"
+)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # no hook: the conftest still imports inside the plugin's initialization window
+        {"conftest.py": _SIDE_EFFECT},
+        # a hook: the same window, through the hook runtime
+        {"conftest.py": _SIDE_EFFECT + "\n\ndef pytest_configure(config):\n    pass\n"},
+        # an unpruned `.hypothesis` directory: the plugin warns of it
+        {"pytest.ini": "[pytest]\nnorecursedirs = build\n", ".hypothesis/examples/x": ""},
+    ],
+    ids=["side-effect", "side-effect-with-hook", "hypothesis-dir"],
+)
+def test_a_warning_hypothesiss_plugin_gives_hands_the_session_to_pytest(
+    tmp_path: Path, files: dict[str, str]
+):
+    """pytest counts these warnings in its summary (and a `filterwarnings = error` makes them
+    errors), which rustest does not reproduce: review M7, M8."""
+    tree = make_tree(tmp_path, "hyp_warn", {**files, "test_a.py": "def test_a():\n    pass\n"})
+
+    result = _rustest(tree)
+
+    assert "handing this session to pytest: rustest's hook runtime: hypothesis" in result.stderr
+    assert "1 passed, 1 warning" in result.stdout, result.stdout + result.stderr
 
 
 def test_p_plugin_hands_the_session_to_pytest_and_the_plugin_acts(tmp_path: Path):
@@ -558,7 +607,7 @@ def test_a_typo_gets_pytests_own_usage_error(tmp_path: Path):
     result = _rustest(tree, "--runslwo")
 
     assert result.returncode == 4
-    assert "--runslwo is not a rustest option" in result.stderr
+    assert "--runslwo is not an option rustest or a conftest declares" in result.stderr
     # Only pytest's usage line has `[file_or_dir]`; rustest's own error would say `rustest: error`.
     assert "[options] [file_or_dir]" in result.stderr and "rustest: error" not in result.stderr
 
@@ -816,8 +865,10 @@ def test_a_rerun_is_not_a_skip():
 
 def test_phase_mapping_matches_pytest():
     assert _status_of(_rep("setup", "failed"))["status"] == "error"
-    assert _status_of(_rep("call", "passed"), _rep("teardown", "failed"))["status"] == "error"
-    assert _status_of(_rep("call", "failed"), _rep("teardown", "failed"))["status"] == "error"
+    # a failed teardown is an error of its own beside the status: pytest's `1 passed, 1 error`
+    for call, status in (("passed", "passed"), ("failed", "failed")):
+        torn = _status_of(_rep("call", call), _rep("teardown", "failed"))
+        assert (torn["status"], torn.get("teardown_error")) == (status, "boom")
     # strict xpass is a plain failure with no `wasxfail`; a lenient one is xpassed
     assert _status_of(_rep("call", "failed"))["status"] == "failed"
     assert _status_of(_rep("call", "passed", wasxfail="odd"))["status"] == "xpassed"
@@ -1013,10 +1064,42 @@ def test_only_the_judged_safe_plugins_are_allowed():
         "icdiff",
         "rich",
         "codeblocks",
+        "hypothesispytest",  # its outcome-changing parts are ported (`_hypothesis`)
     }
     # Each of these was probed or read and found able to change an outcome or an id.
-    for unsafe in ("hypothesispytest", "anyio", "timeout", "inline_snapshot", "randomly"):
+    for unsafe in ("anyio", "timeout", "inline_snapshot", "randomly"):
         assert unsafe not in _fallback.SAFE_PLUGINS
+
+
+def test_the_installed_hypothesis_is_one_rustest_emulates() -> None:
+    """The dev dependency has no ceiling: a release whose plugin changed fails here, before a
+    gate grades the port against a plugin it does not port. Add its fingerprint once the
+    port matches it (``_hypothesis.FINGERPRINTS``)."""
+    from importlib.metadata import version
+
+    from rustest import _hypothesis
+
+    installed = version("hypothesis")
+    assert _hypothesis.supported(f"hypothesis-{installed}"), installed
+
+
+def test_past_the_verified_releases_only_an_unchanged_plugin_is_emulated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rustest import _hypothesis
+
+    assert _hypothesis.supported("hypothesis-6.140.0")
+    assert not _hypothesis.supported("hypothesis-6.139.9")
+    assert _hypothesis.supported("hypothesis-6.999.0")  # the installed plugin is a verified one
+    monkeypatch.setattr(_hypothesis, "FINGERPRINTS", frozenset())
+    assert not _hypothesis.supported("hypothesis-6.999.0")
+    monkeypatch.setattr(
+        _fallback, "installed_plugins", lambda: [("hypothesispytest", "hypothesis-6.999.0")]
+    )
+    assert _fallback.autoload_reasons([]) == [
+        "hypothesis's pytest plugin (hypothesis-6.999.0) is installed, and rustest emulates it "
+        + "only for hypothesis 6.140 to 6.170.x and later releases whose plugin is unchanged"
+    ]
 
 
 def test_an_unknown_plugin_is_a_reason_and_pytests_own_switches_remove_it(

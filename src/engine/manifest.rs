@@ -93,6 +93,11 @@ pub struct CollectedTest {
     /// Direct fixture parameter names in signature order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixtures: Vec<String>,
+    /// What `-k` matches beyond the node names and the marks: the test function's
+    /// `__dict__` keys (`pytestmark` when a decorator marked it) and `parametrize` for a
+    /// parametrized test (`KeywordMatcher.from_item`). Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
     /// The hook runtime's record of this item (`_hookshim.ItemRecord`, protocol v13), sent
     /// only when a `pytest_collection_modifyitems` is registered. Forwarded to the workers
     /// verbatim at the barrier; never read here and never written to a manifest or a cache.
@@ -200,6 +205,7 @@ mod tests {
                     param_id: None,
                     marks: Vec::new(),
                     fixtures: Vec::new(),
+                    keywords: Vec::new(),
                     tier: Tier::Dynamic,
                     record: None,
                 },
@@ -222,6 +228,7 @@ mod tests {
                         },
                     ],
                     fixtures: vec!["tmp_path".to_string(), "capsys".to_string()],
+                    keywords: vec!["parametrize".to_string(), "pytestmark".to_string()],
                     tier: Tier::Dynamic,
                     record: None,
                 },
@@ -233,6 +240,7 @@ mod tests {
                     param_id: None,
                     marks: Vec::new(),
                     fixtures: Vec::new(),
+                    keywords: Vec::new(),
                     tier: Tier::Static,
                     record: None,
                 },
@@ -267,7 +275,7 @@ mod tests {
 
         assert_eq!(
             encoded,
-            r#"{"schema_version":2,"rootdir":"/repo","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"},{"id":"tests/test_math.py::TestBox::test_method[x-1]","path":"tests/test_math.py","qualname":"TestBox.test_method","class_name":"TestBox","param_id":"x-1","marks":[{"name":"skipif","args":[true],"kwargs":{"reason":"needs windows","strict":true}},{"name":"slow"}],"fixtures":["tmp_path","capsys"]},{"id":"tests/test_static.py::test_parsed","path":"tests/test_static.py","qualname":"test_parsed","tier":"s"}],"errors":[{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}]}"#
+            r#"{"schema_version":2,"rootdir":"/repo","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"},{"id":"tests/test_math.py::TestBox::test_method[x-1]","path":"tests/test_math.py","qualname":"TestBox.test_method","class_name":"TestBox","param_id":"x-1","marks":[{"name":"skipif","args":[true],"kwargs":{"reason":"needs windows","strict":true}},{"name":"slow"}],"fixtures":["tmp_path","capsys"],"keywords":["parametrize","pytestmark"]},{"id":"tests/test_static.py::test_parsed","path":"tests/test_static.py","qualname":"test_parsed","tier":"s"}],"errors":[{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}]}"#
         );
     }
 
@@ -297,6 +305,7 @@ mod tests {
             param_id: None,
             marks: Vec::new(),
             fixtures: Vec::new(),
+            keywords: Vec::new(),
             tier: Tier::Static,
             record: None,
         };

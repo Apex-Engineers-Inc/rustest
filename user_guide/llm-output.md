@@ -9,7 +9,7 @@ rustest tests/ --llm
 ```
 
 ```json
-{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":3,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 {"t":"fail","id":"tests/test_auth.py::test_login","file":"tests/test_auth.py","line":42,"status":"failed","msg":"Traceback (most recent call last):\n  File \"/repo/tests/test_auth.py\", line 42, in test_login\n    assert response.status == 200\nAssertionError: assert 401 == 200","stdout":"POST /login user=admin"}
 {"t":"summary","total":412,"passed":411,"failed":1,"skipped":0,"xfailed":0,"xpassed":0,"error":0,"deselected":0,"collection_errors":0,"duration":1.24,"exit_code":1}
 ```
@@ -63,7 +63,7 @@ absent, the run was interrupted, a signal your tooling can rely on.
 ### `meta`
 
 ```json
-{"t":"meta","schema_version":2,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":3,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 ```
 
 | Field | Meaning |
@@ -93,18 +93,26 @@ absent, the run was interrupted, a signal your tooling can rely on.
 
 ### `error`
 
-A failure with no node ID to hang it on.
+A failure that is not a test's own outcome: a file that never imported, or a fixture
+teardown that raised (pytest's `ERROR at teardown of test_x`, an error beside that test's own
+status, so `1 passed, 1 error`).
 
 ```json
 {"t":"error","scope":"collection","file":"tests/test_broken.py","msg":"SyntaxError: unexpected indent (line 15)"}
-{"t":"error","scope":"teardown","msg":"session fixture 'db': RuntimeError: pool already closed"}
+{"t":"error","scope":"teardown","id":"tests/test_db.py::test_last","msg":"RuntimeError: pool already closed"}
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `scope` | `collection` means the file never imported, so none of its tests ran. `teardown` means a module- or session-scoped fixture raised at shutdown, after the last test it owned had already been reported. |
-| `file` | Present for `scope: "collection"` only. A teardown failure the engine could not attribute has no path, and inventing one would be a guess. |
+| `scope` | `collection` means the file never imported, so none of its tests ran. `teardown` means a fixture raised while a test's teardown ran it: the test's own, or a class-, module- or session-scoped fixture whose scope ended with that test. |
+| `id` | For `scope: "teardown"`, the test whose teardown raised. Absent only when a worker died and the engine could not say. |
+| `file` | Present for `scope: "collection"` only. |
 | `msg` | The engine's message, verbatim. |
+
+::: {.callout-note title="Changed in schema 3"}
+`id` is new. Schema 2 reported a teardown error with no test to hang it on; schema 3 names the
+test whose teardown raised, as pytest's `ERROR at teardown of` does. Nothing else changed.
+:::
 
 ::: {.callout-warning title="A collection error interrupts the run"}
 Exactly as under pytest: one unimportable file exits 2 even when other files

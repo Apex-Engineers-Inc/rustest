@@ -35,6 +35,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -484,27 +485,17 @@ def test_exit_codes_match_pytest(
     assert report["exit_code"] == expected
 
 
-def test_a_passing_body_with_a_broken_teardown_agrees_on_the_exit_code_only(
+def test_a_passing_body_with_a_broken_teardown_is_pytests_passed_and_error(
     tmp_path: Path,
 ) -> None:
-    """The one exit-code row whose *buckets* cannot match, stated rather than skipped.
-
-    pytest's summary counts **reports**: ``runtestprotocol`` produces up to three per test,
-    so a passing body with a raising teardown is ``1 passed, 1 error``. The v2 wire carries
-    one **reduced** status per test -- the worker collapses the three phases before the
-    result is ever sent (`src/engine/protocol.rs::TestResult`), and the earliest non-plain-pass
-    phase wins -- so the same test is exactly ``1 error``.
-
-    Both are right about the run: exit 1 either way, and neither reports a green test. The
-    divergence is one of arithmetic, and it is pinned here so a future change to the
-    reduction cannot alter it silently.
-    """
+    """pytest's summary counts **reports**: a passing body with a raising teardown is
+    ``1 passed, 1 error``. The test keeps its ``passed`` status and the teardown travels as
+    its ``teardown_error``, counted as an error of its own, so the buckets match too."""
     tree = _tree(tmp_path, "teardown-error", {"test_a.py": TEARDOWN_ERROR_MODULE})
     counts, report = _assert_matches_pytest(tree, counts=False)
 
     assert report["exit_code"] == 1
-    assert counts["error"] == 1
-    assert counts["passed"] == 0
+    assert (counts["passed"], counts["error"]) == (1, 1)
 
     oracle = _run_pytest(tree, [])
     assert _pytest_counts(oracle.stdout) == {**dict.fromkeys(_BUCKETS, 0), "passed": 1, "error": 1}
@@ -825,9 +816,9 @@ def test_boundary_teardown_output_is_surfaced_but_never_fails_the_run(tmp_path: 
 
 
 def test_a_teardown_failure_after_the_last_test_reddens_the_run(tmp_path: Path) -> None:
-    """The false green this whole path exists to prevent: a module-scoped teardown that
-    raises has no test left to own it, so without the worker's exit-3 channel the run would
-    report ``1 passed`` and exit 0. pytest reports ``1 passed, 1 error`` and exits 1."""
+    """The false green this path exists to prevent: a module-scoped teardown that raises
+    after the last test was answered. pytest reports ``1 passed, 1 error`` and exits 1, the
+    error being that last test's (its ``nextitem=None`` teardown); so does rustest."""
     tree = _tree(
         tmp_path,
         "lateteardown",
@@ -845,13 +836,10 @@ def test_a_teardown_failure_after_the_last_test_reddens_the_run(tmp_path: Path) 
     assert oracle.returncode == 1, _context("pytest", oracle)
     assert ours.returncode == 1, _context("v2", ours)
 
-    report: dict[str, object] = json.loads(report_path.read_text(encoding="utf-8"))
-    teardown_errors = report["teardown_errors"]
-    assert isinstance(teardown_errors, list)
-    assert len(teardown_errors) == 1
-    summary = report["summary"]
-    assert isinstance(summary, dict)
-    assert summary["passed"] == 1
+    report: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "teardown_errors" not in report
+    assert "teardown boom" in report["tests"][0]["teardown_error"]
+    assert (report["summary"]["passed"], report["summary"]["error"]) == (1, 1)
 
 
 # --------------------------------------------------------------------------------------
@@ -1461,11 +1449,9 @@ def test_the_stopped_early_banner_is_not_buried_by_the_failure_block(tmp_path: P
 
 
 def test_teardown_diagnostics_precede_the_summary_on_a_merged_stream(tmp_path: Path) -> None:
-    """``worker_stderr`` and ``teardown_errors`` are two more stderr writes on the same path.
-
-    A module-scoped teardown that raises after the last test produces both, and a failing test
-    alongside it produces the stdout ``FAILURES`` block they were landing on top of.
-    """
+    """A module-scoped teardown that raises after the last test, beside a failing test: the
+    teardown is in the ``ERRORS`` block, which pytest prints before ``FAILURES``, and the
+    summary line stays last on a merged stream."""
     tree = _tree(
         tmp_path,
         "ordering4",
@@ -1481,13 +1467,7 @@ def test_teardown_diagnostics_precede_the_summary_on_a_merged_stream(tmp_path: P
 
     merged = ours.stdout
     assert ours.returncode == 1, _merged_context(ours)
-    assert _index_of(merged, "FAILURES") < _index_of(merged, "teardown boom"), _merged_context(ours)
-    # Asserted by *shape* -- "the last line is a summary line" -- rather than by bucket text.
-    # This tree also trips a separate, **known and deliberate** divergence: an unattributable
-    # teardown failure reddens the exit code but is not folded into the counts, where pytest
-    # adds ``1 error`` (``_run_summary`` takes only ``collection_errors``; the reasoning is in
-    # ``conformance/harness/grade.py``). Restating that wording here would silently pin a
-    # decision owned elsewhere -- ordering is what this test is for.
+    assert _index_of(merged, "teardown boom") < _index_of(merged, "FAILURES"), _merged_context(ours)
     last = _last_line(merged)
     assert _SUMMARY_RE.search(last) and re.search(r" in \d+\.\d\ds$", last), _merged_context(ours)
 

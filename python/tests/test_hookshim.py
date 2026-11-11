@@ -230,7 +230,7 @@ def test_pillow_configure_registers_the_markers_real_pytest_registers(tmp_path: 
 @pytest.mark.parametrize("autoload", [True, False], ids=["plugins", "no-plugins"])
 def test_getini_markers_is_pytests_list(tmp_path: Path, autoload: bool) -> None:
     """The ini's lines, a conftest's, then the loaded plugins' and pytest's own, in real
-    pytest's order (review S5); with two marker-adding plugins the order is not known here."""
+    pytest's order (review S5), several plugins' lines included."""
     from rustest._fallback import installed_plugins
 
     source = """

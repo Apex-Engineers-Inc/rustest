@@ -50,10 +50,9 @@ _WINDOWS = sys.platform == "win32"
 #: | ``icdiff`` | rewrites the text of a failed assertion (``pytest_assertrepr_compare``), never whether it fails; its options are flags (unknown ones hand off) |
 #: | ``rich`` (pytest-rich) | terminal reporting, and only with ``--rich`` (an unrecognized flag, so it hands off by itself) |
 #: | ``codeblocks`` | collects markdown fences only with ``--codeblocks``, which rustest implements itself |
+#: | ``hypothesispytest`` | what it does to outcomes is ported (``_hypothesis``), for the releases checked there and later ones whose plugin is unchanged: another hands off (:func:`autoload_reasons`), as do its ``--hypothesis-*`` flags |
 #:
-#: Judged and **not** allowed, with the evidence: ``hypothesispytest`` (its
-#: ``pytest_runtest_call`` raises ``FailedHealthCheck`` for ``@given`` with a function-scoped
-#: fixture -- pytest fails the test, the engine passes it; probed), ``anyio`` (a
+#: Judged and **not** allowed, with the evidence: ``anyio`` (a
 #: ``@pytest.mark.anyio`` test is run once per backend with ``[asyncio]``/``[trio]`` ids, so
 #: even the node ids differ; ``anyio_backend`` is a fixture rustest lacks), ``timeout`` (the
 #: ``timeout`` mark and ini key act with no flag, and a mark cannot be found without
@@ -71,6 +70,7 @@ SAFE_PLUGINS: Final = frozenset(
         "icdiff",
         "rich",
         "codeblocks",
+        "hypothesispytest",
     }
 )
 
@@ -81,7 +81,9 @@ def installed_plugins() -> list[tuple[str, str]]:
     Read straight from ``*.dist-info/entry_points.txt`` rather than through
     ``importlib.metadata``, which builds a ``Distribution`` per installed package: this runs on
     every invocation, and a directory listing plus one small file read per package is all it
-    needs.  The first entry point of a name wins, as in pluggy.
+    needs.  The first entry point of a name wins, as in pluggy, and the order is pytest's
+    registration order (``sys.path``, then each directory's listing, as ``importlib.metadata``
+    reads it): the order the plugins' ``pytest_configure`` lines land in ``getini("markers")``.
     """
     found: dict[str, str] = {}
     for entry in sys.path:
@@ -106,7 +108,7 @@ def installed_plugins() -> list[tuple[str, str]]:
                     in_group = line == "[pytest11]"
                 elif in_group and "=" in line and not line.startswith("#"):
                     found.setdefault(line.partition("=")[0].strip(), name.rpartition(".")[0])
-    return sorted(found.items())
+    return list(found.items())
 
 
 def autoload_reasons(blocked: Sequence[str]) -> list[str]:
@@ -117,11 +119,19 @@ def autoload_reasons(blocked: Sequence[str]) -> list[str]:
     """
     if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
         return []
+    from ._hypothesis import VERIFIED, supported
+
+    low, high = (".".join(map(str, bound)) for bound in VERIFIED)
     return [
-        f"the pytest plugin {name} ({dist}) is installed and rustest does not run it"
-        + f" (`-p no:{name}` disables it)"
+        (
+            f"hypothesis's pytest plugin ({dist}) is installed, and rustest emulates it only"
+            + f" for hypothesis {low} to {high}.x and later releases whose plugin is unchanged"
+            if name == "hypothesispytest"
+            else f"the pytest plugin {name} ({dist}) is installed and rustest does not run it"
+            + f" (`-p no:{name}` disables it)"
+        )
         for name, dist in installed_plugins()
-        if name not in SAFE_PLUGINS
+        if (name not in SAFE_PLUGINS or (name == "hypothesispytest" and not supported(dist)))
         and name not in blocked
         and not (name.startswith("pytest_") and name[7:] in blocked)
     ]

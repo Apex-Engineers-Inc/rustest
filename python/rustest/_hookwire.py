@@ -132,17 +132,17 @@ def start(
     """
     global _session
     entries = message.get("conftests")
-    if not isinstance(entries, list) or not entries:
-        return None
-    from . import _builtins
-    from ._hookshim import HookRunner
-
     raw_context = message.get("hook_context")
     context: dict[str, object] = (
         {str(k): v for k, v in cast("dict[object, object]", raw_context).items()}
         if isinstance(raw_context, dict)
         else {}
     )
+    if not message.get("hook_runtime") and not context.get("unknown_args"):
+        return None  # no conftest can define a hook, and nothing to parse against one
+    from . import _builtins
+    from ._hookshim import HookRunner
+
     raw_options = context.get("options")
     options: dict[str, object] = (
         {str(k): v for k, v in cast("dict[object, object]", raw_options).items()}
@@ -166,7 +166,7 @@ def start(
     _builtins.set_hooks(_session)
     initial = [
         Path(str(cast("dict[str, object]", entry)["path"]))
-        for entry in cast("list[object]", entries)
+        for entry in cast("list[object]", entries or [])
         if isinstance(entry, dict) and cast("dict[str, object]", entry).get("initial")
     ]
     _session.initial.update(os.path.normcase(str(path)) for path in initial)
@@ -177,6 +177,10 @@ def start(
         except Exception:  # noqa: BLE001 - recorded by the worker as an import failure
             pass
     _session.loading_initial = False
+    # pytest's second argparse pass: what rustest's CLI did not know, against the declarations
+    unknown = context.get("unknown_args")
+    if isinstance(unknown, list):
+        runner.parse_args(cast("list[Mapping[str, Any]]", unknown))
     runner.configure()
     runner.sessionstart()
     _sync_marks(runner)
@@ -231,23 +235,21 @@ def build_record(
     path: Path,
     rootdir: Path,
     parts: Sequence[str],
-    func: object,
+    function_attrs: Sequence[str],
     marks: Sequence[_MarkLike],
     own_count: int,
     parametrized: bool,
     reordered: bool,
     kind: str,
-    has_function_marks: bool,
 ) -> dict[str, Any]:
     """The :class:`ItemRecord` of one collected test, in wire form.
 
     *marks* are in pytest's ``iter_markers`` order **minus** the ``parametrize`` marks (the worker
     cannot place them: ``parametrized`` says they are missing): the function's own decorators, then
-    the parameter set's marks, then the enclosing classes' and the module's.  Anything the wire
-    cannot carry exactly makes the record unusable (kind ``"unsendable"``), which hands the session
-    to pytest the moment a hook is shown it.
+    the parameter set's marks, then the enclosing classes' and the module's.  A mark argument the
+    wire cannot carry exactly travels as an opaque value: a hook that reads it hands off.
     """
-    from ._hookshim import ItemRecord, Mark, mark_is_wire_exact
+    from ._hookshim import ItemRecord, Mark
 
     try:
         relative = path.relative_to(rootdir).parts
@@ -256,27 +258,18 @@ def build_record(
     segment = nodeid.rsplit("::", 1)[-1]
     name = parts[-1] if parts else segment
     param_id = segment[len(name) + 1 : -1] if segment.startswith(name + "[") else None
-    attributes = {
-        key
-        for key in getattr(func, "__dict__", {})
-        if isinstance(key, str) and not key.startswith("__rustest_")
-    }
-    if has_function_marks:
-        attributes.add("pytestmark")  # pytest's decorators leave it on the function
     hook_marks = tuple(Mark(m.name, tuple(m.args), dict(m.kwargs)) for m in marks)
-    if not all(mark_is_wire_exact(m) for m in hook_marks):
-        kind = "unsendable"
     record = ItemRecord(
         nodeid=nodeid,
         name=segment,
         path=str(path),
-        markers=hook_marks if kind != "unsendable" else (),
+        markers=hook_marks,
         own_marker_count=own_count,
         rootdir_name=rootdir.name,
         dir_names=tuple(relative[:-1]),
         module_name=relative[-1],
         class_names=tuple(parts[:-1]),
-        function_attrs=frozenset(attributes),
+        function_attrs=frozenset(function_attrs),
         param_id=param_id,
         kind=kind,
         parametrized=parametrized,

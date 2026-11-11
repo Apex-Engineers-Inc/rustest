@@ -68,14 +68,14 @@ file, or use [`--llm`](llm-output.md) if a machine is consuming it.
 via `request.param`, which is pytest's rule. It used to be rustest-specific: the parameter
 *value* was read directly as a fixture name. See [Parametrization](parametrization.md).
 
-### `--llm` output is schema 2
+### `--llm` output is schema 3
 
 If you have tooling pinned to rustest 0.18's `--llm` JSONL, it will not read this output. The
-`meta` line now carries `"schema_version": 2` and the failure objects changed shape: one
+`meta` line now carries `"schema_version": 3` and the failure objects changed shape: one
 whole `msg` instead of six shredded fields, all six status buckets in the summary, and `line`
 omitted rather than reported as `0` when there is no frame. A consumer pinned to version 1
 should **refuse** rather than half-read, and the published schema marks `schema_version` as
-`const: 2` so it can. Run `rustest --llm-schema` for the current contract, and see
+`const: 3` so it can. Run `rustest --llm-schema` for the current contract, and see
 [LLM output](llm-output.md).
 
 ### Markdown code blocks are off by default, and now execute for real

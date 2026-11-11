@@ -45,6 +45,7 @@ def _init(
         "python_functions": ["test"],
     }
     if conftests is not None:
+        message["hook_runtime"] = True
         message["conftests"] = [
             {"path": (root / name).as_posix(), "initial": initial} for name, initial in conftests
         ]
@@ -372,24 +373,28 @@ def test_stage_two_runs_only_trylast_hooks_over_what_selection_left(tmp_path: Pa
     ]
 
 
-def test_a_record_the_hook_runtime_cannot_model_hands_off_when_a_hook_is_shown_it(
+def test_a_mark_argument_json_cannot_carry_hands_off_only_when_a_hook_reads_it(
     tmp_path: Path,
 ) -> None:
-    """A mark argument JSON cannot carry (a class): the hook must not see a different value."""
-    _ = _write(tmp_path / "conftest.py", "def pytest_collection_modifyitems(items):\n    pass\n")
+    """A mark argument JSON cannot carry (a class) travels opaque: dateutil's hook reads only
+    ``marker.args`` and stays native; reading the opaque ``raises=`` hands off."""
     _ = _write(
         tmp_path / "test_a.py",
         "import pytest\n\n@pytest.mark.xfail(raises=ValueError)\ndef test_a(): raise ValueError\n",
     )
     path = (tmp_path / "test_a.py").as_posix()
-    base = [_init(tmp_path, [("conftest.py", True)]), {"op": "collect_file", "path": path}]
-    record = _talk(base)[1]["tests"][0]["record"]
-    assert record["kind"] == "unsendable"
-
-    responses = _talk([*base, {"op": "modify_items", "stage": 1, "records": [record]}])
-
-    modified = next(r for r in responses if r["op"] == "items_modified")
-    assert any("cannot model (unsendable)" in r for r in modified["hooks"])
+    for body, reason in (
+        ("items[0].get_closest_marker('xfail').args", False),
+        ("items[0].get_closest_marker('xfail').kwargs['raises']", True),
+    ):
+        _ = _write(
+            tmp_path / "conftest.py", f"def pytest_collection_modifyitems(items):\n    {body}\n"
+        )
+        base = [_init(tmp_path, [("conftest.py", True)]), {"op": "collect_file", "path": path}]
+        record = _talk(base)[1]["tests"][0]["record"]
+        responses = _talk([*base, {"op": "modify_items", "stage": 1, "records": [record]}])
+        modified = next(r for r in responses if r["op"] == "items_modified")
+        assert any("raises=" in r for r in modified.get("hooks", [])) is reason, modified
 
 
 def test_a_shim_used_while_a_test_runs_errors_that_test_even_if_it_was_swallowed(

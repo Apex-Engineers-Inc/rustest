@@ -96,6 +96,10 @@ def pytest_runtest_logreport(report: TestReport) -> None:
             entry[stream] = text  # each phase's report already carries the earlier ones
     if status is None:
         return
+    if report.when == "teardown" and report.failed:
+        # pytest's `1 passed, 1 error`: an error of its own beside the test's status
+        entry["teardown_error"] = report.longreprtext
+        return
     if entry["status"] is not None and _PRECEDENCE.index(status) >= _PRECEDENCE.index(
         entry["status"]
     ):
@@ -119,6 +123,7 @@ def pytest_sessionfinish(session: Session, exitstatus: int) -> None:
     tests = [t for t in _tests if t["status"] is not None]  # a phase that never reported
     counts = {name: sum(t["status"] == name for t in tests) for name in _PRECEDENCE}
     counts["skipped"] += _module_skips
+    counts["error"] += sum("teardown_error" in t for t in tests)
     report = {
         "version": 2,
         "rootdir": str(session.config.rootpath.as_posix()),

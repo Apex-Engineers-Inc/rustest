@@ -34,6 +34,7 @@ def collect(
     pytest_fallback: bool = ...,
     hook_context: str | None = ...,
     strict_markers: bool = ...,
+    conftest_args: list[str] = ...,
 ) -> str:
     """Collect tests with the engine; returns a ``CollectionManifest`` JSON string.
 
@@ -98,6 +99,7 @@ def run(
     pytest_fallback: bool = ...,
     hook_context: str | None = ...,
     strict_markers: bool = ...,
+    conftest_args: list[str] = ...,
 ) -> str:
     """Run tests with the engine; returns a schema-v2 ``RunReport`` JSON string.
 

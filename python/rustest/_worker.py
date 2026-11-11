@@ -310,7 +310,7 @@ __all__ = [
 #:
 #: v14 carries the ``markers`` ini and ``--strict-markers`` on ``init`` and ``xfail_strict`` as its
 #: raw text; ``bye`` carries the shutdown teardown's warnings.
-PROTOCOL_VERSION: Final = 14
+PROTOCOL_VERSION: Final = 15
 
 #: The pytest the compat layer emulates: what ``PYTEST_VERSION`` says, which pytest sets for
 #: the whole run (:func:`handle_init`).
@@ -356,6 +356,8 @@ class CollectedTestDict(TypedDict):
     param_id: NotRequired[str]
     marks: NotRequired[list[MarkSpecDict]]
     fixtures: NotRequired[list[str]]
+    #: What ``-k`` matches beyond the node names and marks (:func:`_function_keywords`).
+    keywords: NotRequired[list[str]]
     #: The ``_hookshim.ItemRecord`` as JSON (protocol v13): what a ``pytest_collection_modifyitems``
     #: hook is shown of this test (``_hookwire.build_record``); only when such a hook is registered.
     record: NotRequired[dict[str, Any]]
@@ -440,6 +442,19 @@ class ResultResponse(TypedDict):
     stdout: NotRequired[str]
     stderr: NotRequired[str]
     warnings: NotRequired[list[RecordedWarningDict]]
+    #: This test's own teardown failed; its status is still what setup and call made it
+    #: (pytest reports both: ``1 passed, 1 error``).
+    teardown_error: NotRequired[str]
+    #: A class- or module-scoped teardown that ran at this test's boundary but belongs to an
+    #: earlier test, the one pytest's ``nextitem`` teardown would have run it in.
+    previous_teardown: NotRequired[LateTeardownDict]
+
+
+class LateTeardownDict(TypedDict):
+    """``LateTeardown`` (``src/engine/protocol.rs``): a teardown error for a reported test."""
+
+    id: str
+    message: str
 
 
 class BatchDoneResponse(TypedDict):
@@ -461,6 +476,9 @@ class ByeResponse(TypedDict):
     op: str
     #: The shutdown teardown's warnings, located at the last test (protocol v14).
     warnings: NotRequired[list[RecordedWarningDict]]
+    #: The shutdown teardown failed: an error of the last test this worker ran, as pytest's
+    #: ``nextitem=None`` teardown makes it.
+    teardown: NotRequired[LateTeardownDict]
 
 
 class ConftestsImportedResponse(TypedDict):
@@ -1097,8 +1115,18 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
     (`_pytest/skipping.py::pytest_runtest_setup`) -- string conditions included, which
     arrive as the source text the user wrote.
     """
-    specs = _pytestmark_specs(obj, consider_mro=consider_mro)
-    specs.extend(_rustest_mark_specs(obj, consider_mro=consider_mro))
+    inner = _given_inner(obj)
+    # Below `@given` first: they were applied first, and pytest lists them first (`given`
+    # copies `pytestmark` onto its wrapper, which rustest's own attributes do not ride on).
+    specs = [] if inner is None else _rustest_channel_specs(inner, consider_mro=False)
+    specs.extend(_pytestmark_specs(obj, consider_mro=consider_mro))
+    specs.extend(_rustest_channel_specs(obj, consider_mro=consider_mro))
+    return specs
+
+
+def _rustest_channel_specs(obj: object, *, consider_mro: bool) -> list[MarkSpec]:
+    """The marks rustest's own decorators leave: ``__rustest_marks__`` and the compat skip."""
+    specs = _rustest_mark_specs(obj, consider_mro=consider_mro)
     raw_skip = _safe_getattr(obj, "__rustest_skip_mark__", None)  # compat `pytest.mark.skip`
     skip_reason = _safe_getattr(obj, "__rustest_skip__", None)
     if isinstance(raw_skip, tuple) and len(cast("tuple[object, ...]", raw_skip)) == 2:
@@ -1107,6 +1135,53 @@ def _mark_specs(obj: object, *, consider_mro: bool = False) -> list[MarkSpec]:
     elif skip_reason is not None:
         specs.append(MarkSpec("skip", kwargs={"reason": skip_reason}))
     return specs
+
+
+def _hypothesis_mark(func: object) -> list[MarkSpec]:
+    """hypothesis's ``pytest_collection_modifyitems`` marks every hypothesis test
+    (``_hypothesis``): a ``@given`` function, or a state machine's ``runTest``."""
+    if _hypothesis_mod is not None and _hypothesis_mod.is_test(func):
+        return [MarkSpec("hypothesis")]
+    return []
+
+
+def _given_inner(func: object) -> object | None:
+    """The test a hypothesis ``@given`` wraps (``func.hypothesis.inner_test``), or ``None``.
+
+    A mark or ``@parametrize`` *below* ``@given`` is on it: ``given`` copies only the wrapped
+    function's public attributes, so ``pytestmark`` reaches the wrapper and rustest's own
+    ``__rustest_*`` attributes do not.
+    """
+    if _safe_getattr(func, "is_hypothesis_test", False) is not True:
+        return None
+    inner = _safe_getattr(_safe_getattr(func, "hypothesis", None), "inner_test", None)
+    return inner if callable(inner) else None
+
+
+def _parametrize_source(func: object) -> object:
+    """Where ``@parametrize`` metadata is read from: the test, or for a ``@given`` test both the
+    wrapper and the wrapped function, stacked as two decorators are (the inner one closest)."""
+    from . import decorators
+
+    inner = _given_inner(func)
+    if inner is None:
+        return func
+    below = cast("Any", _safe_getattr(inner, "__rustest_parametrization__", None))
+    above = cast("Any", _safe_getattr(func, "__rustest_parametrization__", None))
+    cases = (
+        decorators._cross_product_cases(tuple(below), tuple(above))  # pyright: ignore[reportPrivateUsage]
+        if below and above
+        else below or above
+    )
+    indirect = [
+        *cast("Any", _safe_getattr(inner, "__rustest_parametrization_indirect__", None) or ()),
+        *cast("Any", _safe_getattr(func, "__rustest_parametrization_indirect__", None) or ()),
+    ]
+    return types.SimpleNamespace(
+        __rustest_parametrization__=cases,
+        __rustest_parametrization_indirect__=indirect,
+        __qualname__=_safe_getattr(func, "__qualname__", "?"),
+    )
 
 
 def _parametrization(func: object) -> "list[_Case] | None":
@@ -4093,6 +4168,7 @@ def _build_entry(
     marks: list[MarkSpec],
     fixtures: list[str],
     block_segment: str | None = None,
+    keywords: Sequence[str] = (),
 ) -> CollectedTestDict:
     """Assemble one ``CollectedTest``, omitting every empty optional field.
 
@@ -4125,7 +4201,26 @@ def _build_entry(
         entry["marks"] = [spec.to_wire() for spec in marks]
     if fixtures:
         entry["fixtures"] = fixtures
+    if keywords:
+        entry["keywords"] = list(keywords)
     return entry
+
+
+def _function_attrs(func: object, has_marks: bool) -> list[str]:
+    """The keys of the test function's ``__dict__`` as pytest sees them: ``pytestmark`` when a
+    decorator marked it, where rustest's own ``__rustest_*`` attributes stand in for it."""
+    attributes = cast("dict[object, object]", _safe_getattr(func, "__dict__", None) or {})
+    names = {key for key in attributes if isinstance(key, str) and not key.startswith("__rustest_")}
+    if has_marks:
+        names.add("pytestmark")
+    return sorted(names)
+
+
+def _function_keywords(func: object, has_marks: bool, parametrized: bool) -> list[str]:
+    """The names pytest's ``KeywordMatcher`` takes from a test beyond its node names and its
+    marks' names: :func:`_function_attrs`, and ``parametrize``, the mark name pytest's
+    ``iter_markers`` yields for a parametrized test, which rustest's collector consumes."""
+    return sorted({*_function_attrs(func, has_marks), *(["parametrize"] if parametrized else [])})
 
 
 @dataclass(frozen=True)
@@ -4201,7 +4296,7 @@ def _collect_function(
         marks = [async_generator_mark, *marks]
     full_parts = (*parts, name)
     func_mark_total = len(func_marks) + (1 if async_generator_mark is not None else 0)
-    own_cases = _parametrization(func)
+    own_cases = _parametrization(_parametrize_source(func))
     if outer_cases:
         cases = (
             list(outer_cases) if own_cases is None else _cross_product_cases(outer_cases, own_cases)
@@ -4223,7 +4318,7 @@ def _collect_function(
     # string instead of the fixture's return: `'str' object has no attribute 'model_dump'`.
     # Threaded explicitly for the same reason `outer_cases` is, and it composes through
     # nested classes for free.
-    indirect = (_indirect_names(func) | outer_indirect) & parametrized
+    indirect = (_indirect_names(_parametrize_source(func)) | outer_indirect) & parametrized
     # `_pytest/fixtures.py::FixtureManager.getfixtureinfo` passes
     # `_get_direct_parametrize_args`, which is the **direct** names only
     # (`_pytest/python.py::Metafunc._get_direct_parametrize_args` filters on
@@ -4248,6 +4343,10 @@ def _collect_function(
         func, name, owner, parametrized, indirect, frozenset(closure.names)
     )
     dimensions = fixture_param_dimensions(closure, parametrized)
+    hypothesis_mark = _hypothesis_mark(func)
+    # A decorator leaves `pytestmark` on the function; a class's `@parametrize` does not.
+    has_function_marks = bool(func_marks) or own_cases is not None
+    keywords = _function_keywords(func, has_function_marks, cases is not None)
 
     entries: list[CollectedTestDict] = []
     for combination in itertools.product(*(values for _name, values in dimensions)):
@@ -4264,12 +4363,8 @@ def _collect_function(
             # `iter_markers` order: the item's own marks (the function's, then the callspec's
             # -- fixture params', then the parameter set's) before the class's and module's,
             # so a per-case `xfail` is closer than a module `pytestmark` one, as in pytest.
-            case_all_marks = [
-                *marks[:func_mark_total],
-                *fixture_marks,
-                *case_marks,
-                *marks[func_mark_total:],
-            ]
+            own = [*marks[:func_mark_total], *fixture_marks, *case_marks, *hypothesis_mark]
+            case_all_marks = [*own, *marks[func_mark_total:]]
             entry = _build_entry(
                 context.rel_path,
                 full_parts,
@@ -4277,6 +4372,7 @@ def _collect_function(
                 case_all_marks,
                 _fixture_names(func, name, owner, frozenset(case_values) - indirect),
                 block_segment=context.block_segment,
+                keywords=keywords,
             )
             entries.append(entry)
             context.plans.append(
@@ -4307,8 +4403,8 @@ def _collect_function(
                     record_own=len(func_marks) + len(fixture_marks) + len(case_marks),
                     record_kind="markdown" if context.block_segment else "function",
                     parametrized=cases is not None,
-                    func_mark_count=func_mark_total + len(fixture_marks) + len(case_marks),
-                    has_function_marks=bool(func_marks) or cases is not None,
+                    func_mark_count=len(own),
+                    has_function_marks=has_function_marks,
                 )
             )
     return entries
@@ -4480,7 +4576,9 @@ def _collect_unittest_class(
     loader = unittest.TestLoader()
     entries: list[CollectedTestDict] = []
 
-    def record(method_name: str, marks: list[MarkSpec]) -> None:
+    def record(method_name: str, method: object) -> None:
+        decorated = _mark_specs(method)
+        marks = [*decorated, *_hypothesis_mark(method), *class_marks]
         entry = _build_entry(
             context.rel_path,
             (*child_parts, method_name),
@@ -4488,6 +4586,7 @@ def _collect_unittest_class(
             marks,
             [],
             block_segment=context.block_segment,
+            keywords=_function_keywords(method, bool(decorated), False),
         )
         entries.append(entry)
         context.plans.append(
@@ -4517,10 +4616,10 @@ def _collect_unittest_class(
         method = _safe_getattr(cls, method_name, None)
         if _safe_getattr(method, "__test__", True) is False:
             continue
-        record(method_name, _mark_specs(_unwrap(method)) + class_marks)
+        record(method_name, _unwrap(method))
 
     if not entries and getattr(cls, "runTest", None) is not None:
-        record("runTest", class_marks)
+        record("runTest", _unwrap(getattr(cls, "runTest")))
     return entries
 
 
@@ -6015,11 +6114,47 @@ def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, o
     func = plan.func
     if func is None:  # pragma: no cover - collection always supplies one of the two
         raise RuntimeError(f"collected test {plan.id!r} has no function and no unittest case")
-    if runner.instance is not None:
+    if _hypothesis_mod is not None:
+        obj = func.__get__(runner.instance) if runner.instance is not None else func
+        with (
+            _hypothesis_mod.around_call(obj, plan.id, plan.closure.arg2defs, plan.parametrized),
+            _async_given(func, plan, runner),
+        ):
+            result = (
+                func(runner.instance, **kwargs) if runner.instance is not None else func(**kwargs)
+            )
+    elif runner.instance is not None:
         result = func(runner.instance, **kwargs)
     else:
         result = func(**kwargs)
     _consume_test_result(plan, runner, result)
+
+
+@contextlib.contextmanager
+def _async_given(func: object, plan: ExecutionPlan, runner: FixtureRunner) -> Iterator[None]:
+    """pytest-asyncio's ``AsyncHypothesisTest``: an ``async`` test under ``@given`` runs with
+    ``func.hypothesis.inner_test`` swapped for a sync stand-in that runs each example on the
+    test's loop, in one context per test (``_synchronize_coroutine``)."""
+    inner = _given_inner(func)
+    scope = runner.test_loop_scope(plan) if inspect.iscoroutinefunction(inner) else None
+    if scope is None:
+        yield
+        return
+    import contextvars
+
+    coroutine = cast("Callable[..., Any]", inner)
+    context = contextvars.copy_context()
+
+    @functools.wraps(coroutine)
+    def synchronized(*args: object, **kwargs: object) -> None:
+        _ = runner.run_coroutine(coroutine(*args, **kwargs), scope, None, context)
+
+    holder = _safe_getattr(func, "hypothesis", None)
+    setattr(holder, "inner_test", synchronized)
+    try:
+        yield
+    finally:
+        setattr(holder, "inner_test", coroutine)
 
 
 def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: object) -> None:
@@ -6127,9 +6262,9 @@ def drain_boundaries(plan: ExecutionPlan, runner: FixtureRunner) -> BaseExceptio
     :meth:`FixtureRunner.note_test_boundary` is called here as well as (idempotently) from
     ``setup``, so the class drain happens out here too rather than half in and half out.
 
-    Returns the exception instead of raising it, so :func:`_run_phases` can report it as the
-    incoming test's *setup* failure — the same attribution as before, just with the output
-    no longer landing in that test's capture.
+    Returns the exception instead of raising it, so :func:`execute_test` can send it as the
+    *previous* test's teardown error (``previous_teardown``), which is where pytest's
+    ``nextitem`` teardown puts it; the incoming test runs as if nothing happened.
     """
     try:
         runner.note_module_boundary(plan.path)
@@ -6168,7 +6303,6 @@ def _run_phases(
     plan: ExecutionPlan,
     runner: FixtureRunner,
     capture: _Capture,
-    boundary_exc: BaseException | None = None,
 ) -> list[PhaseReport]:
     """setup -> call -> teardown, with per-phase exception capture.
 
@@ -6185,10 +6319,6 @@ def _run_phases(
     (`skipping.py::pytest_runtest_setup`, ``tryfirst``): a ``skip`` mark therefore short-
     circuits **before any fixture is built** — probed, a skipped test whose fixture raises
     reports SKIPPED — and a mark that cannot be evaluated at all is a setup *error*.
-
-    *boundary_exc* is a scope teardown that failed in :func:`drain_boundaries`, before the
-    capture window opened; it is reported as this test's setup failure because that is the
-    only phase left to hang it on.
 
     After each phase the capture is checked for having been **closed by the test**
     (:attr:`_Capture.broken`).  A phase that otherwise passed becomes a failure, which is
@@ -6212,7 +6342,7 @@ def _run_phases(
             yield
 
     try:
-        return _phases(plan, runner, capture, boundary_exc, phase)
+        return _phases(plan, runner, capture, phase)
     finally:
         _builtins.set_log_capture(None)
 
@@ -6221,7 +6351,6 @@ def _phases(
     plan: ExecutionPlan,
     runner: FixtureRunner,
     capture: _Capture,
-    boundary_exc: BaseException | None,
     phase: Callable[[str], AbstractContextManager[None]],
 ) -> list[PhaseReport]:
     """:func:`_run_phases`' body, with the logging window as an argument.
@@ -6232,23 +6361,22 @@ def _phases(
     """
     namespace = _condition_namespace(plan)
     xfailed: Xfail | None = None
-    setup_exc: BaseException | None = boundary_exc
+    setup_exc: BaseException | None = None
     kwargs: Mapping[str, object] = {}
-    if setup_exc is None:
-        try:
-            with phase("setup"):
-                skipped = evaluate_skip_marks(plan.marks, namespace)
-                if skipped is not None:
-                    raise _Skipped(skipped.reason)
-                xfailed = evaluate_xfail_marks(plan.marks, namespace)
-                if xfailed is not None and not xfailed.run:
-                    raise _XFailed("[NOTRUN] " + xfailed.reason)
-                kwargs = runner.setup(plan)
-                collect_unraisable_exceptions()
-        except ABORT_EXCEPTIONS:
-            raise
-        except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
-            setup_exc = exc
+    try:
+        with phase("setup"):
+            skipped = evaluate_skip_marks(plan.marks, namespace)
+            if skipped is not None:
+                raise _Skipped(skipped.reason)
+            xfailed = evaluate_xfail_marks(plan.marks, namespace)
+            if xfailed is not None and not xfailed.run:
+                raise _XFailed("[NOTRUN] " + xfailed.reason)
+            kwargs = runner.setup(plan)
+            collect_unraisable_exceptions()
+    except ABORT_EXCEPTIONS:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - classified below, never dropped
+        setup_exc = exc
 
     reports = [_checked(report_for_phase("setup", setup_exc, xfailed), capture)]
 
@@ -6326,7 +6454,7 @@ def execute_test(test_id: str) -> ResultResponse:
                     collect_unraisable_exceptions()
                 except ABORT_EXCEPTIONS:
                     raise
-                except BaseException as exc:  # noqa: BLE001 - this test's setup failure
+                except BaseException as exc:  # noqa: BLE001 - the previous test's teardown
                     boundary_exc = exc
     else:
         # Nothing class- or module-scoped is open, so the drain cannot run user code: no
@@ -6337,10 +6465,13 @@ def execute_test(test_id: str) -> ResultResponse:
     capture = _worker_capture()
     started = time.perf_counter()
     with capture.window(), warnings_window(plan.id, plan.marks, recorded):
-        reports = _run_phases(plan, runner, capture, boundary_exc)
+        reports = _run_phases(plan, runner, capture)
     duration = time.perf_counter() - started
 
-    report = reduce_reports(reports)
+    # pytest reports a failed teardown beside the test's own outcome (`1 passed, 1 error`).
+    teardown = reports[-1]
+    torn = teardown.phase == "teardown" and teardown.outcome == "failed" and len(reports) > 1
+    report = reduce_reports(reports[:-1] if torn else reports)
     status, message = report.status, report.message
     if _hookwire_mod is not None and (late := _hookwire_mod.late_reasons_since(late_before)):
         # A shim a hook kept was used while this test ran.  The user may have swallowed the
@@ -6364,7 +6495,19 @@ def execute_test(test_id: str) -> ResultResponse:
         result["stderr"] = captured_err
     if recorded:
         result["warnings"] = recorded
+    if torn:
+        result["teardown_error"] = teardown.message or ""
+    if boundary_exc is not None and previous is not None:
+        result["previous_teardown"] = _late_teardown(previous, boundary_exc)
     return result
+
+
+def _late_teardown(plan: ExecutionPlan, exc: BaseException) -> LateTeardownDict:
+    """A scope teardown that failed after *plan*'s result went out: its error, by id."""
+    return {
+        "id": plan.id,
+        "message": report_for_phase("teardown", exc, None).message or "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -6947,14 +7090,35 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
         )
     _builtins.configure(rootdir, invocation_dir, ini)
     _install_warning_filters(filter_lines)
-    _install_mark_registry(message, plugins)
-    _start_hook_runtime(message, rootdir, invocation_dir, plugins)
+    names = [name for name, _ in plugins]
+    _install_mark_registry(message, names)
+    _start_hypothesis(plugins)
+    reasons: list[str] = []
+    if _hypothesis_mod is None:
+        _start_hook_runtime(message, rootdir, invocation_dir, names)
+    else:
+        # The plugin's window closes at `pytest_sessionstart`, after the initial conftests,
+        # which pytest imports here with or without hooks.
+        with _hypothesis_mod.initialization(reasons):
+            _start_hook_runtime(message, rootdir, invocation_dir, names)
+            if _hookwire_mod is None:
+                for entry in cast("list[dict[str, object]]", message.get("conftests") or []):
+                    with contextlib.suppress(Exception):  # recorded as an import failure
+                        _ = conftest_registry(Path(str(entry["path"])), rootdir)
+                reasons += new_hooks()
+        if (directory := message.get("hypothesis_dir")) is not None:
+            reasons.append(
+                "rustest's hook runtime: hypothesis warns that it skips "
+                + f"{_relative_posix(Path(str(directory)), rootdir)} "
+                + "(norecursedirs replaces the default ignores), which pytest reports"
+            )
     ready: ReadyResponse = {"op": "ready", "protocol_version": PROTOCOL_VERSION}
     if _hookwire_mod is not None:
-        if reasons := _hookwire_mod.pending_reasons():
-            ready["hooks"] = reasons
+        reasons += _hookwire_mod.pending_reasons()
         if _hookwire_mod.wants_records():
             ready["modify_items"] = True
+    if reasons:
+        ready["hooks"] = reasons
     return ready
 
 
@@ -6970,7 +7134,10 @@ def _start_hook_runtime(
     recorded as an import failure by :func:`conftest_registry` and the rest are still imported.
     """
     global _hookwire_mod
-    if not message.get("conftests"):
+    context = message.get("hook_context")
+    if not message.get("hook_runtime") and not (
+        isinstance(context, dict) and cast("dict[str, object]", context).get("unknown_args")
+    ):
         return
     from . import _hookwire
 
@@ -6984,19 +7151,39 @@ def _start_hook_runtime(
     )
 
 
-def _loaded_plugins(blocked: Sequence[str]) -> list[str]:
-    """The ``pytest11`` entry points pytest would load here: none under
-    ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``, and not the ones ``-p no:NAME`` blocks (by ``NAME`` or
-    ``pytest_NAME``, as ``_fallback.autoload_reasons`` reads it)."""
+def _loaded_plugins(blocked: Sequence[str]) -> list[tuple[str, str]]:
+    """``(entry point, distribution)`` for the ``pytest11`` plugins pytest would load here: none
+    under ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``, and not the ones ``-p no:NAME`` blocks (by ``NAME``
+    or ``pytest_NAME``, as ``_fallback.autoload_reasons`` reads it)."""
     if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
         return []
     from ._fallback import installed_plugins
 
     return [
-        name
-        for name, _ in installed_plugins()
+        (name, dist)
+        for name, dist in installed_plugins()
         if name not in blocked and not (name.startswith("pytest_") and name[7:] in blocked)
     ]
+
+
+#: ``rustest._hypothesis`` when hypothesis's pytest plugin would load (a version it ports),
+#: else ``None``, so a run without hypothesis never imports it.
+_hypothesis_mod: types.ModuleType | None = None
+
+
+def _start_hypothesis(plugins: Sequence[tuple[str, str]]) -> None:
+    """hypothesis's pytest plugin loads before any conftest: emulate it (``_hypothesis``)."""
+    global _hypothesis_mod
+    dist = next((dist for name, dist in plugins if name == "hypothesispytest"), None)
+    if dist is None:
+        return
+    from . import _hypothesis, decorators
+
+    if not _hypothesis.supported(dist):
+        return  # the CLI hands such a session to pytest; without fallback it is not emulated
+    _hypothesis_mod = _hypothesis
+    decorators.ban_given_fixtures = True
+    _hypothesis.start()
 
 
 def _ini_values(
@@ -7063,11 +7250,6 @@ def drain_at_shutdown() -> BaseException | None:
     except ABORT_EXCEPTIONS:
         raise
     except BaseException as exc:  # noqa: BLE001 - returned to main, never dropped
-        print(
-            "rustest worker: errors while tearing down fixtures at shutdown:\n"
-            + _format_exception(exc),
-            file=sys.stderr,
-        )
         return exc
     return None
 
@@ -7387,13 +7569,12 @@ def _attach_records(
             path=plan.path,
             rootdir=rootdir,
             parts=plan.parts,
-            func=plan.func,
+            function_attrs=_function_attrs(plan.func, plan.has_function_marks),
             marks=plan.record_marks,
             own_count=plan.record_own,
             parametrized=plan.parametrized,
             reordered=_reordered_by_fixtures(plan),
             kind=plan.record_kind,
-            has_function_marks=plan.has_function_marks,
         )
 
 
@@ -7794,7 +7975,19 @@ def _protocol_loop(
             # Drain first, answer second: `bye` must not claim the worker is finished while
             # a session fixture is still open.  The exit code carries the drain's verdict.
             shutdown_failure = drain_at_shutdown()
-            emit(handle_shutdown())
+            bye = handle_shutdown()
+            last = _previous_plan
+            if shutdown_failure is not None and last is not None:
+                # The last test's `nextitem=None` teardown: its error, as pytest counts it.
+                bye["teardown"] = _late_teardown(last, shutdown_failure)
+                shutdown_failure = None
+            elif shutdown_failure is not None:
+                print(
+                    "rustest worker: errors while tearing down fixtures at shutdown:\n"
+                    + _format_exception(shutdown_failure),
+                    file=sys.stderr,
+                )
+            emit(bye)
             return SHUTDOWN_TEARDOWN_EXIT if shutdown_failure is not None else 0
         else:
             print(f"rustest worker: unknown op {op!r} in line: {line!r}", file=sys.stderr)

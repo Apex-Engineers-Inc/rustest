@@ -16,6 +16,10 @@ TFunc = TypeVar("TFunc", bound=Callable[..., Any])
 # Valid fixture scopes
 VALID_SCOPES = frozenset(["function", "class", "module", "package", "session"])
 
+#: Set by the worker when hypothesis's pytest plugin would load: like that plugin, a fixture
+#: decorator applied to a ``@given`` test raises (``_hypothesis.ban_fixture``).
+ban_given_fixtures = False
+
 
 def _normalize_param_marks(marks: Any) -> tuple[Any, ...]:
     """One mark, an iterable of marks, or nothing -> a tuple.
@@ -168,6 +172,10 @@ def fixture(
         raise ValueError(msg)
 
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
+        if ban_given_fixtures:
+            from ._hypothesis import ban_fixture
+
+            ban_fixture(f)
         setattr(f, "__rustest_fixture__", True)
         setattr(f, "__rustest_fixture_scope__", scope)
         setattr(f, "__rustest_fixture_autouse__", autouse)

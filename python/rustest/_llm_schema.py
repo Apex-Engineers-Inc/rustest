@@ -27,7 +27,10 @@ import json
 #: produced from the engine's data without inventing fields.  A consumer pinned to ``schema_version: 1``
 #: should refuse a ``2`` stream rather than half-read it, which is exactly what a major bump is
 #: for.  See ``docs/guide/llm-output.md`` for the field-by-field mapping.
-SCHEMA_VERSION = 2
+#:
+#: **3** adds ``id`` to an ``error`` line: a teardown error is attributed to the test whose
+#: teardown raised (pytest's ``ERROR at teardown of``), where 2 had no field for it.
+SCHEMA_VERSION = 3
 
 #: Statuses a ``fail`` line can carry -- the two that make a run red.
 #:
@@ -109,9 +112,10 @@ SCHEMA: dict[str, object] = {
             "type": "object",
             "title": "error",
             "description": (
-                "A failure with no node id to hang it on: a file that could not be collected,"
-                " or a fixture teardown that raised after the last test it owned had already"
-                " been reported. Distinguished from `fail` by shape, not by severity."
+                "A failure that is not a test's own outcome: a file that could not be collected,"
+                " or a fixture teardown that raised (pytest's `ERROR at teardown of`, counted as"
+                " an error beside the test's own status). Distinguished from `fail` by shape,"
+                " not by severity."
             ),
             "properties": {
                 "t": {"const": "error"},
@@ -119,12 +123,19 @@ SCHEMA: dict[str, object] = {
                     "enum": ["collection", "teardown"],
                     "description": (
                         "`collection`: the file never imported, so none of its tests ran."
-                        " `teardown`: a module- or session-scoped fixture raised at shutdown."
+                        " `teardown`: a fixture raised while a test's teardown ran it."
                     ),
                 },
                 "file": {
                     "type": "string",
                     "description": "Path relative to rootdir. Present for scope=collection only.",
+                },
+                "id": {
+                    "type": "string",
+                    "description": (
+                        "The test whose teardown raised. Present for scope=teardown when the"
+                        " engine knows it, which is always but for a worker that died."
+                    ),
                 },
                 "msg": {"type": "string", "description": "The engine's message, verbatim."},
             },

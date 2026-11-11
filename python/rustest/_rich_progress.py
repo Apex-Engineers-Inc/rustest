@@ -346,18 +346,25 @@ class RichProgress:
         """ERRORS, then FAILURES, then pytest's ``FAILED``/``ERROR`` node-id list, on stdout."""
         failed = [test for test in tests if test["status"] == "failed"]
         errored = [test for test in tests if test["status"] == "error"]
-        for title, group in (("ERRORS", errored), ("FAILURES", failed)):
+        torn = [test for test in tests if "teardown_error" in test]  # an error of its own
+        for title, group, key in (
+            ("ERRORS", errored, "message"),
+            ("ERRORS", torn, "teardown_error"),
+            ("FAILURES", failed, "message"),
+        ):
             if not group:
                 continue
-            self._heading(self.out, title)
+            if not (title == "ERRORS" and key == "teardown_error" and errored):
+                self._heading(self.out, title)
             for test in group:
                 file, _, domain = str(test["id"]).partition("::")
-                name = Text(domain.replace("::", ".") or file, style="bold")
-                self._block(self.out, name, file, str(test.get("message") or ""))
-        if failed or errored:
+                prefix = "at teardown of " if key == "teardown_error" else ""
+                name = Text(prefix + (domain.replace("::", ".") or file), style="bold")
+                self._block(self.out, name, file, str(test.get(key) or ""))
+        if failed or errored or torn:
             # What to paste after `rustest` to run them again.
             self.out.print()
-            for word, group in (("FAILED", failed), ("ERROR", errored)):
+            for word, group in (("FAILED", failed), ("ERROR", [*errored, *torn])):
                 for test in group:
                     self.out.print(
                         Text.assemble((word, "red"), " ", str(test["id"])), soft_wrap=True

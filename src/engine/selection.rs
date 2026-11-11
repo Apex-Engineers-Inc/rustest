@@ -562,19 +562,11 @@ fn evaluate(node: &Node, matcher: &dyn Matcher) -> Result<bool, SelectionError> 
 /// directory contributes its own basename, which the `-k alpha` row proves is not an
 /// accident of that tree.
 ///
-/// **Two documented gaps**, both needing a wire field the engine does not have: names assigned
-/// directly onto the test function (`mapped_names.update(function_obj.__dict__)`) and
-/// `item.listextrakeywords()`.  Both are rare and neither can be reconstructed from a
-/// manifest entry — the manifest is data, and these are live-object introspection.
+/// | the function's `__dict__` (`mapped_names.update(function_obj.__dict__)`), and `parametrize` | `keywords`, which the collector fills | `-k seed` on a `@given` test, `-k parametrize` |
 ///
-/// **A third gap is shared with [`MarkMatcher`] and is worth naming here too**, because the
-/// mark names in this set are the reason it bites `-k` as well as `-m`: pytest's
-/// `iter_markers()` yields a `parametrize` mark, so *both* `-m parametrize` and
-/// `-k parametrize` select every parametrized case.  the engine's collector consumes `@parametrize`
-/// into `param_id` and records no mark of that name, so both select nothing.  Probed on a
-/// two-case tree: pytest `2/3 tests collected (1 deselected)`, v2 nothing.  Fixing it means
-/// deciding whether a synthesised `parametrize` mark belongs on the wire — recorded, not
-/// guessed.
+/// **One gap left**: `item.listextrakeywords()`, which only a plugin or hook fills, and which
+/// a session with such a hook hands to pytest. `-m parametrize` (a [`MarkMatcher`] question)
+/// still selects nothing: the collector consumes `@parametrize` into `param_id`.
 #[derive(Debug, Clone)]
 pub struct KeywordMatcher {
     /// Lower-cased once at construction: the matcher is applied per identifier per test,
@@ -615,6 +607,7 @@ impl KeywordMatcher {
         for mark in &test.marks {
             names.push(mark.name.to_lowercase());
         }
+        names.extend(test.keywords.iter().map(|name| name.to_lowercase()));
 
         Self { names }
     }
@@ -784,6 +777,7 @@ mod tests {
             param_id: None,
             marks: Vec::new(),
             fixtures: Vec::new(),
+            keywords: Vec::new(),
             tier: crate::engine::manifest::Tier::Dynamic,
             record: None,
         }

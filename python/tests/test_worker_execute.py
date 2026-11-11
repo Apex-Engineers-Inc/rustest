@@ -252,8 +252,18 @@ def sessionfinish_hook(tree: Path) -> list[str]:
 
 
 def statuses(results: list[ResultResponse]) -> dict[str, str]:
-    """``{nodeid: status}`` for a run, which is what the pytest oracle is compared against."""
-    return {result["id"]: result["status"] for result in results}
+    """``{nodeid: status}`` for a run, which is what the pytest oracle is compared against.
+
+    A passing test whose teardown failed carries the error beside its ``passed`` status (the
+    wire's ``teardown_error``); :func:`pytest_statuses`' reduction ("a ``.`` is not news")
+    reads that as ``error``, so this does too.
+    """
+    return {
+        result["id"]: "error"
+        if result["status"] == "passed" and "teardown_error" in result
+        else result["status"]
+        for result in results
+    }
 
 
 def why(results: list[ResultResponse]) -> str:
@@ -1843,23 +1853,13 @@ def test_boundary_teardown_output_is_not_charged_to_the_next_test(tmp_path: Path
     assert second == "TWO\n", "the previous class's teardown was charged to this test"
 
 
-def test_a_boundary_teardown_failure_is_reported_against_the_incoming_test(
+def test_a_boundary_teardown_failure_is_the_previous_tests_error(
     tmp_path: Path,
 ) -> None:
-    """A class teardown that fails at a **boundary** is an ``error``, never dropped.
-
-    ``drain_boundaries`` returns its exception instead of raising, so it needs somewhere to
-    go; the only phase left is the incoming test's setup. This pins that it gets there —
-    ``drain_boundaries`` swallowing it would lose a real teardown failure entirely, and the
-    shutdown-drain tests do not cover this path because a *boundary* drain happens mid-run,
-    not at shutdown.
-
-    **Documented divergence.** pytest attributes this to ``test_one``'s teardown (``PASSED``
-    then ``ERROR at teardown of test_one``) and leaves ``test_two`` passing, because
-    ``runtestprotocol`` is handed ``nextitem``. The execute wire has no lookahead, so the
-    failure lands on ``test_two`` — the wrong test, but loudly. Asserted here so the
-    divergence is visible rather than implicit.
-    """
+    """A class teardown that fails at a **boundary** is ``test_one``'s error, as pytest's
+    ``nextitem`` teardown makes it (``PASSED`` then ``ERROR at teardown of test_one``), and
+    ``test_two`` still passes. The drain runs at ``test_two``'s boundary, after ``test_one``
+    was answered, so ``test_two``'s result carries it as ``previous_teardown``."""
     target = write(
         tmp_path / "test_bteardown.py",
         """
@@ -1885,11 +1885,10 @@ def test_a_boundary_teardown_failure_is_reported_against_the_incoming_test(
     with isolated_worker_state():
         results = run_module(target, tmp_path)
 
-    assert statuses(results) == {
-        "test_bteardown.py::TestFirst::test_one": "passed",
-        "test_bteardown.py::TestSecond::test_two": "error",
-    }
-    assert "class teardown boom" in results[1]["message"]
+    assert [result["status"] for result in results] == ["passed", "passed"]
+    late = results[1].get("previous_teardown")
+    assert late is not None and late["id"] == "test_bteardown.py::TestFirst::test_one"
+    assert "class teardown boom" in late["message"]
 
 
 def test_a_keyboard_interrupt_ends_the_run_instead_of_being_classified(tmp_path: Path) -> None:
@@ -2415,21 +2414,12 @@ def test_shutdown_drains_every_open_scope(tmp_path: Path) -> None:
         assert getattr(module, "events") == ["setup", "teardown"]
 
 
-def test_a_shutdown_drain_failure_is_returned_not_swallowed(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A teardown failure with no test left to own it must still end the run.
+def test_a_shutdown_drain_failure_is_returned_not_swallowed(tmp_path: Path) -> None:
+    """A teardown failure at shutdown must still reach the run.
 
-    The in-process half: ``drain_at_shutdown`` **returns** the exception (and reports it on
-    stderr) rather than swallowing it, so ``main`` can turn it into
-    :data:`SHUTDOWN_TEARDOWN_EXIT`.  ``bye`` is still answered, because the response stream
-    really is complete — what is not complete is the run.
-
-    This test used to be named ``..._is_reported_but_not_fatal`` and asserted the swallow. It
-    was wrong: a class- or module-scoped teardown that fails on the **last** test routed to a
-    worker was reported ``passed`` with the traceback buried in stderr, i.e. a green run over
-    a real failure. The subprocess half is
-    ``test_a_shutdown_drain_failure_exits_nonzero_after_bye``.
+    The in-process half: ``drain_at_shutdown`` **returns** the exception rather than
+    swallowing it, so ``main`` can put it on ``bye`` as the last test's error. The subprocess
+    half is ``test_a_shutdown_drain_failure_is_the_last_tests_error_on_bye``.
     """
     target = write(
         tmp_path / "test_boom.py",
@@ -2454,22 +2444,15 @@ def test_a_shutdown_drain_failure_is_returned_not_swallowed(
         assert execute_test(plans[0].id)["status"] == "passed"
         failure = shutdown()
 
-    assert isinstance(failure, RuntimeError)
-    assert "session teardown boom" in capsys.readouterr().err
+    assert isinstance(failure, RuntimeError) and "session teardown boom" in str(failure)
 
 
-def test_a_shutdown_drain_failure_exits_nonzero_after_bye(tmp_path: Path) -> None:
+def test_a_shutdown_drain_failure_is_the_last_tests_error_on_bye(tmp_path: Path) -> None:
     """The reviewer's shape: ``tearDownClass`` raises on the worker's **last** test.
 
-    That test is already answered ``passed`` — correctly, its body passed — so there is no
-    test left for the failure to be attributed to. Before this fix the worker exited 0 and
-    the run came back **green** with a traceback in stderr.
-
-    The fix uses the loud channel that already exists: ``bye`` is still written (the stream
-    is well-formed) and the process exits :data:`SHUTDOWN_TEARDOWN_EXIT`, which the
-    orchestrator already treats as a failed run —
-    ``src/engine/collect.rs::a_nonzero_exit_after_bye_is_still_a_failure``. Distinct from 2 so
-    "your teardown is broken" is never confused with "the protocol drifted".
+    That test is already answered ``passed`` — correctly, its body passed. pytest reports
+    the teardown as that test's error (``1 passed, 1 error``), so ``bye`` carries it under
+    the test's id and the worker exits 0: the stream and the process are both fine.
     """
     target = write(
         tmp_path / "test_last.py",
@@ -2499,10 +2482,10 @@ def test_a_shutdown_drain_failure_exits_nonzero_after_bye(tmp_path: Path) -> Non
     assert [message["op"] for message in messages] == ["ready", "collected", "test_result", "bye"]
     assert messages[2]["status"] == "passed", "the body did pass; the class teardown did not"
 
-    why = f"a broken class teardown on the last test must not exit 0: {proc.stderr}"
-    assert proc.returncode == worker.SHUTDOWN_TEARDOWN_EXIT, why
-    assert proc.returncode != 2, "not protocol drift"
-    assert "tearDownClass boom" in proc.stderr
+    assert proc.returncode == 0, proc.stderr
+    teardown = messages[3]["teardown"]
+    assert teardown["id"] == "test_last.py::TestLast::test_only"
+    assert "tearDownClass boom" in teardown["message"]
 
 
 def test_the_runner_is_shared_across_execute_calls(tmp_path: Path) -> None:

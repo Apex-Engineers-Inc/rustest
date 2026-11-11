@@ -330,6 +330,11 @@ def render(
         # test *or* to a file (`RunReport::teardown_errors`). Inventing a path here would be a
         # guess, and this is a mode whose whole value is that its fields are not guesses.
         emit({"t": "error", "scope": "teardown", "msg": failure})
+    for test in report["tests"]:
+        if "teardown_error" in test:
+            emit(
+                {"t": "error", "scope": "teardown", "id": test["id"], "msg": test["teardown_error"]}
+            )
 
     tests = report["tests"]
     for test in tests:

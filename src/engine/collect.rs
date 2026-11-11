@@ -57,8 +57,8 @@ use crate::engine::manifest::{
 use crate::engine::manifest_cache::ManifestCache;
 use crate::engine::nodeid::{name_parts, split_collection_argument, walk_names};
 use crate::engine::protocol::{
-    AddedMark, ConftestWire, CoverageWire, RecordedWarning, WorkerRequest, WorkerResponse,
-    PROTOCOL_VERSION,
+    AddedMark, ConftestWire, CoverageWire, LateTeardown, RecordedWarning, WorkerRequest,
+    WorkerResponse, PROTOCOL_VERSION,
 };
 use crate::engine::selection::{deselect_in_place, select_mask, SelectionError};
 use crate::engine::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
@@ -454,6 +454,8 @@ pub struct CollectOptions {
     pub hook_context: Option<serde_json::Value>,
     /// `--strict-markers` / `--strict`, onto `init` (protocol v14).
     pub strict_markers: bool,
+    /// See `RunOptions::conftest_args`.
+    pub conftest_args: Vec<PathBuf>,
     /// The raw `-k` expression.
     pub keyword: Option<String>,
     /// The raw `-m` expression.
@@ -683,6 +685,7 @@ pub(crate) fn plan(
     coverage: Option<CoverageWire>,
     hook_context: Option<serde_json::Value>,
     strict_markers: bool,
+    conftest_args: Vec<PathBuf>,
 ) -> Result<Dispatch, CollectError> {
     plan_with_options(
         invocation_dir,
@@ -707,6 +710,7 @@ pub(crate) fn plan(
             assert_rewrite,
             hook_context,
             strict_markers,
+            conftest_args,
             ..CollectOptions::default()
         },
     )
@@ -728,10 +732,15 @@ pub(crate) fn plan_with_options(
     // default, pytest's own answer.  Resolved here — after the one config resolution this
     // function does, before the walk decides what a markdown argument means.
     let codeblocks = options.codeblocks.or(config.codeblocks).unwrap_or(false);
-    let (targets, entries, walked_conftests) =
+    let (targets, entries, walked_conftests, hypothesis_dir) =
         discover_targets(&config, &invocation_dir, args, codeblocks)?;
-    let (conftests, late_conftests) =
-        session_conftests(&config, &invocation_dir, args, &walked_conftests)?;
+    let (conftests, late_conftests, hook_runtime) = session_conftests(
+        &config,
+        &invocation_dir,
+        args,
+        &options.conftest_args,
+        &walked_conftests,
+    )?;
     let rootdir = to_posix(&config.rootdir);
     let named: Vec<PathBuf> = initial_paths(&invocation_dir, args, &config)?
         .into_iter()
@@ -829,6 +838,8 @@ pub(crate) fn plan_with_options(
         markers: config.markers.clone(),
         strict_markers: options.strict_markers,
         conftests,
+        hook_runtime,
+        hypothesis_dir: hypothesis_dir.as_deref().map(to_posix),
         hook_context: options.hook_context.clone(),
     };
 
@@ -889,8 +900,13 @@ pub(crate) fn spawn_pool(
     for index in 0..dispatch.assignments.len() {
         pool.push(Worker::spawn(index, launcher)?);
     }
-    let hooks_run =
-        matches!(&dispatch.init, WorkerRequest::Init { conftests, .. } if !conftests.is_empty());
+    let hooks_run = matches!(
+        &dispatch.init,
+        WorkerRequest::Init {
+            hook_runtime: true,
+            ..
+        }
+    );
     let first = usize::from(hooks_run);
     if hooks_run {
         let worker = &mut pool[0];
@@ -1159,7 +1175,7 @@ fn discover(
     // free of `.`/`..`; normalising here gives callers the same guarantee for free.
     let invocation_dir = normpath(invocation_dir);
     let config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
-    let (targets, _, _) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    let (targets, _, _, _) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
     Ok((config, targets))
 }
 
@@ -1220,6 +1236,7 @@ fn discover_targets(
     let mut targets = Vec::new();
     let mut entries = Vec::new();
     let mut walked_conftests = Vec::new();
+    let mut hypothesis_dir = None;
     let mut module_targets: HashMap<usize, usize> = HashMap::new();
     for (arg, node) in args.iter().zip(yielded) {
         if !arg.names.is_empty() {
@@ -1240,7 +1257,13 @@ fn discover_targets(
         let mut files = Vec::new();
         if arg.path.is_dir() {
             let from = walked_conftests.len();
-            walk(&arg.path, config, &mut files, &mut walked_conftests);
+            walk(
+                &arg.path,
+                config,
+                &mut files,
+                &mut walked_conftests,
+                &mut hypothesis_dir,
+            );
             for (_, at) in &mut walked_conftests[from..] {
                 *at += targets.len();
             }
@@ -1256,7 +1279,7 @@ fn discover_targets(
             targets.push(file);
         }
     }
-    Ok((targets, entries, walked_conftests))
+    Ok((targets, entries, walked_conftests, hypothesis_dir))
 }
 
 /// The session's conftests in pytest's registration order, for `init` (protocol v13) -- or
@@ -1279,8 +1302,9 @@ fn session_conftests(
     config: &ResolvedConfig,
     invocation_dir: &Path,
     args: &[PathBuf],
+    first_pass: &[PathBuf],
     walked: &[(PathBuf, usize)],
-) -> Result<(Vec<ConftestWire>, LateConftests), CollectError> {
+) -> Result<(Vec<ConftestWire>, LateConftests, bool), CollectError> {
     let confcutdir = config
         .config_file
         .as_ref()
@@ -1296,18 +1320,40 @@ fn session_conftests(
         found.reverse();
         found
     };
-    let mut initial: Vec<PathBuf> = Vec::new();
-    for arg in initial_paths(invocation_dir, args, config)? {
-        let anchor = if arg.path.is_dir() {
-            arg.path.clone()
+    // `_set_initial_conftests` over pytest's first-pass positionals when the CLI sent them (a
+    // conftest option's value word among them): `::` dropped, a word that is no path skipped,
+    // and none left means the invocation directory, with no `testpaths`.
+    let paths: Vec<PathBuf> = if first_pass.is_empty() {
+        initial_paths(invocation_dir, args, config)?
+            .into_iter()
+            .map(|arg| arg.path)
+            .collect()
+    } else {
+        let found: Vec<PathBuf> = first_pass
+            .iter()
+            .map(|word| {
+                let word = word.to_string_lossy();
+                normpath(&invocation_dir.join(word.split("::").next().unwrap_or_default()))
+            })
+            .filter(|path| path.exists())
+            .collect();
+        if found.is_empty() {
+            vec![invocation_dir.to_path_buf()]
         } else {
-            arg.path
-                .parent()
-                .map_or_else(|| arg.path.clone(), Path::to_path_buf)
+            found
+        }
+    };
+    let mut initial: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        let anchor = if path.is_dir() {
+            path.clone()
+        } else {
+            path.parent()
+                .map_or_else(|| path.clone(), Path::to_path_buf)
         };
         initial.extend(chain(&anchor));
-        if arg.path.is_dir() {
-            let mut subdirs: Vec<PathBuf> = std::fs::read_dir(&arg.path)
+        if path.is_dir() {
+            let mut subdirs: Vec<PathBuf> = std::fs::read_dir(&path)
                 .into_iter()
                 .flatten()
                 .flatten()
@@ -1352,9 +1398,10 @@ fn session_conftests(
         })
     });
     Ok(if may_define_hooks {
-        (ordered, late)
+        (ordered, late, true)
     } else {
-        (Vec::new(), Vec::new())
+        ordered.retain(|conftest| conftest.initial);
+        (ordered, Vec::new(), false)
     })
 }
 
@@ -1371,9 +1418,15 @@ fn is_test_glob(name: &str) -> bool {
 /// reaches after it ([`session_conftests`]).
 pub(crate) type LateConftests = Vec<(usize, PathBuf)>;
 
-/// What the walk found: the targets, the argument entries, and the conftests of every
-/// directory it entered, in walk order, each with the index of the next target after it.
-type Discovered = (Vec<PathBuf>, Vec<Entry>, Vec<(PathBuf, usize)>);
+/// What the walk found: the targets, the argument entries, the conftests of every directory
+/// it entered, in walk order, each with the index of the next target after it, and the first
+/// `.hypothesis` directory it reached unpruned ([`walk`]).
+type Discovered = (
+    Vec<PathBuf>,
+    Vec<Entry>,
+    Vec<(PathBuf, usize)>,
+    Option<PathBuf>,
+);
 
 /// One resolved command-line argument: `_pytest/main.py::CollectionArgument`.
 struct CollectionArgument {
@@ -1758,6 +1811,7 @@ fn walk(
     config: &ResolvedConfig,
     out: &mut Vec<PathBuf>,
     conftests: &mut Vec<(PathBuf, usize)>,
+    hypothesis_dir: &mut Option<PathBuf>,
 ) {
     // `scandir` returns `[]` for a directory that cannot be opened, rather than raising.
     let Ok(reader) = std::fs::read_dir(dir) else {
@@ -1798,7 +1852,13 @@ fn walk(
             if should_prune(&name, &path, config) {
                 continue;
             }
-            walk(&path, config, out, conftests);
+            // hypothesis's plugin warns of a `.hypothesis` directory `norecursedirs` does
+            // not prune, and skips it: the worker hands that to pytest when it emulates the
+            // plugin, and walks it like pytest does when hypothesis is not installed.
+            if name == ".hypothesis" && hypothesis_dir.is_none() {
+                *hypothesis_dir = Some(path.clone());
+            }
+            walk(&path, config, out, conftests, hypothesis_dir);
         } else if is_file(&path, file_type)
             && is_python_source(&path)
             && matches_python_files(&path, config)
@@ -2222,6 +2282,8 @@ pub(crate) struct Worker {
     /// The next `execute_batch` tells the worker to apply the marks of the last
     /// `pytest_collection_modifyitems` stage, which the barrier accepted.
     pub(crate) commit_marks: bool,
+    /// Teardown errors for tests already reported ([`LateTeardown`]), until taken.
+    late_teardowns: Vec<LateTeardown>,
 }
 
 impl Worker {
@@ -2285,6 +2347,7 @@ impl Worker {
             bye_warnings: Vec::new(),
             late_done: 0,
             commit_marks: false,
+            late_teardowns: Vec::new(),
         })
     }
 
@@ -2737,6 +2800,8 @@ impl Worker {
                     stdout,
                     stderr,
                     warnings,
+                    teardown_error,
+                    previous_teardown,
                 } => {
                     let Some(wanted) = ids.get(seen) else {
                         return Err(self.execute_protocol(
@@ -2759,6 +2824,7 @@ impl Worker {
                             line,
                         ));
                     };
+                    self.late_teardowns.extend(previous_teardown);
                     let outcome = TestOutcome {
                         id: echoed,
                         status,
@@ -2767,6 +2833,7 @@ impl Worker {
                         stdout,
                         stderr,
                         warnings,
+                        teardown_error,
                     };
                     on_result(seen, &outcome);
                     out.push(outcome);
@@ -2909,7 +2976,10 @@ impl Worker {
             Err(err) => return Err(self.shutdown_error(format!("could not read bye: {err}"))),
         };
         match serde_json::from_str::<WorkerResponse>(&line) {
-            Ok(WorkerResponse::Bye { warnings }) => self.bye_warnings = warnings,
+            Ok(WorkerResponse::Bye { warnings, teardown }) => {
+                self.bye_warnings = warnings;
+                self.late_teardowns.extend(teardown);
+            }
             Ok(other) => {
                 return Err(self.shutdown_error(format!(
                     "expected `bye`, got `{}`\n  raw line: {line}",
@@ -2977,6 +3047,11 @@ impl Worker {
     /// module-scoped teardown output is drained at a boundary, outside the per-test capture
     /// window, so a *successful* run's stderr can carry legitimate user output (see the
     /// 1b.2 Task 3 divergence note).  The run surfaces it; it never grades it.
+    /// The late teardown errors the worker sent since the last call.
+    pub(crate) fn take_late_teardowns(&mut self) -> Vec<LateTeardown> {
+        std::mem::take(&mut self.late_teardowns)
+    }
+
     /// The warnings `bye` carried, which belong to the last test this worker ran.
     pub(crate) fn take_bye_warnings(&mut self) -> Vec<RecordedWarning> {
         std::mem::take(&mut self.bye_warnings)
@@ -3190,7 +3265,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":14}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":15}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked
@@ -3614,7 +3689,7 @@ mod tests {
         let dir = normpath(tmp.path());
         let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
         let config = resolve_config(&dir, &args).unwrap();
-        let (targets, entries, _) = discover_targets(&config, &dir, &args, false)?;
+        let (targets, entries, _, _) = discover_targets(&config, &dir, &args, false)?;
         Ok(entries
             .iter()
             .map(|entry| {
@@ -5488,9 +5563,9 @@ assert True
         let dir = normpath(dir);
         let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
         let config = resolve_config(&dir, &args).unwrap();
-        let (_, _, walked) = discover_targets(&config, &dir, &args, false).unwrap();
+        let (_, _, walked, _) = discover_targets(&config, &dir, &args, false).unwrap();
         let root = to_posix(&config.rootdir);
-        session_conftests(&config, &dir, &args, &walked)
+        session_conftests(&config, &dir, &args, &[], &walked)
             .unwrap()
             .0
             .into_iter()
@@ -5535,8 +5610,8 @@ assert True
         ]);
         let dir = normpath(tmp.path());
         let config = resolve_config(&dir, &[]).unwrap();
-        let (_, _, walked) = discover_targets(&config, &dir, &[], false).unwrap();
-        let (_, late) = session_conftests(&config, &dir, &[], &walked).unwrap();
+        let (_, _, walked, _) = discover_targets(&config, &dir, &[], false).unwrap();
+        let (_, late, _) = session_conftests(&config, &dir, &[], &[], &walked).unwrap();
         let names: Vec<(usize, String)> = late
             .iter()
             .map(|(at, path)| {
@@ -5579,16 +5654,26 @@ assert True
         );
     }
 
-    /// No conftest mentions `pytest_`: nothing is sent, and the worker imports lazily.
+    /// No conftest mentions `pytest_`: no hook runtime, and only the initial conftests are
+    /// sent (an emulated plugin's initialization window imports them; nothing else does).
     #[test]
-    fn a_hook_free_session_sends_no_conftest_list() {
+    fn a_hook_free_session_sends_only_the_initial_conftests() {
         let tmp = tree(&[
             (
                 "conftest.py",
                 "import pytest\n\n@pytest.fixture\ndef f():\n    return 1\n",
             ),
-            ("test_a.py", &module("a")),
+            ("sub/conftest.py", "X = 1\n"),
+            ("sub/test_a.py", &module("a")),
         ]);
-        assert!(conftest_paths(tmp.path(), &[]).is_empty());
+        assert_eq!(
+            conftest_paths(tmp.path(), &[]),
+            [("conftest.py".to_string(), true)]
+        );
+        let dir = normpath(tmp.path());
+        let config = resolve_config(&dir, &[]).unwrap();
+        let (_, _, walked, _) = discover_targets(&config, &dir, &[], false).unwrap();
+        let (_, late, hook_runtime) = session_conftests(&config, &dir, &[], &[], &walked).unwrap();
+        assert!(late.is_empty() && !hook_runtime);
     }
 }
