@@ -1,4 +1,4 @@
-{"version": 1, "format": "termshow", "term": {"cols": 72, "rows": 7, "type": "xterm-256color"}, "title": "rustest examples/tests/ -v"}
+{"version": 1, "format": "termshow", "term": {"cols": 72, "rows": 9, "type": "xterm-256color"}, "title": "rustest examples/tests/ -v"}
 [0.0, "o", "\u001b[1;32m$\u001b[0m "]
 [0.045, "o", "r"]
 [0.045, "o", "u"]
@@ -27,7 +27,9 @@
 [0.045, "o", "-"]
 [0.045, "o", "v"]
 [0.35, "o", "\r\n"]
-[0.648, "o", "examples/tests/test_math.py::test_increment[one] PASSED         [ 33%]"]
-[0.0, "o", "\r\nexamples/tests/test_math.py::test_increment[five] PASSED        [ 66%]\r\nexamples/tests/test_math.py::test_increment[ten] PASSED         [100%]\r\n"]
-[0.0, "o", "3 passed in 0.46s\r\n"]
+[0.461, "o", "\u001b[?25l"]
+[0.089, "o", "\u001b[32m\u280b\u001b[0m Collecting tests"]
+[0.095, "o", "\r\u001b[2K\u001b[32m\u2819\u001b[0m Collecting tests"]
+[0.093, "o", "\r\u001b[2K\u001b[32m\u2839\u001b[0m Collecting tests"]
+[0.201, "o", "\r\u001b[2K\u001b[32m\u2838\u001b[0m Collecting tests\r\u001b[2K\u001b[32m\u2838\u001b[0m Collecting tests\r\n\u001b[?25h\r\u001b[1A\u001b[2K\u001b[32m\u2713\u001b[0m Collected 3 tests from 1 file \u001b[2m(397ms)\u001b[0m\r\n\u001b[?25l\u001b[32m\u280b\u001b[0m \u001b[36mRunning\u001b[0m \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m \u001b[35m  0%\u001b[0m \u2022 \u001b[32m0/3\u001b[0m \u001b[33m0:00:00\u001b[0m\r\u001b[2K\u001b[32m\u2713\u001b[0m \u001b[32mexamples\\tests\\test_math.py\u001b[0m\u001b[2m (53ms)\u001b[0m\r\n    \u001b[32m\u2713\u001b[0m test_increment[one]\r\n    \u001b[32m\u2713\u001b[0m test_increment[five]\r\n    \u001b[32m\u2713\u001b[0m test_increment[ten]\r\n\u001b[32m\u280b\u001b[0m \u001b[36mRunning\u001b[0m \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m \u001b[35m  0%\u001b[0m \u2022 \u001b[32m0/3\u001b[0m \u001b[33m0:00:00\u001b[0m\r\u001b[2K  \u001b[36mRunning\u001b[0m \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m \u001b[35m100%\u001b[0m \u2022 \u001b[32m3/3\u001b[0m \u001b[33m0:00:00\u001b[0m\r\n\u001b[?25h\r\u001b[1A\u001b[2K\r\n\u001b[32m\u2713 3 passed\u001b[0m\u001b[2m in 476ms\u001b[0m\r\n"]
 [0.6, "o", "\u001b[1;32m$\u001b[0m "]

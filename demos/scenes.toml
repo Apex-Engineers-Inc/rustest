@@ -166,3 +166,43 @@ def test_subtotal(cart: dict[str, int]) -> None:
     subtotal = sum(prices[item] * count for item, count in cart.items())
     assert subtotal == 500
 '''
+
+# ── A session rustest hands to pytest ───────────────────────────────────────────
+#
+# A conftest hook that changes what runs: only pytest can honour it, so the whole session
+# goes to pytest after one line of explanation. `-q` keeps pytest's own output to its bare
+# letters and summary, which are the same on every machine.
+[[scene]]
+name = "fallback"
+title = "rustest -q"
+dir = "shop"
+cols = 88
+commands = [["rustest", "-q"]]
+
+[scene.files]
+"pytest.ini" = '''
+[pytest]
+markers =
+    slow: a slow test
+'''
+"conftest.py" = '''
+import pytest
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(pytest.mark.skip(reason="slow"))
+'''
+"test_shop.py" = '''
+import pytest
+
+
+def test_total():
+    assert 2 * 3 == 6
+
+
+@pytest.mark.slow
+def test_whole_catalogue():
+    assert sum(range(1000)) == 499500
+'''

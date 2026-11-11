@@ -30,8 +30,18 @@ at the repository root.
 ## What is real and what is drawn
 
 The program output is real, down to the order the two streams interleave. rustest writes
-per-test lines to stdout and the summary to stderr, and the recorder merges them the way a
+its display to stdout and the summary to stderr, and the recorder merges them the way a
 terminal does rather than concatenating one after the other.
+
+Each `rustest` command runs through `scripts/_demo_terminal.py`: the real CLI, told that
+stdout is a terminal, with `rich` writing 16-colour escape sequences into the pipe. That is
+what makes the recording show the spinner, the bar redrawing in place and the coloured
+`✓`/`✗` lines a user sees, and not the pytest-format lines a pipe gets. great-docs replays the
+cursor movements with its own terminal emulator, one SVG keyframe per output event, so writes
+less than 80 ms apart are merged into one. OSC 8 links (the clickable `test_math.py:3`) are
+skipped by the emulator, so they are in the file and not on the page. Paths in a recording are
+those of the machine that recorded it (`C:/tmp/shop` on Windows), which is why scenes pick a
+short `dir`.
 
 Two things are drawn, because there is no shell in the loop to produce them: the `$`
 prompt, and the keystrokes of the command being typed. Everything after the newline came

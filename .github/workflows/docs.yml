@@ -3,15 +3,27 @@ name: Deploy Documentation
 on:
   workflow_call:  # Called by publish.yml after successful PyPI release
   workflow_dispatch:  # Manual trigger for rebuilding docs
+  # Build only: a pull request checks that the site still builds and uploads it for
+  # inspection. The `deploy` job below never runs for one.
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs.yml"
+      - "README.md"
+      - "great-docs.yml"
+      - "user_guide/**"
+      - "demos/**"
+      - "docs/**"
+      - "python/rustest/**"
+      - "pyproject.toml"
 
+# Read-only by default; only the deploy job, which a pull request skips, may write Pages.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -56,13 +68,26 @@ jobs:
         run: great-docs build
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./great-docs/_site
 
+      - name: Upload site for inspection
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: ./great-docs/_site
+          retention-days: 7
+
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
