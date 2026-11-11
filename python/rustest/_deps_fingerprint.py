@@ -291,6 +291,15 @@ def affected_by_paths(
     Uncacheable records are not listed: they always run."""
     importlib.invalidate_caches()
     wanted = {_norm(p) for p in changed} | {_norm(os.path.realpath(p)) for p in changed}
+    real: dict[str, str] = {}  # a recorded path as the file system now resolves it (a symlink)
+
+    def reaches(key: str) -> bool:
+        if key in wanted:
+            return True
+        if key not in real:
+            real[key] = _norm(os.path.realpath(key))
+        return real[key] in wanted
+
     resolved: dict[str, tuple[str, str | None]] = {}
     out: dict[str, list[str]] = {}
     for nodeid, record in records.items():
@@ -298,9 +307,13 @@ def affected_by_paths(
         hits: set[str] = set()
         for kind, key, _ in record.deps:
             if kind in (CODE, FILE):
-                hits |= {key} & wanted
+                if reaches(key):
+                    hits.add(key)
             elif kind == LISTING:
-                hits |= {p for p in wanted if p == key or os.path.dirname(p) == key}
+                reaches(key)  # fills `real`
+                hits |= {
+                    p for p in wanted if p == key or os.path.dirname(p) in (key, real.get(key))
+                }
             elif kind == IMPORT:
                 origin = _import_fingerprint(key, paths, resolved)[1]
                 if origin is not None and _norm(origin) in wanted:

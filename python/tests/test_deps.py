@@ -1922,9 +1922,64 @@ def test_every_event_that_cannot_be_an_input_makes_the_test_uncacheable(event: s
     assert not rec.cacheable and any(event in r for r in rec.reasons), rec.reasons
 
 
+#: The first CPython version that raises each audit event this module handles and that an earlier
+#: version lacks (docs.python.org "Audit events table", 3.12 / 3.13 / 3.14).  The 3.14 table in
+#: ``_AUDIT_TABLE_3_14`` is the superset; this is what the earlier versions are missing.
+_EVENT_SINCE: dict[str, tuple[int, int]] = {
+    "time.sleep": (3, 13),
+    "sys.monitoring.register_callback": (3, 13),
+    "sys.remote_exec": (3, 14),
+    "_posixsubprocess.fork_exec": (3, 14),  # undocumented before; subprocess.Popen covers it
+}
+
+
+def test_the_events_older_pythons_lack_are_the_ones_the_contract_names() -> None:
+    handled = set(_deps._EVENTS)  # pyright: ignore[reportPrivateUsage]
+    assert set(_EVENT_SINCE) <= handled
+    # the contract names the 3.12 holes, so a version table change cannot go unnoticed
+    doc = _deps.__doc__ or ""
+    assert "on 3.12 a sleep and a second tracer" in doc
+
+
+@pytest.mark.skipif(sys.version_info < (3, 13), reason="time.sleep raises its event from 3.13")
 def test_time_sleep_is_the_clock_but_a_zero_sleep_is_a_yield() -> None:
     assert not record(lambda: time.sleep(0.001)).cacheable
     assert record(lambda: time.sleep(0)).cacheable
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 13), reason="3.13 raises the time.sleep event")
+def test_hole_time_sleep_on_python_3_12_is_invisible() -> None:
+    assert record(lambda: time.sleep(0.001)).cacheable
+
+
+def test_a_sleep_event_is_the_clock_on_every_version() -> None:
+    """The handler, driven with ``sys.audit`` (which raises the event on any version)."""
+    assert not record(lambda: sys.audit("time.sleep", 0.001)).cacheable
+    assert record(lambda: sys.audit("time.sleep", 0)).cacheable
+
+
+def test_machine_identity_routes() -> None:
+    import platform
+
+    for route in (socket.gethostname, platform.node, platform.system, platform.uname):
+        rec = record(route)
+        assert not rec.cacheable, route  # an audit event, or `platform.uname` being started
+        assert any("machine's identity" in r for r in rec.reasons), (route, rec.reasons)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="os.uname is POSIX only")
+def test_a_hostname_file_read_is_a_file_dependency() -> None:
+    hostname = Path("/etc/hostname")
+    if not hostname.is_file():
+        pytest.skip("no /etc/hostname here")
+    rec = record(hostname.read_text)
+    assert rec.cacheable and "/etc/hostname" in keys(rec, "file")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="os.uname is POSIX only")
+def test_hole_os_uname_is_invisible_on_posix() -> None:
+    """A C function with no audit event: the one route to the node name that is not caught."""
+    assert record(os.uname).cacheable
 
 
 def test_the_machines_identity_is_uncacheable() -> None:
@@ -2057,9 +2112,23 @@ def test_a_changed_symlinked_file_is_matched_by_its_real_path(project: Project) 
     except OSError:
         pytest.skip("symlinks are not available")
     rec = record(link.read_text)
-    assert affected_by_paths({"t": rec}, [real]) == {"t": [project.p("link_data.txt")]} or (
-        affected_by_paths({"t": rec}, [real])
-    )
+    assert affected_by_paths({"t": rec}, [real]) == {"t": [project.p("link_data.txt")]}
+    assert affected_by_paths({"t": rec}, [link]) == {"t": [project.p("link_data.txt")]}
+
+
+def test_a_retargeted_symlink_marks_what_read_through_it_as_affected(project: Project) -> None:
+    first = project.write("first_target.txt", "1")
+    second = project.write("second_target.txt", "2")
+    link = project.root / "moving_link.txt"
+    try:
+        link.symlink_to(first)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    rec = record(link.read_text)
+    link.unlink()
+    link.symlink_to(second)
+    assert affected_by_paths({"t": rec}, [link]) == {"t": [project.p("moving_link.txt")]}
+    assert affected_by_paths({"t": rec}, [first]) == {}  # the old target no longer feeds it
 
 
 def test_a_module_swapped_in_sys_modules_without_changing_its_size_is_not_a_stale_closure(

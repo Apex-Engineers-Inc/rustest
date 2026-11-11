@@ -146,6 +146,17 @@ The holes, each pinned by a test that asserts it is **not** detected
 * a new local file named like a standard-library module:
   ``test_hole_a_new_local_file_named_like_a_standard_library_module_is_invisible``
 * the CPU count: ``test_hole_the_cpu_count_is_invisible_but_the_node_name_is_caught``
+* the machine's identity, by route (``test_machine_identity_routes``): ``socket.gethostname``
+  (audit event, caught), ``platform.uname`` / ``platform.node`` / ``platform.system`` and the other
+  functions built on it (``sys.monitoring`` on ``platform.uname``, caught on every platform, where
+  POSIX raises no audit event), a read of ``/etc/hostname`` or ``/etc/machine-id`` (an ``open``
+  event: a file dependency, caught).  **Not caught**: a direct ``os.uname()`` (a C function that
+  raises no event): ``test_hole_os_uname_is_invisible_on_posix``.
+* Python 3.12: no ``time.sleep`` audit event (raised from 3.13) and no
+  ``sys.monitoring.register_callback`` event (3.13), so **on 3.12 a sleep and a second tracer are
+  not seen** (a ``--fast`` run on 3.12 may cache a test that sleeps for its result): ``test_hole_time_sleep_on_python_3_12_is_invisible``;
+  ``_posixsubprocess.fork_exec`` (documented from 3.14) is covered on every version by
+  ``subprocess.Popen``, ``os.fork`` and ``os.posix_spawn``.
 * an edit inside an untracked install: ``test_hole_an_edit_inside_an_untracked_install_is_invisible``
 * ``sitecustomize`` / ``.pth``: ``test_hole_sitecustomize_and_pth_files_are_in_no_prefix_part``
 * worker machinery's own reads at import time:
@@ -494,6 +505,7 @@ class Recorder:
         self._resolutions: dict[tuple[str, str], tuple[str, str | None]] = {}
         self._modnames: tuple[int, dict[str, str]] = (-1, {})
         self._env_codes: dict[Any, str] = {}
+        self._identity_codes: frozenset[Any] = frozenset()
         self._in_session = False
         self._session_global = _Facts()
         self._session_files: dict[str, _Facts] = {}
@@ -522,6 +534,11 @@ class Recorder:
                 environ.__iter__.__code__: "all",
                 environ.__len__.__code__: "all",
             }
+        import platform
+
+        # `platform.uname()` is the route to the node name on POSIX (`os.uname()` raises no audit
+        # event) and on Windows; it is a Python function, so its start is seen even when cached.
+        self._identity_codes = frozenset({platform.uname.__code__})
         events = monitoring.events
         wanted = events.PY_START | events.PY_RESUME | events.PY_THROW
         for event in (events.PY_START, events.PY_RESUME):
@@ -659,6 +676,10 @@ class Recorder:
                 except Exception as exc:  # noqa: BLE001
                     self._fail(f"the recorder failed on os.environ: {type(exc).__name__}")
             return None  # keep reporting: every read matters
+        if code in self._identity_codes:
+            if self._stack or self._in_session:
+                self._fail("uses the machine's identity (platform.uname)")
+            return None  # keep reporting: every call matters
         name = code.co_filename
         try:
             path = self._code_paths[name]
