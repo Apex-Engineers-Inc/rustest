@@ -198,9 +198,20 @@ Stated rather than implied, because they bound what the absolute seconds mean:
   file granularity, so a suite whose tests are concentrated in one enormous file cannot be
   parallelised past that file, and splitting it is a real speedup. (This is what caps
   cachetools at 1.11x however many workers exist.)
-- **Use `--lf` while iterating.** Warm collection is ~230ms, so rerunning just the failed
-  tests is close to instant. Paired with [`--llm`](llm-output.md) this is the tight loop that
-  agent tooling wants.
+- **Use `--lf` while iterating.** As in pytest, `--lf` does not import the files that hold
+  no remembered failure. Their directories are still collected, so their `conftest.py` files
+  are imported, as pytest imports them; the file walk still covers the whole suite. On a
+  200-file, 2,000-test tree with one failing test (`-n 4`, a fresh process per run, median
+  of five), `--lf` took 0.79s, against 1.06s for the same `--lf` before it skipped files
+  (median of three, same tree) and 0.96s for a full run. Two caveats:
+  - The skip needs a failure in a module-level test. When every remembered failure is a
+    class's method, pytest imports every file, and so does rustest.
+  - Which files to skip is predicted from the remembered ids and checked once the failing
+    files are collected. When the prediction is wrong, because a failing test was renamed
+    or removed since, the run starts again with the right answer, and the files the first
+    attempt collected are imported twice.
+
+  Paired with [`--llm`](llm-output.md) this is the tight loop that agent tooling wants.
 - **`--cov` is opt-in and costs nothing when off.** Coverage runs through `sys.monitoring`
   rather than a plugin; a run that does not ask for it registers no monitoring tool at all.
 - **Reduce your own body time first.** If the framework-share table says your suite is 95%

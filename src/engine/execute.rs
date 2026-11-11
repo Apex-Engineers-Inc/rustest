@@ -50,10 +50,12 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::engine::cache::LastFailedMode;
 use crate::engine::cache::{
-    last_failed_order, merge_last_failed, read_last_failed, write_last_failed,
+    last_failed_order, last_failed_skip, merge_last_failed, predicted_direct, read_last_failed,
+    write_last_failed, LastFailedSkip,
 };
 use crate::engine::collect::{
     assemble, plan, spawn_pool, CollectError, Dispatch, FileOutcome, Worker, WorkerLauncher,
+    IMPORT_FAILURE_PREFIX,
 };
 use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
 use crate::engine::protocol::CoverageWire;
@@ -647,7 +649,58 @@ fn run_with_launcher(
     mut observer: Option<Observer<'_>>,
 ) -> Result<RunReport, RunError> {
     let started = Instant::now();
-    let dispatch = plan(
+    // `--lf` file skipping, pytest's (`cache::last_failed_skip`). Which files it collects
+    // depends on what the last-failed files contain, so it is predicted from the cached ids,
+    // and checked at the barrier against what those files actually collected. A wrong
+    // prediction -- a remembered module-level test since renamed or removed -- abandons the
+    // attempt before anything runs and starts again with the actual answer, which is exact
+    // because every last-failed file is collected under any prediction. The abandoned attempt
+    // has imported the files it collected, so a replanned run imports those twice.
+    let mut known = None;
+    loop {
+        let attempt = run_attempt(
+            invocation_dir,
+            args,
+            launcher,
+            workers,
+            keyword,
+            mark,
+            &options,
+            // A fresh reborrow each attempt; `as_deref_mut` ties it to the observer's lifetime.
+            observer.as_mut().map(|watch| &mut **watch as Observer<'_>),
+            started,
+            known,
+        )?;
+        match attempt {
+            Attempt::Report(report) => return Ok(report),
+            Attempt::Replan(actual) => known = Some(actual),
+        }
+    }
+}
+
+/// One attempt at a run: its report, or the `--lf` skip it should have used instead.
+#[allow(clippy::large_enum_variant)] // one per run
+enum Attempt {
+    Report(RunReport),
+    Replan(Option<LastFailedSkip>),
+}
+
+/// [`run_with_launcher`]'s body, with `known` the `--lf` skip a previous attempt established
+/// (`None`: predict it).
+#[allow(clippy::too_many_arguments)]
+fn run_attempt(
+    invocation_dir: &Path,
+    args: &[PathBuf],
+    launcher: &WorkerLauncher,
+    workers: usize,
+    keyword: Option<&str>,
+    mark: Option<&str>,
+    options: &RunOptions,
+    mut observer: Option<Observer<'_>>,
+    started: Instant,
+    known: Option<Option<LastFailedSkip>>,
+) -> Result<Attempt, RunError> {
+    let mut dispatch = plan(
         invocation_dir,
         args,
         workers,
@@ -662,14 +715,14 @@ fn run_with_launcher(
         // (`_pytest/mark/__init__.py` l. 214), so `-k "and and"` is a usage error even when
         // there is nothing to match — exit 4, not a quiet exit 5.
         let _ = select_mask(&[], keyword, mark)?;
-        if let Some(watch) = observer {
+        if let Some(watch) = observer.as_deref_mut() {
             let ids = Vec::new();
             let rootdir = dispatch.rootdir.clone();
             if watch(LiveEvent::Collected { ids, rootdir }) {
                 watch(LiveEvent::Done { stopped: false });
             }
         }
-        return Ok(finish(
+        return Ok(Attempt::Report(finish(
             dispatch.rootdir,
             Vec::new(),
             Vec::new(),
@@ -677,11 +730,43 @@ fn run_with_launcher(
             WorkerResidue::default(),
             false,
             started,
-        ));
+        )));
     }
 
-    let pool = spawn_pool(&dispatch, launcher)?;
+    // Verified at the barrier whenever `--lf` has something to go on: the prediction is only
+    // an optimisation, and a wrong one in either direction costs a replan, never an answer.
+    let verify = known.is_none()
+        && options.last_failed == LastFailedMode::Only
+        && !previously_failed.is_empty();
+    let skip =
+        known.unwrap_or_else(|| predict_skip(&dispatch, &previously_failed, options.last_failed));
+    if let Some(plan) = &skip {
+        dispatch.skip_targets(&plan.collect, workers);
+    }
+
+    let mut pool = spawn_pool(&dispatch, launcher)?;
     let pool_size = pool.len();
+
+    // pytest still collects the directories of the files it skips, which imports their
+    // conftests: their hooks count, a broken one is a collection error, and their import side
+    // effects happen. One worker imports those chains, and nothing else, before collecting.
+    if let (Some(plan), Some(worker)) = (&skip, pool.first_mut()) {
+        let mut dirs: Vec<&Path> = (dispatch.targets.iter().zip(&plan.collect))
+            .filter(|(_, collected)| !**collected)
+            .filter_map(|(target, _)| target.parent())
+            .collect();
+        dirs.dedup();
+        let labels = worker.import_conftests(&dirs).map_err(RunError::Collect)?;
+        // With nothing to hand the session to, a conftest that would not import must still be
+        // reported: collect its files after all, which turns it into their collection error.
+        if !options.pytest_fallback
+            && labels
+                .iter()
+                .any(|label| label.starts_with(IMPORT_FAILURE_PREFIX))
+        {
+            return Ok(Attempt::Replan(None));
+        }
+    }
 
     let (collect_tx, collect_rx) = channel::<CollectMessage>();
     let mut exec_txs: Vec<Sender<Assignment>> = Vec::with_capacity(pool_size);
@@ -774,7 +859,30 @@ fn run_with_launcher(
                     started,
                 );
                 report.pytest_fallback = hooks;
-                return Ok(report);
+                return Ok(Attempt::Report(report));
+            }
+        }
+
+        if verify && inbox.iter().all(|slot| matches!(slot, Some(Ok(_)))) {
+            let mut direct = vec![false; dispatch.targets.len()];
+            for (index, outcome) in inbox.iter().flatten().flatten().flatten() {
+                direct[*index] = outcome
+                    .tests
+                    .iter()
+                    .any(|test| test.class_name.is_none() && previously_failed.contains(&test.id));
+            }
+            let actual = last_failed_skip(
+                &dispatch.relative_targets(),
+                &dispatch.named_targets(),
+                &previously_failed,
+                |index| direct[index],
+            );
+            if actual != skip {
+                drop(exec_txs);
+                for handle in handles {
+                    let _ = handle.join();
+                }
+                return Ok(Attempt::Replan(actual));
             }
         }
 
@@ -785,6 +893,7 @@ fn run_with_launcher(
             mark,
             &previously_failed,
             options.last_failed,
+            skip.as_ref(),
         );
 
         // `Collected` goes out before any work does, so an observer that declines it stops
@@ -910,8 +1019,28 @@ fn run_with_launcher(
             started,
         );
         record_last_failed(&dispatch.rootdir_path, &previously_failed, &report);
-        Ok(report)
+        Ok(Attempt::Report(report))
     })
+}
+
+/// `--lf`'s file skipping as the cached ids predict it, before anything is imported; `None`
+/// under any other mode, with nothing remembered, or when it would not switch on.
+fn predict_skip(
+    dispatch: &Dispatch,
+    previously_failed: &std::collections::HashSet<String>,
+    mode: LastFailedMode,
+) -> Option<LastFailedSkip> {
+    if mode != LastFailedMode::Only || previously_failed.is_empty() {
+        return None;
+    }
+    let targets = dispatch.relative_targets();
+    let direct = predicted_direct(previously_failed);
+    last_failed_skip(
+        &targets,
+        &dispatch.named_targets(),
+        previously_failed,
+        |index| direct.contains(targets[index].as_str()),
+    )
 }
 
 /// Fold this run's outcomes into the last-failed cache.
@@ -965,6 +1094,7 @@ fn stage(
     mark: Option<&str>,
     previously_failed: &std::collections::HashSet<String>,
     last_failed: LastFailedMode,
+    lf_skip: Option<&LastFailedSkip>,
 ) -> Result<Staged, RunError> {
     let pool_size = inbox.len();
     let mut outcomes = Vec::new();
@@ -983,7 +1113,32 @@ fn stage(
     // `--lf`'s set reaches node-id selection too: it can make an id miss (`select_node_ids`).
     let lf = (last_failed == LastFailedMode::Only && !previously_failed.is_empty())
         .then_some(previously_failed);
-    let assembled = assemble(dispatch, outcomes, lf)?;
+    let mut assembled = assemble(dispatch, outcomes, lf)?;
+    // `--lf` with skipping on: in a last-failed file collected after the switch, pytest drops
+    // a module-level test that did not fail at *collection*, so it is never counted as
+    // deselected -- unless the file was named as an argument (`LFPluginCollWrapper`:
+    // `x.nodeid in lastfailed or session.isinitpath(x.path) or isinstance(x, Collector)`).
+    if let Some(plan) = lf_skip {
+        let keep: Vec<bool> = assembled
+            .tests
+            .iter()
+            .zip(&assembled.origin)
+            .map(|(test, &target)| {
+                !plan.filtered[target]
+                    || dispatch.initpath[target]
+                    || test.class_name.is_some()
+                    || previously_failed.contains(&test.id)
+            })
+            .collect();
+        let mut flags = keep.iter();
+        assembled
+            .tests
+            .retain(|_| flags.next().copied().unwrap_or(true));
+        let mut flags = keep.iter();
+        assembled
+            .origin
+            .retain(|_| flags.next().copied().unwrap_or(true));
+    }
     // Selection is compiled and applied first even when nothing will run, because pytest
     // does: `pytest_collection_modifyitems` is called from inside `perform_collect`, i.e.
     // *before* `pytest_runtestloop` can interrupt, so a malformed `-k` is a usage error (4)
@@ -2189,9 +2344,11 @@ def test_bails():
         );
     }
 
-    /// `--lf` runs only what failed, and the rest are **deselected** (pytest calls
-    /// `pytest_deselected` on them), so the summary accounts for them rather than losing
-    /// them.
+    /// `--lf` runs only what failed. The file's passing tests are dropped at *collection*
+    /// (`LFPluginCollWrapper`), not deselected: probed on pytest 8.4.2, this tree under
+    /// `--lf` reports `2 failed` and no deselected count. Named as an argument, the same file
+    /// reports `2 failed, 2 deselected` -- see
+    /// `lf_deselects_rather_than_filters_in_a_file_named_as_an_argument`.
     #[test]
     fn last_failed_only_runs_the_previously_failed() {
         let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
@@ -2212,7 +2369,7 @@ def test_bails():
                 ("test_x.py::test_c".to_string(), "failed"),
             ]
         );
-        assert_eq!(report.summary.deselected, 2);
+        assert_eq!(report.summary.deselected, 0);
         assert_eq!(report.exit_code, 1);
     }
 
@@ -2264,9 +2421,10 @@ def test_bails():
         );
     }
 
-    /// `--lf` runs **after** `-k`: a keyword that excludes every recorded failure leaves the
-    /// `-k` selection intact (pytest's "known failures not in selected tests" branch) rather
-    /// than resurrecting the deselected tests.
+    /// `--lf`'s filter runs at collection, *before* `-k`; its deselection runs after. Probed on
+    /// pytest 8.4.2: `--lf -k "test_a or test_d"` here reports `collected 2 items / 2
+    /// deselected / 0 selected` and exits 5 -- collection kept only the two failures, the
+    /// keyword deselected both, and no remembered failure was left to select.
     #[test]
     fn last_failed_applies_after_keyword_selection() {
         let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
@@ -2287,15 +2445,9 @@ def test_bails():
         )
         .expect("the run completes");
 
-        assert_eq!(
-            report
-                .tests
-                .iter()
-                .map(|test| test.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["test_x.py::test_a", "test_x.py::test_d"]
-        );
-        assert_eq!(report.exit_code, 0);
+        assert!(report.tests.is_empty(), "{:?}", report.tests);
+        assert_eq!(report.summary.deselected, 2);
+        assert_eq!(report.exit_code, 5);
     }
 
     /// A collection error is cached under the **file's** id, so `--lf` after a broken import
@@ -2314,7 +2466,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":10}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":11}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -3300,5 +3452,205 @@ def pytest_collection_modifyitems(config, items):
             statuses(&report),
             vec![("test_a.py::test_a".to_string(), "passed")]
         );
+    }
+
+    // =====================================================================
+    // --lf file skipping (pytest's LFPluginCollSkipfiles)
+    // =====================================================================
+
+    /// Imports cleanly the first time; `test_b.py` is broken later, as in the design's probe.
+    const LF_A: &str = "def test_x():\n    assert 0\n\n\ndef test_ok():\n    pass\n";
+    const LF_B_BROKEN: &str = "import pathlib\npathlib.Path(__file__).with_name('b_imported').touch()\nraise RuntimeError('broken')\n";
+
+    fn lf_options() -> RunOptions {
+        RunOptions {
+            last_failed: LastFailedMode::Only,
+            ..RunOptions::defaults()
+        }
+    }
+
+    fn remember(tmp: &TempDir, ids: &[&str]) {
+        let entries = ids.iter().map(|id| ((*id).to_string(), true)).collect();
+        assert!(crate::engine::cache::write_last_failed(
+            tmp.path(),
+            &entries
+        ));
+    }
+
+    /// pytest `--lf` on this tree: `1 failed`, exit 1, nothing deselected, and the unrelated
+    /// broken file is never imported -- where collecting everything would have been exit 2.
+    #[test]
+    fn lf_skips_files_with_no_remembered_failure() {
+        let tmp = tree(&[("test_a.py", LF_A), ("test_b.py", LF_B_BROKEN)]);
+        remember(&tmp, &["test_a.py::test_x"]);
+
+        let report = run_options(&tmp, 1, lf_options());
+
+        assert_eq!(
+            statuses(&report),
+            vec![("test_a.py::test_x".to_string(), "failed")]
+        );
+        assert_eq!(report.exit_code, 1);
+        assert_eq!(
+            report.summary.deselected, 0,
+            "test_ok is filtered, not deselected"
+        );
+        assert!(report.collection_errors.is_empty());
+        assert!(
+            !tmp.path().join("b_imported").exists(),
+            "test_b.py was imported"
+        );
+    }
+
+    /// A file named as an argument is not filtered at collection: its other tests reach the
+    /// selection and are deselected, as pytest's `session.isinitpath` keeps them.
+    #[test]
+    fn lf_deselects_rather_than_filters_in_a_file_named_as_an_argument() {
+        let tmp = tree(&[("test_a.py", LF_A), ("test_b.py", LF_B_BROKEN)]);
+        remember(&tmp, &["test_a.py::test_x"]);
+
+        let report = run_with_launcher(
+            tmp.path(),
+            &[tmp.path().join("test_a.py")],
+            &real_worker(),
+            1,
+            None,
+            None,
+            lf_options(),
+            None,
+        )
+        .expect("the run completes");
+
+        assert_eq!(
+            statuses(&report),
+            vec![("test_a.py::test_x".to_string(), "failed")]
+        );
+        assert_eq!(report.summary.deselected, 1);
+    }
+
+    /// A remembered module-level test that no longer exists predicts skipping that does not
+    /// happen: the attempt is abandoned at the barrier and pytest's answer -- nothing skipped,
+    /// no remembered failure selected, so everything runs -- is what the run gives.
+    #[test]
+    fn lf_with_a_renamed_failure_skips_nothing() {
+        let tmp = tree(&[("test_a.py", LF_A), ("test_b.py", LF_B_BROKEN)]);
+        remember(&tmp, &["test_a.py::test_renamed"]);
+
+        let report = run_options(&tmp, 1, lf_options());
+
+        assert!(
+            tmp.path().join("b_imported").exists(),
+            "nothing was skipped"
+        );
+        assert_eq!(report.collection_errors.len(), 1);
+        assert_eq!(report.exit_code, 2);
+    }
+
+    /// A failure inside a class never switches skipping on, under pytest or here.
+    #[test]
+    fn lf_with_only_class_failures_skips_nothing() {
+        let tmp = tree(&[
+            (
+                "test_a.py",
+                "class TestC:\n    def test_x(self):\n        assert 0\n",
+            ),
+            ("test_b.py", LF_B_BROKEN),
+        ]);
+        remember(&tmp, &["test_a.py::TestC::test_x"]);
+
+        let report = run_options(&tmp, 1, lf_options());
+
+        assert!(tmp.path().join("b_imported").exists());
+        assert_eq!(report.exit_code, 2);
+    }
+
+    const LF_C: &str = "import pathlib\npathlib.Path(__file__).with_name('c_imported').touch()\n\n\ndef test_c():\n    pass\n";
+
+    /// pytest still collects a skipped file's directory, importing its conftest (probe t4: a
+    /// hook nested under `if` empties the run). So the conftest is imported -- its side effect
+    /// happens and its hook is named -- while the test file is not.
+    #[test]
+    fn lf_imports_the_conftests_of_skipped_directories() {
+        let conftest = "import pathlib\npathlib.Path(__file__).with_name('conftest_imported').touch()\nif True:\n    def pytest_collection_modifyitems(config, items):\n        items[:] = []\n";
+        let tmp = tree(&[
+            ("test_a.py", LF_A),
+            ("sub/conftest.py", conftest),
+            ("sub/test_c.py", LF_C),
+        ]);
+        remember(&tmp, &["test_a.py::test_x"]);
+
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                pytest_fallback: true,
+                ..lf_options()
+            },
+        );
+
+        assert!(tmp.path().join("sub/conftest_imported").exists());
+        assert!(!tmp.path().join("sub/c_imported").exists());
+        assert_eq!(
+            report.pytest_fallback,
+            vec!["sub/conftest.py::pytest_collection_modifyitems".to_string()]
+        );
+    }
+
+    /// A broken conftest in a skipped directory is pytest's collection error, exit 2 (probe
+    /// t6): handed to pytest when there is one to hand to, and otherwise collected after all
+    /// so it is reported as the collection error it is.
+    #[test]
+    fn lf_a_broken_conftest_in_a_skipped_directory_is_not_lost() {
+        let tmp = tree(&[
+            ("test_a.py", LF_A),
+            ("sub/conftest.py", "import no_such_module_xyz\n"),
+            ("sub/test_c.py", LF_C),
+        ]);
+        remember(&tmp, &["test_a.py::test_x"]);
+
+        let handed = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                pytest_fallback: true,
+                ..lf_options()
+            },
+        );
+        assert!(
+            handed
+                .pytest_fallback
+                .iter()
+                .any(|label| label.starts_with(IMPORT_FAILURE_PREFIX)),
+            "{:?}",
+            handed.pytest_fallback
+        );
+
+        let report = run_options(&tmp, 1, lf_options());
+        assert_eq!(report.exit_code, 2);
+        assert_eq!(report.collection_errors.len(), 1);
+    }
+
+    /// Probe t3: a parametrize id may contain `::`, and is still a module-level failure, so
+    /// pytest switches skipping on and never imports the broken `test_z.py`: `1 failed`.
+    #[test]
+    fn lf_a_parametrize_id_with_colons_still_skips() {
+        let tmp = tree(&[
+            (
+                "test_p.py",
+                "import pytest\n\n\n@pytest.mark.parametrize('v', ['a::b'])\ndef test_p(v):\n    assert 0\n\n\ndef test_ok():\n    pass\n",
+            ),
+            ("test_z.py", LF_B_BROKEN),
+        ]);
+        remember(&tmp, &["test_p.py::test_p[a::b]"]);
+
+        let report = run_options(&tmp, 1, lf_options());
+
+        assert_eq!(
+            statuses(&report),
+            vec![("test_p.py::test_p[a::b]".to_string(), "failed")]
+        );
+        assert_eq!(report.exit_code, 1);
+        assert_eq!(report.summary.deselected, 0);
+        assert!(!tmp.path().join("b_imported").exists());
     }
 }

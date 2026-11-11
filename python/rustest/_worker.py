@@ -231,6 +231,7 @@ __all__ = [
     "handle_init",
     "handle_shutdown",
     "import_conftest",
+    "import_conftests",
     "import_test_module",
     "install_pytest_shim",
     "main",
@@ -289,7 +290,11 @@ __all__ = [
 #: not named before, so the orchestrator has the complete set at the collection barrier
 #: rather than at shutdown.  Absent when there are none, so an ordinary ``collected`` line is
 #: byte-identical to v9's, and ``bye`` is ``{"op":"bye"}`` again.
-PROTOCOL_VERSION: Final = 10
+#:
+#: v11 adds ``import_conftests`` -> ``conftests_imported``: import the conftest chains of
+#: directories whose test files ``--lf`` skips, as pytest's collection still does, without
+#: importing those files. The reply names the hooks (and import failures) they brought in.
+PROTOCOL_VERSION: Final = 11
 
 #: Exit code for "the response stream is complete, but a fixture teardown failed after the
 #: last test was answered" — i.e. :func:`drain_at_shutdown` raised.
@@ -408,6 +413,13 @@ class BatchDoneResponse(TypedDict):
 
 class ByeResponse(TypedDict):
     op: str
+
+
+class ConftestsImportedResponse(TypedDict):
+    """``WorkerResponse::ConftestsImported`` (``src/engine/protocol.rs``)."""
+
+    op: str
+    hooks: NotRequired[list[str]]
 
 
 class NotInitializedError(Exception):
@@ -6489,6 +6501,31 @@ def keyboard_interrupt_banner(exc: KeyboardInterrupt) -> str:
     return "\n".join(lines)
 
 
+def import_conftests(dirs: Sequence[str]) -> ConftestsImportedResponse:
+    """Import each directory's conftest chain without importing any test file there.
+
+    What pytest does for a directory whose files ``--lf`` skips: the ``Dir`` collector is still
+    collected, and collecting it loads its conftests, so their hooks are registered and their
+    import-time side effects happen. A conftest that raises is recorded by
+    :func:`conftest_registry` (``rustest could not import ...``) and the rest still import.
+    The reply names whatever hooks and import failures this brought in.
+    """
+    if _state is None:
+        raise NotInitializedError("import_conftests received before init")
+    for directory in dirs:
+        try:
+            # A file name, so a directory named like `v1.2` is not read as a file.
+            _ = conftest_registry(Path(directory, "conftest.py"), _state.rootdir)
+        except ABORT_EXCEPTIONS:
+            raise
+        except BaseException:  # noqa: BLE001 - a raise is recorded by conftest_registry
+            pass
+    response: ConftestsImportedResponse = {"op": "conftests_imported"}
+    if hooks := new_hooks():
+        response["hooks"] = hooks
+    return response
+
+
 def handle_shutdown() -> ByeResponse:
     """Handle ``shutdown``; reply ``bye`` — the last line the worker writes.
 
@@ -6913,6 +6950,21 @@ def _protocol_loop(
             if hooks := new_hooks():
                 response["hooks"] = hooks
             emit(response)
+        elif op == "import_conftests":
+            dirs = request.get("dirs")
+            if not isinstance(dirs, list) or not all(
+                isinstance(item, str) for item in cast("list[object]", dirs)
+            ):
+                print(
+                    f"rustest worker: import_conftests without a list of dirs: {line!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                emit(import_conftests(cast("list[str]", dirs)))
+            except NotInitializedError as exc:
+                print(f"rustest worker: {exc}", file=sys.stderr)
+                return 2
         elif op == "execute_test":
             test_id = request.get("id")
             if not isinstance(test_id, str):

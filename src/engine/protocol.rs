@@ -109,7 +109,11 @@ use serde::{Deserialize, Serialize};
 /// named before, so the complete set is known at the collection barrier instead of at
 /// shutdown. Omitted when empty, so an ordinary `collected` line is byte-identical to v9's;
 /// `bye` carries nothing again.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// **v11** adds [`WorkerRequest::ImportConftests`] -> [`WorkerResponse::ConftestsImported`]:
+/// `--lf` skips whole files without importing them, but pytest still collects their
+/// directories, which imports those directories' conftests. The orchestrator asks one worker
+/// to do the same, and the reply names the hooks and import failures that brought in.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The `--cov` instruction carried on [`WorkerRequest::Init`].
 ///
@@ -288,6 +292,10 @@ pub enum WorkerRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_fail: Option<usize>,
     },
+    /// Import the conftest chain of each directory (absolute posix) and nothing else; the
+    /// worker replies [`WorkerResponse::ConftestsImported`]. See [`PROTOCOL_VERSION`]'s v11
+    /// note.
+    ImportConftests { dirs: Vec<String> },
     /// Graceful shutdown; worker replies Bye then exits 0.
     Shutdown,
 }
@@ -404,6 +412,12 @@ pub enum WorkerResponse {
     /// Acknowledges [`WorkerRequest::Shutdown`]; the last line a worker writes before
     /// exiting 0.
     Bye,
+    /// Answers [`WorkerRequest::ImportConftests`]: the hooks (and `rustest could not import`
+    /// labels) those conftests brought in that this worker had not named before.
+    ConftestsImported {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hooks: Vec<String>,
+    },
 }
 
 #[cfg(test)]
@@ -442,9 +456,9 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -545,7 +559,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":10,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":11,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -757,7 +771,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":10}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":11}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;

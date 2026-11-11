@@ -219,6 +219,111 @@ pub fn last_failed_order(
     }
 }
 
+/// Which files `--lf` collects: pytest's file skipping, from `_pytest/cacheprovider.py`'s
+/// `LFPluginCollWrapper` and `LFPluginCollSkipfiles` (pytest 8.4.2, l. 249-315).
+///
+/// pytest collects with every last-failed path (a remembered id's file, and that file's
+/// directories) sorted first in each directory. Skipping **switches on** at the first
+/// last-failed file whose *direct* items -- module-level functions and their parametrized
+/// cases, not a class's methods -- include a remembered failure. From then on, every file off
+/// the last-failed paths is skipped without being imported, and inside each last-failed file
+/// a module-level test that did not fail is dropped without being counted as deselected
+/// (unless the file was named as an argument). Files collected before the switch are left
+/// alone, and if no file switches it on, nothing is skipped at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastFailedSkip {
+    /// Per target: collected, or skipped unimported.
+    pub collect: Vec<bool>,
+    /// Per target: collected once skipping was on, so pytest's filter applies to its
+    /// module-level tests.
+    pub filtered: Vec<bool>,
+}
+
+/// pytest's `--lf` file skipping over `targets` (rootdir-relative posix paths, walk order),
+/// or `None` when it does not switch on.
+///
+/// `named` are the targets of node-id arguments, in argument order: pytest's `Session.collect`
+/// collects those files while resolving the arguments, before any last-failed sorting, so they
+/// come first. `direct(index)` answers whether target `index` -- a last-failed file -- has a
+/// remembered failure among its module-level tests. Before collection only the ids can say
+/// (an id with one `::` level, see [`predicted_direct`]); after it, the collected tests can.
+pub fn last_failed_skip(
+    targets: &[String],
+    named: &[usize],
+    last_failed: &HashSet<String>,
+    direct: impl Fn(usize) -> bool,
+) -> Option<LastFailedSkip> {
+    // `LFPlugin.get_last_failed_paths`: each failed id's file and every parent directory.
+    let mut paths: HashSet<&str> = HashSet::new();
+    for id in last_failed {
+        let file = id.split("::").next().unwrap_or(id);
+        paths.insert(file);
+        paths.extend(file.match_indices('/').map(|(end, _)| &file[..end]));
+    }
+    let is_lf_file: Vec<bool> = targets.iter().map(|t| paths.contains(t.as_str())).collect();
+
+    // The collection order: at every directory, last-failed entries first, otherwise walk
+    // order (the sort is stable). Two targets are ordered at their first differing
+    // component; walk order already groups each directory's contents together.
+    let mut order: Vec<usize> = (0..targets.len())
+        .filter(|index| !named.contains(index))
+        .collect();
+    order.sort_by(|&a, &b| {
+        let (left, right) = (targets[a].as_bytes(), targets[b].as_bytes());
+        let common = left.iter().zip(right).take_while(|(x, y)| x == y).count();
+        // On bytes: two paths can diverge inside a multi-byte character (`é`/`è`), where a
+        // `str` slice would panic. `/` is ASCII, so `start` is always a char boundary.
+        let start = left[..common]
+            .iter()
+            .rposition(|&byte| byte == b'/')
+            .map_or(0, |slash| slash + 1);
+        let component = |path: &str| -> bool {
+            let end = path[start..]
+                .find('/')
+                .map_or(path.len(), |slash| start + slash);
+            paths.contains(&path[..end])
+        };
+        component(&targets[b])
+            .cmp(&component(&targets[a]))
+            .then(a.cmp(&b))
+    });
+    let mut first: Vec<usize> = Vec::new();
+    for &index in named {
+        if !first.contains(&index) {
+            first.push(index);
+        }
+    }
+    let order: Vec<usize> = first.into_iter().chain(order).collect();
+
+    let switch = order
+        .iter()
+        .position(|&index| is_lf_file[index] && direct(index))?;
+    let mut collect = is_lf_file.clone();
+    let mut filtered = vec![false; targets.len()];
+    for (position, &index) in order.iter().enumerate() {
+        if position < switch {
+            collect[index] = true;
+        } else {
+            filtered[index] = is_lf_file[index];
+        }
+    }
+    Some(LastFailedSkip { collect, filtered })
+}
+
+/// Before collection: the files a remembered id names a module-level test of -- one `::`
+/// level before any parametrize id, `file::test_x` or `file::test_x[a::b]`, not
+/// `file::Class::test_y`.
+pub fn predicted_direct(last_failed: &HashSet<String>) -> HashSet<&str> {
+    last_failed
+        .iter()
+        .filter_map(|id| {
+            let (file, rest) = id.split_once("::")?;
+            let name = rest.split_once('[').map_or(rest, |(name, _)| name);
+            (!name.contains("::")).then_some(file)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +489,98 @@ mod tests {
             last_failed_order(ids(&["a"]), &set(&["a"]), LastFailedMode::None),
             None
         );
+    }
+
+    // -- --lf file skipping ------------------------------------------------
+
+    fn targets(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|path| (*path).to_string()).collect()
+    }
+
+    /// The common case: the first last-failed file has a failing module-level test, so every
+    /// other file is skipped and that file's own passing tests are filtered.
+    #[test]
+    fn a_module_level_failure_switches_skipping_on() {
+        let all = targets(&["test_a.py", "test_b.py", "sub/test_c.py"]);
+        let lf = set(&["test_a.py::test_x"]);
+        let skip = last_failed_skip(&all, &[], &lf, |_| true).expect("skipping switches on");
+        assert_eq!(skip.collect, vec![true, false, false]);
+        assert_eq!(skip.filtered, vec![true, false, false]);
+    }
+
+    /// A failure inside a class does not switch it on: the file's direct item is the class.
+    #[test]
+    fn class_only_failures_never_switch_skipping_on() {
+        let all = targets(&["test_a.py", "test_b.py"]);
+        let lf = set(&["test_a.py::TestC::test_x"]);
+        assert!(predicted_direct(&lf).is_empty());
+        assert_eq!(last_failed_skip(&all, &[], &lf, |_| false), None);
+    }
+
+    /// Files collected before the switch are left alone, including a file off the
+    /// last-failed paths that pytest reaches first because its directory is a last-failed
+    /// path: `d/` sorts first, so `d/test_n.py` is collected before `test_z.py` switches it on.
+    #[test]
+    fn files_before_the_switch_are_collected_and_not_filtered() {
+        let all = targets(&["d/test_a.py", "d/test_n.py", "test_m.py", "test_z.py"]);
+        let lf = set(&["d/test_a.py::TestC::test_x", "test_z.py::test_y"]);
+        let skip =
+            last_failed_skip(&all, &[], &lf, |index| index == 3).expect("test_z switches it on");
+        assert_eq!(skip.collect, vec![true, true, false, true]);
+        assert_eq!(skip.filtered, vec![false, false, false, true]);
+    }
+
+    /// Last-failed entries sort first in every directory, so a later last-failed file is
+    /// reached before an earlier sibling that is not one.
+    #[test]
+    fn last_failed_paths_are_collected_first_at_every_level() {
+        let all = targets(&["a/test_1.py", "b/test_2.py", "test_3.py"]);
+        let lf = set(&["b/test_2.py::test_x", "test_3.py::Test::test_y"]);
+        // `b/` and `test_3.py` sort before `a/`; `b/test_2.py` switches it on first.
+        let skip = last_failed_skip(&all, &[], &lf, |index| index == 1).expect("switches on");
+        assert_eq!(skip.collect, vec![false, true, true]);
+        assert_eq!(skip.filtered, vec![false, true, true]);
+    }
+
+    /// Node-id arguments' files are collected in argument order before anything is sorted, so
+    /// a named file that is not a last-failed file is collected when it comes first -- and
+    /// skipped when the switch came before it (pytest then reports the id `not found`).
+    #[test]
+    fn node_id_arguments_are_collected_first_in_argument_order() {
+        let all = targets(&["sub/test_n.py", "test_m.py"]);
+        let lf = set(&["test_m.py::test_b"]);
+        let skip = last_failed_skip(&all, &[0, 1], &lf, |index| index == 1).expect("on");
+        assert_eq!(skip.collect, vec![true, true]);
+        let skip = last_failed_skip(&all, &[1, 0], &lf, |index| index == 1).expect("on");
+        assert_eq!(skip.collect, vec![false, true]);
+    }
+
+    #[test]
+    fn a_collection_error_entry_is_a_last_failed_file_but_not_a_direct_failure() {
+        let lf = set(&["test_b.py", "test_a.py::test_x[1]"]);
+        assert_eq!(predicted_direct(&lf), HashSet::from(["test_a.py"]));
+        let all = targets(&["test_a.py", "test_b.py", "test_c.py"]);
+        let skip = last_failed_skip(&all, &[], &lf, |index| index == 0).expect("switches on");
+        assert_eq!(skip.collect, vec![true, true, false]);
+    }
+
+    /// A parametrize id may contain `::`; only what precedes its `[` counts as levels.
+    #[test]
+    fn a_parametrize_id_containing_colons_is_still_module_level() {
+        let lf = set(&["test_p.py::test_p[a::b]", "test_q.py::Test::test_y[c]"]);
+        assert_eq!(predicted_direct(&lf), HashSet::from(["test_p.py"]));
+    }
+
+    /// Paths that diverge inside a multi-byte character are ordered without slicing one.
+    #[test]
+    fn paths_diverging_inside_a_multibyte_character_sort_without_panicking() {
+        let all = targets(&[
+            "tests/test_\u{e8}.py",
+            "tests/test_\u{e9}.py",
+            "x/test_\u{8bd5}.py",
+        ]);
+        let lf = set(&["tests/test_\u{e9}.py::test_x", "x/test_\u{8bd5}.py::test_y"]);
+        let skip = last_failed_skip(&all, &[], &lf, |index| index == 1).expect("switches on");
+        assert_eq!(skip.collect, vec![false, true, true]);
     }
 }

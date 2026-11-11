@@ -546,7 +546,49 @@ pub(crate) struct Dispatch {
     /// Per worker, in walk order: `(target index, path)`.  The target index is what puts
     /// the manifest back into walk order however the pool interleaves.
     pub(crate) assignments: Vec<Vec<(usize, PathBuf)>>,
+    /// Per target: the file was named as an argument (a path or a node id), pytest's
+    /// `Session.isinitpath`. `--lf` never filters such a file's tests at collection.
+    pub(crate) initpath: Vec<bool>,
     init: WorkerRequest,
+}
+
+impl Dispatch {
+    /// Leave out the targets `collect` marks false, as pytest's `--lf` leaves files out of
+    /// collection (`LFPluginCollSkipfiles`: a passed report with no items): answered with no
+    /// tests, so no worker imports them, and the rest re-routed over a pool sized for them.
+    pub(crate) fn skip_targets(&mut self, collect: &[bool], workers: usize) {
+        for (index, keep) in collect.iter().enumerate() {
+            if !keep {
+                self.static_tests[index] = Some(Vec::new());
+            }
+        }
+        let dynamic: Vec<usize> = (0..self.targets.len())
+            .filter(|index| self.static_tests[*index].is_none())
+            .collect();
+        let pool_size = if dynamic.is_empty() {
+            0
+        } else {
+            workers.clamp(1, dynamic.len())
+        };
+        self.assignments = route(&self.targets, &dynamic, pool_size);
+    }
+
+    /// The targets of node-id arguments (`test_m.py::test_a`), in argument order.
+    pub(crate) fn named_targets(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.names.is_empty())
+            .map(|entry| entry.target)
+            .collect()
+    }
+
+    /// Each target rootdir-relative and posix, the form a node id's file part takes.
+    pub(crate) fn relative_targets(&self) -> Vec<String> {
+        self.targets
+            .iter()
+            .map(|target| to_posix(target.strip_prefix(&self.rootdir_path).unwrap_or(target)))
+            .collect()
+    }
 }
 
 /// Resolve config, walk, and route — the whole pre-spawn half of a run, Tier D only.
@@ -609,6 +651,15 @@ pub(crate) fn plan_with_options(
     let codeblocks = options.codeblocks.or(config.codeblocks).unwrap_or(false);
     let (targets, entries) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
     let rootdir = to_posix(&config.rootdir);
+    let named: Vec<PathBuf> = initial_paths(&invocation_dir, args, &config)?
+        .into_iter()
+        .map(|argument| argument.path)
+        .filter(|path| path.is_file())
+        .collect();
+    let initpath = targets
+        .iter()
+        .map(|target| named.contains(target))
+        .collect();
 
     // The Tier S pass, before a single process is spawned.  It is pure computation over files
     // already on disk (plus the manifest cache), so it parallelises and shares nothing.
@@ -698,6 +749,7 @@ pub(crate) fn plan_with_options(
         targets,
         assert_keys,
         assignments,
+        initpath,
         init,
     })
 }
@@ -2142,6 +2194,49 @@ impl Worker {
         }
     }
 
+    /// `import_conftests` -> `conftests_imported`: import each directory's conftest chain and
+    /// nothing else. Returns the labels the reply named, after adding them to the launcher's
+    /// hook set exactly as a `collected` line's are.
+    pub(crate) fn import_conftests(&mut self, dirs: &[&Path]) -> Result<Vec<String>, CollectError> {
+        let Some(&first) = dirs.first() else {
+            return Ok(Vec::new());
+        };
+        let request = WorkerRequest::ImportConftests {
+            dirs: dirs.iter().map(|dir| to_posix(dir)).collect(),
+        };
+        if let Err(err) = self.send(&request) {
+            return Err(self.died(first, format!("could not send import_conftests: {err}")));
+        }
+        let line = match self.receive() {
+            Ok(Some(line)) => line,
+            Ok(None) => return Err(self.died(first, "the worker exited without answering".into())),
+            Err(err) => {
+                return Err(CollectError::Io {
+                    worker: self.index,
+                    context: "reading the response to import_conftests".into(),
+                    message: err.to_string(),
+                })
+            }
+        };
+        match serde_json::from_str(&line) {
+            Ok(WorkerResponse::ConftestsImported { hooks }) => {
+                if let Ok(mut seen) = self.hooks.lock() {
+                    seen.extend(hooks.iter().cloned());
+                }
+                Ok(hooks)
+            }
+            Ok(other) => Err(self.protocol(
+                first,
+                format!(
+                    "expected `conftests_imported`, got `{}`",
+                    response_op(&other)
+                ),
+                line,
+            )),
+            Err(err) => Err(self.protocol(first, format!("undecodable response: {err}"), line)),
+        }
+    }
+
     fn protocol(&self, path: &Path, detail: String, line: String) -> CollectError {
         CollectError::Protocol {
             worker: self.index,
@@ -2577,6 +2672,7 @@ fn response_op(response: &WorkerResponse) -> &'static str {
         WorkerResponse::TestResult { .. } => "test_result",
         WorkerResponse::BatchDone { .. } => "batch_done",
         WorkerResponse::Bye => "bye",
+        WorkerResponse::ConftestsImported { .. } => "conftests_imported",
     }
 }
 
@@ -2669,7 +2765,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":10}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":11}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

@@ -190,7 +190,9 @@ def test_exitfirst_on_a_green_tree_changes_nothing(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_last_failed_reruns_only_the_failures_and_deselects_the_rest(tmp_path: Path) -> None:
+def test_last_failed_reruns_only_the_failures(tmp_path: Path) -> None:
+    """pytest 8.4.2 on this tree, probed: ``--lf`` reports ``2 failed`` and no deselected
+    count -- the file's passing tests are dropped at collection (``LFPluginCollWrapper``)."""
     tree = _tree(tmp_path, "lf", {"test_x.py": FOUR_WITH_FAILURES})
 
     first = _rustest(tree, [])
@@ -202,7 +204,7 @@ def test_last_failed_reruns_only_the_failures_and_deselects_the_rest(tmp_path: P
 
     second = _rustest(tree, ["--lf"])
 
-    assert _summary_line(second.stderr) == "2 failed, 2 deselected", second.stderr
+    assert _summary_line(second.stderr) == "2 failed", second.stderr
     assert second.returncode == 1
 
 
