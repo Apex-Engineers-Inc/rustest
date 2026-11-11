@@ -325,10 +325,14 @@ def test_an_unsupported_ini_key_is_a_loud_usage_error(tmp_path: Path) -> None:
     engine's own config resolver, which has no override channel.
     """
     tree = _tree(tmp_path, "")
-    result = _rustest(tree, ["-o", "python_files=x_*.py"])
+    result = _rustest(tree, ["--no-pytest-fallback", "-o", "python_files=x_*.py"])
     assert result.returncode == 4, result.stderr
     assert "cannot override 'python_files'" in result.stderr
     assert "supported: addopts" in result.stderr
+
+    # By default pytest accepts any ini key, so the session is handed to it instead.
+    handed = _rustest(tree, ["-o", "python_files=x_*.py"])
+    assert "-o python_files is an ini option rustest cannot override" in handed.stderr
 
 
 def test_a_value_without_an_equals_sign_is_a_usage_error(tmp_path: Path) -> None:

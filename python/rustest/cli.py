@@ -236,10 +236,6 @@ def _drop_ignored_pytest_flags(raw: list[str]) -> tuple[list[str], list[str]]:
 class _ArgError(Exception):
     """A usage error the parser would have exited on, raised instead while pytest may take over."""
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
-
 
 class _Parser(argparse.ArgumentParser):
     """``ArgumentParser`` whose usage errors exit **4**, and can name where the flag came from.
@@ -273,6 +269,9 @@ class _Parser(argparse.ArgumentParser):
 def build_parser() -> _Parser:
     parser = _Parser(
         prog="rustest",
+        # pytest's parser does not abbreviate either, and an abbreviation would swallow a
+        # conftest option that happens to be a prefix of a rustest flag (`--report`).
+        allow_abbrev=False,
         description="Run Python tests at blazing speed with a Rust powered core.",
         # See :class:`_LazyHelpFormatter`: without it, describing the arguments below
         # imports `shutil` and `_colorize` on every rustest invocation.
@@ -632,25 +631,39 @@ def _plugin_names(raw: Sequence[str]) -> list[str]:
     return [name for name in names if not name.startswith("no:")]
 
 
-def _rejected(parser: _Parser, error: _ArgError, user_argv: Sequence[str]) -> int:
-    """The parser refused the arguments: pytest may know them, so it gets the session.
+def _where(token: str, addopts: Sequence[str], config_file: object) -> str:
+    """`` (from addopts in <ini>)`` when *token* did not come from the command line."""
+    if token not in addopts:
+        return ""
+    return f" (from addopts in {config_file})" if config_file else " (from addopts)"
 
-    Only what reaches ``_Parser.error`` comes here -- an unknown flag, a value of the wrong
-    type, a flag missing its value. Whatever rustest checks itself keeps its own message:
-    the removed ``--pytest-compat``/``--v1``, malformed or unsupported ``-o``, and the
-    ``--llm-full``/``--cov-report``/``--cov-branch`` refusals, none of which are "pytest may
-    accept this". Without pytest the original usage error is printed, as before.
+
+def _rejected(
+    parser: _Parser,
+    error: _ArgError,
+    user_argv: Sequence[str],
+    addopts: Sequence[str] = (),
+    config_file: object = None,
+) -> int:
+    """The parser refused the arguments; if it is a flag it does not know, pytest may.
+
+    Only ``unrecognized arguments`` goes to pytest. A rustest flag with a bad or missing
+    value (``-n abc``) is rustest's own usage error, as are the removed ``--pytest-compat``
+    and ``--v1``, malformed ``-o``, and the ``--llm-full``/``--cov-report``/``--cov-branch``
+    refusals: none of those is "pytest may accept this". Without pytest installed the
+    original usage error is printed too.
     """
     from . import _fallback
 
-    if not _fallback.pytest_available():
-        parser.fallback = False
-        parser.error(error.message)
+    message = str(error)
     prefix = "unrecognized arguments: "
-    if error.message.startswith(prefix):
-        reasons = [f"{arg} is not a rustest option" for arg in error.message[len(prefix) :].split()]
-    else:
-        reasons = [f"rustest does not accept its arguments ({error.message})"]
+    if not message.startswith(prefix) or not _fallback.pytest_available():
+        parser.fallback = False
+        parser.error(message)
+    reasons = [
+        f"{arg} is not a rustest option{_where(arg, addopts, config_file)}"
+        for arg in message[len(prefix) :].split()
+    ]
     return _fallback.run(user_argv, reasons)
 
 
@@ -693,6 +706,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 4
     unsupported = sorted(set(ini_overrides) - OVERRIDABLE_INI_KEYS)
+    if unsupported and parser.fallback:
+        # pytest accepts any ini key, so this is "an option rustest does not have".
+        from . import _fallback
+
+        return _fallback.run(
+            user_argv, [f"-o {key} is an ini option rustest cannot override" for key in unsupported]
+        )
     if unsupported:
         print(
             "ERROR: -o/--override-ini cannot override "
@@ -720,8 +740,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         addopts = [str(opt) for opt in resolved.get("addopts", ())]
     raw = addopts + raw
     parser.fallback = "--no-pytest-fallback" not in raw
-    # `-p NAME` loads a pytest plugin rustest cannot; the session goes to pytest, below.
-    plugins = _plugin_names(raw) if parser.fallback else []
     # pytest appends these two lines to **every** usage error, not only to one sourced from
     # a config file: they come from `_parser.extra_info`, which `Config._initini` fills in as
     # soon as rootdir is known (l. 1254-1255). Measured — a mistyped flag typed at the prompt
@@ -745,13 +763,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Cosmetic pytest flags are dropped **before** the removed-flag scan and before parsing,
     # so `addopts = "-ra --tb=short"` is a note rather than an exit 4. See
     # `IGNORED_PYTEST_FLAGS` for what qualifies and why the list is short.
+    # `-p NAME` is on the ignored list, so its names are read before it is dropped.
+    plugin_names = _plugin_names(raw)
     raw, ignored = _drop_ignored_pytest_flags(raw)
-    for flag in () if plugins else ignored:
+    # While the session may still go to pytest, which honours these flags, the NOTEs wait:
+    # they are printed only once the run has stayed with rustest.
+    deferred = ignored if parser.fallback else []
+    for flag in () if parser.fallback else ignored:
         print(
             f"NOTE: {flag} is a pytest reporting option rustest does not implement;"
             + " it was ignored.",
             file=sys.stderr,
         )
+
+    def finish(code: int) -> int:
+        for flag in deferred:
+            print(
+                f"NOTE: {flag} is a pytest reporting option rustest does not implement;"
+                + " it was ignored.",
+                file=sys.stderr,
+            )
+        return code
 
     # Scanned *after* the splice, so a repo whose `addopts` still carries a removed flag is
     # told so instead of having it swallowed by `nargs="*"` as a path.
@@ -797,15 +829,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"rustest {package_version()}")
         return 0
 
-    if plugins:
+    # What rustest cannot honour and pytest can, known before anything runs: `-p NAME`, and
+    # the two environment variables pytest reads and rustest does not.
+    handoff = (
+        [
+            f"-p {name} loads a pytest plugin{_where(name, _plugin_names(addopts), config_file)}"
+            for name in plugin_names
+        ]
+        + [
+            f"{var} is set, and rustest ignores it"
+            for var in ("PYTEST_PLUGINS", "PYTEST_ADDOPTS")
+            if os.environ.get(var)
+        ]
+        if parser.fallback
+        else []
+    )
+    if handoff:
         from . import _fallback
 
-        return _fallback.run(user_argv, [f"-p {name} loads a pytest plugin" for name in plugins])
+        return _fallback.run(user_argv, handoff, "they will be ignored")
 
     try:
         args = parser.parse_args(raw)
     except _ArgError as exc:
-        return _rejected(parser, exc, user_argv)
+        return _rejected(parser, exc, user_argv, addopts, config_file)
 
     # Inert-flag refusals, in the shape `--cov-report`-without-`--cov` already uses below.
     # `--llm-full` alone changes nothing about a human run, and accepting it would be the
@@ -865,21 +912,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 4
         try:
-            return collect_only(
-                paths=paths,
-                workers=args.workers,
-                keyword=args.pattern,
-                mark_expr=args.mark_expr,
-                codeblocks=args.enable_codeblocks,
-                pytest_fallback=args.pytest_fallback,
+            return finish(
+                collect_only(
+                    paths=paths,
+                    workers=args.workers,
+                    keyword=args.pattern,
+                    mark_expr=args.mark_expr,
+                    codeblocks=args.enable_codeblocks,
+                    pytest_fallback=args.pytest_fallback,
+                )
             )
         except NeedsPytest as needs:
             from . import _fallback
 
-            return _fallback.run(user_argv, needs.reasons)
+            return _fallback.run(user_argv, needs.reasons, needs.optout)
 
     try:
-        return run(
+        code = run(
             paths=paths,
             workers=args.workers,
             keyword=args.pattern,
@@ -905,4 +954,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     except NeedsPytest as needs:
         from . import _fallback
 
-        return _fallback.run(user_argv, needs.reasons)
+        return _fallback.run(user_argv, needs.reasons, needs.optout)
+    return finish(code)

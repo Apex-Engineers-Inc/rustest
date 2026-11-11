@@ -3151,8 +3151,7 @@ def test_bails():
     // pytest fallback
     // =====================================================================
 
-    /// pytest's `--runslow` recipe: one hook only pytest can run (`modifyitems`) and one
-    /// that is skippable (`addoption`).
+    /// pytest's `--runslow` recipe: two hooks only pytest can honour.
     const RUNSLOW_CONFTEST: &str = "\
 def pytest_addoption(parser):
     parser.addoption('--runslow', action='store_true')
@@ -3195,7 +3194,10 @@ def pytest_collection_modifyitems(config, items):
 
         assert_eq!(
             report.pytest_fallback,
-            vec!["conftest.py::pytest_collection_modifyitems".to_string()]
+            vec![
+                "conftest.py::pytest_addoption".to_string(),
+                "conftest.py::pytest_collection_modifyitems".to_string(),
+            ]
         );
         assert!(report.tests.is_empty());
         assert!(
@@ -3211,6 +3213,67 @@ def pytest_collection_modifyitems(config, items):
             statuses(&ran),
             vec![("test_a.py::test_a".to_string(), "failed")]
         );
+    }
+
+    /// `pytest_addoption` alone needs pytest: under pytest a declared option answers
+    /// `getoption(name, default=x)` and `getoption(name, skip=True)` with its declared
+    /// default, and the engine, which never runs the declaration, cannot.
+    #[test]
+    fn an_option_declaring_conftest_needs_pytest() {
+        let tmp = tree(&[
+            (
+                "conftest.py",
+                "def pytest_addoption(parser):\n    parser.addoption('--env', default='dev')\n",
+            ),
+            ("test_a.py", "def test_a():\n    pass\n"),
+        ]);
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                pytest_fallback: true,
+                ..RunOptions::defaults()
+            },
+        );
+        assert_eq!(
+            report.pytest_fallback,
+            vec!["conftest.py::pytest_addoption".to_string()]
+        );
+    }
+
+    /// A conftest the worker cannot import -- usually one reaching into `_pytest` internals the
+    /// shim does not provide -- needs pytest when the run may fall back, and is the ordinary
+    /// collection error when it may not.
+    #[test]
+    fn an_unimportable_conftest_needs_pytest_only_when_falling_back() {
+        let tmp = tree(&[
+            (
+                "conftest.py",
+                "from _pytest.terminal import TerminalReporter\n",
+            ),
+            ("test_a.py", "def test_a():\n    pass\n"),
+        ]);
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                pytest_fallback: true,
+                ..RunOptions::defaults()
+            },
+        );
+        assert_eq!(report.pytest_fallback.len(), 1, "{report:?}");
+        assert!(
+            report.pytest_fallback[0].starts_with(
+                "rustest could not import conftest.py: ModuleNotFoundError: No module named '_pytest.terminal'"
+            ),
+            "{:?}",
+            report.pytest_fallback
+        );
+
+        let report = run_tree(&tmp, 1);
+        assert!(report.pytest_fallback.is_empty());
+        assert_eq!(report.collection_errors.len(), 1);
+        assert_eq!(report.exit_code, 2);
     }
 
     /// A hook whose only effect is on pytest's terminal text does not need pytest.

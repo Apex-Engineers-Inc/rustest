@@ -3792,9 +3792,17 @@ def _plugin_fixturedefs(name: str) -> tuple[FixtureDef, ...]:
     cached = _plugin_fixturedefs_cache.get(name)
     if cached is not None:
         return cached
-    block = tuple(parse_fixturedefs(importlib.import_module(name), ""))
-    _plugin_fixturedefs_cache[name] = block
-    return block
+    module = importlib.import_module(name)
+    # A placeholder first, so a plugin that names itself (or a cycle) ends here, as pytest's
+    # registry ends it at an already-registered name.
+    _plugin_fixturedefs_cache[name] = ()
+    block = [*parse_fixturedefs(module, "")]
+    # pytest registers a plugin's own `pytest_plugins` too (`import_plugin` -> `register` ->
+    # `consider_module`), so a nested module's fixtures are visible and its hooks are named.
+    for nested in _plugin_specs(_safe_getattr(module, "pytest_plugins", None)):
+        block.extend(_plugin_fixturedefs(nested))
+    _plugin_fixturedefs_cache[name] = tuple(block)
+    return tuple(block)
 
 
 def conftest_fixturedefs(conftest: Path, rootdir: Path) -> tuple[FixtureDef, ...]:
@@ -3859,7 +3867,20 @@ def conftest_registry(path: Path, rootdir: Path) -> FixtureRegistry:
     """
     registry = _builtin_registry().child()
     for conftest in conftest_chain(path, rootdir):
-        for fixturedef in conftest_fixturedefs(conftest, rootdir):
+        try:
+            fixturedefs = conftest_fixturedefs(conftest, rootdir)
+        except (*ABORT_EXCEPTIONS, _Skipped):
+            raise
+        except Exception as exc:
+            # Still the collection error it always was (re-raised); also named, so a run that
+            # may hand itself to pytest can: such a conftest usually needs the `_pytest`
+            # internals this worker's shim does not provide, and pytest imports it fine.
+            reason = traceback.format_exception_only(type(exc), exc)[-1].strip()
+            _conftest_import_failures.add(
+                f"rustest could not import {_relative_posix(conftest, rootdir)}: {reason}"
+            )
+            raise
+        for fixturedef in fixturedefs:
             registry.register(fixturedef)
     return registry
 
@@ -6424,14 +6445,22 @@ def unrun_hooks() -> list[str]:
 #: Every hook this worker has already named on a ``collected`` line.
 _reported_hooks: set[str] = set()
 
+#: Conftests (or modules their ``pytest_plugins`` name) that raised while this worker imported
+#: them, as ``rustest could not import <path>: <exception line>`` --
+#: ``src/engine/collect.rs::IMPORT_FAILURE_PREFIX``. Reported beside the hooks: with
+#: ``pytest_fallback`` on, each is a reason to hand the session to pytest.
+_conftest_import_failures: set[str] = set()
+
 
 def new_hooks() -> list[str]:
-    """:func:`unrun_hooks` this worker has not reported yet, and mark them reported.
+    """:func:`unrun_hooks` and conftest import failures this worker has not reported yet, and
+    mark them reported.
 
     Called after each ``collect_file``: a file's conftest chain is imported while it is
     collected, so its hooks are known by the time its ``collected`` line is written.
     """
-    fresh = [hook for hook in unrun_hooks() if hook not in _reported_hooks]
+    labels = [*unrun_hooks(), *sorted(_conftest_import_failures)]
+    fresh = [label for label in labels if label not in _reported_hooks]
     _reported_hooks.update(fresh)
     return fresh
 

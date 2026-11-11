@@ -573,6 +573,22 @@ def test_a_falsy_constructor_binding_matches_tier_d_not_pytest(tmp_path: Path) -
     assert "'NoneType' object is not callable" in proc.stdout, proc.stdout
 
 
+def test_a_hook_conftest_makes_collection_hand_the_session_to_pytest(tmp_path: Path) -> None:
+    """``rust.collect(pytest_fallback=True)`` through the binding: Tier S sends the hook
+    conftest's directory to a worker, which names the hook, and the manifest is the fallback
+    alone."""
+    root = tmp_path / "suite"
+    root.mkdir()
+    (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (root / "conftest.py").write_text("def pytest_configure(config):\n    pass\n", encoding="utf-8")
+    (root / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+
+    manifest = json.loads(rust.collect(str(root), [], sys.executable, 1, pytest_fallback=True))
+
+    assert manifest["pytest_fallback"] == ["conftest.py::pytest_configure"]
+    assert manifest["tests"] == []
+
+
 def test_a_fixture_kwargs_splat_routes_the_directory_to_d(tmp_path: Path) -> None:
     """The splat defect where it actually costs ids: a **conftest** fixture.
 

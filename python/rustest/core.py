@@ -314,11 +314,25 @@ class NeedsPytest(Exception):
 
     Raised by :func:`run` and :func:`collect_only` only when asked to (``pytest_fallback``),
     after the engine stopped at the collection barrier: nothing ran and nothing was printed.
+    Public in ``rustest.core`` (it is what ``run(pytest_fallback=True)`` documents raising) but
+    not re-exported from ``rustest``: library callers default to ``False`` and never see it.
     """
 
     def __init__(self, labels: Sequence[str]) -> None:
         super().__init__(", ".join(labels))
-        self.reasons = [f"{label} is a pytest hook rustest does not run" for label in labels]
+        self.reasons = [
+            label
+            if label.startswith("rustest could not import ")  # already a whole reason
+            else f"{label} is a pytest hook rustest does not run"
+            for label in labels
+        ]
+        # What `--no-pytest-fallback` would do: skip the hooks, unless a conftest failed to
+        # import, in which case it is a collection error rather than a run.
+        self.optout = (
+            None
+            if any(r.startswith("rustest could not import ") for r in self.reasons)
+            else "those hooks will not run"
+        )
 
 
 def collect_only(

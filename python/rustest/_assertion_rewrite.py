@@ -101,6 +101,7 @@ import marshal
 import os
 import struct
 import sys
+import time
 import types
 from collections.abc import Iterable, Sequence
 from importlib.abc import Loader, MetaPathFinder
@@ -384,7 +385,16 @@ def _write_cached(fn: str, key: str, code: types.CodeType) -> bool:
         with open(tmp, "wb") as handle:
             _ = handle.write(_header())
             _ = handle.write(marshal.dumps(code))
-        os.replace(tmp, path)
+        # On Windows a scanner briefly holding a just-written destination makes the rename
+        # fail with `PermissionError`; a few short retries ride it out.
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.02)
     except OSError:
         # A read-only tree, a full disk, or — on Windows — a scanner holding the destination
         # open. None of them is the user's problem on this path: the run has the code object

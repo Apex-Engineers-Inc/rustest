@@ -2,8 +2,8 @@
 
 A session is either entirely rustest's or entirely pytest's: a conftest hook such as
 ``pytest_collection_modifyitems`` sees every directory's items, so a split run would be
-wrong, not just awkward.  pytest is started as a child with the user's own arguments and
-streams its output unmodified; its exit code is returned verbatim.
+wrong, not just awkward.  pytest gets the user's own arguments and streams its output
+unmodified; its exit code is the process's exit code.
 
 Imported only when a run is being handed over, never on the ``import rustest`` path.
 """
@@ -11,17 +11,19 @@ Imported only when a run is being handed over, never on the ``import rustest`` p
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
 
-#: rustest-only flags pytest does not have: value-taking ones consume a following token.
+#: rustest-only flags pytest does not have; the value says whether one is consumed too.
+#: ``--codeblocks`` is dropped, not translated: a ``.md`` argument is refused below, and
+#: without one the flag has nothing to act on.
 _DROPPED = {
-    "--report-json": True,
-    "--llm": False,
     "--llm-full": False,
     "--ascii": False,
     "--no-pytest-fallback": False,
+    "--codeblocks": False,
     "--no-codeblocks": False,
 }
 
@@ -29,6 +31,7 @@ _DROPPED = {
 _MACHINE = ("--report-json", "--llm", "--collect-only", "--co")
 
 _EXIT_USAGE_ERROR = 4
+_WINDOWS = sys.platform == "win32"
 
 
 def _installed(module: str) -> bool:
@@ -54,12 +57,8 @@ def pytest_argv(argv: Sequence[str]) -> tuple[list[str], bool]:
         i += 1
         name, eq, value = token.partition("=") if token.startswith("--") else (token, "", "")
         if name in _DROPPED:
-            if _DROPPED[name] and not eq:
-                i += 1
-        elif name == "--codeblocks":
-            if _installed("pytest_codeblocks"):
-                out.append(token)
-        elif token == "--no-capture":
+            continue
+        if token == "--no-capture":
             out.append("-s")
         elif name in ("--pattern", "--marks", "--color", "--workers") or token == "-n":
             if not eq and i < len(argv):
@@ -82,26 +81,38 @@ def pytest_argv(argv: Sequence[str]) -> tuple[list[str], bool]:
     return out, dropped_n
 
 
-def run(argv: Sequence[str], reasons: Sequence[str]) -> int:
-    """Run ``python -m pytest`` for *argv* (the user's own, before any ``addopts`` splice)."""
+def _refuse(message: str) -> int:
+    print(f"ERROR: {message}", file=sys.stderr)
+    return _EXIT_USAGE_ERROR
+
+
+def run(argv: Sequence[str], reasons: Sequence[str], optout: str | None = None) -> int:
+    """Run ``python -m pytest`` for *argv* (the user's own, before any ``addopts`` splice).
+
+    *optout* says what ``--no-pytest-fallback`` would do about *reasons*, when that is a
+    rustest run rather than a usage error; ``None`` leaves the sentence out.
+    """
     why = "; ".join(reasons)
+    anyway = (
+        f" Pass --no-pytest-fallback to run it with rustest anyway ({optout})." if optout else ""
+    )
     if any(token == flag or token.startswith(flag + "=") for token in argv for flag in _MACHINE):
-        print(
-            f"ERROR: {why}, so this session needs pytest, and --report-json, --llm and"
-            + " --collect-only are not supported under pytest fallback yet."
-            + " Pass --no-pytest-fallback to run it with rustest instead, without them"
-            + " (results may differ from pytest).",
-            file=sys.stderr,
+        return _refuse(
+            f"this session needs pytest: {why}. --report-json, --llm and --collect-only are"
+            + f" not supported under pytest fallback yet.{anyway}"
         )
-        return _EXIT_USAGE_ERROR
+    # A fence only rustest's collector runs: pytest-codeblocks would skip nothing the
+    # `<!--rustest.mark.skip-->` marker marks and number the nodes differently.
+    if any(not t.startswith("-") and t.partition("::")[0].lower().endswith(".md") for t in argv):
+        return _refuse(
+            f"this session needs pytest: {why}. pytest cannot run rustest's documentation code"
+            + f" blocks (a .md argument).{anyway}"
+        )
     if not pytest_available():
-        print(
-            f"ERROR: {why}. rustest cannot run these and pytest is not installed here."
-            + " Install pytest, or pass --no-pytest-fallback to run without them"
-            + " (results may differ from pytest).",
-            file=sys.stderr,
+        return _refuse(
+            f"this session needs pytest: {why}. pytest is not installed here. Install it,"
+            + f" or pass --no-pytest-fallback to run without that ({optout or 'results may differ'})."
         )
-        return _EXIT_USAGE_ERROR
     translated, dropped_n = pytest_argv(argv)
     serial = (
         " -n was ignored because pytest-xdist is not installed, so it runs serially."
@@ -109,23 +120,27 @@ def run(argv: Sequence[str], reasons: Sequence[str]) -> int:
         else ""
     )
     print(
-        f"rustest: running this session under pytest, because {why}. It runs at pytest's"
-        + f" speed.{serial} --no-pytest-fallback runs it with rustest instead, without them.",
+        f"rustest: handing this session to pytest: {why}. It will run at pytest's speed."
+        + f"{serial}{anyway}",
         file=sys.stderr,
         flush=True,
     )
     # `-o cache_dir=` makes pytest's cache the one rustest already writes, so `--lf`/`--ff`
-    # agree across the two runners.  Argv is a list (no shell), the cwd and environment are
-    # the caller's, and stdin is inherited.
-    child = subprocess.Popen(
-        [sys.executable, "-m", "pytest", *translated, "-o", "cache_dir=.rustest_cache"]
-    )
-    # The terminal sends Ctrl-C to the whole foreground group, so pytest already has it, and
-    # a second one from us would mean "abort now" to it.  Keep waiting for its own summary.
+    # agree across the two runners.  Argv is a list (no shell); cwd and environment are the
+    # caller's.
+    command = [sys.executable, "-m", "pytest", *translated, "-o", "cache_dir=.rustest_cache"]
+    if not _WINDOWS:
+        # pytest *becomes* this process: signals, stdin, process group and exit code are its own.
+        sys.stdout.flush()
+        os.execv(sys.executable, command)
+    child = subprocess.Popen(command)
+    # The console sends Ctrl-C to both processes, so the first one is pytest's to answer
+    # (it prints its own summary); a second means "stop now".
+    interrupted = False
     while True:
         try:
-            code = child.wait()
-            break
+            return child.wait()
         except KeyboardInterrupt:
-            continue
-    return 128 - code if code < 0 else code
+            if interrupted:
+                child.terminate()
+            interrupted = True

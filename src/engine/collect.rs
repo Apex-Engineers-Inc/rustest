@@ -2527,29 +2527,41 @@ impl Drop for Worker {
 /// -- including one this list has never heard of -- needs pytest when
 /// [`CollectOptions::pytest_fallback`] is on. A false positive costs speed, never an answer.
 ///
-/// `pytest_addoption` is here because its only reach is `getoption`/`getini`, which return
-/// pytest's default when the flag is absent and fail loudly otherwise; an unknown flag is the
-/// CLI's trigger, not this one.
-pub const SKIPPABLE_HOOKS: [&str; 5] = [
-    "pytest_addoption",
+/// `pytest_addoption` is **not** here: a declared option answers `getoption(name, default=x)`
+/// and `getoption(name, skip=True)` with its declared default under pytest, and the engine,
+/// which never sees the declaration, would answer `x` or skip the test.
+/// `pytest_report_header` and `pytest_terminal_summary` are here by convention -- a suite can
+/// write files from them -- which is why a run that stays with rustest still names them in
+/// the stderr note.
+pub const SKIPPABLE_HOOKS: [&str; 4] = [
     "pytest_report_header",
     "pytest_report_collectionfinish",
     "pytest_terminal_summary",
     "pytest_assertrepr_compare",
 ];
 
+/// How a worker labels a conftest -- or a module its `pytest_plugins` names -- that raised
+/// while it was imported, on the same `collected.hooks` channel as a hook:
+/// `rustest could not import tests/conftest.py: ModuleNotFoundError: ...`.
+///
+/// With [`CollectOptions::pytest_fallback`] on it is a reason to hand the session to pytest,
+/// whose `_pytest` internals such a conftest usually needs; the file is still the ordinary
+/// collection error otherwise, so the stderr note leaves these out.
+pub const IMPORT_FAILURE_PREFIX: &str = "rustest could not import ";
+
 /// The stderr line for the hooks a run found and did not run, or `None` when there were none.
 fn unrun_hooks_note(hooks: &BTreeSet<String>) -> Option<String> {
+    let hooks: Vec<&str> = hooks
+        .iter()
+        .map(String::as_str)
+        .filter(|label| !label.starts_with(IMPORT_FAILURE_PREFIX))
+        .collect();
     if hooks.is_empty() {
         return None;
     }
     let (count, noun) = (hooks.len(), if hooks.len() == 1 { "hook" } else { "hooks" });
     let verb = if count == 1 { "is" } else { "are" };
-    let list = hooks
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let list = hooks.join(", ");
     Some(format!(
         "NOTE: {count} pytest {noun} in conftest files {verb} not run (rustest has no plugin system): {list}"
     ))
@@ -4165,6 +4177,11 @@ assert True
     #[test]
     fn unrun_hooks_note_is_sorted_pluralised_and_absent_when_empty() {
         let mut hooks = BTreeSet::new();
+        assert_eq!(unrun_hooks_note(&hooks), None);
+        // A conftest the worker could not import is a collection error, not a hook to name.
+        hooks.insert(format!(
+            "{IMPORT_FAILURE_PREFIX}conftest.py: ImportError: x"
+        ));
         assert_eq!(unrun_hooks_note(&hooks), None);
         hooks.insert("tests/conftest.py::pytest_addoption".to_string());
         assert_eq!(

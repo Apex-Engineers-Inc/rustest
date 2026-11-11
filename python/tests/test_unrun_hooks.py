@@ -87,6 +87,74 @@ def test_a_pytest_plugins_module_is_named_by_its_dotted_name(tmp_path: Path) -> 
     assert "myplug::pytest_sessionstart" in "".join(_notes(result.stderr))
 
 
+def test_hooks_in_nested_pytest_plugins_are_named_and_their_fixtures_visible(
+    tmp_path: Path,
+) -> None:
+    """pytest registers a plugin's own ``pytest_plugins`` too, so a hook two levels down is a
+    hook the run has (named here, a fallback reason with the CLI default), and a fixture
+    defined there is visible to the tests."""
+    tree = _tree(
+        tmp_path,
+        "nested",
+        {
+            "conftest.py": 'pytest_plugins = ["plugins"]\n',
+            "plugins.py": 'pytest_plugins = ["shard"]\n',
+            "shard.py": "import pytest\n\n\n@pytest.fixture\ndef shard_value():\n    return 7\n\n\n"
+            "def pytest_collection_modifyitems(config, items):\n    pass\n",
+            "test_a.py": "def test_uses_nested(shard_value):\n    assert shard_value == 7\n",
+        },
+    )
+
+    result = _rustest(tree)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "shard::pytest_collection_modifyitems" in "".join(_notes(result.stderr))
+
+
+def test_hooks_that_stay_with_rustest_are_still_named(tmp_path: Path) -> None:
+    """``pytest_report_header`` and ``pytest_terminal_summary`` do not hand the session to
+    pytest, but a suite can write files from them, so a run that skips them says so -- with
+    the CLI's default, fallback on."""
+    tree = _tree(
+        tmp_path,
+        "harmless",
+        {
+            "conftest.py": "def pytest_report_header(config):\n    return 'x'\n\n\n"
+            "def pytest_terminal_summary(terminalreporter):\n    pass\n",
+            "test_a.py": _TEST,
+        },
+    )
+
+    result = _run([sys.executable, "-m", "rustest", "-n", "1"], tree)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "running this session under pytest" not in result.stderr
+    assert _notes(result.stderr) == [
+        _NOTE
+        + "2 pytest hooks in conftest files are not run (rustest has no plugin system):"
+        + " conftest.py::pytest_report_header, conftest.py::pytest_terminal_summary"
+    ]
+
+
+def test_a_declared_option_default_gets_pytests_answer(tmp_path: Path) -> None:
+    """``pytest_addoption`` changes outcomes: a declared option answers ``getoption`` with its
+    declared default under pytest. The CLI's default therefore hands this session to pytest,
+    and the test passes; forced to stay with rustest it sees the call-site default instead."""
+    tree = _tree(
+        tmp_path,
+        "option",
+        {
+            "conftest.py": "def pytest_addoption(parser):\n"
+            "    parser.addoption('--env', default='dev')\n",
+            "test_a.py": "def test_env(request):\n"
+            "    assert request.config.getoption('--env', default='prod') == 'dev'\n",
+        },
+    )
+
+    assert _run([sys.executable, "-m", "rustest", "-n", "1"], tree).returncode == 0
+    assert _rustest(tree, "-n", "1").returncode == 1
+
+
 def test_collect_only_names_hooks_of_conftests_it_loaded(tmp_path: Path) -> None:
     tree = _tree(tmp_path, "collect", {"conftest.py": _HOOK, "test_a.py": _TEST})
 
