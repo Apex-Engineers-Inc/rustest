@@ -72,12 +72,13 @@ Run `rustest` again:
 
 Rustest shows you:
 
-- **Where it failed**: the file and line, in a traceback you can click in most terminals
-- **The exact expression**: `assert result == 5`, with `^^^` underlining what was evaluated
-- **What went wrong**: `assert 4 == 5`. Rustest rewrites the assertion so you see the
-  *values*, not just that something was false
-- **A copyable list**: `short test summary info` repeats every failure's node id at the
-  bottom, so a long red run ends with the roll-call rather than making you scroll
+- **Where it failed**: the test and `test_math.py:3`, which most terminals let you click
+- **The line**: the failing source with its neighbours, and an arrow (`→`) on the line that
+  raised
+- **What went wrong**: `AssertionError: assert 4 == 5`. Rustest rewrites the assertion so
+  you see the *values*, not just that something was false
+- **A copyable list**: a `FAILED` line with the node id at the bottom, so a long red run
+  ends with the roll-call rather than making you scroll
 
 ::: {.callout-tip title="Re-running just the failures"}
 Use `--lf` (last-failed) to re-run only what went red. It needs no copying; pasting a

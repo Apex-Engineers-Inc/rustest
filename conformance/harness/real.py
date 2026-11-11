@@ -527,6 +527,9 @@ class RunOutcome:
     statuses: dict[str, str]
     deselected: int
     collection_errors: list[str]
+    #: Why the session ran under pytest instead (the report's ``pytest_fallback``); empty
+    #: for a native run, and for every pytest leg.
+    fallback: tuple[str, ...] = ()
 
     def tally(self) -> dict[str, int]:
         counts: dict[str, int] = {
@@ -587,7 +590,32 @@ def _timed(
     return proc.returncode, time.perf_counter() - start, proc.stdout[-4000:] + proc.stderr[-4000:]
 
 
-def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
+#: Worker count for every parallel leg. The same number on both sides: ``-n auto`` on a big
+#: machine measures the machine, not the runner.
+WORKERS: Final = 4
+
+#: What the xdist leg installs into a target's venv when it is missing.
+XDIST_REQUIREMENT: Final = "pytest-xdist==3.8.0"
+
+
+def ensure_xdist(target: RealTarget) -> None:
+    """Install pytest-xdist into *target*'s venv if it is not there already.
+
+    The venv was provisioned by the target's own ``[env] setup``, which never installed it,
+    so this is the one place the harness adds to a venv after the fact. It is outcome-inert
+    for the other legs: without ``-n`` xdist loads and does nothing.
+    """
+    probe = subprocess.run(  # noqa: S603
+        [str(target.python), "-c", "import xdist"], capture_output=True, check=False, timeout=120
+    )
+    if probe.returncode != 0:
+        _run_command(
+            ["uv", "pip", "install", "--python", str(target.python), XDIST_REQUIREMENT],
+            cwd=WORK_DIR,
+        )
+
+
+def run_pytest_real(target: RealTarget, tmp: Path, *, workers: int | None = None) -> RunOutcome:
     """Run the target's suite under real pytest, reading statuses from the plugin.
 
     **The ``addopts`` compensation is retired (Phase 4 Task 1).** Through Phase 3 this
@@ -600,7 +628,8 @@ def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
 
     Nothing is replayed on the command line.
     """
-    report = tmp / "pytest-report.json"
+    name = "pytest-xdist" if workers else "pytest"
+    report = tmp / f"{name}-report.json"
     env = _env_for(target, [_plugin_dir(tmp)])
     env[REPORT_ENV_VAR] = str(report)
     argv = [
@@ -611,6 +640,7 @@ def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
         "no:cacheprovider",
         "-p",
         _PLUGIN_MODULE,
+        *(["-n", str(workers)] if workers else []),
         *target.pytest_args,
         *target.test_paths,
     ]
@@ -620,7 +650,7 @@ def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
     data: dict[str, Any] = json.loads(report.read_text(encoding="utf-8"))
     statuses: dict[str, str] = {str(k): str(v) for k, v in dict(data["statuses"]).items()}
     return RunOutcome(
-        runner="pytest",
+        runner=name,
         exit_code=exit_code,
         seconds=seconds,
         statuses=statuses,
@@ -629,8 +659,21 @@ def run_pytest_real(target: RealTarget, tmp: Path) -> RunOutcome:
     )
 
 
-def run_rustest_real(target: RealTarget, tmp: Path) -> RunOutcome:
-    """Run the target's suite under flagless ``rustest`` (the default v2 engine).
+def run_rustest_real(
+    target: RealTarget,
+    tmp: Path,
+    *,
+    fallback: bool = True,
+    tree: bool = False,
+    workers: int = WORKERS,
+) -> RunOutcome:
+    """Run the target's suite under ``rustest`` with *workers* workers.
+
+    ``fallback=True`` is rustest **as a user runs it**: a session that needs pytest is handed
+    to it, and the outcome carries the reasons.  ``fallback=False`` is the engine alone
+    (``--no-pytest-fallback``), which keeps measuring the engine on the suites that are
+    handed off.  ``tree=True`` imports rustest from this checkout's ``python/`` (with the
+    extension built in it) instead of the wheel installed in the target's venv.
 
     ``--report-json`` is the entire read surface, exactly as in the corpus run gate: the
     terminal prose is worded differently by design, and worker stderr legitimately carries
@@ -640,14 +683,17 @@ def run_rustest_real(target: RealTarget, tmp: Path) -> RunOutcome:
     so rustest reads the target's ``addopts`` -- and its ``pythonpath`` -- out of the
     target's own config exactly as pytest does.
     """
-    report = tmp / "rustest-report.json"
-    env = _env_for(target, [])
+    report = tmp / ("rustest-report.json" if fallback else "rustest-engine-report.json")
+    env = _env_for(target, [_REPO_ROOT / "python"] if tree else [])
     cache = target.repo / ".rustest_cache"
     cache_preexisting = cache.exists()
     argv = [
         str(target.python),
         "-m",
         "rustest",
+        *([] if fallback else ["--no-pytest-fallback"]),
+        "-n",
+        str(workers),
         "--report-json",
         str(report),
         *target.rustest_args,
@@ -668,12 +714,13 @@ def run_rustest_real(target: RealTarget, tmp: Path) -> RunOutcome:
     summary: dict[str, Any] = dict(data["summary"])
     collection_errors: list[dict[str, Any]] = list(data["collection_errors"])
     return RunOutcome(
-        runner="rustest",
+        runner="rustest" if fallback else "rustest-engine",
         exit_code=exit_code,
         seconds=seconds,
         statuses={str(t["id"]): str(t["status"]) for t in tests},
         deselected=int(summary.get("deselected", 0)),
         collection_errors=[str(err.get("path", err)) for err in collection_errors],
+        fallback=tuple(str(x) for x in data.get("pytest_fallback", [])),
     )
 
 
@@ -693,6 +740,13 @@ class RealVerdict:
     stale: list[str]
     detail: str = ""
     notes: dict[str, str] = field(default_factory=dict[str, str])
+    #: ``pytest -n WORKERS`` (informational: timing and a status diff, never graded).
+    xdist_run: RunOutcome | None = None
+    #: Rustest with ``--no-pytest-fallback``; only run for a suite that was handed off.
+    engine_run: RunOutcome | None = None
+    #: ``engine_run`` graded against pytest (informational too).
+    engine_status: str = ""
+    xdist_error: str = ""
 
 
 def _match_ledger(key: str, ledger: Mapping[str, str], used: set[str]) -> str | None:
@@ -861,42 +915,201 @@ def available_targets() -> list[str]:
     return sorted(p.stem for p in REAL_DIR.glob("*.toml"))
 
 
-def run_target(name: str, *, setup_only: bool = False, rebuild_env: bool = False) -> RealVerdict:
-    """Provision, run both runners sequentially, and grade -- containing any harness fault.
+#: One JSON file per suite, written the moment that suite finishes. A sweep is resumable
+#: (`--real-resume` skips a suite that has one) and the table is rebuilt from these, so a
+#: machine that can only run one suite at a time still produces the whole table.
+RESULTS_DIR: Final = REAL_DIR / "results"
 
-    The two runners are run **one after the other, never concurrently**: wall-clock is part
-    of what this gate records, and a suite that competes with another process for cores
-    reports a time that means nothing.
+
+def _verify_tree(target: RealTarget) -> None:
+    """``--real-tree``: can this target's interpreter import the checkout's extension?"""
+    proc = subprocess.run(  # noqa: S603
+        [str(target.python), "-c", "import rustest.rust as r; print(hasattr(r, 'run'))"],
+        env=_env_for(target, [_REPO_ROOT / "python"]),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if proc.returncode != 0 or "True" not in proc.stdout:
+        raise RuntimeError(
+            f"{target.name}: this checkout's extension does not import under {target.python} "
+            + "(its ABI differs from the one built in python/; use the target's wheel instead "
+            + f"of --real-tree).\n{proc.stderr[-500:]}"
+        )
+
+
+def run_target(
+    name: str,
+    *,
+    setup_only: bool = False,
+    rebuild_env: bool = False,
+    tree: bool = False,
+) -> RealVerdict:
+    """Provision, run the legs one after the other, and grade -- containing any harness fault.
+
+    Legs, strictly sequential and never concurrent (wall-clock is part of what is recorded,
+    and so is a machine's memory):
+
+    1. ``pytest``, serial: the oracle.
+    2. ``rustest -n 4`` **as a user runs it** (fallback on): graded against 1, and its
+       ``pytest_fallback`` says whether the session was native or handed off.
+    3. ``pytest -n 4`` under xdist: wall-clock and a status diff, for information.
+    4. Only for a handed-off suite: ``rustest --no-pytest-fallback -n 4``, so the engine is
+       still measured and graded there.
     """
     try:
         target = load_target(name)
         ensure_repo(target)
         ensure_env(target, force=rebuild_env)
-        verify_env(target)
-        # AFTER `verify_env`, so a venv holding a *broken* extension gets that diagnosis
-        # (which names the ABI trap) rather than a staleness one derived from it.
-        assert_build_is_current(target)
+        if tree:
+            _verify_tree(target)
+        else:
+            verify_env(target)
+            # AFTER `verify_env`, so a venv holding a *broken* extension gets that diagnosis
+            # (which names the ABI trap) rather than a staleness one derived from it.
+            assert_build_is_current(target)
         if setup_only:
             return RealVerdict(name, "MATCH", None, None, [], [], [], detail="setup only")
+        ensure_xdist(target)
         tmp = WORK_DIR / "_runs" / name
         if tmp.exists():
             shutil.rmtree(tmp)
         tmp.mkdir(parents=True, exist_ok=True)
         pytest_run = run_pytest_real(target, tmp)
-        rustest_run = run_rustest_real(target, tmp)
-        return grade_real(target, pytest_run, rustest_run)
+        rustest_run = run_rustest_real(target, tmp, tree=tree)
+        verdict = grade_real(target, pytest_run, rustest_run)
+        xdist_run: RunOutcome | None = None
+        xdist_error = ""
+        try:
+            xdist_run = run_pytest_real(target, tmp, workers=WORKERS)
+        except Exception as exc:  # noqa: BLE001 - informational leg
+            xdist_error = repr(exc)
+        engine_run: RunOutcome | None = None
+        engine_status = ""
+        if rustest_run.fallback:
+            engine_run = run_rustest_real(target, tmp, fallback=False, tree=tree)
+            engine_status = grade_real(target, pytest_run, engine_run).status
+        return RealVerdict(
+            verdict.name,
+            verdict.status,
+            verdict.pytest_run,
+            verdict.rustest_run,
+            verdict.unexplained,
+            verdict.explained,
+            verdict.stale,
+            detail=verdict.detail,
+            notes=verdict.notes,
+            xdist_run=xdist_run,
+            engine_run=engine_run,
+            engine_status=engine_status,
+            xdist_error=xdist_error,
+        )
     except Exception as exc:  # noqa: BLE001 - one target's fault must not abort the sweep
         return RealVerdict(name, "HARNESS-ERROR", None, None, [], [], [], detail=repr(exc))
 
 
+def _mode(verdict: RealVerdict) -> str:
+    if verdict.rustest_run is None:
+        return ""
+    return "handed off" if verdict.rustest_run.fallback else "native"
+
+
+def _ratio(baseline: float | None, measured: float | None) -> str:
+    return f"{baseline / measured:.2f}x" if baseline and measured else ""
+
+
+def _row(verdict: RealVerdict) -> dict[str, Any]:
+    """The persisted, mergeable record of one suite: numbers and verdicts, no ids."""
+    pytest_run, rustest_run = verdict.pytest_run, verdict.rustest_run
+    xdist_run, engine_run = verdict.xdist_run, verdict.engine_run
+    xdist_diff = len(_exact_problems(pytest_run, xdist_run)) if pytest_run and xdist_run else None
+    return {
+        "suite": verdict.name,
+        "date": time.strftime("%Y-%m-%d %H:%M"),
+        "mode": _mode(verdict),
+        "reasons": list(rustest_run.fallback) if rustest_run else [],
+        "verdict": verdict.status,
+        "tests": len(pytest_run.statuses) if pytest_run else None,
+        "pytest_s": round(pytest_run.seconds, 2) if pytest_run else None,
+        "xdist_s": round(xdist_run.seconds, 2) if xdist_run else None,
+        "rustest_s": round(rustest_run.seconds, 2) if rustest_run else None,
+        "engine_s": round(engine_run.seconds, 2) if engine_run else None,
+        "engine_verdict": verdict.engine_status,
+        "xdist_status_diffs": xdist_diff,
+        "xdist_error": verdict.xdist_error,
+        "pytest_exit": pytest_run.exit_code if pytest_run else None,
+        "rustest_exit": rustest_run.exit_code if rustest_run else None,
+        "detail": verdict.detail,
+        "unexplained": len(verdict.unexplained),
+    }
+
+
+def record_result(verdict: RealVerdict) -> Path:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RESULTS_DIR / f"{verdict.name}.json"
+    path.write_text(json.dumps(_row(verdict), indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def load_results() -> list[dict[str, Any]]:
+    return [
+        json.loads(path.read_text(encoding="utf-8")) for path in sorted(RESULTS_DIR.glob("*.json"))
+    ]
+
+
+def render_table(rows: Sequence[Mapping[str, Any]]) -> str:
+    """The merged markdown table, one row per recorded suite."""
+    head = (
+        "| Suite | Mode | Verdict | Tests | pytest s | pytest -n 4 s | rustest s "
+        "| x pytest | x xdist | engine only s |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|\n"
+    )
+    lines: list[str] = []
+    for row in rows:
+        mode = row["mode"] or ""
+        if row["reasons"]:
+            mode += ": " + "; ".join(row["reasons"])
+        engine = ""
+        if row["engine_s"] is not None:
+            engine = f"{row['engine_s']} ({row['engine_verdict']})"
+        cells = [
+            str(row["suite"]),
+            mode,
+            str(row["verdict"]),
+            str(row["tests"] or ""),
+            str(row["pytest_s"] or ""),
+            str(row["xdist_s"] or ""),
+            str(row["rustest_s"] or ""),
+            _ratio(row["pytest_s"], row["rustest_s"]),
+            _ratio(row["xdist_s"], row["rustest_s"]),
+            engine,
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return head + "\n".join(lines) + "\n"
+
+
 def _print_verdict(verdict: RealVerdict) -> None:
-    print(f"[{FLAGS[verdict.status]}] {verdict.name}")
+    print(f"[{FLAGS[verdict.status]}] {verdict.name}  ({_mode(verdict) or 'n/a'})")
     if verdict.detail:
         print(f"       {verdict.detail}")
     left, right = verdict.pytest_run, verdict.rustest_run
     if left is not None and right is not None:
         print(f"       pytest : exit={left.exit_code} {left.seconds:.2f}s tally={left.tally()}")
         print(f"       rustest: exit={right.exit_code} {right.seconds:.2f}s tally={right.tally()}")
+        for reason in right.fallback:
+            print(f"       -> handed off: {reason}")
+    if verdict.xdist_run is not None:
+        print(
+            f"       xdist  : exit={verdict.xdist_run.exit_code} {verdict.xdist_run.seconds:.2f}s"
+            + (f" ({_ratio(left.seconds, verdict.xdist_run.seconds)} of serial)" if left else "")
+        )
+    if verdict.xdist_error:
+        print(f"       xdist  : not measured: {verdict.xdist_error[:200]}")
+    if verdict.engine_run is not None:
+        print(
+            f"       engine : [{FLAGS.get(verdict.engine_status, '??')}] "
+            + f"exit={verdict.engine_run.exit_code} {verdict.engine_run.seconds:.2f}s (--no-pytest-fallback)"
+        )
     for key, note in sorted(verdict.notes.items()):
         print(f"       ++ compensated: {key}: {note}")
     for line in verdict.explained[:40]:
@@ -911,7 +1124,20 @@ def _print_verdict(verdict: RealVerdict) -> None:
         print(f"       !! stale ledger entry, nothing matched it: {line}")
 
 
-def main_real(selection: str, *, setup_only: bool = False, rebuild_env: bool = False) -> int:
+def main_real(
+    selection: str,
+    *,
+    setup_only: bool = False,
+    rebuild_env: bool = False,
+    tree: bool = False,
+    resume: bool = False,
+    table: bool = False,
+) -> int:
+    if table:
+        rows = load_results()
+        print(render_table(rows))
+        (REAL_DIR / "results.md").write_text(render_table(rows), encoding="utf-8")
+        return 0
     names = available_targets() if selection == "all" else [selection]
     if selection != "all" and selection not in available_targets():
         print(
@@ -925,22 +1151,19 @@ def main_real(selection: str, *, setup_only: bool = False, rebuild_env: bool = F
     # This was `verdicts = [run_target(...) for name in names]` followed by a print loop, so
     # a full `--real all` sweep -- upwards of two hours, most of it psutil -- emitted NOTHING
     # until the last target finished. Kill it at minute 100 and every verdict is gone with
-    # the process. That happened twice: the Phase 4b speed wave lost its sweep ~11 minutes
-    # into psutil and had to regrade twelve targets from the per-target artifacts on disk,
-    # and the wall-clock column could not be recovered at all because the harness measures it
-    # in-process and never writes it down.
-    #
-    # (That report diagnosed the loss as stdout block-buffering. It is not -- `python -u`
-    # does not help, because nothing had been *written* yet. The buffer was this list.)
-    #
-    # Printed and flushed as each target completes, so an interrupted sweep is worth exactly
-    # the targets it finished. `flush=True` on the print itself because stdout is a pipe
-    # whenever the sweep is redirected to a log, which is how a two-hour run is always driven.
+    # the process. Printed and flushed as each target completes, so an interrupted sweep is
+    # worth exactly the targets it finished -- and each one is also written to
+    # `conformance/real/results/<name>.json`, so it can be resumed and merged.
     verdicts: list[RealVerdict] = []
     for name in names:
-        verdict = run_target(name, setup_only=setup_only, rebuild_env=rebuild_env)
+        if resume and (RESULTS_DIR / f"{name}.json").exists():
+            print(f"[--] {name}: already recorded, skipped (--real-resume)")
+            continue
+        verdict = run_target(name, setup_only=setup_only, rebuild_env=rebuild_env, tree=tree)
         verdicts.append(verdict)
         _print_verdict(verdict)
+        if not setup_only and verdict.status != "HARNESS-ERROR":
+            _ = record_result(verdict)
         sys.stdout.flush()
     bad = [v for v in verdicts if v.status in ("DIVERGE", "STALE-LEDGER", "HARNESS-ERROR")]
     matched = sum(v.status == "MATCH" for v in verdicts)

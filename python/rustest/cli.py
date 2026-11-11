@@ -631,19 +631,56 @@ def _plugin_names(raw: Sequence[str]) -> list[str]:
     return [name for name in names if not name.startswith("no:")]
 
 
-def _where(token: str, addopts: Sequence[str], config_file: object) -> str:
-    """`` (from addopts in <ini>)`` when *token* did not come from the command line."""
-    if token not in addopts:
-        return ""
-    return f" (from addopts in {config_file})" if config_file else " (from addopts)"
+def _blocked_plugins(raw: Sequence[str]) -> list[str]:
+    """The names ``-p no:NAME`` / ``-pno:NAME`` disables, which pytest applies to entry points."""
+    names: list[str] = []
+    for index, token in enumerate(raw):
+        if token == "-p" and index + 1 < len(raw):
+            names.append(raw[index + 1])
+        elif token.startswith("-p") and not token.startswith("--") and len(token) > 2:
+            names.append(token[2:].lstrip("="))
+    return [name[3:] for name in names if name.startswith("no:")]
+
+
+def _hand_to_pytest(
+    parser: _Parser,
+    raw: Sequence[str],
+    user_argv: Sequence[str],
+    reasons: Sequence[str],
+    optout: str | None = None,
+) -> int:
+    """Give the session to pytest, with whichever machine outputs *raw* asked for."""
+    from . import _fallback
+
+    try:
+        known, _ = parser.parse_known_args(list(raw))
+    except _ArgError:  # a bad value: pytest will say so itself
+        known = argparse.Namespace(
+            report_json=None,
+            llm=False,
+            llm_full=False,
+            collect_only=False,
+            verbose=False,
+            quiet=False,
+        )
+    return _fallback.run(
+        user_argv,
+        reasons,
+        optout,
+        report_json=known.report_json,
+        llm=known.llm,
+        llm_full=known.llm_full,
+        collect_only=known.collect_only,
+        verbosity=_verbosity(known),
+    )
 
 
 def _rejected(
     parser: _Parser,
     error: _ArgError,
+    raw: Sequence[str],
     user_argv: Sequence[str],
-    addopts: Sequence[str] = (),
-    config_file: object = None,
+    origin: dict[str, str] | None = None,
 ) -> int:
     """The parser refused the arguments; if it is a flag it does not know, pytest may.
 
@@ -661,10 +698,16 @@ def _rejected(
         parser.fallback = False
         parser.error(message)
     reasons = [
-        f"{arg} is not a rustest option{_where(arg, addopts, config_file)}"
+        f"{arg} is not a rustest option{(origin or {}).get(arg, '')}"
         for arg in message[len(prefix) :].split()
     ]
-    return _fallback.run(user_argv, reasons)
+    return _hand_to_pytest(parser, raw, user_argv, reasons)
+
+
+def _autoloaded_plugins(blocked: Sequence[str]) -> list[str]:
+    from . import _fallback
+
+    return _fallback.autoload_reasons(blocked)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -679,10 +722,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # l. 1394-1397). *Prepended*, not appended, so an explicit command-line flag still wins a
     # last-one-wins option, and paths in `addopts` come first.
     #
-    # NOT modelled: `PYTEST_ADDOPTS`, which pytest splices ahead of the ini value (l.
-    # 1386-1392). Recorded as a limitation rather than added, because it would change the
-    # behaviour of every rustest invocation in an environment that happens to export it —
-    # including this repo's own conformance harness — for a mechanism no ledgered suite uses.
+    # `PYTEST_ADDOPTS` is spliced after it, below, while a session may still go to pytest.
     # `-o`/`--override-ini` is pulled out **first**, because the one key it supports is the
     # one that decides what argv even is. See `OVERRIDABLE_INI_KEYS` for why the list is one
     # entry long, and `_extract_ini_overrides` for why extraction precedes the splice.
@@ -708,10 +748,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     unsupported = sorted(set(ini_overrides) - OVERRIDABLE_INI_KEYS)
     if unsupported and parser.fallback:
         # pytest accepts any ini key, so this is "an option rustest does not have".
-        from . import _fallback
-
-        return _fallback.run(
-            user_argv, [f"-o {key} is an ini option rustest cannot override" for key in unsupported]
+        return _hand_to_pytest(
+            parser,
+            raw,
+            user_argv,
+            [f"-o {key} is an ini option rustest cannot override" for key in unsupported],
         )
     if unsupported:
         print(
@@ -728,7 +769,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         resolved = _config_for_addopts(raw, parser)
     except _ArgError as exc:
-        return _rejected(parser, exc, user_argv)
+        return _rejected(parser, exc, raw, user_argv)
     if "addopts" in ini_overrides:
         # `shlex.split` for the same reason the engine's `getini_args` does shell-like
         # splitting: `addopts` is one ini STRING, and `-k "not slow"` has to survive as two
@@ -738,7 +779,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         addopts = shlex.split(ini_overrides["addopts"])
     else:
         addopts = [str(opt) for opt in resolved.get("addopts", ())]
-    raw = addopts + raw
+    # pytest's order (`Config._preparse`): ini `addopts`, then `PYTEST_ADDOPTS`, then the command
+    # line. rustest reads the variable only while a session may still go to pytest, so that a
+    # `--no-pytest-fallback` run (the conformance harness, the benchmarks) is what it was.
+    import shlex
+
+    parser.fallback = "--no-pytest-fallback" not in addopts + raw
+    env_opts = shlex.split(os.environ.get("PYTEST_ADDOPTS", "")) if parser.fallback else []
+    origin = {tok: " (from PYTEST_ADDOPTS)" for tok in env_opts}
+    origin |= {
+        tok: f" (from addopts in {resolved.get('config_file')})"
+        if resolved.get("config_file")
+        else " (from addopts)"
+        for tok in addopts
+    }
+    # `-o KEY=VALUE` in `addopts` or `PYTEST_ADDOPTS` is pytest's to apply: rustest reads only
+    # the command line's, so these are lifted out here rather than parsed and forgotten.
+    addopts, ini_a, _ = _extract_ini_overrides(addopts)
+    env_opts, ini_e, _ = _extract_ini_overrides(env_opts)
+    late_ini = [
+        f"-o {key} is an ini option rustest cannot apply (from {where})"
+        for where, found in (("addopts", ini_a), ("PYTEST_ADDOPTS", ini_e))
+        for key in found
+    ]
+    raw = addopts + env_opts + raw
     parser.fallback = "--no-pytest-fallback" not in raw
     # pytest appends these two lines to **every** usage error, not only to one sourced from
     # a config file: they come from `_parser.extra_info`, which `Config._initini` fills in as
@@ -765,6 +829,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # `IGNORED_PYTEST_FLAGS` for what qualifies and why the list is short.
     # `-p NAME` is on the ignored list, so its names are read before it is dropped.
     plugin_names = _plugin_names(raw)
+    blocked_plugins = _blocked_plugins(raw)
     raw, ignored = _drop_ignored_pytest_flags(raw)
     # While the session may still go to pytest, which honours these flags, the NOTEs wait:
     # they are printed only once the run has stayed with rustest.
@@ -832,27 +897,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     # What rustest cannot honour and pytest can, known before anything runs: `-p NAME`, and
     # the two environment variables pytest reads and rustest does not.
     handoff = (
-        [
-            f"-p {name} loads a pytest plugin{_where(name, _plugin_names(addopts), config_file)}"
+        late_ini
+        + [
+            f"-p {name} loads a pytest plugin{origin.get(name) or origin.get('-p' + name, '')}"
             for name in plugin_names
         ]
-        + [
-            f"{var} is set, and rustest ignores it"
-            for var in ("PYTEST_PLUGINS", "PYTEST_ADDOPTS")
-            if os.environ.get(var)
-        ]
+        + ["PYTEST_PLUGINS is set, and rustest ignores it"] * bool(os.environ.get("PYTEST_PLUGINS"))
+        + _autoloaded_plugins(blocked_plugins)
         if parser.fallback
         else []
     )
     if handoff:
-        from . import _fallback
-
-        return _fallback.run(user_argv, handoff, "they will be ignored")
+        return _hand_to_pytest(parser, raw, user_argv, handoff, "they will be ignored")
 
     try:
         args = parser.parse_args(raw)
     except _ArgError as exc:
-        return _rejected(parser, exc, user_argv, addopts, config_file)
+        return _rejected(parser, exc, raw, user_argv, origin)
 
     # Inert-flag refusals, in the shape `--cov-report`-without-`--cov` already uses below.
     # `--llm-full` alone changes nothing about a human run, and accepting it would be the
@@ -923,9 +984,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
         except NeedsPytest as needs:
-            from . import _fallback
-
-            return _fallback.run(user_argv, needs.reasons, needs.optout)
+            return _hand_to_pytest(parser, raw, user_argv, needs.reasons, needs.optout)
 
     try:
         code = run(
@@ -952,7 +1011,5 @@ def main(argv: Sequence[str] | None = None) -> int:
             pytest_fallback=args.pytest_fallback,
         )
     except NeedsPytest as needs:
-        from . import _fallback
-
-        return _fallback.run(user_argv, needs.reasons, needs.optout)
+        return _hand_to_pytest(parser, raw, user_argv, needs.reasons, needs.optout)
     return finish(code)

@@ -12,14 +12,19 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import subprocess
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    import subprocess
 
 #: rustest-only flags pytest does not have; the value says whether one is consumed too.
 #: ``--codeblocks`` is dropped, not translated: a ``.md`` argument is refused below, and
 #: without one the flag has nothing to act on.
 _DROPPED = {
+    "--report-json": True,
+    "--llm": False,
     "--llm-full": False,
     "--ascii": False,
     "--no-pytest-fallback": False,
@@ -27,11 +32,99 @@ _DROPPED = {
     "--no-codeblocks": False,
 }
 
-#: Outputs that are a rustest format and cannot yet be taken from a pytest run.
-_MACHINE = ("--report-json", "--llm", "--collect-only", "--co")
-
 _EXIT_USAGE_ERROR = 4
 _WINDOWS = sys.platform == "win32"
+
+
+#: ``pytest11`` entry-point plugins pytest auto-loads and rustest runs without.  Everything
+#: else installed is a hand-off reason (a false positive costs speed; a silent difference
+#: costs a wrong answer).  Each entry is judged on the plugin's own source, as installed in
+#: the ``--real`` target venvs, and the rule is strict: *common* is not *safe*.
+#:
+#: | entry point | why running without it cannot change an outcome or an id |
+#: |---|---|
+#: | ``xdist``, ``xdist.looponfail`` | every behaviour is behind a flag (``-n``, ``--dist``, ``--tx``, ``-f``): rustest owns ``-n``, and any other xdist flag is an unrecognized argument that already hands off. Its ``xdist_group`` mark only steers scheduling, and ``worker_id``/``testrun_uid`` are fixtures a test must request, so a missing one is a loud setup error |
+#: | ``pytest_cov`` | flag-gated (``--cov*``: rustest implements ``--cov`` and ``--cov-report``, the rest hand off); its ``no_cover`` mark and fixtures only steer what coverage records, never an outcome |
+#: | ``asyncio`` | pytest-asyncio's loop-scope model is what rustest emulates (``@mark.asyncio``, ``asyncio_default_*_loop_scope``); the one difference, ``asyncio_mode`` defaulting to ``auto`` here against ``strict`` there, is documented under "where rustest is more permissive" |
+#: | ``pytest_mock`` | the ``mocker`` fixture is a port of pytest-mock 3.15.1 (``_builtins.py``) |
+#: | ``icdiff`` | rewrites the text of a failed assertion (``pytest_assertrepr_compare``), never whether it fails; its options are flags (unknown ones hand off) |
+#: | ``rich`` (pytest-rich) | terminal reporting, and only with ``--rich`` (an unrecognized flag, so it hands off by itself) |
+#: | ``codeblocks`` | collects markdown fences only with ``--codeblocks``, which rustest implements itself |
+#:
+#: Judged and **not** allowed, with the evidence: ``hypothesispytest`` (its
+#: ``pytest_runtest_call`` raises ``FailedHealthCheck`` for ``@given`` with a function-scoped
+#: fixture -- pytest fails the test, the engine passes it; probed), ``anyio`` (a
+#: ``@pytest.mark.anyio`` test is run once per backend with ``[asyncio]``/``[trio]`` ids, so
+#: even the node ids differ; ``anyio_backend`` is a fixture rustest lacks), ``timeout`` (the
+#: ``timeout`` mark and ini key act with no flag, and a mark cannot be found without
+#: collecting), ``inline_snapshot`` (an autouse fixture that fails a test from recorded
+#: snapshot state). Unseen plugins (randomly, rerunfailures, env, django, benchmark, ...)
+#: are not on the list, so they hand off: ``-p no:NAME`` or ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``
+#: opts a project out, exactly as it does for pytest.
+SAFE_PLUGINS: Final = frozenset(
+    {
+        "xdist",
+        "xdist.looponfail",
+        "pytest_cov",
+        "asyncio",
+        "pytest_mock",
+        "icdiff",
+        "rich",
+        "codeblocks",
+    }
+)
+
+
+def installed_plugins() -> list[tuple[str, str]]:
+    """``(entry-point name, distribution)`` for every ``pytest11`` entry point on ``sys.path``.
+
+    Read straight from ``*.dist-info/entry_points.txt`` rather than through
+    ``importlib.metadata``, which builds a ``Distribution`` per installed package: this runs on
+    every invocation, and a directory listing plus one small file read per package is all it
+    needs.  The first entry point of a name wins, as in pluggy.
+    """
+    found: dict[str, str] = {}
+    for entry in sys.path:
+        try:
+            names = os.listdir(entry or ".")
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith((".dist-info", ".egg-info")):
+                continue
+            try:
+                with open(
+                    os.path.join(entry, name, "entry_points.txt"), encoding="utf-8"
+                ) as handle:
+                    lines = handle.read().splitlines()
+            except OSError:
+                continue
+            in_group = False
+            for line in lines:
+                line = line.strip()
+                if line.startswith("["):
+                    in_group = line == "[pytest11]"
+                elif in_group and "=" in line and not line.startswith("#"):
+                    found.setdefault(line.partition("=")[0].strip(), name.rpartition(".")[0])
+    return sorted(found.items())
+
+
+def autoload_reasons(blocked: Sequence[str]) -> list[str]:
+    """Hand-off reasons for auto-loaded plugins rustest does not run.
+
+    pytest's own switches apply: nothing auto-loads under ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``,
+    and ``-p no:NAME`` blocks the entry point called ``NAME`` or ``pytest_NAME``.
+    """
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
+        return []
+    return [
+        f"the pytest plugin {name} ({dist}) is installed and rustest does not run it"
+        + f" (`-p no:{name}` disables it)"
+        for name, dist in installed_plugins()
+        if name not in SAFE_PLUGINS
+        and name not in blocked
+        and not (name.startswith("pytest_") and name[7:] in blocked)
+    ]
 
 
 def _installed(module: str) -> bool:
@@ -57,6 +150,7 @@ def pytest_argv(argv: Sequence[str]) -> tuple[list[str], bool]:
         i += 1
         name, eq, value = token.partition("=") if token.startswith("--") else (token, "", "")
         if name in _DROPPED:
+            i += _DROPPED[name] and not eq  # `--report-json PATH`: the value goes with it
             continue
         if token == "--no-capture":
             out.append("-s")
@@ -86,21 +180,103 @@ def _refuse(message: str) -> int:
     return _EXIT_USAGE_ERROR
 
 
-def run(argv: Sequence[str], reasons: Sequence[str], optout: str | None = None) -> int:
+def _wait(child: subprocess.Popen[bytes]) -> int:
+    """The child's exit code.  The console sends Ctrl-C to both processes, so the first one
+    is pytest's to answer (it prints its own summary); a second means "stop now"."""
+    import signal
+
+    interrupted = False
+
+    # A SIGTERM aimed at this process alone (`timeout`, a CI cancel) must not orphan pytest.
+    def forward(signum: int, frame: object) -> None:
+        del signum, frame
+        child.terminate()
+
+    previous = signal.signal(signal.SIGTERM, forward)
+    try:
+        while True:
+            try:
+                code = child.wait()
+                return 128 - code if code < 0 else code  # killed by signal N: 128+N
+            except KeyboardInterrupt:
+                if interrupted:
+                    child.terminate()
+                interrupted = True
+    finally:
+        _ = signal.signal(signal.SIGTERM, previous)
+
+
+def _deliver(
+    path: str,
+    code: int,
+    reasons: Sequence[str],
+    *,
+    report_json: str | None,
+    llm: bool,
+    llm_full: bool,
+    collect_only: bool,
+    verbosity: int,
+) -> int:
+    """Turn what ``rustest._pytest_report`` wrote into the output rustest was asked for."""
+    import json
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, ValueError):  # pytest stopped before it could report (a usage error)
+        print(f"rustest: pytest wrote no report (exit code {code}).", file=sys.stderr)
+        return code
+    report["exit_code"] = code
+    report["pytest_fallback"] = list(reasons)
+    collected = report.pop("collected")
+    if report_json is not None:
+        with open(report_json, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(report, indent=2))
+    if llm:
+        from ._llm import render
+
+        render(report, verbosity=verbosity, full=llm_full)
+        sys.stdout.flush()
+    if collect_only:
+        from .core import report_collection
+
+        _ = report_collection(
+            collected, report["collection_errors"], report["summary"]["deselected"]
+        )
+    return code
+
+
+def run(
+    argv: Sequence[str],
+    reasons: Sequence[str],
+    optout: str | None = None,
+    *,
+    report_json: str | None = None,
+    llm: bool = False,
+    llm_full: bool = False,
+    collect_only: bool = False,
+    verbosity: int = 0,
+) -> int:
     """Run ``python -m pytest`` for *argv* (the user's own, before any ``addopts`` splice).
 
     *optout* says what ``--no-pytest-fallback`` would do about *reasons*, when that is a
     rustest run rather than a usage error; ``None`` leaves the sentence out.
+
+    ``--report-json``, ``--llm`` and ``--collect-only`` (the keywords) are taken from a
+    bundled pytest plugin's report instead of pytest's own output.  Under ``--llm`` pytest's
+    stdout goes to stderr so that stdout is the JSONL stream and nothing else; under
+    ``--collect-only`` it is dropped, and the ids are printed in rustest's format.
     """
+    import contextlib
+    import subprocess
+    import tempfile
+
     why = "; ".join(reasons)
     anyway = (
         f" Pass --no-pytest-fallback to run it with rustest anyway ({optout})." if optout else ""
     )
-    if any(token == flag or token.startswith(flag + "=") for token in argv for flag in _MACHINE):
-        return _refuse(
-            f"this session needs pytest: {why}. --report-json, --llm and --collect-only are"
-            + f" not supported under pytest fallback yet.{anyway}"
-        )
+    if llm and collect_only:
+        return _refuse("--llm and --collect-only ask for different things; drop one.")
     # A fence only rustest's collector runs: pytest-codeblocks would skip nothing the
     # `<!--rustest.mark.skip-->` marker marks and number the nodes differently.
     if any(not t.startswith("-") and t.partition("::")[0].lower().endswith(".md") for t in argv):
@@ -129,18 +305,41 @@ def run(argv: Sequence[str], reasons: Sequence[str], optout: str | None = None) 
     # agree across the two runners.  Argv is a list (no shell); cwd and environment are the
     # caller's.
     command = [sys.executable, "-m", "pytest", *translated, "-o", "cache_dir=.rustest_cache"]
-    if not _WINDOWS:
-        # pytest *becomes* this process: signals, stdin, process group and exit code are its own.
-        sys.stdout.flush()
-        os.execv(sys.executable, command)
-    child = subprocess.Popen(command)
-    # The console sends Ctrl-C to both processes, so the first one is pytest's to answer
-    # (it prints its own summary); a second means "stop now".
-    interrupted = False
-    while True:
-        try:
-            return child.wait()
-        except KeyboardInterrupt:
-            if interrupted:
-                child.terminate()
-            interrupted = True
+    if not (report_json or llm or collect_only):
+        if not _WINDOWS:
+            # pytest *becomes* this process: signals, stdin, process group and exit code are its own.
+            sys.stdout.flush()
+            os.execv(sys.executable, command)
+        return _wait(subprocess.Popen(command))
+    handle, path = tempfile.mkstemp(prefix="rustest-report-", suffix=".json")
+    os.close(handle)
+    # `--llm` reads each failure's message, so it needs a traceback style it can count on,
+    # whatever `--tb` the user's own arguments say (pytest's stdout is on stderr under `--llm`).
+    plugin = [*command, "-p", "rustest._pytest_report", *(["--tb=long"] if llm else [])]
+    # `--collect-only`: pytest's tree is noise (the ids come from the plugin), but an
+    # INTERNALERROR is written there too, so it is kept and shown if pytest dies (exit 3).
+    try:
+        with tempfile.TemporaryFile() as tree:
+            sys.stdout.flush()
+            child = subprocess.Popen(
+                plugin,
+                env={**os.environ, "RUSTEST_PYTEST_REPORT": path},
+                stdout=sys.stderr if llm else tree if collect_only else None,
+            )
+            code = _wait(child)
+            if collect_only and code == 3:
+                _ = tree.seek(0)
+                _ = sys.stderr.write(tree.read().decode(errors="replace"))
+        return _deliver(
+            path,
+            code,
+            reasons,
+            report_json=report_json,
+            llm=llm,
+            llm_full=llm_full,
+            collect_only=collect_only,
+            verbosity=verbosity,
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)

@@ -309,7 +309,11 @@ def test_corpus_case_count_is_pinned() -> None:
     # move one case's verdict -- review finding C1) and `collection/all-modules-skipped`
     # (the exit-5 shape, review finding I8).
     # `marks/skipif-string` (+1): string `skipif`/`xfail` conditions and a bare `skip`.
-    assert len(discover_cases()) == 54
+    # `collection/hook-modifyitems-cross-dir` (+1): a conftest hook in one directory that removes
+    # a test from another, which only the whole-session pytest fallback gets right.
+    # `builtins/tmpdir-legacy` (+1): `tmpdir`/`tmpdir_factory` (`py.path`), which errored when the
+    # `_pytest` stub hid the `_pytest._py` that pytest's `py.py` imports.
+    assert len(discover_cases()) == 56
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

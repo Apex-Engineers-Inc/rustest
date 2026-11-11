@@ -1,0 +1,19 @@
+{
+  "suite": "sqlparse",
+  "date": "2026-11-10 22:18",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "MATCH",
+  "tests": 482,
+  "pytest_s": 2.99,
+  "xdist_s": 4.72,
+  "rustest_s": 1.43,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

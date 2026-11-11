@@ -23,10 +23,11 @@ rustest --help
 ```
 usage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [-s] [-v] [-q]
                [--ascii] [--color {auto,always,never,yes,no}]
-               [-o OPTION=VALUE] [--maxfail NUM] [--codeblocks]
-               [--no-codeblocks] [--lf] [--ff] [-x] [--report-json PATH]
-               [--cov [SOURCE]] [--cov-report TYPE] [--cov-branch] [--llm]
-               [--llm-full] [--llm-schema] [--version] [--collect-only]
+               [--no-pytest-fallback] [-o OPTION=VALUE] [--maxfail NUM]
+               [--codeblocks] [--no-codeblocks] [--lf] [--ff] [-x]
+               [--report-json PATH] [--cov [SOURCE]] [--cov-report TYPE]
+               [--cov-branch] [--llm] [--llm-full] [--llm-schema] [--version]
+               [--collect-only]
                [paths ...]
 
 Run Python tests at blazing speed with a Rust powered core.
@@ -52,6 +53,10 @@ options:
   --ascii               Draw the terminal display with ASCII characters only.
   --color {auto,always,never,yes,no}
                         Colorize the output (default: auto).
+  --no-pytest-fallback  Run with rustest even when the session needs pytest (a
+                        conftest hook that changes what runs, -p PLUGIN, or an
+                        option rustest does not have). Without it such a
+                        session is handed to pytest.
   -o, --override-ini OPTION=VALUE
                         Override an ini option, e.g. -o addopts=. Supported
                         key: addopts. Registered here for --help and usage
@@ -91,6 +96,7 @@ options:
                         without running anything. Honours -k, -m and -n. Exits
                         0 with tests, 5 with none, 2 on collection errors.
                         None of the other options apply.
+
 ```
 
 ## Basic commands
@@ -569,6 +575,7 @@ rustest [OPTIONS] [PATHS...]
 | `-q, --quiet` | Show only the overall progress bar in a terminal, bare letters when piped. The failure report is still printed, as it is under pytest's own `-q`. `-v` and `-q` cancel out, as they do under pytest |
 | `-o, --override-ini OPTION=VALUE` | Override an ini option, e.g. `-o addopts=`. Supported key: `addopts` |
 | `--maxfail NUM` | Exit after the first `NUM` failures or errors (`0` means no limit) |
+| `--no-pytest-fallback` | Run with rustest even when the session needs pytest (a conftest hook that changes what runs, `-p PLUGIN`, an option rustest does not have). Without it such a session is handed to pytest; see [When rustest hands a session to pytest](pytest-compat.md#when-rustest-hands-a-session-to-pytest) |
 | `--ascii` | Draw the terminal display with ASCII only (`[OK]`, `PASS`/`FAIL`/`SKIP`, `#`/`-` bars). Chosen automatically when the terminal cannot encode the glyphs; piped output is unaffected |
 | `--color {auto,always,never,yes,no}` | Colorize the output. `yes`/`always` and `no`/`never` override everything; `auto` follows pytest's rule (`PY_COLORS`, `NO_COLOR`, `FORCE_COLOR`, then a terminal). Piped output is coloured as pytest colours it; failure sections there stay plain |
 | `--codeblocks` | Collect and run python code blocks in markdown files named as arguments. Off by default; see [Markdown Testing](markdown-testing.md) |

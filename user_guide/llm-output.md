@@ -73,6 +73,7 @@ absent, the run was interrupted, a signal your tooling can rely on.
 | `version` | The rustest package version. |
 | `rootdir` | Absolute rootdir, forward slashes. Every `id` and `file` below is relative to it. |
 | `total` | Tests selected for this run, after `-k`/`-m` deselection, so a consumer knows the scale of the run from the first line. |
+| `pytest_fallback` | Optional. Present only when the session was handed to pytest, and lists why; a failure's `msg` is then pytest's own traceback text. See [When rustest hands a session to pytest](pytest-compat.md#when-rustest-hands-a-session-to-pytest). |
 
 ### `fail`
 

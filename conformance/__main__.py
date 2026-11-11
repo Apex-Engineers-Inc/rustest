@@ -243,13 +243,35 @@ def main() -> int:
         action="store_true",
         help="With --real: delete and rebuild the target's isolated venv before running.",
     )
+    parser.add_argument(
+        "--real-tree",
+        action="store_true",
+        help=(
+            "With --real: run rustest from this checkout's python/ (and its built extension) "
+            "instead of the wheel installed in the target's venv. For a machine that cannot "
+            "build a wheel per ABI; a free-threaded or non-3.14 target still needs its wheel."
+        ),
+    )
+    parser.add_argument(
+        "--real-resume",
+        action="store_true",
+        help="With --real all: skip suites that already have conformance/real/results/NAME.json.",
+    )
+    parser.add_argument(
+        "--real-table",
+        action="store_true",
+        help="Merge conformance/real/results/*.json into one markdown table and print it.",
+    )
     args = parser.parse_args()
 
-    if args.real:
+    if args.real or args.real_table:
         return main_real(
             args.real,
             setup_only=args.real_setup_only,
             rebuild_env=args.real_rebuild_env,
+            tree=args.real_tree,
+            resume=args.real_resume,
+            table=args.real_table,
         )
 
     if args.run:

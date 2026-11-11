@@ -16,6 +16,7 @@ name is one of three things:
 from __future__ import annotations
 
 import re
+import os
 import sys
 import warnings
 from pprint import pformat
@@ -722,6 +723,33 @@ def install_pytest_stubs() -> None:
     sys.modules["_pytest.assertion"] = _pytest_stub.assertion
     sys.modules["_pytest.assertion.rewrite"] = _pytest_stub.assertion.rewrite
     sys.modules["_pytest.main"] = _pytest_stub.main
+    _expose_vendored_py()
+
+
+def _expose_vendored_py() -> None:
+    """Make ``import py`` work while ``_pytest`` is the stub.
+
+    pytest ships ``py.py``, a two-line compat module whose whole body is
+    ``import _pytest._py.error`` / ``import _pytest._py.path``; the vendored ``py.path.local``
+    behind ``tmpdir`` and ``tmpdir_factory`` lives there.  With the stub standing in for
+    ``_pytest`` that import has nowhere to look, and every ``tmpdir`` test errors.  So the
+    real package's ``_py`` directory -- stdlib-only modules -- is registered as the stub's
+    ``_pytest._py``, found by path without importing real ``_pytest`` (which would pull its
+    internals in beside the stubs).  Without pytest installed there is nothing to expose, and
+    ``import py`` is the real ``py`` library or nothing.
+    """
+    import importlib.machinery
+    import types
+
+    spec = importlib.machinery.PathFinder.find_spec("_pytest")
+    if spec is None or not spec.submodule_search_locations:
+        return
+    package = types.ModuleType("_pytest._py")
+    package.__path__ = [os.path.join(where, "_py") for where in spec.submodule_search_locations]
+    sys.modules["_pytest._py"] = package
+    from rustest import _pytest_stub
+
+    setattr(_pytest_stub, "_py", package)  # `import _pytest._py.error as e` walks attributes
 
 
 # Module-level version to match pytest

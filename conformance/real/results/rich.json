@@ -1,0 +1,19 @@
+{
+  "suite": "rich",
+  "date": "2026-11-10 22:18",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "EXPLAINED",
+  "tests": 1007,
+  "pytest_s": 7.94,
+  "xdist_s": 6.25,
+  "rustest_s": 4.25,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 0
+}

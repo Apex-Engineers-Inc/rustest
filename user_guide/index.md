@@ -15,15 +15,16 @@ body-classes: "gd-homepage"
 :::
 
 There is no flag to enable pytest compatibility; it is the only behaviour. `import pytest`
-resolves to rustest's own implementation on every run, so an existing suite just runs. The
-boundary is pytest's plugin and hook system, which rustest does not support; see
-[plugins](user-guide/pytest-plugins.md).
+resolves to rustest's own implementation on every run, so an existing suite just runs. rustest
+does not run pytest's plugin and hook system: a session that needs it is handed to pytest whole,
+with one line saying why ([when](user-guide/pytest-compat.md#when-rustest-hands-a-session-to-pytest),
+and [plugins](user-guide/pytest-plugins.md)).
 
 {{< termshow file="quickstart" autoplay="false" loop="false" >}}
 
 That is a real run of `rustest examples/tests/ -v` in this repository, recorded rather than
-transcribed. It plays back as SVG frames, so it stays sharp at any zoom and costs a fraction
-of what the same clip would cost as a GIF.
+transcribed, as it looks in a terminal. It plays back as SVG frames, so it stays sharp at any
+zoom and costs a fraction of what the same clip would cost as a GIF.
 
 ::: {.callout-note title="A release candidate, and what it is for"}
 The version is named explicitly above because pip and uv skip pre-releases by default, so a
@@ -129,8 +130,9 @@ runner. This one is recorded from a real run too: a wrong subtotal in a two-test
 
 {{< termshow file="failure" autoplay="false" loop="false" >}}
 
-The assertion is rewritten to show the values that produced it, the `FAILURES` block and
-`short test summary info` are pytest's, and so is the exit code.
+The assertion is rewritten to show the values that produced it, and the failing source is
+shown with an arrow on the line that raised. The `FAILED` node id at the bottom is pytest's
+spelling, and the exit code is pytest's.
 
 ## What you get
 

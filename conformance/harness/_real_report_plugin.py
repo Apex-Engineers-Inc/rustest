@@ -111,8 +111,8 @@ def pytest_deselected(items: list[Any]) -> None:
 
 def pytest_sessionfinish(session: object, exitstatus: int | CallInfo[None]) -> None:
     path = os.environ.get(REPORT_ENV_VAR)
-    if not path:
-        return
+    if not path or hasattr(getattr(session, "config", None), "workerinput"):
+        return  # not ours, or a pytest-xdist worker (only the controller reports)
     payload: dict[str, object] = {
         "statuses": _statuses,
         "deselected": sorted(_deselected),

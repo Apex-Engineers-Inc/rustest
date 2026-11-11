@@ -164,7 +164,7 @@ def _meta(report: _RunReport) -> dict[str, Any]:
     *authoritative* -- it is the engine's own count -- and they are the same value read from
     the same field.
     """
-    return {
+    meta: dict[str, Any] = {
         "t": "meta",
         "schema_version": SCHEMA_VERSION,
         "tool": "rustest",
@@ -172,6 +172,9 @@ def _meta(report: _RunReport) -> dict[str, Any]:
         "rootdir": report["rootdir"],
         "total": report["summary"]["total"],
     }
+    if reasons := report.get("pytest_fallback"):
+        meta["pytest_fallback"] = reasons  # the session ran under pytest, for these reasons
+    return meta
 
 
 def _fail_object(test: _ReportTest, *, captures: bool, full: bool) -> dict[str, Any]:
@@ -192,6 +195,8 @@ def _fail_object(test: _ReportTest, *, captures: bool, full: bool) -> dict[str, 
         "file": _file_of(test["id"]),
     }
     line = failing_line(message)
+    if line is None:  # a pytest fallback report records it, its tracebacks have another shape
+        line = test.get("line")
     if line is not None:
         obj["line"] = line
     obj["status"] = test["status"]

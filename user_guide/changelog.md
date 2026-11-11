@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > pip install "rustest==1.0.0rc1"        # or: pip install --pre rustest
 > ```
 >
-> The seven breaking changes below are the one-time cleanup taken before committing to
+> The nine breaking changes below are the one-time cleanup taken before committing to
 > semver discipline. They are what this candidate exists to get wrong in public, before
 > 1.0.0 makes them permanent.
 
@@ -105,6 +105,11 @@ Eight, in rough order of how likely they are to reach you.
    placeholders, and names pytest itself never had (`pytest.capsys`, `pytest.Node`,
    `pytest.TmpPathFactory`) are gone. `typing-extensions` is no longer a dependency.
    *Action:* none unless you constructed these classes by hand.
+9. **Option abbreviations are no longer accepted.** `--work 4`, `--no-cap` and `--report=x`
+   used to be read as `--workers`, `--no-capture` and `--report-json`, because argparse
+   abbreviates by default; pytest's parser does not, and an abbreviation would swallow a
+   conftest option that happens to be a prefix of a rustest flag. They are now unrecognized
+   arguments, which hand the session to pytest. *Action:* spell the flag in full.
 
 > ### Release note for tooling authors: `--llm` schema 2
 >
@@ -206,6 +211,23 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Added
 
+- **A session rustest cannot run correctly is handed to pytest, whole.** A conftest (or
+  `pytest_plugins` module) hook that changes what runs, `-p PLUGIN`, an option rustest does
+  not have (`--runslow`, `--doctest-modules`, `--timeout=5`), an unsupported `-o KEY=`, a
+  conftest rustest cannot import, `PYTEST_PLUGINS`, or a `PYTEST_ADDOPTS` rustest does not
+  understand (a CI value such as `--junitxml=...` now hands every run in that environment
+  to pytest; `-ra --tb=short` is read as `addopts` is, and noted as ignored) now runs under `python -m pytest` with your own arguments: one stderr line says
+  why, pytest's output is streamed unmodified and its exit code is returned. It is on by
+  default and runs at pytest's speed; `--no-pytest-fallback` keeps the engine's behaviour (the
+  conformance `--real` gate and the benchmarks pass it). `pytest_addoption` counts as a hook
+  that changes what runs; `pytest_report_header`, `pytest_report_collectionfinish`,
+  `pytest_terminal_summary` and `pytest_assertrepr_compare` do not. `--lf`/`--ff` share
+  `.rustest_cache` between the runners. `--report-json`, `--llm` and `--collect-only` work
+  under it (the report names the fallback in a top-level `pytest_fallback` key, and the
+  `--llm` `meta` line carries the same array); a `.md`
+  argument is refused. `--collect-only` now notices a conftest hook on a tree it used to answer
+  without importing anything. See *When rustest hands a session to pytest* on the compatibility
+  page for the full list, and what is still not detected.
 - **Live progress, drawn for a terminal and written as pytest's lines everywhere else.**
   Results show as tests finish rather than after the last one; a test that runs longer than
   100 ms is reported as it finishes, not with the rest of its file.
@@ -226,6 +248,8 @@ compatibility shim installed unconditionally. Every run is now a compat run.
   percent column are coloured exactly as pytest colours them; the summary line is coloured as
   a whole in the run's main colour, and failure sections stay plain. `--ascii` draws the terminal display with
   ASCII only, and is chosen automatically when the terminal cannot encode the glyphs.
+- **A test that raises `KeyboardInterrupt` exits 2, as under pytest.** It used to kill its
+  worker and end the run with an `INTERNALERROR` (exit 3).
 - **Ctrl-C ends a run cleanly.** The live display is cleared (or the half-written progress
   line ended), one `Interrupted: KeyboardInterrupt` line goes to stderr and the exit code is
   2 (pytest's INTERRUPTED), instead of a Python traceback.
@@ -332,6 +356,12 @@ compatibility shim installed unconditionally. Every run is now a compat run.
 
 ### Fixed
 
+- **String `skipif` conditions skip, and a bare `skip` says what pytest says.**
+  `@pytest.mark.skipif("sys.platform == 'win32'")` was evaluated when the decorator ran and
+  stored as a bare boolean, which the worker then rejected for having no reason. Marks now keep
+  their arguments as written and the worker evaluates them at run time. A bare `@pytest.mark.skip`
+  reports `unconditional skip`. A string condition on a class no longer sees the class's own
+  attributes, as in pytest.
 - **pytest's generic classes subscript as runtime annotations.** `pytest.CaptureFixture[str]`, `pytest.ExceptionInfo[E]`, `FixtureDef`, `CallInfo`, `RaisesExc`, `RaisesGroup` and `StashKey` raised `TypeError` when the annotation was evaluated.
 
 Several of these were real, shipped defects that reported **green** on a broken test,

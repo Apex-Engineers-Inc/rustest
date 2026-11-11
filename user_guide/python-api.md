@@ -78,6 +78,13 @@ All keyword-only.
 | `llm_full` | `bool` | `False` | `--llm-full` |
 | `color` | `"auto"` / `"yes"` / `"no"` (or `"always"` / `"never"`) | `"auto"` | `--color` |
 | `ascii` | `bool` | `False` | `--ascii` |
+| `pytest_fallback` | `bool` | `False` | the CLI turns it on; `--no-pytest-fallback` turns it off |
+
+`pytest_fallback=True` makes the engine stop at the collection barrier, before anything runs
+or prints, when a conftest or plugin defines a hook only pytest can honour, and `run()` raises
+`rustest.core.NeedsPytest` (its `reasons` name each one) instead of returning. The CLI catches it and
+hands the session to pytest, which a library caller has no argument list to do; the default
+`False` runs the session and prints the `NOTE`, as before. `NeedsPytest` is not exported from `rustest`.
 
 `cov=None` and `cov=[""]` are not the same thing. `None` means no coverage at all, and is the
 only value that leaves the workers with no `sys.monitoring` tool registered. `[""]`, which is

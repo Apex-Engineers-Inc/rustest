@@ -5,8 +5,10 @@ This file provides guidance for Claude Code when working with the rustest codeba
 ## Project Overview
 
 **rustest** is a Rust-powered test runner that **runs your existing pytest suite
-unchanged**, agreeing with pytest on node ids, outcomes and exit codes. The boundary is
-pytest's plugin and hook system, which rustest does not support.
+unchanged**, agreeing with pytest on node ids, outcomes and exit codes. rustest does not run
+pytest's plugin and hook system; a session that needs it (a conftest hook that changes what
+runs, `-p PLUGIN`, an option rustest does not have) is **handed to pytest whole** and runs at
+pytest's speed, unless `--no-pytest-fallback` says otherwise.
 
 **The message, and it is deliberate.** The rewrite behind 1.0 was spent on **compatibility,
 stability and reliability** — not on speed. Lead with that everywhere. rustest is still

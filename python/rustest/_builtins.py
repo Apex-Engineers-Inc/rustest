@@ -1026,14 +1026,17 @@ class TempdirFactory:
 def _legacy_path(path: Path) -> PyPathLocal:
     """``py.path.local(path)`` — `_pytest/legacypath.py::legacy_path`.
 
-    ``py`` is imported here rather than at module level: it is a rustest dependency, so the
-    import cannot fail in a normal install, but it is also dead weight on the start-up path
-    of every worker running a suite that never touches ``tmpdir``.
+    ``py`` is imported here rather than at module level, so a worker running a suite that never
+    touches ``tmpdir`` does not pay for it.  It is not a rustest dependency: it is pytest's
+    ``py.py`` (vendored ``py.path``, made importable by
+    ``compat/pytest.py::install_pytest_stubs``) or the standalone ``py`` library.
     """
     try:
         import py
-    except ImportError as exc:  # pragma: no cover - exercised only without the dependency
-        raise RuntimeError("the 'py' library is required for the tmpdir fixtures") from exc
+    except ImportError as exc:
+        raise RuntimeError(
+            "the tmpdir fixtures need py.path: install pytest or the 'py' library"
+        ) from exc
     return py.path.local(path)
 
 

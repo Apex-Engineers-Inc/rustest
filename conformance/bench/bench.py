@@ -202,7 +202,8 @@ def measure_overhead(quick: bool = False) -> tuple[Derived, list[OverheadRow]]:
             suite = Path(tmp) / "suite"
             generate_suite(suite, files, tests_per_file)
             pytest_base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q"]
-            rustest_base = [sys.executable, "-m", "rustest"]
+            # The engine is what is measured: a session handed to pytest would time pytest twice.
+            rustest_base = [sys.executable, "-m", "rustest", "--no-pytest-fallback"]
             commands = {
                 "pytest_run_s": [*pytest_base, "--tb=no", "-p", "no:randomly"],
                 "rustest_run_s": [*rustest_base, ".", "-n", "1", "-q"],
@@ -294,7 +295,8 @@ def measure_per_file(quick: bool = False) -> tuple[Derived, list[PerFileRow]]:
             suite = Path(tmp) / "suite"
             generate_suite(suite, files, tests_per_file)
             pytest_base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q"]
-            rustest_base = [sys.executable, "-m", "rustest"]
+            # The engine is what is measured: a session handed to pytest would time pytest twice.
+            rustest_base = [sys.executable, "-m", "rustest", "--no-pytest-fallback"]
             commands = {
                 "pytest_run_s": [*pytest_base, "--tb=no", "-p", "no:randomly"],
                 "rustest_run_s": [*rustest_base, ".", "-n", "1", "-q"],
@@ -354,7 +356,8 @@ def run_benchmarks(sizes: list[tuple[int, int]], quick: bool) -> BenchReport:
             suite = Path(tmp) / "suite"
             generate_suite(suite, files, tests_per_file)
             pytest_base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q"]
-            rustest_base = [sys.executable, "-m", "rustest"]
+            # The engine is what is measured: a session handed to pytest would time pytest twice.
+            rustest_base = [sys.executable, "-m", "rustest", "--no-pytest-fallback"]
             row: BenchRow = {
                 "files": files,
                 "tests": files * tests_per_file,

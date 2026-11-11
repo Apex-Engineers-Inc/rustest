@@ -7,9 +7,10 @@
 **rustest is a Rust-powered test runner that runs your existing pytest suite unchanged.**
 
 Point it at your tests. There is no compatibility flag, no migration step, and no plugin to
-install: `import pytest` resolves to rustest's own implementation on every run. The boundary
-is pytest's plugin and hook system, which rustest does not support; a conftest's fixtures
-load but its `pytest_*` hooks are not run, and a `NOTE:` on stderr names them ([details](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-plugins.html)).
+install: `import pytest` resolves to rustest's own implementation on every run. rustest does
+not run pytest's plugin and hook system: a session that needs it (a conftest hook that
+changes what runs, `-p PLUGIN`, an option rustest does not have) is handed to pytest whole,
+with a one-line notice, and runs at pytest's speed ([details](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-compat.html#when-rustest-hands-a-session-to-pytest)).
 
 **[Documentation](https://apex-engineers-inc.github.io/rustest)** · [Quick Start](https://apex-engineers-inc.github.io/rustest/user-guide/quickstart.html) · [Coming from pytest](https://apex-engineers-inc.github.io/rustest/user-guide/pytest-compat.html)
 

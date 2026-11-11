@@ -171,17 +171,132 @@ rustest's own implementations, which is what makes `from _pytest.outcomes import
 catch the exception `pytest.skip()` actually raises. Others satisfy the import and do
 nothing. Anything not on that list, `_pytest.fixtures` among them, does not resolve at all.
 
-**The hook system.** No `pytest_configure`, no `pytest_collection_modifyitems`, no
-`pytest_generate_tests`. A `conftest.py` that defines hooks loads fine and its **fixtures
-are used**; its hooks are not run, and one `NOTE:` line on stderr names each hook found in a
-loaded `conftest.py` or `pytest_plugins` module. Exit code, stdout, `--report-json` and `--llm`
-output are unchanged.
+**The hook system, in rustest itself.** rustest does not run `pytest_configure`,
+`pytest_collection_modifyitems`, `pytest_generate_tests` or any other hook. A session that
+needs them is handed to pytest whole, see
+[When rustest hands a session to pytest](#when-rustest-hands-a-session-to-pytest). With
+`--no-pytest-fallback` a `conftest.py` that defines hooks loads, its **fixtures are used**,
+its hooks are not run, and one `NOTE:` line on stderr names each one.
 
 **Warning diagnostics.** `recwarn` and `pytest.warns()` record warnings in-process and both
 work. What is missing is the reporting channel that surfaces pytest's own diagnostics: the
 `PytestCollectionWarning` for a class with `__init__`, the "usefixtures() without arguments
 has no effect" note. The *behaviour* in each case matches pytest; only the message is
 missing.
+
+## When rustest hands a session to pytest
+
+Some things only pytest can do correctly. A hook such as `pytest_collection_modifyitems`
+in one directory's `conftest.py` sees the items of *every* directory, so running part of a
+session under rustest and part under pytest would be wrong, not just awkward. Instead the
+session is **whole-run, one runner or the other**: when rustest finds something it cannot
+honour, it runs `python -m pytest` with your own arguments, streams pytest's output
+unmodified, and returns pytest's exit code. This is on by default. `--no-pytest-fallback`
+turns it off.
+
+### What hands a session over
+
+| What rustest finds | Why |
+|---|---|
+| A `conftest.py`, or a module a `pytest_plugins` assignment names, defines a `pytest_*` hook other than the four below. **`pytest_addoption` is one of them.** `pytest_configure`, `pytest_collection_modifyitems`, `pytest_generate_tests`, `pytest_sessionfinish` and `pytest_runtest_*` all are | They change what runs, how it is reported, or the exit status. rustest's `getoption` cannot know what an `addoption` declared, so a fixture's `getoption("--db", default=...)` would quietly answer differently |
+| A conftest, or a module it names, raises when rustest's worker imports it (`rustest could not import tests/conftest.py: ...`) | Conftests that import `_pytest` internals rustest does not provide are exactly the hook-writing ones |
+| `-p NAME` (not `-p no:NAME`) | Loads a pytest plugin |
+| `-o KEY=VALUE` arriving through `addopts` or `PYTEST_ADDOPTS` (rustest reads only the command line's `-o`) | pytest applies it |
+| An argument rustest does not have: `--runslow`, `--doctest-modules`, `--timeout=5`, `-n auto`. Abbreviations count: `--report=html` is not `--report-json` | pytest may know it. A typo gets pytest's own usage error, exit 4 |
+| `-o KEY=VALUE` for any key other than `addopts` | pytest accepts any ini key |
+| `PYTEST_PLUGINS` is set, or `PYTEST_ADDOPTS` contains something rustest does not understand | pytest applies them; rustest does not |
+
+Hooks that do **not** hand the session over, because they only change terminal text:
+`pytest_report_header`, `pytest_report_collectionfinish`, `pytest_terminal_summary` and
+`pytest_assertrepr_compare`. They are still named in a `NOTE:` line on stderr and still not
+run.
+
+A rustest flag with a bad value (`-n abc`, `--color=blue`) is rustest's own usage error, and
+so are the removed `--pytest-compat` and `--v1`.
+
+### What you see
+
+One line on stderr before pytest starts. It names the reasons, says the run will be at
+pytest's speed, and, only when it is true for those reasons, says that
+`--no-pytest-fallback` would run the session with rustest anyway and what that would skip.
+A reason that came from `addopts` or `PYTEST_ADDOPTS` names where it came from. After that the
+output is pytest's own, live, and the exit code is pytest's.
+
+{{< termshow file="fallback" autoplay="false" loop="false" >}}
+
+That is a recorded run of a project whose `conftest.py` skips every `slow` test in
+`pytest_collection_modifyitems`: only pytest can honour that, so the session goes to pytest
+(here with `-q`, so pytest prints its bare letters and summary).
+
+pytest's cache is pointed at `.rustest_cache` (`-o cache_dir=.rustest_cache`), the directory
+rustest already writes, so `--lf` and `--ff` agree between the two runners. A project that
+relocates its pytest cache will find `.rustest_cache` created in the rootdir instead.
+
+### Options under a handed-over session
+
+- `-k`, `-m`, `-x`, `--maxfail`, `--lf`, `--ff`, `-v`, `-q`, node ids and paths go to pytest
+  as written, with pytest's own semantics. `--pattern`, `--marks`, `--no-capture` and
+  `--color always|never` are respelled `-k`, `-m`, `-s` and `--color yes|no`.
+- `-n` and `--workers` become `-n`, and work only if pytest-xdist is installed; otherwise they
+  are dropped, the notice says so, and the run is serial.
+- `--cov` goes through, so pytest-cov is needed.
+- **A `.md` argument is refused** (exit 4): pytest cannot run rustest's documentation code
+  blocks, and pytest-codeblocks numbers and skips them differently.
+- If pytest is not installed the run exits 4 and says so. It never carries on silently.
+
+### `--report-json`, `--llm` and `--collect-only`
+
+All three work. A small plugin bundled with rustest is loaded into the pytest child and
+records what pytest did; rustest then writes the report or prints the stream itself.
+
+- `--report-json` writes a schema-version-2 report with one extra top-level key,
+  `"pytest_fallback"`, listing the reasons, so a consumer can tell which runner produced it.
+  The human output is pytest's, live.
+- `--llm` / `--llm-full`: stdout is the JSONL stream and nothing else; pytest's own terminal
+  output goes to stderr (run with `--tb=long`, whatever `--tb` you passed, so a failure's `msg`
+  is a full traceback). The `meta` line carries the same `pytest_fallback` array as the report,
+  and `tool` stays `rustest`.
+- `--collect-only` prints the node ids pytest collected, in rustest's format (ids on stdout,
+  the summary on stderr). `--llm` with `--collect-only` is refused, as it always is.
+
+The report is built from pytest's side, and some fields cannot be filled as the engine fills
+them:
+
+- `teardown_errors`, `worker_stderr` and `session_exit` are absent (there are no workers, and
+  pytest attributes a teardown failure to its own test).
+- A failure's `message` is pytest's rendering of the traceback, so its wording differs from the
+  engine's, and under `--report-json` it follows your own `--tb`. The `line` of a failure is
+  pytest's own, recorded by the plugin.
+- Each test has one reduced status. A body that passes or fails with a teardown that raises is
+  one `error` in the report; pytest's own summary counts it as `1 passed, 1 error` or
+  `1 failed, 1 error`. A module that skips itself at import counts as one skip, as it does in
+  the engine. An outcome other than passed, failed or skipped (pytest-rerunfailures' `rerun`) is
+  ignored.
+- Under pytest-xdist only the controller writes the report, and the workers' deselection counts
+  are not aggregated, so `deselected` is 0.
+- `stopped_early` is true when pytest's should-fail or should-stop state was set, or it ended
+  with exit status 2 (Ctrl-C, `pytest.exit`).
+
+### What it costs
+
+The session runs at **pytest's speed**, and rustest's collection is thrown away first (about
+a second of pool start and imports). A test module's import-time code runs twice, once in
+rustest's workers and once in pytest. The speed figures on this site were measured with
+`--no-pytest-fallback`.
+
+### What is still not detected
+
+These can still make rustest and pytest disagree without a notice, because rustest does not
+yet look for them:
+
+- **Plugins that load themselves** through a `pytest11` entry point (pytest-randomly,
+  pytest-rerunfailures, pytest-timeout, pytest-django and so on).
+- **Ini keys rustest does not honour**, plugin keys (`timeout`, `reruns`) and core ones such as
+  `xfail_strict`.
+- **Plugin marks**, such as `@pytest.mark.timeout`.
+- **A `conftest.py` in a directory with no test files**: rustest only follows the conftests above
+  directories that hold tests, so its session-wide hooks are not seen. (pytest registers it
+  while walking the tree.)
 
 ## Known gaps, with their cost
 

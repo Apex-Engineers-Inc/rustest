@@ -458,6 +458,53 @@ def test_the_tmp_path_directory_is_named_after_the_test() -> None:
         factory.cleanup()
 
 
+def test_py_path_imports_once_the_pytest_shim_is_installed() -> None:
+    """The worker installs the ``_pytest`` stub before any test runs, and pytest's ``py.py``
+    (behind ``tmpdir``) imports ``_pytest._py``; that must still resolve.
+
+    A fresh interpreter, because the point is the order: nothing may have imported real
+    ``_pytest`` first (a ``builtin_fixtures`` that imported ``py`` at module level used to hide
+    this by doing exactly that, and stopped when it was cleaned up).
+    """
+    code = (
+        "from rustest import _worker\n"
+        "_worker.install_pytest_shim()\n"
+        "import py\n"
+        "print(py.path.local('.').check(dir=1))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    assert result.stdout.strip() == "True", result.stderr
+
+
+def test_tmpdir_and_tmpdir_factory_work_in_a_real_run(tmp_path: Path) -> None:
+    from .helpers import make_tree, run_tree
+
+    tree = make_tree(
+        tmp_path,
+        "legacy_tmpdir",
+        {
+            "test_legacy.py": (
+                "def test_tmpdir(tmpdir, tmp_path):\n"
+                "    file = tmpdir.join('a.txt')\n"
+                "    file.write('x')\n"
+                "    assert file.read() == 'x'\n"
+                "    assert str(tmpdir) == str(tmp_path)\n"
+                "\n\n"
+                "def test_tmpdir_factory(tmpdir_factory):\n"
+                "    made = tmpdir_factory.mktemp('made')\n"
+                "    assert made.check(dir=1)\n"
+                "    assert tmpdir_factory.getbasetemp().check(dir=1)\n"
+            )
+        },
+    )
+
+    tally = run_tree(tree)
+
+    assert (tally.passed, tally.error, tally.failed) == (2, 0, 0)
+
+
 # ---------------------------------------------------------------------------
 # mocker
 # ---------------------------------------------------------------------------

@@ -7,8 +7,10 @@ answer is "barely".
 
 The feature table is the part that matters. Compatibility is what this release was built
 for; the performance section at the end reports where speed happens to stand, and is not
-the reason to switch. The boundary is pytest's plugin and hook system, which rustest does not
-support ([see why](pytest-plugins.md)).
+the reason to switch. rustest does not run pytest's plugin and hook system, so a session that needs it
+is handed to pytest whole and runs at pytest's speed
+([when](pytest-compat.md#when-rustest-hands-a-session-to-pytest), and
+[why plugins are not supported](pytest-plugins.md)).
 
 ## Feature comparison table
 

@@ -686,7 +686,7 @@ def test_the_schema_is_a_stable_golden() -> None:
     assert sorted(defs) == ["error", "fail", "meta", "skip", "summary"]
     fields = {name: sorted(body["properties"]) for name, body in defs.items()}
     assert fields == {
-        "meta": ["rootdir", "schema_version", "t", "tool", "total", "version"],
+        "meta": ["pytest_fallback", "rootdir", "schema_version", "t", "tool", "total", "version"],
         "error": ["file", "msg", "scope", "t"],
         "fail": [
             "file",

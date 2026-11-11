@@ -1,0 +1,21 @@
+{
+  "suite": "attrs",
+  "date": "2026-11-10 21:47",
+  "mode": "handed off",
+  "reasons": [
+    "tests/conftest.py::pytest_configure is a pytest hook rustest does not run"
+  ],
+  "verdict": "MATCH",
+  "tests": 1387,
+  "pytest_s": 12.0,
+  "xdist_s": 8.41,
+  "rustest_s": 10.65,
+  "engine_s": 5.13,
+  "engine_verdict": "MATCH",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

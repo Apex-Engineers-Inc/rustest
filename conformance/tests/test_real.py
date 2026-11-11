@@ -418,3 +418,93 @@ def test_a_target_that_names_no_wheel_is_left_alone(
     """
     _ = _staleness_fixture(tmp_path, monkeypatch, wheel_age=-600.0, install_age=None)
     real_mod.assert_build_is_current(_target(setup=[["uv", "pip", "install", "-e", "{repo}"]]))
+
+
+# --------------------------------------------------------------------------------------
+# The sweep table: modes, ratios, mergeable per-suite records
+# --------------------------------------------------------------------------------------
+
+
+def _verdict(
+    name: str,
+    *,
+    pytest_s: float,
+    rustest_s: float,
+    xdist_s: float | None = None,
+    fallback: tuple[str, ...] = (),
+    engine_s: float | None = None,
+) -> real_mod.RealVerdict:
+    def outcome(runner: str, seconds: float, fb: tuple[str, ...] = ()) -> RunOutcome:
+        return RunOutcome(runner, 0, seconds, {"t.py::a": "passed"}, 0, [], fb)
+
+    return real_mod.RealVerdict(
+        name,
+        "MATCH",
+        outcome("pytest", pytest_s),
+        outcome("rustest", rustest_s, fallback),
+        [],
+        [],
+        [],
+        xdist_run=outcome("pytest-xdist", xdist_s) if xdist_s else None,
+        engine_run=outcome("rustest-engine", engine_s) if engine_s else None,
+        engine_status="MATCH" if engine_s else "",
+    )
+
+
+def test_the_mode_comes_from_the_fallback_reasons_the_report_carries() -> None:
+    native = _verdict("a", pytest_s=2.0, rustest_s=1.0)
+    handed = _verdict("b", pytest_s=2.0, rustest_s=2.1, fallback=("conftest.py::pytest_configure",))
+    assert real_mod._mode(native) == "native"  # pyright: ignore[reportPrivateUsage]
+    assert real_mod._mode(handed) == "handed off"  # pyright: ignore[reportPrivateUsage]
+    assert real_mod._row(handed)["reasons"] == ["conftest.py::pytest_configure"]  # pyright: ignore
+
+
+def test_the_table_has_ratios_against_pytest_and_xdist_and_the_engine_leg_for_handed_off() -> None:
+    rows = [
+        real_mod._row(_verdict("fast", pytest_s=4.0, rustest_s=2.0, xdist_s=8.0)),  # pyright: ignore
+        real_mod._row(  # pyright: ignore[reportPrivateUsage]
+            _verdict(
+                "hooked",
+                pytest_s=3.0,
+                rustest_s=3.2,
+                fallback=("x::pytest_configure",),
+                engine_s=1.5,
+            )
+        ),
+    ]
+    table = real_mod.render_table(rows)
+    fast, hooked = table.splitlines()[2:]
+    assert "| fast | native | MATCH | 1 | 4.0 | 8.0 | 2.0 | 2.00x | 4.00x |  |" == fast
+    assert "handed off: x::pytest_configure" in hooked and "1.5 (MATCH)" in hooked
+
+
+def test_a_suite_is_recorded_as_its_own_json_file_and_the_table_merges_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(real_mod, "RESULTS_DIR", tmp_path / "results")
+    _ = real_mod.record_result(_verdict("b", pytest_s=1.0, rustest_s=1.0))
+    _ = real_mod.record_result(_verdict("a", pytest_s=2.0, rustest_s=1.0))
+
+    assert [row["suite"] for row in real_mod.load_results()] == ["a", "b"]  # resumable, mergeable
+
+
+def test_the_xdist_leg_is_diffed_against_pytest_but_never_graded() -> None:
+    verdict = _verdict("a", pytest_s=2.0, rustest_s=1.0, xdist_s=3.0)
+    assert real_mod._row(verdict)["xdist_status_diffs"] == 0  # pyright: ignore[reportPrivateUsage]
+
+
+def test_only_the_xdist_controller_writes_the_pytest_oracle_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from conformance.harness import _real_report_plugin as plugin
+
+    out = tmp_path / "report.json"
+    monkeypatch.setenv(plugin.REPORT_ENV_VAR, str(out))
+    worker = SimpleNamespace(config=SimpleNamespace(workerinput={}))
+    plugin.pytest_sessionfinish(worker, 0)  # pyright: ignore[reportArgumentType]
+    assert not out.exists()
+    controller = SimpleNamespace(config=SimpleNamespace())
+    plugin.pytest_sessionfinish(controller, 0)  # pyright: ignore[reportArgumentType]
+    assert out.exists()

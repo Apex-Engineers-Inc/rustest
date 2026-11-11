@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         status: str
         duration: float
         message: NotRequired[str]
+        line: NotRequired[int]
         stdout: NotRequired[str]
         stderr: NotRequired[str]
 
@@ -424,28 +425,40 @@ def collect_only(
         manifest: _Manifest = json.loads(payload)
         if labels := manifest.get("pytest_fallback"):
             raise NeedsPytest(labels)
-        tests = manifest["tests"]
-        errors = manifest.get("errors", [])
-        deselected = manifest.get("deselected", 0)
+        return report_collection(
+            [test["id"] for test in manifest["tests"]],
+            manifest.get("errors", []),
+            manifest.get("deselected", 0),
+        )
 
+
+def report_collection(
+    ids: Sequence[str], errors: Sequence[_ManifestError], deselected: int = 0
+) -> int:
+    """Print a collection the way ``--collect-only`` does and return pytest's exit code.
+
+    Shared with the pytest fallback, which takes its ids from a pytest run instead of the
+    engine's manifest and must print exactly the same thing.
+    """
+    with _escaping_unencodable_output():
         # One `write` for the whole id list rather than 5 000 `print` calls.  Byte-identical
         # output (`print` is `write(x)` + `write("\n")` on a line-buffered-or-block-buffered
         # stream), and measurably cheaper: at 5 000 ids the loop cost ~55 ms of a ~270 ms
         # command, because each `print` re-enters the `TextIOWrapper` encode/newline path.
         # `sys.stdout` is used rather than `print(..., end="")` so the empty case writes
         # nothing at all instead of an empty string.
-        if tests:
-            _ = sys.stdout.write("".join(f"{test['id']}\n" for test in tests))
+        if ids:
+            _ = sys.stdout.write("".join(f"{node_id}\n" for node_id in ids))
         # The same stdout/stderr hand-off the run path has, and the same hazard: without this
         # a redirected `--collect-only` printed `N tests collected` *above* the ids it
         # counts. Unconditional -- an empty tree writes no ids but still has the flush, which
-        # costs nothing and keeps the invariant from depending on `if tests`.
+        # costs nothing and keeps the invariant from depending on `if ids`.
         _flush_stdout()
         for error in errors:
             print(f"ERROR collecting {error['path']}", file=sys.stderr)
             for line in error["message"].splitlines():
                 print(f"  {line}", file=sys.stderr)
-        print(_summary(len(tests), len(errors), deselected), file=sys.stderr)
+        print(_summary(len(ids), len(errors), deselected), file=sys.stderr)
 
     # The same three branches as `src/engine/execute.rs::exit_code` with `failures = 0`, which
     # is what a collect-only run always has: collection errors outrank everything, then
@@ -457,7 +470,7 @@ def collect_only(
     # `test_selection_does_not_suppress_a_collection_error` for the precedence).
     if errors:
         return _EXIT_INTERRUPTED
-    if not tests:
+    if not ids:
         return _EXIT_NO_TESTS_COLLECTED
     return _EXIT_OK
 

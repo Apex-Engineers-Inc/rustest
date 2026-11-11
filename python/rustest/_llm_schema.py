@@ -92,6 +92,15 @@ SCHEMA: dict[str, object] = {
                         " first line so a consumer knows the scale of the run before reading it."
                     ),
                 },
+                "pytest_fallback": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Present only when the session was handed to pytest, and says why. The"
+                        " `msg` of a `fail` is then pytest's own traceback text (`--tb=long`),"
+                        " and `line` comes from pytest's report."
+                    ),
+                },
             },
             "required": ["t", "schema_version", "tool", "version", "rootdir", "total"],
             "additionalProperties": False,

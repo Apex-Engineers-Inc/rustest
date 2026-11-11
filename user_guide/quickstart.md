@@ -22,11 +22,11 @@ Run your tests with the `rustest` command, then again with `-v`:
 
 {{< termshow file="first-run" autoplay="false" loop="false" >}}
 
-The recording is the piped form, which is pytest's own progress section: one line per file
-at the default verbosity, one per test under `-v`, written as the tests finish. In a
-terminal the same run is drawn live instead, with a progress bar, a `✓`/`✗` line per file
-and each failure shown with the source around the failing line; see
-[CLI usage](cli.md#output-control). Anything that went wrong prints above the summary.
+The recording is what a terminal shows: a spinner while rustest collects, an overall bar
+while the tests run, a `✓`/`✗` line per file with its time, every test under `-v`, and then the
+summary. Anything that went wrong prints above the summary. When stdout is a pipe or a file
+the same run is written as pytest's own progress section instead (one line per file, one per
+test under `-v`); see [CLI usage](cli.md#output-control).
 
 The verbosity ladder has three rungs:
 
