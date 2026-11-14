@@ -8,7 +8,7 @@ the test receives whatever the fixture returns. Ids are generated from the param
 way, so making a name indirect must not move a single node id.
 
 rustest's `indirect=` used to mean something else entirely -- the value was read as the
-*name of a fixture to resolve* -- which is why Apex Member Designer's `TestAPIEndpoints`
+*name of a fixture to resolve* -- which is why a real suite's `TestAPIEndpoints`
 failed 120 tests with `AttributeError: 'str' object has no attribute 'model_dump'` and why
 this repo's own `pyproject.toml` carried `--ignore=tests/test_indirect_parametrization.py`
 (Phase 3 Task 4 report, section 5).
@@ -72,12 +72,12 @@ def test_stacked(labelled, plain):
 
 @pytest.mark.parametrize("label,chosen", [("a", "alpha"), ("b", "beta")], indirect=["chosen"])
 class TestClassLevelIndirect:
-    """A class-level `@parametrize(..., indirect=[...])` -- Member Designer's shape.
+    """A class-level `@parametrize(..., indirect=[...])` -- a real suite's shape.
 
     `decorators.py::parametrize` writes its metadata onto whatever it decorates, so a
     class-level `indirect=` lands on the *class object*, where a method cannot see it
     (functions do not inherit class attributes). Reading only the function's own metadata
-    left Apex Member Designer's 240 `TestAPIEndpoints` cases receiving the raw string:
+    left a real suite's 240 `TestAPIEndpoints` cases receiving the raw string:
     `AttributeError: 'str' object has no attribute 'model_dump'`.
     """
 

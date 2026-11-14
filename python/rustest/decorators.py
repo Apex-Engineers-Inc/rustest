@@ -79,7 +79,7 @@ class ParameterSet:
         #: `pytest.param(x, marks=pytest.mark.xfail(...))` xfails **that case alone**.
         #: rustest stored the attribute and read it nowhere ("Currently not used, but stored
         #: for future support") until Phase 4 Task 1's re-sweep measured the cost: 9 Apex
-        #: Member Designer tests reporting `failed` where pytest reports `xfailed`.
+        #: tests of a real suite reporting `failed` where pytest reports `xfailed`.
         self.marks: tuple[Any, ...] = _normalize_param_marks(marks)
 
     def __repr__(self) -> str:
@@ -255,7 +255,7 @@ def _build_fixture_params(
         # A fixture's params take marks too -- `pytest.fixture(params=[pytest.param(x,
         # marks=pytest.mark.xfail(...))])`. pytest reaches them through the same
         # `ParameterSet`, because `FixtureManager.pytest_generate_tests` hands
-        # `fixturedef.params` straight to `metafunc.parametrize`, and Apex Member Designer's
+        # `fixturedef.params` straight to `metafunc.parametrize`, and a real suite's
         # CL scenarios are exactly this shape: 9 tests reporting `failed` where pytest
         # reports `xfailed`.
         if isinstance(param_value, ParameterSet) and param_value.marks:
@@ -668,7 +668,7 @@ def _build_cases(
     was unpacked, and the test received ``42`` where pytest hands it ``[42]``.  The test
     still runs, and usually still passes, having tested something other than what its author
     wrote.  It announced itself in four suites only because the wrong value happened to be
-    un-iterable (Member Designer's ``LineString``), un-``len``-able (attrs), or unequal to
+    un-iterable (a real suite's ``LineString``), un-``len``-able (attrs), or unequal to
     the assertion (werkzeug's ``test_range_validates_ranges``, whose three length-1 sets
     failed while its one length-2 set passed -- four predictions, four hits); in attrs'
     ``test_setattr`` it changed nothing but the **node id**, both cases still passing.
@@ -1011,8 +1011,8 @@ class MarkGenerator:
     (defects #136 and #137).
 
     ``asyncio`` joined them in Phase 4 for the *other* half of the same defect: a method is
-    not a mark **value**, so ``pytestmark = pytest.mark.asyncio`` — four modules of Apex
-    Member Designer — refused the whole file with ``malformed pytestmark entry ... <bound
+    not a mark **value**, so ``pytestmark = pytest.mark.asyncio`` — four modules of
+    a real suite — refused the whole file with ``malformed pytestmark entry ... <bound
     method MarkGenerator.asyncio ...> is not a mark``, and because pytest's
     ``pytest_runtestloop`` (and `src/engine/execute.rs::stage`) raise ``Interrupted`` before the
     first item, four such files meant *nothing* in that 6 132-test suite ran. Its factory

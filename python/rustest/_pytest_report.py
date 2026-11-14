@@ -67,6 +67,24 @@ def _reason(report: TestReport) -> str:
     return "" if reason == "Skipped" else reason.removeprefix("Skipped: ")
 
 
+_warnings: list[dict[str, str]] = []  # recorded outside a test: collection, config
+
+
+def pytest_warning_recorded(
+    warning_message: Any, when: str, nodeid: str, location: tuple[str, int, str] | None
+) -> None:
+    """A warning, as rustest's report records one: located by node id inside a test, by
+    ``path:line`` otherwise, with pytest's own text (``warning_record_to_str``)."""
+    from _pytest.warnings import warning_record_to_str
+
+    text = warning_record_to_str(warning_message)
+    if when == "runtest" and nodeid in _open:
+        _open[nodeid].setdefault("warnings", []).append({"location": nodeid, "message": text})
+    else:
+        where = f"{location[0]}:{location[1]}" if location else nodeid
+        _warnings.append({"location": where, "message": text})
+
+
 def pytest_collectreport(report: CollectReport) -> None:
     global _module_skips
     if report.failed:
@@ -146,10 +164,12 @@ def pytest_sessionfinish(session: Session, exitstatus: int) -> None:
             **counts,
             "deselected": _deselected,
             "duration": time.perf_counter() - _started,
+            "warnings": len(_warnings) + sum(len(t.get("warnings", ())) for t in tests),
         },
         "tests": tests,
         "collection_errors": _errors,
         "collected": _collected,
+        "warnings": _warnings,
     }
     if session.shouldfail or session.shouldstop or exitstatus == 2:  # -x, pytest.exit, Ctrl-C
         report["stopped_early"] = True

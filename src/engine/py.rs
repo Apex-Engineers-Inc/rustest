@@ -25,6 +25,7 @@
 //! `errors` list and becomes exit 2.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -33,7 +34,7 @@ use serde::Serialize;
 use super::cache::LastFailedMode;
 use super::collect::{collect, CollectError, CollectOptions, TierMode};
 use super::config::{normpath, resolve_config, ResolvedConfig};
-use super::execute::{run, LiveEvent, RunError, RunOptions};
+use super::execute::{run, HandFiles, LiveEvent, RunError, RunOptions};
 use super::protocol::CoverageWire;
 use super::static_collect::CacheMode;
 use super::to_posix;
@@ -391,6 +392,7 @@ fn parse_hook_context(raw: Option<&str>) -> PyResult<Option<serde_json::Value>> 
     hook_context=None,
     strict_markers=false,
     conftest_args=Vec::new(),
+    on_handoff=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn py_run(
@@ -413,9 +415,33 @@ pub fn py_run(
     hook_context: Option<&str>,
     strict_markers: bool,
     conftest_args: Vec<String>,
+    on_handoff: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     let dir = validated_invocation_dir(invocation_dir)?;
     let args: Vec<PathBuf> = args.into_iter().map(PathBuf::from).collect();
+    // B-lite's runner (`_fallback.run_files`): called from the run's own thread, with the GIL
+    // taken back for the call. A runner that raises (a Ctrl-C in its pytest included) answers
+    // `None`, and its exception is raised once the run returns, as `on_event`'s is.
+    let hand_raised: Arc<std::sync::Mutex<Option<PyErr>>> = Arc::default();
+    let hand_files = on_handoff.map(|callback| {
+        let hand_raised = Arc::clone(&hand_raised);
+        HandFiles(Arc::new(move |files: &[String], cache_dir: &str| {
+            Python::attach(|py| {
+                match callback
+                    .call1(py, (files.to_vec(), cache_dir))
+                    .and_then(|answer| answer.extract::<Option<String>>(py))
+                {
+                    Ok(answer) => answer,
+                    Err(err) => {
+                        if let Ok(mut slot) = hand_raised.lock() {
+                            slot.get_or_insert(err);
+                        }
+                        None
+                    }
+                }
+            })
+        }))
+    });
     let options = RunOptions {
         fail_fast,
         max_fail,
@@ -431,6 +457,7 @@ pub fn py_run(
         hook_context: parse_hook_context(hook_context)?,
         strict_markers,
         conftest_args: conftest_args.into_iter().map(PathBuf::from).collect(),
+        hand_files,
     };
     // The first exception `on_event` raised. It wins over whatever the run itself returned,
     // a `KeyboardInterrupt` included: the run stopped *because* of it.
@@ -476,6 +503,9 @@ pub fn py_run(
     // is only pending; it outranks both the callback's own error and the run's.
     py.check_signals()?;
     if let Some(err) = raised {
+        return Err(err);
+    }
+    if let Some(err) = hand_raised.lock().ok().and_then(|mut slot| slot.take()) {
         return Err(err);
     }
     let report = report.map_err(run_error_to_py)?;

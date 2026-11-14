@@ -56,7 +56,7 @@ dev = [
     "maturin>=1.4,<2",
     # `conformance/corpus/builtins/approx-numpy` grades `ndarray == approx(...)` -- the
     # dispatch mechanism (`__array_ufunc__ = None` / `__array_priority__ = 100`) that cost
-    # Apex Member Designer two tests before `approx` became a port. It is DECLARED rather
+    # a real suite two tests before `approx` became a port. It is DECLARED rather
     # than left to `pytest.importorskip` because an undeclared optional dependency makes
     # that case's verdict a function of the machine: with numpy the v1 gate matched, without
     # it pytest skipped the module while v1 turned the module-level skip into a collection

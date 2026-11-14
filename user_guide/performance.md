@@ -29,7 +29,7 @@ That fraction was measured per suite rather than assumed:
 | Suite | Time spent in your test bodies | Framework share = the ceiling |
 |---|---:|---:|
 | werkzeug | 99% | 1% |
-| member-designer (private, 6,132 tests) | 96% | 4% |
+| A real suite (private, 6,132 tests) | 96% | 4% |
 | more-itertools | 87% | 13% |
 | jsonschema | 76% | 24% |
 | attrs | 74% | 26% |
@@ -41,8 +41,8 @@ That fraction was measured per suite rather than assumed:
 | click | 22% | 78% |
 | marshmallow | 10% | 90% |
 
-Read that table before the one below. **A 1.10x on member-designer and a 2.73x on
-marshmallow are the same result**: member-designer spends 96% of its wall clock inside its
+Read that table before the one below. **A 1.10x on a real suite and a 2.73x on
+marshmallow are the same result**: a real suite spends 96% of its wall clock inside its
 own test bodies and marshmallow spends 10%. If your suite is 95% body (network calls,
 database round-trips, numeric work), no runner can give you more than a few percent, and any
 tool that promises otherwise is measuring something other than your suite.
@@ -73,7 +73,7 @@ entry naming its mechanism; **DIVERGE** means something is not.
 | 7 | jinja2 | MATCH | 4.59s | 1.93s | **2.38x** | 72% | 909 tests |
 | 8 | jsonschema | MATCH | 28.37s | 9.76s | **2.91x** | 24% | 7,815 ids; pinned `-n 1` for correctness |
 | 9 | marshmallow | EXPLAINED | 3.69s | 1.35s | **2.73x** | 90% | 4 ids: the target puts a wall-clock in a node id |
-| 10 | member-designer | MATCH | 309.68s | 280.61s | **1.10x** | 4% | 6,132 ids, full parity; median of five runs, see below |
+| 10 | A real suite | MATCH | 309.68s | 280.61s | **1.10x** | 4% | 6,132 ids, full parity; median of five runs, see below |
 | 11 | more-itertools | MATCH | 11.36s | 6.25s | **1.82x** | 13% | 722 tests |
 | 12 | pillow | MATCH | 89.64s | 41.26s | **2.17x** | not measured | 4,036 ids |
 | 13 | psutil | EXPLAINED | 1948.05s | 1663.86s | **1.17x** | not measured | 713 ids, 712 statuses identical |
@@ -100,10 +100,10 @@ None of the four EXPLAINED rows is rustest getting a test result wrong:
 **Totals across all seventeen: pytest 2,683.6s, rustest 2,184.5s, so 1.23x.**
 
 That figure is dominated by the two suites that are almost entirely body time: psutil alone
-is 1,948s of pytest's total, and member-designer another 310s. Across the other fifteen,
+is 1,948s of pytest's total, and a real suite another 310s. Across the other fifteen,
 pytest spends **391.7s** and rustest **142.9s**, so **2.74x**.
 
-The totals are the sweep's own, and the member-designer row in the table above is not: that
+The totals are the sweep's own, and the private suite's row in the table above is not: that
 row carries the post-fix medians described below, measured in a later window. Summing the
 table's columns therefore will not reproduce the two totals exactly.
 
@@ -113,7 +113,7 @@ is in the framework-share table at the top.
 **Do not average the per-suite ratios.** A mean over seventeen suites is a statement about
 which projects happened to be picked, not about the runner.
 
-### member-designer: the row that went the wrong way, then didn't
+### A real suite: the row that went the wrong way, then didn't
 
 This target, a private 6,132-test suite pinned to `-n 1` because it shares a MongoDB, was the
 sweep's one honest loss. rustest ran it at **0.72x**, genuinely *slower* than pytest. The
@@ -189,7 +189,7 @@ Stated rather than implied, because they bound what the absolute seconds mean:
   each was verified by the target's *own* interpreter to be importing the compiled extension
   under test, so no row is measuring a stale build.
 - Two targets are pinned to `-n 1` for correctness, not for speed: jsonschema has a proven
-  import-order dependency, and member-designer shares a MongoDB. jsonschema's pin costs it
+  import-order dependency, and a real suite shares a MongoDB. jsonschema's pin costs it
   roughly a third of its wall clock, and that cost is visible in its row.
 
 ## Getting the most out of it

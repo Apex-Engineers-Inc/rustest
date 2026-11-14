@@ -3,7 +3,7 @@
 Before Phase 4 this file tested a rustest-only feature that borrowed pytest's keyword: an
 indirect value was read as *the name of a fixture to resolve*.  No pytest suite could use
 it, `pyproject.toml` had to `--ignore` this file so pytest would not fail on it, and Apex
-Member Designer's ``TestAPIEndpoints`` — which writes the ordinary pytest shape — lost 120
+A real suite's ``TestAPIEndpoints`` — which writes the ordinary pytest shape — lost 120
 tests to ``AttributeError: 'str' object has no attribute 'model_dump'``.
 
 The semantics here are now `_pytest/python.py::Metafunc._resolve_args_directness`
@@ -45,7 +45,7 @@ def data_2():
 
 @fixture
 def chosen(request):
-    """Apex Member Designer's shape: the parameter names another fixture."""
+    """A real suite's shape: the parameter names another fixture."""
     return request.getfixturevalue(request.param)
 
 
@@ -70,7 +70,7 @@ def test_mixed_indirect_direct(plain, labelled):
 
 @parametrize("chosen", ["data_1", "data_2"], indirect=True)
 def test_getfixturevalue_through_request_param(chosen):
-    """``request.getfixturevalue(request.param)`` — the Member Designer pattern."""
+    """``request.getfixturevalue(request.param)`` — a real suite's pattern."""
     assert chosen["value"] in (42, 100)
 
 

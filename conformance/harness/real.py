@@ -18,7 +18,7 @@ an inert waiver must not survive a fix unnoticed).
 
 **Nothing here modifies a target repository.** OSS targets are shallow-cloned into a
 gitignored work directory at a pinned revision, verified by SHA on every run. The local
-target (Apex Member Designer) is used in place: pytest runs with ``-p no:cacheprovider`` so
+target (a real suite) is used in place: pytest runs with ``-p no:cacheprovider`` so
 no ``.pytest_cache`` appears, the reporting plugin is loaded from a temp directory via
 ``PYTHONPATH`` rather than dropped in the tree, and any ``.rustest_cache`` rustest creates
 is removed afterwards unless it was already there.
@@ -189,7 +189,7 @@ class RealTarget:
     #: is never published.
     private: bool = False
     #: ``[env] environ``: variables every leg runs with, as the target's own test task sets
-    #: them (member-designer's ``PYTHON_GIL=1``).
+    #: them (a real suite's ``PYTHON_GIL=1``).
     environ: dict[str, str] = field(default_factory=dict[str, str])
 
     @property
@@ -384,7 +384,7 @@ def _wheels_named_by(target: RealTarget) -> list[Path]:
     """The rustest wheels **this target's own** ``[env] setup`` installs.
 
     Read out of the config rather than globbed off disk, because each target names its own
-    ABI on purpose (``member-designer`` is ``cp314t``, ``werkzeug`` is 3.13) and "the" wheel
+    ABI on purpose (a private suite is ``cp314t``, ``werkzeug`` is 3.13) and "the" wheel
     is not a thing that exists. ``uv pip install <explicit path>`` does **not** ABI-check a
     direct path, so installing the wrong one across targets by hand succeeds and then fails
     minutes later inside the run.
@@ -403,7 +403,7 @@ def _wheels_named_by(target: RealTarget) -> list[Path]:
 def assert_build_is_current(target: RealTarget) -> None:
     """Refuse to grade a target whose installed rustest predates this tree's source.
 
-    Phase 4c lost a member-designer run to this and *very nearly published the number*.
+    Phase 4c lost a run of a private suite to this and *very nearly published the number*.
     :func:`ensure_env` returns the moment the venv's interpreter exists, so a `--real` run
     silently measures whatever rustest was installed last -- and the failure has no symptom:
     the suite runs, the ids match, and the wall-clock is a real measurement of the wrong
@@ -500,7 +500,7 @@ _ABI_PROBE: Final = (
 def verify_env(target: RealTarget) -> None:
     """Refuse to run a target whose venv holds the wrong rustest, loudly and by name.
 
-    Phase 4 Task 1c lost a Member Designer run to exactly this and could not see it: MD's
+    Phase 4 Task 1c lost a run of a private suite to exactly this and could not see it: that suite's
     venv is a **free-threaded** (``cp314t``) build, a blanket wheel-install loop keyed on
     ``sys.version_info`` -- which reports ``3.14`` for both ABIs -- and force-installed the
     GIL wheel over it. The ``.pyd`` cannot load under free-threading, so ``import

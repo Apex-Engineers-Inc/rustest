@@ -175,7 +175,7 @@ def test_class_level_indirect_reaches_the_methods() -> None:
 
     Methods do not inherit class attributes, so `_indirect_names(method)` sees nothing and
     the routing has to be threaded down from `_collect_class` the way `outer_cases` already
-    is. Member Designer's `TestAPIEndpoints` is exactly this shape, and it is why 120 of its
+    is. A real suite's `TestAPIEndpoints` is exactly this shape, and it is why 120 of its
     tests still failed after the function-level implementation landed.
     """
 

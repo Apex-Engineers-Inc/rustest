@@ -3022,9 +3022,13 @@ class _FixtureDefView(_fixturedef_base()):  # pyright: ignore[reportUntypedBaseC
 
 @dataclass
 class _Cached:
+    """``FixtureDef.cached_result``: the value, or the exception the setup raised (with its
+    traceback as first raised), for the cache key until the scope tears the fixture down."""
+
     value: object
     param_key: object
     finalizer: _Finalizer
+    error: tuple[BaseException, types.TracebackType | None] | None = None
 
 
 @dataclass
@@ -3377,6 +3381,11 @@ class FixtureRunner:
         cached = self._cache.get(fixturedef)
         if cached is not None:
             if cached.param_key is param_key or cached.param_key == param_key:
+                if cached.error is not None:
+                    # `FixtureDef.execute`: a setup that raised (a skip included) raises the
+                    # same exception for every later request in its scope, without running again.
+                    exc, tb = cached.error
+                    raise exc.with_traceback(tb)
                 return cached.value, fixturedef
             # "We have a previous but differently parametrized fixture instance so we
             # need to tear it down before creating a new one." (FixtureDef.execute
@@ -3399,6 +3408,13 @@ class FixtureRunner:
                 )
             else:
                 value = self._call(fixturedef, kwargs, finalizer)
+        except BaseException as exc:
+            # `pytest_fixture_setup`: `except TEST_OUTCOME` caches the exception for the key.
+            if not isinstance(exc, (*ABORT_EXCEPTIONS, SystemExit, GeneratorExit)):
+                self._cache[fixturedef] = _Cached(
+                    None, param_key, finalizer, (exc, exc.__traceback__)
+                )
+            raise
         finally:
             # `FixtureDef.execute` schedules the finalizer "even if the setup failed": a
             # finalizer the body registered, or a hook wrapper raising after the body ran,
@@ -4265,8 +4281,7 @@ def _builtin_registry() -> FixtureRegistry:
     Shared by every chain rather than per chain, because four builtins are ``scope="session"``
     (``tmp_path_factory``, ``tmpdir_factory``, ``cache``, ``pytestconfig``) and the value cache
     keys on the ``FixtureDef`` object: one object per worker is what makes ``tmp_path_factory``
-    a single ``mkdtemp`` for the process, as `_pytest/tmpdir.py` gives one basetemp for the
-    session.  Two chains holding two objects would give a worker two base directories and two
+    a single factory for the process, as `_pytest/tmpdir.py` gives one per session.  Two chains holding two objects would give a worker two base directories and two
     ``Cache`` instances, which is the same defect as the conftest one a level up.
     """
     global _builtins_registry
@@ -4328,10 +4343,11 @@ def _plugin_fixturedefs(name: str) -> tuple[FixtureDef, ...]:
     if cached is not None:
         return cached
     if name in ("pytester", "_pytest.pytester"):
-        # pytest's own plugin, and an in-process pytest: only pytest can run what uses it.
-        reason = f"rustest could not import {name}: pytest's in-process test runner"
-        _conftest_import_failures.add(reason)
-        raise ImportError(reason)
+        # pytest's own plugin, and an in-process pytest: only pytest can run what uses it. A
+        # test module's is that file's collection error, which the engine recognises by its
+        # ending (`src/engine/execute.rs::PYTESTER_MARK`) and runs under pytest first
+        # (B-lite); a conftest's is that conftest's import failure, the whole session's.
+        raise ImportError(f"rustest could not import {name}: pytest's in-process test runner")
     module = importlib.import_module(name)
     if _hookwire_mod is not None:
         _hookwire_mod.on_module(name, module)
@@ -4700,7 +4716,7 @@ def _collect_function(
     parametrized = frozenset(name for _case_id, values, _m in direct_cases for name in values)
     # `outer_indirect` carries a **class-level** `@parametrize(..., indirect=[...])`, whose
     # metadata `decorators.py::parametrize` wrote onto the class object where a method cannot
-    # see it -- functions do not inherit class attributes. Apex Member Designer's
+    # see it -- functions do not inherit class attributes. A real suite's
     # `TestAPIEndpoints` is exactly that shape (`@pytest.mark.parametrize("model_class,
     # endpoint,model_instance", MODEL_CONFIGS, indirect=["model_instance"])` on the *class*),
     # and reading only the function's own metadata left 120 of its tests receiving the raw
@@ -6622,7 +6638,7 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
     (l. 708-723) as ``runner.run(coro, context=context)``. Without it every test sharing a
     runner shares **one** context, which is the runner's own, so a ``ContextVar`` set in one
     test is still set in the next. Measured under ``asyncio_mode = auto`` with both loop
-    scopes ``session`` — the acceptance shape, and Member Designer's config — where pytest
+    scopes ``session`` — the acceptance shape, and a real suite's config — where pytest
     printed ``unset`` for the second test and rustest printed ``from-test-one``. Anything
     that stores request state, a DB session or a trace id in a ``ContextVar`` (structlog,
     SQLAlchemy's async session, OpenTelemetry) leaks across tests on that shape, and leaks

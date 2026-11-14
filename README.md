@@ -71,7 +71,7 @@ it is the ceiling:
 | Suite | Framework share | Speedup |
 |---|---:|---:|
 | werkzeug | 1% | 1.62x |
-| member-designer (6,132 tests) | 4% | 1.10x |
+| A real suite (6,132 tests) | 4% | 1.10x |
 | more-itertools | 13% | 1.82x |
 | jsonschema | 24% | 2.91x |
 | jinja2 | 72% | 2.38x |

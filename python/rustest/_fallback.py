@@ -279,6 +279,93 @@ def _deliver(
     return code
 
 
+def run_files(
+    argv: Sequence[str],
+    files: Sequence[str],
+    cache_dir: str,
+    *,
+    rootdir: str,
+    inifile: str | None,
+) -> str | None:
+    """B-lite: run *files* -- test modules that use pytest's ``pytester`` -- under one pytest
+    subprocess, before the native run, and answer with ``rustest._pytest_report``'s report plus
+    ``exit_code`` (``None``: pytest wrote none, and the whole session goes to pytest).
+
+    pytest gets the user's own arguments with their targets already removed (*argv*), without
+    ``-n`` (one process), the files instead, and the session's rootdir, ini file and cache
+    directory, so node ids, configuration and ``--lf`` agree with the native run's. Its terminal
+    output is kept back: the run renders these results with its own. pytest's ``nfplugin`` is
+    off: its ``cache/nodeids`` would list the handed files only, which rustest never writes.
+    """
+    import contextlib
+    import json
+    import subprocess
+    import tempfile
+
+    if not pytest_available():
+        return None
+    translated, _ = pytest_argv(argv)
+    serial: list[str] = []
+    skip = False
+    for token in translated:
+        if skip:
+            skip = False
+        elif token == "-n":
+            skip = True
+        elif not (token.startswith("-n") and not token.startswith("--")):
+            serial.append(token)
+    print(
+        f"rustest: running {len(files)} file(s) under pytest first (they use pytester): "
+        + ", ".join(os.path.relpath(f, rootdir) for f in files),
+        file=sys.stderr,
+        flush=True,
+    )
+    with contextlib.ExitStack() as stack:
+        scratch = stack.enter_context(tempfile.TemporaryDirectory(prefix="rustest-handed-"))
+        report = os.path.join(scratch, "report.json")
+        ini = inifile
+        confcutdir: list[str] = []
+        if ini is None:  # no ini: an empty one keeps pytest from finding one nearer the files,
+            ini = os.path.join(scratch, "pytest.ini")  # and conftests above the rootdir stay out
+            with open(ini, "w", encoding="utf-8") as handle:
+                _ = handle.write("[pytest]\n")
+            confcutdir = [f"--confcutdir={rootdir}"]
+        output = stack.enter_context(tempfile.TemporaryFile())
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            *confcutdir,  # before the user's own, so theirs wins
+            *serial,
+            f"--rootdir={rootdir}",
+            "-c",
+            ini,
+            "-o",
+            f"cache_dir={cache_dir}",
+            "-p",
+            "rustest._pytest_report",
+            "-p",
+            "no:nfplugin",
+            *files,
+        ]
+        child = subprocess.Popen(
+            command,
+            env={**os.environ, "RUSTEST_PYTEST_REPORT": report},
+            stdout=output,
+            stderr=subprocess.STDOUT,
+        )
+        code = _wait(child)
+        try:
+            with open(report, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            _ = output.seek(0)
+            _ = sys.stderr.write(output.read().decode(errors="replace"))
+            return None
+    data["exit_code"] = code
+    return json.dumps(data)
+
+
 def run(
     argv: Sequence[str],
     reasons: Sequence[str],

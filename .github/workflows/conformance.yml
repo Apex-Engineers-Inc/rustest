@@ -72,7 +72,7 @@ jobs:
       #
       # `python -m conformance --real more-itertools` is the intended CI smoke (it clones
       # fast and pulls no compiled dependencies, unlike the other sixteen targets, one of
-      # which -- member-designer -- is a local read-only tree no runner has). It cannot run
+      # which -- a real suite -- is a local read-only tree no runner has). It cannot run
       # here yet: **all seventeen `conformance/real/*.toml` configs install rustest from a
       # hardcoded wheel filename**, `{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl`
       # (two say cp313). That is a Windows wheel and a pinned version, so the step would

@@ -1300,6 +1300,21 @@ fn collect_with_launcher(
                 .single_process_hooks()
                 .then(|| SESSION_END_IN_COLLECT_ONLY.to_string()),
         )
+        // A test file that uses `pytester`: only pytest collects it (B-lite runs such files
+        // in a run, not in a listing).
+        .chain(
+            outcomes
+                .iter()
+                .filter_map(|(_, outcome)| outcome.error.as_ref())
+                .find(|error| {
+                    error
+                        .message
+                        .contains(crate::engine::execute::PYTESTER_MARK)
+                })
+                .map(|_| {
+                    "rustest could not import pytester: pytest's in-process test runner".to_string()
+                }),
+        )
         .collect::<Vec<_>>();
     if !options.pytest_fallback {
         launcher.note_hooks(modifies.as_slice());
@@ -2063,7 +2078,7 @@ fn walk(
             // named as an *argument* (`initial_file_target`), never when a directory walk
             // happens to pass over it. pytest walks the same tree and collects no markdown
             // at all, so a repo with python fences in its docs got extra tests under
-            // flagless rustest and nowhere else -- measured on Apex Member Designer, whose
+            // flagless rustest and nowhere else -- measured on a real suite, whose
             // `tests/fixtures/SCENARIOS.md` contributed 13 ids pytest never sees, 4 of them
             // failing because documentation snippets do not import what they reference.
             // Testing the docs is still one command away (`rustest README.md docs/`), which

@@ -410,26 +410,40 @@ def test_cache_set_survives_an_unwritable_store(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_temp_path_factory_numbers_and_cleans_up() -> None:
+@pytest.fixture
+def temproot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A private ``PYTEST_DEBUG_TEMPROOT`` and a fresh per-process basetemp."""
+    from rustest import _basetemp
+
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(tmp_path))
+    monkeypatch.delenv(_basetemp.ENV, raising=False)
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(_basetemp, "_worker_basetemp", None)
+    return tmp_path
+
+
+def test_temp_path_factory_numbers_per_name(temproot: Path) -> None:
     factory = TempPathFactory()
     first = factory.mktemp("thing")
     second = factory.mktemp("thing")
     base = factory.getbasetemp()
-    assert first != second and first.is_dir() and second.is_dir()
-    assert first.parent == base
-    factory.cleanup()
-    assert not base.exists()
+    assert (first.name, second.name) == ("thing0", "thing1")
+    assert first.parent == base and base.parent.parent == temproot
+    assert base.name == "pytest-0" and base.parent.name.startswith("pytest-of-")
 
 
-def test_unnumbered_mktemp_refuses_a_second_use() -> None:
+def test_mktemp_refuses_a_name_that_leaves_the_base(temproot: Path) -> None:
+    """`_ensure_relative_to_basetemp`: a normalized, relative name or ``ValueError``."""
+    with pytest.raises(ValueError, match="is not a normalized and relative path"):
+        _ = TempPathFactory().mktemp("../escaped")
+
+
+def test_unnumbered_mktemp_refuses_a_second_use(temproot: Path) -> None:
     """``numbered=False`` is pytest's "this exact name", so a collision must raise."""
     factory = TempPathFactory()
-    try:
+    _ = factory.mktemp("once", numbered=False)
+    with pytest.raises(FileExistsError):
         _ = factory.mktemp("once", numbered=False)
-        with pytest.raises(FileExistsError):
-            _ = factory.mktemp("once", numbered=False)
-    finally:
-        factory.cleanup()
 
 
 class _NodeStub:
@@ -442,7 +456,7 @@ class _RequestStub:
         self.node = _NodeStub(name)
 
 
-def test_the_tmp_path_directory_is_named_after_the_test() -> None:
+def test_the_tmp_path_directory_is_named_after_the_test(temproot: Path) -> None:
     """`_pytest/tmpdir.py::_mk_tmp` (l. 248-253): non-word characters out, 30 characters max.
 
     The parametrized id is the case that matters — ``test_x[1-2]`` is not a legal directory
@@ -450,12 +464,9 @@ def test_the_tmp_path_directory_is_named_after_the_test() -> None:
     path limit.
     """
     factory = TempPathFactory()
-    try:
-        assert _mk_tmp(_RequestStub("test_x[a-b]"), factory).name.startswith("test_x_a_b_")
-        long_name = _mk_tmp(_RequestStub("test_" + "z" * 60), factory).name
-        assert len(long_name.rstrip("0123456789")) == 30
-    finally:
-        factory.cleanup()
+    assert _mk_tmp(_RequestStub("test_x[a-b]"), factory).name.startswith("test_x_a_b_")
+    long_name = _mk_tmp(_RequestStub("test_" + "z" * 60), factory).name
+    assert len(long_name.rstrip("0123456789")) == 30
 
 
 def test_py_path_imports_once_the_pytest_shim_is_installed() -> None:

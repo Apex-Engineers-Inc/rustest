@@ -200,6 +200,8 @@ _NEEDS_FALLBACK = frozenset(
         "collection/hook-modifyitems-fixture-reorder",
         # `addopts` is the CLI's to splice, so a plain `rust.collect` never sees the flags
         "marks/strict-markers-blocked-plugin",
+        # its pytester file only pytest collects (a run hands it to pytest first)
+        "collection/pytester-file",
     }
 )
 

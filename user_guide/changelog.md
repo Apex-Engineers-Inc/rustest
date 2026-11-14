@@ -93,6 +93,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   those hooks skipped or run per worker); `--collect-only`, an empty selection and a `-k` usage
   error with a session-end hook now hand the session to pytest.
 - **`pytest.exit(returncode=N)` exits N.** It exited 2 whatever the return code.
+- **Test files that use `pytester` run under pytest, and only they.** One pytest process runs
+  them first, with the session's rootdir, ini and cache; the rest runs natively and the run
+  reports both, progress lines and warnings included. The whole session still goes to pytest
+  when the files are tied to it (another collection error, a node id inside such a file, a
+  `pytester` fixture used elsewhere, a `pytest_collection_modifyitems` that changed something, a
+  session-end or report hook, `-x`/`--maxfail`, `--lf`/`--ff`, `-s`, coverage). It handed the
+  whole session over before.
+- **`tmp_path` lives where pytest puts it.** `<temp>/pytest-of-<user>/pytest-<n>/<name><i>`, with
+  `popen-gw<k>` per worker below one `pytest-<n>` in a pool, as under pytest-xdist; the last three
+  sessions' trees are kept (pytest's default retention) and `PYTEST_DEBUG_TEMPROOT` is honoured.
+  It was a private temporary directory per worker, removed at the session's end -- under a
+  process a test had left running, and invisible to a cleanup that looks under `pytest-of-`. A
+  non-default `tmp_path_retention_count` / `tmp_path_retention_policy` hands the session to pytest.
+- **A wide-scope fixture whose setup raises runs once per scope.** The exception -- a skip
+  included -- is raised again for every later test in the scope without running the fixture
+  again, as pytest's `cached_result` does; it ran once per test. A suite whose session fixture
+  skips after probing an unreachable service paid that probe on every test.
 - **`record_property`.** The fixture appends to the test's `user_properties`, as pytest's does
   without `--junitxml`; a hook reads it from the item and from each report.
 - **A conftest's own command-line options run natively.** `rustest --runslow tests/`,

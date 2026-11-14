@@ -10,20 +10,20 @@ The supported surface, and the real suite that exercises each piece:
 | attribute | exercised by |
 |---|---|
 | ``config.addinivalue_line("markers", ...)`` | pillow (inside ``try/except Exception``), networkx |
-| ``config.getoption("--opt")``, ``config.option.x`` (declared defaults) | networkx (``--backend``, ``--runslow``), member-designer ``slow_guard`` |
-| ``config.getini`` for ``addini`` keys, and ``markers`` | member-designer ``slow_guard`` (``addini``) |
-| ``config.hook.pytest_deselected(items=...)`` | member-designer ``shards.py`` |
+| ``config.getoption("--opt")``, ``config.option.x`` (declared defaults) | networkx (``--backend``, ``--runslow``), a real suite's ``slow_guard`` |
+| ``config.getini`` for ``addini`` keys, and ``markers`` | a real suite's ``slow_guard`` (``addini``) |
+| ``config.hook.pytest_deselected(items=...)`` | a real suite's ``shards.py`` |
 | user attributes on ``config`` (``config.backend = ...``) | networkx |
-| ``hasattr(config, "workerinput")`` is false | member-designer ``shards.py`` |
+| ``hasattr(config, "workerinput")`` is false | a real suite's ``shards.py`` |
 | ``config.rootpath``, ``config.invocation_params.dir`` | pytest's documented ``Config`` contract |
 | ``parser.addoption``, ``getgroup().addoption``, ``addini`` | networkx (literal ``addoption``), pytest docs |
-| ``item.nodeid`` / ``name`` / ``path`` / ``config`` | member-designer ``shards.py`` (``nodeid``) |
+| ``item.nodeid`` / ``name`` / ``path`` / ``config`` | a real suite's ``shards.py`` (``nodeid``) |
 | ``item.keywords`` (``in`` only) | networkx (``"slow" in item.keywords``) |
 | ``item.get_closest_marker`` | dateutil |
 | ``item.add_marker`` | dateutil, networkx |
 | ``item.iter_markers`` | pytest's documented ``Node`` contract |
 | ``isinstance(item, pytest.Function)`` | the common ``modifyitems`` filter |
-| ``items[:] = ...`` | member-designer ``shards.py`` |
+| ``items[:] = ...`` | a real suite's ``shards.py`` |
 | ``session.config`` | pytest's documented ``Session`` contract |
 
 Any other ``pytest_*`` name (``runtest_setup``, ``sessionfinish``, ...) is ignored by the runner,
@@ -478,7 +478,7 @@ def test_user_attributes_round_trip_and_workerinput_is_absent(tmp_path: Path) ->
 
 
 # --------------------------------------------------------------------------------------
-# member-designer shards.py: trylast hookimpl, `config.hook.pytest_deselected`, `items[:] =`
+# A real suite's shards.py: trylast hookimpl, `config.hook.pytest_deselected`, `items[:] =`
 # (main/server/tests/shards.py, the hook and everything it calls, verbatim)
 # --------------------------------------------------------------------------------------
 
@@ -2659,7 +2659,7 @@ def test_the_markers_of_a_parametrized_test_cannot_be_read_whole(tmp_path: Path)
 
 def test_a_loaded_plugins_options_answer_with_their_defaults(tmp_path: Path) -> None:
     """xdist's and hypothesis's options, as pytest answers them without the flags (which hand
-    off): member-designer's `getattr(config.option, "tx", None)`, pytest 8.4.2 + xdist 3.8."""
+    off): a real suite's `getattr(config.option, "tx", None)`, pytest 8.4.2 + xdist 3.8."""
     seen: dict[str, object] = {}
     module = _module(
         tmp_path,

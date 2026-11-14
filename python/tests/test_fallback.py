@@ -1473,10 +1473,10 @@ def test_no_cacheprovider_and_no_bytecode_leave_the_tree_untouched(tmp_path: Pat
     assert "1 failed, 1 error" in ours.stderr + ours.stdout, ours.stderr
 
 
-def test_a_module_naming_pytester_hands_the_session_to_pytest(tmp_path: Path):
+def test_a_module_naming_pytester_runs_under_pytest_first(tmp_path: Path):
     """``pytest_plugins = ["pytester"]`` is pytest's own in-process runner: only pytest can run
-    a test that uses it, so the session goes to pytest rather than ending in a collection
-    error (member-designer's ``tests/test_slow_guard.py``)."""
+    a test that uses it, so that file runs under pytest first (B-lite, ``test_blite.py``) rather
+    than ending in a collection error, and the rest natively."""
     tree = make_tree(
         tmp_path,
         "pytester",
@@ -1492,8 +1492,8 @@ def test_a_module_naming_pytester_hands_the_session_to_pytest(tmp_path: Path):
     result = _rustest(tree)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "rustest could not import pytester" in result.stderr
-    assert "2 passed" in result.stdout
+    assert "running 1 file(s) under pytest first" in result.stderr
+    assert "2 passed" in result.stderr
 
 
 #: Enough of pytest-xdist for its entry point to load: `worker_id` and `testrun_uid` are

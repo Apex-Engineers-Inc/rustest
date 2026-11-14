@@ -192,12 +192,12 @@ def test_builtin_fixtures_are_available(tmp_path: Path) -> None:
     base_info_path = tmp_path / "base_info.txt"
     assert base_info_path.exists()
     base_path = Path(base_info_path.read_text())
-    assert not base_path.exists()
+    assert base_path.exists()  # kept after the session, as pytest's default retention keeps it
 
     tmpdir_base_info = tmp_path / "tmpdir_base.txt"
     if tmpdir_base_info.exists():
         tmpdir_base_path = Path(tmpdir_base_info.read_text())
-        assert not tmpdir_base_path.exists()
+        assert tmpdir_base_path.exists()
 
     assert os.environ.get("RUSTEST_MONKEYPATCH_SENTINEL") is None
 

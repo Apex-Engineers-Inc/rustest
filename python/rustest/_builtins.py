@@ -1030,24 +1030,13 @@ def cache() -> Cache:
 
 
 class TempPathFactory:
-    """Port of `_pytest/tmpdir.py::TempPathFactory` (l. 47-190), numbering included.
+    """Port of `_pytest/tmpdir.py::TempPathFactory` (l. 47-190): pytest's base directory
+    (``<temproot>/pytest-of-<user>/pytest-<n>``, ``popen-gw<k>`` below it in a pool of two or
+    more, as under xdist -- :mod:`rustest._basetemp`) and its numbering, ``<name><i>`` per name.
 
-    The base directory is one ``mkdtemp`` per worker rather than pytest's
-    ``<temproot>/pytest-of-<user>/pytest-<n>`` with its retention policy: keeping the last
-    three runs' trees is a *debugging* affordance tied to pytest's ``--basetemp`` and
-    ``tmp_path_retention_policy`` options, neither of which is on the worker wire, and a worker
-    pool would race on the ``pytest-<n>`` counter.  Recorded rather than silently different:
-    ``getbasetemp()`` answers with a real directory and everything below it behaves.
+    Nothing is removed at the session's end: pytest's default retention policy (``all``) keeps
+    the last three sessions' trees, and the next session's base removes the oldest.
     """
-
-    def __init__(self, prefix: str = "rustest") -> None:
-        super().__init__()
-        import itertools
-        import tempfile
-
-        self._base: Final[Path] = Path(tempfile.mkdtemp(prefix=f"{prefix}-"))
-        self._counter: Final = itertools.count()
-        self._created: Final[list[Path]] = []
 
     def mktemp(self, basename: str, numbered: bool = True) -> Path:
         """A new directory under the base (l. 105-135).
@@ -1055,24 +1044,24 @@ class TempPathFactory:
         ``numbered=False`` is pytest's "use this exact name"; it raises if the directory is
         already there, which is what makes it usable as a uniqueness assertion.
         """
+        from ._basetemp import make_numbered_dir
+
         if not basename:
             raise ValueError("basename must be a non-empty string")
-        name = f"{basename}{next(self._counter)}" if numbered else basename
-        path = self._base / name
-        path.mkdir(parents=True, exist_ok=False)
-        self._created.append(path)
-        return path
+        # `_ensure_relative_to_basetemp`: no escaping the base directory.
+        basename = os.path.normpath(basename)
+        if (self.getbasetemp() / basename).resolve().parent != self.getbasetemp():
+            raise ValueError(f"{basename} is not a normalized and relative path")
+        if not numbered:
+            path = self.getbasetemp() / basename
+            path.mkdir(mode=0o700)
+            return path
+        return make_numbered_dir(self.getbasetemp(), basename)
 
     def getbasetemp(self) -> Path:
-        return self._base
+        from ._basetemp import worker_basetemp
 
-    def cleanup(self) -> None:
-        import shutil
-
-        for path in reversed(self._created):
-            shutil.rmtree(path, ignore_errors=True)
-        shutil.rmtree(self._base, ignore_errors=True)
-        self._created.clear()
+        return worker_basetemp()
 
 
 class TempdirFactory:
@@ -1109,11 +1098,7 @@ def legacy_path(path: Path) -> PyPathLocal:
 @fixture(scope="session")
 def tmp_path_factory() -> Iterator[TempPathFactory]:
     """Session-scoped factory for temporary directories (`_pytest/tmpdir.py` l. 240-245)."""
-    factory = TempPathFactory()
-    try:
-        yield factory
-    finally:
-        factory.cleanup()
+    yield TempPathFactory()
 
 
 def _mk_tmp(request: Any, factory: TempPathFactory) -> Path:
@@ -1129,11 +1114,8 @@ def _mk_tmp(request: Any, factory: TempPathFactory) -> Path:
 
 @fixture
 def tmp_path(request: Any, tmp_path_factory: TempPathFactory) -> Path:
-    """A unique temporary directory for this test (`_pytest/tmpdir.py` l. 256-289).
-
-    pytest additionally *removes* it at teardown under its retention policy; this factory
-    cleans the whole tree up at session end instead — see :class:`TempPathFactory`.
-    """
+    """A unique temporary directory for this test (`_pytest/tmpdir.py` l. 256-289), kept after
+    the session as pytest's default retention keeps it -- see :class:`TempPathFactory`."""
     return _mk_tmp(request, tmp_path_factory)
 
 

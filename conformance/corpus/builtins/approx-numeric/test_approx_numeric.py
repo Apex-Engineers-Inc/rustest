@@ -5,14 +5,14 @@ Port target: `_pytest/python_api.py` l. 20-806 -- `ApproxBase`, `ApproxNumpy`,
 dispatcher.
 
 MECHANISM M9 of the Phase 4 Task 1b sweep. What rustest shipped was a REIMPLEMENTATION,
-not a port, and it diverged in ways that cost real tests in Apex Member Designer:
+not a port, and it diverged in ways that cost real tests in a real suite:
 
   (a) no `__array_ufunc__`/`__array_priority__`, so `ndarray == approx(scalar)` produced an
       elementwise bool ARRAY and the enclosing assert raised ValueError (that half is the
       `builtins/approx-numpy` case, split out so a missing optional dependency can only
       move one case's verdict -- see its module docstring);
   (b) `rel`/`abs` defaulted to numbers instead of to None, so an explicit `abs=None` --
-      which MD's own `def approx(expected, abs_tol=None)` helper passes on every call --
+      which that suite's own `def approx(expected, abs_tol=None)` helper passes on every call --
       became `TypeError: '>' not supported between 'NoneType' and 'float'`;
   (c) no `nan_ok` at all.
 
@@ -35,8 +35,8 @@ def test_none_tolerances_mean_unspecified():
     assert 1.0000001 == pytest.approx(1.0, rel=None, abs=None)
 
 
-def test_the_member_designer_helper_shape():
-    """MD's conftest wraps approx and forwards `abs=abs_tol`, defaulting to None.
+def test_the_real_suite_helper_shape():
+    """That suite's conftest wraps approx and forwards `abs=abs_tol`, defaulting to None.
 
     It only ever failed for values that are NOT bit-identical, because exact equality
     short-circuits before any tolerance is computed -- which is why one test tripped it and

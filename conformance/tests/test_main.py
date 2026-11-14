@@ -343,7 +343,11 @@ def test_corpus_case_count_is_pinned() -> None:
     # `hooks/session-end-serial`, `hooks/session-end-xdist` (+2): the session's end on one worker
     # (vs pytest) and with workers and a controller (vs a pinned real pytest-xdist run).
     # `marks/pytest-exit-returncode` (+1): `pytest.exit(returncode=N)` exits N.
-    assert len(discover_cases()) == 108
+    # `builtins/tmp-path-layout`, `-xdist` (+2): `tmp_path` under `pytest-of-<user>/pytest-<n>`
+    # (serial vs pytest, and `popen-gw<k>` vs a pinned real pytest-xdist run).
+    # `collection/pytester-file` (+1): a pytester file runs under pytest first, the rest natively.
+    # `fixtures/wide-scope-setup-raises` (+1): a raising wide-scope setup runs once per scope.
+    assert len(discover_cases()) == 112
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

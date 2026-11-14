@@ -30,7 +30,7 @@ invocation onto a surviving gate would answer a question nobody asked, so it ref
   diverge only once something is executed.
 - `python -m conformance --real <name>` — the **Phase 3 Task 4 gate**: run a real-world
   suite under pytest, then under flagless `rustest`, and diff. `<name>` is a config in
-  `conformance/real/` (`member-designer`, `more-itertools`, `click`, `jinja2`) or `all`.
+  `conformance/real/` (`more-itertools`, `click`, `jinja2`, ...) or `all`.
   See "The `--real` protocol" below.
 - `python -m conformance.bench.bench --lf [--quick]` — `rustest --lf` against a full run on
   two 200-file trees with one remembered failure (flat, and over 20 directories with
@@ -201,9 +201,9 @@ Rules the gate follows:
   The second compares the mtime of each wheel a target's own `[env] setup` names against
   this repo's newest build input, and the mtime of the file the target's interpreter would
   actually import against that wheel. Both refuse rather than repair: rebuilding is per-ABI
-  (`member-designer` is `cp314t`, `werkzeug` is 3.13) and `uv pip install <explicit path>`
+  (a private suite is `cp314t`, `werkzeug` is 3.13) and `uv pip install <explicit path>`
   does not ABI-check a direct path, so "reinstall the wheel" is not a safe automatic action.
-  Phase 4c started a member-designer run against wheels seven hours old and caught it by
+  Phase 4c started a run of a private suite against wheels seven hours old and caught it by
   hand; the failure mode has no symptom — the suite runs, the ids match, and the number is a
   real measurement of the previous commit.
 

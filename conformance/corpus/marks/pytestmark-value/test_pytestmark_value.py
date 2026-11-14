@@ -9,7 +9,7 @@ bound method, and rustest refused the entire file with
     malformed pytestmark entry on '<module>': <bound method MarkGenerator.asyncio ...>
 
 `asyncio` was the last standard mark still in method form after #136/#137 converted
-`skipif`/`xfail`/`usefixtures`. Four Apex Member Designer modules write
+`skipif`/`xfail`/`usefixtures`. Four modules of a real suite write
 `pytestmark = pytest.mark.asyncio`, and since a collection error raises `Interrupted`
 before the first item, those four files stopped all 6 132 of that suite's tests from
 running (Phase 3 Task 4 report, section 4.6).

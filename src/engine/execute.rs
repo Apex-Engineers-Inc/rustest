@@ -155,6 +155,82 @@ pub struct RunOptions {
     /// pytest's first-pass positionals when they differ from `args` (a conftest option's
     /// value word): what chooses the initial conftests. Empty: `args` does.
     pub conftest_args: Vec<PathBuf>,
+    /// Runs test files that use pytest's own `pytester` under one pytest subprocess, before the
+    /// native run (B-lite). `None`: such a file hands the whole session to pytest.
+    pub hand_files: Option<HandFiles>,
+}
+
+/// The CLI's runner for the files only pytest can run (`_fallback.run_files`): given their
+/// absolute paths and the cache directory, it runs them under one pytest subprocess and answers
+/// with `rustest._pytest_report`'s report plus `exit_code`, or `None` when it could not.
+#[derive(Clone)]
+pub struct HandFiles(pub Arc<HandFilesFn>);
+
+/// `(absolute paths, cache directory) -> report JSON`.
+pub type HandFilesFn = dyn Fn(&[String], &str) -> Option<String> + Send + Sync;
+
+impl std::fmt::Debug for HandFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HandFiles")
+    }
+}
+
+/// A test module's `pytest_plugins` names `pytester`: the end of the collection error the worker
+/// reports (`_worker.py::_plugin_fixturedefs`). Mirrored there; rename both together.
+pub const PYTESTER_MARK: &str = ": pytest's in-process test runner";
+
+/// The reason a pytester file hands the whole session over when B-lite cannot run it.
+const PYTESTER_WHOLE: &str = "rustest could not import pytester: pytest's in-process test runner";
+
+/// `rustest._pytest_report`'s report of the handed files, as far as B-lite merges it.
+#[derive(Deserialize)]
+struct HandedReport {
+    tests: Vec<TestOutcome>,
+    #[serde(default)]
+    collection_errors: Vec<CollectionErrorEntry>,
+    summary: HandedSummary,
+    #[serde(default)]
+    stopped_early: bool,
+    /// Warnings recorded outside a test (collection); a test's own are on its entry.
+    #[serde(default)]
+    warnings: Vec<RecordedWarning>,
+    exit_code: i32,
+}
+
+/// The fixtures `pytester` registers. A module that names the plugin registers it for the
+/// whole session, so a native test asking for one of these only works beside a handed file
+/// under pytest: the whole session goes there instead.
+const PYTESTER_FIXTURES: [&str; 7] = [
+    "pytester",
+    "testdir",
+    "linecomp",
+    "LineMatcher",
+    "_pytest",
+    "_sys_snapshot",
+    "_config_for_test",
+];
+
+/// Each id's place in pytest's order: the file's position among the targets. A stable sort by
+/// it puts the handed files' tests where the session would have collected them.
+fn file_order(dispatch: &Dispatch) -> impl Fn(&str) -> usize {
+    let order: std::collections::HashMap<String, usize> = dispatch
+        .relative_targets()
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| (path, index))
+        .collect();
+    move |id: &str| {
+        let file = id.split("::").next().unwrap_or_default();
+        order.get(file).copied().unwrap_or(usize::MAX)
+    }
+}
+
+#[derive(Deserialize)]
+struct HandedSummary {
+    #[serde(default)]
+    deselected: usize,
+    #[serde(default)]
+    skipped: usize,
 }
 
 #[cfg(test)]
@@ -176,6 +252,7 @@ impl RunOptions {
             hook_context: None,
             strict_markers: false,
             conftest_args: Vec::new(),
+            hand_files: None,
         }
     }
 }
@@ -1284,6 +1361,14 @@ fn run_attempt(
             };
             inbox[index] = Some(result);
         }
+        let trace = std::env::var_os("RUSTEST_SCHEDULE_TRACE").is_some();
+        if trace {
+            eprintln!(
+                "rustest-schedule: pool {pool_size}{}, every file collected at {:.1}s",
+                if controlled { " + controller" } else { "" },
+                started.elapsed().as_secs_f64()
+            );
+        }
 
         // `pytest_fallback`: decided here, where every worker has imported its conftests and
         // nothing has been selected, dispatched or cached. A worker's own failure wins and
@@ -1380,6 +1465,7 @@ fn run_attempt(
                     &previously_failed,
                     options.last_failed,
                     skip.as_ref(),
+                    options.pytest_fallback,
                     &mut modify,
                 )
             })
@@ -1422,13 +1508,110 @@ fn run_attempt(
             ));
         }
 
+        // B-lite: the pytester files run first, under one pytest subprocess, while the workers
+        // wait at the barrier. Only when nothing ties them to the rest of the session: no other
+        // collection error (pytest would report those alone), no `pytest_collection_modifyitems`
+        // that changed anything (it would run again over a subset), no hook that aggregates the
+        // session (it would run, and write, twice). Otherwise the whole session is pytest's.
+        let mut handed: Option<HandedReport> = None;
+        if let Ok(staged) = &mut staged {
+            if !staged.pytester.is_empty() {
+                // `-x` / `--maxfail`: running the handed files first would change which
+                // failure stops the session.
+                let whole = !staged.errors.is_empty()
+                    || (modifies && accepted)
+                    || launcher.controller_hooks()
+                    || launcher.session_end_hooks()
+                    || options.max_fail > 0
+                    || staged.selected.iter().any(|test| {
+                        test.fixtures
+                            .iter()
+                            .any(|name| PYTESTER_FIXTURES.contains(&name.as_str()))
+                    });
+                let files: Vec<String> = staged
+                    .pytester
+                    .iter()
+                    .map(|error| {
+                        dispatch
+                            .rootdir_path
+                            .join(&error.path)
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect();
+                let cache_dir = dispatch.cache_dir.to_string_lossy().into_owned();
+                let report = options
+                    .hand_files
+                    .as_ref()
+                    .filter(|_| !whole)
+                    .and_then(|hand| (hand.0)(&files, &cache_dir))
+                    .and_then(|json| serde_json::from_str::<HandedReport>(&json).ok())
+                    // Exit 2 with a report and no collection error is an interrupt in a handed
+                    // test (`KeyboardInterrupt`, `pytest.exit`): the session's, kept below.
+                    .filter(|report| {
+                        report.collection_errors.is_empty()
+                            && matches!(report.exit_code, 0 | 1 | 2 | 5)
+                    });
+                let Some(report) = report else {
+                    drop(exec_txs);
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                    return Ok(handed_off(
+                        dispatch.rootdir.clone(),
+                        vec![PYTESTER_WHOLE.to_string()],
+                        started,
+                    ));
+                };
+                if report.exit_code == 2 {
+                    // pytest's session ended there: nothing native runs, and the run exits 2.
+                    session_over.store(true, Ordering::SeqCst);
+                }
+                handed = Some(report);
+            }
+        }
+
         // `Collected` goes out before any work does, so an observer that declines it stops
-        // the run with nothing dispatched.
+        // the run with nothing dispatched. With handed files (B-lite) its ids are the merged
+        // session in pytest's order: a native result's slot is mapped to its place there
+        // (`display`), and the handed results, all known already, follow at once.
         let mut quit = false;
+        let mut display: Vec<usize> = Vec::new();
         if let (Ok(staged), Some(watch)) = (&staged, observer.as_deref_mut()) {
-            let ids = staged.selected.iter().map(|test| test.id.clone()).collect();
+            let mut ids: Vec<String> = staged.selected.iter().map(|test| test.id.clone()).collect();
+            let mut handed_results: Vec<LiveResult> = Vec::new();
+            if let Some(report) = &handed {
+                let order = file_order(&dispatch);
+                let native = ids.len();
+                ids.extend(report.tests.iter().map(|test| test.id.clone()));
+                let mut merged: Vec<usize> = (0..ids.len()).collect();
+                merged.sort_by_key(|&index| order(&ids[index]));
+                let mut place = vec![0; ids.len()];
+                for (position, &index) in merged.iter().enumerate() {
+                    place[index] = position;
+                }
+                ids = merged.iter().map(|&index| ids[index].clone()).collect();
+                display = place[..native].to_vec();
+                handed_results = report
+                    .tests
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, test)| {
+                        let reason = matches!(
+                            test.status,
+                            TestStatus::Skipped | TestStatus::XFailed | TestStatus::XPassed
+                        )
+                        .then(|| test.message.clone())
+                        .flatten();
+                        (place[native + offset], test.status, reason, test.duration_s)
+                    })
+                    .collect();
+            }
             let rootdir = dispatch.rootdir.clone();
             quit = !watch(LiveEvent::Collected { ids, rootdir });
+            if !quit && !handed_results.is_empty() {
+                quit = !watch(LiveEvent::Results(handed_results));
+            }
         }
 
         // Hand out the work — or drop every sender, which unblocks the workers to shut
@@ -1460,6 +1643,11 @@ fn run_attempt(
                 let mut burst = vec![first];
                 burst.extend(live_rx.try_iter());
                 delivered += burst.len();
+                if !display.is_empty() {
+                    for result in &mut burst {
+                        result.0 = display[result.0];
+                    }
+                }
                 if !watch(LiveEvent::Results(burst)) {
                     quit = true;
                     // Read by every worker before each batch, whether or not `-x` was given.
@@ -1577,12 +1765,21 @@ fn run_attempt(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            let replay_began = Instant::now();
             for chunk in reports.chunks(500) {
                 controller
                     .replay_reports(chunk.to_vec())
                     .map_err(RunError::Collect)?;
             }
             let teardown = controller.end_run(Some(facts)).map_err(RunError::Collect)?;
+            if trace {
+                eprintln!(
+                    "rustest-schedule: controller replayed {} records and ended the session in {:.1}s, done at {:.1}s",
+                    reports.len(),
+                    replay_began.elapsed().as_secs_f64(),
+                    started.elapsed().as_secs_f64()
+                );
+            }
             let session = controller.take_session_end();
             residue.teardown_errors.extend(teardown);
             residue.session_end.summary = session.summary;
@@ -1615,15 +1812,36 @@ fn run_attempt(
             }
         }
 
+        let mut selection = Selection {
+            kept: staged.selected.len(),
+            deselected: staged.deselected,
+            module_skipped: staged.module_skipped,
+        };
+        let mut stopped_early = stopped_early;
+        if let Some(handed) = handed {
+            // pytest's own order: by file, as the session would have collected them.
+            let skipped = handed
+                .tests
+                .iter()
+                .filter(|test| test.status == TestStatus::Skipped)
+                .count();
+            selection.kept += handed.tests.len();
+            selection.deselected += handed.summary.deselected;
+            selection.module_skipped += handed.summary.skipped.saturating_sub(skipped);
+            stopped_early |= handed.stopped_early;
+            if handed.exit_code == 2 {
+                residue.interrupted = true;
+            }
+            residue.warnings.extend(handed.warnings);
+            let order = file_order(&dispatch);
+            outcomes.extend(handed.tests);
+            outcomes.sort_by_key(|test| order(&test.id));
+        }
         let report = finish(
             dispatch.rootdir.clone(),
             outcomes,
             staged.errors,
-            Selection {
-                kept: staged.selected.len(),
-                deselected: staged.deselected,
-                module_skipped: staged.module_skipped,
-            },
+            selection,
             residue,
             stopped_early,
             started,
@@ -1717,6 +1935,9 @@ struct Staged {
     /// empties `selected`.
     collected: usize,
     errors: Vec<CollectionErrorEntry>,
+    /// Test files whose `pytest_plugins` names `pytester` (B-lite): not collection errors when
+    /// the session may go to pytest, but files for one pytest subprocess to run first.
+    pytester: Vec<CollectionErrorEntry>,
     deselected: usize,
     /// Modules that skipped themselves at import, straight through from
     /// [`crate::engine::collect::Assembled::module_skipped`]. Never selected against — a skip
@@ -1737,6 +1958,7 @@ impl Staged {
             selected: Vec::new(),
             collected: 0,
             errors: Vec::new(),
+            pytester: Vec::new(),
             deselected: 0,
             module_skipped: 0,
             per_worker: vec![Vec::new(); pool_size],
@@ -1757,6 +1979,7 @@ fn stage(
     previously_failed: &std::collections::HashSet<String>,
     last_failed: LastFailedMode,
     lf_skip: Option<&LastFailedSkip>,
+    split_pytester: bool,
     modify: &mut Modify<'_>,
 ) -> Result<Staged, RunError> {
     let pool_size = inbox.len();
@@ -1779,6 +2002,21 @@ fn stage(
     by_target.sort_by_key(|(target, _)| *target);
     let warnings = by_target.into_iter().flat_map(|(_, found)| found).collect();
 
+    // A node id into a pytester file: only pytest selects inside it (B-lite hands whole files).
+    let named = dispatch.named_targets();
+    let pytester_id = outcomes.iter().any(|(target, outcome)| {
+        named.contains(target)
+            && outcome
+                .error
+                .as_ref()
+                .is_some_and(|error| error.message.contains(PYTESTER_MARK))
+    });
+    if split_pytester && pytester_id {
+        return Ok(Staged::handed_off(
+            vec![PYTESTER_WHOLE.to_string()],
+            pool_size,
+        ));
+    }
     // `--lf`'s set reaches node-id selection too: it can make an id miss (`select_node_ids`).
     let lf = (last_failed == LastFailedMode::Only && !previously_failed.is_empty())
         .then_some(previously_failed);
@@ -1881,10 +2119,15 @@ fn stage(
     // and exits 2, with the passing test never executed.  Running it anyway would put
     // outcomes in the report for a run pytest never performed, and would make every
     // execution-parity comparison disagree on counts.
+    let (pytester, errors): (Vec<_>, Vec<_>) = std::mem::take(&mut assembled.errors)
+        .into_iter()
+        .partition(|error| split_pytester && error.message.contains(PYTESTER_MARK));
+    assembled.errors = errors;
     if !assembled.errors.is_empty() {
         return Ok(Staged {
             selected: Vec::new(),
             collected: ordered.len(),
+            pytester,
             errors: assembled.errors,
             deselected,
             // Carried across the collection-error bail-out because pytest carries it:
@@ -1933,6 +2176,7 @@ fn stage(
     Ok(Staged {
         collected: selected.len(),
         selected,
+        pytester,
         errors: assembled.errors,
         deselected,
         module_skipped: assembled.module_skipped,
@@ -2246,7 +2490,14 @@ fn worker_life(
         );
     }
     let failed = failed_reports(results.iter().map(|(_, outcome)| outcome));
+    let ending = Instant::now();
     let teardown = worker.end_run(Some(end.facts(failed, end.serial, false)))?;
+    if std::env::var_os("RUSTEST_SCHEDULE_TRACE").is_some() {
+        eprintln!(
+            "rustest-schedule: worker {index} ended its session in {:.1}s",
+            ending.elapsed().as_secs_f64()
+        );
+    }
     let session = worker.take_session_end();
     attach_late_teardowns(&mut results, worker.take_late_teardowns());
     let handed_off = worker.take_handoff();

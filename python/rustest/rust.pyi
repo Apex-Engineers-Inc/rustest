@@ -100,6 +100,7 @@ def run(
     hook_context: str | None = ...,
     strict_markers: bool = ...,
     conftest_args: list[str] = ...,
+    on_handoff: Callable[[list[str], str], str | None] | None = ...,
 ) -> str:
     """Run tests with the engine; returns a schema-v2 ``RunReport`` JSON string.
 

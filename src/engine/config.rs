@@ -1626,7 +1626,7 @@ mod tests {
 
     #[test]
     fn asyncio_inis_are_read_verbatim() {
-        // The Member Designer acceptance shape: auto mode, both defaults session.
+        // A real suite's acceptance shape: auto mode, both defaults session.
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         write(

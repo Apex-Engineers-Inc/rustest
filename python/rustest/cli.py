@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -562,7 +562,66 @@ def _run_with(
         hook_context=getattr(args, "hook_context", None),
         strict_markers=args.strict_markers,
         conftest_args=getattr(args, "conftest_args", ()),
+        hand_files=getattr(args, "hand_files", None),
     )
+
+
+def _without_targets(parser: argparse.ArgumentParser, argv: Sequence[str]) -> list[str]:
+    """*argv* without the words rustest's parser took as targets (the path arguments), by
+    position: an option's value stays even when it spells a path (``-k slow slow``). A word
+    after an option rustest does not know stays a target: pytest gets it, and a value that was
+    in fact the option's becomes pytest's usage error, which hands the whole session over."""
+    known = parser._option_string_actions
+    kept: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        index += 1
+        if token == "--":
+            break
+        if not token.startswith("-") or token == "-":
+            continue  # a target
+        kept.append(token)
+        name = token.split("=", 1)[0]
+        action = known.get(name) or (None if token.startswith("--") else known.get(token[:2]))
+        attached = "=" in token or (not token.startswith("--") and len(token) > 2)
+        if action is not None and not attached and action.nargs in (None, "?"):
+            if index < len(argv) and (action.nargs is None or not argv[index].startswith("-")):
+                kept.append(argv[index])
+                index += 1
+    return kept
+
+
+def _hand_files(
+    args: argparse.Namespace,
+    user_argv: Sequence[str],
+    parser: argparse.ArgumentParser,
+    resolved: Any,
+) -> Callable[[list[str], str], str | None] | None:
+    """B-lite's runner for this session (``_fallback.run_files``), or ``None`` when a file that
+    uses ``pytester`` must take the whole session to pytest: ``--lf``/``--ff`` (the cache's
+    filter spans both runners), ``-s`` (pytest's output is not streamed), ``--cov`` or a
+    coverage environment (two processes would write one data file)."""
+    if (
+        not args.pytest_fallback
+        or _last_failed_mode(args) != "none"
+        or not args.capture_output
+        or args.cov is not None
+        or os.environ.get("COVERAGE_PROCESS_START")
+    ):
+        return None
+    from . import _fallback
+
+    rootdir = str(resolved.get("rootdir") or os.getcwd())
+    config_file = resolved.get("config_file")
+    inifile = str(config_file) if config_file else None
+
+    argv = _without_targets(parser, user_argv)
+
+    def run_files(files: list[str], cache_dir: str) -> str | None:
+        return _fallback.run_files(argv, files, cache_dir, rootdir=rootdir, inifile=inifile)
+
+    return run_files
 
 
 def _watch_main(args: argparse.Namespace, paths: list[str], resolved: dict[str, Any]) -> int:
@@ -1003,6 +1062,18 @@ def _default_workers(argv: Sequence[str], blocked: Sequence[str]) -> int | None:
     return _pool_size(None)
 
 
+def _retention_reasons(config_file: object) -> list[str]:
+    """``tmp_path_retention_count`` / ``_policy`` other than pytest's defaults (3, ``all``):
+    rustest keeps the defaults, so a project that changed them is pytest's."""
+    ini = _raw_ini(config_file)
+    reasons: list[str] = []
+    for key, default in (("tmp_path_retention_count", "3"), ("tmp_path_retention_policy", "all")):
+        value = str(ini.get(key, default)).strip()
+        if value != default:
+            reasons.append(f"{key} = {value} (rustest keeps pytest's default, {default})")
+    return reasons
+
+
 def _autoloaded_plugins(blocked: Sequence[str], config_file: object) -> list[str]:
     from . import _fallback
 
@@ -1217,6 +1288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             and any(f in raw for f in ("--lf", "--last-failed", "--ff", "--failed-first"))
         )
         + _autoloaded_plugins(blocked_plugins, resolved.get("config_file"))
+        + _retention_reasons(resolved.get("config_file"))
         if parser.fallback
         else []
     )
@@ -1354,6 +1426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _hand_to_pytest(parser, raw, user_argv, needs.reasons, needs.optout)
 
     try:
+        args.hand_files = _hand_files(args, user_argv, parser, resolved)
         code = _run_with(args, paths, keyword=args.pattern, report_json=args.report_json)
     except NeedsPytest as needs:
         if needs.discarded:

@@ -4,7 +4,7 @@
 `Metafunc.parametrize` hands each set's marks to the item built from it.
 `decorators.py::ParameterSet` stored the attribute and read it nowhere -- its own comment
 said "Currently not used, but stored for future support" -- so `xfail`ing a single case did
-nothing and 9 Apex Member Designer tests reported `failed` where pytest reports `xfailed`
+nothing and 9 tests in a real suite reported `failed` where pytest reports `xfailed`
 (Phase 4 Task 1 re-sweep).
 """
 
@@ -45,7 +45,7 @@ def test_marks_survive_a_cross_product(a, b):
     ]
 )
 def numbered(request):
-    """A **fixture's** params take marks too, and Apex Member Designer's CL scenarios are
+    """A **fixture's** params take marks too, and a real suite's CL scenarios are
     exactly that shape: `pytest.fixture(params=[pytest.param(s, marks=xfail(...))])`.
 
     pytest reaches them through the same `ParameterSet`, because

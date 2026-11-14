@@ -384,6 +384,25 @@ anyio changes node ids at collection, so a test that uses it hands the session t
 when `-k`, `-m` or a node id would deselect it; the others count only once selected. A mark of
 one of these plugins added by a `pytest_collection_modifyitems` hook hands the session off.
 
+### Test files that use `pytester`
+
+A test module whose `pytest_plugins` names `pytester` runs under pytest, and only that file:
+rustest collects the session, runs those files under one pytest process **first** (with the
+session's rootdir, ini file, cache directory and your own options, `-k` and `-m` included),
+then runs the rest itself and reports both as one run, in collection order: the progress
+lines, the warnings summary, the counts and the report all include the handed tests. A line on
+stderr names the files. An interrupt in a handed test (`KeyboardInterrupt`, `pytest.exit`) ends
+the session there, as pytest's does: nothing native runs after it.
+
+The whole session goes to pytest instead when something ties those files to the rest: another
+collection error, a node id that points inside such a file, a test elsewhere that asks for a
+`pytester` fixture (the plugin is the whole session's once a module names it), a
+`pytest_collection_modifyitems` that changed the selection or the order (it would run again
+over the handed files alone), a session-end or report hook a conftest registers (it would run,
+and write, twice), `-x` / `--maxfail` (which failure stops the session would change), `--lf` /
+`--ff`, `-s`, `--cov` or a coverage environment. A conftest that names `pytester` is the whole
+session's too.
+
 ### `-p no:cacheprovider` and `cache_dir`
 
 `-p no:cacheprovider` turns rustest's cache off as it turns pytest's off: nothing is written

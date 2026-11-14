@@ -945,6 +945,7 @@ def run(
     hook_context: Mapping[str, object] | None = None,
     strict_markers: bool = False,
     conftest_args: Sequence[str] = (),
+    hand_files: Callable[[list[str], str], str | None] | None = None,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 
@@ -1022,6 +1023,9 @@ def run(
         llm_full: ``--llm-full`` -- with *llm*, keep captures whole instead of truncating
             them to the last :data:`rustest._llm.CAPTURE_MAX_LINES` lines.  Inert without it,
             which is why the CLI refuses the combination rather than accepting it silently.
+        hand_files: B-lite's runner (``_fallback.run_files`` bound to the session): test files
+            that use ``pytester`` run under one pytest subprocess first. ``None``: such a file
+            hands the whole session to pytest.
 
     Returns:
         pytest's exit code: 0 clean, 1 failures (or errors, or an unattributable teardown
@@ -1069,6 +1073,17 @@ def run(
                     capture=capture,
                     color=use_color(sys.stdout, color),
                 )
+        # The session's `pytest-<n>`, picked once here for every worker (`_basetemp`). Always
+        # replaced: a rustest run inside a test must not reuse the outer session's.
+        # A temp root pytest could not use either is not the session's error: it is the
+        # error of the tests that use `tmp_path`, raised by their worker (pytest is lazy).
+        from . import _basetemp
+
+        outer = os.environ.get(_basetemp.ENV)
+        try:
+            os.environ[_basetemp.ENV] = str(_basetemp.session_basetemp())
+        except OSError:
+            _ = os.environ.pop(_basetemp.ENV, None)
         try:
             try:
                 payload = rust.run(
@@ -1090,12 +1105,20 @@ def run(
                     hook_context=_hook_context_json(hook_context),
                     strict_markers=strict_markers,
                     conftest_args=list(conftest_args),
+                    on_handoff=hand_files,
                 )
             finally:
                 # Before anything below prints, on every way out -- a live region left
                 # running would keep the cursor hidden after the process exits.
                 if display is not None:
                     display.close()
+                # The session's directory is released when its run ends (an unused one goes,
+                # so a hand-off below costs pytest no number), and an outer run's is restored.
+                _basetemp.release()
+                if outer is None:
+                    _ = os.environ.pop(_basetemp.ENV, None)
+                else:
+                    os.environ[_basetemp.ENV] = outer
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return _EXIT_USAGE_ERROR
