@@ -137,7 +137,8 @@ def test_an_unused_session_directory_costs_pytest_no_number(tmp_path: Path) -> N
     _ = _rustest(tree, env={**clean_env(), "PYTEST_DEBUG_TEMPROOT": str(temproot)})
 
     (root,) = temproot.glob("pytest-of-*")
-    assert len([path for path in root.iterdir() if path.name.startswith("pytest-")]) == 1
+    # `pytest-current` is the handed pytest's own symlink (POSIX only).
+    assert len([path for path in root.glob("pytest-[0-9]*")]) == 1
 
 
 def test_k_deselects_the_handed_files_once(tmp_path: Path) -> None:
