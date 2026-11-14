@@ -224,3 +224,29 @@ def test_without_fallback_the_pytester_file_is_a_collection_error(tmp_path: Path
     assert result.returncode == 2
     errors = report["collection_errors"]
     assert isinstance(errors, list) and len(errors) == 1  # pyright: ignore[reportUnknownArgumentType]
+
+
+@pytest.mark.parametrize(
+    ("name", "extra", "args"),
+    [
+        ("maxfail", {}, ("-x",)),
+        ("aggregator", {"conftest.py": "def pytest_sessionfinish(session):\n    pass\n"}, ()),
+    ],
+)
+def test_a_guard_known_before_collection_hands_off_before_collecting(
+    tmp_path: Path, name: str, extra: dict[str, str], args: tuple[str, ...]
+) -> None:
+    """A pytester file plus a guard known without collecting (`-x`, or a session-end hook in
+    worker 0's conftests): the session is pytest's before rustest imports any test module, so
+    a module's import side effect happens once, as under pytest alone."""
+    files = {
+        **_FILES,
+        **extra,
+        "test_a.py": "open('imports.txt', 'a').write('I')\n\n\ndef test_one():\n    pass\n",
+    }
+    tree = make_tree(tmp_path, name, files)
+
+    result, report = _rustest(tree, *args)
+
+    assert report.get("pytest_fallback"), result.stderr
+    assert (tree / "imports.txt").read_text(encoding="utf-8") == "I"

@@ -100,6 +100,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pytester` fixture used elsewhere, a `pytest_collection_modifyitems` that changed something, a
   session-end or report hook, `-x`/`--maxfail`, `--lf`/`--ff`, `-s`, coverage). It handed the
   whole session over before.
+- **A session that goes to pytest because of a `pytester` file goes before rustest collects
+  it** when the reason is known up front (`-x`/`--maxfail`, a session-end hook in the first
+  conftests): no test module is imported twice, and the hand-off no longer waits for a full
+  collection. The controller process now boots alongside the pool instead of after it.
 - **`tmp_path` lives where pytest puts it.** `<temp>/pytest-of-<user>/pytest-<n>/<name><i>`, with
   `popen-gw<k>` per worker below one `pytest-<n>` in a pool, as under pytest-xdist; the last three
   sessions' trees are kept (pytest's default retention) and `PYTEST_DEBUG_TEMPROOT` is honoured.

@@ -2,8 +2,8 @@
 
 Before Phase 4 this file tested a rustest-only feature that borrowed pytest's keyword: an
 indirect value was read as *the name of a fixture to resolve*.  No pytest suite could use
-it, `pyproject.toml` had to `--ignore` this file so pytest would not fail on it, and Apex
-A real suite's ``TestAPIEndpoints`` — which writes the ordinary pytest shape — lost 120
+it, `pyproject.toml` had to `--ignore` this file so pytest would not fail on it, and
+a real suite's endpoint test class — which writes the ordinary pytest shape — lost 120
 tests to ``AttributeError: 'str' object has no attribute 'model_dump'``.
 
 The semantics here are now `_pytest/python.py::Metafunc._resolve_args_directness`

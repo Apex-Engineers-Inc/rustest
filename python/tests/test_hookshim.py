@@ -10,20 +10,20 @@ The supported surface, and the real suite that exercises each piece:
 | attribute | exercised by |
 |---|---|
 | ``config.addinivalue_line("markers", ...)`` | pillow (inside ``try/except Exception``), networkx |
-| ``config.getoption("--opt")``, ``config.option.x`` (declared defaults) | networkx (``--backend``, ``--runslow``), a real suite's ``slow_guard`` |
-| ``config.getini`` for ``addini`` keys, and ``markers`` | a real suite's ``slow_guard`` (``addini``) |
-| ``config.hook.pytest_deselected(items=...)`` | a real suite's ``shards.py`` |
+| ``config.getoption("--opt")``, ``config.option.x`` (declared defaults) | networkx (``--backend``, ``--runslow``), a slow-test guard plugin |
+| ``config.getini`` for ``addini`` keys, and ``markers`` | a slow-test guard plugin (``addini``) |
+| ``config.hook.pytest_deselected(items=...)`` | a file-sharding hook |
 | user attributes on ``config`` (``config.backend = ...``) | networkx |
-| ``hasattr(config, "workerinput")`` is false | a real suite's ``shards.py`` |
+| ``hasattr(config, "workerinput")`` is false | a file-sharding hook |
 | ``config.rootpath``, ``config.invocation_params.dir`` | pytest's documented ``Config`` contract |
 | ``parser.addoption``, ``getgroup().addoption``, ``addini`` | networkx (literal ``addoption``), pytest docs |
-| ``item.nodeid`` / ``name`` / ``path`` / ``config`` | a real suite's ``shards.py`` (``nodeid``) |
+| ``item.nodeid`` / ``name`` / ``path`` / ``config`` | a file-sharding hook (``nodeid``) |
 | ``item.keywords`` (``in`` only) | networkx (``"slow" in item.keywords``) |
 | ``item.get_closest_marker`` | dateutil |
 | ``item.add_marker`` | dateutil, networkx |
 | ``item.iter_markers`` | pytest's documented ``Node`` contract |
 | ``isinstance(item, pytest.Function)`` | the common ``modifyitems`` filter |
-| ``items[:] = ...`` | a real suite's ``shards.py`` |
+| ``items[:] = ...`` | a file-sharding hook |
 | ``session.config`` | pytest's documented ``Session`` contract |
 
 Any other ``pytest_*`` name (``runtest_setup``, ``sessionfinish``, ...) is ignored by the runner,
@@ -478,8 +478,8 @@ def test_user_attributes_round_trip_and_workerinput_is_absent(tmp_path: Path) ->
 
 
 # --------------------------------------------------------------------------------------
-# A real suite's shards.py: trylast hookimpl, `config.hook.pytest_deselected`, `items[:] =`
-# (main/server/tests/shards.py, the hook and everything it calls, verbatim)
+# A file-sharding hook of the shape real suites use: a trylast hookimpl,
+# `config.hook.pytest_deselected`, `items[:] =`, and a timing plugin registered on a controller
 # --------------------------------------------------------------------------------------
 
 _SHARDS = '''
@@ -491,29 +491,28 @@ from pathlib import Path
 
 import pytest
 
-SHARD_ENV = "APEX_TEST_SHARD"
-TIMES_ENV = "APEX_TEST_SHARD_TIMES"
-WEIGHTS_PATH = Path(__file__).with_name("shard_weights.json")
-UNKNOWN_FILE_SECONDS = 1.0
+SHARD_ENV = "DEMO_TEST_SHARD"
+TIMES_ENV = "DEMO_TEST_SHARD_TIMES"
+WEIGHTS_PATH = Path(__file__).with_name("file_weights.json")
+DEFAULT_WEIGHT = 1.0
 
 
-def parse_shard(value: str) -> tuple[int, int]:
-    """``"2/4"`` -> ``(2, 4)``; shards count from 1."""
+def _spec(value: str) -> tuple[int, int]:
+    """``"2/4"``: the second of four parts."""
     index, _, count = value.partition("/")
     if not (index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count)):
         raise pytest.UsageError(f"{SHARD_ENV} must look like 2/4 (shard 2 of 4), not {value!r}")
     return int(index), int(count)
 
 
-def assign_shards(files: set[str], weights: dict[str, float], count: int) -> list[set[str]]:
-    """Each file into one of ``count`` shards, largest first into the least-loaded shard (ties by
-    name, so every xdist worker of a job picks the same files)."""
+def _split(files: set[str], weights: dict[str, float], count: int) -> list[set[str]]:
+    """Greedy: heaviest file first, into the lightest part; ties by name, so every process agrees."""
     shards: list[set[str]] = [set() for _ in range(count)]
     loads = [0.0] * count
-    for file in sorted(files, key=lambda f: (-weights.get(f, UNKNOWN_FILE_SECONDS), f)):
+    for file in sorted(files, key=lambda f: (-weights.get(f, DEFAULT_WEIGHT), f)):
         lightest = loads.index(min(loads))
         shards[lightest].add(file)
-        loads[lightest] += weights.get(file, UNKNOWN_FILE_SECONDS)
+        loads[lightest] += weights.get(file, DEFAULT_WEIGHT)
     return shards
 
 
@@ -521,7 +520,7 @@ def _file_of(nodeid: str) -> str:
     return nodeid.split("::", 1)[0]
 
 
-def _load_weights() -> dict[str, float]:
+def _weights() -> dict[str, float]:
     return json.loads(WEIGHTS_PATH.read_text(encoding="utf-8")) if WEIGHTS_PATH.exists() else {}
 
 
@@ -529,8 +528,8 @@ def _load_weights() -> dict[str, float]:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if not (value := os.environ.get(SHARD_ENV)):
         return
-    index, count = parse_shard(value)
-    mine = assign_shards({_file_of(item.nodeid) for item in items}, _load_weights(), count)[index - 1]
+    index, count = _spec(value)
+    mine = _split({_file_of(item.nodeid) for item in items}, _weights(), count)[index - 1]
     deselected = [item for item in items if _file_of(item.nodeid) not in mine]
     if deselected:
         config.hook.pytest_deselected(items=deselected)
@@ -539,10 +538,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 def pytest_configure(config: pytest.Config) -> None:
     if (path := os.environ.get(TIMES_ENV)) and not hasattr(config, "workerinput"):
-        config.pluginmanager.register(_FileTimes(path))
+        config.pluginmanager.register(_Timings(path))
 
 
-class _FileTimes:
+class _Timings:
     def __init__(self, path: str) -> None:
         self.path = path
         self.seconds: dict[str, float] = {}
@@ -561,9 +560,9 @@ def test_shards_deselects_the_files_pytest_deselects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _module(tmp_path, "shards", _SHARDS)
-    monkeypatch.setenv("APEX_TEST_SHARD", "1/2")
+    monkeypatch.setenv("DEMO_TEST_SHARD", "1/2")
     runner = _runner()
-    runner.register("tests/shards.py", module)
+    runner.register("tests/sharding.py", module)
     runner.configure()  # TIMES unset: `hasattr(config, "workerinput")` is never reached
     records = [_record(f"test_{n}.py::test_{t}") for n in "abcde" for t in "xy"]
 
@@ -579,7 +578,7 @@ def test_shards_deselects_the_files_pytest_deselects(
         tmp_path, "shards_tree", {"shards_plugin.py": textwrap.dedent(_SHARDS), **_SHARD_FILES}
     )
     result = _real_pytest(
-        tree, ["-p", "shards_plugin", "--collect-only", "-q"], {"APEX_TEST_SHARD": "1/2"}
+        tree, ["-p", "shards_plugin", "--collect-only", "-q"], {"DEMO_TEST_SHARD": "1/2"}
     )
     real_ids = [line for line in result.stdout.splitlines() if "::" in line]
     assert real_ids == effects.order
@@ -593,9 +592,9 @@ def test_shards_registering_a_session_end_plugin_joins_the_session_end(
     "workerinput")`` answering False, a controller): the object's ``pytest_runtest_logreport``
     and ``pytest_sessionfinish`` both run natively -- the latter at the session's end."""
     module = _module(tmp_path, "shards_times", _SHARDS)
-    monkeypatch.setenv("APEX_TEST_SHARD_TIMES", str(tmp_path / "times.json"))
+    monkeypatch.setenv("DEMO_TEST_SHARD_TIMES", str(tmp_path / "times.json"))
     runner = _runner()
-    runner.register("tests/shards.py", module)
+    runner.register("tests/sharding.py", module)
 
     runner.configure()
 

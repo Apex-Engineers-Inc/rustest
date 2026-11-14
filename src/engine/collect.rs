@@ -954,11 +954,11 @@ pub(crate) fn plan_with_options(
 /// The session's controller process (v18): a worker that collects nothing, configured as
 /// xdist's controller is for a pool of `workers`, without xdist's worker identity. Its own
 /// hand-off reasons (from `configure`) come back as the `ready` reasons.
-pub(crate) fn spawn_controller(
+pub(crate) fn start_controller(
     dispatch: &Dispatch,
     launcher: &WorkerLauncher,
     workers: usize,
-) -> Result<(Worker, Vec<String>), CollectError> {
+) -> Result<Worker, CollectError> {
     let mut worker = Worker::spawn(workers, launcher, &xdist_identity(0, 1))?;
     let mut init = dispatch.init.clone();
     if let WorkerRequest::Init {
@@ -973,8 +973,7 @@ pub(crate) fn spawn_controller(
     if let Err(err) = worker.send(&init) {
         return Err(worker.handshake_error(format!("could not send init: {err}")));
     }
-    let reasons = worker.await_ready()?;
-    Ok((worker, reasons))
+    Ok(worker)
 }
 
 /// Boot worker 0 alone, without xdist's worker identity, and wait for its `ready` (v18): the
@@ -1056,12 +1055,19 @@ pub(crate) fn initial_conftests_may_need_one_process(dispatch: &Dispatch) -> boo
 /// would run those hooks a further time.
 ///
 /// `first` is a worker 0 already booted ([`spawn_probe`]), used as is.
+///
+/// Once worker 0 has answered (its hooks are known), `early` may name reasons the whole session
+/// is pytest's before any other worker configures, and with `controller` (the xdist model) a
+/// session that needs a controller starts it then, so its boot overlaps the rest of the pool's
+/// and collection; the caller awaits its `ready` ([`Worker::ready`]) before any test runs.
 pub(crate) fn spawn_pool(
     dispatch: &Dispatch,
     launcher: &WorkerLauncher,
     pytest_fallback: bool,
     first: Option<Worker>,
-) -> Result<Vec<Worker>, CollectError> {
+    early: &dyn Fn(&WorkerLauncher) -> Option<Vec<String>>,
+    controller: bool,
+) -> Result<(Vec<Worker>, Option<Worker>), CollectError> {
     // Phase 1 — every `CreateProcess`, back to back.  `?` drops the vector, and
     // `Worker::drop` kills whatever had already started.
     let mut pool: Vec<Worker> = Vec::with_capacity(dispatch.assignments.len());
@@ -1095,6 +1101,17 @@ pub(crate) fn spawn_pool(
             return Err(CollectError::HandOff(launcher.hooks_needing_pytest()));
         }
     }
+    if hooks_run || booted {
+        if let Some(reasons) = early(launcher) {
+            pool.swap_remove(0).quit();
+            return Err(CollectError::HandOff(reasons));
+        }
+    }
+    let started = if controller && pool.len() > 1 && launcher.controller_hooks() {
+        Some(start_controller(dispatch, launcher, pool.len())?)
+    } else {
+        None
+    };
 
     // Phase 2 — every `init` on the wire.  A worker still booting has not read its pipe
     // yet; the write lands in the pipe buffer and the worker picks it up when it gets
@@ -1119,7 +1136,7 @@ pub(crate) fn spawn_pool(
             return Err(worker.handshake_error(detail));
         }
     }
-    Ok(pool)
+    Ok((pool, started))
 }
 
 /// Per-target outcomes put into argument order ([`Dispatch::entries`]), split into tests and
@@ -1246,7 +1263,16 @@ fn collect_with_launcher(
 
     let dispatch = plan_with_options(invocation_dir, args, workers, options)?;
 
-    let pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback, None) {
+    let pool = match spawn_pool(
+        &dispatch,
+        launcher,
+        options.pytest_fallback,
+        None,
+        &|_| None,
+        false,
+    )
+    .map(|(pool, _)| pool)
+    {
         Err(CollectError::HandOff(reasons)) => {
             return Ok(CollectionManifest {
                 schema_version: MANIFEST_SCHEMA_VERSION,
@@ -2774,6 +2800,11 @@ impl Worker {
     /// A `ready` declares the protocol the worker *speaks*, so a mismatch here is real skew
     /// and is fatal.  Separate from the `init` write because [`spawn_pool`] puts every
     /// worker's `init` on the wire before it waits for anybody's answer.
+    /// Wait for the `ready` an `init` sent earlier answers; its hand-off reasons.
+    pub(crate) fn ready(&mut self) -> Result<Vec<String>, CollectError> {
+        self.await_ready()
+    }
+
     fn await_ready(&mut self) -> Result<Vec<String>, CollectError> {
         let line = match self.receive() {
             Ok(Some(line)) => line,

@@ -55,9 +55,9 @@ use crate::engine::cache::{
     write_last_failed, LastFailedSkip,
 };
 use crate::engine::collect::{
-    assemble, initial_conftests_may_need_one_process, modify_items_line, plan, spawn_controller,
-    spawn_pool, spawn_probe, CollectError, Dispatch, FileOutcome, ItemEffects, SessionEndReport,
-    Worker, WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
+    assemble, initial_conftests_may_need_one_process, modify_items_line, plan, spawn_pool,
+    spawn_probe, CollectError, Dispatch, FileOutcome, ItemEffects, SessionEndReport, Worker,
+    WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
 };
 use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
 use crate::engine::protocol::{CoverageWire, LateTeardown, RecordedWarning, SessionFacts};
@@ -1102,6 +1102,17 @@ impl SessionEnd {
     }
 }
 
+/// A target file whose text has both `pytest_plugins` and `pytester`: the cheap scan behind
+/// B-lite's early whole-session decision. A false hit costs a hand-off a collected run would
+/// have made anyway only when a whole-session guard also holds.
+fn names_pytester(dispatch: &Dispatch) -> bool {
+    let has = |source: &[u8], needle: &[u8]| source.windows(needle.len()).any(|w| w == needle);
+    dispatch.targets.iter().any(|path| {
+        std::fs::read(path)
+            .is_ok_and(|source| has(&source, b"pytest_plugins") && has(&source, b"pytester"))
+    })
+}
+
 /// A run that stops here and goes to pytest, with `reasons`.
 fn handed_off(rootdir: String, reasons: Vec<String>, started: Instant) -> Attempt {
     let mut report = finish(
@@ -1238,7 +1249,32 @@ fn run_attempt(
         }
     }
 
-    let mut pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback, first) {
+    // B-lite's whole-session guards that hold before anything is collected: a test file whose
+    // text names `pytester` (`pytest_plugins`) with `-x`/`--maxfail`, a CLI guard (no runner),
+    // or -- once worker 0 reports its hooks -- a controller or session-end hook. The session is
+    // pytest's then, decided without collecting it.
+    let pytester_files = options.pytest_fallback && names_pytester(&dispatch);
+    let certain = options.max_fail > 0 || options.hand_files.is_none();
+    if pytester_files && certain {
+        return Ok(handed_off(
+            dispatch.rootdir,
+            vec![PYTESTER_WHOLE.to_string()],
+            started,
+        ));
+    }
+    let early = |launcher: &WorkerLauncher| {
+        (pytester_files && (launcher.controller_hooks() || launcher.session_end_hooks()))
+            .then(|| vec![PYTESTER_WHOLE.to_string()])
+    };
+
+    let (mut pool, started_controller) = match spawn_pool(
+        &dispatch,
+        launcher,
+        options.pytest_fallback,
+        first,
+        &early,
+        xdist_model,
+    ) {
         Err(CollectError::HandOff(reasons)) => {
             return Ok(handed_off(dispatch.rootdir, reasons, started));
         }
@@ -1247,23 +1283,13 @@ fn run_attempt(
     let pool_size = pool.len();
 
     // A controller process (v18): a pool of two or more under the xdist model with a hook only
-    // a controller sees whole, as `ready` reports it -- the initial conftests, which is all
-    // xdist's controller has (it collects nothing). It boots now, before any test runs, as
-    // xdist's configures and starts its session before it spawns the nodes.
-    let controlled = pool_size > 1 && xdist_model && launcher.controller_hooks();
-    let mut controller = Controller(None);
+    // a controller sees whole, as worker 0's `ready` reports it -- the initial conftests, which
+    // is all xdist's controller has (it collects nothing). `spawn_pool` started it as soon as
+    // that was known; its `ready` is awaited at the barrier, before any test runs, as xdist's
+    // configures and starts its session before the nodes run anything.
+    let controlled = started_controller.is_some();
+    let mut controller = Controller(started_controller);
     let mut controller_reasons = Vec::new();
-    if controlled {
-        let (worker, reasons) =
-            spawn_controller(&dispatch, launcher, pool_size).map_err(RunError::Collect)?;
-        controller.0 = Some(worker);
-        if !reasons.is_empty() && options.pytest_fallback {
-            drop(controller);
-            quit_all(pool);
-            return Ok(handed_off(dispatch.rootdir, reasons, started));
-        }
-        controller_reasons = reasons;
-    }
 
     // pytest still collects the directories of the files it skips, which imports their
     // conftests: their hooks count, a broken one is a collection error, and their import side
@@ -1360,6 +1386,28 @@ fn run_attempt(
                 break;
             };
             inbox[index] = Some(result);
+        }
+        // The controller's `ready`, before anything is selected or run: what its configure or
+        // sessionstart named (an `os.environ` change included) hands the session over here.
+        if let Some(worker) = controller.0.as_mut() {
+            let reasons = match worker.ready() {
+                Ok(reasons) => reasons,
+                Err(err) => {
+                    drop(exec_txs);
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                    return Err(RunError::Collect(err));
+                }
+            };
+            if !reasons.is_empty() && options.pytest_fallback {
+                drop(exec_txs);
+                for handle in handles {
+                    let _ = handle.join();
+                }
+                return Ok(handed_off(dispatch.rootdir.clone(), reasons, started));
+            }
+            controller_reasons = reasons;
         }
         let trace = std::env::var_os("RUSTEST_SCHEDULE_TRACE").is_some();
         if trace {

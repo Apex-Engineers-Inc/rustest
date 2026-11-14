@@ -4716,11 +4716,10 @@ def _collect_function(
     parametrized = frozenset(name for _case_id, values, _m in direct_cases for name in values)
     # `outer_indirect` carries a **class-level** `@parametrize(..., indirect=[...])`, whose
     # metadata `decorators.py::parametrize` wrote onto the class object where a method cannot
-    # see it -- functions do not inherit class attributes. A real suite's
-    # `TestAPIEndpoints` is exactly that shape (`@pytest.mark.parametrize("model_class,
-    # endpoint,model_instance", MODEL_CONFIGS, indirect=["model_instance"])` on the *class*),
-    # and reading only the function's own metadata left 120 of its tests receiving the raw
-    # string instead of the fixture's return: `'str' object has no attribute 'model_dump'`.
+    # see it -- functions do not inherit class attributes. A real suite's endpoint test
+    # class is exactly that shape (a `@pytest.mark.parametrize(..., indirect=[...])` naming one
+    # fixture, on the *class*), and reading only the function's own metadata left 120 of its
+    # tests receiving the raw string instead of the fixture's return.
     # Threaded explicitly for the same reason `outer_cases` is, and it composes through
     # nested classes for free.
     indirect = (_indirect_names(_parametrize_source(func)) | outer_indirect) & parametrized
