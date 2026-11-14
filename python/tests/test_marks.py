@@ -3,8 +3,6 @@
 import sys
 from rustest import mark
 
-FLAG_FOR_SKIP = False
-
 
 def test_basic_mark_decorator():
     """Test basic mark decorator application."""
@@ -90,8 +88,7 @@ def test_xfail_mark_no_condition():
     assert marks[0]["name"] == "xfail"
     assert marks[0]["args"] == ()
     assert marks[0]["kwargs"]["reason"] == "Known bug"
-    assert marks[0]["kwargs"]["strict"] is False
-    assert marks[0]["kwargs"]["run"] is True
+    assert marks[0]["kwargs"] == {"reason": "Known bug"}  # as pytest: only what was given
 
 
 def test_xfail_mark_with_condition():
@@ -232,43 +229,25 @@ def test_mark_with_positional_and_keyword_args():
 
 
 def test_xfail_default_values():
-    """Test that xfail mark has correct default values."""
+    """An xfail called with nothing stores nothing, as pytest's does: the evaluation supplies
+    the defaults (``run=True``, no ``raises``, ``xfail_strict`` for ``strict``)."""
 
     @mark.xfail()
     def test_defaults():
         pass
 
     marks = test_defaults.__rustest_marks__
-    assert marks[0]["kwargs"]["reason"] is None
-    assert marks[0]["kwargs"]["raises"] is None
-    assert marks[0]["kwargs"]["run"] is True
-    assert marks[0]["kwargs"]["strict"] is False
+    assert marks[0]["kwargs"] == {}
 
 
-def test_skipif_with_string_condition():
-    """Test skipif with string condition (for evaluation)."""
+def test_skipif_keeps_a_string_condition_as_written():
+    """The string is evaluated at run time by the worker, as pytest does, not here."""
 
     @mark.skipif("sys.platform == 'win32'", reason="Windows not supported")
     def test_string_condition():
         pass
 
-    marks = test_string_condition.__rustest_marks__
-    assert isinstance(marks[0]["args"][0], bool)
-
-
-def test_skipif_string_condition_uses_module_globals():
-    """Test skipif string evaluation respects module globals."""
-    global FLAG_FOR_SKIP
-    FLAG_FOR_SKIP = True
-
-    @mark.skipif("FLAG_FOR_SKIP", reason="Global flag set")
-    def flagged():
-        pass
-
-    marks = flagged.__rustest_marks__
-    assert marks[0]["args"][0] is True
-
-    FLAG_FOR_SKIP = False
+    assert test_string_condition.__rustest_marks__[0]["args"] == ("sys.platform == 'win32'",)
 
 
 # Integration tests with parametrize

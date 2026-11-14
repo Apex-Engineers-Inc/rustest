@@ -1,0 +1,228 @@
+# Conformance & Benchmarks
+
+The fitness function for the rustest v2 rewrite (the architecture design spec it was
+written against is in git history, under the removed `docs/superpowers/specs/`).
+
+**Two gates**, and a bare `python -m conformance` is neither: it exits **4** naming them.
+It used to be a third gate — pytest against the **v1 engine**, end to end, against
+`conformance/waivers.toml` — retired in Phase 4 Task 2 with the engine it measured. Its
+ledger (24 entries, every one a v1 bug with a fixed-in-v2 citation) is archived in git
+history, under the removed `docs/superpowers/history/`. Defaulting the bare
+invocation onto a surviving gate would answer a question nobody asked, so it refuses.
+
+- `python -m conformance --collect` — the **Phase 1b.1 gate**: diff pytest's
+  collected node IDs and collection exit code against
+  `rustest --collect-only`. Nothing is executed, so nothing but IDs and the
+  exit code is graded. Uses `waivers-collect.toml`.
+- `python -m conformance --run` — the **Phase 1b.2 gate**: diff a real pytest
+  run against flagless `rustest --report-json`. Graded on the **ordered** node IDs
+  the schema-v2 report carries, the **six-value** outcome tally
+  (`passed/failed/skipped/xfailed/xpassed/error`) and the exit code. Uses
+  `waivers-run.toml`. `--collect` and `--run` are mutually exclusive.
+- `conformance/corpus/<area>/<case>/` — one directory per case: `test_*.py`
+  files, optional `conftest.py`, optional `case.toml` (`[case] args = [...]`).
+- `conformance/waivers-collect.toml` and `conformance/waivers-run.toml` —
+  every known divergence with a mandatory reason, one ledger per gate. Phase gates
+  are defined as these files shrinking. `NEW-BUG:` prefix marks divergences the
+  corpus discovered rather than predicted. They are kept separate because an entry
+  in one says nothing about the other: `fixtures/session-scope` and
+  `marks/pytest-exit` are waived for the run and MATCH on collect, because both
+  diverge only once something is executed.
+- `python -m conformance --real <name>` — the **Phase 3 Task 4 gate**: run a real-world
+  suite under pytest, then under flagless `rustest`, and diff. `<name>` is a config in
+  `conformance/real/` (`member-designer`, `more-itertools`, `click`, `jinja2`) or `all`.
+  See "The `--real` protocol" below.
+- `python -m conformance.bench.bench --lf [--quick]` — `rustest --lf` against a full run on
+  two 200-file trees with one remembered failure (flat, and over 20 directories with
+  conftests); the numbers `performance.md` quotes for `--lf`.
+- `python -m conformance.bench.bench [--quick]` — pytest collect / pytest run /
+  rustest run / rustest collect-only (cold and warm). The `rustest v1 run` column
+  was dropped in Phase 4 Task 2 along with the engine it timed.
+
+pytest is a dev-dependency only. It never ships with rustest.
+
+## Case statuses
+
+Each corpus case is graded into exactly one of five statuses, printed as
+`[flag] area/case`. The run's exit code is 1 if *any* case is `DIVERGE`,
+`STALE-WAIVER` or `HARNESS-ERROR`; matches and waivers alone exit 0.
+
+| Flag | Status          | Meaning                                                                                                                                                     |
+| ---- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ok` | `MATCH`         | pytest and rustest agree on collected IDs, outcome counts, and exit code.                                                                                    |
+| `~~` | `WAIVED`        | They diverge, but the divergence is recorded in the gate's ledger with a reason. Exits 0.                                                                    |
+| `XX` | `DIVERGE`       | They diverge and there is no waiver for this case. Fails the run (exit 1).                                                                                    |
+| `!!` | `STALE-WAIVER`  | The case now matches, but the ledger still carries a waiver for it. Fails the run (exit 1) — remove the waiver. Shrinking the ledger is the phase-gate metric, so a waiver that has quietly gone inert must not go unnoticed. |
+| `EE` | `HARNESS-ERROR` | **The harness could not ask the question** — a malformed `case.toml`, a subprocess timeout, a runner that wrote no report. Fails the run (exit 1). **A waiver does not apply**: a waiver is a judgement about a known *divergence*, and no comparison happened for it to be about. |
+
+`DIVERGE` and `HARNESS-ERROR` are counted separately on the summary line for
+the same reason they have different flags: "the runners disagree about three
+cases" and "the instrument fell over on three cases" are different problems
+with different fixes, and they printed as the same `[XX]` until Phase 1c
+Task 2. The cost of that ambiguity is on the record — a `1 diverged` reading
+that turned out to be a subprocess timeout under concurrent load (P1b.2 Task 5
+report §10.7), which is where this status was recommended.
+
+Under `--collect` the five statuses are graded on collected IDs and the
+collection exit code alone, against `waivers-collect.toml`. Under `--run`
+they apply to ordered IDs, the seven-value tally and the exit code, against
+`waivers-run.toml`.
+
+`--only PREFIX` that matches no case **exits 1** with a message naming the
+prefix and listing the corpus. It used to print `0 cases: …` and exit 0, which
+answered "all clear" to a question that was never asked.
+
+## The `--collect` comparison protocol
+
+Both runners see the **same** configuration environment, because otherwise they
+would not be answering the same question. pytest can be pinned to a rootdir with
+`-c <empty ini>` and `--rootdir=<case dir>`; the `--collect-only` surface has
+neither flag and resolves config by walking *up* from its working directory. Run in place, the two disagree about
+rootdir for every in-repo case — this repo's `pyproject.toml` carries
+`[tool.pytest.ini_options]`, so v2's IDs would read `conformance/corpus/…` while
+pytest's read `test_x.py`, and every case would "diverge" on a prefix neither
+runner is getting wrong.
+
+So each case is **copied into a temporary tree** (minus `__pycache__`) with a bare
+`pytest.ini` at its root, and both runners are invoked there with no config flags
+at all. An empty `pytest.ini` is authoritative for pytest
+(`_pytest/config/findpaths.py`) and for v2 (`src/engine/config.rs`), so both resolve
+the same rootdir by their own unmodified rules and both emit case-relative IDs. A
+case that ships its own config file keeps it.
+
+A shipped config file is honored only when it would *actually* anchor the search,
+decided on **content** the way both runners decide it (`pyproject.toml` needs
+`[tool.pytest.ini_options]`; `tox.ini` needs `[pytest]`; `setup.cfg` needs
+`[tool:pytest]`; `pytest.ini` qualifies by name even when empty, a section-less
+`.pytest.ini` does not). Qualifying on mere existence would skip the bare ini for
+a case shipping, say, a `[project]`-only `pyproject.toml` — both runners would then
+walk up out of the copy, agree on the wrong rootdir, and record a **vacuous MATCH**.
+
+Two further rules the grader follows:
+
+- **Node IDs are compared verbatim and in order**, with no normalization, sorting
+  or de-duplication on either side. v2's contract is byte-parity with pytest's node
+  IDs *in pytest's collection order* — the name-sorted interleaved walk descends a
+  directory at the position its own name sorts to, which a set comparison cannot
+  see — and a duplicated ID collapses into a set silently. On a mismatch the grader
+  reports the set difference (readable) *and* the first divergent index (complete).
+- **stderr is never read.** v2 deliberately puts its summary and
+  `ERROR collecting <path>` prose on stderr where pytest puts them on stdout, and
+  the wording differs by design. Grading anything but stdout IDs and the exit code
+  manufactures divergences out of diagnostics.
+
+## The `--run` comparison protocol
+
+The same isolation protocol — copy the case out of the repo, drop a bare
+`pytest.ini` unless the case ships config that would really anchor the search,
+invoke both runners with no config flags. What differs is where the two halves of
+the graded contract are read from.
+
+**pytest** is invoked twice in the one isolated tree: `--collect-only -q` supplies
+the **ordered IDs of the selected tests**, and `-q --tb=no` supplies the summary
+line and the exit code. The IDs deliberately do *not* come from a `-v` run: `-v`
+prints one line per *report*, and a body that passes with a teardown that raises
+prints its ID twice (`PASSED` then `ERROR`), while the schema-v2 report carries one
+reduced status per test. Grading reports against tests would manufacture an ID
+divergence out of a difference that is real only in the counts.
+
+**`rustest`** is read entirely from `--report-json`: IDs verbatim and in order
+from `tests[]`, the six buckets from `summary`, the exit code from the process.
+Neither stream is parsed — worker stderr legitimately carries class/module teardown
+output on a completely green run.
+
+Two mappings the harness applies so the two sides answer the same question:
+
+- **A collection error means nothing ran.** pytest's `pytest_runtestloop` raises
+  `Interrupted` before the first item, so exit 2 leaves the executed-ID list empty
+  however many IDs the collect pass listed; `src/engine/execute.rs::stage` encodes the
+  identical rule. Without this the gate would pit pytest's *collected* set against
+  v2's *executed* one.
+- **Collection errors count in the `error` bucket**, because pytest reports a failed
+  import as `1 error`. The JSON report keeps `collection_errors` separate from
+  `summary.error` on purpose; the harness folds them exactly as v2's own terminal
+  summary line does (`python/rustest/core.py::_run_summary`).
+
+## The `--real` protocol
+
+The corpus asks whether rustest reproduces pytest on cases written to probe one rule each.
+`--real` asks the question the rewrite exists for: **does it reproduce pytest on suites
+nobody wrote for it.** One TOML per target in `conformance/real/`:
+
+| Table               | What it declares                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------ |
+| `[repo]`            | `kind` (`oss` = shallow clone, `local` = used in place), `url`/`tag`/`rev` or `path`, and `test_paths`.  |
+| `[env]`             | `setup` — the commands that build an **isolated venv** under the work directory's `_venvs/<name>` — and `pythonpath`.  |
+| `[run]`             | Extra per-runner args, a timeout, and `id_policy` (`exact`, the default, or `strip_params`).            |
+| `[notes]`           | Divergences the harness **compensates for**, so nothing observable is left for a ledger to describe.    |
+| `[divergence.ids]`  | node id (or glob) → mechanism, for every test whose status differs.                                     |
+| `[divergence.global]` | `exit_code` / `tally` / `deselected` / `collection_errors` → mechanism.                                |
+
+Rules the gate follows:
+
+- **Per-test-id statuses are compared, not just counts.** Two tests that trade `passed`
+  and `skipped` leave every count and the exit code identical; a counts-only gate calls
+  that a perfect match. pytest's statuses come from a reporting plugin loaded with `-p`
+  from a throwaway directory on `PYTHONPATH` (`harness/_real_report_plugin.py`) —
+  `-q` is counts-only, `-v` prints one line per *report* (up to three per test), and
+  `--junit-xml` cannot round-trip a node id. rustest's come from `--report-json`.
+- **Both sides reduce to one status per test**, with `error > failed > xpassed > xfailed >
+  skipped > passed`. pytest's own summary line does not: a passing body with a raising
+  teardown is `1 passed, 1 error` there. Comparing that line against rustest's per-test
+  report would grade a schema difference as a behavioural one.
+- **Each runner reads the target's own config, `addopts` included.** Nothing is replayed
+  or neutralized on the command line; a target's `[run]` args are the only per-runner lever.
+- **Ledger entries may be globs, and an entry that matches nothing is `STALE-LEDGER`** —
+  the same rule the corpus ledgers follow, for the same reason.
+- **`id_policy = "strip_params"` is the one relaxation, and it pays for itself.** It exists
+  for a target whose *parametrize ids* diverge systematically (click and jinja2: rustest
+  names dicts, tuples, lambdas, enums and long strings differently from pytest's
+  `IdMaker`). The raw id difference is then raised as its own graded `ids` problem — so it
+  needs a mechanism like anything else and goes stale the moment it is fixed — and outcomes
+  are compared per `file::function` as a status multiset. That still catches a test rustest
+  fails and pytest passes, a lost or extra parameter case, and every count change; it
+  cannot say *which* parameter case moved, and it is blind to two cases of one function
+  trading statuses.
+- **A run where neither runner executed anything is `HARNESS-ERROR`, not `MATCH`.** Two
+  collapsed runners agree about nothing. Measured: jinja2's async tests import `trio`,
+  `trio` imports `ssl`, and against a uv CPython install missing `libcrypto-3-x64.dll` both
+  sides exited 2 with two collection errors — and the gate printed green until this rule
+  existed.
+- **Targets never change.** OSS clones are pinned by commit and re-verified every run.
+  The local target is read-only in the strict sense: its environment is rebuilt *outside*
+  its tree from `uv export --frozen`, pytest runs with `-p no:cacheprovider`, and any
+  `.rustest_cache` the run creates is removed again unless the repo already had one.
+- **The two runners never run concurrently**, because wall-clock is part of the record.
+- **A stale rustest is refused before anything is measured.** `ensure_env` returns the
+  moment a target's venv interpreter exists — reprovisioning seventeen targets on every
+  invocation would cost more than the sweep — so the freshness questions are asked
+  separately, on every run, by `verify_env` (is the extension *loadable*, and is this venv's
+  ABI the one the config named) and `assert_build_is_current` (is it *this tree's code*).
+  The second compares the mtime of each wheel a target's own `[env] setup` names against
+  this repo's newest build input, and the mtime of the file the target's interpreter would
+  actually import against that wheel. Both refuse rather than repair: rebuilding is per-ABI
+  (`member-designer` is `cp314t`, `werkzeug` is 3.13) and `uv pip install <explicit path>`
+  does not ABI-check a direct path, so "reinstall the wheel" is not a safe automatic action.
+  Phase 4c started a member-designer run against wheels seven hours old and caught it by
+  hand; the failure mode has no symptom — the suite runs, the ids match, and the number is a
+  real measurement of the previous commit.
+
+`--real-setup-only` clones and provisions without running; `--real-rebuild-env` discards
+and rebuilds the venv. Everything staged (clones, venvs, wheels, caches, run directories) lives
+in the **work directory**, `RUSTEST_REAL_WORK` or by default `rustest-real-work` beside this
+checkout, and is reproducible from the configs. It is outside the repository on purpose: a suite
+whose own config the pinned pytest cannot read walks upward to the first ini it finds, which
+inside this repository is rustest's own `pyproject.toml`. The harness refuses a run whose
+resolved ini (pytest) or rootdir (rustest) is outside the suite's checkout. Private targets'
+configs and results stay in this repository's git-ignored `conformance/real/_work/local/`.
+rustest's legs keep their cache (last-failed, the duration record) in the work directory's
+`_cache/<suite>` between sweeps, so a rerun schedules by measured cost as a user's second run
+would; each result records whether a duration record existed (`record`: `warm` or `cold` in
+`results.md`), because the two are different numbers.
+
+## Requirements
+
+The conformance harness requires **Python >= 3.12** (rustest v2's floor, per
+the 2026-07-25 architecture decision recorded in the spec above). The
+`Conformance` CI workflow (`.github/workflows/conformance.yml`) pins its job
+to Python 3.12 accordingly.

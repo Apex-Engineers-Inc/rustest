@@ -1,0 +1,19 @@
+{
+  "suite": "humanize",
+  "date": "2026-11-11 16:19",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "MATCH",
+  "tests": 784,
+  "pytest_s": 4.45,
+  "xdist_s": 3.67,
+  "rustest_s": 1.84,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 1,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 0
+}

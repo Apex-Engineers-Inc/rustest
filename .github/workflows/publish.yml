@@ -59,10 +59,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 3.14 added for #132. `pyproject.toml` declares `requires-python = ">=3.12"` and
+      # classifies 3.14, and `ci.yml` tests all three -- but this line stopped at 3.13, so
+      # every release shipped a matrix that claimed a version it had no wheel for and
+      # 3.14 users fell back to building from the sdist.
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist --interpreter 3.10 3.11 3.12 3.13
+          args: --release --out dist --interpreter 3.12 3.13 3.14
           manylinux: auto
 
       - name: Upload wheels

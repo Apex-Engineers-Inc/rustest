@@ -1,0 +1,2 @@
+[case]
+args = ["test_dupe.py", "test_dupe.py"]

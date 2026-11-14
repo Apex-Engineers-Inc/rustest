@@ -92,10 +92,14 @@ def test_bounded_param_fixture(bounded_param_fixture: int) -> None:
 
 # Regression test for MonkeyPatch with dotted path validation
 def test_monkeypatch_dotted_path_validation(monkeypatch: object) -> None:
-    """MonkeyPatch should require at least one dot in dotted path syntax."""
+    """MonkeyPatch should require at least one dot in dotted path syntax.
+
+    The wording is pytest's own, from `_pytest/monkeypatch.py::derive_importpath`
+    (l. 98-100), since Phase 4 ported the resolver.
+    """
     import pytest
 
-    with pytest.raises(TypeError, match="at least one dot"):
+    with pytest.raises(TypeError, match="must be absolute import path string"):
         monkeypatch.setattr("nodots", "value")  # type: ignore[attr-defined]
 
 

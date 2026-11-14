@@ -1,0 +1,5 @@
+# A conftest hook in a/ removes a test from b/. pytest runs session hooks on every directory's items,
+# and so does the hook runtime: the barrier shows the hook the whole collection, so this runs
+# natively (no hand-off) and still agrees.
+[case]
+args = ["."]

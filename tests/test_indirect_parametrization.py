@@ -1,144 +1,82 @@
-"""Test indirect parametrization support.
+"""``indirect=`` parametrization — **pytest's**, since Phase 4 Task 1.
 
-Indirect parametrize passes param values to fixtures via request.param,
-rather than using them as direct test arguments.
+Before Phase 4 this file tested a rustest-only feature that borrowed pytest's keyword: an
+indirect value was read as *the name of a fixture to resolve*.  No pytest suite could use
+it, `pyproject.toml` had to `--ignore` this file so pytest would not fail on it, and Apex
+Member Designer's ``TestAPIEndpoints`` — which writes the ordinary pytest shape — lost 120
+tests to ``AttributeError: 'str' object has no attribute 'model_dump'``.
+
+The semantics here are now `_pytest/python.py::Metafunc._resolve_args_directness`
+(l. 1417-1454): an indirect argname keeps its fixturedefs, the parametrized value is handed
+to that fixture as ``request.param``, and the test receives whatever the fixture returns.
+Node ids are unaffected — they are generated from the parameter either way.
+
+Runs under **both** runners, which is the point: every assertion below was diffed against
+pytest 8.4.2 before it was written (`scratchpad/probe/ind`, 11 modules). The *refusals*
+(a string ``indirect``, an unknown name, a non-Sequence) live in
+`python/tests/test_indirect_parametrization.py` instead, because rustest raises them at
+decoration and pytest at collection — the same collection error and the same exit 2, but
+not at a moment one file can assert in both runners.
 """
+
+
 from rustest import fixture, parametrize
-from rustest.compat.pytest import FixtureRequest
 
-
-DATA_REGISTRY = {
-    "data_1": {"name": "fixture_1", "value": 42},
-    "data_2": {"name": "fixture_2", "value": 100},
-    "data_3": {"name": "fixture_3", "value": 999},
-}
+@fixture
+def doubled(request):
+    """The canonical shape: the parameter arrives as ``request.param``."""
+    return request.param * 2
 
 
 @fixture
-def fixture_name(request: FixtureRequest):
-    """Fixture that looks up data by request.param key."""
-    return DATA_REGISTRY[request.param]
+def labelled(request):
+    return f"<{request.param}>"
 
 
 @fixture
-def data(request: FixtureRequest):
-    """Fixture that looks up data by request.param key."""
-    return DATA_REGISTRY[request.param]
+def data_1():
+    return {"name": "fixture_1", "value": 42}
 
 
 @fixture
-def fixture_ref(request: FixtureRequest):
-    """Fixture that looks up data by request.param key."""
-    return DATA_REGISTRY[request.param]
+def data_2():
+    return {"name": "fixture_2", "value": 100}
 
 
 @fixture
-def data_fixture(request: FixtureRequest):
-    """Fixture that looks up data by request.param key."""
-    return DATA_REGISTRY[request.param]
+def chosen(request):
+    """Apex Member Designer's shape: the parameter names another fixture."""
+    return request.getfixturevalue(request.param)
 
 
-# Test with indirect as a list of strings (preferred way)
-@parametrize(
-    "fixture_name, expected_value",
-    [
-        ("data_1", 42),
-        ("data_2", 100),
-        ("data_3", 999),
-    ],
-    indirect=["fixture_name"],
-)
-def test_indirect_as_list(fixture_name, expected_value):
-    """Test indirect parametrization with list of parameter names."""
-    assert fixture_name["value"] == expected_value
-    assert "name" in fixture_name
+@parametrize("doubled", [3, 5], indirect=["doubled"])
+def test_indirect_as_list(doubled):
+    """A list names which parameters are routed; the rest stay direct."""
+    assert doubled in (6, 10)
 
 
-# Test with indirect=True (all parameters are indirect)
-@parametrize("data", ["data_1", "data_2", "data_3"], indirect=True)
-def test_indirect_true(data):
-    """Test indirect parametrization with indirect=True."""
-    assert "name" in data
-    assert "value" in data
-    assert data["value"] in [42, 100, 999]
+@parametrize("doubled", [3, 5], indirect=True)
+def test_indirect_true(doubled):
+    """``True`` routes every parametrized name."""
+    assert doubled in (6, 10)
 
 
-# Test with indirect as a single string
-@parametrize(
-    "fixture_ref, direct_value",
-    [
-        ("data_1", "first"),
-        ("data_2", "second"),
-    ],
-    indirect=["fixture_ref"],
-)
-def test_indirect_single_string(fixture_ref, direct_value):
-    """Test indirect parametrization with single parameter name."""
-    assert "value" in fixture_ref
-    assert direct_value in ["first", "second"]
+@parametrize("plain,labelled", [(1, "a"), (2, "b")], indirect=["labelled"])
+def test_mixed_indirect_direct(plain, labelled):
+    """Direct and indirect names in one ``parametrize``, and the id keeps both parts."""
+    assert plain in (1, 2)
+    assert labelled in ("<a>", "<b>")
 
 
-# Test mixed indirect and direct parameters
-@parametrize(
-    "data_fixture, multiplier",
-    [
-        ("data_1", 2),
-        ("data_2", 3),
-    ],
-    indirect=["data_fixture"],
-)
-def test_mixed_indirect_direct(data_fixture, multiplier):
-    """Test mixing indirect fixture references with direct values."""
-    result = data_fixture["value"] * multiplier
-    if data_fixture["name"] == "fixture_1":
-        assert result == 84  # 42 * 2
-    elif data_fixture["name"] == "fixture_2":
-        assert result == 300  # 100 * 3
+@parametrize("chosen", ["data_1", "data_2"], indirect=True)
+def test_getfixturevalue_through_request_param(chosen):
+    """``request.getfixturevalue(request.param)`` — the Member Designer pattern."""
+    assert chosen["value"] in (42, 100)
 
 
-@fixture
-def executor_style(request: FixtureRequest):
-    """Fixture that uses request.param to decide behavior."""
-    if request.param == "fast":
-        return {"mode": "fast", "value": 10}
-    elif request.param == "slow":
-        return {"mode": "slow", "value": 100}
-    return {"mode": "unknown", "value": 0}
-
-
-@parametrize("executor_style", ["fast", "slow"], indirect=True)
-def test_indirect_with_request_param(executor_style):
-    """Indirect parametrize should pass values via request.param, not as fixture names."""
-    assert executor_style["mode"] in ("fast", "slow")
-    if executor_style["mode"] == "fast":
-        assert executor_style["value"] == 10
-    else:
-        assert executor_style["value"] == 100
-
-
-@fixture
-def model_resolver(request: FixtureRequest):
-    """Fixture that resolves another fixture by name via request.param."""
-    name = request.param
-    # Simulate dynamic fixture resolution
-    return {"resolved_from": name, "value": f"resolved_{name}"}
-
-
-@parametrize(
-    "direct_val,model_resolver",
-    [("x", "alpha"), ("y", "beta")],
-    indirect=["model_resolver"],
-)
-class TestClassLevelIndirect:
-    """Class-level parametrize with partial indirect."""
-
-    def test_direct_value(self, direct_val, model_resolver):
-        assert direct_val in ("x", "y")
-        assert isinstance(model_resolver, dict)
-        assert model_resolver["resolved_from"] in ("alpha", "beta")
-
-    def test_resolved_correctly(self, direct_val, model_resolver):
-        if direct_val == "x":
-            assert model_resolver["resolved_from"] == "alpha"
-        else:
-            assert model_resolver["resolved_from"] == "beta"
+@parametrize("labelled", [1, 2], indirect=True)
+@parametrize("plain", ["x", "y"])
+def test_stacked_decorators(labelled, plain):
+    """Stacking crosses the two, and only the inner name is routed."""
+    assert labelled in ("<1>", "<2>")
+    assert plain in ("x", "y")

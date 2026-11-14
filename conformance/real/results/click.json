@@ -1,0 +1,19 @@
+{
+  "suite": "click",
+  "date": "2026-11-11 16:18",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "MATCH",
+  "tests": 1686,
+  "pytest_s": 6.72,
+  "xdist_s": 5.41,
+  "rustest_s": 3.29,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

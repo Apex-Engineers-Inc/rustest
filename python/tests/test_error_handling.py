@@ -6,6 +6,7 @@ import pytest
 
 from .helpers import ensure_rust_stub
 from rustest import parametrize, fixture, raises
+from rustest.decorators import Failed
 
 ensure_rust_stub()
 
@@ -31,13 +32,14 @@ class TestErrorHandling:
             def _test(_x: int, _y: int) -> None:
                 pass
 
-        assert "does not match" in str(ctx.value).lower()
+        # pytest's own wording, from `ParameterSet._for_parametrize` l. 204-208.
+        assert "must be equal to the number of values" in str(ctx.value)
 
     def test_parametrize_mismatched_ids_raises_error(self) -> None:
         """Test that mismatched IDs raises ValueError."""
         with pytest.raises(ValueError) as ctx:
 
-            @parametrize("value", [(1,), (2,)], ids=["only_one"])
+            @parametrize("value", [1, 2], ids=["only_one"])
             def _test(_: int) -> None:
                 pass
 
@@ -137,7 +139,7 @@ class TestEdgeCases:
     def test_parametrize_with_nested_tuples(self) -> None:
         """Test parametrization with nested tuple values."""
 
-        @parametrize("data", [((1, 2),), ((3, 4),)])
+        @parametrize("data", [(1, 2), (3, 4)])
         def test_func(data: tuple) -> tuple:
             return data
 
@@ -150,11 +152,11 @@ class TestEdgeCases:
         @parametrize(
             "value",
             [
-                (1,),
-                ("string",),
-                (None,),
-                (True,),
-                ([1, 2, 3],),
+                1,
+                "string",
+                None,
+                True,
+                [1, 2, 3],
             ],
         )
         def test_func(value) -> None:  # type: ignore
@@ -181,7 +183,7 @@ class TestEdgeCases:
 
     def test_parametrize_with_large_number_of_cases(self) -> None:
         """Test parametrization with many cases."""
-        cases_data = [(i,) for i in range(100)]
+        cases_data = [i for i in range(100)]
 
         @parametrize("x", cases_data)
         def test_func(x: int) -> int:
@@ -198,11 +200,11 @@ class TestEdgeCases:
         @parametrize(
             "text",
             [
-                ("",),  # Empty string
-                ("\\n",),  # Escaped newline
-                ("\n",),  # Actual newline
-                ("\t",),  # Tab
-                ("'\"",),  # Quotes
+                "",  # Empty string
+                "\\n",  # Escaped newline
+                "\n",  # Actual newline
+                "\t",  # Tab
+                "'\"",  # Quotes
             ],
         )
         def test_func(text: str) -> str:
@@ -270,7 +272,7 @@ class TestRobustness:
         obj1 = DummyClass(1)
         obj2 = DummyClass(2)
 
-        @parametrize("obj", [(obj1,), (obj2,)])
+        @parametrize("obj", [obj1, obj2])
         def test_func(obj: DummyClass) -> int:
             return obj.value
 
@@ -308,14 +310,19 @@ class TestRaises:
             raise ValueError("invalid literal")
 
     def test_raises_with_match_failure(self) -> None:
-        """Test that raises with match fails when pattern doesn't match."""
-        with pytest.raises(AssertionError, match="Pattern.*does not match"):
+        """Test that raises with match fails when pattern doesn't match.
+
+        The wording is pytest's since Phase 4 ported `_pytest/raises.py::_check_match`.
+        """
+        with pytest.raises(AssertionError, match="Regex pattern did not match"):
             with raises(ValueError, match="notfound"):
                 raise ValueError("something else")
 
     def test_raises_no_exception(self) -> None:
         """Test that raises fails when no exception is raised."""
-        with pytest.raises(AssertionError, match="DID NOT RAISE"):
+        # `Failed`, not `AssertionError`: pytest's three DID-NOT-RAISE wordings all come
+        # out of `fail()` and `raises.Exception is fail.Exception`.
+        with pytest.raises(Failed, match="DID NOT RAISE"):
             with raises(ValueError):
                 pass  # No exception raised
 
@@ -377,7 +384,7 @@ class TestRaises:
         with raises(ValueError) as exc_info:
             raise ValueError("test")
 
-        repr_str = repr(exc_info.excinfo)
+        repr_str = repr(exc_info)
         assert "ExceptionInfo" in repr_str
         assert "ValueError" in repr_str
 
@@ -387,14 +394,14 @@ class TestRaises:
             raise ValueError("this is an invalid literal for conversion")
 
     def test_raises_format_exc_name_single(self) -> None:
-        """Test formatting of single exception name."""
-        with pytest.raises(AssertionError, match="DID NOT RAISE ValueError"):
+        """pytest reports the *repr* of the type (`_pytest/raises.py` l. 713)."""
+        with pytest.raises(Failed, match=r"DID NOT RAISE <class 'ValueError'>"):
             with raises(ValueError):
                 pass
 
     def test_raises_format_exc_name_tuple(self) -> None:
-        """Test formatting of tuple of exception names."""
-        with pytest.raises(AssertionError, match="ValueError or TypeError"):
+        """...and the repr of the whole tuple for more than one (l. 711)."""
+        with pytest.raises(Failed, match=r"DID NOT RAISE any of \(<class 'ValueError'>"):
             with raises((ValueError, TypeError)):
                 pass
 
@@ -405,6 +412,6 @@ class TestRaises:
                 raise ValueError("actual message")
 
         error_msg = str(exc_info.value)
-        assert "Pattern 'expected' does not match" in error_msg
-        assert "'actual message'" in error_msg
-        assert "ValueError" in error_msg
+        assert "Regex pattern did not match." in error_msg
+        assert " Regex: 'expected'" in error_msg
+        assert " Input: 'actual message'" in error_msg

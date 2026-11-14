@@ -3,12 +3,24 @@
 Package scope shares fixtures across all tests in a package (directory).
 This is useful for expensive setup that should be reused within a package
 but reset when moving to a different package.
+
+**Two strict ``xfail`` markers used to live here and are gone**, and how they left is the
+point. They pinned "a package- or session-scoped fixture is rebuilt once PER FILE", the
+limitation the ``fixtures/session-scope`` ledger entry described, and they were ``strict``
+precisely so that fixing it would turn them into a red XPASS rather than an invisible pass.
+The two halves then landed in different places: the v1 deletion added the markers in a
+worktree while the caching fix (``_worker.py::conftest_fixturedefs``) landed on the main
+branch, so neither side could see the other and the merge of the two was textually clean.
+The strict flag is what surfaced it -- the convergence wave's first `python/tests` run came
+back ``2 failed`` with the marker's own removal instructions in the failure message. Every
+assertion below is unchanged; only the markers were removed. ``run_tree`` pins
+``workers=1``, so this is a deterministic per-worker question, not a bin-packing one.
 """
 
 import os
 import tempfile
 
-from rustest import run
+from .helpers import run_tree
 
 
 class TestPackageScopeBasic:
@@ -56,7 +68,7 @@ def test_second(pkg_fixture):
     assert pkg_fixture == 1
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -107,7 +119,7 @@ def test_in_pkg_b(pkg_fixture):
     assert pkg_fixture >= 1
 """)
 
-            result = run(paths=[tmpdir])
+            result = run_tree(tmpdir)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -159,7 +171,7 @@ def test_in_pkg_b(pkg_resource):
     assert pkg_resource >= 1
 """)
 
-            result = run(paths=[tmpdir])
+            result = run_tree(tmpdir)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -197,7 +209,7 @@ def test_package_depends_on_session(pkg_value):
     assert pkg_value == 101
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0
 
@@ -232,7 +244,7 @@ def test_valid_dependency(mod_value):
     assert mod_value == 101
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             # Should pass - narrower scope can depend on broader scope
             assert result.passed == 1
             assert result.failed == 0
@@ -267,7 +279,7 @@ def test_valid_dependency(func_value):
     assert func_value == 101
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0
 
@@ -335,7 +347,7 @@ def test_third():
     assert setup_count["value"] == 1
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 3
             assert result.failed == 0
 
@@ -389,7 +401,7 @@ def test_in_child(pkg_fixture):
     assert pkg_fixture >= 1
 """)
 
-            result = run(paths=[tmpdir])
+            result = run_tree(tmpdir)
             assert result.passed == 2
             assert result.failed == 0
 
@@ -438,7 +450,7 @@ def test_all_scopes(session_fix, package_fix, module_fix, function_fix):
     assert function_fix == "function"
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0
 
@@ -487,6 +499,6 @@ def test_ordering(function_fix):
     assert function_fix == ["session", "package", "module", "function"]
 """)
 
-            result = run(paths=[pkg_a])
+            result = run_tree(pkg_a)
             assert result.passed == 1
             assert result.failed == 0

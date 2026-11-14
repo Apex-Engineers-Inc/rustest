@@ -1,0 +1,19 @@
+{
+  "suite": "pynite",
+  "date": "2026-11-14 01:59",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "MATCH",
+  "tests": 182,
+  "pytest_s": 66.87,
+  "xdist_s": 23.89,
+  "rustest_s": 20.85,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}
