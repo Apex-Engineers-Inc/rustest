@@ -10,7 +10,7 @@
 
 [repo]
 kind = "local"
-path = 'C:\Users\JeffreyMBloss\local-repos\Pynite'
+path = '../Pynite'  # a checkout beside this repository; relative to the repository root
 # Audited at this rev (git log -1 at audit time). The gate verifies the work tree still
 # sits here and is clean, and fails rather than silently re-baselining.
 rev = "59aca05"

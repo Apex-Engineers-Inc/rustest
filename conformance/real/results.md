@@ -9,7 +9,6 @@
 | jinja2 | native | MATCH | 909 | 6.2 | 4.43 | 2.12 |  | 2.92x | 2.09x |  |
 | jsonschema | native | MATCH | 7815 | 15.66 | 8.2 | 8.3 |  | 1.89x | 0.99x |  |
 | marshmallow | native | EXPLAINED | 1178 | 3.62 | 4.37 | 1.76 |  | 2.06x | 2.48x |  |
-| member-designer | handed off: rustest's hook runtime: tests.slow_guard::pytest_configure uses config.pluginmanager.register, which rustest's hook runtime does not support | MATCH | 11591 | 967.61 | 230.4 | 293.42 |  | 3.30x | 0.79x | 26.86 (DIVERGE) |
 | more-itertools | native | MATCH | 722 | 9.71 | 8.07 | 6.21 |  | 1.56x | 1.30x |  |
 | pillow | native | MATCH | 4036 | 59.26 | 20.15 | 12.76 | warm | 4.64x | 1.58x |  |
 | psutil | native | DIVERGE | 713 | 576.84 | 417.86 | 420.83 |  | 1.37x | 0.99x |  |
