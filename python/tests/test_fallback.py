@@ -99,6 +99,36 @@ def windows(monkeypatch: pytest.MonkeyPatch) -> type[_Child]:
     return _Child
 
 
+def test_a_handed_off_session_keeps_rustests_parallelism(windows: type[_Child]):
+    """With xdist installed and no `-n` anywhere, pytest gets rustest's pool size (and the
+    project's own `cache_dir`, when its ini names one, is left to pytest)."""
+    _ = _fallback.run(["x"], ["why"], workers=4, cache_dir_set=True)
+    _ = _fallback.run(["x"], ["why"], workers=1)
+
+    assert windows.calls == [
+        [sys.executable, "-m", "pytest", "-n", "4", "x"],
+        [sys.executable, "-m", "pytest", "x", "-o", "cache_dir=.rustest_cache"],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["tests"], True),
+        (["-n", "2"], False),
+        (["-n2"], False),
+        (["--workers=3"], False),
+        (["--dist", "loadfile"], False),
+        (["--pdb"], False),
+        (["-p", "no:xdist"], False),
+        (["-p", "no:cacheprovider"], True),
+    ],
+)
+def test_the_default_worker_count_only_fills_a_gap(argv: list[str], expected: bool):
+    workers = cli._default_workers(argv, cli._blocked_plugins(argv))  # pyright: ignore[reportPrivateUsage]
+    assert (workers is not None) is expected
+
+
 def test_windows_starts_pytest_waits_through_one_ctrl_c_and_returns_its_code(
     windows: type[_Child], capsys: pytest.CaptureFixture[str]
 ):
@@ -307,10 +337,20 @@ def test_the_machine_outputs_asked_for_travel_with_the_handoff(
         assert cli.main(["--llm", "--llm-full", "-v"]) == 0
         assert cli.main(["--report-json", "r.json", "-q"]) == 0
 
+    from rustest.core import _pool_size  # pyright: ignore[reportPrivateUsage]
+
+    common = dict(cache_dir_set=False, workers=_pool_size(None))
     assert outputs == [
-        dict(report_json=None, llm=False, llm_full=False, collect_only=True, verbosity=0),
-        dict(report_json=None, llm=True, llm_full=True, collect_only=False, verbosity=1),
-        dict(report_json="r.json", llm=False, llm_full=False, collect_only=False, verbosity=-1),
+        dict(report_json=None, llm=False, llm_full=False, collect_only=True, verbosity=0, **common),
+        dict(report_json=None, llm=True, llm_full=True, collect_only=False, verbosity=1, **common),
+        dict(
+            report_json="r.json",
+            llm=False,
+            llm_full=False,
+            collect_only=False,
+            verbosity=-1,
+            **common,
+        ),
     ]
 
 
@@ -406,7 +446,7 @@ def test_pytest_plugins_in_the_environment_is_a_fallback_reason(
     monkeypatch.chdir(tmp_path)
     assert cli.main([]) == 17
     assert seen[0][1] == ["PYTEST_PLUGINS is set, and rustest ignores it"]
-    assert seen[0][2] == "they will be ignored"
+    assert seen[0][2] == "without what these reasons ask for"
 
 
 def test_pytest_addopts_is_spliced_between_addopts_and_the_command_line(
@@ -583,7 +623,7 @@ def test_p_plugin_hands_the_session_to_pytest_and_the_plugin_acts(tmp_path: Path
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout and "2 passed" not in result.stdout
     assert "-p myplug loads a pytest plugin" in result.stderr
-    assert "(they will be ignored)" in result.stderr
+    assert "(without what these reasons ask for)" in result.stderr
 
 
 def test_a_plugin_named_in_addopts_is_handed_over_and_says_where_it_came_from(tmp_path: Path):
@@ -1065,9 +1105,18 @@ def test_only_the_judged_safe_plugins_are_allowed():
         "rich",
         "codeblocks",
         "hypothesispytest",  # its outcome-changing parts are ported (`_hypothesis`)
+        # inert until a selected test uses their mark or fixture (`_worker._PLUGIN_USES`)
+        "anyio",
+        "timeout",
+        "syrupy",
+        "textual-snapshot",
+        "platformdirs",
+        "hydra_pytest",
+        "faker",
+        "typeguard",
     }
     # Each of these was probed or read and found able to change an outcome or an id.
-    for unsafe in ("anyio", "timeout", "inline_snapshot", "randomly"):
+    for unsafe in ("inline_snapshot", "randomly"):
         assert unsafe not in _fallback.SAFE_PLUGINS
 
 
@@ -1135,7 +1184,7 @@ def test_an_installed_plugin_hands_the_session_over_unless_it_is_blocked(
 
     assert cli.main([]) == 17
     assert "the pytest plugin randomly (pytest_randomly-4)" in seen[0][1][0]
-    assert seen[0][2] == "they will be ignored"
+    assert seen[0][2] == "without what these reasons ask for"
 
     with stub_rust_module(run=_quiet_engine()):
         assert cli.main(["-p", "no:randomly"]) == 0  # pytest would not load it either
@@ -1158,3 +1207,341 @@ def test_a_plugin_that_only_the_environment_installs_is_handed_over_end_to_end(t
 
     blocked = _rustest(tree, "-p", "no:fakeplug")
     assert blocked.returncode == 0 and "handing this session" not in blocked.stderr
+
+
+def _site_plugin(name: str, module: str, source: str) -> dict[str, str]:
+    """A plugin installed the way pytest finds one: a ``pytest11`` entry point named *name*."""
+    dist = f"site/fake_{module}-1.0.dist-info"
+    return {
+        f"{dist}/METADATA": f"Metadata-Version: 2.1\nName: fake-{module}\nVersion: 1.0\n",
+        f"{dist}/entry_points.txt": f"[pytest11]\n{name} = {module}\n",
+        f"site/{module}.py": source,
+    }
+
+
+#: A stand-in for anyio's pytest plugin with the part that changes ids: a test marked `anyio`
+#: gets `usefixtures("anyio_backend")` at collection, and `anyio_backend` is parametrized, so
+#: pytest selects on `test_p[asyncio]` / `test_p[trio]` (anyio 4.x `pytest_pycollect_makeitem`).
+_FAKE_ANYIO = _site_plugin(
+    "anyio",
+    "fake_anyio_plugin",
+    "import pytest\n\n\n"
+    "def pytest_configure(config):\n"
+    "    config.addinivalue_line('markers', 'anyio: run with anyio')\n\n\n"
+    "@pytest.hookimpl(tryfirst=True)\n"
+    "def pytest_pycollect_makeitem(collector, name, obj):\n"
+    "    if collector.istestfunction(obj, name) and (\n"
+    "        any(m.name == 'anyio' for m in getattr(obj, 'pytestmark', ()))\n"
+    "        or collector.get_closest_marker('anyio')\n"
+    "    ):\n"
+    "        pytest.mark.usefixtures('anyio_backend')(obj)\n\n\n"
+    "@pytest.fixture(scope='module', params=['asyncio', 'trio'])\n"
+    "def anyio_backend(request):\n    return request.param\n",
+)
+
+#: A stand-in for Faker's plugin: one fixture, `faker`.
+_FAKE_FAKER = _site_plugin(
+    "faker",
+    "fake_faker_plugin",
+    "import pytest\n\n\n@pytest.fixture\ndef faker():\n    return 'fake'\n",
+)
+
+_MARKED = (
+    "import pytest\n\npytestmark = pytest.mark.anyio\n\n\n"
+    "def test_p():\n    pass\n\n\ndef test_q():\n    pass\n"
+)
+
+
+def _both_with_site(
+    tree: Path, args: list[str]
+) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]]:
+    env = clean_env()
+    env["PYTHONPATH"] = str(tree / "site")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    oracle = run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args], tree, env)
+    ours = run([sys.executable, "-m", "rustest", "-p", "no:cacheprovider", *args], tree, env)
+    return oracle, ours
+
+
+def _summary(text: str) -> str:
+    """pytest's last summary line, without its timing."""
+    import re
+
+    return re.findall(r"^=* ?(\d.*?) in [\d.]+s", text, re.M)[-1]
+
+
+@pytest.mark.parametrize(
+    ("files", "args", "native"),
+    [
+        ({"test_a.py": "def test_a():\n    pass\n"}, [], True),
+        ({"test_a.py": "def test_a(anyio_backend):\n    pass\n"}, [], False),
+        ({"test_a.py": _MARKED}, [], False),
+        # anyio decides ids at collection: `-k asyncio` selects `test_p[asyncio]` under pytest,
+        # so the decision is the whole collection's (review #4)
+        ({"test_a.py": _MARKED}, ["-k", "asyncio"], False),
+        ({"test_a.py": _MARKED}, ["test_a.py::test_p[asyncio]"], False),
+        (
+            {"test_a.py": _MARKED + "\n\ndef test_plain():\n    pass\n"},
+            ["-m", "not anyio", "--strict-markers"],
+            False,
+        ),
+        # a conftest's own `anyio_backend` is still anyio's: it acts on the name (review #1)
+        (
+            {
+                "conftest.py": "import pytest\n\n\n@pytest.fixture\ndef anyio_backend():\n"
+                "    return 'trio'\n",
+                "test_a.py": "def test_a(anyio_backend):\n    assert anyio_backend == 'trio'\n",
+            },
+            [],
+            False,
+        ),
+        # `--collect-only` through Tier S must see the fixture too (review #3)
+        ({"test_a.py": "def test_f(anyio_backend):\n    pass\n"}, ["--collect-only", "-q"], False),
+        # a mark added by a modifyitems hook is pytest's to expand (review #5)
+        (
+            {
+                "conftest.py": "import pytest\n\n\ndef pytest_collection_modifyitems(items):\n"
+                "    for item in items:\n        item.add_marker(pytest.mark.anyio)\n",
+                "test_a.py": "def test_m():\n    pass\n",
+            },
+            [],
+            False,
+        ),
+        # a fixture asked for by name at run time (review #8)
+        (
+            {"test_a.py": "def test_d(request):\n    request.getfixturevalue('anyio_backend')\n"},
+            [],
+            False,
+        ),
+    ],
+    ids=[
+        "unused",
+        "fixture",
+        "mark",
+        "k-on-backend-id",
+        "node-id-with-backend",
+        "mark-deselected",
+        "user-anyio-backend",
+        "collect-only-static",
+        "modifyitems-adds-mark",
+        "getfixturevalue-literal",
+    ],
+)
+def test_anyio_hands_off_wherever_it_would_act(
+    tmp_path: Path, files: dict[str, str], args: list[str], native: bool
+):
+    tree = make_tree(tmp_path, "inert", {**_FAKE_ANYIO, **files})
+
+    oracle, ours = _both_with_site(tree, args)
+
+    assert ours.returncode == oracle.returncode, ours.stdout + ours.stderr
+    assert ("handing this session to pytest" not in ours.stderr) is native, ours.stderr
+    if "--collect-only" in args:
+        assert (
+            "test_a.py::test_f[asyncio]" in ours.stdout and "test_a.py::test_f[trio]" in ours.stdout
+        )
+    else:
+        # the same tests, the same deselected count: pytest's own answer either way
+        assert _summary(ours.stdout + "\n" + ours.stderr) == _summary(oracle.stdout), (
+            ours.stdout + ours.stderr
+        )
+
+
+@pytest.mark.parametrize(
+    ("conftest", "test", "native"),
+    [
+        # shadowing without asking for the plugin's: the user's fixture alone, native
+        (
+            "@pytest.fixture\ndef faker():\n    return 'mine'\n",
+            "def test_a(faker):\n    assert faker == 'mine'\n",
+            True,
+        ),
+        # overriding and requesting it: the plugin's fixture is used (review #2)
+        (
+            "@pytest.fixture\ndef faker(faker):\n    return faker + '!'\n",
+            "def test_a(faker):\n    assert faker == 'fake!'\n",
+            False,
+        ),
+    ],
+    ids=["shadowed", "override-requests-it"],
+)
+def test_a_plugin_fixture_counts_as_used_when_an_override_requests_it(
+    tmp_path: Path, conftest: str, test: str, native: bool
+):
+    tree = make_tree(
+        tmp_path,
+        "faker",
+        {**_FAKE_FAKER, "conftest.py": "import pytest\n\n\n" + conftest, "test_a.py": test},
+    )
+
+    oracle, ours = _both_with_site(tree, [])
+
+    assert ours.returncode == oracle.returncode == 0, ours.stdout + ours.stderr
+    assert ("handing this session to pytest" not in ours.stderr) is native, ours.stderr
+
+
+def test_a_computed_plugin_fixture_name_errors_naming_the_plugin(tmp_path: Path):
+    """No literal to find: the lookup fails at run time, and says whose fixture it is."""
+    tree = make_tree(
+        tmp_path,
+        "computed",
+        {
+            **_FAKE_FAKER,
+            "test_a.py": "def test_a(request):\n    request.getfixturevalue('fa' + 'ker')\n",
+        },
+    )
+
+    _, ours = _both_with_site(tree, [])
+
+    assert "fixture 'faker' is the pytest plugin faker's, which rustest does not run" in (
+        ours.stdout + ours.stderr
+    )
+
+
+def test_an_inert_plugin_leaves_strict_markers_on(tmp_path: Path):
+    """A loaded inert plugin keeps the marker registry known (review #6)."""
+    tree = make_tree(
+        tmp_path,
+        "strict",
+        {
+            **_FAKE_FAKER,
+            "test_a.py": "import pytest\n\n\n@pytest.mark.foo\ndef test_a():\n    pass\n",
+        },
+    )
+
+    oracle, ours = _both_with_site(tree, ["--strict-markers"])
+
+    assert oracle.returncode == ours.returncode == 2, ours.stdout + ours.stderr
+    assert "'foo' not found in `markers`" in ours.stdout + ours.stderr
+
+
+def test_config_cache_is_gone_without_the_cache_provider(tmp_path: Path):
+    """``config.cache`` is the cache provider's attribute (review #7)."""
+    tree = make_tree(
+        tmp_path,
+        "cfgcache",
+        {"test_a.py": "def test_b(pytestconfig):\n    assert pytestconfig.cache is not None\n"},
+    )
+
+    oracle, ours = _both_with_site(tree, [])
+
+    assert oracle.returncode == ours.returncode == 1
+    assert "has no attribute 'cache'" in ours.stdout + ours.stderr
+
+
+def test_the_cache_dir_ini_is_where_rustest_keeps_its_cache(tmp_path: Path):
+    """pytest's ``cache_dir`` ini: last-failed (and the ``cache`` fixture) go there, and no
+    ``.rustest_cache`` appears."""
+    tree = make_tree(
+        tmp_path,
+        "cachedir",
+        {
+            "pytest.ini": "[pytest]\ncache_dir = mycache\n",
+            "test_a.py": "def test_a(cache):\n    cache.set('k/v', 1)\n    assert 0\n",
+        },
+    )
+    env = clean_env()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    result = run([sys.executable, "-m", "rustest"], tree, env)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (tree / "mycache" / "v" / "cache" / "lastfailed").is_file()
+    assert (tree / "mycache" / "v" / "k" / "v").is_file()
+    assert not (tree / ".rustest_cache").exists()
+
+
+def test_no_cacheprovider_and_no_bytecode_leave_the_tree_untouched(tmp_path: Path):
+    """`-p no:cacheprovider` keeps no cache (no `cache/lastfailed`, no `cache` fixture) and
+    `PYTHONDONTWRITEBYTECODE` no compiled assertion rewrites: nothing lands under the rootdir,
+    as with pytest."""
+    tree = make_tree(
+        tmp_path,
+        "nocache",
+        {
+            "test_a.py": "def test_a():\n    assert 1 == 2\n\n\ndef test_b(cache):\n    pass\n",
+        },
+    )
+    env = clean_env()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    before = sorted(p.name for p in tree.rglob("*"))
+    oracle = run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider"], tree, env)
+    ours = run([sys.executable, "-m", "rustest", "-p", "no:cacheprovider"], tree, env)
+    assert sorted(p.name for p in tree.rglob("*")) == before
+    assert ours.returncode == oracle.returncode == 1
+    assert "1 failed, 1 error" in oracle.stdout and "fixture 'cache' not found" in oracle.stdout
+    assert "1 failed, 1 error" in ours.stderr + ours.stdout, ours.stderr
+
+
+def test_a_module_naming_pytester_hands_the_session_to_pytest(tmp_path: Path):
+    """``pytest_plugins = ["pytester"]`` is pytest's own in-process runner: only pytest can run
+    a test that uses it, so the session goes to pytest rather than ending in a collection
+    error (member-designer's ``tests/test_slow_guard.py``)."""
+    tree = make_tree(
+        tmp_path,
+        "pytester",
+        {
+            "test_p.py": 'pytest_plugins = ["pytester"]\n\n\n'
+            "def test_inner(pytester):\n"
+            '    pytester.makepyfile("def test_x():\\n    pass\\n")\n'
+            "    pytester.runpytest().assert_outcomes(passed=1)\n",
+            "test_q.py": "def test_q():\n    pass\n",
+        },
+    )
+
+    result = _rustest(tree)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "rustest could not import pytester" in result.stderr
+    assert "2 passed" in result.stdout
+
+
+#: Enough of pytest-xdist for its entry point to load: `worker_id` and `testrun_uid` are
+#: then rustest's, as xdist's would be.
+_FAKE_XDIST = _site_plugin("xdist", "fake_xdist_plugin", "")
+
+_IDENTITY = (
+    "import json, os, pathlib\n\n\n"
+    "def _record(name, worker_id, testrun_uid, pytestconfig):\n"
+    "    workerinput = getattr(pytestconfig, 'workerinput', None)\n"
+    "    env = {k: v for k, v in os.environ.items() if k.startswith('PYTEST_XDIST_')}\n"
+    "    out = pathlib.Path(__file__).with_name(name + '.json')\n"
+    "    out.write_text(json.dumps([worker_id, testrun_uid, workerinput, env]))\n\n\n"
+    "def test_one(worker_id, testrun_uid, pytestconfig):\n"
+    "    _record('one', worker_id, testrun_uid, pytestconfig)\n"
+)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_a_pool_of_two_or_more_has_xdist_worker_identity(tmp_path: Path, workers: int):
+    """xdist's model (`xdist/remote.py`, `plugin.py::worker_id`): `gwN`, the count and one
+    session uid in each worker's environment and `config.workerinput`; one worker is serial
+    pytest, `"master"` and none of it."""
+    tree = make_tree(
+        tmp_path,
+        "ident",
+        {
+            **_FAKE_XDIST,
+            "test_a.py": _IDENTITY,
+            "test_b.py": _IDENTITY.replace("'one'", "'two'").replace("test_one", "test_two"),
+        },
+    )
+    env = clean_env("PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT", "PYTEST_XDIST_TESTRUNUID")
+    env["PYTHONPATH"] = str(tree / "site")
+
+    result = run([sys.executable, "-m", "rustest", "-n", str(workers)], tree, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    one, two = (json.loads((tree / f"{n}.json").read_text()) for n in ("one", "two"))
+    if workers == 1:
+        assert one[0] == two[0] == "master"
+        assert one[2] is None and one[3] == {}
+        return
+    assert {one[0], two[0]} == {"gw0", "gw1"}
+    assert one[1] == two[1] and len(one[1]) == 32  # one session id, uuid4().hex-shaped
+    assert one[2] == {"workerid": one[0], "workercount": 2, "testrunuid": one[1]}
+    assert one[3] == {
+        "PYTEST_XDIST_WORKER": one[0],
+        "PYTEST_XDIST_WORKER_COUNT": "2",
+        "PYTEST_XDIST_TESTRUNUID": one[1],
+    }

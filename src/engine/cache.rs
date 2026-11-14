@@ -76,12 +76,9 @@ pub enum LastFailedMode {
     First,
 }
 
-/// Where the last-failed file lives for a given rootdir.
-pub fn last_failed_path(rootdir: &Path) -> PathBuf {
-    rootdir
-        .join(CACHE_DIR)
-        .join(CACHE_VALUES_DIR)
-        .join(LAST_FAILED_FILE)
+/// Where the last-failed file lives in a cache directory (`ResolvedConfig::cache_dir`).
+pub fn last_failed_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join(CACHE_VALUES_DIR).join(LAST_FAILED_FILE)
 }
 
 /// Read the previously failed node ids, or an empty set.
@@ -90,8 +87,8 @@ pub fn last_failed_path(rootdir: &Path) -> PathBuf {
 /// corrupt or unreadable one is a cache to be rebuilt, not a reason to refuse to run tests.
 /// pytest takes the same position — `Cache.get` returns the default "if the value is not
 /// found or is invalid" (`_pytest/cacheprovider.py` l. 129-152).
-pub fn read_last_failed(rootdir: &Path) -> HashSet<String> {
-    let Ok(content) = std::fs::read_to_string(last_failed_path(rootdir)) else {
+pub fn read_last_failed(cache_dir: &Path) -> HashSet<String> {
+    let Ok(content) = std::fs::read_to_string(last_failed_path(cache_dir)) else {
         return HashSet::new();
     };
     let Ok(entries) = serde_json::from_str::<BTreeMap<String, bool>>(&content) else {
@@ -154,8 +151,8 @@ pub fn merge_last_failed(
 /// Failures are swallowed for the same reason [`read_last_failed`] swallows them: a
 /// read-only checkout must still be able to run its tests.  Returns whether the write
 /// happened, which is what the tests assert on.
-pub fn write_last_failed(rootdir: &Path, entries: &BTreeMap<String, bool>) -> bool {
-    let path = last_failed_path(rootdir);
+pub fn write_last_failed(cache_dir: &Path, entries: &BTreeMap<String, bool>) -> bool {
+    let path = last_failed_path(cache_dir);
     let Some(parent) = path.parent() else {
         return false;
     };
@@ -344,7 +341,7 @@ mod tests {
     /// — which is what makes `cache.get("cache/lastfailed", {})` answer with the real set.
     #[test]
     fn the_cache_file_is_under_a_v2_directory_in_pytests_value_layout() {
-        let path = last_failed_path(Path::new("/repo"));
+        let path = last_failed_path(&Path::new("/repo").join(CACHE_DIR));
         assert!(path.ends_with("lastfailed"), "{path:?}");
         assert_eq!(
             path,

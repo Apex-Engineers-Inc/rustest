@@ -925,7 +925,7 @@ fn run_attempt(
         options.strict_markers,
         options.conftest_args.clone(),
     )?;
-    let previously_failed = read_last_failed(&dispatch.rootdir_path);
+    let previously_failed = read_last_failed(&dispatch.cache_dir);
 
     if dispatch.targets.is_empty() {
         // Still compile the expressions. `deselect_by_keyword` parses **before** it loops
@@ -1074,7 +1074,16 @@ fn run_attempt(
         // nothing has been selected, dispatched or cached. A worker's own failure wins and
         // is reported as one (through `stage` below), as it is for `--collect-only`.
         if options.pytest_fallback && inbox.iter().all(|slot| matches!(slot, Some(Ok(_)))) {
-            let hooks = launcher.hooks_needing_pytest();
+            let mut hooks = launcher.hooks_needing_pytest();
+            hooks.extend(crate::engine::manifest::plugin_handoff(
+                inbox
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .flatten()
+                    .flat_map(|(_, outcome)| &outcome.tests),
+                true,
+            ));
             if !hooks.is_empty() {
                 // Dropping every sender lets the workers leave the barrier and shut down;
                 // each is joined so a panic surfaces here rather than out of the scope.
@@ -1130,7 +1139,7 @@ fn run_attempt(
             Ok(())
         };
         let mut accepted = false;
-        let staged = {
+        let mut staged = {
             let txs = &exec_txs;
             let mut modify = |stage_number: u8, tests: &[CollectedTest]| {
                 let modified = modify_items(
@@ -1158,6 +1167,12 @@ fn run_attempt(
             })
         };
 
+        // A selected test that uses a plugin rustest runs only while nothing uses it.
+        if let Ok(staged) = &mut staged {
+            if options.pytest_fallback && staged.handoff.is_empty() {
+                staged.handoff = crate::engine::manifest::plugin_handoff(&staged.selected, false);
+            }
+        }
         // A `pytest_collection_modifyitems` stage the runtime could not answer: the same
         // hand-off as the hooks check above, one step later, still before anything runs.
         if let Ok(staged) = &staged {
@@ -1305,7 +1320,9 @@ fn run_attempt(
             stopped_early,
             started,
         );
-        record_last_failed(&dispatch.rootdir_path, &previously_failed, &report);
+        if !cache_provider_off(options.hook_context.as_ref()) {
+            record_last_failed(&dispatch.cache_dir, &previously_failed, &report);
+        }
         Ok(Attempt::Report(report))
     })
 }
@@ -1330,15 +1347,23 @@ fn predict_skip(
     )
 }
 
+/// `-p no:cacheprovider`, as the CLI records it in `hook_context.blocked_plugins`: pytest then
+/// keeps no cache at all, so this run writes none.
+fn cache_provider_off(hook_context: Option<&serde_json::Value>) -> bool {
+    hook_context
+        .and_then(|context| context.get("blocked_plugins"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|names| names.iter().any(|name| name == "cacheprovider"))
+}
+
 /// Fold this run's outcomes into the last-failed cache.
 ///
 /// Unconditional: pytest writes `cache/lastfailed` on every session that has a cache
 /// (`LFPlugin.pytest_sessionfinish`), not only when `--lf` was asked for — a cache written
 /// only when read would never have anything in it.  `-p no:cacheprovider` is pytest's opt-out
-/// and rustest has no plugin flags, so there is no way to suppress it yet; the file is inside
-/// the already-gitignored `.rustest_cache/`.
+/// ([`cache_provider_off`]); the file is inside the already-gitignored `.rustest_cache/`.
 fn record_last_failed(
-    rootdir: &Path,
+    cache_dir: &Path,
     previous: &std::collections::HashSet<String>,
     report: &RunReport,
 ) {
@@ -1355,7 +1380,7 @@ fn record_last_failed(
     // so a green repeat run does not keep touching a file (and a read-only tree stays quiet).
     let unchanged = merged.len() == previous.len() && merged.keys().all(|id| previous.contains(id));
     if !unchanged {
-        let _ = write_last_failed(rootdir, &merged);
+        let _ = write_last_failed(cache_dir, &merged);
     }
 }
 
@@ -2741,7 +2766,7 @@ def test_bails():
         let _ = run_tree(&tmp, 1);
 
         assert_eq!(
-            crate::engine::cache::read_last_failed(tmp.path()),
+            crate::engine::cache::read_last_failed(&tmp.path().join(".rustest_cache")),
             [
                 "test_x.py::test_b".to_string(),
                 "test_x.py::test_c".to_string()
@@ -2823,7 +2848,7 @@ def test_bails():
         let _ = run_tree(&tmp, 1);
 
         assert_eq!(
-            crate::engine::cache::read_last_failed(tmp.path()),
+            crate::engine::cache::read_last_failed(&tmp.path().join(".rustest_cache")),
             ["test_x.py::test_c".to_string()].into_iter().collect()
         );
     }
@@ -2864,7 +2889,7 @@ def test_bails():
         let tmp = tree(&[("test_broken.py", "import nope_does_not_exist\n")]);
         let _ = run_tree(&tmp, 1);
         assert_eq!(
-            crate::engine::cache::read_last_failed(tmp.path()),
+            crate::engine::cache::read_last_failed(&tmp.path().join(".rustest_cache")),
             ["test_broken.py".to_string()].into_iter().collect()
         );
     }
@@ -2873,7 +2898,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":15}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":16}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -3773,7 +3798,9 @@ def pytest_generate_tests(metafunc):
             events.is_empty(),
             "no `collected`, so no display draws: {events:?}"
         );
-        assert!(crate::engine::cache::read_last_failed(tmp.path()).is_empty());
+        assert!(
+            crate::engine::cache::read_last_failed(&tmp.path().join(".rustest_cache")).is_empty()
+        );
 
         // ...and with the option off, the same tree runs as it always has.
         let ran = run_tree(&tmp, 1);
@@ -3979,7 +4006,7 @@ def pytest_collection_modifyitems(config, items):
     fn remember(tmp: &TempDir, ids: &[&str]) {
         let entries = ids.iter().map(|id| ((*id).to_string(), true)).collect();
         assert!(crate::engine::cache::write_last_failed(
-            tmp.path(),
+            &tmp.path().join(".rustest_cache"),
             &entries
         ));
     }
@@ -4181,6 +4208,7 @@ def pytest_collection_modifyitems(config, items):
             marks: Vec::new(),
             fixtures: Vec::new(),
             keywords: Vec::new(),
+            needs: Vec::new(),
             tier: crate::engine::manifest::Tier::Dynamic,
             record: None,
         }

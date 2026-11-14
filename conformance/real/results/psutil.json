@@ -1,0 +1,19 @@
+{
+  "suite": "psutil",
+  "date": "2026-11-11 17:05",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "EXPLAINED",
+  "tests": 713,
+  "pytest_s": 445.26,
+  "xdist_s": 344.3,
+  "rustest_s": 342.01,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 2,
+  "xdist_error": "",
+  "pytest_exit": 1,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 0
+}

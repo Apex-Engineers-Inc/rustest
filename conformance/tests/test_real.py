@@ -508,3 +508,23 @@ def test_only_the_xdist_controller_writes_the_pytest_oracle_report(
     controller = SimpleNamespace(config=SimpleNamespace())
     plugin.pytest_sessionfinish(controller, 0)  # pyright: ignore[reportArgumentType]
     assert out.exists()
+
+
+def test_a_private_target_is_read_from_the_local_dir_and_never_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "mine.toml").write_text(
+        '[repo]\nkind = "local"\npath = "."\ntest_paths = []\n[env]\nsetup = []\n'
+        "[run]\npytest_args = []\nrustest_args = []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(real_mod, "LOCAL_DIR", local)
+    monkeypatch.setattr(real_mod, "RESULTS_DIR", tmp_path / "results")
+
+    assert "mine" in real_mod.available_targets()
+    assert real_mod.load_target("mine").private
+    path = real_mod.record_result(_verdict("mine", pytest_s=1.0, rustest_s=1.0))
+    assert path.parent == local / "results"
+    assert real_mod.load_results() == []  # the published table never sees it

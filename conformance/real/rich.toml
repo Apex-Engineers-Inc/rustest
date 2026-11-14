@@ -34,7 +34,7 @@ setup = [
     "{py}",
     "--reinstall-package",
     "rustest",
-    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
   ],
 ]
 pythonpath = []
@@ -67,10 +67,11 @@ pytest module rather than using its API. Worth stating plainly in the compat doc
 a code change. KNOWN-LIMITATION."""
 
 [divergence.global]
-exit_code = """\
-rustest exits 1 where pytest exits 0, entirely because of the single `test_suppress` failure \
-ledgered above."""
+# Both runners exit 1 since the 2026-11-11 sweep: eight rendering tests (`test_syntax.py` x6,
+# `test_card_render`, `test_inline_code_in_table_cells`) fail identically under pytest and
+# rustest against the Pygments the rebuilt venv resolves, so the exit code agrees and only the
+# tally carries `test_suppress`.
 tally = """\
-pytest 984 passed / 23 skipped; rustest 983 passed / 1 failed / 23 skipped. The same 1007 ids \
-on both sides with identical spelling, the same 23 skips, and the one-test delta is \
-`test_suppress` and nothing else."""
+pytest 976 passed / 8 failed / 23 skipped; rustest 975 passed / 9 failed / 23 skipped. The same \
+1007 ids on both sides, and the one-test delta is `test_suppress` (ledgered above) and nothing \
+else."""

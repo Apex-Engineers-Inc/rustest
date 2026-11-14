@@ -158,6 +158,10 @@ pub struct ResolvedConfig {
     /// the `strict` an `xfail` mark gets when it does not say. Parsed by the worker where
     /// pytest parses it, at the first xfail evaluation, so a bad value errors that test.
     pub xfail_strict: Option<String>,
+    /// Where every rustest cache lives (last-failed, the manifest store, compiled assertion
+    /// rewrites): the `cache_dir` ini as pytest resolves it (`Cache.for_config`: the rootdir
+    /// joined with the expanded value), else `<rootdir>/.rustest_cache`.
+    pub cache_dir: PathBuf,
     /// `[tool.rustest] codeblocks`, or the pytest-ini-section spelling, or `None` when
     /// neither is set.  `None` is not `false`: it means "no config opinion", so the CLI
     /// flag and then the built-in default decide.
@@ -228,6 +232,7 @@ pub fn resolve_config(
         None => getini_bool(&inicfg, "codeblocks"),
     };
 
+    let cache_dir = resolve_cache_dir(&rootdir, getini_string(&inicfg, "cache_dir"));
     Ok(ResolvedConfig {
         rootdir,
         // All of the following are `type="args"` inis: see the citations on the
@@ -259,6 +264,7 @@ pub fn resolve_config(
         markers: getini_linelist(&inicfg, "markers"),
         filterwarnings: getini_linelist(&inicfg, "filterwarnings"),
         xfail_strict: getini_string(&inicfg, "xfail_strict"),
+        cache_dir,
         // The three asyncio inis are `type=None`/`type="string"`, so they are taken raw
         // rather than shlex-split (`plugin.py::pytest_addoption` l. 106-128).
         asyncio_mode: getini_asyncio_mode(&inicfg, &err_path)?,
@@ -967,6 +973,61 @@ fn getini_paths(
 /// `scope not in valid_scopes` check rejects it. Joining the items reproduces that
 /// rejection with the offending value visible in the message, rather than silently reading
 /// the first element.
+/// `_pytest/cacheprovider.py::Cache.for_config` /
+/// `resolve_from_str`: `rootpath / expanduser(expandvars(cache_dir))` (an absolute value
+/// stays absolute), and rustest's own `.rustest_cache` when the ini says nothing.
+fn resolve_cache_dir(rootdir: &Path, ini: Option<String>) -> PathBuf {
+    let Some(raw) = ini.filter(|value| !value.is_empty()) else {
+        return rootdir.join(crate::engine::cache::CACHE_DIR);
+    };
+    let expanded = expand_vars(&raw);
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"));
+    let expanded = match (expanded.strip_prefix('~'), home) {
+        (Some(rest), Ok(home)) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+            format!("{home}{rest}")
+        }
+        _ => expanded,
+    };
+    normpath(&rootdir.join(expanded))
+}
+
+/// `os.path.expandvars`: `$NAME` and `${NAME}`, plus `%NAME%` on Windows (`ntpath`); an unset
+/// name is left as written.
+fn expand_vars(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(|c| c == '$' || (cfg!(windows) && c == '%')) {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let (name, len) = if let Some(braced) = tail.strip_prefix("${") {
+            braced
+                .find('}')
+                .map_or(("", 0), |end| (&braced[..end], end + 3))
+        } else if let Some(percent) = tail.strip_prefix('%') {
+            percent
+                .find('%')
+                .map_or(("", 0), |end| (&percent[..end], end + 2))
+        } else {
+            let word = tail[1..]
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(tail.len() - 1);
+            (&tail[1..=word], word + 1)
+        };
+        match std::env::var(name) {
+            Ok(value) if len > 0 && !name.is_empty() => {
+                out.push_str(&value);
+                rest = &tail[len..];
+            }
+            _ => {
+                out.push_str(&tail[..1]);
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn getini_string(cfg: &ConfigDict, name: &str) -> Option<String> {
     match lookup(cfg, name) {
         None => None,

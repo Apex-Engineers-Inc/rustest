@@ -289,8 +289,8 @@ them:
   summary counts `1 passed, 1 error`; the engine's report carries the same field. A module that skips itself at import counts as one skip, as it does in
   the engine. An outcome other than passed, failed or skipped (pytest-rerunfailures' `rerun`) is
   ignored.
-- Under pytest-xdist only the controller writes the report, and the workers' deselection counts
-  are not aggregated, so `deselected` is 0.
+- Under pytest-xdist only the controller writes the report; each worker hands it its
+  deselection count, so `deselected` is pytest's.
 - `stopped_early` is true when pytest's should-fail or should-stop state was set, or it ended
   with exit status 2 (Ctrl-C, `pytest.exit`).
 
@@ -298,18 +298,59 @@ them:
 
 The session runs at **pytest's speed**, and rustest's collection is thrown away first (about
 a second of pool start and imports). A test module's import-time code runs twice, once in
-rustest's workers and once in pytest. The speed figures on this site were measured with
-`--no-pytest-fallback`.
+rustest's workers and once in pytest. When pytest-xdist is installed and nothing chose a
+worker count (no `-n`, `--dist` or `--tx` on the command line, in `addopts` or
+`PYTEST_ADDOPTS`, no `--pdb`, xdist not blocked), pytest is given rustest's own `-n`, so a
+handed-off suite keeps the parallelism rustest would have used. The speed figures on this
+site were measured with `--no-pytest-fallback`.
+
+### Plugins that only act when used
+
+Some installed plugins change nothing until a test uses them, so rustest runs the session
+itself while nothing does:
+
+| Plugin | Used when a selected test has | Switched on for the whole session by |
+|---|---|---|
+| anyio | the `anyio` mark, or `anyio_backend` / `free_*_port*` fixtures | `anyio_mode = auto`, `--anyio-mode` |
+| pytest-timeout | the `timeout` mark | the `timeout` or `session_timeout` ini key, `PYTEST_TIMEOUT`, its flags |
+| syrupy | the `snapshot` fixture, the `syrupy_snapshot` mark | its `--snapshot-*` flags |
+| pytest-textual-snapshot | the `snap_compare` fixture | `--snapshot-report` |
+| platformdirs, hydra, Faker | their fixtures (`platformdirs_isolated`, `hydra_*`, `faker`) | — |
+| typeguard | — | any `typeguard-*` ini key, its flags |
+
+"Uses a fixture" means the name is in the test's fixture closure and nothing else defines it,
+or a definition that requests it in turn (`def faker(faker)`); `anyio_backend` counts however
+it is defined, because anyio acts on the name. A `request.getfixturevalue("faker")` with a
+literal name counts too; a computed name fails at run time with a message naming the plugin.
+anyio changes node ids at collection, so a test that uses it hands the session to pytest even
+when `-k`, `-m` or a node id would deselect it; the others count only once selected. A mark of
+one of these plugins added by a `pytest_collection_modifyitems` hook hands the session off.
+
+### `-p no:cacheprovider` and `cache_dir`
+
+`-p no:cacheprovider` turns rustest's cache off as it turns pytest's off: nothing is written
+(no last-failed store, no manifest store, no compiled assertion rewrites), the `cache` fixture
+and `config.cache` do not exist, and `--lf`/`--ff` hand the session to pytest, which rejects
+them. `PYTHONDONTWRITEBYTECODE` also stops rustest writing compiled rewrites. The `cache_dir`
+ini key is where rustest keeps its cache, as pytest does; without it, `.rustest_cache`.
+
+### Parallel workers look like pytest-xdist's
+
+With two or more workers, each one has what a pytest-xdist worker has: `PYTEST_XDIST_WORKER`
+(`gw0`, `gw1`, ...), `PYTEST_XDIST_WORKER_COUNT` and `PYTEST_XDIST_TESTRUNUID` in its
+environment before anything of the project is imported, `config.workerinput` with
+`workerid`, `workercount` and `testrunuid`, and (with xdist installed) the `worker_id` and
+`testrun_uid` fixtures. With one worker it is serial pytest: `worker_id` is `"master"` and none
+of the rest exists. Suites that give each xdist worker its own database or port work unchanged.
 
 ### What is still not detected
 
 These can still make rustest and pytest disagree without a notice, because rustest does not
 yet look for them:
 
-- **Plugins that load themselves** through a `pytest11` entry point (pytest-randomly,
-  pytest-rerunfailures, pytest-timeout, pytest-django and so on).
-- **Ini keys rustest does not honour**, such as plugin keys (`timeout`, `reruns`).
-- **Plugin marks**, such as `@pytest.mark.timeout`.
+- **Ini keys rustest does not honour that belong to no plugin rustest knows of**: rustest
+  reads the keys of the plugins it allows (`timeout`, `anyio_mode`, `typeguard-*`); a key of a
+  plugin it does not know is only seen through that plugin's entry point, which hands off.
 - **A `conftest.py` in a directory with no test files**: rustest only follows the conftests above
   directories that hold tests, so its session-wide hooks are not seen. (pytest registers it
   while walking the tree.)

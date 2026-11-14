@@ -8,7 +8,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from . import rust
 
@@ -369,7 +369,11 @@ _ASSERT_REWRITE_ENV = "RUSTEST_ASSERT_REWRITE"
 
 #: Labels a worker reports that are already whole reasons: a conftest that did not import, and the
 #: native hook runtime's (``rustest._hookwire.REASON_PREFIX``, pinned equal by a test).
-_WHOLE_REASONS: Final = ("rustest could not import ", "rustest's hook runtime: ")
+_WHOLE_REASONS: Final = (
+    "rustest could not import ",
+    "rustest's hook runtime: ",
+    "the pytest plugin ",
+)
 
 
 class NeedsPytest(Exception):
@@ -471,7 +475,10 @@ def collect_only(
             mark_expr,
             codeblocks,
             os.environ.get(_COLLECT_TIER_ENV, "auto"),
-            os.environ.get(_MANIFEST_CACHE_ENV, "auto"),
+            # `-p no:cacheprovider`: no cache directory is written, the manifest store included
+            "off"
+            if "cacheprovider" in cast("Any", (hook_context or {}).get("blocked_plugins", ()))
+            else os.environ.get(_MANIFEST_CACHE_ENV, "auto"),
             pytest_fallback=pytest_fallback,
             hook_context=_hook_context_json(hook_context),
             strict_markers=strict_markers,

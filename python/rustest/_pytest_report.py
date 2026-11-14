@@ -4,18 +4,17 @@ Loaded with ``-p rustest._pytest_report`` in the **child** pytest only, never in
 process.  It writes one JSON object to the path in ``RUSTEST_PYTEST_REPORT``; the parent adds
 ``exit_code`` and ``pytest_fallback`` and renders it exactly as it renders an engine report.
 
-Each test gets one reduced status, by the precedence the worker uses, which differs from
-pytest's tally in one place: a passing body whose teardown raises is one ``error`` here and
-``1 passed, 1 error`` in pytest's own summary.
+Each test gets one reduced status, by the precedence the worker uses; a teardown that raises
+is the test's ``teardown_error`` beside that status, counted in ``summary.error`` as pytest
+counts ``1 passed, 1 error``.
 
 Fields that cannot be filled faithfully from pytest's side, and are therefore left out:
 ``teardown_errors`` and ``worker_stderr`` (there are no workers, and pytest attributes a
 teardown failure to its test), and ``session_exit`` (``pytest.exit`` reaches the plugin only
 as ``stopped_early``).  ``message`` of a failure is pytest's own rendering of the traceback,
 so its frames are worded pytest's way rather than rustest's (and follow the user's ``--tb``).
-A body that fails or passes with a teardown that raises is one ``error`` either way, where
-pytest counts ``1 failed, 1 error`` or ``1 passed, 1 error``.  Only the controller writes
-under pytest-xdist, where the workers' deselection counts are not aggregated.
+Only the controller writes under pytest-xdist; each worker hands it its deselection count
+through ``workeroutput`` (xdist's channel), because deselection happens in the workers.
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ import json
 import os
 import time
 from typing import TYPE_CHECKING, Any, Final
+
+import pytest
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from _pytest.main import Session
@@ -116,9 +117,22 @@ def pytest_runtest_logreport(report: TestReport) -> None:
         entry["message"] = _reason(report)
 
 
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any, error: object) -> None:
+    """xdist's controller, as each worker finishes: every worker collects and deselects the
+    whole session, so their counts agree and the controller keeps one."""
+    global _deselected
+    output: dict[str, Any] = getattr(node, "workeroutput", None) or {}
+    _deselected = max(_deselected, int(output.get("rustest_deselected", 0)))
+
+
 def pytest_sessionfinish(session: Session, exitstatus: int) -> None:
     path = os.environ.get("RUSTEST_PYTEST_REPORT")
-    if not path or hasattr(session.config, "workerinput"):  # an xdist worker: not the controller
+    workeroutput = getattr(session.config, "workeroutput", None)
+    if isinstance(workeroutput, dict):  # an xdist worker: its count goes to the controller
+        workeroutput["rustest_deselected"] = _deselected
+        return
+    if not path or hasattr(session.config, "workerinput"):
         return
     tests = [t for t in _tests if t["status"] is not None]  # a phase that never reported
     counts = {name: sum(t["status"] == name for t in tests) for name in _PRECEDENCE}

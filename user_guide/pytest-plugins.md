@@ -533,12 +533,15 @@ async def test_slow_async_operation():
     await slow_operation()
 ```
 
-**Synchronous tests have no timeout at all**, and this is the trap: `@mark.timeout(5)` is
-accepted as an ordinary mark, so it can be selected with `-m` and it never errors — but it
-does not bound how long the test may run. A suite that relied on pytest-timeout to kill a
-hung test will hang instead of failing.
+**With pytest-timeout installed**, rustest does not enforce `@mark.timeout` itself: a selected
+test with the mark, the `timeout` or `session_timeout` ini key, `PYTEST_TIMEOUT` or a
+`--timeout` flag hands the session to pytest, which does. Installed but unused, it changes
+nothing and the run stays native.
 
-If you need one, wrap the test yourself rather than reaching for the mark:
+**Without pytest-timeout, synchronous tests have no timeout at all**, as under pytest:
+`@mark.timeout(5)` is then an unregistered mark that bounds nothing.
+
+If you need one without the plugin, wrap the test yourself:
 
 - On Unix, `signal.SIGALRM` plus `signal.alarm()` in a context manager. `SIGALRM` does not
   exist on Windows.

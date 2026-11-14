@@ -121,6 +121,7 @@ def start(
     invocation_dir: Path,
     plugins: Sequence[str],
     load: Callable[[Path], None],
+    plugin_dists: Mapping[str, str] | None = None,
 ) -> HookSession | None:
     """Start the runtime if ``init`` asked for it (``conftests``); ``load(path)`` imports one
     conftest (and its ``pytest_plugins``) through the worker, which calls back :func:`on_module`.
@@ -161,6 +162,7 @@ def start(
         builtin_options=options,
         invocation_dir=invocation_dir,
         plugins=plugins,
+        plugin_dists=plugin_dists,
     )
     _session = HookSession(runner, options)
     _builtins.set_hooks(_session)

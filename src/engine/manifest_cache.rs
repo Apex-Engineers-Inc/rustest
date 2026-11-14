@@ -86,7 +86,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::cache::CACHE_DIR;
 use crate::engine::config::ResolvedConfig;
 use crate::engine::manifest::{CollectedTest, Tier};
 
@@ -257,6 +256,8 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
         asyncio_default_fixture_loop_scope,
         asyncio_default_test_loop_scope,
         codeblocks,
+        // Where the store lives, not what goes into an entry.
+        cache_dir: _,
     } = config;
 
     let mut hasher = blake3::Hasher::new();
@@ -470,8 +471,8 @@ struct LoadedEntry {
 impl ManifestCache {
     /// Open the cache for a run.  Never fails: an unwritable or unreadable cache directory
     /// simply produces misses.
-    pub fn open(rootdir: &Path, config: &ResolvedConfig, shadows: &BTreeSet<String>) -> Self {
-        Self::open_with_version(rootdir, config, shadows, build_version())
+    pub fn open(config: &ResolvedConfig, shadows: &BTreeSet<String>) -> Self {
+        Self::open_with_version(config, shadows, build_version())
     }
 
     /// [`Self::open`] with the build identity supplied.
@@ -480,13 +481,12 @@ impl ManifestCache {
     /// to observe what a *different build* of rustest does to a store this one wrote, and
     /// cannot do that by rebuilding itself.
     pub fn open_with_version(
-        rootdir: &Path,
         config: &ResolvedConfig,
         shadows: &BTreeSet<String>,
         version: String,
     ) -> Self {
         Self {
-            dir: rootdir.join(CACHE_DIR).join(MANIFEST_CACHE_DIR),
+            dir: config.cache_dir.join(MANIFEST_CACHE_DIR),
             version,
             config: digest_of_config(config),
             shadows: digest_of_shadows(shadows),
@@ -734,6 +734,7 @@ pub type FreshByDir = HashMap<PathBuf, BTreeMap<String, (Digest, Vec<CollectedTe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::cache::CACHE_DIR;
     use crate::engine::config::{
         DEFAULT_ASYNCIO_MODE, DEFAULT_ASYNCIO_TEST_LOOP_SCOPE, DEFAULT_PYTHON_CLASSES,
         DEFAULT_PYTHON_FILES, DEFAULT_PYTHON_FUNCTIONS,
@@ -762,6 +763,7 @@ mod tests {
             asyncio_default_fixture_loop_scope: None,
             asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),
             codeblocks: None,
+            cache_dir: rootdir.join(CACHE_DIR),
         }
     }
 
@@ -786,6 +788,7 @@ mod tests {
             marks: Vec::new(),
             fixtures: Vec::new(),
             keywords: Vec::new(),
+            needs: Vec::new(),
             tier: Tier::Static,
             record: None,
         }
@@ -1306,7 +1309,7 @@ mod tests {
     }
 
     fn cache_for(rootdir: &Path) -> ManifestCache {
-        ManifestCache::open(rootdir, &config_at(rootdir), &BTreeSet::new())
+        ManifestCache::open(&config_at(rootdir), &BTreeSet::new())
     }
 
     /// An unwritable cache directory is a cache that misses, not a run that fails.

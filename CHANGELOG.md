@@ -121,8 +121,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is cut at its first `[`, as pytest cuts it, so a file or directory whose name contains a
   bracket (`test_x[1].py`, `d[x]/`) can no longer be named on the command line.
 
+- **Installed plugins that only act when used no longer send every session to pytest.**
+  anyio, pytest-timeout, syrupy, pytest-textual-snapshot, platformdirs, hydra, Faker and
+  typeguard: the session stays native until a selected test uses one (its mark, or a fixture
+  of its, including by `getfixturevalue("<name>")`), or its flags, ini keys or environment
+  switch it on. anyio, which changes node ids, is decided on the whole collection. See *Plugins
+  that only act when used* on the compatibility page.
+- **`-p no:cacheprovider` and the `cache_dir` ini are honoured.** With the cache provider off
+  rustest writes nothing (no last-failed or manifest store, no compiled rewrites), there is no
+  `cache` fixture or `config.cache`, and `--lf`/`--ff` go to pytest. `cache_dir` is where
+  every rustest cache lives, as for pytest; `PYTHONDONTWRITEBYTECODE` stops compiled rewrites.
+- **Parallel workers carry pytest-xdist's identity.** With two or more workers:
+  `PYTEST_XDIST_WORKER`, `PYTEST_XDIST_WORKER_COUNT`, `PYTEST_XDIST_TESTRUNUID`,
+  `config.workerinput`, and the `worker_id`/`testrun_uid` fixtures when xdist is installed.
+  With one: `worker_id == "master"`, as serial pytest.
+- **A handed-off session keeps rustest's parallelism.** With pytest-xdist installed and no
+  worker count chosen, pytest runs with rustest's own `-n`.
+
 ### Fixed
 
+- **A `pytest_plugins = ["pytester"]` test module hands the session to pytest** instead of
+  failing to collect: pytester is pytest's in-process runner.
+- **The pytest fallback's report counts deselected tests under pytest-xdist** (it reported 0).
+- **`-p no:NAME` is no longer reported as an ignored option**: it is honoured.
 - **`--collect-only --lf` and `--ff` list what pytest lists.** `--lf` printed the whole
   collection. pytest's last-failed filter acts in two places and depends on whether a
   failure was recorded at module level, so a reimplementation was wrong in three probed

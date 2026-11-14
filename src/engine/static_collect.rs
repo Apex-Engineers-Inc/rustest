@@ -169,6 +169,43 @@ pub enum Reason {
     /// `filterwarnings` ini, or any module under an `error` filter: the warning can be a
     /// collection error.
     CollectionWarning,
+    /// The file or its conftest chain names a fixture a pytest plugin provides
+    /// ([`PLUGIN_FIXTURES`]): whether that plugin is installed, and whether its fixture changes
+    /// the ids (anyio's `anyio_backend` is parametrized), is the worker's question.
+    PluginFixture,
+}
+
+/// The fixtures of the plugins rustest runs only while nothing uses them: the union of
+/// `python/rustest/_hookshim.py::_PLUGIN_USES`' fixture sets (`test_hookshim` keeps the two
+/// equal).
+pub const PLUGIN_FIXTURES: &[&str] = &[
+    "anyio_backend",
+    "anyio_backend_name",
+    "anyio_backend_options",
+    "faker",
+    "free_tcp_port",
+    "free_tcp_port_factory",
+    "free_udp_port",
+    "free_udp_port_factory",
+    "hydra_restore_singletons",
+    "hydra_sweep_runner",
+    "hydra_task_runner",
+    "platformdirs_isolated",
+    "snap_compare",
+    "snapshot",
+];
+
+/// The first [`PLUGIN_FIXTURES`] name *source* mentions as a whole word -- a parameter, a
+/// `usefixtures` argument, a `getfixturevalue` literal or anything else. Conservative on
+/// purpose: a false positive costs `--collect-only` the speed of Tier S, a miss a wrong id.
+fn mentions_plugin_fixture(source: &str) -> Option<&'static str> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    PLUGIN_FIXTURES.iter().copied().find(|name| {
+        source.match_indices(name).any(|(at, _)| {
+            !source[..at].chars().next_back().is_some_and(word)
+                && !source[at + name.len()..].chars().next().is_some_and(word)
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -270,11 +307,7 @@ pub fn static_pass_cached(
 
     let cache = match mode {
         CacheMode::Off => None,
-        CacheMode::Auto => Some(ManifestCache::open(
-            rootdir,
-            config,
-            &shadowable_names(&shadows),
-        )),
+        CacheMode::Auto => Some(ManifestCache::open(config, &shadowable_names(&shadows))),
     };
 
     // One entry per *directory*, because the chain is identical for every file in it and
@@ -413,7 +446,7 @@ pub fn rewrite_plan(
     // `cache_key` directly is deliberate: the run-global half of the key (build version,
     // config digest, shadow digest) is composed in exactly one place, so the bytecode cache
     // cannot drift from the manifest cache it is keyed against.
-    let cache = ManifestCache::open(rootdir, config, &shadowable_names(&shadows));
+    let cache = ManifestCache::open(config, &shadowable_names(&shadows));
 
     let mut chains: HashMap<PathBuf, (Result<(), Dynamic>, crate::engine::manifest_cache::Digest)> =
         HashMap::new();
@@ -931,6 +964,12 @@ fn chain_is_static(
                 format!("{} defines the pytest hook {hook}", conftest.display()),
             ));
         }
+        if let Some(name) = mentions_plugin_fixture(source) {
+            return Err(Dynamic::new(
+                Reason::PluginFixture,
+                format!("{} names the plugin fixture {name}", conftest.display()),
+            ));
+        }
         // A conftest defines fixtures, not tests, so only the import-safety half applies —
         // but it applies in full, decorators included.
         let config = conftest_scan_config();
@@ -1029,6 +1068,12 @@ pub fn scan_module(
         return Err(Dynamic::new(
             Reason::EncodingCookie,
             format!("{rel_path} declares `coding: {encoding}`"),
+        ));
+    }
+    if let Some(name) = mentions_plugin_fixture(source) {
+        return Err(Dynamic::new(
+            Reason::PluginFixture,
+            format!("{rel_path} names the plugin fixture {name}"),
         ));
     }
     let parsed = parse_module(source)
@@ -1816,6 +1861,15 @@ impl<'a> Scan<'a> {
                 "@mark.asyncio rewrites the object it decorates".to_string(),
             ));
         }
+        // A plugin's own mark (anyio's runs a test once per backend, with `[asyncio]` ids;
+        // pytest-timeout's arms a timer): whether that plugin is installed is the worker's
+        // question (`_worker._plugin_needs`), so the file is answered there.
+        if matches!(name, "anyio" | "timeout") {
+            return Err(Dynamic::new(
+                Reason::NonLiteralMark,
+                format!("@mark.{name} belongs to a pytest plugin"),
+            ));
+        }
 
         let Some(arguments) = arguments else {
             // Bare: `BareOrFactoryMark._bare` is `MarkDecorator(name, (), {})` for every mark,
@@ -2197,6 +2251,7 @@ impl<'a> Scan<'a> {
                 .cloned()
                 .collect(),
             keywords: keywords.clone(),
+            needs: Vec::new(),
             tier: Tier::Static,
             record: None,
         };
@@ -2895,6 +2950,7 @@ fn conftest_scan_config() -> ResolvedConfig {
         codeblocks: None,
         filterwarnings: Vec::new(),
         xfail_strict: None,
+        cache_dir: PathBuf::new(),
     }
 }
 
@@ -3828,7 +3884,12 @@ class TestBox:
         rootdir: &Path,
         config: &ResolvedConfig,
     ) -> (Vec<Result<Vec<CollectedTest>, Dynamic>>, ManifestCache) {
-        let pass = static_pass_cached(targets, rootdir, config, CacheMode::Auto);
+        // The store follows `cache_dir`, not the rootdir: an empty one writes into the cwd.
+        let config = ResolvedConfig {
+            cache_dir: rootdir.join(".rustest_cache"),
+            ..config.clone()
+        };
+        let pass = static_pass_cached(targets, rootdir, &config, CacheMode::Auto);
         let cache = pass.cache.expect("CacheMode::Auto opens a cache");
         (pass.outcomes, cache)
     }
@@ -4462,7 +4523,7 @@ class TestBox:
         let plan = rewrite_plan(&targets, tmp.path(), &config());
         let planned = plan[0].as_deref().expect("a static file is rewritable");
 
-        let cache = ManifestCache::open(tmp.path(), &config(), &Default::default());
+        let cache = ManifestCache::open(&config(), &Default::default());
         let expected = crate::engine::manifest_cache::hex_digest(&cache.key_for_chain(
             crate::engine::manifest_cache::empty_chain_digest(),
             "test_a.py",

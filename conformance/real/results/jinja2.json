@@ -1,0 +1,19 @@
+{
+  "suite": "jinja2",
+  "date": "2026-11-11 16:25",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "MATCH",
+  "tests": 909,
+  "pytest_s": 6.2,
+  "xdist_s": 4.43,
+  "rustest_s": 2.12,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

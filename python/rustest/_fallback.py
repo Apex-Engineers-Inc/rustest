@@ -13,7 +13,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -50,14 +50,11 @@ _WINDOWS = sys.platform == "win32"
 #: | ``icdiff`` | rewrites the text of a failed assertion (``pytest_assertrepr_compare``), never whether it fails; its options are flags (unknown ones hand off) |
 #: | ``rich`` (pytest-rich) | terminal reporting, and only with ``--rich`` (an unrecognized flag, so it hands off by itself) |
 #: | ``codeblocks`` | collects markdown fences only with ``--codeblocks``, which rustest implements itself |
+#: | ``anyio``, ``timeout``, ``syrupy``, ``textual-snapshot``, ``platformdirs``, ``hydra_pytest``, ``faker``, ``typeguard`` | inert until something uses them: a selected test with the plugin's mark or one of its fixtures hands the session off (``_worker._PLUGIN_USES``), as do their flags, and the ini keys and environment that switch them on (:func:`autoload_reasons`) -- anyio's ``anyio_mode = auto``, pytest-timeout's ``timeout``/``session_timeout``/``PYTEST_TIMEOUT``, typeguard's ``typeguard-*`` keys (faker's autouse ``_session_faker`` only builds a ``Faker`` with its own ``random.Random``) |
 #: | ``hypothesispytest`` | what it does to outcomes is ported (``_hypothesis``), for the releases checked there and later ones whose plugin is unchanged: another hands off (:func:`autoload_reasons`), as do its ``--hypothesis-*`` flags |
 #:
-#: Judged and **not** allowed, with the evidence: ``anyio`` (a
-#: ``@pytest.mark.anyio`` test is run once per backend with ``[asyncio]``/``[trio]`` ids, so
-#: even the node ids differ; ``anyio_backend`` is a fixture rustest lacks), ``timeout`` (the
-#: ``timeout`` mark and ini key act with no flag, and a mark cannot be found without
-#: collecting), ``inline_snapshot`` (an autouse fixture that fails a test from recorded
-#: snapshot state). Unseen plugins (randomly, rerunfailures, env, django, benchmark, ...)
+#: Judged and **not** allowed, with the evidence: ``inline_snapshot`` (an autouse fixture
+#: that fails a test from recorded snapshot state, and a session report). Unseen plugins (randomly, rerunfailures, env, django, benchmark, ...)
 #: are not on the list, so they hand off: ``-p no:NAME`` or ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``
 #: opts a project out, exactly as it does for pytest.
 SAFE_PLUGINS: Final = frozenset(
@@ -71,6 +68,14 @@ SAFE_PLUGINS: Final = frozenset(
         "rich",
         "codeblocks",
         "hypothesispytest",
+        "anyio",
+        "timeout",
+        "syrupy",
+        "textual-snapshot",
+        "platformdirs",
+        "hydra_pytest",
+        "faker",
+        "typeguard",
     }
 )
 
@@ -111,18 +116,38 @@ def installed_plugins() -> list[tuple[str, str]]:
     return list(found.items())
 
 
-def autoload_reasons(blocked: Sequence[str]) -> list[str]:
+def autoload_reasons(blocked: Sequence[str], ini: Mapping[str, object] | None = None) -> list[str]:
     """Hand-off reasons for auto-loaded plugins rustest does not run.
 
     pytest's own switches apply: nothing auto-loads under ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``,
-    and ``-p no:NAME`` blocks the entry point called ``NAME`` or ``pytest_NAME``.
+    and ``-p no:NAME`` blocks the entry point called ``NAME`` or ``pytest_NAME``. *ini* is the
+    ini file's section: what switches an otherwise inert plugin on.
     """
     if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
         return []
     from ._hypothesis import VERIFIED, supported
 
+    ini = ini or {}
+    switched_on = {
+        "timeout": [
+            *(f"the {key} ini option" for key in ("timeout", "session_timeout") if ini.get(key)),
+            *(["PYTEST_TIMEOUT"] * bool(os.environ.get("PYTEST_TIMEOUT"))),
+        ],
+        "anyio": ["anyio_mode = auto"] * (str(ini.get("anyio_mode", "")).strip() == "auto"),
+        "typeguard": [f"the {key} ini option" for key in ini if key.startswith("typeguard-")],
+    }
     low, high = (".".join(map(str, bound)) for bound in VERIFIED)
-    return [
+    loaded = [
+        (name, dist)
+        for name, dist in installed_plugins()
+        if name not in blocked and not (name.startswith("pytest_") and name[7:] in blocked)
+    ]
+    on = [
+        f"the pytest plugin {name} ({dist}) acts on {why}, and rustest does not run it"
+        for name, dist in loaded
+        for why in switched_on.get(name, ())
+    ]
+    return on + [
         (
             f"hypothesis's pytest plugin ({dist}) is installed, and rustest emulates it only"
             + f" for hypothesis {low} to {high}.x and later releases whose plugin is unchanged"
@@ -130,10 +155,8 @@ def autoload_reasons(blocked: Sequence[str]) -> list[str]:
             else f"the pytest plugin {name} ({dist}) is installed and rustest does not run it"
             + f" (`-p no:{name}` disables it)"
         )
-        for name, dist in installed_plugins()
-        if (name not in SAFE_PLUGINS or (name == "hypothesispytest" and not supported(dist)))
-        and name not in blocked
-        and not (name.startswith("pytest_") and name[7:] in blocked)
+        for name, dist in loaded
+        if name not in SAFE_PLUGINS or (name == "hypothesispytest" and not supported(dist))
     ]
 
 
@@ -266,6 +289,8 @@ def run(
     llm_full: bool = False,
     collect_only: bool = False,
     verbosity: int = 0,
+    cache_dir_set: bool = False,
+    workers: int | None = None,
 ) -> int:
     """Run ``python -m pytest`` for *argv* (the user's own, before any ``addopts`` splice).
 
@@ -300,6 +325,10 @@ def run(
             + f" or pass --no-pytest-fallback to run without that ({optout or 'results may differ'})."
         )
     translated, dropped_n = pytest_argv(argv)
+    # The parallelism rustest would have used, so a handed-off suite is not slower than the
+    # run it replaces: pytest-xdist's `-n`, when it is installed and nothing chose otherwise.
+    if workers and workers > 1 and _installed("xdist"):
+        translated = ["-n", str(workers), *translated]
     serial = (
         " -n was ignored because pytest-xdist is not installed, so it runs serially."
         if dropped_n
@@ -312,9 +341,15 @@ def run(
         flush=True,
     )
     # `-o cache_dir=` makes pytest's cache the one rustest already writes, so `--lf`/`--ff`
-    # agree across the two runners.  Argv is a list (no shell); cwd and environment are the
-    # caller's.
-    command = [sys.executable, "-m", "pytest", *translated, "-o", "cache_dir=.rustest_cache"]
+    # agree across the two runners; a project whose ini names one (*cache_dir_set*) has both
+    # runners there already.  Argv is a list (no shell); cwd and environment are the caller's.
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        *translated,
+        *([] if cache_dir_set else ["-o", "cache_dir=.rustest_cache"]),
+    ]
     if not (report_json or llm or collect_only):
         if not _WINDOWS:
             # pytest *becomes* this process: signals, stdin, process group and exit code are its own.

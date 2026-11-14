@@ -1,0 +1,21 @@
+{
+  "suite": "member-designer",
+  "date": "2026-11-13 19:45",
+  "mode": "handed off",
+  "reasons": [
+    "rustest's hook runtime: tests.slow_guard::pytest_configure uses config.pluginmanager.register, which rustest's hook runtime does not support"
+  ],
+  "verdict": "MATCH",
+  "tests": 11591,
+  "pytest_s": 967.61,
+  "xdist_s": 230.4,
+  "rustest_s": 293.42,
+  "engine_s": 26.86,
+  "engine_verdict": "DIVERGE",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

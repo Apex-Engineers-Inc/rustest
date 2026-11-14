@@ -132,6 +132,7 @@ from __future__ import annotations
 # annotations` never evaluates.  Measured: worker boot 550 ms -> 300 ms.
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
+import ast
 import contextlib
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
@@ -310,7 +311,7 @@ __all__ = [
 #:
 #: v14 carries the ``markers`` ini and ``--strict-markers`` on ``init`` and ``xfail_strict`` as its
 #: raw text; ``bye`` carries the shutdown teardown's warnings.
-PROTOCOL_VERSION: Final = 15
+PROTOCOL_VERSION: Final = 16
 
 #: The pytest the compat layer emulates: what ``PYTEST_VERSION`` says, which pytest sets for
 #: the whole run (:func:`handle_init`).
@@ -358,6 +359,8 @@ class CollectedTestDict(TypedDict):
     fixtures: NotRequired[list[str]]
     #: What ``-k`` matches beyond the node names and marks (:func:`_function_keywords`).
     keywords: NotRequired[list[str]]
+    #: A plugin this test uses that rustest runs only while nothing does (:func:`_plugin_needs`).
+    needs: NotRequired[list[str]]
     #: The ``_hookshim.ItemRecord`` as JSON (protocol v13): what a ``pytest_collection_modifyitems``
     #: hook is shown of this test (``_hookwire.build_record``); only when such a hook is registered.
     record: NotRequired[dict[str, Any]]
@@ -3752,6 +3755,13 @@ def _fixture_not_found_message(name: str, registry: FixtureRegistry) -> str:
             f"fixture '{name}' is not supported by the rustest worker yet "
             + f"(supported builtins: {', '.join(BUILTIN_FIXTURES)})"
         )
+    if (plugin := plugin_of_fixture(name)) is not None:
+        # A fixture of an installed plugin rustest runs only while nothing uses it, asked for
+        # in a way collection could not see (a computed `getfixturevalue` name).
+        return (
+            f"fixture '{name}' is the pytest plugin {plugin}'s, which rustest does not run;"
+            + " run this session under pytest (`python -m pytest`), which loads it"
+        )
     return f"fixture '{name}' not found" + _available_fixtures_suffix(registry)
 
 
@@ -3894,7 +3904,12 @@ def _register_builtin_fixtures(registry: FixtureRegistry) -> None:
     Registered first, so any user fixture of the same name shadows it — which is what
     pytest's furthest-to-nearest ordering does for plugin fixtures too.
     """
-    for name in BUILTIN_FIXTURES:
+    xdist = (
+        ("worker_id", "testrun_uid") if any(n == "xdist" for n, _ in _loaded_plugin_dists) else ()
+    )
+    for name in (*BUILTIN_FIXTURES, *xdist):
+        if name == "cache" and _builtins.cache_provider_off:
+            continue  # the provider's fixture: `fixture 'cache' not found`
         func = getattr(_builtins, name)
         registry.register(
             FixtureDef(
@@ -3977,6 +3992,11 @@ def _plugin_fixturedefs(name: str) -> tuple[FixtureDef, ...]:
     cached = _plugin_fixturedefs_cache.get(name)
     if cached is not None:
         return cached
+    if name in ("pytester", "_pytest.pytester"):
+        # pytest's own plugin, and an in-process pytest: only pytest can run what uses it.
+        reason = f"rustest could not import {name}: pytest's in-process test runner"
+        _conftest_import_failures.add(reason)
+        raise ImportError(reason)
     module = importlib.import_module(name)
     if _hookwire_mod is not None:
         _hookwire_mod.on_module(name, module)
@@ -4169,6 +4189,7 @@ def _build_entry(
     fixtures: list[str],
     block_segment: str | None = None,
     keywords: Sequence[str] = (),
+    needs: Sequence[str] = (),
 ) -> CollectedTestDict:
     """Assemble one ``CollectedTest``, omitting every empty optional field.
 
@@ -4203,7 +4224,40 @@ def _build_entry(
         entry["fixtures"] = fixtures
     if keywords:
         entry["keywords"] = list(keywords)
+    if needs:
+        entry["needs"] = list(needs)
     return entry
+
+
+#: ``(entry point, distribution)`` of the plugins pytest would load here (``handle_init``).
+_loaded_plugin_dists: list[tuple[str, str]] = []
+
+#: ``_hookshim._PLUGIN_USES`` for the plugins pytest would load here (``handle_init``).
+_loaded_plugin_uses: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+
+
+def _plugin_needs(marks: Sequence[MarkSpec], closure: "FixtureClosure | None") -> list[str]:
+    """What this test uses of a plugin in :data:`_loaded_plugin_uses`: its mark, or one of its
+    fixtures in the closure that nothing here defines, or whose definition here requests it in
+    turn (``def faker(faker)``, syrupy's ``def snapshot(snapshot)``). anyio's ``anyio_backend``
+    counts however it is defined, because anyio acts on the name."""
+    from ._hookshim import _NAME_KEYED_FIXTURES  # pyright: ignore[reportPrivateUsage]
+
+    names = {mark.name for mark in marks}
+    used: set[str] = set()
+    if closure is not None:
+        for name in closure.names:
+            defs = closure.arg2defs.get(name)
+            if not defs or name in defs[-1].argnames or name in _NAME_KEYED_FIXTURES:
+                used.add(name)
+    return [
+        f"the pytest plugin {plugin} is used ({what} {name!r}), and rustest does not run it"
+        for plugin, (plugin_marks, fixtures) in _loaded_plugin_uses.items()
+        for what, name in (
+            *(("mark", n) for n in sorted(plugin_marks & names)),
+            *(("fixture", n) for n in sorted(fixtures & used)),
+        )
+    ]
 
 
 def _function_attrs(func: object, has_marks: bool) -> list[str]:
@@ -4373,6 +4427,7 @@ def _collect_function(
                 _fixture_names(func, name, owner, frozenset(case_values) - indirect),
                 block_segment=context.block_segment,
                 keywords=keywords,
+                needs=_plugin_needs(case_all_marks, closure) if _loaded_plugin_uses else (),
             )
             entries.append(entry)
             context.plans.append(
@@ -4587,6 +4642,7 @@ def _collect_unittest_class(
             [],
             block_segment=context.block_segment,
             keywords=_function_keywords(method, bool(decorated), False),
+            needs=_plugin_needs(marks, None) if _loaded_plugin_uses else (),
         )
         entries.append(entry)
         context.plans.append(
@@ -6821,22 +6877,9 @@ def warnings_window(
 #: plugins' own source as installed in the ``--real`` target venvs. A plugin missing from this
 #: table makes the registry unknown, so nothing is checked: a false ``PytestUnknownMarkWarning``
 #: would be a false error under ``filterwarnings = error``.
-_PLUGIN_MARKS: Final[Mapping[str, tuple[str, ...]]] = {
-    "xdist": ("xdist_group",),
-    "xdist.looponfail": (),
-    "pytest_cov": ("no_cover",),
-    "asyncio": ("asyncio",),
-    "pytest_mock": (),
-    "icdiff": (),
-    "rich": (),
-    "codeblocks": (),
-    "hypothesispytest": ("hypothesis",),
-    "anyio": ("anyio",),
-    "timeout": ("timeout",),
-}
-
-
-def _install_mark_registry(message: Mapping[str, object], plugins: Sequence[str]) -> None:
+def _install_mark_registry(
+    message: Mapping[str, object], plugins: Sequence[tuple[str, str]]
+) -> None:
     """Seed the ``PytestUnknownMarkWarning`` registry (protocol v14): pytest's own marks, the
     ``markers`` ini, and the marks of the *plugins* pytest loads here (:func:`_loaded_plugins`).
     The hook runtime adds what a native ``pytest_configure`` registers."""
@@ -6844,11 +6887,14 @@ def _install_mark_registry(message: Mapping[str, object], plugins: Sequence[str]
 
     strict = bool(message.get("strict_markers", False))
     lines = [str(line) for line in cast("Sequence[object]", message.get("markers") or ())]
-    if any(name not in _PLUGIN_MARKS for name in plugins):
+    from ._hookshim import _PLUGIN_MARKER_LINES, plugin_marker_lines  # pyright: ignore[reportPrivateUsage]
+
+    if any(name not in _PLUGIN_MARKER_LINES for name, _ in plugins):
         set_mark_registry(None, strict=strict)
         return
     set_mark_registry(
-        [*lines, *(mark for name in plugins for mark in _PLUGIN_MARKS[name])], strict=strict
+        [*lines, *(line for name, dist in plugins for line in plugin_marker_lines(name, dist))],
+        strict=strict,
     )
 
 
@@ -7041,9 +7087,16 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     if isinstance(argv, list):
         sys.argv = ["pytest", *(str(arg) for arg in cast("list[object]", argv))]
     blocked = context.get("blocked_plugins")
-    plugins = _loaded_plugins(
+    blocked_names = (
         [str(name) for name in cast("list[object]", blocked)] if isinstance(blocked, list) else []
     )
+    plugins = _loaded_plugins(blocked_names)
+    from ._hookshim import _PLUGIN_USES  # pyright: ignore[reportPrivateUsage]
+
+    _loaded_plugin_uses.update(
+        (name, _PLUGIN_USES[name]) for name, _ in plugins if name in _PLUGIN_USES
+    )
+    _builtins.cache_provider_off = "cacheprovider" in blocked_names
 
     # The assertion-rewriting hook goes on `sys.meta_path` here rather than in `main`,
     # because its bytecode cache lives under the *rootdir* and `init` is the first moment
@@ -7052,7 +7105,15 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     # `find_spec` delegation per import and nothing else.
     from . import _assertion_rewrite
 
-    _ = _assertion_rewrite.install_hook(str(rootdir / ".rustest_cache" / "assert"))
+    # No compiled rewrites written under `sys.dont_write_bytecode` (`PYTHONDONTWRITEBYTECODE`;
+    # pytest's `_write_pyc` checks it too). With the cache provider off (`-p no:cacheprovider`)
+    # pytest still writes its rewrites to `__pycache__`, but rustest keeps them in the cache
+    # directory, which the user has just said not to write: nothing is written there either.
+    no_cache = sys.dont_write_bytecode or _builtins.cache_provider_off
+    _builtins.cache_root = Path(str(message["cache_dir"])) if message.get("cache_dir") else None
+    _ = _assertion_rewrite.install_hook(
+        None if no_cache else str(_builtins._cache_dir(rootdir) / "assert")  # pyright: ignore[reportPrivateUsage]
+    )
 
     # Coverage starts **here**, before the first `collect_file`, because a module's
     # import-time lines are lines coverage.py counts: `coverage run -m pytest` starts before
@@ -7091,7 +7152,8 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     _builtins.configure(rootdir, invocation_dir, ini)
     _install_warning_filters(filter_lines)
     names = [name for name, _ in plugins]
-    _install_mark_registry(message, names)
+    _loaded_plugin_dists[:] = plugins
+    _install_mark_registry(message, plugins)
     _start_hypothesis(plugins)
     reasons: list[str] = []
     if _hypothesis_mod is None:
@@ -7125,6 +7187,7 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
 def _start_hook_runtime(
     message: Mapping[str, object], rootdir: Path, invocation_dir: Path, plugins: Sequence[str]
 ) -> None:
+    dists = dict(_loaded_plugin_dists)
     """Start the native hook runtime when ``init`` carries ``conftests`` (protocol v13).
 
     The **initial** conftests are imported here, in pytest's order, before any test module:
@@ -7147,7 +7210,12 @@ def _start_hook_runtime(
         _ = conftest_registry(path, rootdir)
 
     _ = _hookwire.start(
-        message, rootdir=rootdir, invocation_dir=invocation_dir, plugins=plugins, load=load
+        message,
+        rootdir=rootdir,
+        invocation_dir=invocation_dir,
+        plugins=plugins,
+        load=load,
+        plugin_dists=dists,
     )
 
 
@@ -7547,10 +7615,59 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
         return fail("".join(traceback.format_exception(exc)).rstrip())
 
     if tests:
+        if _loaded_plugin_uses:
+            dynamic = _dynamic_plugin_needs(file_path, state.rootdir)
+            for entry in tests if dynamic else ():
+                entry["needs"] = [*entry.get("needs", []), *dynamic]
         if _hookwire_mod is not None:  # a later conftest may still register modifyitems
             _attach_records(tests, plans, state.rootdir)
         response["tests"] = tests
     return answer()
+
+
+@functools.cache
+def _getfixturevalue_literals(path: Path) -> frozenset[str]:
+    """The string literals passed to a ``getfixturevalue(...)`` call anywhere in *path*."""
+    try:
+        source = path.read_bytes()
+        if b"getfixturevalue" not in source:
+            return frozenset()
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, ValueError):
+        return frozenset()
+    return frozenset(
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "getfixturevalue"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    )
+
+
+def _dynamic_plugin_needs(path: Path, rootdir: Path) -> list[str]:
+    """A loaded plugin's fixture requested by name at run time (``request.getfixturevalue``)
+    in the module or its conftest chain: no closure shows it, so every test of the file
+    carries it, as a test requesting the fixture would."""
+    literals: frozenset[str] = frozenset[str]().union(
+        *(_getfixturevalue_literals(p) for p in (*conftest_chain(path, rootdir), path))
+    )
+    return [
+        f"the pytest plugin {plugin} is used (fixture {name!r}, by getfixturevalue), and rustest"
+        + " does not run it"
+        for plugin, (_, fixtures) in _loaded_plugin_uses.items()
+        for name in sorted(fixtures & literals)
+    ]
+
+
+def plugin_of_fixture(name: str) -> str | None:
+    """The loaded-but-unrun plugin that provides fixture *name*, for a lookup error."""
+    return next(
+        (plugin for plugin, (_, fixtures) in _loaded_plugin_uses.items() if name in fixtures),
+        None,
+    )
 
 
 def _attach_records(

@@ -2463,3 +2463,53 @@ def test_the_markers_of_a_parametrized_test_cannot_be_read_whole(tmp_path: Path)
     runner.register("conftest.py", module)
     _ = _modify(runner, [_record("a.py::t[1]", Mark("slow"), parametrized=True)])
     assert runner.reasons == [] and module.seen == [True]  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_a_loaded_plugins_options_answer_with_their_defaults(tmp_path: Path) -> None:
+    """xdist's and hypothesis's options, as pytest answers them without the flags (which hand
+    off): member-designer's `getattr(config.option, "tx", None)`, pytest 8.4.2 + xdist 3.8."""
+    seen: dict[str, object] = {}
+    module = _module(
+        tmp_path,
+        "plugin_option_conftest",
+        """
+        SEEN = {}
+
+        def pytest_configure(config):
+            SEEN["tx"] = getattr(config.option, "tx", None)
+            SEEN["dist"] = config.getoption("dist")
+            SEEN["profile"] = config.getoption("--hypothesis-profile")
+        """,
+    )
+    runner = _runner(plugins=["xdist", "hypothesispytest"])
+    runner.register("conftest.py", module)
+    runner.configure()
+    seen.update(module.SEEN)
+
+    assert runner.reasons == []
+    assert seen == {"tx": [], "dist": "no", "profile": None}
+
+
+def test_the_plugin_tables_cannot_drift_apart() -> None:
+    """Every allowed plugin has its flags and its marker lines (empty when it has none), an
+    inert one its uses, and Tier S refuses every fixture those uses name: one missing entry
+    switches the marker registry off or lets `--collect-only` list wrong ids."""
+    import re
+
+    from rustest._fallback import SAFE_PLUGINS
+    from rustest._hookshim import (  # pyright: ignore[reportPrivateUsage]
+        _PLUGIN_FLAGS,
+        _PLUGIN_MARKER_LINES,
+        _PLUGIN_USES,
+    )
+
+    assert set(_PLUGIN_FLAGS) == set(_PLUGIN_MARKER_LINES) == SAFE_PLUGINS
+    assert set(_PLUGIN_USES) <= SAFE_PLUGINS
+    static = Path(__file__).parents[2] / "src" / "engine" / "static_collect.rs"
+    block = re.search(
+        r"pub const PLUGIN_FIXTURES: &\[&str\] = &\[(.*?)\];", static.read_text("utf-8"), re.S
+    )
+    assert block is not None
+    assert set(re.findall(r'"(\w+)"', block.group(1))) == set().union(
+        *(fixtures for _, fixtures in _PLUGIN_USES.values())
+    )

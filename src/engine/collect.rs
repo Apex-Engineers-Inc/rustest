@@ -606,6 +606,8 @@ pub(crate) struct Dispatch {
     /// string, because anything that writes *next to* the rootdir — the last-failed cache —
     /// needs a path the platform's own APIs accept.
     pub(crate) rootdir_path: PathBuf,
+    /// `ResolvedConfig::cache_dir`: where the last-failed store is read and written.
+    pub(crate) cache_dir: PathBuf,
     pub(crate) targets: Vec<PathBuf>,
     /// Per target, in walk order: the Tier S manifest cache key for a file whose assertions
     /// may be rewritten, or `None`.
@@ -840,6 +842,7 @@ pub(crate) fn plan_with_options(
         conftests,
         hook_runtime,
         hypothesis_dir: hypothesis_dir.as_deref().map(to_posix),
+        cache_dir: to_posix(&config.cache_dir),
         hook_context: options.hook_context.clone(),
     };
 
@@ -850,6 +853,7 @@ pub(crate) fn plan_with_options(
         #[cfg(test)]
         cache: _cache,
         rootdir_path: config.rootdir.clone(),
+        cache_dir: config.cache_dir.clone(),
         targets,
         assert_keys,
         assignments,
@@ -898,7 +902,11 @@ pub(crate) fn spawn_pool(
     // `Worker::drop` kills whatever had already started.
     let mut pool: Vec<Worker> = Vec::with_capacity(dispatch.assignments.len());
     for index in 0..dispatch.assignments.len() {
-        pool.push(Worker::spawn(index, launcher)?);
+        pool.push(Worker::spawn(
+            index,
+            launcher,
+            &xdist_identity(index, dispatch.assignments.len()),
+        )?);
     }
     let hooks_run = matches!(
         &dispatch.init,
@@ -1122,6 +1130,10 @@ fn collect_with_launcher(
             .hooks_needing_pytest()
             .into_iter()
             .chain(modifies)
+            .chain(crate::engine::manifest::plugin_handoff(
+                outcomes.iter().flat_map(|(_, outcome)| &outcome.tests),
+                true,
+            ))
             .collect();
         if !hooks.is_empty() {
             return Ok(CollectionManifest {
@@ -1143,15 +1155,20 @@ fn collect_with_launcher(
         options.mark.as_deref(),
     )
     .map_err(CollectError::Selection)?;
-
+    let needs = if options.pytest_fallback {
+        crate::engine::manifest::plugin_handoff(&assembled.tests, false)
+    } else {
+        Vec::new()
+    };
+    let native = needs.is_empty();
     Ok(CollectionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         rootdir: dispatch.rootdir,
-        tests: assembled.tests,
-        errors: assembled.errors,
-        deselected,
-        module_skipped: assembled.module_skipped,
-        pytest_fallback: Vec::new(),
+        tests: if native { assembled.tests } else { Vec::new() },
+        errors: if native { assembled.errors } else { Vec::new() },
+        deselected: if native { deselected } else { 0 },
+        module_skipped: if native { assembled.module_skipped } else { 0 },
+        pytest_fallback: needs,
     })
 }
 
@@ -2286,9 +2303,63 @@ pub(crate) struct Worker {
     late_teardowns: Vec<LateTeardown>,
 }
 
+/// The environment a pytest-xdist worker has, for worker *index* of a pool of *size*
+/// (`xdist/remote.py`: set before anything of the project is imported). A pool of one is
+/// serial pytest, which has none of it: the variables are removed, in case the parent itself
+/// runs under xdist.
+fn xdist_identity(index: usize, size: usize) -> Vec<(&'static str, Option<String>)> {
+    if size < 2 {
+        return [
+            "PYTEST_XDIST_WORKER",
+            "PYTEST_XDIST_WORKER_COUNT",
+            "PYTEST_XDIST_TESTRUNUID",
+        ]
+        .into_iter()
+        .map(|key| (key, None))
+        .collect();
+    }
+    vec![
+        ("PYTEST_XDIST_WORKER", Some(format!("gw{index}"))),
+        ("PYTEST_XDIST_WORKER_COUNT", Some(size.to_string())),
+        ("PYTEST_XDIST_TESTRUNUID", Some(testrun_uid().to_string())),
+    ]
+}
+
+/// One id per session, 32 lowercase hex digits like xdist's `uuid.uuid4().hex`.
+fn testrun_uid() -> &'static str {
+    static UID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    UID.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        let mut out = String::new();
+        for part in 0..2u64 {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u64(part);
+            hasher.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_nanos()),
+            );
+            hasher.write_u32(std::process::id());
+            out.push_str(&format!("{:016x}", hasher.finish()));
+        }
+        out
+    })
+}
+
 impl Worker {
-    fn spawn(index: usize, launcher: &WorkerLauncher) -> Result<Self, CollectError> {
-        let mut child = Command::new(&launcher.program)
+    fn spawn(
+        index: usize,
+        launcher: &WorkerLauncher,
+        identity: &[(&'static str, Option<String>)],
+    ) -> Result<Self, CollectError> {
+        let mut command = Command::new(&launcher.program);
+        for (key, value) in identity {
+            match value {
+                Some(value) => command.env(key, value),
+                None => command.env_remove(key),
+            };
+        }
+        let mut child = command
             .args(&launcher.args)
             .envs(launcher.envs.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
@@ -3265,7 +3336,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":15}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":16}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

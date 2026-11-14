@@ -161,9 +161,11 @@ has no effect.
 
 from __future__ import annotations
 
+import copy
 import functools
 import gc
 import inspect
+import os
 import shlex
 import sys
 import warnings
@@ -617,6 +619,41 @@ _PLUGIN_FLAGS: Final[Mapping[str, frozenset[str]]] = {
     "rich": frozenset({"--rich", "--rich-capture"}),
     "codeblocks": frozenset({"--codeblocks"}),
     "pytest_mock": frozenset(),
+    "anyio": frozenset({"--anyio-mode"}),
+    "timeout": frozenset(
+        {
+            "--session-timeout",
+            "--timeout",
+            "--timeout-disable-debugger-detection",
+            "--timeout-method",
+            "--timeout_method",
+        }
+    ),
+    "syrupy": frozenset(
+        {
+            "--snapshot-default-extension",
+            "--snapshot-details",
+            "--snapshot-diff-mode",
+            "--snapshot-no-colors",
+            "--snapshot-patch-pycharm-diff",
+            "--snapshot-update",
+            "--snapshot-warn-unused",
+        }
+    ),
+    "textual-snapshot": frozenset({"--snapshot-report"}),
+    "platformdirs": frozenset(),
+    "hydra_pytest": frozenset(),
+    "faker": frozenset(),
+    "typeguard": frozenset(
+        {
+            "--typeguard-collection-check-strategy",
+            "--typeguard-debug-instrumentation",
+            "--typeguard-forward-ref-policy",
+            "--typeguard-packages",
+            "--typeguard-packages-ignore",
+            "--typeguard-typecheck-fail-callback",
+        }
+    ),
     "hypothesispytest": frozenset(
         {
             "--hypothesis-explain",
@@ -628,16 +665,32 @@ _PLUGIN_FLAGS: Final[Mapping[str, frozenset[str]]] = {
     ),
 }
 
-#: What ``getoption`` answers for an emulated plugin's options: their defaults, since the CLI
-#: hands a session that sets one to pytest. Keyed by option string; the dest is derived.
-_PLUGIN_OPTION_DEFAULTS: Final[Mapping[str, Mapping[str, object]]] = {
+#: What ``getoption`` and ``config.option`` answer for a loaded plugin's options: their
+#: defaults, since the CLI hands a session that sets one to pytest. Option string -> (dest,
+#: default), as the plugin declares them (xdist 3.8's ``-n``/``--numprocesses`` is rustest's
+#: own and left out).
+_PLUGIN_OPTION_DEFAULTS: Final[Mapping[str, Mapping[str, tuple[str, object]]]] = {
     "hypothesispytest": {
-        "--hypothesis-profile": None,
-        "--hypothesis-verbosity": None,
-        "--hypothesis-show-statistics": False,
-        "--hypothesis-seed": None,
-        "--hypothesis-explain": False,
+        "--hypothesis-profile": ("hypothesis_profile", None),
+        "--hypothesis-verbosity": ("hypothesis_verbosity", None),
+        "--hypothesis-show-statistics": ("hypothesis_show_statistics", False),
+        "--hypothesis-seed": ("hypothesis_seed", None),
+        "--hypothesis-explain": ("hypothesis_explain", False),
     },
+    "xdist": {
+        "--maxprocesses": ("maxprocesses", None),
+        "--max-worker-restart": ("maxworkerrestart", None),
+        "--dist": ("dist", "no"),
+        "--loadscope-reorder": ("loadscopereorder", True),
+        "--tx": ("tx", []),
+        "--px": ("px", []),
+        "-d": ("distload", False),
+        "--rsyncdir": ("rsyncdir", []),
+        "--rsyncignore": ("rsyncignore", []),
+        "--testrunuid": ("testrunuid", None),
+        "--maxschedchunk": ("maxschedchunk", None),
+    },
+    "xdist.looponfail": {"--looponfail": ("looponfail", False)},
 }
 
 #: The ``markers`` lines pytest 8.4.2's own plugins add in their ``pytest_configure``, in the
@@ -672,15 +725,88 @@ _PYTEST_MARKER_LINES: Final = (
     + " call it last/as late as possible. DEPRECATED, use @pytest.hookimpl(trylast=True) instead.",
 )
 
-#: The ``markers`` line each allowed plugin adds (the rest add none), in reverse registration
-#: order when several are loaded (``_fallback.installed_plugins`` gives that order).
-_PLUGIN_MARKER_LINES: Final[Mapping[str, str]] = {
-    "xdist": "xdist_group: specify group for tests should run in same session.in relation to one"
-    + " another. Provided by pytest-xdist.",
-    "pytest_cov": "no_cover: disable coverage for this test.",
-    "asyncio": "asyncio: mark the test as a coroutine, it will be run using an asyncio event loop",
-    "hypothesispytest": "hypothesis: Tests which use hypothesis.",
+#: The ``markers`` lines each allowed plugin adds, in reverse registration order when several
+#: are loaded (``_fallback.installed_plugins`` gives that order). **Every** plugin of
+#: ``_fallback.SAFE_PLUGINS`` has an entry, empty when it adds none: a plugin missing here turns
+#: the unknown-mark registry off (``_worker._install_mark_registry``), and
+#: ``test_hookshim`` fails when the tables drift apart.
+_PLUGIN_MARKER_LINES: Final[Mapping[str, tuple[str, ...]]] = {
+    "xdist": (
+        "xdist_group: specify group for tests should run in same session.in relation to one"
+        + " another. Provided by pytest-xdist.",
+    ),
+    "xdist.looponfail": (),
+    "pytest_cov": ("no_cover: disable coverage for this test.",),
+    "asyncio": (
+        "asyncio: mark the test as a coroutine, it will be run using an asyncio event loop",
+    ),
+    "pytest_mock": (),
+    "icdiff": (),
+    "rich": (),
+    "codeblocks": (),
+    "hypothesispytest": ("hypothesis: Tests which use hypothesis.",),
+    "anyio": ("anyio: mark the (coroutine function) test to be run asynchronously via anyio.",),
+    # pytest-timeout 2.4.0's line, verbatim.
+    "timeout": (
+        "timeout(timeout, method=None, func_only=False, disable_debugger_detection=False):"
+        + " Set a timeout, timeout method and func_only evaluation on just one test item.  The"
+        + " first argument, *timeout*, is the timeout in seconds while the keyword, *method*,"
+        + " takes the same values as the --timeout-method option. The *func_only* keyword, when"
+        + " set to True, defers the timeout evaluation to only the test function body, ignoring"
+        + " the time it takes when evaluating any fixtures used in the test. The"
+        + " *disable_debugger_detection* keyword, when set to True, disables debugger detection,"
+        + " allowing breakpoint(), pdb.set_trace(), etc. to be interrupted",
+    ),
+    # syrupy 7's; 4.x registers none (`plugin_marker_lines`).
+    "syrupy": ("syrupy_snapshot: test directly or indirectly uses the snapshot fixture",),
+    "textual-snapshot": (),
+    "platformdirs": (),
+    "hydra_pytest": (),
+    "faker": (),
+    "typeguard": (),
 }
+
+#: Installed plugins rustest runs without while no selected test uses them
+#: (``_fallback.SAFE_PLUGINS``): entry point -> (its marks, its fixtures). Each is inert
+#: otherwise; its flags, ini keys and environment are the CLI's to check. A mark of one of
+#: these that a ``pytest_collection_modifyitems`` adds is a violation (:meth:`_Item.add_marker`).
+_PLUGIN_USES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = {
+    "anyio": (
+        frozenset({"anyio"}),
+        frozenset(
+            {
+                "anyio_backend",
+                "anyio_backend_name",
+                "anyio_backend_options",
+                "free_tcp_port",
+                "free_tcp_port_factory",
+                "free_udp_port",
+                "free_udp_port_factory",
+            }
+        ),
+    ),
+    "timeout": (frozenset({"timeout"}), frozenset()),
+    "syrupy": (frozenset({"syrupy_snapshot"}), frozenset({"snapshot"})),
+    "textual-snapshot": (frozenset(), frozenset({"snap_compare"})),
+    "platformdirs": (frozenset(), frozenset({"platformdirs_isolated"})),
+    "hydra_pytest": (
+        frozenset(),
+        frozenset({"hydra_restore_singletons", "hydra_sweep_runner", "hydra_task_runner"}),
+    ),
+    "faker": (frozenset(), frozenset({"faker"})),
+}
+
+#: Plugin fixtures a plugin acts on **by name**, defined by the user or not: anyio's hooks key
+#: on ``"anyio_backend" in fixturenames``, so a conftest's own ``anyio_backend`` is still anyio's.
+_NAME_KEYED_FIXTURES: Final = frozenset({"anyio_backend"})
+
+
+def plugin_marker_lines(name: str, distribution: str = "") -> tuple[str, ...]:
+    """The ``markers`` lines plugin *name* registers, for the installed *distribution*."""
+    if name == "syrupy" and distribution.partition("-")[2].split(".")[0] in tuple("0123456"):
+        return ()  # syrupy < 7 registers no marker
+    return _PLUGIN_MARKER_LINES.get(name, ())
+
 
 #: The ``dest`` of each of pytest's core options (:data:`_PYTEST_CORE_FLAGS`).
 _PYTEST_CORE_DESTS: Final = frozenset(
@@ -845,6 +971,7 @@ class _State:
     active: bool = False  # a hook is running: the shims are valid only now
     violations: list[str] = field(default_factory=list[str])
     late: list[str] = field(default_factory=list[str])  # uses of a shim after its hook returned
+    plugin_marks: dict[str, str] = field(default_factory=dict[str, str])  # mark -> its plugin
     markers: list[str] = field(default_factory=list[str])
     options: dict[str, _Option] = field(default_factory=dict[str, _Option])  # by dest
     opt2dest: dict[str, str] = field(default_factory=dict[str, str])
@@ -1181,7 +1308,16 @@ class _Config(_Shim):
         st = self._st
         if name in st.user:
             return st.user[name]
-        if name in _ABSENT_CONFIG_ATTRS:
+        worker = os.environ.get("PYTEST_XDIST_WORKER")
+        if name == "workerinput" and worker is not None:
+            # A pool of two or more is xdist's: its three keys, anything else is pytest's.
+            return _WorkerInput(
+                st,
+                workerid=worker,
+                workercount=int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")),
+                testrunuid=os.environ.get("PYTEST_XDIST_TESTRUNUID", ""),
+            )
+        if name in _ABSENT_CONFIG_ATTRS and not (worker is not None and name == "workeroutput"):
             raise AttributeError(name)
         st.violate(f"uses config.{name}")
 
@@ -1189,6 +1325,18 @@ class _Config(_Shim):
         if name.startswith("_") or name in _RESERVED_CONFIG:
             self._st.violate(f"sets config.{name}")
         self._st.user[name] = value
+
+
+class _WorkerInput(dict[str, object]):
+    """``config.workerinput`` in a pool of two or more: xdist's ``workerid``, ``workercount``
+    and ``testrunuid``; any other key is a violation."""
+
+    def __init__(self, st: _State, **values: object) -> None:
+        super().__init__(values)
+        self._st = st
+
+    def __missing__(self, key: str) -> NoReturn:
+        self._st.violate(f"reads config.workerinput[{key!r}]")
 
 
 class _Session(_Shim):
@@ -1404,6 +1552,10 @@ class _Item(_Shim):
         if self.nodeid in st.duplicates:  # the worker keeps one plan per node id
             st.violate(f"adds a mark to {self.nodeid}, which the item list holds more than once")
         mark = _mark_of(st, marker)
+        if (plugin := st.plugin_marks.get(mark.name)) is not None:
+            # pytest-timeout reads it when the test runs, anyio expands the test in
+            # `pytest_collection_finish`: both after this hook, both pytest's to honour.
+            st.violate(f"adds the {mark.name!r} mark, which the pytest plugin {plugin} acts on")
         index = (
             0 if not append else (self._rs_own if self._rs_own is not None else len(self._rs_marks))
         )
@@ -1538,6 +1690,7 @@ class HookRunner:
         builtin_options: Mapping[str, object] | None = None,
         invocation_dir: str | Path | None = None,
         plugins: Iterable[str] = (),
+        plugin_dists: Mapping[str, str] | None = None,
     ) -> None:
         """*plugins* are the ``pytest11`` entry-point names pytest would load: their option
         strings (:data:`_PLUGIN_FLAGS`) are as taken as pytest's own, and their ``markers``
@@ -1545,10 +1698,10 @@ class HookRunner:
         super().__init__()
         plugins = tuple(plugins)
         defaults = {
-            key: value
+            key: copy.copy(value)
             for name in plugins
-            for flag, value in _PLUGIN_OPTION_DEFAULTS.get(name, {}).items()
-            for key in (flag, flag[2:].replace("-", "_"))
+            for flag, (dest, value) in _PLUGIN_OPTION_DEFAULTS.get(name, {}).items()
+            for key in (flag, dest)
         }
         self._st = _State(
             Path(rootpath),
@@ -1558,7 +1711,11 @@ class HookRunner:
             _PYTEST_CORE_FLAGS.union(*(_PLUGIN_FLAGS.get(name, ()) for name in plugins)),
         )
         # each plugin's `pytest_configure` adds its line, last-registered first (pluggy's LIFO)
-        plugin_lines = [_PLUGIN_MARKER_LINES[n] for n in plugins if n in _PLUGIN_MARKER_LINES]
+        dists = plugin_dists or {}
+        plugin_lines = [line for n in plugins for line in plugin_marker_lines(n, dists.get(n, ""))]
+        self._st.plugin_marks = {
+            mark: name for name in plugins for mark in _PLUGIN_USES.get(name, ((), ()))[0]
+        }
         self._marker_tail: tuple[str, ...] | None = (
             (*reversed(plugin_lines), *_PYTEST_MARKER_LINES)
             if all(n in _PLUGIN_FLAGS for n in plugins)

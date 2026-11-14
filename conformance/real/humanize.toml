@@ -51,7 +51,7 @@ setup = [
     "{py}",
     "--reinstall-package",
     "rustest",
-    "{wheels}/rustest-0.16.2-cp314-cp314-win_amd64.whl",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
   ],
 ]
 pythonpath = []

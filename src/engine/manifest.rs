@@ -98,6 +98,11 @@ pub struct CollectedTest {
     /// parametrized test (`KeywordMatcher.from_item`). Omitted when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// An installed pytest plugin rustest runs without **while no selected test uses it**
+    /// (`_fallback.SAFE_PLUGINS`) that this test uses: its mark or its fixture. A session that
+    /// selects such a test goes to pytest ([`plugin_handoff`]). Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
     /// The hook runtime's record of this item (`_hookshim.ItemRecord`, protocol v13), sent
     /// only when a `pytest_collection_modifyitems` is registered. Forwarded to the workers
     /// verbatim at the barrier; never read here and never written to a manifest or a cache.
@@ -172,6 +177,34 @@ fn is_zero(count: &usize) -> bool {
     *count == 0
 }
 
+/// Plugins that change the collection itself when used: anyio parametrizes a test by backend
+/// (`[asyncio]`/`[trio]` ids) and syrupy 7 marks it `syrupy_snapshot`, both before `-k`/`-m`
+/// and node-id selection. Their [`CollectedTest::needs`] are decided on the whole collection;
+/// the others' only on what selection keeps.
+const COLLECTION_CHANGING: &[&str] = &["anyio", "syrupy"];
+
+/// The hand-off reasons the given tests' [`CollectedTest::needs`] add up to, each once and
+/// naming the first test that has it: on the whole collection only those of
+/// [`COLLECTION_CHANGING`] plugins (`before_selection`), after selection every one.
+pub fn plugin_handoff<'a>(
+    tests: impl IntoIterator<Item = &'a CollectedTest>,
+    before_selection: bool,
+) -> Vec<String> {
+    let changes_collection = |need: &str| {
+        COLLECTION_CHANGING
+            .iter()
+            .any(|plugin| need.starts_with(&format!("the pytest plugin {plugin} ")))
+    };
+    let mut seen = std::collections::HashSet::new();
+    tests
+        .into_iter()
+        .flat_map(|test| test.needs.iter().map(move |need| (need, &test.id)))
+        .filter(|(need, _)| !before_selection || changes_collection(need))
+        .filter(|(need, _)| seen.insert(need.as_str()))
+        .map(|(need, id)| format!("{need} ({id})"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +239,7 @@ mod tests {
                     marks: Vec::new(),
                     fixtures: Vec::new(),
                     keywords: Vec::new(),
+                    needs: Vec::new(),
                     tier: Tier::Dynamic,
                     record: None,
                 },
@@ -229,6 +263,7 @@ mod tests {
                     ],
                     fixtures: vec!["tmp_path".to_string(), "capsys".to_string()],
                     keywords: vec!["parametrize".to_string(), "pytestmark".to_string()],
+                    needs: Vec::new(),
                     tier: Tier::Dynamic,
                     record: None,
                 },
@@ -241,6 +276,7 @@ mod tests {
                     marks: Vec::new(),
                     fixtures: Vec::new(),
                     keywords: Vec::new(),
+                    needs: Vec::new(),
                     tier: Tier::Static,
                     record: None,
                 },
@@ -306,6 +342,7 @@ mod tests {
             marks: Vec::new(),
             fixtures: Vec::new(),
             keywords: Vec::new(),
+            needs: Vec::new(),
             tier: Tier::Static,
             record: None,
         };

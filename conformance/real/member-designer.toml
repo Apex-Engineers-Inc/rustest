@@ -65,7 +65,7 @@ setup = [
     "{py}",
     "--reinstall-package",
     "rustest",
-    "{wheels}/rustest-0.16.2-cp314-cp314t-win_amd64.whl",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314t-win_amd64.whl",
   ],
 ]
 
@@ -77,19 +77,18 @@ setup = [
 # now (`_worker::_apply_pythonpath`, protocol v6), so the scaffolding is gone and rustest
 # resolves `src/` from the repo's own pyproject.toml exactly as pytest does.
 pythonpath = []
+# The suite refuses a free-threaded interpreter with the GIL off (its conftest exits:
+# "the GIL is disabled ... corrupts the heap during FEM analysis"); its own `poe test-once`
+# sets `PYTHON_GIL=1`, and so does every leg here.
+environ = { PYTHON_GIL = "1" }
 
 [run]
 pytest_args = []
-# `-n 1`, and it is the one runner flag this target carries. NOT a compensation for a
-# compat defect: it is the only way to ask the two runners the same question about a suite
-# whose fixtures **drop and recreate a single shared MongoDB database**. rustest's default
-# worker pool gives each worker its own session-scoped fixtures, so worker B's `testDB`
-# teardown lands while worker A is mid-insert and pymongo answers
-# `OperationFailure: The database is currently being dropped`. Measured on this tree:
-# default pool -> 262 errors + 94 failures; `-n 1` -> 0 errors, 25 failures, 6082 passed.
-# The parallel result is ledgered under [divergence.global] rather than hidden, because it
-# is a real and reportable property of running this suite under rustest.
-rustest_args = ["-n", "1"]
+# No `-n 1` any more (removed 2026-11-13). It dated from a suite whose fixtures dropped one
+# shared MongoDB database; the suite now starts a throwaway mongod per process
+# (`tests/mongo_for_tests.py`), and pytest-xdist at `-n 4` passes all 11 591 tests on this
+# tree, so rustest runs it with the same default parallelism as every other target.
+rustest_args = []
 # ~6k tests against a real MongoDB, twice.
 timeout_s = 7200
 # `id_policy` is DEFAULT (`exact`), and the entry that used to sit here documented its own

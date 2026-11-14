@@ -970,9 +970,46 @@ class Cache:
             return
 
 
+def xdist_workerinput() -> dict[str, object] | None:
+    """What xdist puts in ``config.workerinput`` for this worker (its own
+    ``PYTEST_XDIST_*`` environment, which the engine sets for a pool of two or more)."""
+    workerid = os.environ.get("PYTEST_XDIST_WORKER")
+    if workerid is None:
+        return None
+    return {
+        "workerid": workerid,
+        "workercount": int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")),
+        "testrunuid": os.environ.get("PYTEST_XDIST_TESTRUNUID", ""),
+    }
+
+
+@fixture(scope="session")
+def worker_id() -> str:
+    """pytest-xdist's ``worker_id``: ``gwN`` in a pool of two or more, else ``"master"``."""
+    workerinput = xdist_workerinput()
+    return "master" if workerinput is None else str(workerinput["workerid"])
+
+
+@fixture(scope="session")
+def testrun_uid() -> str:
+    """pytest-xdist's ``testrun_uid``: the session's id, shared by every worker."""
+    import uuid
+
+    workerinput = xdist_workerinput()
+    return uuid.uuid4().hex if workerinput is None else str(workerinput["testrunuid"])
+
+
+#: ``-p no:cacheprovider``: no ``cache`` fixture, no ``config.cache`` (set by the worker).
+cache_provider_off = False
+
+#: The resolved ``cache_dir`` ini (``ResolvedConfig::cache_dir``), set by the worker from
+#: ``init``; ``None`` means the default.
+cache_root: Path | None = None
+
+
 def _cache_dir(rootdir: Path) -> Path:
-    """``<rootdir>/.rustest_cache`` — mirrors ``src/engine/cache.rs``'s two constants."""
-    return rootdir / ".rustest_cache"
+    """The ``cache_dir`` ini as pytest resolves it, else ``<rootdir>/.rustest_cache``."""
+    return cache_root if cache_root is not None else rootdir / ".rustest_cache"
 
 
 @fixture(scope="session")
@@ -1517,8 +1554,21 @@ class Config:
         return legacy_path(self.rootpath)
 
     @property
+    def workerinput(self) -> Mapping[str, object]:
+        """`config.workerinput` as a pytest-xdist worker has it -- ``workerid``,
+        ``workercount`` and ``testrunuid`` -- when the pool has more than one worker; serial
+        pytest has no such attribute."""
+        workerinput = xdist_workerinput()
+        if workerinput is None:
+            raise AttributeError("'Config' object has no attribute 'workerinput'")
+        return workerinput
+
+    @property
     def cache(self) -> Cache:
-        """`Config.cache` — the same object the :func:`cache` fixture yields."""
+        """`Config.cache` — the same object the :func:`cache` fixture yields. The cache provider
+        sets the attribute, so without it (``-p no:cacheprovider``) there is none."""
+        if cache_provider_off:
+            raise AttributeError("'Config' object has no attribute 'cache'")
         return Cache(_cache_dir(self.rootpath))
 
     def getini(self, name: str) -> object:

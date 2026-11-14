@@ -27,6 +27,7 @@ is removed afterwards unless it was already there.
 from __future__ import annotations
 
 import fnmatch
+import dataclasses
 import json
 import os
 import shutil
@@ -44,6 +45,12 @@ from ._real_report_plugin import REPORT_ENV_VAR
 #: Where the ``--real`` configs live, and where clones/venvs/wheels are staged.
 REAL_DIR: Final = Path(__file__).resolve().parent.parent / "real"
 WORK_DIR: Final = REAL_DIR / "_work"
+#: **Private** targets: configs for repositories that must never leave this machine. The
+#: directory is inside the git-ignored ``_work``, so their names, paths and results are never
+#: committed; a config here is a target like any other, its result goes to ``results/`` beside
+#: it rather than to the published ``conformance/real/results``, and the run must leave the
+#: repository's ``git status`` exactly as it found it.
+LOCAL_DIR: Final = WORK_DIR / "local"
 
 #: The name the reporting plugin is written under inside the throwaway ``PYTHONPATH``
 #: directory. Deliberately not importable from the harness package: putting
@@ -168,6 +175,12 @@ class RealTarget:
     #: would simply go stale. They are printed with every verdict instead, because a
     #: compensation nobody can see is indistinguishable from a bug nobody found.
     notes: dict[str, str] = field(default_factory=dict[str, str])
+    #: A config under :data:`LOCAL_DIR`: a repository that is never written to, whose result
+    #: is never published.
+    private: bool = False
+    #: ``[env] environ``: variables every leg runs with, as the target's own test task sets
+    #: them (member-designer's ``PYTHON_GIL=1``).
+    environ: dict[str, str] = field(default_factory=dict[str, str])
 
     @property
     def python(self) -> Path:
@@ -178,7 +191,9 @@ def load_target(name: str) -> RealTarget:
     """Parse ``conformance/real/<name>.toml`` into a :class:`RealTarget`."""
     path = REAL_DIR / f"{name}.toml"
     if not path.is_file():
-        raise ConfigError(f"no such target config: {path}")
+        path = LOCAL_DIR / f"{name}.toml"
+    if not path.is_file():
+        raise ConfigError(f"no such target config: {REAL_DIR / f'{name}.toml'}")
     try:
         data: dict[str, object] = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
@@ -215,6 +230,7 @@ def load_target(name: str) -> RealTarget:
         venv=(WORK_DIR / "_venvs" / name).resolve(),
         setup=_commands(env_tbl, "setup"),
         pythonpath=_strings(env_tbl, "pythonpath"),
+        environ={str(k): str(v) for k, v in _table(env_tbl, "environ").items()},
         pytest_args=_strings(run_tbl, "pytest_args"),
         rustest_args=_strings(run_tbl, "rustest_args"),
         timeout_s=_int(run_tbl, "timeout_s", 3600),
@@ -222,6 +238,7 @@ def load_target(name: str) -> RealTarget:
         ids_ledger=_ledger(div_tbl, "ids"),
         global_ledger=_ledger(div_tbl, "global"),
         notes=_ledger(data, "notes"),
+        private=path.parent == LOCAL_DIR,
     )
 
 
@@ -562,7 +579,9 @@ def _env_for(target: RealTarget, extra_paths: Iterable[Path]) -> dict[str, str]:
     ``[env] pythonpath`` is a compensation lever for a target whose ini ``pythonpath`` the
     runners would not otherwise resolve (fastapi uses it for ``docs_src``).
     """
-    env = dict(os.environ)
+    env = dict(os.environ) | target.environ
+    if target.kind == "local":
+        env["PYTHONDONTWRITEBYTECODE"] = "1"  # no `__pycache__` inside a local tree
     parts = [str(p) for p in extra_paths]
     parts += [str((target.repo / rel).resolve()) for rel in target.pythonpath]
     existing = env.get("PYTHONPATH", "")
@@ -696,6 +715,8 @@ def run_rustest_real(
         str(workers),
         "--report-json",
         str(report),
+        # A local tree is never written to: `-p no:cacheprovider`, as the pytest legs run.
+        *(["-p", "no:cacheprovider"] if target.kind == "local" else []),
         *target.rustest_args,
         *target.test_paths,
     ]
@@ -912,7 +933,24 @@ FLAGS: Final[Mapping[str, str]] = {
 
 
 def available_targets() -> list[str]:
-    return sorted(p.stem for p in REAL_DIR.glob("*.toml"))
+    return sorted(p.stem for p in [*REAL_DIR.glob("*.toml"), *LOCAL_DIR.glob("*.toml")])
+
+
+def _git_status(target: RealTarget) -> str | None:
+    """``git status --short`` of a local target's tree (``None`` when it is not a git tree):
+    the before-and-after check that a run wrote nothing there."""
+    if target.kind != "local":
+        return None
+    proc = subprocess.run(  # noqa: S603
+        ["git", "-C", str(target.repo), "status", "--short", "--ignored=matching"],
+        capture_output=True,
+        text=True,
+        encoding=_ENCODING,
+        errors=_ERRORS,
+        timeout=300,
+        check=False,
+    )
+    return proc.stdout if proc.returncode == 0 else None
 
 
 #: One JSON file per suite, written the moment that suite finishes. A sweep is resumable
@@ -972,13 +1010,22 @@ def run_target(
         if setup_only:
             return RealVerdict(name, "MATCH", None, None, [], [], [], detail="setup only")
         ensure_xdist(target)
+        before = _git_status(target)
         tmp = WORK_DIR / "_runs" / name
         if tmp.exists():
             shutil.rmtree(tmp)
         tmp.mkdir(parents=True, exist_ok=True)
         pytest_run = run_pytest_real(target, tmp)
         rustest_run = run_rustest_real(target, tmp, tree=tree)
-        verdict = grade_real(target, pytest_run, rustest_run)
+        # A handed-off leg is pytest's own run, graded exactly: the ledgers describe the
+        # engine, and grade the engine leg below.
+        verdict = grade_real(
+            dataclasses.replace(target, ids_ledger={}, global_ledger={})
+            if rustest_run.fallback
+            else target,
+            pytest_run,
+            rustest_run,
+        )
         xdist_run: RunOutcome | None = None
         xdist_error = ""
         try:
@@ -990,6 +1037,8 @@ def run_target(
         if rustest_run.fallback:
             engine_run = run_rustest_real(target, tmp, fallback=False, tree=tree)
             engine_status = grade_real(target, pytest_run, engine_run).status
+        if before is not None and _git_status(target) != before:
+            raise RuntimeError(f"{name}: the run changed `git status` in {target.repo}")
         return RealVerdict(
             verdict.name,
             verdict.status,
@@ -1045,9 +1094,14 @@ def _row(verdict: RealVerdict) -> dict[str, Any]:
     }
 
 
+def _result_path(name: str) -> Path:
+    private = (LOCAL_DIR / f"{name}.toml").is_file() and not (REAL_DIR / f"{name}.toml").is_file()
+    return (LOCAL_DIR / "results" if private else RESULTS_DIR) / f"{name}.json"
+
+
 def record_result(verdict: RealVerdict) -> Path:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = RESULTS_DIR / f"{verdict.name}.json"
+    path = _result_path(verdict.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_row(verdict), indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -1156,7 +1210,7 @@ def main_real(
     # `conformance/real/results/<name>.json`, so it can be resumed and merged.
     verdicts: list[RealVerdict] = []
     for name in names:
-        if resume and (RESULTS_DIR / f"{name}.json").exists():
+        if resume and _result_path(name).exists():
             print(f"[--] {name}: already recorded, skipped (--real-resume)")
             continue
         verdict = run_target(name, setup_only=setup_only, rebuild_env=rebuild_env, tree=tree)

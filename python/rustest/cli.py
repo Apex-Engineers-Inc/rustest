@@ -224,7 +224,8 @@ def _drop_ignored_pytest_flags(raw: list[str]) -> tuple[list[str], list[str]]:
         if takes is None:
             kept.append(token)
             continue
-        dropped.append(token)
+        if name != "-p":  # read already (`_plugin_names`, `_blocked_plugins`): not ignored
+            dropped.append(token)
         # `--tb short` (separate token) as well as `--tb=short`; only consume when the flag
         # takes a value and did not already carry one, and never consume another flag.
         if takes and not inline and index < len(raw) and not raw[index].startswith("-"):
@@ -256,6 +257,10 @@ class _Parser(argparse.ArgumentParser):
     config_source_hint: str | None = None
     #: ``True`` while a usage error should be handed to pytest instead of ending the run.
     fallback: bool = False
+    #: The ini file sets `cache_dir`, which both runners then use (`_fallback.run`).
+    cache_dir_set: bool = False
+    #: The `-n` a handed-off session gives pytest when nothing asked for one (`_fallback.run`).
+    default_workers: int | None = None
 
     def error(self, message: str) -> "NoReturn":
         if self.fallback:
@@ -872,6 +877,8 @@ def _hand_to_pytest(
         llm_full=known.llm_full,
         collect_only=known.collect_only,
         verbosity=_verbosity(known),
+        cache_dir_set=parser.cache_dir_set,
+        workers=parser.default_workers,
     )
 
 
@@ -970,10 +977,26 @@ def _conftest_args(
     return kept, segments, [] if paths is parser.get_default("paths") else list(paths)
 
 
-def _autoloaded_plugins(blocked: Sequence[str]) -> list[str]:
+def _default_workers(argv: Sequence[str], blocked: Sequence[str]) -> int | None:
+    """rustest's own pool size, for pytest-xdist to use when a session goes to pytest: unless
+    the arguments (``addopts`` and ``PYTEST_ADDOPTS`` included) already decide distribution,
+    ask for a debugger, or turn xdist off -- then pytest is left to what it was told."""
+    owned = ("-n", "--workers", "--numprocesses", "--dist", "-d", "--tx", "--pdb", "--trace", "-f")
+    if "xdist" in blocked or any(
+        token in owned
+        or token.startswith(("-n", "--workers=", "--numprocesses=", "--dist=", "--tx="))
+        for token in argv
+    ):
+        return None
+    from .core import _pool_size  # pyright: ignore[reportPrivateUsage]
+
+    return _pool_size(None)
+
+
+def _autoloaded_plugins(blocked: Sequence[str], config_file: object) -> list[str]:
     from . import _fallback
 
-    return _fallback.autoload_reasons(blocked)
+    return _fallback.autoload_reasons(blocked, _raw_ini(config_file))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1063,12 +1086,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # the command line's, so these are lifted out here rather than parsed and forgotten.
     addopts, ini_a, _ = _extract_ini_overrides(addopts)
     env_opts, ini_e, _ = _extract_ini_overrides(env_opts)
+    parser.cache_dir_set = bool(_raw_ini(resolved.get("config_file")).get("cache_dir"))
     late_ini = [
         f"-o {key} is an ini option rustest cannot apply (from {where})"
         for where, found in (("addopts", ini_a), ("PYTEST_ADDOPTS", ini_e))
         for key in found
     ]
     raw = addopts + env_opts + raw
+    parser.default_workers = _default_workers(raw, _blocked_plugins(raw))
     parser.fallback = "--no-pytest-fallback" not in raw
     # pytest appends these two lines to **every** usage error, not only to one sourced from
     # a config file: they come from `_parser.extra_info`, which `Config._initini` fills in as
@@ -1173,12 +1198,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         # is a request only pytest can honour.
         + ["-p no:warnings turns off the warning filters rustest applies"]
         * ("warnings" in blocked_plugins)
-        + _autoloaded_plugins(blocked_plugins)
+        # `--lf`/`--ff` are the cache provider's own options: pytest rejects them without it.
+        + ["-p no:cacheprovider removes --lf and --ff, which pytest then rejects"]
+        * (
+            "cacheprovider" in blocked_plugins
+            and any(f in raw for f in ("--lf", "--last-failed", "--ff", "--failed-first"))
+        )
+        + _autoloaded_plugins(blocked_plugins, resolved.get("config_file"))
         if parser.fallback
         else []
     )
     if handoff:
-        return _hand_to_pytest(parser, raw, user_argv, handoff, "they will be ignored")
+        return _hand_to_pytest(
+            parser, raw, user_argv, handoff, "without what these reasons ask for"
+        )
 
     # A conftest's own options (`--runslow`, `--db-url x`) go to the workers, which parse them
     # against the declarations (`_hookshim.HookRunner.parse_args`); what nobody declares is

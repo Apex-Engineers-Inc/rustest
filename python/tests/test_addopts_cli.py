@@ -160,8 +160,10 @@ def test_reporting_flags_in_addopts_are_dropped_with_a_note(tmp_path: Path) -> N
 
     assert oracle.returncode == 0, oracle.stdout
     assert ours.returncode == 0, ours.stdout + ours.stderr
-    for flag in ("-ra", "--tb=short", "--durations=10", "-p"):
+    for flag in ("-ra", "--tb=short", "--durations=10"):
         assert f"NOTE: {flag} is a pytest reporting option" in ours.stderr, ours.stderr
+    # `-p no:NAME` is honoured (the plugin stays off), so it is not noted as ignored
+    assert "NOTE: -p " not in ours.stderr
 
 
 def test_strict_markers_turns_an_unregistered_mark_into_a_collection_error(tmp_path: Path) -> None:

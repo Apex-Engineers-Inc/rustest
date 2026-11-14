@@ -1,0 +1,21 @@
+{
+  "suite": "werkzeug",
+  "date": "2026-11-13 19:06",
+  "mode": "handed off",
+  "reasons": [
+    "the pytest plugin timeout is used (mark 'timeout'), and rustest does not run it (tests/test_debug.py::test_chained_exception_cycle)"
+  ],
+  "verdict": "MATCH",
+  "tests": 964,
+  "pytest_s": 27.19,
+  "xdist_s": 16.52,
+  "rustest_s": 19.13,
+  "engine_s": 18.07,
+  "engine_verdict": "MATCH",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

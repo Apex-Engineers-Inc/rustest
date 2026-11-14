@@ -52,14 +52,18 @@ setup = [
     "{py}",
     "--reinstall-package",
     "rustest",
-    "{wheels}/rustest-0.16.2-cp313-cp313-win_amd64.whl",
+    "{wheels}/rustest-1.0.0rc1-cp313-cp313-win_amd64.whl",
   ],
 ]
 pythonpath = []
 
 [run]
-pytest_args = []
-rustest_args = []
+# `-k "not reloader"` for BOTH runners: on this machine the serial pytest leg hung for over ten
+# minutes in a reloader dev server (`test_server[reloader]`, `tests/live_apps/run.py` with
+# `use_reloader: true`) on 2026-11-11; werkzeug itself skips its reloader test on Windows CI.
+# An environment property, deselected identically on both sides.
+pytest_args = ["-k", "not reloader"]
+rustest_args = ["-k", "not reloader"]
 timeout_s = 1800
 id_policy = "exact"
 

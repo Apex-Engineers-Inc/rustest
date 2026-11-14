@@ -523,6 +523,7 @@ mod tests {
             codeblocks: None,
             filterwarnings: Vec::new(),
             xfail_strict: None,
+            cache_dir: PathBuf::from(ROOT).join(".rustest_cache"),
         }
     }
 

@@ -93,7 +93,7 @@ setup = [
     "{py}",
     "--reinstall-package",
     "rustest",
-    "{wheels}/rustest-0.16.2-cp313-cp313-win_amd64.whl",
+    "{wheels}/rustest-1.0.0rc1-cp313-cp313-win_amd64.whl",
   ],
 ]
 # The tutorial tests under tests/ import their subjects from `docs_src/`, which upstream wires

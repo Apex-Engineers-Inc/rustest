@@ -778,6 +778,7 @@ mod tests {
             marks: Vec::new(),
             fixtures: Vec::new(),
             keywords: Vec::new(),
+            needs: Vec::new(),
             tier: crate::engine::manifest::Tier::Dynamic,
             record: None,
         }
