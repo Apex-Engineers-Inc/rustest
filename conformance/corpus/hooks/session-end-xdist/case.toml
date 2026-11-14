@@ -1,0 +1,19 @@
+# The session's end with a controller process, graded against REAL pytest-xdist. This
+# repository's .venv must not have xdist (the gates' pytest loads exactly what an unpolluted
+# pytest loads), so the oracle's answer is pinned: produced on 2026-11-14 by
+# `conformance.harness.runners.run_pytest_full(case, ["-n", "2"])` run with pytest 9.0.2 +
+# pytest-xdist 3.8.0. The controller-only plugin turns the failing
+# session into exit 0 only when it saw what xdist's controller sees; serial pytest 9.0.2 on the
+# same case also exits 0 (its one process is the controller), but the worker-id check is what
+# only a real controller fed by workers passes.
+# Re-derive: `conformance/tests/test_pinned.py` (its docstring has the one command).
+[case]
+args = ["-n", "2"]
+
+[pinned]
+source = "pytest 9.0.2 + pytest-xdist 3.8.0, -n 2"
+pytest = "9.0.2"
+xdist = "3.8.0"
+ids = ["test_a.py::test_a1", "test_a.py::test_a2", "test_b.py::test_b1"]
+exit_code = 0
+outcomes = { passed = 2, failed = 1, skipped = 0, xfailed = 0, xpassed = 0, errors = 0, deselected = 0 }

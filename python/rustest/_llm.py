@@ -345,4 +345,10 @@ def render(
             if test["status"] in _SKIP:
                 emit(_skip_object(test))
 
+    if ops := report.get("terminal_summary"):
+        # A `pytest_terminal_summary` hook's output, as the human renderer prints it.
+        from .core import terminal_summary_lines
+
+        emit({"t": "terminal_summary", "text": "\n".join(terminal_summary_lines(ops))})
+
     emit(_summary_object(report))

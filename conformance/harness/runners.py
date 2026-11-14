@@ -288,8 +288,11 @@ def _check_pytest_exit(proc: subprocess.CompletedProcess[str], phase: str) -> No
     increments ``Session.testsfailed`` and, with ``--continue-on-collection-errors``, no
     ``Interrupted`` is raised, so pytest exits ``TESTS_FAILED``. Probed on pytest 8.4.2
     (see ``test_runners.py``); the guard lets 1 through deliberately.
+
+    Above 5 is a case's own ``pytest.exit(returncode=N)`` (pytest uses no such code itself),
+    graded like any other; a process killed by a signal or a crash is not.
     """
-    if proc.returncode >= 3 and proc.returncode != 5:
+    if proc.returncode in (3, 4) or not 0 <= proc.returncode <= 255:
         raise RuntimeError(f"pytest {phase} failed (exit {proc.returncode}): {proc.stderr[-500:]}")
 
 

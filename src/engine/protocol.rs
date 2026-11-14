@@ -136,7 +136,12 @@ use serde::{Deserialize, Serialize};
 /// **v17**: the execution hooks run in the worker. A test's result carries `handoff` when a
 /// hook touched something the runtime cannot answer while it ran, and `execute_batch`'s
 /// `stop_on_handoff` asks the worker to stop the batch there (the session goes to pytest).
-pub const PROTOCOL_VERSION: u32 = 17;
+/// **v18**: the session's end and its controller. `ready`/`collected`/`conftests_imported`
+/// say whether a controller-side hook exists (`controller`, `session_end`); `end_session`
+/// carries the session's facts and `bye` the summary and an exit-status override;
+/// `execute_batch.ship_reports` puts each test's phase reports on its result, and a
+/// controller process (`init.controller`) replays them (`replay_reports`).
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// A teardown error for a test whose result went out before the teardown ran: a scope drained
 /// at the next test's boundary, or at shutdown.
@@ -304,6 +309,11 @@ pub enum WorkerRequest {
         /// unread. `None` from an API caller with nothing to say.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hook_context: Option<serde_json::Value>,
+        /// This process is the session's controller (v18): it collects nothing, runs the
+        /// initial conftests' `configure` as xdist's controller does for `workers` workers,
+        /// and replays the workers' reports. Omitted for a worker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller: Option<ControllerInit>,
     },
     /// Collect one file. path: absolute posix.
     CollectFile {
@@ -393,6 +403,14 @@ pub enum WorkerRequest {
         /// to pytest, so nothing after it is worth running. Omitted when false.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stop_on_handoff: bool,
+        /// Put each test's phase reports on its result, for the controller (v18). Omitted
+        /// when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ship_reports: bool,
+        /// The session's facts as they stand (v18), for the session's end a `pytest.exit()`
+        /// in this batch triggers. Omitted when no session-end hook can run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionFacts>,
     },
     /// Import the conftest chain of each directory (absolute posix) and nothing else; the
     /// worker replies [`WorkerResponse::ConftestsImported`]. See [`PROTOCOL_VERSION`]'s v11
@@ -412,6 +430,35 @@ pub enum WorkerRequest {
     },
     /// Graceful shutdown; worker replies Bye then exits 0.
     Shutdown,
+    /// The controller (v18): the workers' phase reports, in the order they arrived, for its
+    /// `pytest_runtest_logreport`. No answer.
+    ReplayReports { reports: Vec<serde_json::Value> },
+    /// [`WorkerRequest::Shutdown`] at the end of a run (v18): the session's facts for
+    /// `pytest_sessionfinish` / `pytest_terminal_summary` / `pytest_unconfigure`, then `bye`.
+    EndSession { session: SessionFacts },
+}
+
+/// What a controller process needs to configure as xdist's controller does (v18).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControllerInit {
+    /// The pool size (xdist's `-n`): `config.option.tx` is `["popen"] * workers`.
+    pub workers: usize,
+}
+
+/// The session's end as `pytest_sessionfinish` sees it (v18): the whole session's in a pool of
+/// one and in the controller, a worker's own in a pool of two or more (an xdist worker's).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionFacts {
+    pub exitstatus: i32,
+    pub testscollected: usize,
+    pub testsfailed: usize,
+    /// Record `pytest_terminal_summary`'s output for `bye` (the session's own summary); a
+    /// worker's goes nowhere, as an xdist worker's does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub summary: bool,
+    /// `session.shouldfail` (`stopping after N failures` under `-x` / `--maxfail`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shouldfail: Option<String>,
 }
 
 /// A message from a worker to the orchestrator, one per stdout line.
@@ -429,6 +476,16 @@ pub enum WorkerResponse {
         /// Whether a registered module implements `pytest_collection_modifyitems` (v13).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         modify_items: bool,
+        /// A hook only a session's controller sees whole is registered (v18).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        controller: bool,
+        /// Among them, one that runs at the session's end (v18).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        session_end: bool,
+        /// A hook asked `config.workerinput` (v18): what it registers may differ between the
+        /// workers and a controller.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        workerinput: bool,
     },
     /// Per-file result. Either tests or an error entry (import/syntax failure).
     ///
@@ -458,6 +515,13 @@ pub enum WorkerResponse {
         /// Warnings recorded while the file was collected (v12). Omitted when empty.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         warnings: Vec<RecordedWarning>,
+        /// As on `ready`, once this file's conftests registered (v18).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        controller: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        session_end: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        workerinput: bool,
     },
     /// Outcome of one [`WorkerRequest::ExecuteTest`], one line per executed test.
     ///
@@ -535,6 +599,9 @@ pub enum WorkerResponse {
         /// what the runtime cannot answer. The result itself is an error. Omitted when empty.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         handoff: Vec<String>,
+        /// The test's phase reports for the controller (v18), when the batch asked.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reports: Vec<serde_json::Value>,
     },
     /// Terminates the result stream of one [`WorkerRequest::ExecuteBatch`].
     ///
@@ -563,6 +630,35 @@ pub enum WorkerResponse {
         /// answer (v17): the session is pytest's. Omitted when empty.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         handoff: Vec<String>,
+        /// `pytest_terminal_summary`'s output, recorded (v18): `["sep", char, title]` and
+        /// `["line", text]`. Omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        summary: Vec<serde_json::Value>,
+        /// The exit status a `pytest_sessionfinish` set on `session` (v18).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exitstatus: Option<i32>,
+        /// A session-end hook raised (v18): its traceback is on the worker's stderr; pytest
+        /// exits 1 with no summary line.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        end_error: bool,
+        /// A session-end hook called `pytest.exit()` (v18): its `Exit:` line is on stderr, and
+        /// pytest prints no summary line.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        aborted: bool,
+    },
+    /// A test called `pytest.exit()` (v18): the session's end ran; then the worker exits with
+    /// its session-exit code. Its fields are [`WorkerResponse::Bye`]'s, plus the return code.
+    SessionExit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        returncode: Option<i32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        summary: Vec<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exitstatus: Option<i32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        end_error: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        aborted: bool,
     },
     /// Answers [`WorkerRequest::ImportConftests`]: the hooks (and `rustest could not import`
     /// labels) those conftests brought in that this worker had not named before.
@@ -573,6 +669,13 @@ pub enum WorkerResponse {
         /// the first one). Omitted when false.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         modify_items: bool,
+        /// As on `ready` (v18).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        controller: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        session_end: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        workerinput: bool,
     },
     /// Answers [`WorkerRequest::ModifyItems`] (`_hookshim.CollectionEffects`): the surviving
     /// ids in their new order, the removed ones reported through `pytest_deselected`
@@ -633,12 +736,13 @@ mod tests {
             hypothesis_dir: None,
             cache_dir: String::new(),
             hook_context: None,
+            controller: None,
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -739,7 +843,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -886,6 +990,8 @@ mod tests {
             max_fail: None,
             commit_marks: false,
             stop_on_handoff: false,
+            ship_reports: false,
+            session: None,
         };
 
         assert_eq!(
@@ -953,7 +1059,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":17}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":18}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -987,6 +1093,9 @@ mod tests {
             skipped: None,
             hooks: Vec::new(),
             warnings: Vec::new(),
+            controller: false,
+            session_end: false,
+            workerinput: false,
         }
     }
 
@@ -1001,6 +1110,9 @@ mod tests {
             skipped: None,
             hooks: Vec::new(),
             warnings: Vec::new(),
+            controller: false,
+            session_end: false,
+            workerinput: false,
         }
     }
 
@@ -1016,6 +1128,7 @@ mod tests {
             teardown_error: None,
             previous_teardown: None,
             handoff: Vec::new(),
+            reports: Vec::new(),
         }
     }
 
@@ -1031,6 +1144,7 @@ mod tests {
             teardown_error: None,
             previous_teardown: None,
             handoff: Vec::new(),
+            reports: Vec::new(),
         }
     }
 
@@ -1040,6 +1154,9 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             hooks: Vec::new(),
             modify_items: false,
+            controller: false,
+            session_end: false,
+            workerinput: false,
         };
 
         assert_eq!(
@@ -1166,6 +1283,7 @@ mod tests {
                 teardown_error: None,
                 previous_teardown: None,
                 handoff: Vec::new(),
+                reports: Vec::new(),
             };
 
             let encoded = serde_json::to_string(&response).expect("test_result serializes");
@@ -1229,6 +1347,10 @@ mod tests {
                 warnings: Vec::new(),
                 teardown: None,
                 handoff: Vec::new(),
+                exitstatus: None,
+                end_error: false,
+                aborted: false,
+                summary: Vec::new(),
             })
             .expect("bye serializes"),
             BYE_LINE
@@ -1241,6 +1363,10 @@ mod tests {
                 warnings: Vec::new(),
                 teardown: None,
                 handoff: Vec::new(),
+                exitstatus: None,
+                end_error: false,
+                aborted: false,
+                summary: Vec::new(),
             }
         );
     }
@@ -1256,6 +1382,9 @@ mod tests {
             skipped: None,
             hooks: vec!["conftest.py::pytest_configure".to_string()],
             warnings: Vec::new(),
+            controller: false,
+            session_end: false,
+            workerinput: false,
         };
         assert_eq!(serde_json::to_string(&collected).unwrap(), line);
         assert_eq!(
@@ -1306,6 +1435,7 @@ mod tests {
             hypothesis_dir: None,
             cache_dir: String::new(),
             hook_context: None,
+            controller: None,
         })
         .unwrap();
         assert!(
@@ -1642,6 +1772,8 @@ mod tests {
                 max_fail: None,
                 commit_marks: false,
                 stop_on_handoff: false,
+                ship_reports: false,
+                session: None,
             },
             WorkerRequest::Shutdown,
         ];
@@ -1660,6 +1792,9 @@ mod tests {
             skipped: None,
             hooks: Vec::new(),
             warnings: Vec::new(),
+            controller: false,
+            session_end: false,
+            workerinput: false,
         };
 
         let multi_line_result = WorkerResponse::TestResult {
@@ -1676,6 +1811,7 @@ mod tests {
             teardown_error: None,
             previous_teardown: None,
             handoff: Vec::new(),
+            reports: Vec::new(),
         };
 
         let responses = [
@@ -1683,6 +1819,9 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
                 hooks: Vec::new(),
                 modify_items: false,
+                controller: false,
+                session_end: false,
+                workerinput: false,
             },
             sample_collected_with_tests(),
             sample_collected_with_error(),
@@ -1697,6 +1836,10 @@ mod tests {
                 warnings: Vec::new(),
                 teardown: None,
                 handoff: Vec::new(),
+                exitstatus: None,
+                end_error: false,
+                aborted: false,
+                summary: Vec::new(),
             },
         ];
         for response in &responses {

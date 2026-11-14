@@ -15,7 +15,7 @@ from .helpers import make_tree as _tree, run as _run
 
 _NOTE = "NOTE: "
 _TEST = "def test_ok():\n    pass\n"
-_HOOK = "def pytest_terminal_summary(terminalreporter):\n    pass\n"
+_HOOK = "def pytest_report_header(config):\n    pass\n"
 
 
 def _rustest(tree: Path, *args: str, env: dict[str, str] | None = None):
@@ -37,7 +37,7 @@ def test_one_hook_is_named_once_and_changes_nothing_else(tmp_path: Path) -> None
     assert _notes(with_hook.stderr) == [
         _NOTE
         + "1 pytest hook in conftest files is not run (rustest has no plugin system):"
-        + " conftest.py::pytest_terminal_summary"
+        + " conftest.py::pytest_report_header"
     ]
     assert _notes(without.stderr) == []
     assert (with_hook.returncode, with_hook.stdout) == (without.returncode, without.stdout)
@@ -45,7 +45,7 @@ def test_one_hook_is_named_once_and_changes_nothing_else(tmp_path: Path) -> None
 
 def test_nested_conftests_across_workers_are_deduped_and_sorted(tmp_path: Path) -> None:
     files = {
-        "conftest.py": "def pytest_terminal_summary(terminalreporter):\n    pass\n",
+        "conftest.py": "def pytest_report_header(config):\n    pass\n",
         "tests/conftest.py": (
             "def pytest_report_header(config):\n    pass\n"
             "def pytest_generate_tests(metafunc):\n    pass\n"
@@ -66,7 +66,7 @@ def test_nested_conftests_across_workers_are_deduped_and_sorted(tmp_path: Path) 
     assert _notes(result.stderr) == [
         _NOTE
         + "3 pytest hooks in conftest files are not run (rustest has no plugin system):"
-        + " conftest.py::pytest_terminal_summary,"
+        + " conftest.py::pytest_report_header,"
         + " tests/conftest.py::pytest_generate_tests,"
         + " tests/conftest.py::pytest_report_header"
     ]
@@ -114,15 +114,15 @@ def test_hooks_in_nested_pytest_plugins_are_named_and_their_fixtures_visible(
 
 
 def test_hooks_that_stay_with_rustest_are_still_named(tmp_path: Path) -> None:
-    """``pytest_report_header`` and ``pytest_terminal_summary`` do not hand the session to
-    pytest, but a suite can write files from them, so a run that skips them says so -- with
+    """``pytest_report_header`` and ``pytest_report_collectionfinish`` do not hand the session
+    to pytest, but a suite can write files from them, so a run that skips them says so -- with
     the CLI's default, fallback on."""
     tree = _tree(
         tmp_path,
         "harmless",
         {
             "conftest.py": "def pytest_report_header(config):\n    return 'x'\n\n\n"
-            "def pytest_terminal_summary(terminalreporter):\n    pass\n",
+            "def pytest_report_collectionfinish(config, start_path, items):\n    return 'y'\n",
             "test_a.py": _TEST,
         },
     )
@@ -134,7 +134,7 @@ def test_hooks_that_stay_with_rustest_are_still_named(tmp_path: Path) -> None:
     assert _notes(result.stderr) == [
         _NOTE
         + "2 pytest hooks in conftest files are not run (rustest has no plugin system):"
-        + " conftest.py::pytest_report_header, conftest.py::pytest_terminal_summary"
+        + " conftest.py::pytest_report_collectionfinish, conftest.py::pytest_report_header"
     ]
 
 
@@ -180,7 +180,7 @@ def test_without_fallback_the_supported_hooks_still_run_beside_an_unrun_one(
     assert _notes(result.stderr) == [
         _NOTE
         + "1 pytest hook in conftest files is not run (rustest has no plugin system):"
-        + " conftest.py::pytest_terminal_summary"
+        + " conftest.py::pytest_report_header"
     ]
 
 

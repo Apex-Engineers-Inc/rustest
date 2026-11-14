@@ -189,12 +189,12 @@ def test_check_pytest_exit_passes_through_gradeable_outcomes(phase: str) -> None
     invocation -- a real product divergence the grader must see, not one the harness
     should mask by raising. Under ``--collect-only`` 0, 2 and 5 all occur too.
     """
-    for returncode in (0, 1, 2, 5):
+    for returncode in (0, 1, 2, 5, 7):  # 7: a case's own `pytest.exit(returncode=7)`
         _check_pytest_exit(_completed(returncode), phase)  # must not raise
 
 
 @pytest.mark.parametrize("phase", ["run", "collect"])
-@pytest.mark.parametrize("returncode", [3, 4])
+@pytest.mark.parametrize("returncode", [3, 4, -11, 3221225477])  # ... a signal, a crash
 def test_check_pytest_exit_raises_on_internal_and_usage_errors(returncode: int, phase: str) -> None:
     """A pytest run that never happened must not grade as an empty result.
 
@@ -202,7 +202,7 @@ def test_check_pytest_exit_raises_on_internal_and_usage_errors(returncode: int, 
     parsing zero ids or counts out of that would fabricate a divergence with no
     explanation. Raising routes it to the harness-error channel instead.
     """
-    with pytest.raises(RuntimeError, match=rf"pytest {phase} failed \(exit \d+\)"):
+    with pytest.raises(RuntimeError, match=rf"pytest {phase} failed \(exit -?\d+\)"):
         _check_pytest_exit(_completed(returncode), phase)
 
 

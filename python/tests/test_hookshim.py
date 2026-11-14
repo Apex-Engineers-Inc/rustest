@@ -586,13 +586,12 @@ def test_shards_deselects_the_files_pytest_deselects(
     assert f"{len(effects.deselected)} deselected" in result.stdout
 
 
-def test_shards_registering_a_session_end_plugin_hands_the_session_to_pytest(
+def test_shards_registering_a_session_end_plugin_joins_the_session_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``config.pluginmanager.register`` from ``pytest_configure`` (``hasattr(config,
     "workerinput")`` answering False, a controller): the object's ``pytest_runtest_logreport``
-    runs natively, but its ``pytest_sessionfinish`` is a controller's hook, which the runtime
-    does not run yet -- a reason before any test."""
+    and ``pytest_sessionfinish`` both run natively -- the latter at the session's end."""
     module = _module(tmp_path, "shards_times", _SHARDS)
     monkeypatch.setenv("APEX_TEST_SHARD_TIMES", str(tmp_path / "times.json"))
     runner = _runner()
@@ -600,11 +599,9 @@ def test_shards_registering_a_session_end_plugin_hands_the_session_to_pytest(
 
     runner.configure()
 
-    assert runner.reasons == [
-        "tests/shards.py::pytest_configure registers a plugin implementing"
-        " pytest_sessionfinish, a hook rustest does not run, which rustest's hook runtime"
-        " does not support"
-    ]
+    assert runner.reasons == []
+    assert runner.runs("pytest_runtest_logreport", "anywhere")
+    assert runner.runs("pytest_sessionfinish")
 
 
 def test_a_registered_plugin_object_joins_the_chains_and_replays_configure(
@@ -749,12 +746,12 @@ def test_an_old_style_wrapper_raising_after_yield_warns_as_pluggy_does(tmp_path:
 
 
 def test_a_registered_plugin_with_a_hook_the_runtime_does_not_run_hands_off() -> None:
-    """``pytest_terminal_summary`` is a controller's hook: registering an object implementing
-    it is a reason, as an unrun hook in a conftest is."""
+    """``pytest_report_teststatus`` is a hook the runtime does not run: registering an object
+    implementing it is a reason, as an unrun hook in a conftest is."""
     module = types.ModuleType("summary_plugin")
 
     class Summary:
-        def pytest_terminal_summary(self, terminalreporter: object) -> None:
+        def pytest_report_teststatus(self, report: object, config: object) -> None:
             pass
 
     def pytest_configure(config: Any) -> None:
@@ -767,7 +764,7 @@ def test_a_registered_plugin_with_a_hook_the_runtime_does_not_run_hands_off() ->
     runner.configure()
 
     assert runner.reasons == [
-        "conftest.py::pytest_configure registers a plugin implementing pytest_terminal_summary,"
+        "conftest.py::pytest_configure registers a plugin implementing pytest_report_teststatus,"
         " a hook rustest does not run, which rustest's hook runtime does not support"
     ]
 
@@ -1268,14 +1265,14 @@ def test_a_hook_that_does_anything_else_to_the_list_hands_off(tmp_path: Path, bo
 
 
 def test_a_hook_it_does_not_run_is_ignored_and_the_native_ones_still_run(tmp_path: Path) -> None:
-    """``pytest_terminal_summary`` is the worker's to name (a hand-off reason of its own); the
+    """``pytest_report_header`` is the worker's to name (a note of its own); the
     runner neither refuses it nor stops running ``pytest_configure`` beside it, which is what
     ``--no-pytest-fallback`` relies on."""
     module = _module(
         tmp_path,
         "late_hook",
         """
-        def pytest_terminal_summary(terminalreporter):
+        def pytest_report_header(config):
             pass
 
         def pytest_configure(config):
@@ -1286,7 +1283,7 @@ def test_a_hook_it_does_not_run_is_ignored_and_the_native_ones_still_run(tmp_pat
     runner.register("conftest.py", module)
     runner.configure()
     assert runner.reasons == [] and runner.user_attributes == {"seen": True}
-    assert not runner.implements("pytest_terminal_summary")
+    assert not runner.implements("pytest_report_header")
 
 
 def test_a_free_threaded_build_declines_rather_than_trust_reference_counts(
@@ -1297,10 +1294,10 @@ def test_a_free_threaded_build_declines_rather_than_trust_reference_counts(
     assert runner.reasons and "free-threaded build" in runner.reasons[0]
 
 
-def test_the_native_hooks_are_the_collection_four_and_the_per_test_ones() -> None:
-    """The four whose effects precede execution, and the ones the worker calls around each test,
-    as an xdist worker calls them.  ``pytest_sessionfinish`` / ``pytest_unconfigure`` are not
-    among them: they need the session's one controller process."""
+def test_the_native_hooks_are_the_collection_four_the_per_test_ones_and_the_end() -> None:
+    """The four whose effects precede execution, the ones the worker calls around each test, and
+    the session's end -- run by the one worker of a serial pool, by every worker and the
+    controller process of a larger one, as under xdist."""
     assert NATIVE_HOOKS == {
         "pytest_addoption",
         "pytest_configure",
@@ -1314,6 +1311,9 @@ def test_the_native_hooks_are_the_collection_four_and_the_per_test_ones() -> Non
         "pytest_runtest_makereport",
         "pytest_runtest_logreport",
         "pytest_fixture_setup",
+        "pytest_sessionfinish",
+        "pytest_terminal_summary",
+        "pytest_unconfigure",
     }
 
 

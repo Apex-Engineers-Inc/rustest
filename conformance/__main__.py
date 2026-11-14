@@ -14,12 +14,14 @@ from .harness.grade import (
     grade_collect_case,
     grade_run_case,
     load_case_args,
+    load_pinned,
     load_waivers,
 )
 from .harness.real import available_targets, main_real
 from .harness.runners import (
     CollectResult,
     FullRunResult,
+    RunOutcomes,
     run_pytest_collect,
     run_pytest_full,
     run_rustest_collect,
@@ -140,7 +142,12 @@ def _grade_one_collect(
 
     def grade() -> CaseResult:
         case_args = load_case_args(case_dir)
-        pytest_result = run_pytest_fn(case_dir, case_args)
+        pinned = load_pinned(case_dir)
+        pytest_result = (
+            CollectResult(ids=[str(i) for i in pinned["ids"]], exit_code=0)  # pyright: ignore[reportGeneralTypeIssues,reportUnknownVariableType,reportUnknownArgumentType]
+            if pinned is not None
+            else run_pytest_fn(case_dir, case_args)
+        )
         v2_result = run_rustest_fn(case_dir, case_args)
         return grade_collect_case(name, pytest_result, v2_result, waivers)
 
@@ -163,12 +170,29 @@ def _grade_one_run(
 
     def grade() -> CaseResult:
         case_args = load_case_args(case_dir)
-        pytest_result = run_pytest_fn(case_dir, case_args)
+        pinned = load_pinned(case_dir)
+        pytest_result = (
+            _pinned_run(pinned) if pinned is not None else run_pytest_fn(case_dir, case_args)
+        )
         v2_result = run_rustest_fn(case_dir, case_args)
         native = (case_dir / "NATIVE").is_file()
         return grade_run_case(name, pytest_result, v2_result, waivers, native)
 
     return _contained(name, waivers, grade)
+
+
+def _pinned_run(pinned: Mapping[str, object]) -> FullRunResult:
+    """A ``[pinned]`` table as the run the oracle produced (see ``grade.load_pinned``)."""
+    outcomes = pinned["outcomes"]
+    assert isinstance(outcomes, dict)
+    counts = {str(k): int(v) for k, v in outcomes.items()}  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
+    ids = pinned["ids"]
+    assert isinstance(ids, list)
+    return FullRunResult(
+        ids=[str(i) for i in ids],  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
+        outcomes=RunOutcomes(**counts),
+        exit_code=int(str(pinned["exit_code"])),
+    )
 
 
 def _summarize(results: list[CaseResult]) -> tuple[str, int]:

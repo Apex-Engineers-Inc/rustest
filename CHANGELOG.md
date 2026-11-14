@@ -27,9 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    abbreviates by default; pytest's parser does not, and an abbreviation would swallow a
    conftest option that happens to be a prefix of a rustest flag. They are now unrecognized
    arguments, which hand the session to pytest. *Action:* spell the flag in full.
-3. **`--llm` output is schema 3.** An `error` line with `scope: "teardown"` now carries `id`,
-   the test whose teardown raised; nothing else changed from schema 2. The published schema
-   marks `schema_version` as `const: 3`, so a consumer pinned to 2 can refuse the stream.
+3. **`--llm` output is schema 4.** An `error` line with `scope: "teardown"` now carries `id`,
+   the test whose teardown raised, and a `terminal_summary` line before `summary` carries what
+   a `pytest_terminal_summary` hook wrote; nothing else changed from schema 2. The published
+   schema marks `schema_version` as `const: 4`, so a consumer pinned to 2 can refuse the stream.
 
 ### Added
 
@@ -73,12 +74,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Stash`, `item.config` inside a hook is the hook's `config`, and a conftest's hooks reach only
   the tests under its directory. `config.pluginmanager.register(obj)` adds an object's hooks
   (replaying its `pytest_configure`). What the runtime cannot answer exactly hands the session
-  to pytest: before any test (`pytest_sessionfinish`, `pytest_unconfigure`, a teardown hook
-  reading `nextitem`, a registered plugin object implementing a hook rustest does not run, such
-  as `pytest_terminal_summary`) or, when a hook touches it mid-run (`report.sections`, rewriting
+  to pytest: before any test (a teardown hook reading `nextitem`, a registered plugin object
+  implementing a hook rustest does not run) or, when a hook touches it mid-run (`report.sections`, rewriting
   `report.outcome` or `report.longrepr`, `request.node` of a module-scoped fixture, a hook that
   would see a class- or module-scoped teardown failure), by stopping, saying that the results so
   far are discarded, and rerunning the session under pytest.
+- **The session's end runs natively.** `pytest_sessionfinish` (with the session's exit status,
+  failed-report count and `shouldfail`; setting `session.exitstatus` changes the exit code),
+  `pytest_terminal_summary` (its output printed where pytest prints it, `--llm` included) and
+  `pytest_unconfigure`, which runs even when an earlier one raised. A raise there exits 1 with
+  its traceback; `pytest.exit()` there, or from a test, still ends the session. In a pool of one
+  worker that worker is the session; under the xdist model (`-n N`, or pytest-xdist installed)
+  every worker runs them for itself and one controller process, booted with the pool, receives
+  every test's logstart, reports and logfinish and ends the session once, as pytest-xdist's
+  controller does. Without pytest-xdist installed and without `-n`, a session with a
+  session-end hook or a `config.workerinput` check runs on one worker, and a line on stderr says
+  why. **Slower than before for some suites:** such a suite used to run on the whole pool (with
+  those hooks skipped or run per worker); `--collect-only`, an empty selection and a `-k` usage
+  error with a session-end hook now hand the session to pytest.
+- **`pytest.exit(returncode=N)` exits N.** It exited 2 whatever the return code.
 - **`record_property`.** The fixture appends to the test's `user_properties`, as pytest's does
   without `--junitxml`; a hook reads it from the item and from each report.
 - **A conftest's own command-line options run natively.** `rustest --runslow tests/`,

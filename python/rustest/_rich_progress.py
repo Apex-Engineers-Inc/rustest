@@ -343,7 +343,8 @@ class RichProgress:
     # -- after the run -------------------------------------------------------------------
 
     def failures(self, tests: Sequence[Mapping[str, object]]) -> None:
-        """ERRORS, then FAILURES, then pytest's ``FAILED``/``ERROR`` node-id list, on stdout."""
+        """ERRORS, then FAILURES, on stdout (:meth:`short_summary` follows the warnings and any
+        ``pytest_terminal_summary`` output, where pytest prints its node-id list)."""
         failed = [test for test in tests if test["status"] == "failed"]
         errored = [test for test in tests if test["status"] == "error"]
         torn = [test for test in tests if "teardown_error" in test]  # an error of its own
@@ -361,6 +362,12 @@ class RichProgress:
                 prefix = "at teardown of " if key == "teardown_error" else ""
                 name = Text(prefix + (domain.replace("::", ".") or file), style="bold")
                 self._block(self.out, name, file, str(test.get(key) or ""))
+
+    def short_summary(self, tests: Sequence[Mapping[str, object]]) -> None:
+        """pytest's ``FAILED``/``ERROR`` node-id list, on stdout."""
+        failed = [test for test in tests if test["status"] == "failed"]
+        errored = [test for test in tests if test["status"] == "error"]
+        torn = [test for test in tests if "teardown_error" in test]
         if failed or errored or torn:
             # What to paste after `rustest` to run them again.
             self.out.print()

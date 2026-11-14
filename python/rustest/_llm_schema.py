@@ -30,7 +30,10 @@ import json
 #:
 #: **3** adds ``id`` to an ``error`` line: a teardown error is attributed to the test whose
 #: teardown raised (pytest's ``ERROR at teardown of``), where 2 had no field for it.
-SCHEMA_VERSION = 3
+#:
+#: **4** adds the ``terminal_summary`` line: a ``pytest_terminal_summary`` hook's output, which
+#: 3 dropped.
+SCHEMA_VERSION = 4
 
 #: Statuses a ``fail`` line can carry -- the two that make a run red.
 #:
@@ -58,7 +61,8 @@ SCHEMA: dict[str, object] = {
     "description": (
         "One JSON object per line, all emitted at completion. Line order is fixed: meta,"
         " then error lines (collection and unattributable teardown), then fail lines,"
-        " then skip lines (only under -v), then exactly one summary line. Fail and skip"
+        " then skip lines (only under -v), then a terminal_summary line when a"
+        " pytest_terminal_summary hook wrote something, then exactly one summary line. Fail and skip"
         " lines are in manifest order -- pytest's collection order -- which the engine"
         " reassembles independently of which worker finished first, so the byte stream is"
         " identical across runs and across -n. The summary line is the completion"
@@ -69,6 +73,7 @@ SCHEMA: dict[str, object] = {
         {"$ref": "#/$defs/error"},
         {"$ref": "#/$defs/fail"},
         {"$ref": "#/$defs/skip"},
+        {"$ref": "#/$defs/terminal_summary"},
         {"$ref": "#/$defs/summary"},
     ],
     "$defs": {
@@ -211,6 +216,20 @@ SCHEMA: dict[str, object] = {
                 },
             },
             "required": ["t", "id", "file", "status", "reason"],
+            "additionalProperties": False,
+        },
+        "terminal_summary": {
+            "type": "object",
+            "title": "terminal_summary",
+            "description": (
+                "What the session's pytest_terminal_summary hooks wrote, as the human renderer"
+                " prints it (separator lines included). Absent when they wrote nothing."
+            ),
+            "properties": {
+                "t": {"const": "terminal_summary"},
+                "text": {"type": "string"},
+            },
+            "required": ["t", "text"],
             "additionalProperties": False,
         },
         "summary": {

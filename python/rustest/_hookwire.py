@@ -174,6 +174,12 @@ def start(
         if isinstance(raw_options, dict)
         else {}
     )
+    controller = message.get("controller")
+    if isinstance(controller, dict) and "xdist" in plugins:
+        # What xdist's `pytest_cmdline_main` leaves on the controller (only) before
+        # `pytest_configure` for `-n N`; its workers see `tx == []` (probed).
+        workers = int(cast("dict[str, object]", controller).get("workers", 2))  # pyright: ignore[reportArgumentType]
+        options.update(tx=["popen"] * workers, numprocesses=workers, dist="load")
     raw_ini = context.get("ini")  # the ini file's values: what `addini` keys are read from
     ini: dict[str, object] = (
         {str(k): v for k, v in cast("dict[object, object]", raw_ini).items()}
@@ -242,6 +248,60 @@ def on_module(label: str, module: object, *, conftest: Path | None = None) -> No
     )
     _session.runner.register(label, module, initial=initial, conftest=conftest)
     _sync_marks(_session.runner)
+
+
+def hook_flags() -> tuple[bool, bool, bool]:
+    """``(controller, session_end, workerinput)``: a hook only a controller sees whole is
+    registered (on a module or a registered object), one of them runs at the session's end, and
+    a hook asked ``config.workerinput`` -- so what is registered may differ between workers and
+    a controller."""
+    if _session is None:
+        return False, False, False
+    from ._hookshim import CONTROLLER_HOOKS, SESSION_END_HOOKS
+
+    runner = _session.runner
+    return (
+        runner.implements_any(CONTROLLER_HOOKS),
+        runner.implements_any(SESSION_END_HOOKS),
+        runner.reads_workerinput,
+    )
+
+
+def replay(records: Sequence[Mapping[str, Any]]) -> None:
+    """The controller's half of the run, as xdist's ``DSession`` delivers it: around each test
+    ``pytest_runtest_logstart`` / ``pytest_runtest_logfinish``, and each phase report a worker
+    produced, rebuilt as xdist's controller rebuilds it, through ``pytest_runtest_logreport``
+    -- all on ``config.hook``: every registered implementation, no directory scoping."""
+    if _session is None:
+        return
+    from ._hookshim import HookUnsupported
+    from ._runtest import report_from_record
+
+    runner = _session.runner
+    if replay_faults:
+        return
+    mark = runner.fault_mark()
+    try:
+        for record in records:
+            hook = record.get("hook")
+            if hook in ("logstart", "logfinish"):
+                name = f"pytest_runtest_{hook}"
+                if runner.runs(name):
+                    location = cast("list[object]", record["location"])
+                    _ = runner.run_hook(
+                        name, None, nodeid=record["nodeid"], location=tuple(location)
+                    )
+            elif runner.runs("pytest_runtest_logreport"):
+                _ = runner.run_hook(
+                    "pytest_runtest_logreport", None, report=report_from_record(record)
+                )
+    except HookUnsupported:
+        pass  # recorded; the rest is pytest's to replay
+    replay_faults.extend(REASON_PREFIX + r for r in runner.faults_since(mark))
+
+
+#: Hand-off reasons the controller found while replaying (it answers nothing until ``bye``).
+replay_faults: list[str] = []
 
 
 def native_module(module: object) -> bool:

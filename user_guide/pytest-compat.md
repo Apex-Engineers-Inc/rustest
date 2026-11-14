@@ -191,10 +191,50 @@ writing `report.outcome` or `report.longrepr` are not modelled, and neither is `
 for a fixture wider than function scope, nor a class- or module-scoped teardown failure seen
 from `makereport`/`logreport` (rustest tears those scopes down at the next test).
 
-Everything else (`pytest_sessionfinish` and `pytest_unconfigure`, which need the one
-controller process rustest does not have yet, `pytest_generate_tests`,
-`pytest_runtest_protocol`, a `pytest_runtest_teardown` that reads `nextitem` or runs `trylast`,
-...), and any use of `config`, `item`, `report` or
+The session's end runs natively too, as pytest's `wrap_session` runs it:
+`pytest_sessionfinish` (with the session's `exitstatus`, `testsfailed`, `testscollected` and,
+under `-x` / `--maxfail`, `shouldfail`; setting `session.exitstatus` changes the exit code, as
+it does under pytest), then `pytest_terminal_summary` for the exit statuses pytest prints a
+summary for (its `terminalreporter` answers `section`, `write_line`, `write_sep` and `line`,
+and what it writes is printed where pytest prints it, after the failures and before the short
+test summary), then `pytest_unconfigure`, which runs even when an earlier hook raised. A hook
+that raises ends the run with its traceback and exit 1; a `pytest.exit()` in one prints
+`Exit: ...` and exits with its return code. A test that calls `pytest.exit()` still ends the
+session, and `returncode=N` is the exit code. Who runs these hooks depends on the pool:
+
+- **One worker** (`-n 1`, or a single test file): that worker is the session, exactly as
+  pytest's one process is.
+- **Two or more workers, as pytest-xdist runs them** (`-n N`, or pytest-xdist installed): each
+  worker runs the session's end for its own tests, as each xdist worker does, and one extra
+  process, the session's *controller*, boots with the pool, before any test runs. It loads the
+  initial conftests, runs `pytest_configure` and `pytest_sessionstart` as xdist's controller
+  does (no `config.workerinput`; with xdist installed `config.option.tx` is `["popen"] * N`),
+  receives `pytest_runtest_logstart`, `pytest_runtest_logreport` (with `worker_id` and
+  `testrun_uid`) and `pytest_runtest_logfinish` for every test, and ends the session once with
+  the session's own facts -- under `-x`, as xdist's controller does, interrupted (exit 2). A
+  plugin registered only where there is no `workerinput` -- the usual "once, on the
+  controller" guard -- runs there. The controller is started when one of those hooks is on a
+  conftest or a registered object, or a hook checked `config.workerinput`. If its
+  `pytest_configure` or `pytest_sessionstart` changes `os.environ` -- which xdist's workers
+  would inherit, and rustest's, already running, cannot -- the session goes to pytest.
+  With pytest-xdist installed and no `-n`, rustest uses this model even though plain `pytest`
+  would run the session in one process.
+- **Two or more workers by default, pytest-xdist not installed, and a session-end hook or a
+  `config.workerinput` check exists**: the project has only ever run these in pytest's one
+  process. rustest runs the session on **one worker** and says so in one line on stderr; when
+  the initial conftests show it, that worker boots alone and is configured once. Installing
+  pytest-xdist, or passing `-n N` (which asks for the xdist model), removes it. The per-test
+  report hooks alone (`pytest_runtest_logreport` and the like) keep the pool.
+
+A `user_properties` value the controller would receive as something else (anything JSON
+cannot carry exactly), `report.node` or `report.item_index` on the controller, anything else
+the session's end does not model, and -- because rustest's collection does not end a session
+-- `--collect-only` or a run with nothing to collect (or a `-k` usage error) where a
+session-end hook exists, hand the session to pytest, like any other gap.
+
+Everything else (`pytest_generate_tests`, `pytest_runtest_protocol`, a
+`pytest_runtest_teardown` that reads `nextitem` or runs `trylast`, ...), and any use of
+`config`, `item`, `report` or
 `session` that the runtime does not provide, is handed to pytest whole, see
 [When rustest hands a session to pytest](#when-rustest-hands-a-session-to-pytest). The hand-off
 also happens when a hook swallows the runtime's refusal in an `except Exception`: the refusal
@@ -232,7 +272,7 @@ turns it off.
 
 | What rustest finds | Why |
 |---|---|
-| A `conftest.py`, or a module a `pytest_plugins` assignment names, defines a `pytest_*` hook that is neither one rustest runs natively (see [the hook system](#not-supported)) nor one of the four terminal-text hooks below: `pytest_sessionfinish`, `pytest_generate_tests`, `pytest_runtest_protocol` and the rest | They change what runs, how it is reported, or the exit status |
+| A `conftest.py`, or a module a `pytest_plugins` assignment names, defines a `pytest_*` hook that is neither one rustest runs natively (see [the hook system](#not-supported)) nor one of the three terminal-text hooks below: `pytest_generate_tests`, `pytest_runtest_protocol` and the rest | They change what runs, how it is reported, or the exit status |
 | A native hook uses something the hook runtime does not provide (for example `config.pluginmanager.getplugin`, reading a parametrized item's markers, or `report.sections`) | The runtime cannot answer it the way pytest would, so the session goes to pytest rather than guess. Found while a test runs, the results so far are discarded |
 | A conftest, or a module it names, raises when rustest's worker imports it (`rustest could not import tests/conftest.py: ...`) | Conftests that import `_pytest` internals rustest does not provide are exactly the hook-writing ones |
 | `-p NAME` (not `-p no:NAME`) | Loads a pytest plugin |
@@ -243,9 +283,8 @@ turns it off.
 | `PYTEST_PLUGINS` is set, or `PYTEST_ADDOPTS` contains something rustest does not understand | pytest applies them; rustest does not |
 
 Hooks that do **not** hand the session over, because they only change terminal text:
-`pytest_report_header`, `pytest_report_collectionfinish`, `pytest_terminal_summary` and
-`pytest_assertrepr_compare`. They are still named in a `NOTE:` line on stderr and still not
-run.
+`pytest_report_header`, `pytest_report_collectionfinish` and `pytest_assertrepr_compare`.
+They are still named in a `NOTE:` line on stderr and still not run.
 
 A rustest flag with a bad value (`-n abc`, `--color=blue`) is rustest's own usage error, and
 so are the removed `--pytest-compat` and `--v1`.

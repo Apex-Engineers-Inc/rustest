@@ -15,6 +15,7 @@ name is one of three things:
 
 from __future__ import annotations
 
+import enum
 import re
 import os
 import sys
@@ -68,6 +69,7 @@ __all__ = [
     "fail",
     "exit",
     "Exit",
+    "ExitCode",
     "Failed",
     "Skipped",
     "XFailed",
@@ -148,6 +150,17 @@ Failed = _rustest_Failed
 Skipped = _rustest_Skipped
 XFailed = _rustest_XFailed
 xfail = _rustest_xfail
+
+
+class ExitCode(enum.IntEnum):
+    """Port of `_pytest/config/__init__.py::ExitCode`: what ``pytest_sessionfinish`` receives."""
+
+    OK = 0
+    TESTS_FAILED = 1
+    INTERRUPTED = 2
+    INTERNAL_ERROR = 3
+    USAGE_ERROR = 4
+    NO_TESTS_COLLECTED = 5
 
 
 class Exit(Exception):

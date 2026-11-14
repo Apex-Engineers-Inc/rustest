@@ -163,7 +163,7 @@ def _shape(objs: list[dict[str, Any]], tree: Path) -> list[dict[str, Any]]:
 _GOLDEN_VERBOSE: list[dict[str, Any]] = [
     {
         "t": "meta",
-        "schema_version": 3,
+        "schema_version": 4,
         "tool": "rustest",
         "version": "<version>",
         "rootdir": "<rootdir>",
@@ -696,7 +696,7 @@ def test_the_schema_is_a_stable_golden() -> None:
     :data:`SCHEMA_VERSION`.
     """
     defs: dict[str, Any] = SCHEMA["$defs"]  # pyright: ignore[reportAssignmentType]
-    assert sorted(defs) == ["error", "fail", "meta", "skip", "summary"]
+    assert sorted(defs) == ["error", "fail", "meta", "skip", "summary", "terminal_summary"]
     fields = {name: sorted(body["properties"]) for name, body in defs.items()}
     assert fields == {
         "meta": ["pytest_fallback", "rootdir", "schema_version", "t", "tool", "total", "version"],
@@ -714,6 +714,7 @@ def test_the_schema_is_a_stable_golden() -> None:
             "t",
         ],
         "skip": ["file", "id", "reason", "status", "t"],
+        "terminal_summary": ["t", "text"],
         "summary": [
             "collection_errors",
             "deselected",

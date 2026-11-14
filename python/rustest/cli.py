@@ -703,11 +703,21 @@ def _hook_context(
         options[dest] = value
         for flag in flags:
             options[flag] = value
+    from ._fallback import installed_plugins
+
+    xdist = "xdist" not in blocked_plugins and any(
+        name == "xdist" for name, _ in installed_plugins()
+    )
     return {
         "args": list(user_argv),
         "options": options,
         "ini": _raw_ini(resolved.get("config_file")),
         "blocked_plugins": list(blocked_plugins),
+        # How a pool of two or more ends its session (step 3's tier rule, `execute.rs`): the
+        # xdist model when xdist is installed or `-n` was asked for, else one worker when a
+        # hook only a controller sees whole exists.
+        "xdist_installed": xdist,
+        "workers_explicit": args.workers is not None,
     }
 
 

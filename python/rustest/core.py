@@ -78,6 +78,9 @@ if TYPE_CHECKING:
         session_exit: NotRequired[str]
         pytest_fallback: NotRequired[list[str]]
         discarded: NotRequired[int]
+        terminal_summary: NotRequired[list[list[object]]]
+        notes: NotRequired[list[str]]
+        session_end_error: NotRequired[bool]
 
 # The `TypedDict`s above live under `TYPE_CHECKING`, and that is a latency decision like the
 # ones below rather than a style one: on CPython 3.14 `typing` pulls `annotationlib` and
@@ -668,8 +671,28 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds:.2f}s ({datetime.timedelta(seconds=int(seconds))})"
 
 
+def terminal_summary_lines(ops: Sequence[Sequence[object]]) -> list[str]:
+    """A ``pytest_terminal_summary``'s output, from the operations its reporter recorded:
+    ``section`` / ``write_sep`` as pytest's separator line, ``write_line`` / ``line`` as text."""
+    lines: list[str] = []
+    for op in ops:
+        if op and op[0] == "sep":
+            title = op[2] if len(op) > 2 else None
+            lines.append(_sep(str(op[1]), None if title is None else str(title)))
+        elif op and op[0] == "line":
+            lines.append(str(op[1]) if len(op) > 1 else "")
+    return lines
+
+
+def _print_terminal_summary(ops: Sequence[Sequence[object]]) -> None:
+    for line in terminal_summary_lines(ops):
+        print(line)
+
+
 def _print_failure_sections(
-    tests: Sequence[_ReportTest], warnings: Sequence[tuple[str, str]] = ()
+    tests: Sequence[_ReportTest],
+    warnings: Sequence[tuple[str, str]] = (),
+    summary: Sequence[Sequence[object]] = (),
 ) -> None:
     """pytest's failure report: ``ERRORS``, then ``FAILURES``, then the short summary.
 
@@ -716,6 +739,9 @@ def _print_failure_sections(
             if message:
                 print(message.rstrip("\n"))
     _print_warnings_summary(warnings)
+    # Where pytest's terminal reporter calls `pytest_terminal_summary`: after the failures
+    # and the warnings summary, before the short test summary.
+    _print_terminal_summary(summary)
     if not failed and not errored and not torn:
         return
     print(_sep("=", "short test summary info"))
@@ -1123,11 +1149,14 @@ def run(
             # a different verbosity, and a divergence from the oracle on the one rung a CI
             # pipeline is most likely to use.
             warning_groups = _warning_groups(report)
+            summary = report.get("terminal_summary", [])
             if rich is not None:
                 rich.failures(tests)
                 rich.warnings(warning_groups)
+                _print_terminal_summary(summary)
+                rich.short_summary(tests)
             else:
-                _print_failure_sections(tests, warning_groups)
+                _print_failure_sections(tests, warning_groups, summary)
 
             # Last stdout write of the human renderer; the collection errors immediately
             # below, and every diagnostic after them, are stderr's.
@@ -1147,6 +1176,8 @@ def run(
         # and inventing one would make every ``print`` in a teardown a JSON line.
         for chunk in report.get("worker_stderr", []):
             print(chunk, file=sys.stderr, end="" if chunk.endswith("\n") else "\n")
+        for note in report.get("notes", []):
+            print(note, file=sys.stderr)
         if not llm:
             for failure in report.get("teardown_errors", []):
                 print(f"ERROR {failure}", file=sys.stderr)
@@ -1190,7 +1221,10 @@ def run(
         coverage.render(sys.stderr if llm else sys.stdout)
         _flush_stdout()
 
-        if not llm:
+        if not llm and not report.get("session_end_error"):
+            # A session-end hook that raised ends pytest before its summary line (the traceback
+            # is in `worker_stderr`, above).
+            #
             # The sentinel's job under ``--llm``; there is exactly one summary per run and it
             # is the JSONL one.
             #

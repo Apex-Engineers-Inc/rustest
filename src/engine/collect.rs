@@ -57,8 +57,8 @@ use crate::engine::manifest::{
 use crate::engine::manifest_cache::ManifestCache;
 use crate::engine::nodeid::{name_parts, split_collection_argument, walk_names};
 use crate::engine::protocol::{
-    AddedMark, ConftestWire, CoverageWire, LateTeardown, RecordedWarning, WorkerRequest,
-    WorkerResponse, PROTOCOL_VERSION,
+    AddedMark, ConftestWire, ControllerInit, CoverageWire, LateTeardown, RecordedWarning,
+    SessionFacts, WorkerRequest, WorkerResponse, PROTOCOL_VERSION,
 };
 use crate::engine::selection::{deselect_in_place, select_mask, SelectionError};
 use crate::engine::static_collect::{rewrite_plan, static_pass_cached, CacheMode};
@@ -315,6 +315,44 @@ pub struct WorkerLauncher {
     /// Set when any worker's `ready` says a `pytest_collection_modifyitems` is registered
     /// (protocol v13): the barrier then runs [`Worker::modify_items`] on every worker.
     modify_items: Arc<AtomicBool>,
+    /// What any worker said about controller-side and session-end hooks (v18).
+    session_hooks: Arc<SessionHooks>,
+}
+
+/// Whether the session has a hook only a controller sees whole, and one that runs at the
+/// session's end (v18), as the workers report them on `ready`, `collected` and
+/// `conftests_imported`.
+#[derive(Debug, Default)]
+pub(crate) struct SessionHooks {
+    controller: AtomicBool,
+    session_end: AtomicBool,
+    workerinput: AtomicBool,
+}
+
+impl SessionHooks {
+    fn note(&self, controller: bool, session_end: bool, workerinput: bool) {
+        for (flag, seen) in [
+            (&self.controller, controller),
+            (&self.session_end, session_end),
+            (&self.workerinput, workerinput),
+        ] {
+            if seen {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+/// The session's end as a worker or the controller reported it (v18): `pytest_terminal_summary`'s
+/// recorded output, the exit status a hook set, whether a session-end hook raised, and the
+/// return code of a `pytest.exit()` from a test.
+#[derive(Debug, Default)]
+pub(crate) struct SessionEndReport {
+    pub(crate) summary: Vec<serde_json::Value>,
+    pub(crate) exit_override: Option<i32>,
+    pub(crate) end_error: bool,
+    pub(crate) aborted: bool,
+    pub(crate) returncode: Option<i32>,
 }
 
 /// The hand-off reason for `--collect-only` on a session with a `pytest_collection_modifyitems`
@@ -322,6 +360,11 @@ pub struct WorkerLauncher {
 pub const MODIFY_ITEMS_IN_COLLECT_ONLY: &str = "rustest's hook runtime: \
     pytest_collection_modifyitems changes what --collect-only lists, and rustest applies it only \
     to a run";
+
+/// The hand-off reason for `--collect-only` on a session with a session-end hook (v18): pytest
+/// runs `pytest_sessionfinish` / `pytest_terminal_summary` / `pytest_unconfigure` at the end of
+/// a collection too, and rustest's collection runs them only at the end of a run.
+pub const SESSION_END_IN_COLLECT_ONLY: &str = "rustest's hook runtime: pytest_sessionfinish, pytest_terminal_summary or pytest_unconfigure runs at the end of --collect-only too, and rustest runs them only at the end of a run";
 
 /// The hand-off reason when two workers' `pytest_collection_modifyitems` disagree.
 pub const MODIFY_ITEMS_DISAGREE: &str =
@@ -348,6 +391,7 @@ impl WorkerLauncher {
             envs: vec![(RUNNING_ENV.to_string(), "1".to_string())],
             hooks: Arc::default(),
             modify_items: Arc::default(),
+            session_hooks: Arc::default(),
         }
     }
 
@@ -379,7 +423,29 @@ impl WorkerLauncher {
             envs: Vec::new(),
             hooks: Arc::default(),
             modify_items: Arc::default(),
+            session_hooks: Arc::default(),
         }
+    }
+
+    /// The session needs a controller process under the xdist model (v18): a hook only a
+    /// controller sees whole is registered, or a hook asked `config.workerinput` (so what a
+    /// controller registers may differ from what the workers did).
+    pub(crate) fn controller_hooks(&self) -> bool {
+        let hooks = &self.session_hooks;
+        hooks.controller.load(Ordering::SeqCst) || hooks.workerinput.load(Ordering::SeqCst)
+    }
+
+    /// The session needs one process without the xdist model (v18): a hook that runs at the
+    /// session's end, or a `config.workerinput` question, which only a single process answers
+    /// the way the project has always seen it answered.
+    pub(crate) fn single_process_hooks(&self) -> bool {
+        let hooks = &self.session_hooks;
+        hooks.session_end.load(Ordering::SeqCst) || hooks.workerinput.load(Ordering::SeqCst)
+    }
+
+    /// A hook that runs at the session's end is registered somewhere (v18).
+    pub(crate) fn session_end_hooks(&self) -> bool {
+        self.session_hooks.session_end.load(Ordering::SeqCst)
     }
 
     /// The hooks the pool found that only pytest can honour: every one but
@@ -864,6 +930,7 @@ pub(crate) fn plan_with_options(
         hypothesis_dir: hypothesis_dir.as_deref().map(to_posix),
         cache_dir: to_posix(&config.cache_dir),
         hook_context: options.hook_context.clone(),
+        controller: None,
     };
 
     Ok(Dispatch {
@@ -882,6 +949,79 @@ pub(crate) fn plan_with_options(
         late_conftests,
         init,
     })
+}
+
+/// The session's controller process (v18): a worker that collects nothing, configured as
+/// xdist's controller is for a pool of `workers`, without xdist's worker identity. Its own
+/// hand-off reasons (from `configure`) come back as the `ready` reasons.
+pub(crate) fn spawn_controller(
+    dispatch: &Dispatch,
+    launcher: &WorkerLauncher,
+    workers: usize,
+) -> Result<(Worker, Vec<String>), CollectError> {
+    let mut worker = Worker::spawn(workers, launcher, &xdist_identity(0, 1))?;
+    let mut init = dispatch.init.clone();
+    if let WorkerRequest::Init {
+        controller,
+        coverage,
+        ..
+    } = &mut init
+    {
+        *controller = Some(ControllerInit { workers });
+        *coverage = None; // xdist's controller measures nothing
+    }
+    if let Err(err) = worker.send(&init) {
+        return Err(worker.handshake_error(format!("could not send init: {err}")));
+    }
+    let reasons = worker.await_ready()?;
+    Ok((worker, reasons))
+}
+
+/// Boot worker 0 alone, without xdist's worker identity, and wait for its `ready` (v18): the
+/// probe the one-worker rule takes when a cheap scan says the initial conftests may need one
+/// process ([`initial_conftests_may_need_one_process`]). When they do, this worker is the pool.
+pub(crate) fn spawn_probe(
+    dispatch: &Dispatch,
+    launcher: &WorkerLauncher,
+) -> Result<(Worker, Vec<String>), CollectError> {
+    let mut worker = Worker::spawn(0, launcher, &xdist_identity(0, 1))?;
+    if let Err(err) = worker.send(&dispatch.init) {
+        return Err(worker.handshake_error(format!("could not send init: {err}")));
+    }
+    let reasons = worker.await_ready()?;
+    Ok((worker, reasons))
+}
+
+/// A cheap text scan of the initial conftests for what makes a session need one process
+/// without the xdist model (v18): a session-end hook or a `workerinput` question. A miss (a
+/// hook from a `pytest_plugins` module, a late conftest) is caught at the barrier, which
+/// replans on one worker after the pool unconfigures; a false hit costs one extra
+/// configure/unconfigure in a probe process that is then discarded.
+pub(crate) fn initial_conftests_may_need_one_process(dispatch: &Dispatch) -> bool {
+    const NEEDLES: [&[u8]; 4] = [
+        b"pytest_sessionfinish",
+        b"pytest_terminal_summary",
+        b"pytest_unconfigure",
+        b"workerinput",
+    ];
+    let WorkerRequest::Init {
+        conftests,
+        hook_runtime: true,
+        ..
+    } = &dispatch.init
+    else {
+        return false;
+    };
+    conftests
+        .iter()
+        .filter(|conftest| conftest.initial)
+        .any(|conftest| {
+            std::fs::read(&conftest.path).map_or(true, |source| {
+                NEEDLES
+                    .iter()
+                    .any(|needle| source.windows(needle.len()).any(|window| window == *needle))
+            })
+        })
 }
 
 /// Spawn and handshake the whole pool up front, so a bad interpreter or a version skew is
@@ -914,15 +1054,22 @@ pub(crate) fn plan_with_options(
 /// are repeated N times; the other interpreters keep booting meanwhile. A later worker whose
 /// hooks then fail where worker 0's did not is pytest's configure error (exit 3): a hand-off
 /// would run those hooks a further time.
+///
+/// `first` is a worker 0 already booted ([`spawn_probe`]), used as is.
 pub(crate) fn spawn_pool(
     dispatch: &Dispatch,
     launcher: &WorkerLauncher,
     pytest_fallback: bool,
+    first: Option<Worker>,
 ) -> Result<Vec<Worker>, CollectError> {
     // Phase 1 — every `CreateProcess`, back to back.  `?` drops the vector, and
     // `Worker::drop` kills whatever had already started.
     let mut pool: Vec<Worker> = Vec::with_capacity(dispatch.assignments.len());
-    for index in 0..dispatch.assignments.len() {
+    let booted = first.is_some();
+    if let Some(worker) = first {
+        pool.push(worker);
+    }
+    for index in pool.len()..dispatch.assignments.len() {
         pool.push(Worker::spawn(
             index,
             launcher,
@@ -936,13 +1083,15 @@ pub(crate) fn spawn_pool(
             ..
         }
     );
-    let first = usize::from(hooks_run);
-    if hooks_run {
+    let first = usize::from(hooks_run || booted);
+    if hooks_run && !booted {
         let worker = &mut pool[0];
         if let Err(err) = worker.send(&dispatch.init) {
             return Err(worker.handshake_error(format!("could not send init: {err}")));
         }
         if !worker.await_ready()?.is_empty() && pytest_fallback {
+            // Worker 0 configured: it unconfigures. The rest never got `init`.
+            pool.swap_remove(0).quit();
             return Err(CollectError::HandOff(launcher.hooks_needing_pytest()));
         }
     }
@@ -1097,7 +1246,7 @@ fn collect_with_launcher(
 
     let dispatch = plan_with_options(invocation_dir, args, workers, options)?;
 
-    let pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback) {
+    let pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback, None) {
         Err(CollectError::HandOff(reasons)) => {
             return Ok(CollectionManifest {
                 schema_version: MANIFEST_SCHEMA_VERSION,
@@ -1142,7 +1291,16 @@ fn collect_with_launcher(
     // listing that ignored it would be a silently different answer.
     let modifies = launcher
         .modifies_items()
-        .then(|| MODIFY_ITEMS_IN_COLLECT_ONLY.to_string());
+        .then(|| MODIFY_ITEMS_IN_COLLECT_ONLY.to_string())
+        .into_iter()
+        .chain(
+            // A `workerinput` check too: the plugin it guards is registered in pytest's one
+            // process, and its session-end hooks with it.
+            launcher
+                .single_process_hooks()
+                .then(|| SESSION_END_IN_COLLECT_ONLY.to_string()),
+        )
+        .collect::<Vec<_>>();
     if !options.pytest_fallback {
         launcher.note_hooks(modifies.as_slice());
     }
@@ -2373,6 +2531,13 @@ pub(crate) struct Worker {
     hooks: Arc<Mutex<BTreeSet<String>>>,
     /// See [`WorkerLauncher::modify_items`].
     modify_items: Arc<AtomicBool>,
+    /// See [`WorkerLauncher::session_hooks`].
+    session_hooks: Arc<SessionHooks>,
+    /// The facts the next shutdown sends (`end_session`, v18).
+    end_facts: Option<SessionFacts>,
+    /// What `bye` carried: `pytest_terminal_summary`'s recorded output and the exit status a
+    /// `pytest_sessionfinish` set (v18).
+    session_end: SessionEndReport,
     /// What `bye` carried: the shutdown teardown's warnings (protocol v14).
     bye_warnings: Vec<RecordedWarning>,
     /// How many of [`Dispatch::late_conftests`] this worker has imported.
@@ -2498,6 +2663,9 @@ impl Worker {
             reaped: false,
             hooks: Arc::clone(&launcher.hooks),
             modify_items: Arc::clone(&launcher.modify_items),
+            session_hooks: Arc::clone(&launcher.session_hooks),
+            session_end: SessionEndReport::default(),
+            end_facts: None,
             bye_warnings: Vec::new(),
             late_done: 0,
             commit_marks: false,
@@ -2612,7 +2780,11 @@ impl Worker {
                 protocol_version,
                 hooks,
                 modify_items,
+                controller,
+                session_end,
+                workerinput,
             } if protocol_version == PROTOCOL_VERSION => {
+                self.session_hooks.note(controller, session_end, workerinput);
                 if !hooks.is_empty() {
                     if let Ok(mut seen) = self.hooks.lock() {
                         seen.extend(hooks.iter().cloned());
@@ -2686,7 +2858,12 @@ impl Worker {
                 skipped,
                 hooks,
                 warnings,
+                controller,
+                session_end,
+                workerinput,
             } => {
+                self.session_hooks
+                    .note(controller, session_end, workerinput);
                 if echoed != posix {
                     return Err(self.protocol(
                         path,
@@ -2758,7 +2935,12 @@ impl Worker {
             Ok(WorkerResponse::ConftestsImported {
                 hooks,
                 modify_items,
+                controller,
+                session_end,
+                workerinput,
             }) => {
+                self.session_hooks
+                    .note(controller, session_end, workerinput);
                 if let Ok(mut seen) = self.hooks.lock() {
                     seen.extend(hooks.iter().cloned());
                 }
@@ -2894,12 +3076,15 @@ impl Worker {
     ///
     /// `on_result` sees each outcome the moment it is accepted, with its position in `ids` --
     /// before the batch ends, which is what lets a run report progress per test.
+    #[allow(clippy::too_many_arguments)] // each is one of the batch request's own fields
     pub(crate) fn execute_batch(
         &mut self,
         ids: &[String],
         stop_on_failure: bool,
         max_fail: Option<usize>,
         stop_on_handoff: bool,
+        shipped: Option<&Mutex<Vec<serde_json::Value>>>,
+        session: Option<&SessionFacts>,
         out: &mut Vec<TestOutcome>,
         on_result: &mut dyn FnMut(usize, &TestOutcome),
     ) -> Result<bool, CollectError> {
@@ -2911,6 +3096,8 @@ impl Worker {
             max_fail,
             commit_marks: std::mem::take(&mut self.commit_marks),
             stop_on_handoff,
+            ship_reports: shipped.is_some(),
+            session: session.cloned(),
         };
         if let Err(err) = self.send(&request) {
             return Err(self.execute_died(first, format!("could not send execute_batch: {err}")));
@@ -2960,7 +3147,16 @@ impl Worker {
                     teardown_error,
                     previous_teardown,
                     handoff,
+                    reports,
                 } => {
+                    // In the order results arrive across the pool, as xdist's controller
+                    // receives them.
+                    if let Some(shipped) = shipped {
+                        shipped
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .extend(reports);
+                    }
                     let Some(wanted) = ids.get(seen) else {
                         return Err(self.execute_protocol(
                             expected,
@@ -2996,6 +3192,23 @@ impl Worker {
                     };
                     on_result(seen, &outcome);
                     out.push(outcome);
+                }
+                WorkerResponse::SessionExit {
+                    returncode,
+                    summary,
+                    exitstatus,
+                    end_error,
+                    aborted,
+                } => {
+                    // A test called `pytest.exit()`; the session's end ran. The worker exits
+                    // next, which the read below turns into `CollectError::SessionExit`.
+                    self.session_end = SessionEndReport {
+                        summary,
+                        exit_override: exitstatus,
+                        end_error,
+                        aborted,
+                        returncode,
+                    };
                 }
                 WorkerResponse::BatchDone { executed, stopped } => {
                     if executed != seen {
@@ -3129,7 +3342,11 @@ impl Worker {
     /// differs between the two phases (see [`Worker::shutdown_run`]) while the handshake
     /// does not, and two copies of a handshake are two chances to drift.
     fn shutdown_and_reap(&mut self) -> Result<std::process::ExitStatus, CollectError> {
-        if let Err(err) = self.send(&WorkerRequest::Shutdown) {
+        let request = match self.end_facts.take() {
+            Some(session) => WorkerRequest::EndSession { session },
+            None => WorkerRequest::Shutdown,
+        };
+        if let Err(err) = self.send(&request) {
             return Err(self.shutdown_error(format!("could not send shutdown: {err}")));
         }
         let line = match self.receive() {
@@ -3144,7 +3361,15 @@ impl Worker {
                 warnings,
                 teardown,
                 handoff,
+                summary,
+                exitstatus,
+                end_error,
+                aborted,
             }) => {
+                self.session_end.summary = summary;
+                self.session_end.exit_override = exitstatus;
+                self.session_end.end_error = end_error;
+                self.session_end.aborted = aborted;
                 self.bye_warnings = warnings;
                 self.late_teardowns.extend(teardown);
                 self.handoff.extend(handoff);
@@ -3196,7 +3421,13 @@ impl Worker {
     /// It cannot be attributed to a test — the test that triggered it was already answered,
     /// correctly, because its body passed — so the worker's stderr, which carries the
     /// traceback, travels with it.
-    pub(crate) fn shutdown_run(&mut self) -> Result<Option<String>, CollectError> {
+    /// With the session's facts (v18), `end_session` instead of `shutdown`, so the session-end
+    /// hooks run.
+    pub(crate) fn end_run(
+        &mut self,
+        facts: Option<SessionFacts>,
+    ) -> Result<Option<String>, CollectError> {
+        self.end_facts = facts;
         let status = self.shutdown_and_reap()?;
         if status.success() {
             return Ok(None);
@@ -3225,6 +3456,28 @@ impl Worker {
     /// the last call.
     pub(crate) fn take_handoff(&mut self) -> Vec<String> {
         std::mem::take(&mut self.handoff)
+    }
+
+    /// `pytest_terminal_summary`'s recorded output and the exit status a hook set, from `bye`.
+    pub(crate) fn take_session_end(&mut self) -> SessionEndReport {
+        std::mem::take(&mut self.session_end)
+    }
+
+    /// Shut down without the session's end: `pytest_unconfigure` still runs in the worker, so
+    /// what configured, unconfigures (a worker left at the barrier, a replan, a hand-off).
+    /// Best effort: a worker that cannot answer is killed when dropped, as before.
+    pub(crate) fn quit(mut self) {
+        let _ = self.shutdown_and_reap();
+    }
+
+    /// Feed the controller the workers' phase reports (v18). No answer: a hook that raises
+    /// ends the process, which the shutdown that follows reports.
+    pub(crate) fn replay_reports(
+        &mut self,
+        reports: Vec<serde_json::Value>,
+    ) -> Result<(), CollectError> {
+        self.send(&WorkerRequest::ReplayReports { reports })
+            .map_err(|err| self.shutdown_error(format!("could not send replay_reports: {err}")))
     }
 
     /// The warnings `bye` carried, which belong to the last test this worker ran.
@@ -3269,13 +3522,12 @@ impl Drop for Worker {
 /// `pytest_addoption` is **not** here: a declared option answers `getoption(name, default=x)`
 /// and `getoption(name, skip=True)` with its declared default under pytest, and the engine,
 /// which never sees the declaration, would answer `x` or skip the test.
-/// `pytest_report_header` and `pytest_terminal_summary` are here by convention -- a suite can
-/// write files from them -- which is why a run that stays with rustest still names them in
-/// the stderr note.
-pub const SKIPPABLE_HOOKS: [&str; 4] = [
+/// `pytest_report_header` is here by convention -- a suite can write files from it -- which is
+/// why a run that stays with rustest still names it in the stderr note.
+/// (`pytest_terminal_summary` runs natively since protocol v18: the session's end.)
+pub const SKIPPABLE_HOOKS: [&str; 3] = [
     "pytest_report_header",
     "pytest_report_collectionfinish",
-    "pytest_terminal_summary",
     "pytest_assertrepr_compare",
 ];
 
@@ -3343,6 +3595,7 @@ fn response_op(response: &WorkerResponse) -> &'static str {
         WorkerResponse::TestResult { .. } => "test_result",
         WorkerResponse::BatchDone { .. } => "batch_done",
         WorkerResponse::Bye { .. } => "bye",
+        WorkerResponse::SessionExit { .. } => "session_exit",
         WorkerResponse::ConftestsImported { .. } => "conftests_imported",
         WorkerResponse::ItemsModified { .. } => "items_modified",
     }
@@ -3440,7 +3693,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":17}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":18}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

@@ -314,7 +314,7 @@ __all__ = [
 #:
 #: v14 carries the ``markers`` ini and ``--strict-markers`` on ``init`` and ``xfail_strict`` as its
 #: raw text; ``bye`` carries the shutdown teardown's warnings.
-PROTOCOL_VERSION: Final = 17
+PROTOCOL_VERSION: Final = 18
 
 #: The pytest the compat layer emulates: what ``PYTEST_VERSION`` says, which pytest sets for
 #: the whole run (:func:`handle_init`).
@@ -381,6 +381,12 @@ class ReadyResponse(TypedDict):
     protocol_version: int
     hooks: NotRequired[list[str]]
     modify_items: NotRequired[bool]
+    #: A hook only a session's controller sees whole exists (protocol v18).
+    controller: NotRequired[bool]
+    #: Among them, one that runs at the session's end.
+    session_end: NotRequired[bool]
+    #: A hook asked ``config.workerinput`` (v18).
+    workerinput: NotRequired[bool]
 
 
 class AddedMarkDict(TypedDict):
@@ -427,6 +433,10 @@ class CollectedResponse(TypedDict):
     skipped: NotRequired[str]
     hooks: NotRequired[list[str]]
     warnings: NotRequired[list[RecordedWarningDict]]
+    #: Controller-side / session-end hooks registered by this file's conftests (v18).
+    controller: NotRequired[bool]
+    session_end: NotRequired[bool]
+    workerinput: NotRequired[bool]
 
 
 class ResultResponse(TypedDict):
@@ -456,6 +466,8 @@ class ResultResponse(TypedDict):
     previous_teardown: NotRequired[LateTeardownDict]
     #: Why the session must go to pytest, found while this test ran (protocol v17).
     handoff: NotRequired[list[str]]
+    #: The test's phase reports for the session's controller (v18), when it asked for them.
+    reports: NotRequired[list[dict[str, object]]]
 
 
 class LateTeardownDict(TypedDict):
@@ -489,6 +501,16 @@ class ByeResponse(TypedDict):
     teardown: NotRequired[LateTeardownDict]
     #: A session-end hook touched what the hook runtime cannot answer (protocol v17).
     handoff: NotRequired[list[str]]
+    #: ``pytest_terminal_summary``'s output as recorded operations (v18): ``["sep", c, title]``
+    #: and ``["line", text]``, for the renderer to print before the short test summary.
+    summary: NotRequired[list[list[object]]]
+    #: The exit status a ``pytest_sessionfinish`` set on ``session`` (v18).
+    exitstatus: NotRequired[int]
+    #: A session-end hook raised (v18): its traceback is on stderr; pytest exits 1 with no
+    #: summary line.
+    end_error: NotRequired[bool]
+    #: A session-end hook called ``pytest.exit`` (v18): no summary line either.
+    aborted: NotRequired[bool]
 
 
 class ConftestsImportedResponse(TypedDict):
@@ -497,6 +519,9 @@ class ConftestsImportedResponse(TypedDict):
     op: str
     hooks: NotRequired[list[str]]
     modify_items: NotRequired[bool]
+    controller: NotRequired[bool]
+    session_end: NotRequired[bool]
+    workerinput: NotRequired[bool]
 
 
 class NotInitializedError(Exception):
@@ -6742,7 +6767,7 @@ def _run_phases(
         hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
         if hooks is not None:
             directory = _directory_key(plan.path)
-            if hooks.runs_any(_PER_TEST_HOOKS, directory):
+            if _ship_reports or hooks.runs_any(_PER_TEST_HOOKS, directory):
                 return _hooked_phases(plan, runner, capture, phase, hooks, directory)
         return _phases(plan, runner, capture, phase)
     finally:
@@ -6871,7 +6896,14 @@ def _hooked_phases(
     caught and reported as the test's error, carrying the hand-off.
     """
     from ._hookshim import HookUnsupported, builtin_impl
-    from ._runtest import CallInfo, FailureRepr, ReprFileLocation, TestReport, reprcrash
+    from ._runtest import (
+        CallInfo,
+        FailureRepr,
+        ReprFileLocation,
+        TestReport,
+        record_of,
+        reprcrash,
+    )
 
     node = _ItemNode(plan, None)
     namespace = _condition_namespace(plan)
@@ -7032,6 +7064,8 @@ def _hooked_phases(
                 ),
             )
             _ = hooks.run_hook("pytest_runtest_logreport", directory, report=report)
+            if _ship_reports:
+                _shipped.append(record_of(report))
         except HookUnsupported as exc:
             return PhaseReport(when, "failed", exc.reason)
         if when == "teardown" and report.outcome == "skipped":
@@ -7047,6 +7081,8 @@ def _hooked_phases(
             message = wasxfail or None
         return PhaseReport(when, report.outcome, message, wasxfail)
 
+    if _ship_reports:
+        _shipped.append({"hook": "logstart", "nodeid": plan.id, "location": list(node.location)})
     with capture.disabled():
         try:
             _ = hooks.run_hook(
@@ -7065,6 +7101,8 @@ def _hooked_phases(
             )
         except HookUnsupported:
             pass
+    if _ship_reports:
+        _shipped.append({"hook": "logfinish", "nodeid": plan.id, "location": list(node.location)})
     return reports
 
 
@@ -7141,6 +7179,7 @@ def execute_test(test_id: str) -> ResultResponse:
     _previous_plan = plan
 
     capture = _worker_capture()
+    _shipped.clear()
     started = time.perf_counter()
     with capture.window(), warnings_window(plan.id, plan.marks, recorded):
         reports = _run_phases(plan, runner, capture)
@@ -7171,6 +7210,10 @@ def execute_test(test_id: str) -> ResultResponse:
         result["message"] = message
     if handoff:
         result["handoff"] = handoff
+    if _ship_reports:
+        result["reports"] = list(_shipped)
+    global _failed_reports
+    _failed_reports += int(status in ("failed", "error")) + int(torn)
     captured_out, captured_err = capture.drain()
     if captured_out:
         result["stdout"] = captured_out
@@ -7238,6 +7281,21 @@ _warning_filters: tuple[WarningFilter, ...] = ()
 #: down -- under *its* marks, since pytest runs that teardown inside the previous item's
 #: ``runtest`` window.
 _previous_plan: ExecutionPlan | None = None
+
+#: The session has a controller process (protocol v18): every phase report goes on the test's
+#: result (``reports``) for it, and every test takes the hooked path that builds them.
+_ship_reports = False
+
+#: The current test's shipped phase reports.
+_shipped: list[dict[str, object]] = []
+
+#: This worker's failed reports so far (pytest's ``session.testsfailed`` counts reports: a test
+#: failing in its call and erroring in teardown is two), for a ``pytest.exit`` mid-run.
+_failed_reports = 0
+
+#: The session facts the last ``execute_batch`` carried (v18): what this worker's session end
+#: needs if a test calls ``pytest.exit()`` before ``end_session`` arrives.
+_session_base: dict[str, object] | None = None
 
 #: The warnings the shutdown teardown recorded, for ``bye``.
 _shutdown_warnings: list[RecordedWarningDict] = []
@@ -7783,6 +7841,7 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     _install_mark_registry(message, plugins)
     _start_hypothesis(plugins)
     reasons: list[str] = []
+    environ_before = dict(os.environ) if message.get("controller") is not None else None
     if _hypothesis_mod is None:
         _start_hook_runtime(message, rootdir, invocation_dir, names)
     else:
@@ -7801,11 +7860,21 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
                 + f"{_relative_posix(Path(str(directory)), rootdir)} "
                 + "(norecursedirs replaces the default ignores), which pytest reports"
             )
+    if environ_before is not None and dict(os.environ) != environ_before:
+        # xdist's controller configures before it spawns its workers, which inherit what its
+        # `pytest_configure` / `pytest_sessionstart` put in `os.environ` (a shared temp dir, a
+        # port). rustest's workers are already running: hand the session to pytest.
+        changed = sorted(set(os.environ.items()).symmetric_difference(environ_before.items()))
+        reasons.append(
+            "rustest's hook runtime: the controller's pytest_configure or pytest_sessionstart"
+            + f" changed os.environ ({changed[0][0]}), which xdist's workers would inherit"
+        )
     ready: ReadyResponse = {"op": "ready", "protocol_version": PROTOCOL_VERSION}
     if _hookwire_mod is not None:
         reasons += _hookwire_mod.pending_reasons()
         if _hookwire_mod.wants_records():
             ready["modify_items"] = True
+        _add_hook_flags(ready)
     if reasons:
         ready["hooks"] = reasons
     return ready
@@ -7949,6 +8018,90 @@ def drain_at_shutdown() -> BaseException | None:
     return None
 
 
+class _EndResult(TypedDict):
+    """What the session's end leaves for ``bye`` (or ``session_exit``)."""
+
+    summary: NotRequired[list[list[object]]]
+    exitstatus: NotRequired[int]
+    end_error: NotRequired[bool]
+    aborted: NotRequired[bool]
+
+
+def _session_end(facts: Mapping[str, object] | None, drain_failed: bool) -> _EndResult:
+    """The session's end, as ``wrap_session`` and ``main`` run it (v18).
+
+    With *facts* (``end_session``, or a ``pytest.exit`` mid-run): ``pytest_sessionfinish`` ->
+    ``pytest_terminal_summary`` -> ``pytest_unconfigure`` with them -- the whole session's in a
+    pool of one, this worker's own in a pool of two or more (an xdist worker's), the session's in
+    the controller.  Without (a plain ``shutdown``: the barrier, collection, a replan): only
+    ``pytest_unconfigure``, so what configured, unconfigures.
+
+    A failed shutdown teardown is the last test's teardown error under pytest, before the
+    session ends: one more failed report, and a session that would have passed fails.
+
+    A hook that raises ends pytest with that traceback on stderr, exit 1 and no summary line
+    (``end_error``).  A ``pytest.exit()`` there writes ``Exit: <msg>`` to stderr and, with a
+    return code, sets the exit status.  A violation is recorded and reaches ``bye`` through the fault mark.
+    The summary goes back only when ``facts["summary"]`` asks (a worker's goes nowhere).
+    """
+    result: _EndResult = {}
+    hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+    if hooks is None:
+        return result
+    from ._hookshim import HookUnsupported
+
+    try:
+        if facts is None:
+            hooks.unconfigure()
+            return result
+        exitstatus = int(cast(int, facts.get("exitstatus", 0)))
+        testsfailed = int(cast(int, facts.get("testsfailed", 0)))
+        if drain_failed:
+            testsfailed += 1
+            if exitstatus in (0, 5):
+                exitstatus = 1
+        shouldfail = facts.get("shouldfail")
+        end = hooks.run_session_end(
+            exitstatus=exitstatus,
+            testscollected=int(cast(int, facts.get("testscollected", 0))),
+            testsfailed=testsfailed,
+            shouldfail=shouldfail if isinstance(shouldfail, str) else False,
+        )
+    except HookUnsupported:
+        return result
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - pytest's traceback and exit 1
+        print("".join(traceback.format_exception(exc)).rstrip(), file=sys.stderr)
+        result["end_error"] = True
+        return result
+    if end.summary and facts.get("summary"):
+        result["summary"] = end.summary
+    if end.exitstatus is not None:
+        result["exitstatus"] = end.exitstatus
+    if end.aborted:
+        result["aborted"] = True
+    return result
+
+
+def _exit_session(emit: Callable[[Mapping[str, object]], None], returncode: int | None) -> None:
+    """``pytest.exit()`` from a test (v18): pytest's ``wrap_session`` sets the exit status to the
+    return code (else ``INTERRUPTED``), tears the session's fixtures down and still ends the
+    session.  The worker does that when a session-end hook is registered (the batch carried
+    the facts), then says so -- and names the return code, the run's exit code -- on
+    ``session_exit`` before it exits."""
+    response: dict[str, object] = {"op": "session_exit"}
+    if returncode is not None:
+        response["returncode"] = returncode
+    if _session_base is not None:
+        shutdown_failure = drain_at_shutdown()
+        facts = dict(_session_base)
+        facts["exitstatus"] = 2 if returncode is None else returncode
+        facts["testsfailed"] = int(cast(int, facts.get("testsfailed", 0))) + _failed_reports
+        response.update(_session_end(facts, shutdown_failure is not None))
+    emit(response)
+
+
 def _wide_teardown_failed(owner: ExecutionPlan | None) -> None:
     """A class-, module- or session-scoped teardown failed outside the test it belongs to.
 
@@ -7961,8 +8114,10 @@ def _wide_teardown_failed(owner: ExecutionPlan | None) -> None:
     if hooks is None:
         return
     directory = os.path.normcase(str(owner.path.parent)) if owner is not None else None
-    if hooks.runs("pytest_runtest_makereport", directory) or hooks.runs(
-        "pytest_runtest_logreport", directory
+    if (
+        _ship_reports  # a controller-side plugin would see the pass xdist does not show it
+        or hooks.runs("pytest_runtest_makereport", directory)
+        or hooks.runs("pytest_runtest_logreport", directory)
     ):
         hooks.note_reason(
             "a pytest_runtest_makereport or pytest_runtest_logreport hook would see "
@@ -8078,7 +8233,24 @@ def import_conftests(dirs: Sequence[str]) -> ConftestsImportedResponse:
         response["hooks"] = hooks
     if _hookwire_mod is not None and _hookwire_mod.wants_records():
         response["modify_items"] = True
+    _add_hook_flags(response)
     return response
+
+
+def _add_hook_flags(
+    response: ReadyResponse | ConftestsImportedResponse | CollectedResponse,
+) -> None:
+    """Say whether the session has controller-side and session-end hooks (v18): the
+    orchestrator sizes the pool and decides on a controller process from them."""
+    if _hookwire_mod is None:
+        return
+    controller, session_end, workerinput = _hookwire_mod.hook_flags()
+    if controller:
+        response["controller"] = True
+    if session_end:
+        response["session_end"] = True
+    if workerinput:
+        response["workerinput"] = True
 
 
 #: The marks the last ``modify_items`` stage added, held until the orchestrator says it accepted
@@ -8202,6 +8374,7 @@ def collect_file(path: str, assert_key: str | None = None) -> CollectedResponse:
     def answer() -> CollectedResponse:
         if recorded:
             response["warnings"] = recorded
+        _add_hook_flags(response)
         return response
 
     def fail(message: str) -> CollectedResponse:
@@ -8361,6 +8534,8 @@ def execute_batch(
     emit: Callable[[Mapping[str, object]], None],
     max_fail: int | None = None,
     stop_on_handoff: bool = False,
+    ship_reports: bool = False,
+    session: Mapping[str, object] | None = None,
 ) -> BatchDoneResponse:
     """Run one module instance's tests, emitting one ``test_result`` each, then ``batch_done``.
 
@@ -8387,6 +8562,9 @@ def execute_batch(
     single ``execute_test``: an id this worker never collected is a routing bug, and the
     results already emitted stay on the wire for the orchestrator to keep.
     """
+    global _ship_reports, _session_base
+    _ship_reports = ship_reports
+    _session_base = dict(session) if session is not None else None
     _execution_runner().start_module_instance()
     executed = 0
     stopped = False
@@ -8570,12 +8748,14 @@ def main() -> int:
             # emitted for the test that called it — the run did not finish, and a fabricated
             # outcome is exactly the false green this replaces.
             print(f"Exit: {exc}", file=sys.stderr)
+            _exit_session(emit, exc.returncode)
             return SESSION_EXIT_EXIT
         except KeyboardInterrupt as exc:
             # A test raised it, or Ctrl-C reached this worker; pytest does not tell the two
             # apart.  The session ends exactly as for `pytest.exit()`: the results so far are
             # kept, nothing after the test runs, the run exits 2 -- with pytest's banner.
             print(keyboard_interrupt_banner(exc), file=sys.stderr)
+            _exit_session(emit, None)
             return SESSION_EXIT_EXIT
     finally:
         # Coverage is stopped and written on **every** exit path, for the same reason the
@@ -8705,6 +8885,12 @@ def _protocol_loop(
             except UnknownTestError as exc:
                 print(f"rustest worker: {exc}", file=sys.stderr)
                 return 2
+        elif op == "replay_reports":
+            # The controller process (v18): workers' phase reports, in the order the
+            # orchestrator received them, through `pytest_runtest_logreport`.
+            records = request.get("reports")
+            if _hookwire_mod is not None and isinstance(records, list):
+                _hookwire_mod.replay(cast("list[Mapping[str, Any]]", records))
         elif op == "execute_batch":
             ids = request.get("ids")
             stop_on_failure = request.get("stop_on_failure")
@@ -8734,6 +8920,10 @@ def _protocol_loop(
                     emit_buffered,
                     int(cast(int, raw_max_fail)) if raw_max_fail is not None else None,
                     request.get("stop_on_handoff") is True,
+                    request.get("ship_reports") is True,
+                    cast("Mapping[str, object] | None", request.get("session"))
+                    if isinstance(request.get("session"), dict)
+                    else None,
                 )
             except UnknownTestError as exc:
                 # Whatever the batch already wrote is flushed before the worker dies, so the
@@ -8744,7 +8934,7 @@ def _protocol_loop(
                 return 2
             emit_buffered(done)
             _ = flush()
-        elif op == "shutdown":
+        elif op in ("shutdown", "end_session"):
             # Drain first, answer second: `bye` must not claim the worker is finished while
             # a session fixture is still open.  The exit code carries the drain's verdict.
             # The fault mark brackets the drain: a session fixture's finalizer can use what a
@@ -8754,10 +8944,17 @@ def _protocol_loop(
             shutdown_failure = drain_at_shutdown()
             if shutdown_failure is not None:
                 _wide_teardown_failed(_previous_plan)
+            facts = request.get("session")
+            ended = _session_end(
+                cast("Mapping[str, object] | None", facts) if isinstance(facts, dict) else None,
+                shutdown_failure is not None,
+            )
             bye = handle_shutdown()
+            bye.update(ended)  # pyright: ignore[reportCallIssue,reportArgumentType]
             if _hookwire_mod is not None and mark is not None:
                 handoff = [
-                    _hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(mark)
+                    *_hookwire_mod.replay_faults,
+                    *(_hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(mark)),
                 ]
                 if handoff:
                     bye["handoff"] = handoff

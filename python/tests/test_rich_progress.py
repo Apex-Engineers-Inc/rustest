@@ -134,7 +134,9 @@ def _failure_screen(
     display, buffer = _display(tmp_path)
     display("collected", ([node_id], str(tmp_path)))
     display("done", False)
-    display.failures([{"id": node_id, "status": status, "message": message}])
+    tests = [{"id": node_id, "status": status, "message": message}]
+    display.failures(tests)
+    display.short_summary(tests)
     screen = _screen(buffer.getvalue())
     return screen[screen.index("ERRORS" if status == "error" else "FAILURES") + 2 :]
 
@@ -469,7 +471,9 @@ def test_a_long_failure_location_is_shortened_but_the_name_and_rerun_id_are_whol
     display, buffer = _display(tmp_path, width=60)
     display("collected", ([node_id], str(tmp_path)))
     display("done", False)
-    display.failures([{"id": node_id, "status": "failed", "message": message}])
+    tests = [{"id": node_id, "status": "failed", "message": message}]
+    display.failures(tests)
+    display.short_summary(tests)
     screen = _screen(buffer.getvalue())
 
     header = screen[screen.index("FAILURES") + 2]

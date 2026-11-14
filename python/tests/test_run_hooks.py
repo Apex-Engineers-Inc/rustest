@@ -20,11 +20,12 @@ from rustest._worker import PYTEST_FIXTUREDEF_NAMES, PYTEST_FUNCTION_NAMES
 from .helpers import make_tree, run
 
 
-def _rustest(tree: Path, *args: str, workers: int = 1) -> subprocess.CompletedProcess[str]:
-    return run([sys.executable, "-m", "rustest", "-n", str(workers), *args], tree)
+def _rustest(tree: Path, *args: str, workers: int | None = 1) -> subprocess.CompletedProcess[str]:
+    pool = [] if workers is None else ["-n", str(workers)]
+    return run([sys.executable, "-m", "rustest", *pool, *args], tree)
 
 
-def _report(tree: Path, *args: str, workers: int = 1) -> tuple[int, dict[str, object]]:
+def _report(tree: Path, *args: str, workers: int | None = 1) -> tuple[int, dict[str, object]]:
     path = tree.parent / f"{tree.name}-report.json"
     result = _rustest(tree, "--report-json", str(path), *args, workers=workers)
     return result.returncode, json.loads(path.read_text(encoding="utf-8"))
@@ -156,22 +157,150 @@ def test_item_config_in_a_hook_is_the_hooks_config(tmp_path: Path) -> None:
 # -- hand-offs: up front and mid-run ----------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "hook",
-    [
-        "def pytest_sessionfinish(session, exitstatus):\n    pass\n",
-        "def pytest_unconfigure(config):\n    pass\n",
-        "def pytest_runtest_teardown(item, nextitem):\n    pass\n",
-    ],
-    ids=["sessionfinish", "unconfigure", "teardown-nextitem"],
-)
-def test_a_controller_or_nextitem_hook_hands_off_before_any_test(tmp_path: Path, hook: str) -> None:
-    tree = make_tree(tmp_path, "upfront", {"conftest.py": hook, "test_a.py": _PASS})
+def test_a_nextitem_teardown_hook_hands_off_before_any_test(tmp_path: Path) -> None:
+    tree = make_tree(
+        tmp_path,
+        "upfront",
+        {
+            "conftest.py": "def pytest_runtest_teardown(item, nextitem):\n    pass\n",
+            "test_a.py": _PASS,
+        },
+    )
 
     code, report = _report(tree)
 
     assert code == 0 and _reasons(report)
     assert "discarded" not in report
+
+
+# -- the session's end: one worker, or workers and a controller --------------------------
+
+#: A controller-only plugin (shards.py's shape) and a summary (slow_guard.py's): the session
+#: end writes what the controller saw; its exit status is overridden on 5, as CI recipes do.
+_SESSION_END = """
+import json
+import os
+
+import pytest
+
+
+class Seen:
+    def __init__(self):
+        self.reports = []
+
+    def pytest_runtest_logreport(self, report):
+        self.reports.append([report.nodeid, report.when, report.outcome,
+                             list(report.user_properties), type(report.location).__name__])
+
+    def pytest_sessionfinish(self, session, exitstatus):
+        with open("controller.json", "w") as handle:
+            json.dump({"exitstatus": int(exitstatus), "testsfailed": session.testsfailed,
+                       "testscollected": session.testscollected, "reports": self.reports},
+                      handle)
+        if exitstatus == 5:
+            session.exitstatus = 0
+
+    def pytest_terminal_summary(self, terminalreporter):
+        terminalreporter.section("SEEN BY THE CONTROLLER")
+        terminalreporter.write_line(f"{len(self.reports)} reports")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    if call.when == "call":
+        report.user_properties.append(("worker", os.environ.get("PYTEST_XDIST_WORKER", "-")))
+    return report
+
+
+def pytest_configure(config):
+    if not hasattr(config, "workerinput"):
+        config.pluginmanager.register(Seen())
+"""
+
+_FILES = {
+    "conftest.py": _SESSION_END,
+    "test_a.py": "def test_a1():\n    pass\n\n\ndef test_a2():\n    assert False\n",
+    "test_b.py": "def test_b1():\n    pass\n",
+}
+
+
+def test_without_xdist_a_controller_hook_runs_the_session_on_one_worker(tmp_path: Path) -> None:
+    """The default pool would be several workers, but nothing tells the project how such a pool
+    ends its session: one worker, serial semantics, and a line that says why."""
+    tree = make_tree(tmp_path, "serial", _FILES)
+
+    result = _rustest(tree, workers=None)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "rustest: running on one worker" in result.stderr
+    assert "Install pytest-xdist, or pass -n N" in result.stderr
+    seen = json.loads((tree / "controller.json").read_text(encoding="utf-8"))
+    assert (seen["exitstatus"], seen["testsfailed"], seen["testscollected"]) == (1, 1, 3)
+    assert len(seen["reports"]) == 9  # setup, call and teardown of three tests
+    assert {props[0][1] for _, when, _, props, _ in seen["reports"] if when == "call"} == {"-"}
+    out = result.stdout
+    assert out.index("SEEN BY THE CONTROLLER") < out.index("short test summary info")
+    assert "9 reports" in out
+
+
+def test_with_n_the_workers_and_one_controller_run_the_session_as_xdist(tmp_path: Path) -> None:
+    """``-n 2``: each worker guards on ``workerinput`` and registers nothing; the controller
+    process registers the plugin, is fed every phase report (``user_properties`` as the worker
+    set them) and ends the session once."""
+    tree = make_tree(tmp_path, "xdist", _FILES)
+
+    code, report = _report(tree, workers=2)
+
+    assert code == 1 and not _reasons(report)
+    assert "notes" not in report
+    seen = json.loads((tree / "controller.json").read_text(encoding="utf-8"))
+    assert (seen["exitstatus"], seen["testsfailed"], seen["testscollected"]) == (1, 1, 3)
+    assert len(seen["reports"]) == 9
+    workers = {props[0][1] for _, when, _, props, _ in seen["reports"] if when == "call"}
+    assert workers <= {"gw0", "gw1"} and workers
+    assert {kind for *_, kind in seen["reports"]} == {"tuple"}  # as xdist's controller has it
+    assert report["terminal_summary"] == [
+        ["sep", "=", "SEEN BY THE CONTROLLER"],
+        ["line", "9 reports"],
+    ]
+
+
+@pytest.mark.parametrize("workers", [None, 2], ids=["one-worker", "controller"])
+def test_a_sessionfinish_exit_status_override_is_the_exit_code(
+    tmp_path: Path, workers: int | None
+) -> None:
+    """``session.exitstatus = 0`` on 5 (``-k nomatch``): pytest -- and xdist's controller --
+    exit 0."""
+    tree = make_tree(tmp_path, "override", _FILES)
+
+    result = _rustest(tree, "-k", "nomatch", workers=workers)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    seen = json.loads((tree / "controller.json").read_text(encoding="utf-8"))
+    assert seen["exitstatus"] == 5
+
+
+def test_a_user_property_the_wire_cannot_carry_hands_off(tmp_path: Path) -> None:
+    files = dict(_FILES)
+    files["conftest.py"] = _SESSION_END.replace(
+        '("worker", os.environ.get("PYTEST_XDIST_WORKER", "-"))', '("set", {1, 2})'
+    )
+    tree = make_tree(tmp_path, "inexact", files)
+
+    result = _rustest(tree, "--no-pytest-fallback", workers=2)
+
+    # The test whose report carried it errors; the session stays (fallback is off).
+    assert result.returncode == 1
+    assert "which the wire cannot carry exactly" in result.stdout + result.stderr
+
+
+def test_collect_only_with_a_session_end_hook_hands_off(tmp_path: Path) -> None:
+    tree = make_tree(tmp_path, "collect", _FILES)
+
+    result = _rustest(tree, "--collect-only", "-q", workers=None)
+
+    assert "runs at the end of --collect-only too" in result.stderr
 
 
 def test_a_violation_mid_run_discards_the_results_and_reruns_under_pytest(tmp_path: Path) -> None:

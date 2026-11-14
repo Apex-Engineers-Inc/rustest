@@ -54,6 +54,9 @@ ADJUDICATED_RUN_WAIVERS: set[str] = {
     # `pytest.exit()` reaches the compat shim's catch-all `__getattr__` and is a silent
     # no-op, so the session never stops.
     "marks/pytest-exit",
+    # The same truncated-session id asymmetry; the exit code (the return code) and the tally
+    # match.
+    "marks/pytest-exit-returncode",
     # THE ONLY DELIBERATE ONE. rustest defaults `asyncio_mode` to `auto` where
     # pytest-asyncio defaults to `strict`; both modes are implemented faithfully and every
     # case that sets the option explicitly matches. See `src/engine/config.rs`'s
@@ -337,7 +340,10 @@ def test_corpus_case_count_is_pinned() -> None:
     # pytest (a wide fixture's request.node, a report.outcome rewrite, a teardown's nextitem).
     # `marks/dynamic-xfail` (+1): an xfail mark applied from a fixture or the body still counts.
     # `fixtures/funcargs-live` (+1): `request.node.funcargs` is the live closure, without hooks.
-    assert len(discover_cases()) == 105
+    # `hooks/session-end-serial`, `hooks/session-end-xdist` (+2): the session's end on one worker
+    # (vs pytest) and with workers and a controller (vs a pinned real pytest-xdist run).
+    # `marks/pytest-exit-returncode` (+1): `pytest.exit(returncode=N)` exits N.
+    assert len(discover_cases()) == 108
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

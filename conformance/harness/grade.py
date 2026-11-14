@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from typing import cast
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,18 @@ def load_waivers(path: Path) -> dict[str, str]:
         return {}
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     return {str(k): str(v) for k, v in data.get("cases", {}).items()}
+
+
+def load_pinned(case_dir: Path) -> dict[str, object] | None:
+    """A case's ``[pinned]`` table: the oracle's answer recorded once, for a case whose oracle
+    this repository's environment cannot run (real pytest-xdist: ``.venv`` must not have it).
+    ``source`` says which pytest produced it; ``ids``, ``outcomes`` and ``exit_code`` replace
+    the live pytest run in both gates (collection: the ids, exit 0)."""
+    config = case_dir / "case.toml"
+    if not config.exists():
+        return None
+    pinned: object = tomllib.loads(config.read_text(encoding="utf-8")).get("pinned")
+    return cast("dict[str, object]", pinned) if isinstance(pinned, dict) else None
 
 
 def load_case_args(case_dir: Path) -> list[str]:

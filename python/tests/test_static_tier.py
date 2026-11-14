@@ -73,7 +73,7 @@ def _case_args(case_dir: Path) -> list[str]:
     """A corpus case's own ``case.toml`` arguments, minus the option-shaped ones.
 
     ``-k``/``-m`` are *selection*, applied identically to both tiers after collection, so
-    they add nothing here and would only shrink the sample. The path arguments are kept,
+    they add nothing here and would only shrink the sample; ``-n`` sizes the pool. The path arguments are kept,
     because ``collection/dupe-args`` is a case about what naming a file twice collects.
     """
     config = case_dir / "case.toml"
@@ -88,7 +88,7 @@ def _case_args(case_dir: Path) -> list[str]:
         if skip_next:
             skip_next = False
             continue
-        if arg in ("-k", "-m"):
+        if arg in ("-k", "-m", "-n"):
             skip_next = True
             continue
         if arg.startswith("-"):

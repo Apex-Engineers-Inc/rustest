@@ -319,3 +319,96 @@ class TestReport:
 
     def __repr__(self) -> str:
         return f"<TestReport {self.nodeid!r} when={self.when!r} outcome={self._outcome!r}>"
+
+
+class ControllerReport(TestReport):
+    """A report as xdist's controller rebuilds it from a worker's.  Its ``node`` -- the worker
+    that ran the test -- is not modelled."""
+
+    @property
+    def node(self) -> NoReturn:
+        _refuse("reads report.node (the xdist worker that ran the test)")
+
+    @property
+    def item_index(self) -> NoReturn:
+        _refuse("reads report.item_index (xdist's index of the test in its worker's list)")
+
+
+def record_of(report: TestReport) -> dict[str, object]:
+    """One phase report as the wire carries it to the controller.  A ``user_properties`` value
+    JSON cannot carry exactly would reach the controller as something else: refused."""
+    from ._hookshim import wire_exact
+
+    properties: list[list[object]] = []
+    for entry in report.user_properties:
+        name, value = cast("tuple[object, object]", entry)
+        if not (isinstance(name, str) and wire_exact(value)):
+            _refuse(
+                f"puts {value!r} in report.user_properties, which the wire cannot carry exactly"
+            )
+        properties.append([name, value])
+    longrepr = report._longrepr  # pyright: ignore[reportPrivateUsage]
+    if longrepr is None:
+        wire: object = None
+    elif isinstance(longrepr, tuple):
+        wire = {"skip": list(cast("tuple[object, ...]", longrepr))}
+    elif isinstance(longrepr, FailureRepr):
+        crash = longrepr.reprcrash
+        wire = {"crash": [crash.path, crash.lineno, crash.message]}
+    else:
+        wire = {"text": str(longrepr)}
+    record: dict[str, object] = {
+        "nodeid": report.nodeid,
+        "location": list(report.location),
+        "keywords": list(report.keywords),
+        "outcome": report.outcome,
+        "longrepr": wire,
+        "when": report.when,
+        "duration": report.duration,
+        "start": report.start,
+        "stop": report.stop,
+        "user_properties": properties,
+    }
+    if "wasxfail" in report.__dict__:
+        record["wasxfail"] = report.__dict__["wasxfail"]
+    # What xdist's worker adds to every report it sends (`remote.py`): who ran it, in which run.
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker is not None:
+        record["worker_id"] = worker
+        record["testrun_uid"] = os.environ.get("PYTEST_XDIST_TESTRUNUID", "")
+    return record
+
+
+def report_from_record(record: Mapping[str, object]) -> ControllerReport:
+    """:func:`record_of`, back."""
+    wire = record.get("longrepr")
+    longrepr: object = None
+    if isinstance(wire, dict):
+        data = cast("dict[str, object]", wire)
+        if "skip" in data:
+            longrepr = tuple(cast("list[object]", data["skip"]))
+        elif "crash" in data:
+            path, lineno, message = cast("list[object]", data["crash"])
+            longrepr = FailureRepr(
+                ReprFileLocation(str(path), int(cast(int, lineno)), str(message))
+            )
+        else:
+            longrepr = str(data.get("text", ""))
+    path, lineno, domain = cast("list[object]", record["location"])
+    report = ControllerReport(
+        str(record["nodeid"]),
+        (str(path), None if lineno is None else int(cast(int, lineno)), str(domain)),
+        {str(k): 1 for k in cast("list[object]", record["keywords"])},
+        str(record["outcome"]),
+        longrepr,
+        str(record["when"]),
+        float(cast(float, record["duration"])),
+        float(cast(float, record["start"])),
+        float(cast(float, record["stop"])),
+        [(str(n), v) for n, v in cast("list[list[object]]", record["user_properties"])],
+        None,
+    )
+    for name in ("wasxfail", "worker_id", "testrun_uid"):
+        if name in record:
+            setattr(report, name, record[name])
+    return report

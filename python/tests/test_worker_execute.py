@@ -1920,7 +1920,9 @@ def test_a_keyboard_interrupt_ends_the_run_instead_of_being_classified(tmp_path:
     )
 
     assert proc.returncode != 0
-    assert [json.loads(line)["op"] for line in proc.stdout.splitlines()] == ["ready", "collected"]
+    # No test_result: the session ends (`session_exit`, protocol v18) and nothing runs after.
+    ops = [json.loads(line)["op"] for line in proc.stdout.splitlines()]
+    assert ops == ["ready", "collected", "session_exit"]
 
 
 def test_a_system_exit_is_an_ordinary_failure_and_the_run_continues(tmp_path: Path) -> None:

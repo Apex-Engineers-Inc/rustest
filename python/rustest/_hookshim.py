@@ -177,7 +177,9 @@ from pathlib import Path
 from typing import Any, Final, NoReturn, cast
 
 __all__ = [
+    "CONTROLLER_HOOKS",
     "NATIVE_HOOKS",
+    "SESSION_END_HOOKS",
     "CollectionEffects",
     "HookRunner",
     "HookUnsupported",
@@ -398,7 +400,29 @@ _RUN_HOOKS: Final = {
     "pytest_runtest_makereport": ("item", "call"),
     "pytest_runtest_logreport": ("report",),
     "pytest_fixture_setup": ("fixturedef", "request"),
+    # The session's end: once per session in a pool of one (the worker is the session), and
+    # in every worker plus the controller process in a pool of two or more, as under xdist.
+    "pytest_sessionfinish": ("session", "exitstatus"),
+    "pytest_terminal_summary": ("terminalreporter", "exitstatus", "config"),
+    "pytest_unconfigure": ("config",),
 }
+#: Hooks xdist's controller also runs: under the xdist model one on a conftest or a registered
+#: object starts the controller process. Without it, only `SESSION_END_HOOKS` (and a
+#: `workerinput` check) put the session on one worker; the per-test ones run in each worker.
+CONTROLLER_HOOKS: Final = frozenset(
+    {
+        "pytest_runtest_logstart",
+        "pytest_runtest_logfinish",
+        "pytest_runtest_logreport",
+        "pytest_terminal_summary",
+        "pytest_sessionfinish",
+        "pytest_unconfigure",
+    }
+)
+#: The ones that run when the session ends.
+SESSION_END_HOOKS: Final = frozenset(
+    {"pytest_terminal_summary", "pytest_sessionfinish", "pytest_unconfigure"}
+)
 #: pluggy's ``firstresult=True`` specifications among them.
 _FIRSTRESULT: Final = frozenset({"pytest_runtest_makereport", "pytest_fixture_setup"})
 NATIVE_HOOKS: Final = frozenset(_HOOKS) | frozenset(_RUN_HOOKS)
@@ -1004,6 +1028,10 @@ class _State:
     born: list[weakref.ref[_Shim]] = field(default_factory=list[weakref.ref["_Shim"]])
     #: ``config.pluginmanager.register``, wired by :class:`HookRunner`.
     register_object: Callable[[object, str | None], str] | None = None
+    #: A hook asked whether this process is an xdist worker (``config.workerinput``, by
+    #: ``hasattr``, ``getattr`` or attribute access): what it registers may differ between the
+    #: workers and a controller, so the session needs one, or a single process.
+    reads_workerinput: bool = False
 
     def violate(self, what: str) -> NoReturn:
         """Record a use the shim does not support and raise.  Outside a hook call it is a stale
@@ -1339,6 +1367,8 @@ class _Config(_Shim):
         if name in st.user:
             return st.user[name]
         worker = os.environ.get("PYTEST_XDIST_WORKER")
+        if name in _ABSENT_CONFIG_ATTRS:
+            st.reads_workerinput = True
         if name == "workerinput" and worker is not None:
             # A pool of two or more is xdist's: its three keys, anything else is pytest's.
             return _WorkerInput(
@@ -1370,14 +1400,62 @@ class _WorkerInput(dict[str, object]):
 
 
 class _Session(_Shim):
-    """``session``: its ``config``, which is all the supported hooks read from it."""
+    """``session``: its ``config``, and at the session's end the facts pytest's ``Session``
+    carries then -- ``exitstatus`` (writable: a ``pytest_sessionfinish`` that sets it changes the
+    run's exit code), ``testsfailed``, ``testscollected``, ``shouldfail``, ``shouldstop``."""
 
-    __slots__ = ("config",)
+    __slots__ = ("_facts", "_override", "config")
     config: _Config
+    _facts: dict[str, object]
+    _override: object
 
     def __init__(self, st: _State, config: _Config) -> None:
         super().__init__(st, "session", persistent=True)
         object.__setattr__(self, "config", config)
+        object.__setattr__(self, "_facts", {})
+        object.__setattr__(self, "_override", _MISSING)
+
+    def __getattr__(self, name: str) -> object:
+        facts = cast("dict[str, object]", _getattribute(self, "_facts"))
+        if name in facts:
+            return facts[name]
+        return super().__getattr__(name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        facts = cast("dict[str, object]", _getattribute(self, "_facts"))
+        if name == "exitstatus" and "exitstatus" in facts:
+            facts["exitstatus"] = value
+            object.__setattr__(self, "_override", value)
+            return
+        super().__setattr__(name, value)
+
+
+class _TerminalReporter(_Shim):
+    """``terminalreporter`` in ``pytest_terminal_summary``: ``section``, ``write_line``,
+    ``write_sep`` and ``line``, recorded for the run's renderer to print where pytest prints a
+    plugin's summary (after the failures, before the short test summary).  Nothing else."""
+
+    __slots__ = ("_ops",)
+    _ops: list[list[object]]
+
+    def __init__(self, st: _State) -> None:
+        super().__init__(st, "terminalreporter")
+        object.__setattr__(self, "_ops", [])
+
+    def section(self, title: str, sep: str = "=", **markup: object) -> None:
+        _getattribute(self, "_ops").append(["sep", str(sep), str(title)])
+
+    def write_sep(
+        self, sep: str, title: str | None = None, fullwidth: int | None = None, **markup: object
+    ) -> None:
+        _getattribute(self, "_ops").append(["sep", str(sep), None if title is None else str(title)])
+
+    def write_line(self, line: str | bytes, **markup: object) -> None:
+        text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+        _getattribute(self, "_ops").append(["line", text])
+
+    def line(self, msg: str = "", **markup: object) -> None:
+        _getattribute(self, "_ops").append(["line", str(msg)])
 
 
 # --------------------------------------------------------------------------------------
@@ -1732,6 +1810,22 @@ _BUILTIN_STEP: Final = _Impl("pytest", "", lambda: None, (), False, False, True,
 def _canonical_name(plugin: object) -> str:
     """pluggy's ``get_canonical_name``."""
     return str(getattr(plugin, "__name__", None) or id(plugin))
+
+
+#: `_pytest/terminal.py::TerminalReporter.pytest_sessionfinish`: the statuses after which the
+#: terminal summary -- and so ``pytest_terminal_summary`` -- runs.
+_SUMMARY_EXIT_CODES: Final = frozenset({0, 1, 2, 4, 5})
+
+
+@dataclass
+class SessionEnd:
+    """What :meth:`HookRunner.run_session_end` produced: ``pytest_terminal_summary``'s recorded
+    output, the exit status a hook set (``session.exitstatus``, or a ``pytest.exit`` return
+    code), and whether a ``pytest.exit`` ended it (pytest then prints no summary line)."""
+
+    summary: list[list[object]] = field(default_factory=list[list[object]])
+    exitstatus: int | None = None
+    aborted: bool = False
 
 
 class _HookResult:
@@ -2450,6 +2544,89 @@ class HookRunner:
         if found is None:
             found = self._runs_cache[key] = any(True for _ in self._impls_for(hook, directory))
         return found
+
+    def implements_any(self, hooks: Iterable[str]) -> bool:
+        """Does any registered module or object implement one of *hooks* (anywhere)?"""
+        return any(self.runs(hook) for hook in hooks)
+
+    def run_session_end(
+        self,
+        *,
+        exitstatus: int,
+        testscollected: int,
+        testsfailed: int,
+        shouldfail: str | bool = False,
+    ) -> SessionEnd:
+        """pytest's session end, as ``wrap_session`` and ``main`` run it.
+
+        ``pytest_sessionfinish``, with pytest's terminal reporter as a wrapper around it that
+        then calls ``pytest_terminal_summary`` -- only for the exit statuses that print a
+        summary (0, 1, 2, 4, 5) -- with the status the session ended with.  A ``pytest.exit()``
+        there ends the session's end with its message and, when given, its return code as the
+        exit status.  ``pytest_unconfigure`` runs in a ``finally``, as ``main`` ensures it.
+        Any other exception propagates after it, as pytest's does.
+        """
+        from .compat.pytest import Exit, ExitCode
+
+        status: object = exitstatus
+        try:
+            status = ExitCode(exitstatus)
+        except ValueError:
+            pass
+        session = self._session
+        facts = cast("dict[str, object]", _getattribute(session, "_facts"))
+        facts.clear()
+        facts.update(
+            exitstatus=status,
+            testscollected=testscollected,
+            testsfailed=testsfailed,
+            shouldfail=shouldfail,
+            shouldstop=False,  # pytest sets it for `--sw` and plugins; neither runs natively
+        )
+        object.__setattr__(session, "_override", _MISSING)
+        end = SessionEnd()
+        try:
+            try:
+                if self.runs("pytest_sessionfinish"):
+                    _ = self.run_hook(
+                        "pytest_sessionfinish", None, session=session, exitstatus=status
+                    )
+                if self.runs("pytest_terminal_summary") and exitstatus in _SUMMARY_EXIT_CODES:
+                    reporter = _TerminalReporter(self._st)
+                    try:
+                        _ = self.run_hook(
+                            "pytest_terminal_summary",
+                            None,
+                            terminalreporter=reporter,
+                            exitstatus=status,
+                            config=self._config,
+                        )
+                    finally:
+                        end.summary = cast("list[list[object]]", _getattribute(reporter, "_ops"))
+            except Exit as exc:
+                # `wrap_session`'s words, on stderr, before `pytest_unconfigure`.
+                print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                end.aborted = True
+                if exc.returncode is not None:
+                    object.__setattr__(session, "_override", exc.returncode)
+        finally:
+            override = _getattribute(session, "_override")
+            if override is not _MISSING:
+                end.exitstatus = int(cast(int, override))
+            if self.runs("pytest_unconfigure"):
+                _ = self.run_hook("pytest_unconfigure", None, config=self._config)
+        return end
+
+    def unconfigure(self) -> None:
+        """``pytest_unconfigure`` alone, for a process that ends without the session's end (a
+        worker shut down at the barrier, or after collecting): what configured, unconfigures."""
+        if self._configured and self.runs("pytest_unconfigure"):
+            _ = self.run_hook("pytest_unconfigure", None, config=self._config)
+
+    @property
+    def reads_workerinput(self) -> bool:
+        """A hook asked ``config.workerinput`` (see :class:`_State`)."""
+        return self._st.reads_workerinput
 
     def runs_any(self, hooks: tuple[str, ...], directory: str | None) -> bool:
         """:meth:`runs` for any of *hooks*, cached as one answer."""

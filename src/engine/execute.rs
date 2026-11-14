@@ -55,11 +55,12 @@ use crate::engine::cache::{
     write_last_failed, LastFailedSkip,
 };
 use crate::engine::collect::{
-    assemble, modify_items_line, plan, spawn_pool, CollectError, Dispatch, FileOutcome,
-    ItemEffects, Worker, WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
+    assemble, initial_conftests_may_need_one_process, modify_items_line, plan, spawn_controller,
+    spawn_pool, spawn_probe, CollectError, Dispatch, FileOutcome, ItemEffects, SessionEndReport,
+    Worker, WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
 };
 use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
-use crate::engine::protocol::{CoverageWire, LateTeardown, RecordedWarning};
+use crate::engine::protocol::{CoverageWire, LateTeardown, RecordedWarning, SessionFacts};
 use crate::engine::selection::{select_mask, SelectionError};
 
 /// `_worker.py::SHUTDOWN_TEARDOWN_EXIT`.
@@ -392,6 +393,21 @@ pub struct RunReport {
     /// was written. Omitted when zero.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub discarded: usize,
+    /// `pytest_terminal_summary`'s output (v18), recorded as operations -- `["sep", char,
+    /// title]`, `["line", text]` -- for the renderer to print where pytest prints a plugin's
+    /// summary: after the failures, before the short test summary. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminal_summary: Vec<serde_json::Value>,
+    /// One-line notices about how the run was carried out (the pool shrunk to one worker, and
+    /// why). Printed on stderr; never graded. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// A `pytest_sessionfinish` / `pytest_terminal_summary` / `pytest_unconfigure` raised, or
+    /// called `pytest.exit()` (v18): the traceback or `Exit:` line is in `worker_stderr`, and
+    /// pytest prints no summary line (its terminal reporter's wrapper raised before
+    /// `summary_stats`). A raise exits 1. Omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub session_end_error: bool,
 }
 
 /// `skip_serializing_if` needs a predicate over a reference; `bool::not` is not one.
@@ -443,15 +459,17 @@ pub fn exit_code(
     collected: usize,
     collection_errors: usize,
     failures: usize,
-    session_exit: bool,
+    interrupted: bool,
 ) -> i32 {
     // `pytest.exit()` outranks everything, including failures already reported.
     // `_pytest/main.py::wrap_session` catches `Exit` in the same arm as `KeyboardInterrupt`
     // and sets `exitstatus = ExitCode.INTERRUPTED` regardless of `session.testsfailed`,
     // because the `except Failed` arm never runs — the exception that escaped is the `Exit`.
     // Probed on pytest 8.4.2: a file whose first test fails and whose second calls
-    // `pytest.exit()` reports `1 failed` and exits **2**, not 1.
-    if session_exit {
+    // `pytest.exit()` reports `1 failed` and exits **2**, not 1. (`pytest.exit(returncode=N)`
+    // is `finish`'s: it overrides this.) pytest-xdist's `-x` / `--maxfail` is the same arm:
+    // its controller raises `Interrupted` when the pool reaches the limit.
+    if interrupted {
         return 2;
     }
     if collection_errors > 0 {
@@ -593,6 +611,8 @@ struct StopSignals<'a> {
     /// is off); the reasons collect here, and the worker stops its batch there.
     pytest_fallback: bool,
     handoff: &'a Mutex<Vec<String>>,
+    /// The controller's reports, in arrival order, when the session has a controller (v18).
+    shipped: Option<&'a Mutex<Vec<serde_json::Value>>>,
 }
 
 impl StopSignals<'_> {
@@ -632,6 +652,9 @@ struct WorkerRun {
     /// Set when this worker's test called `pytest.exit()`; the string is the worker's
     /// diagnostics, carrying pytest's `Exit: <reason>` banner.
     session_exit: Option<String>,
+    /// How this worker's session ended (v18). Only a pool of one's decides the run's
+    /// summary and exit status; a worker in a larger pool is an xdist worker, whose are ignored.
+    session: SessionEndReport,
 }
 
 /// What the main thread hands one worker across the barrier: its tests, in batches.
@@ -655,9 +678,19 @@ enum ToWorker {
         files: Vec<PathBuf>,
         reply: Sender<Result<(), CollectError>>,
     },
-    /// The assignment, and whether the last `modify_items` stage was accepted (its marks are
-    /// then applied by the worker).
-    Run(Assignment, bool),
+    /// The assignment, whether the last `modify_items` stage was accepted (its marks are
+    /// then applied by the worker), and how the session ends (v18).
+    Run(Assignment, bool, SessionEnd),
+}
+
+/// `session.testsfailed` as pytest counts it: failed *reports* -- a test's own failure or
+/// error, and a teardown error beside it, are two.
+fn failed_reports<'a>(outcomes: impl Iterator<Item = &'a TestOutcome>) -> usize {
+    outcomes
+        .map(|outcome| {
+            usize::from(outcome.status.is_failure()) + usize::from(outcome.teardown_error.is_some())
+        })
+        .sum()
 }
 
 /// One `pytest_collection_modifyitems` stage as [`stage`] sees it.
@@ -881,6 +914,8 @@ fn run_with_launcher(
     // because every last-failed file is collected under any prediction. The abandoned attempt
     // has imported the files it collected, so a replanned run imports those twice.
     let mut known = None;
+    let mut workers = workers;
+    let mut notes = Vec::new();
     loop {
         let attempt = run_attempt(
             invocation_dir,
@@ -893,11 +928,19 @@ fn run_with_launcher(
             // A fresh reborrow each attempt; `as_deref_mut` ties it to the observer's lifetime.
             observer.as_mut().map(|watch| &mut **watch as Observer<'_>),
             started,
-            known,
+            known.clone(),
+            &mut notes,
         )?;
         match attempt {
-            Attempt::Report(report) => return Ok(report),
+            Attempt::Report(mut report) => {
+                report.notes.append(&mut notes);
+                return Ok(report);
+            }
             Attempt::Replan(actual) => known = Some(actual),
+            Attempt::Serial(note) => {
+                workers = 1;
+                notes.push(note);
+            }
         }
     }
 }
@@ -907,7 +950,119 @@ fn run_with_launcher(
 enum Attempt {
     Report(RunReport),
     Replan(Option<LastFailedSkip>),
+    /// Run again on one worker (v18): the session has a hook only a controller sees whole,
+    /// pytest-xdist is not installed and nobody asked for `-n`. Carries the notice.
+    Serial(String),
 }
+
+/// pytest-xdist is installed in the project's environment (the CLI's `hook_context`).
+fn xdist_installed(options: &RunOptions) -> bool {
+    context_flag(options, "xdist_installed")
+}
+
+/// The user chose the pool size (`-n N`): the xdist model, whatever is installed.
+fn workers_explicit(options: &RunOptions) -> bool {
+    context_flag(options, "workers_explicit")
+}
+
+fn context_flag(options: &RunOptions, key: &str) -> bool {
+    options
+        .hook_context
+        .as_ref()
+        .and_then(|context| context.get(key))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The notice for [`Attempt::Serial`] and the one-worker probe.
+const SERIAL_NOTE: &str = "rustest: running on one worker: a pytest_sessionfinish, \
+    pytest_terminal_summary or pytest_unconfigure hook, or a check of config.workerinput, needs \
+    the whole session in one process, as pytest has it, and pytest-xdist is not installed to \
+    provide a controller. Install pytest-xdist, or pass -n N to run in parallel as pytest-xdist \
+    would.";
+
+/// How the session's end runs (v18), decided at the barrier and sent with the assignment.
+#[derive(Debug, Clone, Copy)]
+struct SessionEnd {
+    /// `session.testscollected`: the selection, as every xdist worker and the controller see it.
+    testscollected: usize,
+    /// Collection errors: each a failed report (`session.testsfailed`), and together pytest's
+    /// interrupt (exit 2).
+    collection_errors: usize,
+    /// `--maxfail` (`-x` is 1); `0` is no limit. Sets `session.shouldfail`.
+    maxfail: usize,
+    /// A pool of one: this worker is the session, and its summary is the session's.
+    serial: bool,
+    /// A session-end hook is registered: a `pytest.exit()` mid-batch still ends the session,
+    /// so each batch carries the facts so far.
+    ends: bool,
+}
+
+impl SessionEnd {
+    /// The facts pytest's `Session` holds when `wrap_session` ends it, for a process that saw
+    /// `failed` failed test reports. `wrap_session`'s order: interrupted (collection errors, or
+    /// xdist's controller stopping the pool: `stopped`), then failed, then nothing collected.
+    fn facts(self, failed: usize, summary: bool, stopped: bool) -> SessionFacts {
+        let testsfailed = self.collection_errors + failed;
+        let exitstatus = if self.collection_errors > 0 || stopped {
+            2
+        } else if testsfailed > 0 {
+            1
+        } else if self.testscollected == 0 {
+            5
+        } else {
+            0
+        };
+        SessionFacts {
+            exitstatus,
+            testscollected: self.testscollected,
+            testsfailed,
+            summary,
+            // `Session.pytest_runtest_logreport`, after each failed report.
+            shouldfail: (self.maxfail > 0 && testsfailed >= self.maxfail)
+                .then(|| format!("stopping after {testsfailed} failures")),
+        }
+    }
+}
+
+/// A run that stops here and goes to pytest, with `reasons`.
+fn handed_off(rootdir: String, reasons: Vec<String>, started: Instant) -> Attempt {
+    let mut report = finish(
+        rootdir,
+        Vec::new(),
+        Vec::new(),
+        Selection::default(),
+        WorkerResidue::default(),
+        false,
+        started,
+    );
+    report.pytest_fallback = reasons;
+    Attempt::Report(report)
+}
+
+/// Shut workers down that the run no longer needs: each still runs `pytest_unconfigure`.
+fn quit_all(workers: impl IntoIterator<Item = Worker>) {
+    for worker in workers {
+        worker.quit();
+    }
+}
+
+/// The session's controller (v18), shut down (`pytest_unconfigure` only) however the run
+/// leaves it unless its session was ended.
+struct Controller(Option<Worker>);
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        quit_all(self.0.take());
+    }
+}
+
+/// pytest's terminal reporter is not the only thing that ends a session with no tests: a
+/// session-end hook still runs, with exit status 5 or 4. Not modelled without a pool; the
+/// session goes to pytest when the initial conftests look like they have one.
+const NO_TESTS_SESSION_END: &str = "rustest's hook runtime: a session with nothing to run still \
+    calls the session-end hooks (pytest_sessionfinish, pytest_terminal_summary, \
+    pytest_unconfigure)";
 
 /// [`run_with_launcher`]'s body, with `known` the `--lf` skip a previous attempt established
 /// (`None`: predict it).
@@ -923,6 +1078,7 @@ fn run_attempt(
     mut observer: Option<Observer<'_>>,
     started: Instant,
     known: Option<Option<LastFailedSkip>>,
+    notes: &mut Vec<String>,
 ) -> Result<Attempt, RunError> {
     let mut dispatch = plan(
         invocation_dir,
@@ -938,6 +1094,13 @@ fn run_attempt(
     let previously_failed = read_last_failed(&dispatch.cache_dir);
 
     if dispatch.targets.is_empty() {
+        if options.pytest_fallback && initial_conftests_may_need_one_process(&dispatch) {
+            return Ok(handed_off(
+                dispatch.rootdir,
+                vec![NO_TESTS_SESSION_END.to_string()],
+                started,
+            ));
+        }
         // Still compile the expressions. `deselect_by_keyword` parses **before** it loops
         // (`_pytest/mark/__init__.py` l. 214), so `-k "and and"` is a usage error even when
         // there is nothing to match — exit 4, not a quiet exit 5.
@@ -971,23 +1134,59 @@ fn run_attempt(
         dispatch.skip_targets(&plan.collect, workers);
     }
 
-    let mut pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback) {
-        Err(CollectError::HandOff(reasons)) => {
-            let mut report = finish(
-                dispatch.rootdir.clone(),
-                Vec::new(),
-                Vec::new(),
-                Selection::default(),
-                WorkerResidue::default(),
-                false,
+    // The one-worker rule, decided before the pool boots when the initial conftests can say
+    // (M1): worker 0 boots alone, and if its hooks need one process it is the pool. Otherwise
+    // it unconfigures and the pool boots as usual. Late conftests are the barrier's to catch.
+    let xdist_model = xdist_installed(options) || workers_explicit(options);
+    let mut first = None;
+    if dispatch.assignments.len() > 1
+        && !xdist_model
+        && initial_conftests_may_need_one_process(&dispatch)
+    {
+        let (probe, reasons) = spawn_probe(&dispatch, launcher).map_err(RunError::Collect)?;
+        if !reasons.is_empty() && options.pytest_fallback {
+            probe.quit();
+            return Ok(handed_off(
+                dispatch.rootdir,
+                launcher.hooks_needing_pytest(),
                 started,
-            );
-            report.pytest_fallback = reasons;
-            return Ok(Attempt::Report(report));
+            ));
+        }
+        if launcher.single_process_hooks() {
+            dispatch.skip_targets(&[], 1); // every file to worker 0
+            notes.push(SERIAL_NOTE.to_string());
+            first = Some(probe);
+        } else {
+            probe.quit();
+        }
+    }
+
+    let mut pool = match spawn_pool(&dispatch, launcher, options.pytest_fallback, first) {
+        Err(CollectError::HandOff(reasons)) => {
+            return Ok(handed_off(dispatch.rootdir, reasons, started));
         }
         pool => pool?,
     };
     let pool_size = pool.len();
+
+    // A controller process (v18): a pool of two or more under the xdist model with a hook only
+    // a controller sees whole, as `ready` reports it -- the initial conftests, which is all
+    // xdist's controller has (it collects nothing). It boots now, before any test runs, as
+    // xdist's configures and starts its session before it spawns the nodes.
+    let controlled = pool_size > 1 && xdist_model && launcher.controller_hooks();
+    let mut controller = Controller(None);
+    let mut controller_reasons = Vec::new();
+    if controlled {
+        let (worker, reasons) =
+            spawn_controller(&dispatch, launcher, pool_size).map_err(RunError::Collect)?;
+        controller.0 = Some(worker);
+        if !reasons.is_empty() && options.pytest_fallback {
+            drop(controller);
+            quit_all(pool);
+            return Ok(handed_off(dispatch.rootdir, reasons, started));
+        }
+        controller_reasons = reasons;
+    }
 
     // pytest still collects the directories of the files it skips, which imports their
     // conftests: their hooks count, a broken one is a collection error, and their import side
@@ -1034,6 +1233,8 @@ fn run_attempt(
     let session_over = AtomicBool::new(false);
     let session_over = &session_over;
     let handoff = Mutex::new(Vec::new());
+    // The workers' phase reports for the controller, when there is one.
+    let shipped = Mutex::new(Vec::new());
     let signals = StopSignals {
         fail_fast: options.fail_fast,
         max_fail: options.max_fail,
@@ -1042,6 +1243,7 @@ fn run_attempt(
         session_over,
         pytest_fallback: options.pytest_fallback,
         handoff: &handoff,
+        shipped: controlled.then_some(&shipped),
     };
 
     let (live_tx, live_rx) = observer.is_some().then(channel::<LiveResult>).unzip();
@@ -1104,17 +1306,7 @@ fn run_attempt(
                 for handle in handles {
                     let _ = handle.join();
                 }
-                let mut report = finish(
-                    dispatch.rootdir.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    Selection::default(),
-                    WorkerResidue::default(),
-                    false,
-                    started,
-                );
-                report.pytest_fallback = hooks;
-                return Ok(Attempt::Report(report));
+                return Ok(handed_off(dispatch.rootdir.clone(), hooks, started));
             }
         }
 
@@ -1139,6 +1331,19 @@ fn run_attempt(
                 }
                 return Ok(Attempt::Replan(actual));
             }
+        }
+
+        // Step 3's tier rule: a pool of two or more chosen by default, a session-end hook or a
+        // `workerinput` check, and no pytest-xdist to say how such a pool behaves -- the
+        // project has only ever had serial semantics, so it gets them: one worker. Checked
+        // here, where every conftest (late ones included) has registered and nothing ran; the
+        // workers unconfigure as they leave the barrier.
+        if pool_size > 1 && !xdist_model && launcher.single_process_hooks() {
+            drop(exec_txs);
+            for handle in handles {
+                let _ = handle.join();
+            }
+            return Ok(Attempt::Serial(SERIAL_NOTE.to_string()));
         }
 
         let modifies = launcher.modifies_items();
@@ -1194,18 +1399,27 @@ fn run_attempt(
                 for handle in handles {
                     let _ = handle.join();
                 }
-                let mut report = finish(
+                return Ok(handed_off(
                     dispatch.rootdir.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    Selection::default(),
-                    WorkerResidue::default(),
-                    false,
+                    staged.handoff.clone(),
                     started,
-                );
-                report.pytest_fallback = staged.handoff.clone();
-                return Ok(Attempt::Report(report));
+                ));
             }
+        }
+        // A usage error (`-k "and and"`) still ends pytest's session, with exit status 4.
+        if matches!(staged, Err(RunError::Selection(_)))
+            && options.pytest_fallback
+            && launcher.session_end_hooks()
+        {
+            drop(exec_txs);
+            for handle in handles {
+                let _ = handle.join();
+            }
+            return Ok(handed_off(
+                dispatch.rootdir.clone(),
+                vec![NO_TESTS_SESSION_END.to_string()],
+                started,
+            ));
         }
 
         // `Collected` goes out before any work does, so an observer that declines it stops
@@ -1221,7 +1435,17 @@ fn run_attempt(
         // down — *before* joining, or the join deadlocks on threads still at the barrier.
         if let (Ok(staged), false) = (&staged, quit) {
             for (tx, assignment) in exec_txs.iter().zip(&staged.per_worker) {
-                let _ = tx.send(ToWorker::Run(assignment.clone(), accepted));
+                let _ = tx.send(ToWorker::Run(
+                    assignment.clone(),
+                    accepted,
+                    SessionEnd {
+                        testscollected: staged.collected,
+                        collection_errors: staged.errors.len(),
+                        maxfail: options.max_fail,
+                        serial: pool_size == 1,
+                        ends: launcher.session_end_hooks(),
+                    },
+                ));
             }
         }
         drop(exec_txs);
@@ -1286,6 +1510,16 @@ fn run_attempt(
                     }
                     // Worker order is deterministic, so "the first one" is too.
                     residue.session_exit = residue.session_exit.or(run.session_exit);
+                    let end = &mut residue.session_end;
+                    end.end_error |= run.session.end_error;
+                    end.aborted |= run.session.aborted;
+                    end.returncode = end.returncode.or(run.session.returncode);
+                    if pool_size == 1 {
+                        // The session's own end. An xdist worker's summary goes nowhere and its
+                        // exit status is not the run's.
+                        end.summary = run.session.summary;
+                        end.exit_override = run.session.exit_override;
+                    }
                 }
                 // Worker order is deterministic, so the reported failure is too.
                 Err(err) => failure = failure.or(Some(err)),
@@ -1317,6 +1551,67 @@ fn run_attempt(
                         id: test.id.clone(),
                     }))
                 }
+            }
+        }
+
+        // xdist's controller interrupts the session when the pool reaches `--maxfail`: its
+        // exit status is 2, where a single process's is 1. A pool of one is that process.
+        residue.interrupted = xdist_model && pool_size > 1 && stopped_early && !session_ended;
+
+        // The controller's session end (v18): after every worker's, as xdist's comes after
+        // its workers finish. It replays every phase report, and ends the session with the
+        // session's facts. A session `pytest.exit()` ended, or a declined run, leaves it to
+        // `Controller`'s drop (unconfigure only).
+        if let (Some(mut controller), false, false) = (controller.0.take(), session_ended, quit) {
+            let failed = failed_reports(outcomes.iter()) + residue.teardown_errors.len();
+            let facts = SessionEnd {
+                testscollected: staged.collected,
+                collection_errors: staged.errors.len(),
+                maxfail: options.max_fail,
+                serial: false,
+                ends: true,
+            }
+            .facts(failed, true, residue.interrupted);
+            let reports = std::mem::take(
+                &mut *shipped
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for chunk in reports.chunks(500) {
+                controller
+                    .replay_reports(chunk.to_vec())
+                    .map_err(RunError::Collect)?;
+            }
+            let teardown = controller.end_run(Some(facts)).map_err(RunError::Collect)?;
+            let session = controller.take_session_end();
+            residue.teardown_errors.extend(teardown);
+            residue.session_end.summary = session.summary;
+            residue.session_end.exit_override = session.exit_override;
+            residue.session_end.end_error |= session.end_error;
+            residue.session_end.aborted |= session.aborted;
+            let mut late = std::mem::take(&mut controller_reasons);
+            late.extend(controller.take_handoff());
+            if !late.is_empty() {
+                if options.pytest_fallback {
+                    handoff
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend(late);
+                } else {
+                    let stderr = late
+                        .iter()
+                        .map(|reason| {
+                            format!(
+                                "rustest: not handed to pytest (--no-pytest-fallback): {reason}\n"
+                            )
+                        })
+                        .collect::<String>();
+                    residue.stderr.push(stderr);
+                }
+            }
+            let stderr = controller.take_stderr();
+            if !stderr.is_empty() {
+                residue.stderr.push(stderr);
             }
         }
 
@@ -1418,6 +1713,9 @@ fn record_last_failed(
 /// The selected manifest plus the per-worker dispatch lists derived from it.
 struct Staged {
     selected: Vec<CollectedTest>,
+    /// `session.testscollected`: what selection kept, counted before a collection error
+    /// empties `selected`.
+    collected: usize,
     errors: Vec<CollectionErrorEntry>,
     deselected: usize,
     /// Modules that skipped themselves at import, straight through from
@@ -1437,6 +1735,7 @@ impl Staged {
     fn handed_off(reasons: Vec<String>, pool_size: usize) -> Self {
         Staged {
             selected: Vec::new(),
+            collected: 0,
             errors: Vec::new(),
             deselected: 0,
             module_skipped: 0,
@@ -1585,6 +1884,7 @@ fn stage(
     if !assembled.errors.is_empty() {
         return Ok(Staged {
             selected: Vec::new(),
+            collected: ordered.len(),
             errors: assembled.errors,
             deselected,
             // Carried across the collection-error bail-out because pytest carries it:
@@ -1631,6 +1931,7 @@ fn stage(
     }
 
     Ok(Staged {
+        collected: selected.len(),
         selected,
         errors: assembled.errors,
         deselected,
@@ -1656,6 +1957,11 @@ struct WorkerResidue {
     warnings: Vec<RecordedWarning>,
     /// The first `pytest.exit()` banner, if a test ended the session.
     session_exit: Option<String>,
+    /// The session's end (v18): `pytest_terminal_summary`'s output, the exit status a hook or
+    /// `pytest.exit(returncode=)` set, and whether a session-end hook raised.
+    session_end: SessionEndReport,
+    /// The xdist model's `-x` / `--maxfail`: the controller interrupted the session (exit 2).
+    interrupted: bool,
 }
 
 /// What the selection pass decided: how many tests the run will execute, and how many it
@@ -1692,12 +1998,22 @@ fn finish(
         .filter(|test| test.status.is_failure() || test.teardown_error.is_some())
         .count()
         + residue.teardown_errors.len();
-    let exit = exit_code(
-        tests.len(),
-        collection_errors.len(),
-        failures,
-        residue.session_exit.is_some(),
-    );
+    // The session's end decides when it says something (v18): a hook that raised is exit 1;
+    // a `session.exitstatus` a hook set, or `pytest.exit(returncode=N)`, is that status.
+    let end = &residue.session_end;
+    let exit = if end.end_error {
+        1
+    } else {
+        end.exit_override.or(end.returncode).unwrap_or_else(|| {
+            exit_code(
+                tests.len(),
+                collection_errors.len(),
+                failures,
+                residue.session_exit.is_some() || residue.interrupted,
+            )
+        })
+    };
+    let session_end_error = end.end_error || end.aborted;
     RunReport {
         version: REPORT_SCHEMA_VERSION,
         rootdir,
@@ -1712,6 +2028,9 @@ fn finish(
         session_exit: residue.session_exit,
         pytest_fallback: Vec::new(),
         discarded: 0,
+        terminal_summary: residue.session_end.summary,
+        notes: Vec::new(),
+        session_end_error,
     }
 }
 
@@ -1745,6 +2064,7 @@ fn worker_life(
                 // worker order" rule; this thread's own result is then empty rather than a
                 // second, racing copy of the same failure.
                 let _ = collect_tx.send((index, Err(err)));
+                worker.quit();
                 return Ok(WorkerRun::default());
             }
         }
@@ -1753,9 +2073,11 @@ fn worker_life(
     // time any test runs: a later directory's options and hooks reach this worker's tests.
     if let Err(err) = worker.import_late_conftests(late_conftests, usize::MAX) {
         let _ = collect_tx.send((index, Err(err)));
+        worker.quit();
         return Ok(WorkerRun::default());
     }
     if collect_tx.send((index, Ok(outcomes))).is_err() {
+        worker.quit();
         return Ok(WorkerRun::default());
     }
 
@@ -1773,18 +2095,21 @@ fn worker_life(
                     .try_for_each(|path| worker.collect_one(path, None).map(|_| ()));
                 let _ = reply.send(imported);
             }
-            Ok(ToWorker::Run(assignment, commit)) => {
+            Ok(ToWorker::Run(assignment, commit, end)) => {
                 worker.commit_marks = commit;
-                break Some(assignment);
+                break Some((assignment, end));
             }
             Err(_) => break None,
         }
     };
-    let Some(assignment) = assignment else {
-        // The run was abandoned at the barrier (another worker failed, or selection was
-        // rejected). Nothing to execute and nothing to say; `Worker::drop` reaps.
+    let Some((assignment, end)) = assignment else {
+        // The run was abandoned at the barrier (another worker failed, selection was rejected,
+        // a replan or a hand-off). Nothing to execute; the worker still unconfigures.
+        worker.quit();
         return Ok(WorkerRun::default());
     };
+    // The facts a `pytest.exit()` mid-batch ends this worker's session with.
+    let base = end.ends.then(|| end.facts(0, end.serial, false));
 
     let mut results: Vec<(usize, TestOutcome)> = Vec::new();
     // `RUSTEST_SCHEDULE_TRACE=1`: one stderr line per worker (files, busy seconds, when it
@@ -1844,6 +2169,8 @@ fn worker_life(
             signals.fail_fast,
             budget,
             signals.pytest_fallback,
+            signals.shipped,
+            base.as_ref(),
             &mut outcomes,
             &mut forward,
         );
@@ -1896,6 +2223,7 @@ fn worker_life(
                     teardown: None,
                     stderr: String::new(),
                     session_exit: Some(stderr),
+                    session: worker.take_session_end(),
                 });
             }
             Err(err) => return Err(err),
@@ -1917,7 +2245,9 @@ fn worker_life(
             began.elapsed().as_secs_f64()
         );
     }
-    let teardown = worker.shutdown_run()?;
+    let failed = failed_reports(results.iter().map(|(_, outcome)| outcome));
+    let teardown = worker.end_run(Some(end.facts(failed, end.serial, false)))?;
+    let session = worker.take_session_end();
     attach_late_teardowns(&mut results, worker.take_late_teardowns());
     let handed_off = worker.take_handoff();
     let mut stderr = worker.take_stderr();
@@ -1948,6 +2278,7 @@ fn worker_life(
         teardown,
         stderr,
         session_exit: None,
+        session,
     })
 }
 
@@ -1993,6 +2324,7 @@ mod tests {
                 stderr,
                 session_exit: None,
                 warnings: Vec::new(),
+                ..WorkerResidue::default()
             },
             false,
             Instant::now(),
@@ -2296,6 +2628,9 @@ mod tests {
             pytest_fallback: Vec::new(),
             discarded: 0,
             warnings: Vec::new(),
+            notes: Vec::new(),
+            terminal_summary: Vec::new(),
+            session_end_error: false,
         };
 
         assert_eq!(
@@ -3022,7 +3357,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":17}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":18}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(
@@ -3065,7 +3400,7 @@ def test_bails():
              \x20                'status': 'passed', 'duration_s': 0.0}}) + chr(10))\n\
              \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
              \x20           'executed': len(message['ids']), 'stopped': False}}) + chr(10))\n\
-             \x20   elif op == 'shutdown':\n\
+             \x20   elif op in ('shutdown', 'end_session'):\n\
              \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
              \x20       sys.stdout.flush()\n\
              \x20       break\n\
@@ -3716,7 +4051,7 @@ def test_bails():
              \x20           sys.stdout.flush()\n\
              \x20       sys.stdout.write(json.dumps({{'op': 'batch_done',\n\
              \x20           'executed': len(message['ids']), 'stopped': False}}) + chr(10))\n\
-             \x20   elif op == 'shutdown':\n\
+             \x20   elif op in ('shutdown', 'end_session'):\n\
              \x20       sys.stdout.write('{{\"op\":\"bye\"}}' + chr(10))\n\
              \x20       sys.stdout.flush()\n\
              \x20       break\n\

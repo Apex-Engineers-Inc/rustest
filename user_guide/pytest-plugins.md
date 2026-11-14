@@ -46,20 +46,22 @@ for details.
 
 rustest does not implement any of the machinery a real pytest plugin needs:
 
-- the pluggy hook system, beyond the four conftest hooks rustest runs itself
-  (`pytest_addoption`, `pytest_configure`, `pytest_sessionstart`,
-  `pytest_collection_modifyitems`; see [pytest compatibility](pytest-compat.md))
+- the pluggy hook system, beyond the conftest hooks rustest runs itself: the four that
+  shape a session (`pytest_addoption`, `pytest_configure`, `pytest_sessionstart`,
+  `pytest_collection_modifyitems`), the per-test ones (`pytest_runtest_*`,
+  `pytest_fixture_setup`) and the session's end (`pytest_sessionfinish`,
+  `pytest_terminal_summary`, `pytest_unconfigure`); see [pytest compatibility](pytest-compat.md)
 - setuptools entry points (`pytest11`)
 - plugin packages from PyPI, except where the behaviour has been reimplemented in the engine
-- hook wrappers
+- hook wrappers, except on the per-test hooks
 
-A conftest that defines any other hook (`pytest_runtest_setup`, `pytest_sessionfinish`, ...)
+A conftest that defines any other hook (`pytest_generate_tests`, `pytest_runtest_protocol`, ...)
 hands the session to pytest. With `--no-pytest-fallback` it is not an error: the hook is not
 run, and rustest prints one `NOTE:` line on stderr naming each such hook it found in a loaded
 `conftest.py` or `pytest_plugins` module:
 
 ```text
-NOTE: 2 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_sessionfinish, tests/conftest.py::pytest_runtest_setup
+NOTE: 2 pytest hooks in conftest files are not run (rustest has no plugin system): conftest.py::pytest_generate_tests, tests/conftest.py::pytest_runtest_protocol
 ```
 
 The paths are relative to the rootdir, a `pytest_plugins` module is named by its dotted name,
