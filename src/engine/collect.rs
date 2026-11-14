@@ -2382,6 +2382,8 @@ pub(crate) struct Worker {
     pub(crate) commit_marks: bool,
     /// Teardown errors for tests already reported ([`LateTeardown`]), until taken.
     late_teardowns: Vec<LateTeardown>,
+    /// Hand-off reasons a test's result carried (v17), until taken.
+    handoff: Vec<String>,
 }
 
 /// The environment a pytest-xdist worker has, for worker *index* of a pool of *size*
@@ -2500,6 +2502,7 @@ impl Worker {
             late_done: 0,
             commit_marks: false,
             late_teardowns: Vec::new(),
+            handoff: Vec::new(),
         })
     }
 
@@ -2896,6 +2899,7 @@ impl Worker {
         ids: &[String],
         stop_on_failure: bool,
         max_fail: Option<usize>,
+        stop_on_handoff: bool,
         out: &mut Vec<TestOutcome>,
         on_result: &mut dyn FnMut(usize, &TestOutcome),
     ) -> Result<bool, CollectError> {
@@ -2906,6 +2910,7 @@ impl Worker {
             stop_on_failure,
             max_fail,
             commit_marks: std::mem::take(&mut self.commit_marks),
+            stop_on_handoff,
         };
         if let Err(err) = self.send(&request) {
             return Err(self.execute_died(first, format!("could not send execute_batch: {err}")));
@@ -2954,6 +2959,7 @@ impl Worker {
                     warnings,
                     teardown_error,
                     previous_teardown,
+                    handoff,
                 } => {
                     let Some(wanted) = ids.get(seen) else {
                         return Err(self.execute_protocol(
@@ -2977,6 +2983,7 @@ impl Worker {
                         ));
                     };
                     self.late_teardowns.extend(previous_teardown);
+                    self.handoff.extend(handoff);
                     let outcome = TestOutcome {
                         id: echoed,
                         status,
@@ -3010,7 +3017,12 @@ impl Worker {
                     // `--maxfail` is the second thing that legitimately stops a batch, and
                     // the check has to know about it or a `--maxfail=2` run is a protocol
                     // error instead of a short run.
-                    if stopped && !stop_on_failure && max_fail.is_none() {
+                    // A hand-off is the third, when the session is going to pytest.
+                    if stopped
+                        && !stop_on_failure
+                        && max_fail.is_none()
+                        && !(stop_on_handoff && !self.handoff.is_empty())
+                    {
                         return Err(self.execute_protocol(
                             expected,
                             "the batch reports stopping early, but neither `-x` nor `--maxfail` was in effect"
@@ -3128,9 +3140,14 @@ impl Worker {
             Err(err) => return Err(self.shutdown_error(format!("could not read bye: {err}"))),
         };
         match serde_json::from_str::<WorkerResponse>(&line) {
-            Ok(WorkerResponse::Bye { warnings, teardown }) => {
+            Ok(WorkerResponse::Bye {
+                warnings,
+                teardown,
+                handoff,
+            }) => {
                 self.bye_warnings = warnings;
                 self.late_teardowns.extend(teardown);
+                self.handoff.extend(handoff);
             }
             Ok(other) => {
                 return Err(self.shutdown_error(format!(
@@ -3202,6 +3219,12 @@ impl Worker {
     /// The late teardown errors the worker sent since the last call.
     pub(crate) fn take_late_teardowns(&mut self) -> Vec<LateTeardown> {
         std::mem::take(&mut self.late_teardowns)
+    }
+
+    /// Why the session must go to pytest, found while this worker's tests ran (v17), since
+    /// the last call.
+    pub(crate) fn take_handoff(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.handoff)
     }
 
     /// The warnings `bye` carried, which belong to the last test this worker ran.
@@ -3417,7 +3440,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":16}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":17}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

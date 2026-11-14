@@ -44,7 +44,7 @@ import os
 import re
 import sys
 import warnings
-from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import GenericAlias
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
@@ -82,6 +82,7 @@ __all__ = [
     "mocker",
     "monkeypatch",
     "pytestconfig",
+    "record_property",
     "recwarn",
     "set_log_capture",
     "tmp_path",
@@ -1701,6 +1702,18 @@ def recwarn() -> Generator[WarningsRecorder, None, None]:
 #: The fixtures this module contributes, in the order
 #: ``_worker._register_builtin_fixtures`` registers them.  Dependencies first, so the
 #: registration order reads like the dependency order even though the registry does not care.
+@fixture
+def record_property(request: Any) -> Callable[[str, object], None]:
+    """Add a ``(name, value)`` to the test's ``user_properties`` -- pytest's
+    ``record_property`` (`_pytest/junitxml.py` l. 257-280).  Without ``--junitxml`` that list is
+    all it touches; a hook reads it from the item and from each report."""
+
+    def append_property(name: str, value: object) -> None:
+        request.node.user_properties.append((name, value))
+
+    return append_property
+
+
 BUILTIN_FIXTURES: Final[Sequence[str]] = (
     "tmp_path_factory",
     "tmp_path",
@@ -1714,4 +1727,5 @@ BUILTIN_FIXTURES: Final[Sequence[str]] = (
     "mocker",
     "pytestconfig",
     "recwarn",
+    "record_property",
 )

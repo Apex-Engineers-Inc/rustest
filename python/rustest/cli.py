@@ -1346,5 +1346,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         code = _run_with(args, paths, keyword=args.pattern, report_json=args.report_json)
     except NeedsPytest as needs:
+        if needs.discarded:
+            sys.stdout.flush()
+            print(
+                f"rustest: discarding the {needs.discarded} results so far"
+                + f" ({needs.reasons[0]}); rerunning the session under pytest",
+                file=sys.stderr,
+            )
         return _hand_to_pytest(parser, raw, user_argv, needs.reasons, needs.optout)
     return finish(code)

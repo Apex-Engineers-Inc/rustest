@@ -171,7 +171,7 @@ import sys
 import warnings
 import weakref
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, NoReturn, cast
@@ -386,7 +386,22 @@ _HOOKS: Final = {
     "pytest_sessionstart": ("session",),
     "pytest_collection_modifyitems": ("session", "config", "items"),
 }
-NATIVE_HOOKS: Final = frozenset(_HOOKS)
+#: The hooks the worker calls around execution, and the arguments each is offered.  Unlike
+#: :data:`_HOOKS` these may be wrappers (``wrapper=True`` / ``hookwrapper=True``): they run in
+#: every worker as an xdist worker runs them, through :meth:`HookRunner.run_hook`.
+_RUN_HOOKS: Final = {
+    "pytest_runtest_logstart": ("nodeid", "location"),
+    "pytest_runtest_logfinish": ("nodeid", "location"),
+    "pytest_runtest_setup": ("item",),
+    "pytest_runtest_call": ("item",),
+    "pytest_runtest_teardown": ("item", "nextitem"),
+    "pytest_runtest_makereport": ("item", "call"),
+    "pytest_runtest_logreport": ("report",),
+    "pytest_fixture_setup": ("fixturedef", "request"),
+}
+#: pluggy's ``firstresult=True`` specifications among them.
+_FIRSTRESULT: Final = frozenset({"pytest_runtest_makereport", "pytest_fixture_setup"})
+NATIVE_HOOKS: Final = frozenset(_HOOKS) | frozenset(_RUN_HOOKS)
 
 #: Absent on an xdist controller and on a serial run, which is what a conftest checks for.
 _ABSENT_CONFIG_ATTRS: Final = frozenset({"workerinput", "workeroutput", "slaveinput"})
@@ -987,6 +1002,8 @@ class _State:
     after_argparse: bool = False  # options declared now were declared after argparse ran
     phase: int = 0  # bumped per registration / configure / sessionstart / modifyitems stage
     born: list[weakref.ref[_Shim]] = field(default_factory=list[weakref.ref["_Shim"]])
+    #: ``config.pluginmanager.register``, wired by :class:`HookRunner`.
+    register_object: Callable[[object, str | None], str] | None = None
 
     def violate(self, what: str) -> NoReturn:
         """Record a use the shim does not support and raise.  Outside a hook call it is a stale
@@ -1223,6 +1240,19 @@ class _HookProxy(_Shim):
             self._st.deselected.append(item)
 
 
+class _PluginManager(_Shim):
+    """``config.pluginmanager``: ``register`` -- a plugin object whose hooks join the chains
+    (:meth:`HookRunner.register_object`)."""
+
+    __slots__ = ()
+
+    def register(self, plugin: object, name: str | None = None) -> str:
+        callback = self._st.register_object
+        if callback is None:
+            self._st.violate("calls config.pluginmanager.register")
+        return callback(plugin, name)
+
+
 class _InvocationParams(_Shim):
     """``config.invocation_params``: its ``dir``."""
 
@@ -1241,14 +1271,14 @@ class _Config(_Shim):
     hook: _HookProxy
     invocation: _InvocationParams | None
     option: _Options
-    pluginmanager: _Shim
+    pluginmanager: _PluginManager
 
     def __init__(self, st: _State) -> None:
         super().__init__(st, "config", persistent=True)
         object.__setattr__(self, "option", _Options(st, "config.option", persistent=True))
         object.__setattr__(self, "hook", _HookProxy(st, "config.hook", persistent=True))
         object.__setattr__(
-            self, "pluginmanager", _Shim(st, "config.pluginmanager", persistent=True)
+            self, "pluginmanager", _PluginManager(st, "config.pluginmanager", persistent=True)
         )
         object.__setattr__(
             self,
@@ -1634,12 +1664,18 @@ class _Impl:
     tryfirst: bool
     trylast: bool
     initial: bool = True  # registered before `pytest_sessionstart` (so before FixtureManager)
+    wrapper: bool = False  # `wrapper=True`: a generator that yields once
+    hookwrapper: bool = False  # `hookwrapper=True`: yields once and receives a `_HookResult`
+    builtin: bool = False  # pytest's own implementation, run by the worker (never a user's)
 
 
 @dataclass
 class _Plugin:
     label: str
     impls: dict[str, _Impl]
+    #: A conftest's directory (``os.path.normcase``d): its hooks reach only the nodes under it,
+    #: as pytest's per-node ``ihook`` does.  ``None``: a plugin, global.
+    scope: str | None = None
 
 
 def _impl_options(value: object) -> dict[str, object]:
@@ -1673,6 +1709,178 @@ def _insert(chain: list[_Impl], impl: _Impl) -> None:
         while i >= 0 and chain[i].tryfirst:
             i -= 1
         chain.insert(i + 1, impl)
+
+
+def builtin_impl(
+    hook: str,
+    func: Callable[..., object],
+    *,
+    tryfirst: bool = False,
+    trylast: bool = False,
+    wrapper: bool = False,
+) -> _Impl:
+    """One of pytest's own implementations of an execution hook, for :meth:`HookRunner.run_hook`."""
+    return _Impl(
+        "pytest", hook, func, _pluggy_argnames(func), tryfirst, trylast, True, wrapper, False, True
+    )
+
+
+#: Resumes an old-style hookwrapper's adapter, which enters the user's code itself.
+_BUILTIN_STEP: Final = _Impl("pytest", "", lambda: None, (), False, False, True, False, False, True)
+
+
+def _canonical_name(plugin: object) -> str:
+    """pluggy's ``get_canonical_name``."""
+    return str(getattr(plugin, "__name__", None) or id(plugin))
+
+
+class _HookResult:
+    """pluggy's ``Result``: what an old-style ``hookwrapper`` receives from its ``yield``."""
+
+    __slots__ = ("_exception", "_result")
+
+    def __init__(self, result: object, exception: BaseException | None) -> None:
+        super().__init__()
+        self._result = result
+        self._exception = exception
+
+    @property
+    def exception(self) -> BaseException | None:
+        return self._exception
+
+    def force_result(self, result: object) -> None:
+        self._result = result
+        self._exception = None
+
+    def force_exception(self, exception: BaseException) -> None:
+        self._result = None
+        self._exception = exception
+
+    def get_result(self) -> object:
+        exc = self._exception
+        if exc is None:
+            return self._result
+        raise exc.with_traceback(exc.__traceback__)
+
+
+class PluggyTeardownRaisedWarning(UserWarning):
+    """pluggy's warning for an old-style hookwrapper raising after its ``yield``."""
+
+
+PluggyTeardownRaisedWarning.__module__ = "pluggy._warnings"
+
+
+def _warn_teardown_exception(impl: _Impl, exc: BaseException) -> None:
+    """`pluggy/_callers.py::_warn_teardown_exception`, with its message."""
+    message = (
+        "A plugin raised an exception during an old-style hookwrapper teardown.\n"
+        + f"Plugin: {impl.label}, Hook: {impl.hook}\n"
+        + f"{type(exc).__name__}: {exc}\n"
+        + "For more information see"
+        + " https://pluggy.readthedocs.io/en/stable/api_reference.html#pluggy.PluggyTeardownRaisedWarning"
+    )
+    warnings.warn(PluggyTeardownRaisedWarning(message), stacklevel=6)
+
+
+def _wrapfail(impl: _Impl, message: str) -> RuntimeError:
+    code = getattr(impl.func, "__code__", None)
+    where = "" if code is None else f" {code.co_filename}:{code.co_firstlineno}"
+    return RuntimeError(f"wrap_controller at {impl.func.__name__!r}{where} {message}")
+
+
+def _old_style(
+    runner: HookRunner, impl: _Impl, args: Sequence[object]
+) -> Generator[None, object, object]:  # `return`s the result, as pluggy's adapter does
+    teardown = cast("Iterator[None]", runner._invoke(impl, lambda: impl.func(*args)))  # pyright: ignore[reportPrivateUsage]
+    try:
+        _ = runner._invoke(impl, lambda: next(teardown))  # pyright: ignore[reportPrivateUsage]
+    except StopIteration:
+        raise _wrapfail(impl, "did not yield") from None
+    try:
+        res: object = yield
+        result = _HookResult(res, None)
+    except BaseException as exc:  # noqa: BLE001 - handed to the wrapper, as pluggy does
+        result = _HookResult(None, exc)
+    gen = cast("Any", teardown)
+    try:
+        _ = runner._invoke(impl, lambda: gen.send(result))  # pyright: ignore[reportPrivateUsage]
+    except StopIteration:
+        pass
+    except BaseException as exc:
+        _warn_teardown_exception(impl, exc)
+        raise
+    else:
+        raise _wrapfail(impl, "has second yield")
+    finally:
+        gen.close()
+    return result.get_result()
+
+
+def _multicall(
+    runner: HookRunner,
+    hook: str,
+    plain: list[_Impl],
+    wrappers: list[_Impl],
+    kwargs: Mapping[str, object],
+) -> object:
+    """Port of pluggy 1.5's ``_multicall``: wrappers outermost, then the plain implementations,
+    each list called last-in-chain first; ``firstresult`` stops at the first non-``None``."""
+    firstresult = hook in _FIRSTRESULT
+    results: list[object] = []
+    exception: BaseException | None = None
+    teardowns: list[tuple[_Impl, Any]] = []
+    invoke = runner._invoke  # pyright: ignore[reportPrivateUsage]
+    try:
+        try:
+            for impl in (*reversed(wrappers), *reversed(plain)):
+                args = [kwargs[name] for name in impl.argnames]
+                if impl.hookwrapper:
+                    adapter = _old_style(runner, impl, args)
+                    next(adapter)
+                    teardowns.append((_BUILTIN_STEP, adapter))
+                elif impl.wrapper:
+                    gen = cast("Any", invoke(impl, functools.partial(impl.func, *args)))
+                    try:
+                        _ = invoke(impl, functools.partial(next, gen))
+                    except StopIteration:
+                        raise _wrapfail(impl, "did not yield") from None
+                    teardowns.append((impl, gen))
+                else:
+                    res = invoke(impl, functools.partial(impl.func, *args))
+                    if res is not None:
+                        if firstresult and not impl.builtin:
+                            runner._st.where = f"{impl.label}::{impl.hook}"  # pyright: ignore[reportPrivateUsage]
+                            reason = (
+                                f"{impl.label}::{impl.hook} returned a result of its own, which"
+                                + " rustest's hook runtime does not support"
+                            )
+                            runner._st.violations.append(reason)  # pyright: ignore[reportPrivateUsage]
+                            raise HookUnsupported(reason)
+                        results.append(res)
+                        if firstresult:
+                            break
+        except BaseException as exc:  # noqa: BLE001 - re-raised after the wrappers saw it
+            exception = exc
+    finally:
+        result: object = (results[0] if results else None) if firstresult else results
+        for impl, gen in reversed(teardowns):
+            try:
+                if exception is not None:
+                    _ = invoke(impl, functools.partial(gen.throw, exception))
+                else:
+                    _ = invoke(impl, functools.partial(gen.send, result))
+                gen.close()
+            except StopIteration as stop:
+                result = stop.value
+                exception = None
+                continue
+            except BaseException as exc:  # noqa: BLE001 - the next wrapper out sees it
+                exception = exc
+                continue
+            raise _wrapfail(impl, "has second yield")
+    if exception is not None:
+        raise exception
+    return result
 
 
 class HookRunner:
@@ -1736,6 +1944,10 @@ class HookRunner:
         self._session = _Session(self._st, self._config)
         self._plugins: list[_Plugin] = []
         self._configured = False
+        self._objects: list[object] = []
+        self._object_names: set[str] = set()
+        self._runs_cache: dict[tuple[object, str | None], bool] = {}
+        self._st.register_object = self.register_object
 
     # -- results ------------------------------------------------------------------------
 
@@ -1788,23 +2000,30 @@ class HookRunner:
             return True, default
         return True, _coerce_ini(st, name, kind, st.ini[name])
 
+    def note_reason(self, reason: str) -> None:
+        """Record a whole hand-off *reason* found outside any hook (no ``where`` prefix)."""
+        self._st.violations.append(reason)
+
     def note_violation(self, what: str) -> None:
         """Record a reason the session must go to pytest (for a problem found outside a hook)."""
         self._violate_quietly(what)
 
     def implements(self, hook: str) -> bool:
-        """Does any registered module define *hook* (one of :data:`NATIVE_HOOKS`)?"""
+        """Does any registered module or object define *hook* (one of :data:`NATIVE_HOOKS`)?"""
         return any(hook in plugin.impls for plugin in self._plugins)
 
     # -- registration -------------------------------------------------------------------
 
-    def register(self, label: str, module: object, *, initial: bool = True) -> None:
+    def register(
+        self, label: str, module: object, *, initial: bool = True, conftest: Path | None = None
+    ) -> None:
         """Register one conftest or plugin module, in pytest's registration order.
 
         ``initial`` is true for what pytest loads before it has parsed the command line (the
         argument paths' conftests and their ``pytest_plugins``) and false for a conftest the
         collection walk reaches later.  Like pluggy's historic hooks, ``pytest_addoption``
         runs at registration, and ``pytest_configure`` too if ``configure`` already ran.
+        *conftest* is the conftest's path: its execution hooks reach only the tests under it.
         """
         if self._st.violations:
             return
@@ -1812,38 +2031,104 @@ class HookRunner:
         self._st.after_argparse = not initial
         impls: dict[str, _Impl] = {}
         for name, value in vars(module).items():
-            options = _impl_options(value)
-            if options.get("specname"):
-                self._refuse(label, name, "implements a hook through specname=")
+            if not self._take(impls, label, name, value, initial=initial):
                 return
-            if name not in _HOOKS or not callable(value):
+        scope = None if conftest is None else os.path.normcase(str(conftest.parent))
+        self._add_plugin(_Plugin(label, impls, scope))
+
+    def register_object(self, plugin: object, name: str | None = None) -> str:
+        """``config.pluginmanager.register(plugin, name)``: every ``pytest_*`` attribute joins its
+        chain now, globally, after everything registered so far (pluggy's order).  A
+        ``pytest_*`` name this runtime does not run is a violation, as an unrun hook is."""
+        st = self._st
+        canonical = name if name is not None else _canonical_name(plugin)
+        if canonical in self._object_names or any(p is plugin for p in self._objects):
+            raise ValueError(f"Plugin name already registered: {canonical}={plugin!r}")
+        self._object_names.add(canonical)
+        self._objects.append(plugin)
+        label = f"{st.where or 'a hook'} -> {type(plugin).__name__}"
+        impls: dict[str, _Impl] = {}
+        for attr in dir(plugin):
+            if not attr.startswith("pytest_"):
                 continue
-            if options.get("hookwrapper") or options.get("wrapper"):
-                self._refuse(label, name, "is a hook wrapper")
-                return
-            if inspect.isgeneratorfunction(value) or inspect.iscoroutinefunction(value):
-                self._refuse(label, name, "is a generator or coroutine function")
-                return
-            try:
-                argnames = _pluggy_argnames(value)
-            except (TypeError, ValueError):
-                self._refuse(label, name, "has a signature that cannot be read")
-                return
-            unknown = [a for a in argnames if a not in _HOOKS[name]]
-            if unknown:
-                self._refuse(label, name, f"asks for the argument {unknown[0]!r}")
-                return
-            impls[name] = _Impl(
+            value = getattr(plugin, attr, None)
+            if not callable(value):
+                continue
+            if attr not in _HOOKS and attr not in _RUN_HOOKS:
+                st.violate(f"registers a plugin implementing {attr}, a hook rustest does not run")
+            if attr == "pytest_addoption":
+                st.violate("registers a plugin implementing pytest_addoption after argparse")
+            if not self._take(impls, label, attr, value, initial=not st.after_argparse):
+                raise HookUnsupported(st.violations[-1])
+        self._add_plugin(_Plugin(label, impls))
+        return canonical
+
+    def _take(
+        self, impls: dict[str, _Impl], label: str, name: str, value: object, *, initial: bool
+    ) -> bool:
+        """Add *value* to *impls* if it is a hook this runtime runs; ``False`` if refused."""
+        options = _impl_options(value)
+        if options.get("specname"):
+            self._refuse(label, name, "implements a hook through specname=")
+            return False
+        run = name in _RUN_HOOKS
+        if not (name in _HOOKS or run) or not callable(value):
+            return True
+        func = value
+        wrapper = bool(options.get("wrapper"))
+        old = bool(options.get("hookwrapper"))
+        generator = inspect.isgeneratorfunction(func)
+        if not run and (wrapper or old):
+            self._refuse(label, name, "is a hook wrapper")
+            return False
+        if inspect.iscoroutinefunction(func) or (generator and not (wrapper or old)):
+            self._refuse(label, name, "is a generator or coroutine function")
+            return False
+        if (wrapper or old) and not generator:
+            self._refuse(label, name, "is a hook wrapper but not a generator function")
+            return False
+        if wrapper and old:
+            self._refuse(label, name, "is both a wrapper and a hookwrapper")
+            return False
+        try:
+            argnames = _pluggy_argnames(func)
+        except (TypeError, ValueError):
+            self._refuse(label, name, "has a signature that cannot be read")
+            return False
+        allowed = _HOOKS[name] if name in _HOOKS else _RUN_HOOKS[name]
+        unknown = [a for a in argnames if a not in allowed]
+        if unknown:
+            self._refuse(label, name, f"asks for the argument {unknown[0]!r}")
+            return False
+        if name == "pytest_runtest_teardown" and (
+            "nextitem" in argnames or wrapper or old or options.get("trylast")
+        ):
+            # ponytail: rustest tears class/module fixtures down at the next test's start, not
+            # inside this teardown chain; draining them in the last test's teardown lifts it.
+            self._refuse(
                 label,
                 name,
-                value,
-                argnames,
-                bool(options.get("tryfirst")),
-                bool(options.get("trylast")),
-                initial,
+                "reads nextitem or runs after the item's teardown (trylast or a wrapper), where"
+                + " rustest has not torn class and module fixtures down yet",
             )
-        plugin = _Plugin(label, impls)
+            return False
+        impls[name] = _Impl(
+            label,
+            name,
+            func,
+            argnames,
+            bool(options.get("tryfirst")),
+            bool(options.get("trylast")),
+            initial,
+            wrapper,
+            old,
+        )
+        return True
+
+    def _add_plugin(self, plugin: _Plugin) -> None:
         self._plugins.append(plugin)
+        self._runs_cache.clear()
+        impls = plugin.impls
         if "pytest_addoption" in impls:
             self._call(
                 impls["pytest_addoption"],
@@ -2096,6 +2381,9 @@ class HookRunner:
     def _call(self, impl: _Impl, **available: object) -> None:
         """Call one hook as pluggy does: the parameters without defaults, positionally."""
         st = self._st
+        # Re-entrant: a `pytest_configure` that registers a plugin object replays the object's
+        # own `pytest_configure` from inside itself (pluggy's historic call).
+        outer = (st.active, st.where, list(st.born))
         st.where = f"{impl.label}::{impl.hook}"
         args = [available[name] for name in impl.argnames]
         tracked = self._tracked(available)
@@ -2114,12 +2402,107 @@ class HookRunner:
             return
         finally:
             st.active = False
+            if outer[0]:
+                st.active, st.where = True, outer[1]
+                st.born[:] = outer[2]
+        if outer[0]:
+            return  # the outer call's retention check covers this one
         kept = self._kept(tracked, before)
         st.born.clear()
         if kept is not None:
             self._violate_quietly(
                 f"kept a reference to {kept} after returning (for example `CFG = config`)"
             )
+
+    # -- execution hooks ----------------------------------------------------------------
+
+    @property
+    def hook_active(self) -> bool:
+        """A user's hook implementation is running now (its objects are strict)."""
+        return self._st.active
+
+    def violate(self, what: str) -> NoReturn:
+        """Record *what* as a reason to hand the session to pytest, and raise."""
+        self._st.violate(what)
+
+    def fault_mark(self) -> tuple[int, int]:
+        """Where the violation lists end now; :meth:`faults_since` reads what came after."""
+        return len(self._st.violations), len(self._st.late)
+
+    def faults_since(self, mark: tuple[int, int]) -> list[str]:
+        return [*self._st.violations[mark[0] :], *self._st.late[mark[1] :]]
+
+    @property
+    def config(self) -> object:
+        """The ``config`` every hook receives."""
+        return self._config
+
+    @property
+    def session(self) -> object:
+        return self._session
+
+    def runs(self, hook: str, directory: str | None = None) -> bool:
+        """Is any implementation of *hook* reachable from *directory* (``None``: anywhere)?
+        Cached per ``(hook, directory)`` until the next registration: the worker asks per test
+        and per fixture, and a suite without execution hooks must not pay for the question."""
+        key = (hook, directory)
+        found = self._runs_cache.get(key)
+        if found is None:
+            found = self._runs_cache[key] = any(True for _ in self._impls_for(hook, directory))
+        return found
+
+    def runs_any(self, hooks: tuple[str, ...], directory: str | None) -> bool:
+        """:meth:`runs` for any of *hooks*, cached as one answer."""
+        key = (hooks, directory)
+        found = self._runs_cache.get(key)
+        if found is None:
+            found = self._runs_cache[key] = any(self.runs(h, directory) for h in hooks)
+        return found
+
+    def _impls_for(self, hook: str, directory: str | None) -> Iterator[_Impl]:
+        for plugin in self._plugins:
+            impl = plugin.impls.get(hook)
+            if impl is None:
+                continue
+            scope = plugin.scope
+            if (
+                scope is None
+                or directory is None
+                or directory == scope
+                or directory.startswith(scope.rstrip(os.sep) + os.sep)
+            ):
+                yield impl
+
+    def run_hook(
+        self,
+        hook: str,
+        directory: str | None,
+        builtins: Sequence[_Impl] = (),
+        **kwargs: object,
+    ) -> object:
+        """Call *hook* exactly as pluggy calls it: *builtins* (pytest's own implementations,
+        registered before any conftest) and every user implementation reachable from
+        *directory* (the normcased directory of the node whose ``ihook`` pytest uses; ``None``
+        for ``config.hook``), ordered wrappers-outermost, ``tryfirst`` / plain / ``trylast``,
+        last-registered first.  Exceptions propagate as pluggy's do."""
+        plain: list[_Impl] = []
+        wrappers: list[_Impl] = []
+        for impl in (*builtins, *self._impls_for(hook, directory)):
+            _insert(wrappers if impl.wrapper or impl.hookwrapper else plain, impl)
+        return _multicall(self, hook, plain, wrappers, kwargs)
+
+    def _invoke(self, impl: _Impl, call: Callable[[], object]) -> object:
+        """Run *call* (an implementation, or a wrapper's resumption) with the shims live while it
+        is a user's code and not while it is pytest's own."""
+        st = self._st
+        outer = (st.active, st.where)
+        st.active = not impl.builtin
+        if not impl.builtin:
+            st.where = f"{impl.label}::{impl.hook}"
+        try:
+            return call()
+        finally:
+            st.active, st.where = outer
 
 
 def _refs(objs: Sequence[object]) -> list[int]:

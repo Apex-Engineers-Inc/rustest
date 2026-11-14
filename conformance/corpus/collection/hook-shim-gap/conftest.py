@@ -5,6 +5,6 @@ is recorded before it is raised, so the session still goes to pytest, which answ
 
 def pytest_configure(config):
     try:
-        config.pluginmanager.register(object(), "rustest-shim-gap-probe")
+        config.pluginmanager.getplugin("rustest-shim-gap-probe")
     except Exception:
         pass

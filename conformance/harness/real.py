@@ -42,15 +42,25 @@ from typing import Any, Final, cast
 
 from ._real_report_plugin import REPORT_ENV_VAR
 
-#: Where the ``--real`` configs live, and where clones/venvs/wheels are staged.
+#: Where the ``--real`` configs live.
 REAL_DIR: Final = Path(__file__).resolve().parent.parent / "real"
-WORK_DIR: Final = REAL_DIR / "_work"
+#: Where clones, venvs, wheels, caches and run directories are staged: ``RUSTEST_REAL_WORK``,
+#: else ``rustest-real-work`` beside this checkout. **Never inside it**: a suite whose own
+#: config the pinned pytest cannot read (pillow's pytest-9 ``[tool.pytest]`` under pytest
+#: 8.4.2) walks upward to the first ini it finds, and inside this repository that is
+#: rustest's own ``pyproject.toml`` -- for both runners, so the comparison still agrees while
+#: measuring a configuration the suite's users never have. :func:`_check_config` refuses such
+#: a run.
+WORK_DIR: Final = Path(
+    os.environ.get("RUSTEST_REAL_WORK")
+    or Path(__file__).resolve().parent.parent.parent.parent / "rustest-real-work"
+).resolve()
 #: **Private** targets: configs for repositories that must never leave this machine. The
-#: directory is inside the git-ignored ``_work``, so their names, paths and results are never
+#: directory is git-ignored in this repository, so their names, paths and results are never
 #: committed; a config here is a target like any other, its result goes to ``results/`` beside
 #: it rather than to the published ``conformance/real/results``, and the run must leave the
 #: repository's ``git status`` exactly as it found it.
-LOCAL_DIR: Final = WORK_DIR / "local"
+LOCAL_DIR: Final = REAL_DIR / "_work" / "local"
 
 #: The name the reporting plugin is written under inside the throwaway ``PYTHONPATH``
 #: directory. Deliberately not importable from the harness package: putting
@@ -547,6 +557,10 @@ class RunOutcome:
     #: Why the session ran under pytest instead (the report's ``pytest_fallback``); empty
     #: for a native run, and for every pytest leg.
     fallback: tuple[str, ...] = ()
+    #: rustest legs: whether a duration record from an earlier run existed, so files were
+    #: routed to workers by measured cost (a warm run) rather than by size (a cold one).
+    #: ``None`` for pytest legs.
+    duration_record: bool | None = None
 
     def tally(self) -> dict[str, int]:
         counts: dict[str, int] = {
@@ -634,6 +648,21 @@ def ensure_xdist(target: RealTarget) -> None:
         )
 
 
+def _check_config(target: RealTarget, runner: str, what: str, found: object) -> None:
+    """Refuse a run whose configuration came from outside the target's checkout: it would
+    measure the suite under somebody else's ini (see :data:`WORK_DIR`)."""
+    if not found:
+        return
+    path = Path(str(found)).resolve()
+    checkout = target.repo.resolve()
+    if path != checkout and checkout not in path.parents:
+        raise RuntimeError(
+            f"{runner} resolved its {what} to {path}, outside the checkout {checkout}: the"
+            + " suite would run under a configuration that is not its own. Stage the work"
+            + " directory outside any project (RUSTEST_REAL_WORK)."
+        )
+
+
 def run_pytest_real(target: RealTarget, tmp: Path, *, workers: int | None = None) -> RunOutcome:
     """Run the target's suite under real pytest, reading statuses from the plugin.
 
@@ -667,6 +696,7 @@ def run_pytest_real(target: RealTarget, tmp: Path, *, workers: int | None = None
     if not report.exists():
         raise RuntimeError(f"pytest wrote no report (exit {exit_code}):\n{tail[-2000:]}")
     data: dict[str, Any] = json.loads(report.read_text(encoding="utf-8"))
+    _check_config(target, "pytest", "ini file", data.get("inipath"))
     statuses: dict[str, str] = {str(k): str(v) for k, v in dict(data["statuses"]).items()}
     return RunOutcome(
         runner=name,
@@ -706,6 +736,8 @@ def run_rustest_real(
     env = _env_for(target, [_REPO_ROOT / "python"] if tree else [])
     cache = target.repo / ".rustest_cache"
     cache_preexisting = cache.exists()
+    cache_dir = WORK_DIR / "_cache" / target.name
+    had_record = (cache_dir / "v" / "rustest" / "durations").is_file()
     argv = [
         str(target.python),
         "-m",
@@ -715,14 +747,12 @@ def run_rustest_real(
         str(workers),
         "--report-json",
         str(report),
-        # A local tree is never written to: its cache (last-failed, the duration record,
-        # compiled rewrites) lives under `_work` instead, so a rerun schedules by the record
-        # as a user's would.
-        *(
-            ["-o", f"cache_dir={WORK_DIR / '_cache' / target.name}"]
-            if target.kind == "local"
-            else []
-        ),
+        # rustest's cache (last-failed, the duration record, compiled rewrites) lives in the
+        # work directory, never in the target's tree, and persists between sweeps: a rerun
+        # schedules by the record as a user's second run would. Whether one existed is
+        # recorded with the result (`duration_record`).
+        "-o",
+        f"cache_dir={cache_dir}",
         *target.rustest_args,
         *target.test_paths,
     ]
@@ -737,6 +767,9 @@ def run_rustest_real(
     if not report.exists():
         raise RuntimeError(f"rustest wrote no report (exit {exit_code}):\n{tail[-2000:]}")
     data: dict[str, Any] = json.loads(report.read_text(encoding="utf-8"))
+    # rustest's report names the rootdir, which is the ini file's directory whenever one was
+    # found: outside the checkout, the config came from outside it.
+    _check_config(target, "rustest", "rootdir", data.get("rootdir"))
     tests: list[dict[str, Any]] = list(data["tests"])
     summary: dict[str, Any] = dict(data["summary"])
     collection_errors: list[dict[str, Any]] = list(data["collection_errors"])
@@ -748,6 +781,7 @@ def run_rustest_real(
         deselected=int(summary.get("deselected", 0)),
         collection_errors=[str(err.get("path", err)) for err in collection_errors],
         fallback=tuple(str(x) for x in data.get("pytest_fallback", [])),
+        duration_record=had_record,
     )
 
 
@@ -1089,6 +1123,7 @@ def _row(verdict: RealVerdict) -> dict[str, Any]:
         "pytest_s": round(pytest_run.seconds, 2) if pytest_run else None,
         "xdist_s": round(xdist_run.seconds, 2) if xdist_run else None,
         "rustest_s": round(rustest_run.seconds, 2) if rustest_run else None,
+        "duration_record": rustest_run.duration_record if rustest_run else None,
         "engine_s": round(engine_run.seconds, 2) if engine_run else None,
         "engine_verdict": verdict.engine_status,
         "xdist_status_diffs": xdist_diff,
@@ -1118,11 +1153,17 @@ def load_results() -> list[dict[str, Any]]:
     ]
 
 
+def _record_cell(record: object) -> str:
+    """``warm`` when the rustest leg scheduled by a duration record, ``cold`` when it had none."""
+    return "warm" if record is True else "cold" if record is False else ""
+
+
 def render_table(rows: Sequence[Mapping[str, Any]]) -> str:
     """The merged markdown table, one row per recorded suite."""
     head = (
-        "| Suite | Mode | Verdict | Tests | pytest s | pytest -n 4 s | rustest s "
-        "| x pytest | x xdist | engine only s |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|\n"
+        "| Suite | Mode | Verdict | Tests | pytest s | pytest -n 4 s | rustest s | record "
+        "| x pytest | x xdist | engine only s |\n"
+        "|---|---|---|---:|---:|---:|---:|---|---:|---:|---:|\n"
     )
     lines: list[str] = []
     for row in rows:
@@ -1140,6 +1181,7 @@ def render_table(rows: Sequence[Mapping[str, Any]]) -> str:
             str(row["pytest_s"] or ""),
             str(row["xdist_s"] or ""),
             str(row["rustest_s"] or ""),
+            _record_cell(row.get("duration_record")),
             _ratio(row["pytest_s"], row["rustest_s"]),
             _ratio(row["xdist_s"], row["rustest_s"]),
             engine,

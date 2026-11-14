@@ -435,7 +435,8 @@ def _verdict(
     engine_s: float | None = None,
 ) -> real_mod.RealVerdict:
     def outcome(runner: str, seconds: float, fb: tuple[str, ...] = ()) -> RunOutcome:
-        return RunOutcome(runner, 0, seconds, {"t.py::a": "passed"}, 0, [], fb)
+        record = None if runner == "pytest" else runner == "rustest"
+        return RunOutcome(runner, 0, seconds, {"t.py::a": "passed"}, 0, [], fb, record)
 
     return real_mod.RealVerdict(
         name,
@@ -474,7 +475,9 @@ def test_the_table_has_ratios_against_pytest_and_xdist_and_the_engine_leg_for_ha
     ]
     table = real_mod.render_table(rows)
     fast, hooked = table.splitlines()[2:]
-    assert "| fast | native | MATCH | 1 | 4.0 | 8.0 | 2.0 | 2.00x | 4.00x |  |" == fast
+    # `warm`: the rustest leg found a duration record from an earlier run (a published number
+    # says which it is).
+    assert "| fast | native | MATCH | 1 | 4.0 | 8.0 | 2.0 | warm | 2.00x | 4.00x |  |" == fast
     assert "handed off: x::pytest_configure" in hooked and "1.5 (MATCH)" in hooked
 
 
@@ -528,3 +531,25 @@ def test_a_private_target_is_read_from_the_local_dir_and_never_published(
     path = real_mod.record_result(_verdict("mine", pytest_s=1.0, rustest_s=1.0))
     assert path.parent == local / "results"
     assert real_mod.load_results() == []  # the published table never sees it
+
+
+def test_a_config_resolved_outside_the_checkout_is_refused(tmp_path: Path) -> None:
+    """A suite whose own config its pytest cannot read walks upward; inside another project it
+    would run under that project's ini. Both legs are checked: pytest's ini file, rustest's
+    rootdir."""
+    checkout = tmp_path / "work" / "suite"
+    checkout.mkdir(parents=True)
+    target = _target(repo=checkout)
+
+    real_mod._check_config(target, "pytest", "ini file", None)  # pyright: ignore[reportPrivateUsage]
+    real_mod._check_config(target, "pytest", "ini file", str(checkout / "tox.ini"))  # pyright: ignore[reportPrivateUsage]
+    real_mod._check_config(target, "rustest", "rootdir", checkout.as_posix())  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(RuntimeError, match="outside the checkout"):
+        real_mod._check_config(target, "pytest", "ini file", str(tmp_path / "pyproject.toml"))  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(RuntimeError, match="outside the checkout"):
+        real_mod._check_config(target, "rustest", "rootdir", tmp_path.as_posix())  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_work_directory_is_outside_this_repository() -> None:
+    repo = Path(real_mod.__file__).resolve().parents[2]
+    assert repo not in real_mod.WORK_DIR.parents or "RUSTEST_REAL_WORK" in os.environ

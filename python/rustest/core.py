@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         stopped_early: NotRequired[bool]
         session_exit: NotRequired[str]
         pytest_fallback: NotRequired[list[str]]
+        discarded: NotRequired[int]
 
 # The `TypedDict`s above live under `TYPE_CHECKING`, and that is a latency decision like the
 # ones below rather than a style one: on CPython 3.14 `typing` pulls `annotationlib` and
@@ -380,13 +381,16 @@ class NeedsPytest(Exception):
     """The session uses pytest hooks rustest does not run; *reasons* names them.
 
     Raised by :func:`run` and :func:`collect_only` only when asked to (``pytest_fallback``),
-    after the engine stopped at the collection barrier: nothing ran and nothing was printed.
+    after the engine stopped at the collection barrier: nothing ran and nothing was printed --
+    or, when a hook touched what rustest's hook runtime cannot answer while a test ran, after
+    *discarded* results that the caller must say it is throwing away.
     Public in ``rustest.core`` (it is what ``run(pytest_fallback=True)`` documents raising) but
     not re-exported from ``rustest``: library callers default to ``False`` and never see it.
     """
 
-    def __init__(self, labels: Sequence[str]) -> None:
+    def __init__(self, labels: Sequence[str], discarded: int = 0) -> None:
         super().__init__(", ".join(labels))
+        self.discarded = discarded
         self.reasons = [
             label
             if label.startswith(_WHOLE_REASONS)  # already a whole reason
@@ -395,9 +399,12 @@ class NeedsPytest(Exception):
         ]
         # What `--no-pytest-fallback` would do: skip the hooks, unless a conftest failed to
         # import, in which case it is a collection error rather than a run.
+        # A late hand-off's hooks did run: what they touched is the test's error instead.
         self.optout = (
             None
             if any(r.startswith("rustest could not import ") for r in self.reasons)
+            else "the test during which a hook touched it reports an error"
+            if discarded
             else "those hooks will not run"
         )
 
@@ -1080,7 +1087,7 @@ def run(
 
         report: _RunReport = json.loads(payload)
         if labels := report.get("pytest_fallback"):
-            raise NeedsPytest(labels)
+            raise NeedsPytest(labels, report.get("discarded", 0))
 
         # Written before anything is printed, so a report exists even if rendering the
         # summary somehow fails -- the conformance harness treats a missing report as a

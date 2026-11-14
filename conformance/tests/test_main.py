@@ -331,7 +331,13 @@ def test_corpus_case_count_is_pinned() -> None:
     # `fixtures/teardown-error-*` (+5): a fixture teardown that raises is an error of the test
     # whose teardown ran it, beside its own outcome (function, class and module mid-run, module
     # and session at shutdown).
-    assert len(discover_cases()) == 94
+    # `hooks/*` (+9): the execution hooks in the worker -- runtest setup/call/teardown and
+    # logstart/logfinish order, new- and old-style wrappers, makereport wrappers around the xfail
+    # promotion, the fixture-setup guard, register(), conftest scoping, and three that must reach
+    # pytest (a wide fixture's request.node, a report.outcome rewrite, a teardown's nextitem).
+    # `marks/dynamic-xfail` (+1): an xfail mark applied from a fixture or the body still counts.
+    # `fixtures/funcargs-live` (+1): `request.node.funcargs` is the live closure, without hooks.
+    assert len(discover_cases()) == 105
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

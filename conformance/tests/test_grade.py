@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from conformance.harness.grade import (
@@ -165,6 +166,22 @@ def _run_result(
 def test_grade_run_match() -> None:
     a = _run_result(["test_a.py::test_x"])
     assert grade_run_case("area/case", a, a, {}).status == "MATCH"
+
+
+def test_a_native_case_that_rustest_handed_to_pytest_diverges() -> None:
+    """A hand-off reproduces pytest's answer by construction, so for a case marked ``NATIVE``
+    the agreement proves nothing: the hand-off itself is the divergence.  Unmarked, the same
+    pair matches -- a case may legitimately exist to show that a session reaches pytest."""
+    a = _run_result(["test_a.py::test_x"])
+    handed = replace(
+        a, handed_off=("conftest.py::pytest_foo is a pytest hook rustest does not run",)
+    )
+
+    assert grade_run_case("area/case", a, handed, {}).status == "MATCH"
+    got = grade_run_case("area/case", a, handed, {}, native=True)
+    assert got.status == "DIVERGE"
+    assert "marked NATIVE, but rustest handed it to pytest" in got.detail
+    assert grade_run_case("area/case", a, a, {}, native=True).status == "MATCH"
 
 
 TWO_IDS = ["test_a.py::test_x", "test_a.py::test_y"]

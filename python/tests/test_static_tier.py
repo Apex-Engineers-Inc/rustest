@@ -601,13 +601,13 @@ def test_a_hook_conftest_makes_collection_hand_the_session_to_pytest(tmp_path: P
     root.mkdir()
     (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (root / "conftest.py").write_text(
-        "def pytest_runtest_setup(item):\n    pass\n", encoding="utf-8"
+        "def pytest_itemcollected(item):\n    pass\n", encoding="utf-8"
     )
     (root / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
 
     manifest = json.loads(rust.collect(str(root), [], sys.executable, 1, pytest_fallback=True))
 
-    assert any("pytest_runtest_setup" in r for r in manifest["pytest_fallback"])
+    assert any("pytest_itemcollected" in r for r in manifest["pytest_fallback"])
     assert manifest["tests"] == []
 
 

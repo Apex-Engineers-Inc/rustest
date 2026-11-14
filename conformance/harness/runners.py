@@ -113,6 +113,9 @@ class FullRunResult:
     ids: list[str]
     outcomes: RunOutcomes
     exit_code: int
+    #: rustest's reasons for handing the session to pytest (its report's ``pytest_fallback``);
+    #: empty for pytest's own side and for a run rustest kept.
+    handed_off: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -534,4 +537,5 @@ def run_rustest_run(case_dir: Path, args: list[str]) -> FullRunResult:
             deselected=summary["deselected"],
         ),
         exit_code=proc.returncode,
+        handed_off=tuple(str(reason) for reason in data.get("pytest_fallback", [])),
     )

@@ -36,7 +36,7 @@ xdist was installed into each target venv by the harness (`pytest-xdist==3.8.0`)
 | jsonschema | native | MATCH | 7815 | 18.22 | 8.84 | 7.74 | 2.35x | 1.14x |  |
 | marshmallow | native | EXPLAINED | 1178 | 2.66 | 3.67 | 1.27 | 2.09x | 2.89x |  |
 | more-itertools | native | MATCH | 722 | 9.29 | 8.26 | 5.68 | 1.64x | 1.45x |  |
-| pillow | handed off: conformance/real/_work/pillow/Tests/conftest.py::pytest_configure is a pytest hook rustest does not run | MATCH | 4036 | 68.08 | 21.3 | 24.34 | 2.80x | 0.88x | 35.59 (MATCH) |
+| pillow | handed off: pillow/Tests/conftest.py::pytest_configure is a pytest hook rustest does not run | MATCH | 4036 | 68.08 | 21.3 | 24.34 | 2.80x | 0.88x | 35.59 (MATCH) |
 | rich | native | EXPLAINED | 1007 | 7.94 | 6.25 | 4.25 | 1.87x | 1.47x |  |
 | sqlparse | native | MATCH | 482 | 2.99 | 4.72 | 1.43 | 2.09x | 3.30x |  |
 
@@ -55,8 +55,9 @@ xdist was installed into each target venv by the harness (`pytest-xdist==3.8.0`)
 - **Not run:** jinja2, fastapi, werkzeug, pynite and member-designer, whose venvs are a different ABI
   (3.13 or free-threaded) from the extension built in `python/` and need a wheel per ABI (maturin); and
   psutil (about 30 minutes alone, run monthly). Their previous results are in the old design notes, not here.
-- Node ids carry a `conformance/real/_work/<suite>/` prefix for sqlparse and pillow, because the rootdir
-  resolves to this repository's `pyproject.toml`; both runners agree, so it grades fine.
+- Node ids carried a repository-relative prefix for sqlparse and pillow, because the clones were then
+  staged inside this repository and the rootdir resolved to its `pyproject.toml`. The work directory
+  is now outside it (`RUSTEST_REAL_WORK`, see `conformance/README.md`).
 
 ## What the baseline found
 

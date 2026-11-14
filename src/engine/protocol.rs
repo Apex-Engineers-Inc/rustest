@@ -133,7 +133,10 @@ use serde::{Deserialize, Serialize};
 /// `teardown_error`, a drained scope's error the test it belongs to (`previous_teardown`),
 /// and `bye` the shutdown teardown's.
 /// **v16**: `init` carries the resolved `cache_dir` ini.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// **v17**: the execution hooks run in the worker. A test's result carries `handoff` when a
+/// hook touched something the runtime cannot answer while it ran, and `execute_batch`'s
+/// `stop_on_handoff` asks the worker to stop the batch there (the session goes to pytest).
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// A teardown error for a test whose result went out before the teardown ran: a scope drained
 /// at the next test's boundary, or at shutdown.
@@ -386,6 +389,10 @@ pub enum WorkerRequest {
         /// worker's first batch only; omitted when false.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         commit_marks: bool,
+        /// Stop the batch after a result that carries `handoff` (v17): the session is going
+        /// to pytest, so nothing after it is worth running. Omitted when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stop_on_handoff: bool,
     },
     /// Import the conftest chain of each directory (absolute posix) and nothing else; the
     /// worker replies [`WorkerResponse::ConftestsImported`]. See [`PROTOCOL_VERSION`]'s v11
@@ -524,6 +531,10 @@ pub enum WorkerResponse {
         /// to an earlier test, the one pytest's `nextitem` teardown runs it in (v14).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         previous_teardown: Option<LateTeardown>,
+        /// Why the session must go to pytest, found while this test ran (v17): a hook touched
+        /// what the runtime cannot answer. The result itself is an error. Omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        handoff: Vec<String>,
     },
     /// Terminates the result stream of one [`WorkerRequest::ExecuteBatch`].
     ///
@@ -548,6 +559,10 @@ pub enum WorkerResponse {
         /// The shutdown teardown failed: an error of the last test the worker ran (v14).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         teardown: Option<LateTeardown>,
+        /// A `pytest_sessionfinish` / `pytest_unconfigure` touched what the hook runtime cannot
+        /// answer (v17): the session is pytest's. Omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        handoff: Vec<String>,
     },
     /// Answers [`WorkerRequest::ImportConftests`]: the hooks (and `rustest could not import`
     /// labels) those conftests brought in that this worker had not named before.
@@ -621,9 +636,9 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":16,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":16,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":16,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -724,7 +739,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":16,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":17,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -870,6 +885,7 @@ mod tests {
             stop_on_failure: false,
             max_fail: None,
             commit_marks: false,
+            stop_on_handoff: false,
         };
 
         assert_eq!(
@@ -937,7 +953,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":16}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":17}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -999,6 +1015,7 @@ mod tests {
             warnings: Vec::new(),
             teardown_error: None,
             previous_teardown: None,
+            handoff: Vec::new(),
         }
     }
 
@@ -1013,6 +1030,7 @@ mod tests {
             warnings: Vec::new(),
             teardown_error: None,
             previous_teardown: None,
+            handoff: Vec::new(),
         }
     }
 
@@ -1147,6 +1165,7 @@ mod tests {
                 warnings: Vec::new(),
                 teardown_error: None,
                 previous_teardown: None,
+                handoff: Vec::new(),
             };
 
             let encoded = serde_json::to_string(&response).expect("test_result serializes");
@@ -1209,6 +1228,7 @@ mod tests {
             serde_json::to_string(&WorkerResponse::Bye {
                 warnings: Vec::new(),
                 teardown: None,
+                handoff: Vec::new(),
             })
             .expect("bye serializes"),
             BYE_LINE
@@ -1220,6 +1240,7 @@ mod tests {
             WorkerResponse::Bye {
                 warnings: Vec::new(),
                 teardown: None,
+                handoff: Vec::new(),
             }
         );
     }
@@ -1620,6 +1641,7 @@ mod tests {
                 stop_on_failure: true,
                 max_fail: None,
                 commit_marks: false,
+                stop_on_handoff: false,
             },
             WorkerRequest::Shutdown,
         ];
@@ -1653,6 +1675,7 @@ mod tests {
             warnings: Vec::new(),
             teardown_error: None,
             previous_teardown: None,
+            handoff: Vec::new(),
         };
 
         let responses = [
@@ -1673,6 +1696,7 @@ mod tests {
             WorkerResponse::Bye {
                 warnings: Vec::new(),
                 teardown: None,
+                handoff: Vec::new(),
             },
         ];
         for response in &responses {

@@ -859,6 +859,11 @@ def __getattr__(name: str) -> Any:
         from rustest._worker import SubRequest
 
         return SubRequest
+    if name in ("TestReport", "CallInfo", "Stash", "StashKey"):
+        # Real classes: the reports and call infos rustest's hook runtime hands to hooks.
+        from rustest import _runtest
+
+        return getattr(_runtest, name)
 
     # Check if we've already created this stub
     if name in _dynamic_stubs:

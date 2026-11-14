@@ -44,7 +44,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -386,6 +386,12 @@ pub struct RunReport {
     /// when empty, so every other run's document is unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pytest_fallback: Vec<String>,
+    /// With [`RunReport::pytest_fallback`]: how many results the run had already produced
+    /// when a hook touched what rustest's hook runtime cannot answer (a late hand-off).
+    /// Those results are discarded -- the session is rerun under pytest -- and no cache
+    /// was written. Omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub discarded: usize,
 }
 
 /// `skip_serializing_if` needs a predicate over a reference; `bool::not` is not one.
@@ -583,6 +589,10 @@ struct StopSignals<'a> {
     /// How many failures the whole pool has recorded, for `--maxfail`.
     failures: &'a AtomicUsize,
     session_over: &'a AtomicBool,
+    /// The session goes to pytest when a result carries a hand-off (`--no-pytest-fallback`
+    /// is off); the reasons collect here, and the worker stops its batch there.
+    pytest_fallback: bool,
+    handoff: &'a Mutex<Vec<String>>,
 }
 
 impl StopSignals<'_> {
@@ -1023,12 +1033,15 @@ fn run_attempt(
     // one is exit 1, the other exit 2.
     let session_over = AtomicBool::new(false);
     let session_over = &session_over;
+    let handoff = Mutex::new(Vec::new());
     let signals = StopSignals {
         fail_fast: options.fail_fast,
         max_fail: options.max_fail,
         failures: &failures,
         stop,
         session_over,
+        pytest_fallback: options.pytest_fallback,
+        handoff: &handoff,
     };
 
     let (live_tx, live_rx) = observer.is_some().then(channel::<LiveResult>).unzip();
@@ -1320,6 +1333,19 @@ fn run_attempt(
             stopped_early,
             started,
         );
+        let late = std::mem::take(
+            &mut *handoff
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if !late.is_empty() {
+            // A late hand-off: what ran is discarded and the session is pytest's. Nothing is
+            // cached -- neither last-failed nor the durations -- from a run nobody keeps.
+            let mut report = report;
+            report.discarded = report.tests.len();
+            report.pytest_fallback = late;
+            return Ok(Attempt::Report(report));
+        }
         if !crate::engine::cache::cache_provider_off(options.hook_context.as_ref()) {
             record_last_failed(&dispatch.cache_dir, &previously_failed, &report);
             // A run that selected everything it collected, and finished, replaces its files'
@@ -1685,6 +1711,7 @@ fn finish(
         stopped_early,
         session_exit: residue.session_exit,
         pytest_fallback: Vec::new(),
+        discarded: 0,
     }
 }
 
@@ -1812,8 +1839,14 @@ fn worker_life(
             }
         };
         let batch_began = Instant::now();
-        let batch =
-            worker.execute_batch(&ids, signals.fail_fast, budget, &mut outcomes, &mut forward);
+        let batch = worker.execute_batch(
+            &ids,
+            signals.fail_fast,
+            budget,
+            signals.pytest_fallback,
+            &mut outcomes,
+            &mut forward,
+        );
         busy += batch_began.elapsed();
         // The results are folded in **before** the batch's own outcome is inspected, so the
         // `SessionExit` arm below returns with them already recorded.
@@ -1831,6 +1864,24 @@ fn worker_life(
             results.push((*slot, outcome));
         }
         attach_late_teardowns(&mut results, worker.take_late_teardowns());
+        let handed_off = worker.take_handoff();
+        if signals.pytest_fallback && !handed_off.is_empty() {
+            // A hook touched what the runtime cannot answer: the session is pytest's. Every
+            // worker stops dispatching; this one still shuts down normally below, so the
+            // session fixtures and the hooks' own `sessionfinish` release what they hold.
+            signals
+                .handoff
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(handed_off);
+            signals.session_over.store(true, Ordering::SeqCst);
+            if let Err(err) = batch {
+                if !matches!(err, CollectError::SessionExit { .. }) {
+                    return Err(err);
+                }
+            }
+            break;
+        }
         let stopped_in_batch = match batch {
             Ok(stopped) => stopped,
             // `pytest.exit()`.  The worker is gone and the test that called it gets no
@@ -1868,7 +1919,24 @@ fn worker_life(
     }
     let teardown = worker.shutdown_run()?;
     attach_late_teardowns(&mut results, worker.take_late_teardowns());
-    let stderr = worker.take_stderr();
+    let handed_off = worker.take_handoff();
+    let mut stderr = worker.take_stderr();
+    if signals.pytest_fallback && !handed_off.is_empty() {
+        signals
+            .handoff
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(handed_off);
+    } else {
+        // `--no-pytest-fallback`: the run stands, but not silently. (A test's own hand-off
+        // reason already made that test an error; one found at shutdown has no test.)
+        for reason in handed_off {
+            stderr.push_str(&format!(
+                "rustest: not handed to pytest (--no-pytest-fallback): {reason}
+"
+            ));
+        }
+    }
     // The shutdown teardown ran under the last test's warnings window (as pytest's
     // `nextitem=None` teardown does), so what it recorded is that test's.
     let late = worker.take_bye_warnings();
@@ -2226,6 +2294,7 @@ mod tests {
             stopped_early: false,
             session_exit: None,
             pytest_fallback: Vec::new(),
+            discarded: 0,
             warnings: Vec::new(),
         };
 
@@ -2779,6 +2848,42 @@ def test_bails():
 
     /// Every run writes the cache, `--lf` or not — pytest's `LFPlugin.pytest_sessionfinish`
     /// is unconditional, and a cache written only when read would always be empty.
+    /// A late hand-off (protocol 17): a hook touches what the runtime cannot answer while the
+    /// second test runs. The batch stops there, every worker stops dispatching, the report
+    /// names the reason and how many results it discards, and nothing is cached from a run
+    /// nobody keeps.
+    #[test]
+    fn a_violation_mid_run_stops_and_discards_without_caching() {
+        let tmp = tree(&[
+            (
+                "conftest.py",
+                "def pytest_runtest_logreport(report):
+    if report.nodeid.endswith('test_b'):
+        report.sections
+",
+            ),
+            ("test_x.py", FOUR_WITH_A_FAILURE),
+        ]);
+        let report = run_options(
+            &tmp,
+            1,
+            RunOptions {
+                pytest_fallback: true,
+                ..RunOptions::default()
+            },
+        );
+
+        assert_eq!(report.discarded, 2, "{report:?}");
+        assert!(
+            report.pytest_fallback[0].contains("report.sections"),
+            "{:?}",
+            report.pytest_fallback
+        );
+        let cache = tmp.path().join(".rustest_cache");
+        assert!(crate::engine::cache::read_last_failed(&cache).is_empty());
+        assert!(!cache.join("v").join("rustest").join("durations").exists());
+    }
+
     #[test]
     fn an_ordinary_run_writes_the_last_failed_cache() {
         let tmp = tree(&[("test_x.py", FOUR_WITH_A_FAILURE)]);
@@ -2917,7 +3022,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":16}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":17}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(

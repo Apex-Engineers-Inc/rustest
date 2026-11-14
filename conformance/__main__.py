@@ -165,7 +165,8 @@ def _grade_one_run(
         case_args = load_case_args(case_dir)
         pytest_result = run_pytest_fn(case_dir, case_args)
         v2_result = run_rustest_fn(case_dir, case_args)
-        return grade_run_case(name, pytest_result, v2_result, waivers)
+        native = (case_dir / "NATIVE").is_file()
+        return grade_run_case(name, pytest_result, v2_result, waivers, native)
 
     return _contained(name, waivers, grade)
 

@@ -20,9 +20,12 @@ This module is everything between that and the worker protocol:
 * **Reasons.**  Every hand-off reason the runner recorded is reported, once, as a whole reason
   (``REASON_PREFIX``) through the ``hooks`` arrays of ``collected`` / ``conftests_imported`` /
   ``modified_items`` -- always *before* a test executes.
-* **Backstop.**  :func:`late_count` is the length of ``HookRunner.late_reasons``: a shim used after
-  its hook returned.  The worker compares it around each test and errors the test during which it
-  grew, even if the user swallowed the exception.
+* **Execution hooks.**  :func:`hook_runner` is what the worker calls ``pytest_runtest_*``,
+  ``pytest_fixture_setup``, ``pytest_sessionfinish`` and ``pytest_unconfigure`` through.
+* **During a test.**  :func:`fault_mark` / :func:`faults_since` bracket each test: a violation a
+  hook made while it ran, or a shim used after its hook returned (even if the user swallowed the
+  exception), errors that test and goes on its result as ``handoff`` -- the session is pytest's
+  unless ``--no-pytest-fallback`` keeps it.
 
 Imported lazily by ``_worker`` (and ``_hookshim`` lazily by this module): a run whose ``init``
 carries no ``conftests`` imports neither.
@@ -33,7 +36,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, NoReturn, Protocol, cast
 
 if TYPE_CHECKING:
     from ._hookshim import HookRunner
@@ -42,7 +45,10 @@ __all__ = [
     "REASON_PREFIX",
     "HookSession",
     "build_record",
-    "late_count",
+    "fault_mark",
+    "faults_since",
+    "hook_active",
+    "hook_runner",
     "modify_items",
     "native_module",
     "pending_reasons",
@@ -101,13 +107,31 @@ class HookSession:
 _session: HookSession | None = None
 
 
-def late_count() -> int:
-    """How many uses of a shim after its hook returned this worker has seen."""
-    return len(_session.runner.late_reasons) if _session is not None else 0
+def hook_runner() -> HookRunner | None:
+    """The runtime's :class:`HookRunner` -- the execution hooks run through it -- or ``None``."""
+    return _session.runner if _session is not None else None
 
 
-def late_reasons_since(count: int) -> list[str]:
-    return _session.runner.late_reasons[count:] if _session is not None else []
+def hook_active() -> bool:
+    """A user's hook implementation is running: what it touches must be modelled exactly."""
+    return _session is not None and _session.runner.hook_active
+
+
+def violate(what: str) -> NoReturn:
+    """Record *what* as a reason the session is pytest's, and raise ``HookUnsupported``."""
+    assert _session is not None
+    _session.runner.violate(what)
+
+
+def fault_mark() -> tuple[int, int]:
+    """Where the violation lists end now (see :func:`faults_since`)."""
+    return _session.runner.fault_mark() if _session is not None else (0, 0)
+
+
+def faults_since(mark: tuple[int, int]) -> list[str]:
+    """Violations recorded since *mark*, and uses of a shim after its hook returned: each is a
+    reason to hand the session to pytest, found while a test ran."""
+    return _session.runner.faults_since(mark) if _session is not None else []
 
 
 def pending_reasons() -> list[str]:
@@ -165,6 +189,9 @@ def start(
         plugin_dists=plugin_dists,
     )
     _session = HookSession(runner, options)
+    from . import _runtest
+
+    _runtest.set_violate(runner.violate)
     _builtins.set_hooks(_session)
     initial = [
         Path(str(cast("dict[str, object]", entry)["path"]))
@@ -213,7 +240,7 @@ def on_module(label: str, module: object, *, conftest: Path | None = None) -> No
         if conftest is not None
         else _session.loading_initial
     )
-    _session.runner.register(label, module, initial=initial)
+    _session.runner.register(label, module, initial=initial, conftest=conftest)
     _sync_marks(_session.runner)
 
 

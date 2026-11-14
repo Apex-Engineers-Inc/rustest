@@ -80,15 +80,15 @@ send you hunting for a missing `@fixture` that was never yours to write:
 ```text
 FixtureLookupError: fixture 'pytester' is not supported by the rustest worker yet
 (supported builtins: tmp_path_factory, tmp_path, tmpdir_factory, tmpdir, monkeypatch,
-capsys, capfd, caplog, cache, mocker, pytestconfig, recwarn)
+capsys, capfd, caplog, cache, mocker, pytestconfig, recwarn, record_property)
 ```
 
 The full not-yet list: `capfdbinary`, `capsysbinary`, `capteesys`, `doctest_namespace`,
-`pytester`, `record_property`, `record_testsuite_property`, `record_xml_attribute`,
-`testdir`. Each needs a distinct piece of machinery rather than a variation on one that
+`pytester`, `record_testsuite_property`, `record_xml_attribute`, `testdir`. Each needs a distinct piece of machinery rather than a variation on one that
 already exists. The `*binary` capture pair and `capteesys` need a bytes-flavoured capture
-class, and `capteesys` a tee besides; the `record_*` trio write JUnit XML attributes and
-there is no XML report; `doctest_namespace` belongs to a doctest collector this engine does
+class, and `capteesys` a tee besides; `record_testsuite_property` and
+`record_xml_attribute` write JUnit XML and there is no XML report (`record_property` only
+appends to the test's `user_properties`, which rustest has); `doctest_namespace` belongs to a doctest collector this engine does
 not have; `pytester` and `testdir` are pytest's own in-process harness.
 
 ### The `request` object
@@ -177,9 +177,25 @@ ones rustest's hook runtime models: `pytest_addoption`, `pytest_configure`,
 ordering around `-k` and `-m`, `item.add_marker`, reordering, and
 `config.hook.pytest_deselected`). `config.getoption`, `config.getini`, `config.option` and
 attributes a `pytest_configure` sets on `config` answer from what those hooks declared.
-Everything else (`pytest_generate_tests`, `pytest_runtest_*`, `pytest_sessionfinish`, ...), and
-any use of `config`, `item` or `session` that the runtime does not provide, is handed to
-pytest whole, see
+
+The per-test hooks run natively as well, in every worker as each pytest-xdist worker runs
+them: `pytest_runtest_setup`, `pytest_runtest_call`, `pytest_runtest_teardown`,
+`pytest_runtest_makereport`, `pytest_runtest_logreport`, `pytest_runtest_logstart`,
+`pytest_runtest_logfinish` and `pytest_fixture_setup`. pytest's own implementations hold their
+places in each chain, so `tryfirst`, `trylast`, `wrapper=True` and `hookwrapper=True` order
+exactly as under pytest; a conftest's hooks reach only the tests under its directory;
+`item.config` inside a hook is the hook's `config`; and `config.pluginmanager.register(obj)`
+adds an object's hooks. A report is a real `pytest.TestReport` that a plugin may keep. Its
+captured-output sections, the text of a failure's `longrepr` (its `reprcrash` is there) and
+writing `report.outcome` or `report.longrepr` are not modelled, and neither is `request.node`
+for a fixture wider than function scope, nor a class- or module-scoped teardown failure seen
+from `makereport`/`logreport` (rustest tears those scopes down at the next test).
+
+Everything else (`pytest_sessionfinish` and `pytest_unconfigure`, which need the one
+controller process rustest does not have yet, `pytest_generate_tests`,
+`pytest_runtest_protocol`, a `pytest_runtest_teardown` that reads `nextitem` or runs `trylast`,
+...), and any use of `config`, `item`, `report` or
+`session` that the runtime does not provide, is handed to pytest whole, see
 [When rustest hands a session to pytest](#when-rustest-hands-a-session-to-pytest). The hand-off
 also happens when a hook swallows the runtime's refusal in an `except Exception`: the refusal
 is recorded first. With `--no-pytest-fallback` the supported hooks still run natively, the
@@ -187,7 +203,10 @@ others are not run, and one `NOTE:` line on stderr names each one.
 
 rustest runs `pytest_configure` and `pytest_sessionstart` once per worker process, as
 pytest-xdist does: the first worker runs them before any other starts, and a session that has
-to go to pytest goes then. A hook whose side effect only works once (creating a directory, say)
+to go to pytest goes then. When a hook touches something the runtime does not provide while
+a test runs, the session goes to pytest then: rustest stops, prints one line saying the
+results so far are discarded and why, and runs the whole session under pytest. A hook whose
+side effect only works once (creating a directory, say)
 therefore fails in the second worker, and the session ends with pytest's configure error
 (exit 3) rather than being handed to pytest to run the hook yet again; `-n 1` runs it once.
 When a `pytest_collection_modifyitems` hook runs with more than one worker, every worker first
@@ -213,8 +232,8 @@ turns it off.
 
 | What rustest finds | Why |
 |---|---|
-| A `conftest.py`, or a module a `pytest_plugins` assignment names, defines a `pytest_*` hook that is neither one rustest runs natively (`pytest_addoption`, `pytest_configure`, `pytest_sessionstart`, `pytest_collection_modifyitems`) nor one of the four terminal-text hooks below: `pytest_generate_tests`, `pytest_sessionfinish`, `pytest_runtest_*` and the rest | They change what runs, how it is reported, or the exit status |
-| A native hook uses something the hook runtime does not provide (for example `config.pluginmanager.register`, or reading a parametrized item's markers) | The runtime cannot answer it the way pytest would, so the session goes to pytest rather than guess |
+| A `conftest.py`, or a module a `pytest_plugins` assignment names, defines a `pytest_*` hook that is neither one rustest runs natively (see [the hook system](#not-supported)) nor one of the four terminal-text hooks below: `pytest_sessionfinish`, `pytest_generate_tests`, `pytest_runtest_protocol` and the rest | They change what runs, how it is reported, or the exit status |
+| A native hook uses something the hook runtime does not provide (for example `config.pluginmanager.getplugin`, reading a parametrized item's markers, or `report.sections`) | The runtime cannot answer it the way pytest would, so the session goes to pytest rather than guess. Found while a test runs, the results so far are discarded |
 | A conftest, or a module it names, raises when rustest's worker imports it (`rustest could not import tests/conftest.py: ...`) | Conftests that import `_pytest` internals rustest does not provide are exactly the hook-writing ones |
 | `-p NAME` (not `-p no:NAME`) | Loads a pytest plugin |
 | A pytest plugin is installed and auto-loads (`pytest11`) that rustest does not run. Allowed, because running without them changes no outcome: pytest-xdist, pytest-cov, pytest-asyncio, pytest-mock, pytest-icdiff, pytest-rich, pytest-codeblocks; and hypothesis 6.140 to 6.170 and later releases whose plugin is unchanged, which rustest emulates (the function-scoped-fixture health check, the usage errors, the `hypothesis` mark, the fixture ban and the initialization-window warning; its `--hypothesis-*` options, a side-effect warning while conftests import, and an unpruned `.hypothesis` directory go to pytest) | The plugin may change outcomes. `-p no:NAME` or `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` opts out, as for pytest |

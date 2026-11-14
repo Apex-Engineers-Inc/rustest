@@ -152,7 +152,7 @@ nobody wrote for it.** One TOML per target in `conformance/real/`:
 | Table               | What it declares                                                                                       |
 | ------------------- | ------------------------------------------------------------------------------------------------------ |
 | `[repo]`            | `kind` (`oss` = shallow clone, `local` = used in place), `url`/`tag`/`rev` or `path`, and `test_paths`.  |
-| `[env]`             | `setup` — the commands that build an **isolated venv** under `_work/_venvs/<name>` — and `pythonpath`.  |
+| `[env]`             | `setup` — the commands that build an **isolated venv** under the work directory's `_venvs/<name>` — and `pythonpath`.  |
 | `[run]`             | Extra per-runner args, a timeout, and `id_policy` (`exact`, the default, or `strip_params`).            |
 | `[notes]`           | Divergences the harness **compensates for**, so nothing observable is left for a ledger to describe.    |
 | `[divergence.ids]`  | node id (or glob) → mechanism, for every test whose status differs.                                     |
@@ -208,8 +208,17 @@ Rules the gate follows:
   real measurement of the previous commit.
 
 `--real-setup-only` clones and provisions without running; `--real-rebuild-env` discards
-and rebuilds the venv. Everything staged lives in the gitignored `conformance/real/_work/`
-and is reproducible from the configs.
+and rebuilds the venv. Everything staged (clones, venvs, wheels, caches, run directories) lives
+in the **work directory**, `RUSTEST_REAL_WORK` or by default `rustest-real-work` beside this
+checkout, and is reproducible from the configs. It is outside the repository on purpose: a suite
+whose own config the pinned pytest cannot read walks upward to the first ini it finds, which
+inside this repository is rustest's own `pyproject.toml`. The harness refuses a run whose
+resolved ini (pytest) or rootdir (rustest) is outside the suite's checkout. Private targets'
+configs and results stay in this repository's git-ignored `conformance/real/_work/local/`.
+rustest's legs keep their cache (last-failed, the duration record) in the work directory's
+`_cache/<suite>` between sweeps, so a rerun schedules by measured cost as a user's second run
+would; each result records whether a duration record existed (`record`: `warm` or `cold` in
+`results.md`), because the two are different numbers.
 
 ## Requirements
 

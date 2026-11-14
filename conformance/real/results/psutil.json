@@ -1,19 +1,19 @@
 {
   "suite": "psutil",
-  "date": "2026-11-11 17:05",
+  "date": "2026-11-14 02:27",
   "mode": "native",
   "reasons": [],
-  "verdict": "EXPLAINED",
+  "verdict": "DIVERGE",
   "tests": 713,
-  "pytest_s": 445.26,
-  "xdist_s": 344.3,
-  "rustest_s": 342.01,
+  "pytest_s": 576.84,
+  "xdist_s": 417.86,
+  "rustest_s": 420.83,
   "engine_s": null,
   "engine_verdict": "",
-  "xdist_status_diffs": 2,
+  "xdist_status_diffs": 0,
   "xdist_error": "",
   "pytest_exit": 1,
   "rustest_exit": 1,
   "detail": "",
-  "unexplained": 0
+  "unexplained": 1
 }

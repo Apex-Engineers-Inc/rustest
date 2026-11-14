@@ -41,6 +41,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import types
 import warnings
 from collections.abc import Callable
 from pathlib import Path
@@ -538,7 +539,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 def pytest_configure(config: pytest.Config) -> None:
     if (path := os.environ.get(TIMES_ENV)) and not hasattr(config, "workerinput"):
-        config.pluginmanager.register(object())
+        config.pluginmanager.register(_FileTimes(path))
+
+
+class _FileTimes:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.seconds: dict[str, float] = {}
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        self.seconds[report.nodeid] = report.duration
+
+    def pytest_sessionfinish(self) -> None:
+        pass
 '''
 
 _SHARD_FILES = {f"test_{name}.py": "def test_x(): pass\ndef test_y(): pass\n" for name in "abcde"}
@@ -573,11 +586,13 @@ def test_shards_deselects_the_files_pytest_deselects(
     assert f"{len(effects.deselected)} deselected" in result.stdout
 
 
-def test_shards_registering_a_plugin_hands_the_session_to_pytest(
+def test_shards_registering_a_session_end_plugin_hands_the_session_to_pytest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``config.pluginmanager.register`` is exactly what the runtime does not do, and
-    ``hasattr(config, "workerinput")`` must answer False (a controller) to get that far."""
+    """``config.pluginmanager.register`` from ``pytest_configure`` (``hasattr(config,
+    "workerinput")`` answering False, a controller): the object's ``pytest_runtest_logreport``
+    runs natively, but its ``pytest_sessionfinish`` is a controller's hook, which the runtime
+    does not run yet -- a reason before any test."""
     module = _module(tmp_path, "shards_times", _SHARDS)
     monkeypatch.setenv("APEX_TEST_SHARD_TIMES", str(tmp_path / "times.json"))
     runner = _runner()
@@ -586,8 +601,174 @@ def test_shards_registering_a_plugin_hands_the_session_to_pytest(
     runner.configure()
 
     assert runner.reasons == [
-        "tests/shards.py::pytest_configure uses config.pluginmanager.register, "
-        "which rustest's hook runtime does not support"
+        "tests/shards.py::pytest_configure registers a plugin implementing"
+        " pytest_sessionfinish, a hook rustest does not run, which rustest's hook runtime"
+        " does not support"
+    ]
+
+
+def test_a_registered_plugin_object_joins_the_chains_and_replays_configure(
+    tmp_path: Path,
+) -> None:
+    module = _module(
+        tmp_path,
+        "registering",
+        """
+        import pytest
+
+        SEEN = []
+
+
+        class Plugin:
+            def pytest_configure(self, config):
+                SEEN.append("replayed")
+
+            def pytest_runtest_logreport(self, report):
+                pass
+
+
+        def pytest_configure(config):
+            SEEN.append(config.pluginmanager.register(Plugin(), "named"))
+        """,
+    )
+    runner = _runner()
+    runner.register("conftest.py", module)
+
+    runner.configure()
+
+    assert runner.reasons == []
+    assert module.SEEN == ["replayed", "named"]
+    assert runner.runs("pytest_runtest_logreport", "anywhere")
+
+
+def test_registering_a_name_or_an_object_twice_is_pluggys_value_error() -> None:
+    runner = _runner()
+    plugin = object()
+
+    def configure(config: Any) -> None:
+        _ = config.pluginmanager.register(plugin, "one")
+        for again in ((plugin, "two"), (object(), "one")):
+            with pytest.raises(ValueError, match="already registered"):
+                _ = config.pluginmanager.register(*again)
+
+    module = types.ModuleType("dupes")
+    module.pytest_configure = configure  # pyright: ignore[reportAttributeAccessIssue]
+    runner.register("conftest.py", module)
+    runner.configure()
+
+    assert runner.reasons == []
+
+
+def _chain_runner(tmp_path: Path, source: str) -> Any:
+    runner = _runner()
+    runner.register("conftest.py", _module(tmp_path, "chain", source))
+    runner.configure()
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            "import pytest\n@pytest.hookimpl(wrapper=True)\n"
+            "def pytest_runtest_call(item):\n    if False:\n        yield\n",
+            "did not yield",
+        ),
+        (
+            "import pytest\n@pytest.hookimpl(wrapper=True)\n"
+            "def pytest_runtest_call(item):\n    yield\n    yield\n",
+            "has second yield",
+        ),
+        (
+            "import pytest\n@pytest.hookimpl(hookwrapper=True)\n"
+            "def pytest_runtest_call(item):\n    if False:\n        yield\n",
+            "did not yield",
+        ),
+        (
+            "import pytest\n@pytest.hookimpl(hookwrapper=True)\n"
+            "def pytest_runtest_call(item):\n    yield\n    yield\n",
+            "has second yield",
+        ),
+    ],
+    ids=["new-no-yield", "new-second-yield", "old-no-yield", "old-second-yield"],
+)
+def test_a_wrapper_that_misbehaves_is_pluggys_runtime_error(
+    tmp_path: Path, source: str, message: str
+) -> None:
+    from rustest._hookshim import builtin_impl
+
+    runner = _chain_runner(tmp_path, source)
+    ran: list[str] = []
+
+    def body(item: object) -> None:
+        ran.append("body")
+
+    with pytest.raises(RuntimeError, match=f"wrap_controller at .*{message}"):
+        _ = runner.run_hook(
+            "pytest_runtest_call", None, [builtin_impl("pytest_runtest_call", body)], item=None
+        )
+
+
+def test_a_user_makereport_returning_its_own_report_is_a_violation(tmp_path: Path) -> None:
+    from rustest._hookshim import HookUnsupported, builtin_impl
+
+    runner = _chain_runner(
+        tmp_path, "def pytest_runtest_makereport(item, call):\n    return 'mine'\n"
+    )
+
+    def pytests(item: object, call: object) -> str:
+        return "pytest's"
+
+    with pytest.raises(HookUnsupported, match="returned a result of its own"):
+        _ = runner.run_hook(
+            "pytest_runtest_makereport",
+            None,
+            [builtin_impl("pytest_runtest_makereport", pytests)],
+            item=None,
+            call=None,
+        )
+    assert runner.reasons and "returned a result of its own" in runner.reasons[0]
+
+
+def test_an_old_style_wrapper_raising_after_yield_warns_as_pluggy_does(tmp_path: Path) -> None:
+    from rustest._hookshim import builtin_impl
+
+    runner = _chain_runner(
+        tmp_path,
+        "import pytest\n@pytest.hookimpl(hookwrapper=True)\n"
+        "def pytest_runtest_call(item):\n    yield\n    raise KeyError('after')\n",
+    )
+
+    def body(item: object) -> None:
+        pass
+
+    with pytest.warns(UserWarning, match="old-style hookwrapper teardown"), pytest.raises(KeyError):
+        _ = runner.run_hook(
+            "pytest_runtest_call", None, [builtin_impl("pytest_runtest_call", body)], item=None
+        )
+
+
+def test_a_registered_plugin_with_a_hook_the_runtime_does_not_run_hands_off() -> None:
+    """``pytest_terminal_summary`` is a controller's hook: registering an object implementing
+    it is a reason, as an unrun hook in a conftest is."""
+    module = types.ModuleType("summary_plugin")
+
+    class Summary:
+        def pytest_terminal_summary(self, terminalreporter: object) -> None:
+            pass
+
+    def pytest_configure(config: Any) -> None:
+        config.pluginmanager.register(Summary())
+
+    module.pytest_configure = pytest_configure  # pyright: ignore[reportAttributeAccessIssue]
+    runner = _runner()
+    runner.register("conftest.py", module)
+
+    runner.configure()
+
+    assert runner.reasons == [
+        "conftest.py::pytest_configure registers a plugin implementing pytest_terminal_summary,"
+        " a hook rustest does not run, which rustest's hook runtime does not support"
     ]
 
 
@@ -1087,14 +1268,14 @@ def test_a_hook_that_does_anything_else_to_the_list_hands_off(tmp_path: Path, bo
 
 
 def test_a_hook_it_does_not_run_is_ignored_and_the_native_ones_still_run(tmp_path: Path) -> None:
-    """``pytest_sessionfinish`` is the worker's to name (a hand-off reason of its own); the
+    """``pytest_terminal_summary`` is the worker's to name (a hand-off reason of its own); the
     runner neither refuses it nor stops running ``pytest_configure`` beside it, which is what
     ``--no-pytest-fallback`` relies on."""
     module = _module(
         tmp_path,
         "late_hook",
         """
-        def pytest_sessionfinish(session):
+        def pytest_terminal_summary(terminalreporter):
             pass
 
         def pytest_configure(config):
@@ -1105,7 +1286,7 @@ def test_a_hook_it_does_not_run_is_ignored_and_the_native_ones_still_run(tmp_pat
     runner.register("conftest.py", module)
     runner.configure()
     assert runner.reasons == [] and runner.user_attributes == {"seen": True}
-    assert not runner.implements("pytest_sessionfinish")
+    assert not runner.implements("pytest_terminal_summary")
 
 
 def test_a_free_threaded_build_declines_rather_than_trust_reference_counts(
@@ -1116,12 +1297,23 @@ def test_a_free_threaded_build_declines_rather_than_trust_reference_counts(
     assert runner.reasons and "free-threaded build" in runner.reasons[0]
 
 
-def test_the_native_hooks_are_the_four_whose_effects_precede_execution() -> None:
+def test_the_native_hooks_are_the_collection_four_and_the_per_test_ones() -> None:
+    """The four whose effects precede execution, and the ones the worker calls around each test,
+    as an xdist worker calls them.  ``pytest_sessionfinish`` / ``pytest_unconfigure`` are not
+    among them: they need the session's one controller process."""
     assert NATIVE_HOOKS == {
         "pytest_addoption",
         "pytest_configure",
         "pytest_sessionstart",
         "pytest_collection_modifyitems",
+        "pytest_runtest_logstart",
+        "pytest_runtest_logfinish",
+        "pytest_runtest_setup",
+        "pytest_runtest_call",
+        "pytest_runtest_teardown",
+        "pytest_runtest_makereport",
+        "pytest_runtest_logreport",
+        "pytest_fixture_setup",
     }
 
 

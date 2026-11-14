@@ -184,7 +184,8 @@ def test_a_hook_the_runtime_does_not_run_is_named_once_as_unrun(tmp_path: Path) 
     """One reason per hook: the runtime is silent about it, the worker names it as unrun."""
     _ = _write(
         tmp_path / "conftest.py",
-        "def pytest_runtest_setup(item):\n    pass\ndef pytest_generate_tests(metafunc):\n    pass\n",
+        "def pytest_terminal_summary(terminalreporter):\n    pass\n"
+        + "def pytest_generate_tests(metafunc):\n    pass\n",
     )
     _ = _write(tmp_path / "test_a.py", "def test_a(): pass\n")
 
@@ -198,7 +199,7 @@ def test_a_hook_the_runtime_does_not_run_is_named_once_as_unrun(tmp_path: Path) 
     assert "hooks" not in responses[0]
     assert responses[1]["hooks"] == [
         "conftest.py::pytest_generate_tests",
-        "conftest.py::pytest_runtest_setup",
+        "conftest.py::pytest_terminal_summary",
     ]
 
 
@@ -400,25 +401,33 @@ def test_a_mark_argument_json_cannot_carry_hands_off_only_when_a_hook_reads_it(
 def test_a_shim_used_while_a_test_runs_errors_that_test_even_if_it_was_swallowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The backstop: ``late_reasons`` grew during the test, so it is an error, loudly."""
+    """The backstop: a fault was recorded during the test, so it is an error, loudly, and the
+    result carries it as a hand-off."""
     import rustest._worker as worker
     from rustest import _hookwire
 
     _ = _write(tmp_path / "test_a.py", "def test_a(): pass\n")
     saved_state = worker._state  # pyright: ignore[reportPrivateUsage]
-    counter = {"late": 0}
 
     class FakeHooks:
         REASON_PREFIX = PREFIX
 
         @staticmethod
-        def late_count() -> int:
-            return counter["late"]
+        def fault_mark() -> tuple[int, int]:
+            return (0, 0)
 
         @staticmethod
-        def late_reasons_since(count: int) -> list[str]:
-            counter["late"] += 1  # a shim was used while the test ran
+        def faults_since(mark: tuple[int, int]) -> list[str]:
+            # a shim was used while the test ran
             return ["conftest.py::pytest_configure uses config.rootpath after the hook returned"]
+
+        @staticmethod
+        def hook_runner() -> None:
+            return None
+
+        @staticmethod
+        def hook_active() -> bool:
+            return False
 
         @staticmethod
         def pending_reasons() -> list[str]:
@@ -439,3 +448,6 @@ def test_a_shim_used_while_a_test_runs_errors_that_test_even_if_it_was_swallowed
 
     assert result["status"] == "error"
     assert PREFIX in result["message"] and "after the hook returned" in result["message"]
+    assert result.get("handoff") == [
+        PREFIX + "conftest.py::pytest_configure uses config.rootpath after the hook returned"
+    ]

@@ -63,6 +63,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `config.getoption`/`getini`, `item.add_marker`, `item.keywords` and deselection
   answered as pytest answers them. A hook that asks for anything the runtime does not provide
   hands the session to pytest rather than guess.
+- **The per-test hooks run natively too.** `pytest_runtest_setup`/`call`/`teardown`,
+  `pytest_runtest_makereport`, `pytest_runtest_logreport`, `pytest_runtest_logstart`/`logfinish`
+  and `pytest_fixture_setup` run in every worker, as each pytest-xdist worker runs them, with
+  pytest's own implementations in their places in each chain: `tryfirst`/`trylast`, new-style
+  `wrapper=True` and old-style `hookwrapper=True`, a `trylast` makereport wrapper seeing the
+  report before the xfail promotion, output captured where pytest captures it. Reports and call
+  infos are real `pytest.TestReport`/`pytest.CallInfo` objects, `item.stash` is pytest's
+  `Stash`, `item.config` inside a hook is the hook's `config`, and a conftest's hooks reach only
+  the tests under its directory. `config.pluginmanager.register(obj)` adds an object's hooks
+  (replaying its `pytest_configure`). What the runtime cannot answer exactly hands the session
+  to pytest: before any test (`pytest_sessionfinish`, `pytest_unconfigure`, a teardown hook
+  reading `nextitem`, a registered plugin object implementing a hook rustest does not run, such
+  as `pytest_terminal_summary`) or, when a hook touches it mid-run (`report.sections`, rewriting
+  `report.outcome` or `report.longrepr`, `request.node` of a module-scoped fixture, a hook that
+  would see a class- or module-scoped teardown failure), by stopping, saying that the results so
+  far are discarded, and rerunning the session under pytest.
+- **`record_property`.** The fixture appends to the test's `user_properties`, as pytest's does
+  without `--junitxml`; a hook reads it from the item and from each report.
 - **A conftest's own command-line options run natively.** `rustest --runslow tests/`,
   `--db-url x`, `--level=3`, `nargs=2` and `action="append"` options are parsed by their
   declarations, after pytest's two-pass rules: the first pass decides which conftests are
@@ -146,6 +164,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`request.node.funcargs` is the closure's values**, filled in as each fixture is set up,
+  as pytest's `item.funcargs` is.
+- **A fixture's finalizers run even when its setup failed.** A finalizer registered with
+  `request.addfinalizer` before the fixture raised was dropped; pytest schedules it anyway.
+- **An xfail mark applied after setup counts.** `request.applymarker(pytest.mark.xfail(...))`
+  from a fixture or from the test body was recorded and ignored, so the test reported FAILED
+  (or passed) where pytest reports XFAIL (or XPASS): pytest evaluates the marks again around
+  the call, and now so does rustest.
 - **A `pytest_plugins = ["pytester"]` test module hands the session to pytest** instead of
   failing to collect: pytester is pytest's in-process runner.
 - **The pytest fallback's report counts deselected tests under pytest-xdist** (it reported 0).

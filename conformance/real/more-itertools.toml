@@ -13,7 +13,7 @@ rev = "64be96ceb2a6e836f76f069f4a96d2394d59fd0c"
 test_paths = ["tests"]
 
 [env]
-# Isolated venv under conformance/real/_work/_venvs/, never the rustest development venv
+# Isolated venv under the work directory's _venvs/, never the rustest development venv
 # and never the target's own environment.
 setup = [
   ["uv", "venv", "--python", "3.14", "{venv}"],

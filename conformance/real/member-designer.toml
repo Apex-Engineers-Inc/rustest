@@ -80,7 +80,9 @@ pythonpath = []
 # The suite refuses a free-threaded interpreter with the GIL off (its conftest exits:
 # "the GIL is disabled ... corrupts the heap during FEM analysis"); its own `poe test-once`
 # sets `PYTHON_GIL=1`, and so does every leg here.
-environ = { PYTHON_GIL = "1" }
+# `OPENBLAS_NUM_THREADS = "4"` is what its own `poe test-parallel` sets beside `-n 4`: four
+# processes each spawning a full-width BLAS pool oversubscribe the CPU.
+environ = { PYTHON_GIL = "1", OPENBLAS_NUM_THREADS = "4" }
 
 [run]
 pytest_args = []

@@ -131,7 +131,7 @@ from __future__ import annotations
 # reference left is the annotation on `self._loop`, which `from __future__ import
 # annotations` never evaluates.  Measured: worker boot 550 ms -> 300 ms.
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterator, Mapping, Sequence, Set as AbstractSet
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence, Set as AbstractSet
 import ast
 import contextlib
 from contextlib import AbstractContextManager
@@ -177,6 +177,7 @@ if __name__ == "__main__":
     setattr(sys.modules["rustest"], "_worker", sys.modules[__name__])
 
 from . import _builtins as _builtins
+from ._runtest import Stash
 
 if TYPE_CHECKING:
     # Type-check-only, so the ~240 ms runtime import stays deferred (see the note above
@@ -184,6 +185,8 @@ if TYPE_CHECKING:
     # string, so nothing here is evaluated at import time.
     import asyncio
     import contextvars
+
+    from ._hookshim import HookRunner
 
 __all__ = [
     "AsyncioConfig",
@@ -311,7 +314,7 @@ __all__ = [
 #:
 #: v14 carries the ``markers`` ini and ``--strict-markers`` on ``init`` and ``xfail_strict`` as its
 #: raw text; ``bye`` carries the shutdown teardown's warnings.
-PROTOCOL_VERSION: Final = 16
+PROTOCOL_VERSION: Final = 17
 
 #: The pytest the compat layer emulates: what ``PYTEST_VERSION`` says, which pytest sets for
 #: the whole run (:func:`handle_init`).
@@ -451,6 +454,8 @@ class ResultResponse(TypedDict):
     #: A class- or module-scoped teardown that ran at this test's boundary but belongs to an
     #: earlier test, the one pytest's ``nextitem`` teardown would have run it in.
     previous_teardown: NotRequired[LateTeardownDict]
+    #: Why the session must go to pytest, found while this test ran (protocol v17).
+    handoff: NotRequired[list[str]]
 
 
 class LateTeardownDict(TypedDict):
@@ -482,6 +487,8 @@ class ByeResponse(TypedDict):
     #: The shutdown teardown failed: an error of the last test this worker ran, as pytest's
     #: ``nextitem=None`` teardown makes it.
     teardown: NotRequired[LateTeardownDict]
+    #: A session-end hook touched what the hook runtime cannot answer (protocol v17).
+    handoff: NotRequired[list[str]]
 
 
 class ConftestsImportedResponse(TypedDict):
@@ -1951,7 +1958,8 @@ BUILTIN_FIXTURES: Final = _builtins.BUILTIN_FIXTURES
 #: * the ``*binary`` capture pair and ``capteesys`` need a bytes-flavoured capture class and,
 #:   for ``capteesys``, a *tee* — output both captured and passed through;
 #: * ``pytester``/``testdir`` are pytest's own in-process test harness;
-#: * ``record_property`` and friends write JUnit XML attributes, and there is no XML report;
+#: * ``record_testsuite_property`` and ``record_xml_attribute`` write JUnit XML, and there is no
+#:   XML report (``record_property`` only appends to ``user_properties``, so it is supported);
 #: * ``doctest_namespace`` belongs to a doctest collector this engine does not have.
 UNSUPPORTED_BUILTIN_FIXTURES: Final = frozenset(
     {
@@ -1960,7 +1968,6 @@ UNSUPPORTED_BUILTIN_FIXTURES: Final = frozenset(
         "capteesys",
         "doctest_namespace",
         "pytester",
-        "record_property",
         "record_testsuite_property",
         "record_xml_attribute",
         "testdir",
@@ -2504,7 +2511,80 @@ class ExecutionPlan:
         return ".".join(self.parts[:-1]) if len(self.parts) > 1 else None
 
 
-class _ItemNode:
+#: The attribute names a real pytest ``Function`` item has (its class's and its instance's,
+#: a parametrized one's ``callspec`` included), pinned against pytest 8.4.2 by
+#: ``python/tests/test_run_hooks.py``.  Inside a hook, reading one of these that the item here
+#: lacks is a hand-off; any other missing name is pytest's own ``AttributeError``.
+PYTEST_FUNCTION_NAMES: Final = frozenset(
+    {
+        "_ALLOW_MARKERS", "_abc_impl", "_check_item_and_collector_diamond_inheritance",
+        "_fixtureinfo", "_getinstance", "_getobj", "_initrequest", "_instance", "_nodeid",
+        "_obj", "_pyfuncitem", "_pytest_diamond_inheritance_warning_shown", "_report_sections",
+        "_repr_failure_py", "_request", "_store", "_traceback_filter", "add_marker",
+        "add_report_section", "addfinalizer", "callspec", "cls", "config",
+        "extra_keyword_matches", "fixturenames", "from_parent", "fspath", "funcargs",
+        "function", "get_closest_marker", "getmodpath", "getparent", "ihook", "instance",
+        "iter_markers", "iter_markers_with_node", "iter_parents", "keywords", "listchain",
+        "listextrakeywords", "listnames", "location", "module", "name", "nextitem", "nodeid",
+        "obj", "originalname", "own_markers", "parent", "path", "reportinfo", "repr_failure",
+        "runtest", "session", "setup", "stash", "teardown", "user_properties", "warn",
+    }
+)  # fmt: skip
+
+#: The same for pytest's ``FixtureDef``.
+PYTEST_FIXTUREDEF_NAMES: Final = frozenset(
+    {
+        "_autouse", "_finalizers", "_scope", "addfinalizer", "argname", "argnames", "baseid",
+        "cache_key", "cached_result", "execute", "finish", "func", "has_location", "ids",
+        "params", "scope",
+    }
+)  # fmt: skip
+
+_UNBUILT: Final = object()
+
+
+class _Keywords(dict[str, object]):
+    """``item.keywords`` as rustest answers it: a snapshot, so a write would be lost -- it is
+    refused instead (a hand-off inside the hook runtime, a ``TypeError`` without one)."""
+
+    def __setitem__(self, key: str, value: object) -> None:
+        _refuse_keywords_write(key)
+
+    def __delitem__(self, key: str) -> None:
+        _refuse_keywords_write(key)
+
+
+def _refuse_keywords_write(key: str) -> NoReturn:
+    if _hookwire_mod is not None:
+        _hookwire_mod.violate(f"writes item.keywords[{key!r}]")
+    raise TypeError(f"rustest does not support writing item.keywords[{key!r}]")
+
+
+def _config_for_now() -> object:
+    """``config`` as the code reading it should see it: the hook runtime's while a user's hook
+    implementation runs, the worker's own everywhere else."""
+    if _hookwire_mod is not None and _hookwire_mod.hook_active():
+        hooks = _hookwire_mod.hook_runner()
+        if hooks is not None:
+            return hooks.config
+    return _builtins.current_config()
+
+
+def _item_bases() -> tuple[type, ...]:
+    """The classes ``pytest.Function`` / ``Item`` / ``Node`` (and ``_pytest.nodes.Item``)
+    resolve to under rustest, so ``isinstance(item, pytest.Item)`` holds in a hook."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # `_pytest_stub` warns that it is private API
+        from rustest._pytest_stub import nodes as _stub_nodes
+        from rustest.compat import pytest as _compat
+
+    return (
+        *(cast(type, getattr(_compat, name)) for name in ("Function", "Item", "Node")),
+        _stub_nodes.Item,
+    )
+
+
+class _ItemNode(*_item_bases()):  # pyright: ignore[reportUntypedBaseClass]
     """The collection-tree node ``request.node`` returns — pytest's ``Function`` item.
 
     the engine has no collection tree (the manifest replaced it), so this is a **façade** over the
@@ -2526,7 +2606,7 @@ class _ItemNode:
     """
 
     def __init__(self, plan: ExecutionPlan, instance: object | None) -> None:
-        super().__init__()
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]
         self._plan = plan
         #: pytest's ``Item.name`` is the last ``::`` segment, parametrization included
         #: (``test_add[1-2]``); ``nodeid`` is the whole thing.
@@ -2535,18 +2615,91 @@ class _ItemNode:
         self.path: Final = plan.path
         self.cls: Final = plan.owner
         self.module: Final = plan.module
-        #: pytest's ``Function.function`` is ``self.obj``, which for a ``TestCaseFunction``
-        #: is the **bound method on the instance** (`_pytest/python.py::PyobjMixin.obj` ->
-        #: ``getattr(self.instance, self.name)``), not a plain function. A ``TestCase`` plan
-        #: carries no ``func``, so it is read off the instance here -- which is what makes
-        #: ``setup_method(self, request.function)`` receive a method rather than ``None``.
-        self.function: Final = (
-            _safe_getattr(instance, plan.unittest_method, None)
-            if plan.unittest_case is not None and plan.unittest_method is not None
-            else plan.func
-        )
-        self.instance: Final = instance
+        self._instance: object = instance if instance is not None else _UNBUILT
         self.own_markers: list[MarkSpec] = list(plan.marks)
+        #: pytest's ``Function.funcargs``: the closure's values as they are set up (the very
+        #: dict :meth:`FixtureRunner.setup` fills), ``None`` once torn down.
+        self.funcargs: dict[str, object] | None = {}
+
+    @functools.cached_property
+    def stash(self) -> Stash:
+        """pytest's ``Node.stash``."""
+        return Stash()
+
+    @functools.cached_property
+    def user_properties(self) -> list[tuple[str, object]]:
+        """pytest's ``Item.user_properties``."""
+        return []
+
+    @property
+    def instance(self) -> object | None:
+        """`Function.instance`: built on first use, as pytest's ``_getinstance`` does, so a hook
+        that runs before setup sees the same object the test and its fixtures will."""
+        if self._instance is _UNBUILT:
+            self._instance = FixtureRunner.build_instance(self._plan)
+        return self._instance
+
+    @instance.setter
+    def instance(self, value: object | None) -> None:
+        self._instance = value
+
+    @property
+    def obj(self) -> object:
+        """`PyobjMixin.obj`: the test function (a ``TestCase`` method bound to its instance)."""
+        return self.function
+
+    @property
+    def function(self) -> object:
+        """pytest's ``Function.function`` is ``self.obj``, which for a ``TestCaseFunction``
+        is the **bound method on the instance** (`_pytest/python.py::PyobjMixin.obj` ->
+        ``getattr(self.instance, self.name)``), not a plain function. A ``TestCase`` plan
+        carries no ``func``, so it is read off the instance here -- which is what makes
+        ``setup_method(self, request.function)`` receive a method rather than ``None``."""
+        plan = self._plan
+        if plan.unittest_case is not None and plan.unittest_method is not None:
+            return _safe_getattr(self.instance, plan.unittest_method, None)
+        return plan.func
+
+    @functools.cached_property
+    def location(self) -> tuple[str, int, str]:
+        """`Item.location`: the rootdir-relative path (``bestrelpath``, so ``os.sep``), the
+        0-based line of the ``def`` (`compat.getfslineno`, decorators included) and the dotted
+        name below the module (`PyobjMixin.getmodpath`)."""
+        plan = self._plan
+        rootdir = _state.rootdir if _state is not None else Path.cwd()
+        try:
+            relative = os.path.relpath(plan.path, rootdir)
+        except ValueError:  # another drive
+            relative = str(plan.path)
+        func = self.function if plan.unittest_case is not None else plan.func
+        try:
+            func = inspect.unwrap(cast("Callable[..., object]", func))
+        except (TypeError, ValueError):
+            pass
+        code = _safe_getattr(func, "__code__", None)
+        lineno = code.co_firstlineno - 1 if isinstance(code, types.CodeType) else -1
+        return relative, lineno, ".".join((*plan.parts[:-1], self.name))
+
+    @property
+    def fixturenames(self) -> list[str]:
+        """`Function.fixturenames`: the closure, in setup order."""
+        return list(self._plan.closure.names)
+
+    def __getattr__(self, name: str) -> NoReturn:
+        # Inside a hook, a name pytest's `Function` has and this one lacks is a reason to hand
+        # off (a hook may `getattr(item, "callspec", None)` and draw the wrong conclusion).  A
+        # name pytest's item does not have either is the plain AttributeError pytest raises,
+        # so `hasattr(item, "rep_call")` stays native.
+        if (
+            name in PYTEST_FUNCTION_NAMES
+            and _hookwire_mod is not None
+            and _hookwire_mod.hook_active()
+        ):
+            _hookwire_mod.violate(f"uses item.{name}")
+        raise AttributeError(f"'Function' object has no attribute {name!r}")
+
+    def __repr__(self) -> str:
+        return f"<Function {self.name}>"
 
     @property
     def originalname(self) -> str:
@@ -2577,12 +2730,14 @@ class _ItemNode:
             for part in self._plan.class_name.split("."):
                 names[part] = True
         names[self.path.name] = True
-        return names
+        return _Keywords(names)
 
     @property
-    def config(self) -> _builtins.Config:
-        """`Node.config` — the same object ``request.config`` and ``pytestconfig`` answer."""
-        return _builtins.current_config()
+    def config(self) -> object:
+        """`Node.config` — the same object ``request.config`` and ``pytestconfig`` answer, and
+        inside a hook the hook's own ``config`` (pytest's ``item.config is config``), with the
+        hook runtime's surface and its violations."""
+        return _config_for_now()
 
     def add_marker(self, marker: object, append: bool = True) -> None:
         """Port of `_pytest/nodes.py::Node.add_marker` (l. 265-287).
@@ -2715,6 +2870,11 @@ class SubRequest:
         function-scoped fixture and is *not* what pytest gives a session-scoped one.
         Recorded rather than papered over: the alternative is a tree.
         """
+        if self.scope != "function" and _hookwire_mod is not None and _hookwire_mod.hook_active():
+            _hookwire_mod.violate(
+                f"reads request.node of a {self.scope}-scoped fixture, which pytest answers with"
+                + " a collection node rustest does not build"
+            )
         node = self._node
         if node is None:
             raise AttributeError(
@@ -2757,13 +2917,14 @@ class SubRequest:
         return self.node.keywords
 
     @property
-    def config(self) -> _builtins.Config:
-        """`FixtureRequest.config` — see :class:`rustest._builtins.Config` for the subset.
+    def config(self) -> object:
+        """`FixtureRequest.config` — see :class:`rustest._builtins.Config` for the subset (inside
+        a hook, the hook's ``config``).
 
         Unlike :attr:`node` this does **not** need a live test: it is whole-run state, so a
         session fixture built before any test can read it.
         """
-        return _builtins.current_config()
+        return _config_for_now()
 
     def applymarker(self, marker: object) -> None:
         """Port of `FixtureRequest.applymarker` (l. 449-458): ``self.node.add_marker(marker)``.
@@ -2774,6 +2935,64 @@ class SubRequest:
         `skipping.py::pytest_runtest_setup` has already run.
         """
         self.node.add_marker(marker)
+
+
+def _direct_param_value(request: SubRequest) -> object:
+    """`_pytest/python.py::get_direct_param_fixture_func`."""
+    return getattr(request, "param")
+
+
+def _fixturedef_base() -> type:
+    from rustest.compat import pytest as _compat
+
+    return cast(type, getattr(_compat, "FixtureDef"))
+
+
+class _FixtureDefView(_fixturedef_base()):  # pyright: ignore[reportUntypedBaseClass]
+    """``fixturedef`` in ``pytest_fixture_setup``: what rustest's :class:`FixtureDef` can answer
+    as pytest's does.  Anything else is a reason to hand off."""
+
+    def __init__(self, fixturedef: FixtureDef) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        self._def = fixturedef
+
+    @property
+    def argname(self) -> str:
+        return self._def.name
+
+    @property
+    def scope(self) -> str:
+        return self._def.scope
+
+    @property
+    def baseid(self) -> str:
+        return self._def.baseid
+
+    @property
+    def func(self) -> Callable[..., object]:
+        return self._def.func
+
+    @property
+    def argnames(self) -> tuple[str, ...]:
+        return self._def.argnames
+
+    @property
+    def params(self) -> list[object] | None:
+        params = self._def.params
+        return None if params is None else [value for _id, value, _marks in params]
+
+    @property
+    def ids(self) -> list[str] | None:
+        params = self._def.params
+        return None if params is None else [id_ for id_, _value, _marks in params]
+
+    def __getattr__(self, name: str) -> NoReturn:
+        if name in PYTEST_FIXTUREDEF_NAMES and _hookwire_mod is not None:
+            _hookwire_mod.violate(f"uses fixturedef.{name}")
+        raise AttributeError(f"'FixtureDef' object has no attribute {name!r}")
+
+    def __repr__(self) -> str:
+        return f"<FixtureDef argname={self.argname!r} scope={self.scope!r} baseid={self.baseid!r}>"
 
 
 @dataclass
@@ -2875,7 +3094,7 @@ class FixtureRunner:
 
     # -- setup ------------------------------------------------------------
 
-    def setup(self, plan: ExecutionPlan) -> dict[str, object]:
+    def setup(self, plan: ExecutionPlan, node: _ItemNode | None = None) -> dict[str, object]:
         """Instantiate *plan*'s closure and return the test function's keyword arguments.
 
         Port of `_pytest/fixtures.py::FixtureRequest._fillfixtures` as reached from
@@ -2895,15 +3114,27 @@ class FixtureRunner:
         self.note_test_boundary(plan.class_name)
         self._active = (plan.closure, plan.fixture_params)
         self._open_test_loop(plan)
-        self.instance = self._build_instance(plan)
-        self.current_node = _ItemNode(plan, self.instance)
+        if node is None:
+            self.instance = self.build_instance(plan)
+            node = _ItemNode(plan, self.instance)
+        else:
+            self.instance = node.instance  # built now, unless a hook already asked for it
+        self.current_node = node
         values: dict[str, object] = dict(plan.direct_params)
+        # pytest's `item.funcargs` fills in as each fixture is set up: the same dict, live.
+        node.funcargs = values
         # `indirect` names are deliberately absent from `direct_params`: they are ordinary
         # closure members whose fixture reads the parametrized value off `request.param`
         # (seeded into `plan.fixture_params` at collection), so the loop below resolves them
         # like any other fixture — scope-checked, cached per parameter, torn down in order.
+        hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+        hooked = hooks is not None and hooks.runs("pytest_fixture_setup")
         for name in plan.closure.names:
             if name in values:
+                if hooked and name in plan.direct_params:
+                    # pytest gives a directly parametrized name a pseudo `FixtureDef`
+                    # (`get_direct_param_fixture_func`), set up through the same hook.
+                    self._hooked_direct(cast("HookRunner", hooks), name, plan)
                 continue
             # The test itself is the requester, so the requesting scope is ``function`` --
             # pytest's ``TopRequest._scope`` (l. 690-692).
@@ -2913,7 +3144,7 @@ class FixtureRunner:
         return {name: values[name] for name in plan.argnames if name in values}
 
     @staticmethod
-    def _build_instance(plan: ExecutionPlan) -> object | None:
+    def build_instance(plan: ExecutionPlan) -> object | None:
         """The object this test runs on, built once per test and shared with its fixtures.
 
         Port of `_pytest/python.py::Function.instance` (l. 1637-1646), which **caches**
@@ -3135,10 +3366,89 @@ class FixtureRunner:
             if dependency_cache is not None:
                 dependency_cache.finalizer.calls.append(functools.partial(self._finish, finalizer))
 
-        value = self._call(fixturedef, kwargs, finalizer)
-        self._finalizers[_SCOPE_BUCKET[fixturedef.scope]].append(finalizer)
+        hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+        try:
+            if hooks is not None and hooks.runs("pytest_fixture_setup"):
+                value = self._hooked_call(
+                    hooks, fixturedef, kwargs, finalizer, closure, params, sub_chain
+                )
+            else:
+                value = self._call(fixturedef, kwargs, finalizer)
+        finally:
+            # `FixtureDef.execute` schedules the finalizer "even if the setup failed": a
+            # finalizer the body registered, or a hook wrapper raising after the body ran,
+            # must not leak the fixture's teardown.
+            self._finalizers[_SCOPE_BUCKET[fixturedef.scope]].append(finalizer)
         self._cache[fixturedef] = _Cached(value, param_key, finalizer)
         return value, fixturedef
+
+    def _hooked_call(
+        self,
+        hooks: HookRunner,
+        fixturedef: FixtureDef,
+        kwargs: dict[str, object],
+        finalizer: _Finalizer,
+        closure: FixtureClosure,
+        params: Mapping[str, object],
+        chain: tuple[FixtureDef, ...],
+    ) -> object:
+        """``ihook.pytest_fixture_setup(fixturedef=..., request=...)`` around :meth:`_call`.
+
+        Dependencies are already resolved, as in `FixtureDef.execute` (l. 1083-1122): pytest
+        builds them before the hook, so a nested fixture is not inside an outer wrapper.  The
+        ``ihook`` is the *scope* node's: a session fixture reaches only the conftests at or
+        above the rootdir.
+        """
+        from ._hookshim import builtin_impl
+
+        rootdir = _state.rootdir if _state is not None else Path.cwd()
+        node = self.current_node
+        if fixturedef.scope == "session":
+            directory = rootdir
+        elif fixturedef.scope == "package":
+            directory = rootdir / fixturedef.baseid if fixturedef.baseid else rootdir
+        else:
+            directory = node.path.parent if node is not None else rootdir
+        request = SubRequest(self, closure, params, fixturedef.name, fixturedef.scope, chain)
+
+        def fixtures_setup(fixturedef: object, request: object) -> object:
+            return self._call(fixturedef_, kwargs, finalizer)
+
+        fixturedef_ = fixturedef
+        return hooks.run_hook(
+            "pytest_fixture_setup",
+            os.path.normcase(str(directory)),
+            [builtin_impl("pytest_fixture_setup", fixtures_setup)],
+            fixturedef=_FixtureDefView(fixturedef),
+            request=request,
+        )
+
+    def _hooked_direct(self, hooks: HookRunner, name: str, plan: ExecutionPlan) -> None:
+        """``pytest_fixture_setup`` for a directly parametrized argname's pseudo fixture."""
+        from ._hookshim import builtin_impl
+
+        value = plan.direct_params[name]
+        pseudo = FixtureDef(
+            name=name,
+            func=_direct_param_value,
+            scope="function",
+            params=None,
+            autouse=False,
+            baseid="",
+            argnames=("request",),
+        )
+        request = SubRequest(self, plan.closure, {name: value}, name, "function", (pseudo,))
+
+        def direct(fixturedef: object, request: object) -> object:
+            return value
+
+        _ = hooks.run_hook(
+            "pytest_fixture_setup",
+            _directory_key(plan.path),
+            [builtin_impl("pytest_fixture_setup", direct)],
+            fixturedef=_FixtureDefView(pseudo),
+            request=request,
+        )
 
     def _check_scope(
         self,
@@ -4573,7 +4883,7 @@ def _unittest_setup_method_fixture(cls: type) -> Callable[..., Iterator[None]] |
       before ``setup_method`` runs.
 
     ``self`` is ``request.instance``, which is the instance the body will run on — see
-    :meth:`FixtureRunner._build_instance` for why that is now true.
+    :meth:`FixtureRunner.build_instance` for why that is now true.
     """
     setup = _safe_getattr(cls, "setup_method", None)
     teardown = _safe_getattr(cls, "teardown_method", None)
@@ -5366,7 +5676,14 @@ _BLOCK_BODY_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
 XFAILED_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (_XFailed,)
 
 
-def _visible_frames(exc: BaseException) -> list[bool]:
+#: The modules whose frames sit between the protocol loop and a test: this worker, and the
+#: hook machinery a hooked test runs inside (pluggy's frames are hidden under pytest too).
+_RUNNER_MODULES: Final = frozenset(
+    {__name__, "rustest._worker", "rustest._hookshim", "rustest._runtest"}
+)
+
+
+def _visible_frames(exc: BaseException, cut: types.CodeType | None = None) -> list[bool]:
     """Which of *exc*'s traceback frames belong in a user-facing message.
 
     Port of the two filters pytest applies before printing a traceback, both of which key on
@@ -5386,10 +5703,20 @@ def _visible_frames(exc: BaseException) -> list[bool]:
     """
     visible: list[bool] = []
     tb = exc.__traceback__
+    if cut is not None:
+        # `Function._traceback_filter`: from the test function's own frame on, when it is in
+        # the traceback (a hook wrapper around the call is above it, and pytest cuts it away).
+        probe = tb
+        while probe is not None and probe.tb_frame.f_code is not cut:
+            probe = probe.tb_next
+        if probe is not None:
+            while tb is not probe and tb is not None:
+                visible.append(False)
+                tb = tb.tb_next
     while tb is not None:
         frame_globals = tb.tb_frame.f_globals
         hidden = (
-            frame_globals.get("__name__") == __name__
+            frame_globals.get("__name__") in _RUNNER_MODULES
             or bool(frame_globals.get("__unittest"))
             or bool(tb.tb_frame.f_locals.get("__tracebackhide__"))
         )
@@ -5398,7 +5725,7 @@ def _visible_frames(exc: BaseException) -> list[bool]:
     return visible
 
 
-def _format_exception(exc: BaseException) -> str:
+def _format_exception(exc: BaseException, cut: types.CodeType | None = None) -> str:
     """A failure message: the exception's traceback, runner and plumbing frames removed.
 
     pytest's own fallback is ported with the filter: *"if not ntraceback: ntraceback =
@@ -5406,7 +5733,7 @@ def _format_exception(exc: BaseException) -> str:
     exception with no visible frame at all is less useful than a noisy one.
     """
     rendered = traceback.TracebackException.from_exception(exc)
-    visible = _visible_frames(exc)
+    visible = _visible_frames(exc, cut)
     if any(visible) and len(visible) == len(rendered.stack):
         rendered.stack = traceback.StackSummary.from_list(
             [frame for frame, keep in zip(rendered.stack, visible, strict=True) if keep]
@@ -5732,30 +6059,44 @@ def report_for_phase(phase: str, exc: BaseException | None, xfailed: Xfail | Non
        * no exception, and only in the ``call`` phase -> ``xpassed``, or ``failed`` with
          pytest's ``"[XPASS(strict)] "`` prefix when ``strict=True`` (l. 300-303).
     """
-    if exc is None:
-        outcome, message, wasxfail = "passed", None, None
-    elif isinstance(exc, XFAILED_EXCEPTIONS):
-        outcome, message, wasxfail = "skipped", None, str(exc)
-    elif isinstance(exc, SKIPPED_EXCEPTIONS):
-        outcome, message, wasxfail = "skipped", str(exc), None
-    else:
-        outcome, message, wasxfail = "failed", _format_exception(exc), None
-
-    if wasxfail is None and outcome != "skipped" and xfailed is not None:
-        if exc is not None:
-            if xfailed.raises is None or isinstance(exc, xfailed.raises):
-                outcome, message, wasxfail = "skipped", None, xfailed.reason
-            else:
-                outcome = "failed"
-        elif phase == "call":
-            if xfailed.strict:
-                outcome, message = "failed", "[XPASS(strict)] " + xfailed.reason
-            else:
-                outcome, wasxfail = "passed", xfailed.reason
-
+    outcome, message = raw_outcome(exc)
+    outcome, message, wasxfail = xfail_promotion(phase, exc, xfailed, outcome, message)
     if wasxfail is not None and not message:
         message = wasxfail or None
     return PhaseReport(phase=phase, outcome=outcome, message=message, wasxfail=wasxfail)
+
+
+def raw_outcome(exc: BaseException | None) -> tuple[str, str | None]:
+    """Stage 1, `runner.py::pytest_runtest_makereport`: the exception's type alone.  An
+    ``xfail()`` is a ``Failed`` here; stage 2 turns it into an xfail."""
+    if exc is None:
+        return "passed", None
+    if isinstance(exc, SKIPPED_EXCEPTIONS) and not isinstance(exc, XFAILED_EXCEPTIONS):
+        return "skipped", str(exc)
+    return "failed", _format_exception(exc)
+
+
+def xfail_promotion(
+    phase: str,
+    exc: BaseException | None,
+    xfailed: Xfail | None,
+    outcome: str,
+    message: str | None,
+) -> tuple[str, str | None, str | None]:
+    """Stage 2, `skipping.py::pytest_runtest_makereport` (l. 272-306): ``(outcome, message,
+    wasxfail)`` after the ``xfail()`` call or the ``xfail`` mark."""
+    if exc is not None and isinstance(exc, XFAILED_EXCEPTIONS):
+        return "skipped", None, str(exc)
+    if outcome != "skipped" and xfailed is not None:
+        if exc is not None:
+            if xfailed.raises is None or isinstance(exc, xfailed.raises):
+                return "skipped", None, xfailed.reason
+            return "failed", message, None
+        if phase == "call":
+            if xfailed.strict:
+                return "failed", "[XPASS(strict)] " + xfailed.reason, None
+            return "passed", None, xfailed.reason
+    return outcome, message, None
 
 
 def reduce_reports(reports: Sequence[PhaseReport]) -> PhaseReport:
@@ -6149,7 +6490,7 @@ def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, o
     """Run the test body: a ``TestCase`` through ``unittest``, anything else directly."""
     if plan.unittest_case is not None:
         recorder = _UnittestOutcomeRecorder()
-        # The instance the SETUP phase built (`FixtureRunner._build_instance`), never a
+        # The instance the SETUP phase built (`FixtureRunner.build_instance`), never a
         # fresh one: `setup_method` and any instance-touching fixture have already run
         # against it, and constructing a second here would silently discard everything they
         # did. pytest caches the same object on the item for the same reason.
@@ -6398,9 +6739,32 @@ def _run_phases(
             yield
 
     try:
+        hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+        if hooks is not None:
+            directory = _directory_key(plan.path)
+            if hooks.runs_any(_PER_TEST_HOOKS, directory):
+                return _hooked_phases(plan, runner, capture, phase, hooks, directory)
         return _phases(plan, runner, capture, phase)
     finally:
         _builtins.set_log_capture(None)
+
+
+@functools.lru_cache(maxsize=None)
+def _directory_key(path: Path) -> str:
+    """The normcased directory a test file's hooks are looked up by (its ``ihook``)."""
+    return os.path.normcase(str(path.parent))
+
+
+#: The hooks pytest calls for every test; any one of them takes a test down the hooked path.
+_PER_TEST_HOOKS: Final = (
+    "pytest_runtest_logstart",
+    "pytest_runtest_logfinish",
+    "pytest_runtest_setup",
+    "pytest_runtest_call",
+    "pytest_runtest_teardown",
+    "pytest_runtest_makereport",
+    "pytest_runtest_logreport",
+)
 
 
 def _phases(
@@ -6440,7 +6804,17 @@ def _phases(
         call_exc: BaseException | None = None
         try:
             with phase("call"):
-                _run_call(plan, runner, kwargs)
+                # `skipping.py::pytest_runtest_call` (l. 253-268): an xfail mark applied since
+                # setup (`request.applymarker` in a fixture, or in the body) still counts.
+                if xfailed is None:
+                    xfailed = _current_xfail(runner, plan, namespace)
+                if xfailed is not None and not xfailed.run:
+                    raise _XFailed("[NOTRUN] " + xfailed.reason)
+                try:
+                    _run_call(plan, runner, kwargs)
+                finally:
+                    if xfailed is None:
+                        xfailed = _current_xfail(runner, plan, namespace)
                 collect_unraisable_exceptions()
         except ABORT_EXCEPTIONS:
             raise
@@ -6459,6 +6833,252 @@ def _phases(
         teardown_exc = exc
     reports.append(_checked(report_for_phase("teardown", teardown_exc, xfailed), capture))
     return reports
+
+
+def _current_xfail(
+    runner: FixtureRunner, plan: ExecutionPlan, namespace: Mapping[str, object]
+) -> Xfail | None:
+    """`evaluate_xfail_marks(item)` over the item's marks as they are now."""
+    node = runner.current_node
+    if node is None or node.nodeid != plan.id or len(node.own_markers) == len(plan.marks):
+        return None  # nothing added since setup evaluated these marks (add_marker only grows)
+    return evaluate_xfail_marks(node.own_markers, namespace)
+
+
+def _hooked_phases(
+    plan: ExecutionPlan,
+    runner: FixtureRunner,
+    capture: _Capture,
+    phase: Callable[[str], AbstractContextManager[None]],
+    hooks: HookRunner,
+    directory: str,
+) -> list[PhaseReport]:
+    """`runner.py::runtest_protocol` with the hooks: ``logstart``, then per phase
+    ``CallInfo.from_call(ihook.pytest_runtest_<when>)`` -> ``pytest_runtest_makereport`` ->
+    ``pytest_runtest_logreport``, then ``logfinish``.  pytest's own implementations of each
+    hook take their places in the chains (:func:`rustest._hookshim.builtin_impl`), so a user's
+    ``tryfirst`` / plain / ``trylast`` implementation and wrapper run where pluggy runs them --
+    a ``trylast`` makereport wrapper sees the report before the xfail promotion, a plain one
+    after it.
+
+    Output is captured where pytest captures it: ``capture.py``'s wrapper sits inside every
+    user wrapper and around every plain implementation of the three ``runtest`` hooks, and
+    ``logstart`` / ``makereport`` / ``logreport`` / ``logfinish`` run outside it, so what they
+    print reaches the worker's stderr, which the run forwards.
+
+    A hook that raises in ``makereport`` / ``logreport`` / ``logstart`` / ``logfinish`` is not
+    caught: as under pytest it ends the session (an internal error, exit 3).  A violation is
+    caught and reported as the test's error, carrying the hand-off.
+    """
+    from ._hookshim import HookUnsupported, builtin_impl
+    from ._runtest import CallInfo, FailureRepr, ReprFileLocation, TestReport, reprcrash
+
+    node = _ItemNode(plan, None)
+    namespace = _condition_namespace(plan)
+    xfailed: list[Xfail | None] = [None]  # pytest's `item.stash[xfailed_key]`
+    funcargs: dict[str, object] = {}
+    torn = [False]  # pytest's own teardown ran (M6)
+    test_code = _test_code(plan)
+
+    def capture_wrapper(item: object) -> Generator[None, object, object]:
+        with capture.window():
+            return (yield)
+
+    def skipping_setup(item: object) -> None:
+        skipped = evaluate_skip_marks(node.own_markers, namespace)
+        if skipped is not None:
+            exc = _Skipped(skipped.reason)
+            setattr(exc, "_use_item_location", True)
+            raise exc
+        xfailed[0] = evaluate_xfail_marks(node.own_markers, namespace)
+        if xfailed[0] is not None and not xfailed[0].run:
+            raise _XFailed("[NOTRUN] " + xfailed[0].reason)
+
+    def runner_setup(item: object) -> None:
+        try:
+            funcargs.update(runner.setup(plan, node))
+        except SKIPPED_EXCEPTIONS as exc:
+            # `fixtures.py::pytest_fixture_setup`: a fixture's skip reports the item's place.
+            setattr(exc, "_use_item_location", True)
+            raise
+
+    def skipping_call(item: object) -> Generator[None, object, object]:
+        if xfailed[0] is None:
+            xfailed[0] = evaluate_xfail_marks(node.own_markers, namespace)
+        if xfailed[0] is not None and not xfailed[0].run:
+            raise _XFailed("[NOTRUN] " + xfailed[0].reason)
+        try:
+            return (yield)
+        finally:
+            if xfailed[0] is None:
+                xfailed[0] = evaluate_xfail_marks(node.own_markers, namespace)
+
+    def runner_call(item: object) -> None:
+        _run_call(plan, runner, funcargs)
+
+    def runner_teardown(item: object) -> None:
+        torn[0] = True
+        runner.teardown("function")
+
+    def unraisable(item: object) -> None:
+        collect_unraisable_exceptions()
+
+    def runner_makereport(item: object, call: CallInfo[object]) -> TestReport:
+        exc = None if call.excinfo is None else cast(BaseException, call.excinfo.value)
+        outcome, message = raw_outcome(exc)
+        longrepr: object = None
+        if exc is None:
+            if capture.broken:
+                outcome, message = "failed", CAPTURE_CLOSED_MESSAGE
+                longrepr = FailureRepr(
+                    ReprFileLocation(str(plan.path), node.location[1] + 1, message)
+                )
+        elif outcome == "skipped":
+            text = "Skipped: " + (message or "")
+            if getattr(exc, "_use_item_location", False):  # a skip mark, or a fixture's skip
+                longrepr = (str(plan.path), node.location[1] + 1, text)
+            else:
+                crash = reprcrash(exc, text)
+                longrepr = (crash.path, crash.lineno, crash.message)
+        else:
+            message = _format_exception(exc, test_code)
+            longrepr = FailureRepr(reprcrash(exc))
+        return TestReport(
+            plan.id,
+            node.location,
+            {name: 1 for name in node.keywords},
+            outcome,
+            longrepr,
+            call.when,
+            call.duration,
+            call.start,
+            call.stop,
+            list(node.user_properties),
+            message,
+        )
+
+    def skipping_makereport(
+        item: object, call: CallInfo[object]
+    ) -> Generator[None, object, TestReport]:
+        rep = cast(TestReport, (yield))
+        exc = None if call.excinfo is None else cast(BaseException, call.excinfo.value)
+        before = rep._message  # pyright: ignore[reportPrivateUsage]
+        outcome, message, wasxfail = xfail_promotion(
+            call.when, exc, xfailed[0], rep.outcome, before
+        )
+        if outcome == "failed" and exc is None and message != before:
+            rep._longrepr = message  # pyright: ignore[reportPrivateUsage] # `[XPASS(strict)] ...`
+        rep._outcome, rep._message = outcome, message  # pyright: ignore[reportPrivateUsage]
+        if wasxfail is not None:
+            setattr(rep, "wasxfail", wasxfail)
+        return rep
+
+    # Registration order is pytest's: capture before skipping, so skipping's wrapper is the
+    # outer of the two; both are inside every user wrapper (registered later).
+    builtins: dict[str, list[object]] = {
+        "setup": [
+            builtin_impl("pytest_runtest_setup", capture_wrapper, wrapper=True),
+            builtin_impl("pytest_runtest_setup", skipping_setup, tryfirst=True),
+            builtin_impl("pytest_runtest_setup", runner_setup),
+            builtin_impl("pytest_runtest_setup", unraisable, trylast=True),
+        ],
+        "call": [
+            builtin_impl("pytest_runtest_call", capture_wrapper, wrapper=True),
+            builtin_impl("pytest_runtest_call", skipping_call, wrapper=True),
+            builtin_impl("pytest_runtest_call", runner_call),
+            builtin_impl("pytest_runtest_call", unraisable, trylast=True),
+        ],
+        "teardown": [
+            builtin_impl("pytest_runtest_teardown", capture_wrapper, wrapper=True),
+            builtin_impl("pytest_runtest_teardown", runner_teardown),
+            builtin_impl("pytest_runtest_teardown", unraisable, trylast=True),
+        ],
+    }
+    makereport = [
+        builtin_impl("pytest_runtest_makereport", runner_makereport),
+        builtin_impl("pytest_runtest_makereport", skipping_makereport, wrapper=True),
+    ]
+
+    def run_phase(when: str) -> PhaseReport:
+        def body() -> object:
+            return hooks.run_hook(
+                f"pytest_runtest_{when}",
+                directory,
+                cast("list[Any]", builtins[when]),
+                item=node,
+                nextitem=None,
+            )
+
+        with phase(when):
+            call = CallInfo[object].from_call(body, when, reraise=ABORT_EXCEPTIONS)
+        if when == "teardown" and not torn[0]:
+            # A teardown hook raised (or skipped) before pytest's own teardown ran: pytest
+            # leaves the fixtures up and fails the next test's setup; rustest cannot.
+            hooks.note_reason(
+                f"a pytest_runtest_teardown hook raised before {plan.id}'s fixtures were torn"
+                + " down, which rustest's hook runtime does not support"
+            )
+            with contextlib.suppress(Exception):
+                runner.teardown("function")
+        try:
+            report = cast(
+                TestReport,
+                hooks.run_hook(
+                    "pytest_runtest_makereport",
+                    directory,
+                    cast("list[Any]", makereport),
+                    item=node,
+                    call=call,
+                ),
+            )
+            _ = hooks.run_hook("pytest_runtest_logreport", directory, report=report)
+        except HookUnsupported as exc:
+            return PhaseReport(when, "failed", exc.reason)
+        if when == "teardown" and report.outcome == "skipped":
+            # pytest counts the call's outcome and the teardown's skip, two reports; the wire
+            # carries one status per test.
+            hooks.note_reason(
+                f"{plan.id}'s teardown was skipped, which pytest reports beside the test's own"
+                + " outcome and rustest's hook runtime does not support"
+            )
+        wasxfail = cast("str | None", getattr(report, "wasxfail", None))
+        message = report._message  # pyright: ignore[reportPrivateUsage]
+        if wasxfail is not None and not message:
+            message = wasxfail or None
+        return PhaseReport(when, report.outcome, message, wasxfail)
+
+    with capture.disabled():
+        try:
+            _ = hooks.run_hook(
+                "pytest_runtest_logstart", directory, nodeid=plan.id, location=node.location
+            )
+        except HookUnsupported:
+            pass  # recorded: the test reports an error and carries the hand-off
+        reports = [run_phase("setup")]
+        if reports[0].outcome == "passed":
+            reports.append(run_phase("call"))
+        reports.append(run_phase("teardown"))
+        node.funcargs = None
+        try:
+            _ = hooks.run_hook(
+                "pytest_runtest_logfinish", directory, nodeid=plan.id, location=node.location
+            )
+        except HookUnsupported:
+            pass
+    return reports
+
+
+def _test_code(plan: ExecutionPlan) -> types.CodeType | None:
+    """The code object of the test function itself, where pytest cuts a failure's traceback."""
+    func: object = plan.func
+    if plan.unittest_case is not None and plan.unittest_method is not None:
+        func = _safe_getattr(plan.unittest_case, plan.unittest_method, None)
+    try:
+        func = inspect.unwrap(cast("Callable[..., object]", func))
+    except (TypeError, ValueError):
+        pass
+    code = _safe_getattr(func, "__code__", None)
+    return code if isinstance(code, types.CodeType) else None
 
 
 def _checked(report: PhaseReport, capture: _Capture) -> PhaseReport:
@@ -6500,7 +7120,7 @@ def execute_test(test_id: str) -> ResultResponse:
     global _previous_plan
     runner = _execution_runner()
     recorded: list[RecordedWarningDict] = []
-    late_before = _hookwire_mod.late_count() if _hookwire_mod is not None else 0
+    fault_mark = _hookwire_mod.fault_mark() if _hookwire_mod is not None else None
     previous = _previous_plan
     if previous is not None and runner.has_wide_finalizers():
         with warnings_window(previous.id, previous.marks, recorded):
@@ -6516,6 +7136,8 @@ def execute_test(test_id: str) -> ResultResponse:
         # Nothing class- or module-scoped is open, so the drain cannot run user code: no
         # window needed (two `catch_warnings` per test were measurable).
         boundary_exc = drain_boundaries(plan, runner)
+    if boundary_exc is not None:
+        _wide_teardown_failed(previous)
     _previous_plan = plan
 
     capture = _worker_capture()
@@ -6529,13 +7151,16 @@ def execute_test(test_id: str) -> ResultResponse:
     torn = teardown.phase == "teardown" and teardown.outcome == "failed" and len(reports) > 1
     report = reduce_reports(reports[:-1] if torn else reports)
     status, message = report.status, report.message
-    if _hookwire_mod is not None and (late := _hookwire_mod.late_reasons_since(late_before)):
-        # A shim a hook kept was used while this test ran.  The user may have swallowed the
-        # exception it raised (`except BaseException`, a `__del__`): the test is an error anyway.
+    handoff: list[str] = []
+    if _hookwire_mod is not None and fault_mark is not None:
+        handoff = [_hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(fault_mark)]
+    if handoff:
+        # A hook (or a shim a hook kept) touched what the runtime cannot answer while this test
+        # ran.  The user may have swallowed the exception it raised (`except BaseException`,
+        # a `__del__`): the test is an error anyway, and the session is pytest's to run
+        # (`handoff`) unless `--no-pytest-fallback` keeps it here.
         status = "error"
-        message = "\n".join(
-            [*([message] if message else []), *(_hookwire_mod.REASON_PREFIX + r for r in late)]
-        )
+        message = "\n".join([*([message] if message else []), *handoff])
     result: ResultResponse = {
         "op": "test_result",
         "id": plan.id,
@@ -6544,6 +7169,8 @@ def execute_test(test_id: str) -> ResultResponse:
     }
     if message:
         result["message"] = message
+    if handoff:
+        result["handoff"] = handoff
     captured_out, captured_err = capture.drain()
     if captured_out:
         result["stdout"] = captured_out
@@ -7322,6 +7949,29 @@ def drain_at_shutdown() -> BaseException | None:
     return None
 
 
+def _wide_teardown_failed(owner: ExecutionPlan | None) -> None:
+    """A class-, module- or session-scoped teardown failed outside the test it belongs to.
+
+    pytest reports that failure in the owning item's teardown report, through
+    ``pytest_runtest_makereport`` and ``pytest_runtest_logreport``; rustest unwinds those scopes
+    at the next test's boundary (or at shutdown) and attributes the error afterwards, so a hook
+    of either kind would see a passing teardown report.  It is a hand-off reason then.
+    """
+    hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+    if hooks is None:
+        return
+    directory = os.path.normcase(str(owner.path.parent)) if owner is not None else None
+    if hooks.runs("pytest_runtest_makereport", directory) or hooks.runs(
+        "pytest_runtest_logreport", directory
+    ):
+        hooks.note_reason(
+            "a pytest_runtest_makereport or pytest_runtest_logreport hook would see "
+            + (owner.id if owner is not None else "the last test")
+            + "'s teardown report pass, where pytest reports its failed class-, module- or"
+            + " session-scoped fixture teardown"
+        )
+
+
 def unrun_hooks() -> list[str]:
     """``pytest_*`` callables in the conftests and plugin modules this worker loaded.
 
@@ -7710,6 +8360,7 @@ def execute_batch(
     stop_on_failure: bool,
     emit: Callable[[Mapping[str, object]], None],
     max_fail: int | None = None,
+    stop_on_handoff: bool = False,
 ) -> BatchDoneResponse:
     """Run one module instance's tests, emitting one ``test_result`` each, then ``batch_done``.
 
@@ -7744,6 +8395,10 @@ def execute_batch(
         result = execute_test(test_id)
         emit(result)
         executed += 1
+        if stop_on_handoff and "handoff" in result:
+            # The session is going to pytest: nothing after this test is worth running.
+            stopped = True
+            break
         if result["status"] in ("failed", "error"):
             failures += 1
             if stop_on_failure or (max_fail is not None and failures >= max_fail):
@@ -8078,6 +8733,7 @@ def _protocol_loop(
                     stop_on_failure,
                     emit_buffered,
                     int(cast(int, raw_max_fail)) if raw_max_fail is not None else None,
+                    request.get("stop_on_handoff") is True,
                 )
             except UnknownTestError as exc:
                 # Whatever the batch already wrote is flushed before the worker dies, so the
@@ -8091,8 +8747,20 @@ def _protocol_loop(
         elif op == "shutdown":
             # Drain first, answer second: `bye` must not claim the worker is finished while
             # a session fixture is still open.  The exit code carries the drain's verdict.
+            # The fault mark brackets the drain: a session fixture's finalizer can use what a
+            # hook kept, and a failed shutdown teardown is a report no hook saw (see
+            # `_wide_teardown_failed`). Either is a hand-off reason, carried on `bye`.
+            mark = _hookwire_mod.fault_mark() if _hookwire_mod is not None else None
             shutdown_failure = drain_at_shutdown()
+            if shutdown_failure is not None:
+                _wide_teardown_failed(_previous_plan)
             bye = handle_shutdown()
+            if _hookwire_mod is not None and mark is not None:
+                handoff = [
+                    _hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(mark)
+                ]
+                if handoff:
+                    bye["handoff"] = handoff
             last = _previous_plan
             if shutdown_failure is not None and last is not None:
                 # The last test's `nextitem=None` teardown: its error, as pytest counts it.

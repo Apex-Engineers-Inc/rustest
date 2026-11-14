@@ -134,8 +134,12 @@ def grade_run_case(
     pytest_result: FullRunResult,
     v2_result: FullRunResult,
     waivers: dict[str, str],
+    native: bool = False,
 ) -> CaseResult:
-    """Grade a case on a full run: ordered ids, the seven graded counts, the exit code.
+    """Grade a case on a full run: ordered ids, the seven graded counts, the exit code --
+    and, for a case marked ``NATIVE``, that rustest ran it itself.  A hand-off reproduces
+    pytest's answer by construction, so without the mark a hook case "matches" whether or
+    not the runtime ran a single hook.
 
     Those three *are* the whole ``rustest`` contract as a machine reader sees it.
     Nothing else is compared, and each omission is deliberate:
@@ -182,4 +186,8 @@ def grade_run_case(
         )
     if pytest_result.exit_code != v2_result.exit_code:
         problems.append(f"exit codes pytest={pytest_result.exit_code} v2={v2_result.exit_code}")
+    if native and v2_result.handed_off:
+        problems.append(
+            "marked NATIVE, but rustest handed it to pytest: " + "; ".join(v2_result.handed_off)
+        )
     return _adjudicate(name, problems, waivers)

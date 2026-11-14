@@ -118,6 +118,8 @@ def pytest_sessionfinish(session: object, exitstatus: int | CallInfo[None]) -> N
         "deselected": sorted(_deselected),
         "collection_errors": sorted(_collection_errors),
         "exit_status": int(exitstatus) if isinstance(exitstatus, int) else -1,
+        # Where the configuration came from: the harness refuses an ini outside the checkout.
+        "inipath": str(getattr(getattr(session, "config", None), "inipath", None) or "") or None,
     }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)

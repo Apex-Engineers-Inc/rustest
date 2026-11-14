@@ -551,13 +551,13 @@ _P1 = {
 }
 
 
-#: The same recipe through a hook rustest does not run: `pytest_runtest_setup` skips.
+#: The same recipe through a hook rustest does not run: `pytest_itemcollected` marks a skip.
 _P1_SETUP = {
     "conftest.py": (
         "import pytest\n\n\n"
-        "def pytest_runtest_setup(item):\n"
+        "def pytest_itemcollected(item):\n"
         '    if "slow" in item.keywords:\n'
-        '        pytest.skip("need --runslow")\n'
+        '        item.add_marker(pytest.mark.skip(reason="need --runslow"))\n'
     ),
     "test_p1.py": _P1["test_p1.py"],
 }
@@ -655,7 +655,7 @@ def test_a_typo_gets_pytests_own_usage_error(tmp_path: Path):
 def test_the_failures_of_a_fallen_back_run_feed_lf_in_a_rustest_run(tmp_path: Path):
     """One cache: pytest runs under `-o cache_dir=.rustest_cache`, which rustest also reads."""
     files = {
-        "conftest.py": "def pytest_runtest_setup(item):\n    pass\n",
+        "conftest.py": "def pytest_itemcollected(item):\n    pass\n",
         "test_a.py": "def test_ok():\n    pass\n\n\ndef test_bad():\n    assert 0\n",
     }
     tree = make_tree(tmp_path, "lf_across", files)
@@ -675,7 +675,7 @@ def test_a_hook_that_changes_what_runs_hands_the_session_to_pytest(tmp_path: Pat
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed, 1 skipped" in result.stdout
-    assert "conftest.py::pytest_runtest_setup" in result.stderr
+    assert "conftest.py::pytest_itemcollected" in result.stderr
     assert result.stderr.count("handing this session to pytest") == 1
     assert "(those hooks will not run)" in result.stderr
 
@@ -728,7 +728,7 @@ def test_a_reason_in_worker_0_hands_off_before_any_other_worker_runs_configure(t
             "def pytest_configure(config):\n"
             "    with open('configured.log', 'a') as handle:\n"
             "        handle.write('x')\n"
-            "    config.pluginmanager.register(object(), 'probe')\n"
+            "    config.pluginmanager.getplugin('probe')\n"
         ),
         "test_a.py": "def test_a():\n    pass\n",
         "test_b.py": "def test_b():\n    pass\n",
@@ -781,7 +781,7 @@ def test_an_import_failure_label_is_a_whole_reason_and_has_no_opt_out_sentence()
 # -- machine outputs from a pytest run -----------------------------------------------------
 
 _MIXED = {
-    "conftest.py": "def pytest_runtest_setup(item):\n    pass\n",
+    "conftest.py": "def pytest_itemcollected(item):\n    pass\n",
     "test_m.py": (
         "import pytest\n\n\n"
         "@pytest.fixture\ndef boom():\n    raise RuntimeError('fixture broke')\n\n\n"

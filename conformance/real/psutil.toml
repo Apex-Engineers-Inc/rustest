@@ -114,11 +114,15 @@ id_policy = "exact"
 # on the per-platform base classes covering test_bsd/test_linux/test_osx/test_aix/test_sunos)
 # and Task 1c had to record them as "STILL UNMEASURED". They are now measured, and they are
 # exact.
-"conformance/real/_work/psutil/tests/test_windows.py::TestCpuAPIs::test_cpu_freq" = """THE TARGET'S OWN FLAKE, and note the DIRECTION: pytest **failed** this and rustest **passed** it. Whatever it is, it is not rustest failing something pytest passes.
+"tests/test_windows.py::TestCpuAPIs::test_cpu_freq" = """THE TARGET'S OWN FLAKE, and note the DIRECTION: pytest **failed** this and rustest **passed** it. Whatever it is, it is not rustest failing something pytest passes.
 
 `TestCpuAPIs::test_cpu_freq` compares `psutil.cpu_freq()` against the frequency Windows reports through WMI/the registry. That is a live hardware reading on a laptop whose clock moves with turbo, thermal state and idle -- the two runners sampled it ~30 minutes apart in the same sweep and got different answers. It is a timing-dependent measurement of the machine, not a property of either runner, and it belongs in the same class as marshmallow's wall-clock-in-a-nodeid and jsonschema's import-order dependency: a target property the gate reports rather than hides.
 
 NOT pre-waived any wider than this one id, deliberately. If this test starts flipping the other way, or if a second id joins it, the gate must say so."""
+
+"tests/test_windows.py::TestSystemAPIs::test_pids" = """THE TARGET'S OWN FLAKE, of the parallel-runner kind. It compares `psutil.pids()` with the process list Windows reports a moment later, so any process starting or exiting in between fails it -- and under a pool, the other workers' tests start and kill processes all the time. Measured 2026-11-14, the first sweep after the work directory moved outside this repository (the suite's ini is now its own, not rustest's): pytest (serial) passed it and rustest (4 workers) failed it, while the Phase 4 sweep had both failing it. Run alone it passes under both runners, four times out of four each. Not a status rustest computes differently; the race is the machine's.
+
+NOT pre-waived any wider than this one id."""
 
 [divergence.global]
 # The tally DOES still differ, by exactly one test moving between two buckets, and that is the

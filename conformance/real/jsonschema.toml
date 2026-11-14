@@ -108,10 +108,8 @@ id_policy = "exact"
 #    tests the suite asked for -- but a real and reportable cost of running an
 #    order-dependent suite under a parallel runner. KNOWN-LIMITATION.
 #
-# 2. NODE ID PREFIXES are repo-root-relative in an unexpected way (`conformance/real/_work/
-#    jsonschema/jsonschema/tests/...`) because jsonschema ships NO pytest config of any kind --
-#    no ini_options, no pytest.ini, no setup.cfg, no tox.ini section -- so the rootdir search
-#    walks all the way up out of the clone and anchors on THIS repo's pyproject.toml, which
-#    does carry `[tool.pytest.ini_options]`. BOTH runners resolve it identically and agree on
-#    every id, so nothing is graded here; it is an artifact of staging clones inside the
-#    rustest tree, not a rustest behaviour. Worth knowing before reading the id list.
+# 2. jsonschema ships NO pytest config of any kind -- no ini_options, no pytest.ini, no
+#    setup.cfg, no tox.ini section -- so the rootdir search walks up out of the clone. While
+#    clones were staged inside this repository it anchored on rustest's own pyproject.toml
+#    (and ran under its ini); the work directory is now outside any project
+#    (`RUSTEST_REAL_WORK`), so the rootdir is the clone, as for jsonschema's own users.

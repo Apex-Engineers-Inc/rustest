@@ -133,12 +133,12 @@ Most suites need no plugins to migrate. rustest already provides:
 - Async testing, with no marker required by default
 - Warning capture (warns, deprecated_call)
 - These built-in fixtures: `tmp_path`, `tmp_path_factory`, `tmpdir`, `tmpdir_factory`,
-  `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `mocker`, `pytestconfig`, `recwarn`
+  `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `mocker`, `pytestconfig`, `recwarn`,
+  `record_property`
 
 Requesting one of pytest's remaining built-in fixtures is an error naming the gap rather than a
 "fixture not found": `capsysbinary`, `capfdbinary`, `capteesys`, `doctest_namespace`,
-`pytester`, `testdir`, `record_property`, `record_testsuite_property` and
-`record_xml_attribute`.
+`pytester`, `testdir`, `record_testsuite_property` and `record_xml_attribute`.
 
 Cosmetic pytest flags are accepted and ignored rather than rejected, so an `addopts` line that
 carries them still runs. Each one prints a line on stderr naming what was dropped: `--tb`,
@@ -797,9 +797,9 @@ carrying one does not break the run.
 - **pytest-html**: HTML reports (not implemented)
 - **pytest-json-report**: use `--report-json PATH`, which writes a schema-2 JSON report of the
   run, or `--llm` for JSONL aimed at LLM tooling
-- **pytest-junit**: JUnit XML (not implemented). The `record_property`,
-  `record_testsuite_property` and `record_xml_attribute` fixtures are unavailable for the same
-  reason.
+- **pytest-junit**: JUnit XML (not implemented). The `record_testsuite_property` and
+  `record_xml_attribute` fixtures are unavailable for the same reason; `record_property` works,
+  appending to the test's `user_properties` as it does under pytest without `--junitxml`.
 
 ### IDE/Tool integration
 
