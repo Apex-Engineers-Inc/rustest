@@ -165,6 +165,70 @@ pub fn write_last_failed(cache_dir: &Path, entries: &BTreeMap<String, bool>) -> 
     std::fs::write(&path, content + "\n").is_ok()
 }
 
+/// The previous runs' per-test durations, in pytest's value layout beside `cache/lastfailed`:
+/// test id -> seconds. What the scheduler weighs a file by (`collect.rs::file_weights`).
+const DURATIONS_FILE: &str = "rustest/durations";
+
+fn durations_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join(CACHE_VALUES_DIR).join(DURATIONS_FILE)
+}
+
+/// The recorded durations, test id -> whole microseconds (a file of thousands of
+/// sub-millisecond tests must not sum to nothing), or none: a missing, unreadable or corrupt
+/// record is no record. Never an error, like [`read_last_failed`].
+pub fn read_durations(cache_dir: &Path) -> BTreeMap<String, u64> {
+    std::fs::read_to_string(durations_path(cache_dir))
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+/// Fold this run's durations (seconds) into the record. A run that selected everything it
+/// collected (`complete`) replaces the entries of the files it ran, so deleted or renamed
+/// tests leave; a partial run (`-k`, `-m`, node ids, `--lf`, a stop) only overwrites the tests
+/// it ran. Written to a temporary file and renamed into place, and a failure is swallowed:
+/// the record is a heuristic, never a reason for a run to fail.
+pub fn record_durations(
+    cache_dir: &Path,
+    ran: impl IntoIterator<Item = (String, f64)>,
+    complete: bool,
+) {
+    let ran: Vec<(String, u64)> = ran
+        .into_iter()
+        .map(|(id, seconds)| (id, (seconds.max(0.0) * 1e6) as u64))
+        .collect();
+    let mut record = read_durations(cache_dir);
+    if complete {
+        let files: HashSet<&str> = ran.iter().map(|(id, _)| file_of(id)).collect();
+        record.retain(|id, _| !files.contains(file_of(id)));
+    }
+    record.extend(ran);
+    let path = durations_path(cache_dir);
+    let temporary = path.with_extension("tmp");
+    let written = path
+        .parent()
+        .is_some_and(|parent| std::fs::create_dir_all(parent).is_ok())
+        && serde_json::to_string(&record)
+            .is_ok_and(|content| std::fs::write(&temporary, content).is_ok());
+    if written && std::fs::rename(&temporary, &path).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+}
+
+/// The file part of a node id (`tests/test_a.py::test_x` -> `tests/test_a.py`).
+pub(crate) fn file_of(id: &str) -> &str {
+    id.split("::").next().unwrap_or(id)
+}
+
+/// `-p no:cacheprovider`, as the CLI records it in `hook_context.blocked_plugins`: pytest then
+/// keeps no cache at all, so rustest reads and writes none.
+pub(crate) fn cache_provider_off(hook_context: Option<&serde_json::Value>) -> bool {
+    hook_context
+        .and_then(|context| context.get("blocked_plugins"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|names| names.iter().any(|name| name == "cacheprovider"))
+}
+
 /// Split `ids` into "failed last time" and "did not", preserving order in both halves.
 ///
 /// The caller applies [`LastFailedMode`] to the result.  Returned as index vectors rather

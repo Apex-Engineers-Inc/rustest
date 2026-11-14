@@ -135,6 +135,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PYTEST_XDIST_WORKER`, `PYTEST_XDIST_WORKER_COUNT`, `PYTEST_XDIST_TESTRUNUID`,
   `config.workerinput`, and the `worker_id`/`testrun_uid` fixtures when xdist is installed.
   With one: `worker_id == "master"`, as serial pytest.
+- **Files are scheduled by how long they took last time.** Each run records its tests'
+  durations in the cache directory (`v/rustest/durations`, in microseconds; nothing read or
+  written under `-p no:cacheprovider`), and the next run packs whole files onto workers by
+  that record, by file size where there is none. A run that selects everything replaces its
+  files' entries, so the record does not grow forever. Pillow at `-n 4`: 32 s, then 12 s
+  once a record exists.
 - **A handed-off session keeps rustest's parallelism.** With pytest-xdist installed and no
   worker count chosen, pytest runs with rustest's own `-n`.
 
@@ -144,6 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failing to collect: pytester is pytest's in-process runner.
 - **The pytest fallback's report counts deselected tests under pytest-xdist** (it reported 0).
 - **`-p no:NAME` is no longer reported as an ignored option**: it is honoured.
+- **`@pytest.mark.asyncio` on a class no longer breaks its static and class methods.** The
+  mark was copied onto the class's coroutine members by re-setting them on the class, which
+  turned a `@staticmethod async def` helper into a method that received `self` and failed
+  collection for a `@classmethod` one. `-o cache_dir=PATH` is honoured too.
 - **`--collect-only --lf` and `--ff` list what pytest lists.** `--lf` printed the whole
   collection. pytest's last-failed filter acts in two places and depends on whether a
   failure was recorded at module level, so a reimplementation was wrong in three probed

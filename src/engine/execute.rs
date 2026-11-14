@@ -1320,8 +1320,22 @@ fn run_attempt(
             stopped_early,
             started,
         );
-        if !cache_provider_off(options.hook_context.as_ref()) {
+        if !crate::engine::cache::cache_provider_off(options.hook_context.as_ref()) {
             record_last_failed(&dispatch.cache_dir, &previously_failed, &report);
+            // A run that selected everything it collected, and finished, replaces its files'
+            // entries; anything narrower only overwrites the tests it ran.
+            let complete = report.summary.deselected == 0
+                && !report.stopped_early
+                && options.last_failed == LastFailedMode::None
+                && dispatch.named_targets().is_empty();
+            crate::engine::cache::record_durations(
+                &dispatch.cache_dir,
+                report
+                    .tests
+                    .iter()
+                    .map(|test| (test.id.clone(), test.duration_s)),
+                complete,
+            );
         }
         Ok(Attempt::Report(report))
     })
@@ -1345,15 +1359,6 @@ fn predict_skip(
         previously_failed,
         |index| direct.contains(targets[index].as_str()),
     )
-}
-
-/// `-p no:cacheprovider`, as the CLI records it in `hook_context.blocked_plugins`: pytest then
-/// keeps no cache at all, so this run writes none.
-fn cache_provider_off(hook_context: Option<&serde_json::Value>) -> bool {
-    hook_context
-        .and_then(|context| context.get("blocked_plugins"))
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|names| names.iter().any(|name| name == "cacheprovider"))
 }
 
 /// Fold this run's outcomes into the last-failed cache.
@@ -1755,6 +1760,10 @@ fn worker_life(
     };
 
     let mut results: Vec<(usize, TestOutcome)> = Vec::new();
+    // `RUSTEST_SCHEDULE_TRACE=1`: one stderr line per worker (files, busy seconds, when it
+    // finished) -- the diagnosis behind a run that loses to xdist. Not a contract.
+    let began = Instant::now();
+    let mut busy = std::time::Duration::ZERO;
     // One request per batch (module instance), not per test.  Measured at Phase 2 Task 3:
     // the per-test round trip cost ~160 µs of orchestrator time against ~20 µs of in-worker
     // execution, because each test meant a pipe write and a blocking line read.  A batch's
@@ -1802,8 +1811,10 @@ fn worker_life(
                 ));
             }
         };
+        let batch_began = Instant::now();
         let batch =
             worker.execute_batch(&ids, signals.fail_fast, budget, &mut outcomes, &mut forward);
+        busy += batch_began.elapsed();
         // The results are folded in **before** the batch's own outcome is inspected, so the
         // `SessionExit` arm below returns with them already recorded.
         for ((slot, _), outcome) in group.iter().zip(outcomes) {
@@ -1847,6 +1858,14 @@ fn worker_life(
         }
     }
 
+    if std::env::var_os("RUSTEST_SCHEDULE_TRACE").is_some() {
+        eprintln!(
+            "rustest-schedule: worker {index} ran {} files, busy {:.1}s, done at {:.1}s",
+            files.len(),
+            busy.as_secs_f64(),
+            began.elapsed().as_secs_f64()
+        );
+    }
     let teardown = worker.shutdown_run()?;
     attach_late_teardowns(&mut results, worker.take_late_teardowns());
     let stderr = worker.take_stderr();

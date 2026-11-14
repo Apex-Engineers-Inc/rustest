@@ -331,7 +331,7 @@ def test_corpus_case_count_is_pinned() -> None:
     # `fixtures/teardown-error-*` (+5): a fixture teardown that raises is an error of the test
     # whose teardown ran it, beside its own outcome (function, class and module mid-run, module
     # and session at shutdown).
-    assert len(discover_cases()) == 93
+    assert len(discover_cases()) == 94
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

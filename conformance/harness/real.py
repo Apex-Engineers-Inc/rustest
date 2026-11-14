@@ -715,8 +715,14 @@ def run_rustest_real(
         str(workers),
         "--report-json",
         str(report),
-        # A local tree is never written to: `-p no:cacheprovider`, as the pytest legs run.
-        *(["-p", "no:cacheprovider"] if target.kind == "local" else []),
+        # A local tree is never written to: its cache (last-failed, the duration record,
+        # compiled rewrites) lives under `_work` instead, so a rerun schedules by the record
+        # as a user's would.
+        *(
+            ["-o", f"cache_dir={WORK_DIR / '_cache' / target.name}"]
+            if target.kind == "local"
+            else []
+        ),
         *target.rustest_args,
         *target.test_paths,
     ]

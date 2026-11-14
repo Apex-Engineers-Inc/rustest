@@ -332,7 +332,8 @@ one of these plugins added by a `pytest_collection_modifyitems` hook hands the s
 (no last-failed store, no manifest store, no compiled assertion rewrites), the `cache` fixture
 and `config.cache` do not exist, and `--lf`/`--ff` hand the session to pytest, which rejects
 them. `PYTHONDONTWRITEBYTECODE` also stops rustest writing compiled rewrites. The `cache_dir`
-ini key is where rustest keeps its cache, as pytest does; without it, `.rustest_cache`.
+ini key (or `-o cache_dir=PATH`) is where rustest keeps its cache, as pytest does; without
+it, `.rustest_cache`.
 
 ### Parallel workers look like pytest-xdist's
 

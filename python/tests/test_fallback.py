@@ -1545,3 +1545,19 @@ def test_a_pool_of_two_or_more_has_xdist_worker_identity(tmp_path: Path, workers
         "PYTEST_XDIST_WORKER_COUNT": "2",
         "PYTEST_XDIST_TESTRUNUID": one[1],
     }
+
+
+def test_o_cache_dir_moves_every_cache_out_of_the_tree(tmp_path: Path):
+    """``-o cache_dir=PATH``, as pytest takes it: last-failed, the duration record and the
+    compiled rewrites all go there, and the tree gets no ``.rustest_cache``."""
+    tree = make_tree(tmp_path, "ocache", {"test_a.py": "def test_a():\n    assert 0\n"})
+    elsewhere = tmp_path / "elsewhere"
+
+    result = run(
+        [sys.executable, "-m", "rustest", "-o", f"cache_dir={elsewhere}"], tree, clean_env()
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (elsewhere / "v" / "cache" / "lastfailed").is_file()
+    assert (elsewhere / "v" / "rustest" / "durations").is_file()
+    assert not (tree / ".rustest_cache").exists()

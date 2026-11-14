@@ -15,7 +15,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .core import NeedsPytest, terminal_columns, collect_only, run
 
@@ -772,7 +772,7 @@ def _config_for_addopts(raw: list[str], parser: _Parser) -> "dict[str, Any]":
 #: and would silently ignore anything set here. Accepting ``-o python_files=...`` and doing
 #: nothing with it is precisely the class of silent no-op this project refuses, so an
 #: unsupported key is a **usage error (exit 4)** naming what is supported.
-OVERRIDABLE_INI_KEYS: frozenset[str] = frozenset({"addopts"})
+OVERRIDABLE_INI_KEYS: frozenset[str] = frozenset({"addopts", "cache_dir"})
 
 
 def _extract_ini_overrides(raw: list[str]) -> "tuple[list[str], dict[str, str], list[str]]":
@@ -1059,6 +1059,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         resolved = _config_for_addopts(raw, parser)
     except _ArgError as exc:
         return _rejected(parser, exc, raw, user_argv)
+    if "cache_dir" in ini_overrides:
+        parser.cache_dir_set = True  # the user's own `-o` reaches pytest on a hand-off
     if "addopts" in ini_overrides:
         # `shlex.split` for the same reason the engine's `getini_args` does shell-like
         # splitting: `addopts` is one ini STRING, and `-k "not slow"` has to survive as two
@@ -1266,6 +1268,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # every `testpaths` project.
     paths = [] if args.paths is parser.get_default("paths") else list(args.paths)
     args.hook_context = _hook_context(args, user_argv, resolved, raw, blocked_plugins)
+    if "cache_dir" in ini_overrides:
+        # The engine resolves it against the rootdir, as pytest's `Cache.for_config` does.
+        args.hook_context["cache_dir"] = ini_overrides["cache_dir"]
+        cast("dict[str, object]", args.hook_context["ini"])["cache_dir"] = ini_overrides[
+            "cache_dir"
+        ]
     args.hook_context["unknown_args"] = unknown_args
     args.conftest_args = conftest_args
 

@@ -38,7 +38,7 @@
 //!   attribute one file's tests to another);
 //! * EOF mid-protocol names the file that was in flight and surfaces the worker's stderr.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -621,6 +621,9 @@ pub(crate) struct Dispatch {
     /// Per worker, in walk order: `(target index, path)`.  The target index is what puts
     /// the manifest back into walk order however the pool interleaves.
     pub(crate) assignments: Vec<Vec<(usize, PathBuf)>>,
+    /// Per target: its expected cost in microseconds ([`file_weights`]), what [`route`] packs
+    /// by and what an idle worker reads to choose whom to take a file from.
+    pub(crate) weights: Vec<u64>,
     /// Per target: the file was named as an argument (a path or a node id), pytest's
     /// `Session.isinitpath`. `--lf` never filters such a file's tests at collection.
     pub(crate) initpath: Vec<bool>,
@@ -648,7 +651,7 @@ impl Dispatch {
         } else {
             workers.clamp(1, dynamic.len())
         };
-        self.assignments = route(&self.targets, &dynamic, pool_size);
+        self.assignments = route(&self.targets, &dynamic, pool_size, &self.weights);
     }
 
     /// The targets of node-id arguments (`test_m.py::test_a`), in argument order.
@@ -728,7 +731,18 @@ pub(crate) fn plan_with_options(
     // `os.getcwd()` — what pytest's `invocation_params.dir` always is — is absolute and
     // free of `.`/`..`; normalising here gives everything below the same guarantee.
     let invocation_dir = normpath(invocation_dir);
-    let config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
+    let mut config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
+    // `-o cache_dir=PATH`, which the CLI carries in `hook_context` (the ini's own value is
+    // already in `config`).
+    if let Some(cache_dir) = options
+        .hook_context
+        .as_ref()
+        .and_then(|context| context.get("cache_dir"))
+        .and_then(serde_json::Value::as_str)
+    {
+        config.cache_dir =
+            crate::engine::config::resolve_cache_dir(&config.rootdir, Some(cache_dir.to_string()));
+    }
     // `options.codeblocks` is the CLI's opinion, if it has one; `config.codeblocks` is
     // `[tool.rustest] codeblocks` or the pytest ini spelling; `false` is the built-in
     // default, pytest's own answer.  Resolved here — after the one config resolution this
@@ -800,7 +814,13 @@ pub(crate) fn plan_with_options(
 
     // The dispatch index recorded here is what puts the manifest back into walk order
     // afterwards, whichever tier produced each file's tests.
-    let assignments = route(&targets, &dynamic, pool_size);
+    let durations = if crate::engine::cache::cache_provider_off(options.hook_context.as_ref()) {
+        BTreeMap::new()
+    } else {
+        crate::engine::cache::read_durations(&config.cache_dir)
+    };
+    let weights = file_weights(&targets, &config.rootdir, &durations);
+    let assignments = route(&targets, &dynamic, pool_size, &weights);
 
     // Over `targets` rather than the dynamic subset, so the vector stays indexed by target
     // like every other per-file vector here.
@@ -857,6 +877,7 @@ pub(crate) fn plan_with_options(
         targets,
         assert_keys,
         assignments,
+        weights,
         initpath,
         late_conftests,
         init,
@@ -2081,6 +2102,61 @@ fn worker_for(path: &Path, workers: usize) -> usize {
 /// genuine outliers (jsonschema's 93.8%-of-tests mega-file) where it should.
 const FILE_IMPORT_WEIGHT: u64 = 8 * 1024;
 
+/// The module import a file costs a worker beyond its tests, in microseconds: the Phase 4b
+/// profile's ~40 ms per file (see [`FILE_IMPORT_WEIGHT`]).
+const FILE_IMPORT_US: u64 = 40_000;
+
+/// Each target's expected cost in microseconds. A file the previous runs recorded
+/// (`cache::read_durations`) weighs its tests' measured time plus one import; a file with no
+/// record weighs its size plus [`FILE_IMPORT_WEIGHT`], scaled by what the recorded files cost
+/// per such byte (unscaled when nothing is recorded, and then only the ratios matter).
+/// Deterministic given the same record and tree. Saturating throughout: a record is
+/// user-editable.
+pub(crate) fn file_weights(
+    targets: &[PathBuf],
+    rootdir: &Path,
+    durations: &BTreeMap<String, u64>,
+) -> Vec<u64> {
+    let mut per_file: HashMap<&str, u64> = HashMap::new();
+    for (id, micros) in durations {
+        let total = per_file
+            .entry(crate::engine::cache::file_of(id))
+            .or_default();
+        *total = total.saturating_add(*micros);
+    }
+    let sizes: Vec<u64> = targets
+        .iter()
+        .map(|path| std::fs::metadata(path).map_or(0, |meta| meta.len()) + FILE_IMPORT_WEIGHT)
+        .collect();
+    let measured: Vec<Option<u64>> = targets
+        .iter()
+        .map(|path| {
+            let key = to_posix(path.strip_prefix(rootdir).unwrap_or(path));
+            per_file
+                .get(key.as_str())
+                .map(|micros| micros.saturating_add(FILE_IMPORT_US))
+        })
+        .collect();
+    let (spent, bytes) = measured
+        .iter()
+        .zip(&sizes)
+        .filter_map(|(cost, size)| cost.map(|cost| (cost, *size)))
+        .fold((0u64, 0u64), |(us, by), (cost, size)| {
+            (us.saturating_add(cost), by.saturating_add(size))
+        });
+    measured
+        .iter()
+        .zip(&sizes)
+        .map(|(cost, size)| {
+            cost.unwrap_or_else(|| {
+                size.saturating_mul(spent)
+                    .checked_div(bytes)
+                    .unwrap_or(*size)
+            })
+        })
+        .collect()
+}
+
 /// Assign every dynamic file to a worker, balancing the pool by estimated cost.
 ///
 /// **Longest-processing-time-first bin packing**, which is the standard 4/3-approximation
@@ -2095,17 +2171,22 @@ const FILE_IMPORT_WEIGHT: u64 = 8 * 1024;
 /// outright so the group is always entirely dynamic — so a group is indivisible here and is
 /// weighed as the sum of its members.
 ///
-/// **The weight is file size plus [`FILE_IMPORT_WEIGHT`] per file.**  Size is the only
-/// signal available at plan time: a Tier D file's test count is unknown until a worker
-/// imports it, which is the very work being scheduled.  It is a proxy, not a measurement,
-/// and it is a good one for the failure this fixes — the pathological case is always one
-/// enormous file, and enormous files are large.
+/// **The weight is [`file_weights`]'**: the previous run's measured time when there is one,
+/// file size plus [`FILE_IMPORT_WEIGHT`] otherwise. Size was the only signal before there
+/// was a record, and it was wrong where it mattered most: Pillow's slowest files are not its
+/// largest, and one worker drew 26 s of a 45 s suite.
 ///
-/// **Deterministic**, and deliberately so: the same tree must produce the same plan on
-/// every run or a `-n 4` reproduction of a routing bug is not a reproduction.  Ties in
+/// **Deterministic**, and deliberately so: the same tree and the same record produce the
+/// same plan, or a `-n 4` reproduction of a routing bug is not a reproduction (the record
+/// moves with every run's timings: pass the same one, or `-p no:cacheprovider`).  Ties in
 /// weight break on [`worker_for`]'s stem hash and then on the stem itself, neither of which
 /// depends on walk order or filesystem timing.
-fn route(targets: &[PathBuf], dynamic: &[usize], pool_size: usize) -> Vec<Vec<(usize, PathBuf)>> {
+fn route(
+    targets: &[PathBuf],
+    dynamic: &[usize],
+    pool_size: usize,
+    weights: &[u64],
+) -> Vec<Vec<(usize, PathBuf)>> {
     let mut assignments: Vec<Vec<(usize, PathBuf)>> = vec![Vec::new(); pool_size];
     if pool_size == 0 {
         return assignments;
@@ -2118,12 +2199,12 @@ fn route(targets: &[PathBuf], dynamic: &[usize], pool_size: usize) -> Vec<Vec<(u
     for index in dynamic {
         let path = &targets[*index];
         let stem = crate::engine::file_stem_lossy(path);
-        let weight = std::fs::metadata(path).map_or(0, |meta| meta.len()) + FILE_IMPORT_WEIGHT;
+        let weight = weights[*index];
         let entry = groups.entry(stem.clone()).or_insert_with(|| {
             order.push(stem);
             (0, Vec::new())
         });
-        entry.0 += weight;
+        entry.0 = entry.0.saturating_add(weight);
         entry.1.push(*index);
     }
 
@@ -2148,7 +2229,7 @@ fn route(targets: &[PathBuf], dynamic: &[usize], pool_size: usize) -> Vec<Vec<(u
         let worker = (0..pool_size)
             .min_by_key(|index| load[*index])
             .unwrap_or_default();
-        load[worker] += weight;
+        load[worker] = load[worker].saturating_add(*weight);
         for member in members {
             assignments[worker].push((*member, targets[*member].clone()));
         }
@@ -4226,6 +4307,103 @@ assert True
                     .collect()
             })
             .collect()
+    }
+
+    /// **A recorded duration outweighs the byte heuristic.** Four files of one size: by size
+    /// alone two workers get two each; with the previous run's record saying `test_a` took
+    /// ten seconds and the rest a tenth, `test_a` gets a worker to itself. Under
+    /// `-p no:cacheprovider` the record is not read, and a corrupt one is no record.
+    #[test]
+    fn routing_follows_the_recorded_durations() {
+        let body = module("x");
+        let files = [
+            ("test_a.py", body.as_str()),
+            ("test_b.py", body.as_str()),
+            ("test_c.py", body.as_str()),
+            ("test_d.py", body.as_str()),
+        ];
+        let plan = |tmp: &TempDir, hook_context: Option<serde_json::Value>| {
+            let dispatch = plan_with_options(
+                tmp.path(),
+                &[],
+                2,
+                &CollectOptions {
+                    tier: TierMode::DynamicOnly,
+                    cache: CacheMode::Off,
+                    hook_context,
+                    ..CollectOptions::default()
+                },
+            )
+            .unwrap();
+            let mut stems: Vec<Vec<String>> = dispatch
+                .assignments
+                .iter()
+                .map(|files| {
+                    files
+                        .iter()
+                        .map(|(_, path)| path.file_stem().unwrap().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .collect();
+            stems.sort();
+            stems
+        };
+        let by_size = |stems: &[Vec<String>]| stems.iter().all(|files| files.len() == 2);
+        let tmp = tree(&files);
+        assert!(by_size(&plan(&tmp, None)));
+
+        let cache = tmp.path().join(crate::engine::cache::CACHE_DIR);
+        crate::engine::cache::record_durations(
+            &cache,
+            [
+                ("test_a.py::test_x".to_string(), 10.0),
+                ("test_b.py::test_x".to_string(), 0.1),
+                ("test_c.py::test_x".to_string(), 0.1),
+                ("test_d.py::test_x".to_string(), 0.1),
+            ],
+            true,
+        );
+        assert_eq!(
+            plan(&tmp, None),
+            vec![
+                vec!["test_a".to_string()],
+                vec![
+                    "test_b".to_string(),
+                    "test_c".to_string(),
+                    "test_d".to_string()
+                ],
+            ]
+        );
+        let no_cache = serde_json::json!({"blocked_plugins": ["cacheprovider"]});
+        assert!(by_size(&plan(&tmp, Some(no_cache))));
+
+        std::fs::write(
+            cache.join("v").join("rustest").join("durations"),
+            "{not json",
+        )
+        .unwrap();
+        assert!(by_size(&plan(&tmp, None)));
+    }
+
+    /// A complete run replaces its files' entries (a deleted test leaves the record); a
+    /// partial one only overwrites what it ran. Sub-millisecond tests keep their weight.
+    #[test]
+    fn the_duration_record_is_bounded_and_keeps_microseconds() {
+        let tmp = TempDir::new().unwrap();
+        let record = |ran: &[(&str, f64)], complete: bool| {
+            crate::engine::cache::record_durations(
+                tmp.path(),
+                ran.iter().map(|(id, s)| ((*id).to_string(), *s)),
+                complete,
+            );
+            crate::engine::cache::read_durations(tmp.path())
+        };
+        record(&[("a.py::gone", 1.0), ("a.py::kept", 0.0004)], true);
+        let after = record(&[("a.py::kept", 0.0004), ("b.py::t", 1.0)], true);
+        assert_eq!(after.keys().collect::<Vec<_>>(), ["a.py::kept", "b.py::t"]);
+        assert_eq!(after["a.py::kept"], 400);
+        let partial = record(&[("c.py::t", 2.0)], false);
+        assert_eq!(partial.len(), 3);
     }
 
     /// **No worker gets nothing while another gets two.**  This is the shape the stem hash

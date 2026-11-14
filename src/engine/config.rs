@@ -976,7 +976,7 @@ fn getini_paths(
 /// `_pytest/cacheprovider.py::Cache.for_config` /
 /// `resolve_from_str`: `rootpath / expanduser(expandvars(cache_dir))` (an absolute value
 /// stays absolute), and rustest's own `.rustest_cache` when the ini says nothing.
-fn resolve_cache_dir(rootdir: &Path, ini: Option<String>) -> PathBuf {
+pub(crate) fn resolve_cache_dir(rootdir: &Path, ini: Option<String>) -> PathBuf {
     let Some(raw) = ini.filter(|value| !value.is_empty()) else {
         return rootdir.join(crate::engine::cache::CACHE_DIR);
     };

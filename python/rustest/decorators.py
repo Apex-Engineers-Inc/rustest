@@ -779,9 +779,13 @@ class AsyncioMarkDecorator(MarkDecorator):
         marked = super().__call__(func)
         if not inspect.isclass(marked):
             return marked
-        for name, method in inspect.getmembers(marked, predicate=inspect.iscoroutinefunction):
-            marked_method = MarkDecorator(self.name, self.args, self.kwargs)(method)
-            setattr(marked, name, marked_method)
+        # The class's own members, marked in place: `getmembers` would hand back the function
+        # inside a `staticmethod`/`classmethod` (or a bound method), and setting that back on
+        # the class turned a static async helper into a method that receives `self`.
+        for member in list(vars(marked).values()):
+            function = getattr(member, "__func__", member)
+            if inspect.iscoroutinefunction(function):
+                _ = MarkDecorator(self.name, self.args, self.kwargs)(function)
         return cast(TFunc, marked)
 
 
