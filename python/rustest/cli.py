@@ -696,6 +696,24 @@ def _watch_main(args: argparse.Namespace, paths: list[str], resolved: dict[str, 
                 pass
 
 
+def _toml_table(path: Path) -> tuple[dict[str, object], bool]:
+    """The pytest config of a TOML file, as its native values, and whether it is pytest 9's
+    TOML mode (``pytest.toml`` / ``.pytest.toml``'s ``[pytest]``, or a ``[tool.pytest]``
+    table with keys besides ``ini_options``, under pytest 9 or later)."""
+    import tomllib
+
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    pytest9 = os.environ.get("RUSTEST_PYTEST9") == "1"
+    if pytest9 and path.name in ("pytest.toml", ".pytest.toml"):
+        return dict(data.get("pytest", {})), True
+    tool = dict(data.get("tool", {}).get("pytest", {}))
+    native = {key: value for key, value in tool.items() if key != "ini_options"}
+    if pytest9 and native:
+        return native, True
+    options = tool.get("ini_options", {})
+    return (dict(options) if isinstance(options, dict) else {}), False  # pyright: ignore[reportUnknownArgumentType]
+
+
 def _raw_ini(config_file: object) -> dict[str, object]:
     """The ``pytest`` section of the ini file rustest found, as strings: what a conftest's
     ``addini`` keys are read from.  Empty when there is none, or it cannot be read."""
@@ -705,11 +723,8 @@ def _raw_ini(config_file: object) -> dict[str, object]:
         return {}
     path = Path(str(config_file))
     try:
-        if path.name == "pyproject.toml":
-            import tomllib
-
-            table = tomllib.loads(path.read_text(encoding="utf-8"))
-            options = table.get("tool", {}).get("pytest", {}).get("ini_options", {})
+        if path.suffix == ".toml":
+            options, _ = _toml_table(path)
             # `findpaths.load_config_dict_from_file`'s `make_scalar`: a list stays a list
             return {
                 str(key): value if isinstance(value, list) else str(value)
@@ -769,7 +784,7 @@ def _hook_context(
         options[dest] = value
         for flag in flags:
             options[flag] = value
-    from ._fallback import installed_plugins, pytest_major
+    from ._fallback import installed_plugins
 
     ini = _raw_ini(resolved.get("config_file"))
 
@@ -788,12 +803,21 @@ def _hook_context(
         "workers_explicit": args.workers is not None,
         # pytest 9's strictness keys count only under pytest 9 (rustest emulates 8.4.2 without
         # one); looked up only when the ini carries one of them.
-        "pytest9": bool(_PYTEST9_KEYS & set(ini)) and (pytest_major() or 0) >= 9,
+        # ponytail: a copy of RUSTEST_PYTEST9, which `plan_with_options` could read itself; and
+        # the TOML file is parsed by `_raw_ini`, `_toml_mode` and `_toml_reasons` separately.
+        "pytest9": os.environ.get("RUSTEST_PYTEST9") == "1",
+        # pytest 9's TOML mode: a conftest's `addini` key read from it is pytest's (`_hookshim`)
+        "ini_mode": "toml" if _toml_mode(resolved.get("config_file")) else "ini",
     }
 
 
-#: The ini keys pytest 9 added whose meaning depends on the installed pytest.
-_PYTEST9_KEYS = frozenset({"strict", "strict_xfail", "strict_markers"})
+def _toml_mode(config_file: object) -> bool:
+    if not config_file or Path(str(config_file)).suffix != ".toml":
+        return False
+    try:
+        return _toml_table(Path(str(config_file)))[1]
+    except (OSError, ValueError):
+        return False
 
 
 def _last_failed_mode(args: argparse.Namespace) -> str:
@@ -1078,6 +1102,114 @@ def _default_workers(argv: Sequence[str], blocked: Sequence[str]) -> int | None:
     return _pool_size(None)
 
 
+#: The TOML type pytest 9.0.2 requires of every built-in key, in TOML mode (its
+#: `_parser._inidict`: `args` / `linelist` / `paths` -> a list of strings, `bool`, `string`;
+#: there is no int or float kind), plus pytest-asyncio's keys. pytest checks a key when it reads
+#: it, and reads most at configure for every session.
+_TOML_KEY_TYPES: dict[str, type] = {
+    **dict.fromkeys(
+        (
+            "addopts",
+            "doctest_optionflags",
+            "filterwarnings",
+            "markers",
+            "norecursedirs",
+            "python_classes",
+            "python_files",
+            "python_functions",
+            "pythonpath",
+            "required_plugins",
+            "testpaths",
+            "usefixtures",
+        ),
+        list,
+    ),
+    **dict.fromkeys(
+        (
+            "collect_imported_tests",
+            "consider_namespace_packages",
+            "disable_test_id_escaping_and_forfeit_all_rights_to_community_support",
+            "enable_assertion_pass_hook",
+            "faulthandler_exit_on_timeout",
+            "junit_log_passing_tests",
+            "log_cli",
+            "strict",
+            "strict_config",
+            "strict_markers",
+            "strict_parametrization_ids",
+            "strict_xfail",
+            "xfail_strict",
+        ),
+        bool,
+    ),
+    **dict.fromkeys(
+        (
+            "cache_dir",
+            "console_output_style",
+            "doctest_encoding",
+            "empty_parameter_set_mark",
+            "faulthandler_timeout",
+            "junit_duration_report",
+            "junit_family",
+            "junit_logging",
+            "junit_suite_name",
+            "log_auto_indent",
+            "log_cli_date_format",
+            "log_cli_format",
+            "log_cli_level",
+            "log_date_format",
+            "log_file",
+            "log_file_date_format",
+            "log_file_format",
+            "log_file_level",
+            "log_file_mode",
+            "log_format",
+            "log_level",
+            "minversion",
+            "tmp_path_retention_count",
+            "tmp_path_retention_policy",
+            "truncation_limit_chars",
+            "truncation_limit_lines",
+            "verbosity_assertions",
+            "verbosity_subtests",
+            "verbosity_test_cases",
+            "asyncio_mode",
+            "asyncio_default_fixture_loop_scope",
+            "asyncio_default_test_loop_scope",
+        ),
+        str,
+    ),
+}
+
+
+def _toml_reasons(config_file: object) -> list[str]:
+    """pytest 9's TOML mode refuses a value of the wrong TOML type (a string where a list is
+    expected, ``"true"`` for a bool), each at the point pytest reads it: the session is
+    pytest's, so its own error and exit status are the ones the user sees."""
+    if not config_file or Path(str(config_file)).suffix != ".toml":
+        return []
+    try:
+        options, toml_mode = _toml_table(Path(str(config_file)))
+    except (OSError, ValueError):
+        return []
+    if not toml_mode:
+        return []
+    reasons: list[str] = []
+    for key, expected in _TOML_KEY_TYPES.items():
+        value = options.get(key)
+        if value is None:
+            continue
+        wrong = not isinstance(value, expected) or (
+            expected is list and not all(isinstance(item, str) for item in value)  # pyright: ignore[reportUnknownVariableType, reportGeneralTypeIssues]
+        )
+        if wrong:
+            reasons.append(
+                f"the pytest 9 TOML config sets {key} to a {type(value).__name__}, where pytest"
+                + f" expects a {expected.__name__} (pytest reports it)"
+            )
+    return reasons
+
+
 def _retention_reasons(config_file: object) -> list[str]:
     """``tmp_path_retention_count`` / ``_policy`` other than pytest's defaults (3, ``all``):
     rustest keeps the defaults, so a project that changed them is pytest's."""
@@ -1100,6 +1232,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     # pytest reads its own `addopts`, so a handed-over session gets the user's argv as typed.
     user_argv = list(raw)
+    # Which pytest's config rules apply (pytest 9's `pytest.toml`, `[tool.pytest]`, strict
+    # keys): the engine's config resolution reads this (`config.rs::pytest9`).
+    from ._fallback import pytest_major
+
+    # ponytail: set process-wide, so workers and tests see a variable pytest never sets; an
+    # environment given to the Rust calls alone would keep it out of theirs.
+    os.environ["RUSTEST_PYTEST9"] = "1" if (pytest_major() or 0) >= 9 else "0"
 
     parser = build_parser()
     parser.fallback = "--no-pytest-fallback" not in raw
@@ -1305,6 +1444,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         + _autoloaded_plugins(blocked_plugins, resolved.get("config_file"))
         + _retention_reasons(resolved.get("config_file"))
+        # ponytail: under --no-pytest-fallback a wrongly typed TOML value is read leniently,
+        # without a note that pytest 9 would reject it.
+        + _toml_reasons(resolved.get("config_file"))
         if parser.fallback
         else []
     )

@@ -24,6 +24,23 @@ pub const CONFIG_NAMES: &[&str] = &[
     "setup.cfg",
 ];
 
+/// pytest 9's config file names, searched before [`CONFIG_NAMES`] in each directory
+/// (`findpaths.py::locate_config`), when [`pytest9`] says they are config at all.
+const PYTEST9_CONFIG_NAMES: &[&str] = &["pytest.toml", ".pytest.toml"];
+
+/// Whether the installed pytest is 9 or later, as the CLI found it (`RUSTEST_PYTEST9=1`,
+/// `cli.py`). pytest 9's config files and `[tool.pytest]` table count only then: under
+/// pytest 8 they are not config, and without the CLI rustest emulates 8.4.2.
+fn pytest9() -> bool {
+    std::env::var_os("RUSTEST_PYTEST9").is_some_and(|value| value == "1")
+}
+
+/// pytest 9's error for a `pyproject.toml` with both tables (`findpaths.py`).
+const BOTH_TOML_MODES: &str = "Cannot use both [tool.pytest] (native TOML types) and \
+    [tool.pytest.ini_options] (string-based INI format) simultaneously. Please use \
+    [tool.pytest] with native TOML types (recommended) or [tool.pytest.ini_options] for \
+    backwards compatibility.";
+
 /// Source: `_pytest/python.py::pytest_addoption` — `addini("python_files", type="args", default=["test_*.py", "*_test.py"])`.
 pub const DEFAULT_PYTHON_FILES: &[&str] = &["test_*.py", "*_test.py"];
 
@@ -802,8 +819,9 @@ fn load_config_dict_from_file(path: &Path) -> Result<Option<ConfigDict>, ConfigE
             }
             // '"pytest.ini" files are always the source of configuration, even if empty.'
             // Keyed on the exact file *name*, so a section-less ".pytest.ini" does NOT
-            // qualify and the search continues.
-            Ok((name == "pytest.ini").then(Vec::new))
+            // qualify and the search continues -- under pytest 8; pytest 9 keys it on
+            // `{"pytest.ini", ".pytest.ini"}` (`findpaths.py`).
+            Ok((name == "pytest.ini" || (name == ".pytest.ini" && pytest9())).then(Vec::new))
         }
         // "'.cfg' files are considered if they contain a [tool:pytest] section."
         "cfg" => {
@@ -821,6 +839,10 @@ fn load_config_dict_from_file(path: &Path) -> Result<Option<ConfigDict>, ConfigE
             Ok(None)
         }
         // "'.toml' files are considered if they contain a [tool.pytest.ini_options] table."
+        // pytest 9: also a `[tool.pytest]` table of native TOML values ("TOML mode"), and
+        // `pytest.toml` / `.pytest.toml` whose `[pytest]` table is the config. TOML-mode values
+        // are taken as INI mode sees them (`make_scalar`); a value of the wrong TOML type is
+        // pytest's to report, and the CLI hands such a session to pytest (`cli.py`).
         "toml" => {
             let text = read_file(path)?;
             let value: toml::Value =
@@ -829,6 +851,51 @@ fn load_config_dict_from_file(path: &Path) -> Result<Option<ConfigDict>, ConfigE
                         path: path.to_path_buf(),
                         message: e.to_string(),
                     })?;
+            let toml_mode = |table: &toml::map::Map<String, toml::Value>| -> ConfigDict {
+                table
+                    .iter()
+                    .filter(|(key, _)| *key != "ini_options")
+                    .map(|(key, v)| (key.clone(), toml_to_ini_value(v)))
+                    .collect()
+            };
+            if PYTEST9_CONFIG_NAMES.contains(&name) && pytest9() {
+                // "pytest.toml files are always the source of configuration, even if empty."
+                return Ok(Some(
+                    value
+                        .get("pytest")
+                        .and_then(toml::Value::as_table)
+                        .map(|table| {
+                            table
+                                .iter()
+                                .map(|(key, v)| (key.clone(), toml_to_ini_value(v)))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                ));
+            }
+            let tool_pytest = value
+                .get("tool")
+                .and_then(|t| t.get("pytest"))
+                .and_then(toml::Value::as_table);
+            if let Some(table) = tool_pytest.filter(|_| pytest9()) {
+                let native = toml_mode(table);
+                if !native.is_empty() {
+                    // `if toml_config and ini_config`: an empty `ini_options` is falsy.
+                    // ponytail: a non-table `ini_options` (`ini_options = 'x'`) is read as
+                    // empty here, where pytest 9 raises AttributeError (rc 1).
+                    let ini_options = table
+                        .get("ini_options")
+                        .and_then(toml::Value::as_table)
+                        .is_some_and(|options| !options.is_empty());
+                    if ini_options {
+                        return Err(ConfigError::Usage {
+                            path: path.to_path_buf(),
+                            message: format!("{}: {BOTH_TOML_MODES}", path.display()),
+                        });
+                    }
+                    return Ok(Some(native));
+                }
+            }
             let table = value
                 .get("tool")
                 .and_then(|t| t.get("pytest"))
@@ -1359,7 +1426,8 @@ fn locate_config(
     for arg in effective {
         let argpath = absolutepath(invocation_dir, arg);
         for base in argpath.ancestors() {
-            for config_name in CONFIG_NAMES {
+            let names = if pytest9() { PYTEST9_CONFIG_NAMES } else { &[] };
+            for config_name in names.iter().chain(CONFIG_NAMES) {
                 let p = base.join(config_name);
                 if !p.is_file() {
                     continue;
@@ -1886,6 +1954,87 @@ mod tests {
     }
 
     // -- ini value normalisation --------------------------------------------
+
+    /// Unsets `RUSTEST_PYTEST9` however a test ends, so no later test runs under pytest 9.
+    struct UnsetPytest9;
+
+    impl Drop for UnsetPytest9 {
+        fn drop(&mut self) {
+            std::env::remove_var("RUSTEST_PYTEST9");
+        }
+    }
+
+    /// pytest 9's TOML config, only with pytest 9 installed (`RUSTEST_PYTEST9`, which the
+    /// CLI sets): `pytest.toml` outranks `pytest.ini`, `[tool.pytest]` is TOML mode, and both
+    /// tables at once are a usage error -- unless `ini_options` is empty, which pytest 9 runs.
+    /// Under pytest 8 none of it is config.
+    #[test]
+    fn pytest_9_toml_config_counts_only_under_pytest_9() {
+        let _unset = UnsetPytest9;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pytest.toml",
+            "[pytest]\npython_classes = [\"FromToml\"]\n",
+        );
+        write(root, "pytest.ini", "[pytest]\npython_classes = FromIni\n");
+        let both = TempDir::new().unwrap();
+        write(
+            both.path(),
+            "pyproject.toml",
+            "[tool.pytest]\npython_classes = [\"Typed\"]\n\
+             [tool.pytest.ini_options]\npython_classes = \"Ini\"\n",
+        );
+        let empty = TempDir::new().unwrap();
+        write(
+            empty.path(),
+            "pyproject.toml",
+            "[tool.pytest]\npython_classes = [\"Typed\"]\n[tool.pytest.ini_options]\n",
+        );
+        let resolve = || {
+            resolve_config(root, &[root.to_path_buf()])
+                .unwrap()
+                .python_classes
+        };
+        let at = |dir: &TempDir| resolve_config(dir.path(), &[dir.path().to_path_buf()]);
+
+        std::env::remove_var("RUSTEST_PYTEST9");
+        assert_eq!(resolve(), vec!["FromIni".to_string()]);
+        assert!(at(&both).is_ok());
+
+        std::env::set_var("RUSTEST_PYTEST9", "1");
+        assert_eq!(resolve(), vec!["FromToml".to_string()]);
+        let refused = at(&both);
+        assert!(
+            matches!(refused, Err(ConfigError::Usage { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(
+            at(&empty).unwrap().python_classes,
+            vec!["Typed".to_string()]
+        );
+    }
+
+    /// pytest 9 also takes a section-less `.pytest.ini` as the config (pytest 8 walks on).
+    #[test]
+    fn a_sectionless_dot_pytest_ini_is_the_config_under_pytest_9() {
+        let _unset = UnsetPytest9;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write(root, ".pytest.ini", "");
+        write(root, "tox.ini", "[pytest]\npython_classes = FromTox\n");
+        let classes = || {
+            resolve_config(root, &[root.to_path_buf()])
+                .unwrap()
+                .python_classes
+        };
+
+        std::env::remove_var("RUSTEST_PYTEST9");
+        assert_eq!(classes(), vec!["FromTox".to_string()]);
+        std::env::set_var("RUSTEST_PYTEST9", "1");
+        assert_eq!(classes(), defaults_owned(DEFAULT_PYTHON_CLASSES));
+    }
 
     #[test]
     fn empty_ini_options_table_is_authoritative() {

@@ -1032,6 +1032,8 @@ class _State:
     #: ``hasattr``, ``getattr`` or attribute access): what it registers may differ between the
     #: workers and a controller, so the session needs one, or a single process.
     reads_workerinput: bool = False
+    #: pytest 9's TOML mode: its values are typed and checked against each declaration.
+    ini_toml: bool = False
 
     def violate(self, what: str) -> NoReturn:
         """Record a use the shim does not support and raise.  Outside a hook call it is a stale
@@ -1353,6 +1355,10 @@ class _Config(_Shim):
         kind, default = st.ini_decl[name]
         if name not in st.ini:
             return default
+        if st.ini_toml:
+            # ponytail: pytest 9 checks a TOML-mode value's type against the declaration;
+            # until the shim does, a conftest key read from one is pytest's to answer.
+            st.violate(f"asks config.getini({name!r}) of a pytest 9 native TOML config")
         return _coerce_ini(st, name, kind, st.ini[name])
 
     def addinivalue_line(self, name: str, line: str) -> None:
@@ -1992,6 +1998,7 @@ class HookRunner:
         *,
         rootpath: str | Path,
         ini: Mapping[str, object] | None = None,
+        ini_toml: bool = False,
         builtin_options: Mapping[str, object] | None = None,
         invocation_dir: str | Path | None = None,
         plugins: Iterable[str] = (),
@@ -2015,6 +2022,7 @@ class HookRunner:
             None if invocation_dir is None else Path(invocation_dir),
             _PYTEST_CORE_FLAGS.union(*(_PLUGIN_FLAGS.get(name, ()) for name in plugins)),
         )
+        self._st.ini_toml = ini_toml
         # each plugin's `pytest_configure` adds its line, last-registered first (pluggy's LIFO)
         dists = plugin_dists or {}
         plugin_lines = [line for n in plugins for line in plugin_marker_lines(n, dists.get(n, ""))]

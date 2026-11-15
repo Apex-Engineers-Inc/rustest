@@ -66,7 +66,17 @@ _TICK: Final = 0.05
 _BACKOFF: Final = 3
 
 _PRUNED: Final = frozenset({"__pycache__", "node_modules"})
-_CONFIG_FILES: Final = frozenset({"pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"})
+_CONFIG_FILES: Final = frozenset(
+    {
+        "pytest.toml",
+        ".pytest.toml",
+        "pytest.ini",
+        ".pytest.ini",
+        "pyproject.toml",
+        "setup.cfg",
+        "tox.ini",
+    }
+)
 
 Snapshot = dict[str, tuple[int, int]]
 

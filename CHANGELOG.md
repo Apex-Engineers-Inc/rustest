@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **pytest 9's native TOML configuration, when pytest 9 or later is installed.** `pytest.toml`
+  and `.pytest.toml` are found first in each directory, and a `[tool.pytest]` table of typed
+  values in `pyproject.toml` is read; both tables at once is pytest 9's usage error. A value of
+  the wrong type, or a conftest's own ini key read from such a config, hands the session to
+  pytest. Before, a pytest-9-native project's config was not read at all.
 - **Under the xdist model, test files that use `pytester` start under pytest while rustest
   collects the rest**, instead of after it, so that run no longer adds its length to the
   session's. When collection hands the whole session to pytest instead, the early run is stopped
@@ -253,6 +258,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known gaps
 
+- **pytest 9's "Unknown config option" warning** for an unknown key in a native TOML config is
+  not printed; the run is otherwise the same.
 - **Selecting a class that contains no tests exits 4** (`ERROR: not found`) where pytest exits 5
   (no tests collected). Loud, and never runs the wrong tests.
 - **pytest 9's `strict_config` and `strict_parametrization_ids`**, set directly or through

@@ -158,6 +158,19 @@ def database():
     return connect(os.environ.get("DB_URL", "sqlite:///:memory:"))
 ```
 
+### Configuration files
+
+rustest finds its configuration where pytest does, in pytest's order: `pytest.ini`,
+`.pytest.ini`, `pyproject.toml` (`[tool.pytest.ini_options]`), `tox.ini`, `setup.cfg`. With
+pytest 9 or later installed it also reads pytest 9's native TOML config: `pytest.toml` and
+`.pytest.toml` (their `[pytest]` table), searched first in each directory, and a `[tool.pytest]`
+table of typed values in `pyproject.toml`; a section-less `.pytest.ini` then counts as
+configuration, as `pytest.ini` always does. Both `pyproject.toml` tables at once, the
+`ini_options` one non-empty, is the same usage error as under pytest 9 (exit 4). A value of the
+wrong type there (a string where pytest 9 wants a list or a bool) is pytest's to report, so that
+session goes to pytest; so does one whose conftest reads its own `addini` key from a native TOML
+config. With pytest 8 those files and that table are not configuration, as for pytest 8.
+
 ## Not supported
 
 **pytest plugins.** By design. See the

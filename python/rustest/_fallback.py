@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import threading
+import re
 import sys
+import threading
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final
 
@@ -182,6 +183,15 @@ def pytest_major() -> int | None:
                 head = name[len("pytest-") :].split(".")[0]
                 if head.isdigit():  # not `pytest-asyncio-1.3.0.dist-info`
                     return int(head)
+        # The package with no dist-info beside it (a source checkout, an editable install):
+        # its generated `_version.py` says, as text (`version = '9.0.2'`).
+        try:
+            with open(os.path.join(entry or ".", "_pytest", "_version.py"), encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            return None
+        match = re.search(r"""\bversion\s*=\s*['"](\d+)\.""", text)
+        return int(match.group(1)) if match else None
     return None
 
 

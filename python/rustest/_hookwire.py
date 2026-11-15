@@ -189,6 +189,7 @@ def start(
     runner = HookRunner(
         rootpath=rootdir,
         ini=ini,
+        ini_toml=context.get("ini_mode") == "toml",
         builtin_options=options,
         invocation_dir=invocation_dir,
         plugins=plugins,
