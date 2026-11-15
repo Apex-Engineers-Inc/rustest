@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Under the xdist model, test files that use `pytester` start under pytest while rustest
+  collects the rest**, instead of after it, so that run no longer adds its length to the
+  session's. When collection hands the whole session to pytest instead, the early run is stopped
+  with every process it started, and a stderr line says why; if rustest is killed, the early run
+  ends itself.
 - **Under `-n`, a long test file's tests can run in more than one worker**, as they can under
   `pytest -n`, here in contiguous slices, one per worker at most, each its own module instance.
   A file is split when the previous run's recorded call times say it alone exceeds its share of

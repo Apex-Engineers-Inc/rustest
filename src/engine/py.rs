@@ -425,7 +425,34 @@ pub fn py_run(
     let hand_raised: Arc<std::sync::Mutex<Option<PyErr>>> = Arc::default();
     let hand_files = on_handoff.map(|callback| {
         let hand_raised = Arc::clone(&hand_raised);
-        HandFiles(Arc::new(
+        let interrupt_raised = Arc::clone(&hand_raised);
+        let stop_raised = Arc::clone(&hand_raised);
+        let stop = Arc::new(move || {
+            Python::attach(|py| {
+                // A pending Ctrl-C would raise at `stop_handed`'s first instruction and kill
+                // nothing: take it first, and keep it for the caller to re-raise.
+                if let Err(err) = py.check_signals() {
+                    if let Ok(mut slot) = stop_raised.lock() {
+                        slot.get_or_insert(err);
+                    }
+                }
+                let _ = py
+                    .import("rustest._fallback")
+                    .and_then(|module| module.call_method0("stop_handed"));
+            });
+        });
+        let interrupted = Arc::new(move || {
+            Python::attach(|py| match py.check_signals() {
+                Ok(()) => false,
+                Err(err) => {
+                    if let Ok(mut slot) = interrupt_raised.lock() {
+                        slot.get_or_insert(err);
+                    }
+                    true
+                }
+            })
+        });
+        let run = Arc::new(
             move |files: &[String],
                   cache_dir: &str,
                   worker: Option<&(String, usize, String, bool)>| {
@@ -444,7 +471,12 @@ pub fn py_run(
                     }
                 })
             },
-        ))
+        );
+        HandFiles {
+            run,
+            stop,
+            interrupted,
+        }
     });
     let options = RunOptions {
         fail_fast,

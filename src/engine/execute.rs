@@ -163,8 +163,90 @@ pub struct RunOptions {
 /// The CLI's runner for the files only pytest can run (`_fallback.run_files`): given their
 /// absolute paths and the cache directory, it runs them under one pytest subprocess and answers
 /// with `rustest._pytest_report`'s report plus `exit_code`, or `None` when it could not.
+/// `stop` ends that subprocess and everything it started, from another thread
+/// (`_fallback.stop_handed`); `interrupted` says whether the user pressed Ctrl-C (and keeps
+/// the interrupt for the caller to re-raise).
 #[derive(Clone)]
-pub struct HandFiles(pub Arc<HandFilesFn>);
+pub struct HandFiles {
+    pub run: Arc<HandFilesFn>,
+    pub stop: Arc<dyn Fn() + Send + Sync>,
+    pub interrupted: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+/// The handed pytest started before the pool boots (B-lite), running beside native collection
+/// on its own thread; the barrier waits for it ([`HandedEarly::wait`]), or it is stopped when
+/// the session goes another way ([`HandedEarly::stop`], or dropped).
+struct HandedEarly {
+    /// Rootdir-relative posix paths, sorted: what the barrier checks its own list against.
+    relative: Vec<String>,
+    thread: Option<std::thread::JoinHandle<Option<String>>>,
+    hand: HandFiles,
+}
+
+impl HandedEarly {
+    fn start(
+        hand: &HandFiles,
+        relative: Vec<String>,
+        files: Vec<String>,
+        cache_dir: String,
+        worker: Option<(String, usize, String, bool)>,
+    ) -> Self {
+        let run = Arc::clone(&hand.run);
+        let thread = std::thread::spawn(move || run(&files, &cache_dir, worker.as_ref()));
+        HandedEarly {
+            relative,
+            thread: Some(thread),
+            hand: hand.clone(),
+        }
+    }
+
+    /// Its report, once it has one; `None` (the child stopped) when the user pressed Ctrl-C
+    /// while waiting, which the caller re-raises.
+    fn wait(mut self) -> Option<String> {
+        let thread = self.thread.take()?;
+        while !thread.is_finished() {
+            if (self.hand.interrupted)() {
+                (self.hand.stop)();
+                let _ = thread.join();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let answer = thread.join().ok().flatten();
+        // A Ctrl-C that came while it was already done (its child never saw it) still ends
+        // the run here.
+        if (self.hand.interrupted)() {
+            return None;
+        }
+        answer
+    }
+
+    /// End it, with one line on stderr saying why when there is a reason to give (`why`).
+    fn stop(mut self, why: Option<&str>) {
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        if let Some(why) = why {
+            if thread.is_finished() {
+                eprintln!("rustest: the pytester run is discarded: {why}");
+            } else {
+                eprintln!("rustest: stopped the pytester run: {why}");
+            }
+        }
+        (self.hand.stop)();
+        let _ = thread.join();
+    }
+}
+
+impl Drop for HandedEarly {
+    /// An error or an abandoned attempt: end it without a word.
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            (self.hand.stop)();
+            let _ = thread.join();
+        }
+    }
+}
 
 /// `(absolute paths, cache directory, xdist identity) -> report JSON`. The identity
 /// `(worker id, worker count, testrun uid, records)` makes the handed process one more xdist
@@ -1043,6 +1125,7 @@ fn run_with_launcher(
     let mut workers = workers;
     let mut notes = Vec::new();
     loop {
+        let mut handed_early = None;
         let attempt = run_attempt(
             invocation_dir,
             args,
@@ -1056,7 +1139,19 @@ fn run_with_launcher(
             started,
             known.clone(),
             &mut notes,
+            &mut handed_early,
         )?;
+        // Still running: the barrier never took it, so the session went another way.
+        if let Some(handed) = handed_early.take() {
+            let why = match &attempt {
+                Attempt::Report(report) if !report.pytest_fallback.is_empty() => Some(format!(
+                    "the session goes to pytest: {}",
+                    report.pytest_fallback.join("; ")
+                )),
+                _ => None,
+            };
+            handed.stop(why.as_deref());
+        }
         match attempt {
             Attempt::Report(mut report) => {
                 report.notes.append(&mut notes);
@@ -1151,15 +1246,17 @@ impl SessionEnd {
     }
 }
 
-/// A target file whose text has both `pytest_plugins` and `pytester`: the cheap scan behind
-/// B-lite's early whole-session decision. A false hit costs a hand-off a collected run would
-/// have made anyway only when a whole-session guard also holds.
-fn names_pytester(dispatch: &Dispatch) -> bool {
+/// The target files whose text has both `pytest_plugins` and `pytester`, by index: the cheap
+/// scan behind B-lite's early whole-session decision and its early start. A false hit costs a
+/// hand-off a collected run would have made anyway only when a whole-session guard also holds.
+fn pytester_targets(dispatch: &Dispatch) -> Vec<usize> {
     let has = |source: &[u8], needle: &[u8]| source.windows(needle.len()).any(|w| w == needle);
-    dispatch.targets.iter().any(|path| {
-        std::fs::read(path)
-            .is_ok_and(|source| has(&source, b"pytest_plugins") && has(&source, b"pytester"))
-    })
+    (0..dispatch.targets.len())
+        .filter(|&index| {
+            std::fs::read(&dispatch.targets[index])
+                .is_ok_and(|source| has(&source, b"pytest_plugins") && has(&source, b"pytester"))
+        })
+        .collect()
 }
 
 /// A run that stops here and goes to pytest, with `reasons`.
@@ -1216,6 +1313,7 @@ fn run_attempt(
     started: Instant,
     known: Option<Option<LastFailedSkip>>,
     notes: &mut Vec<String>,
+    handed_early: &mut Option<HandedEarly>,
 ) -> Result<Attempt, RunError> {
     let mut dispatch = plan(
         invocation_dir,
@@ -1314,7 +1412,12 @@ fn run_attempt(
     // text names `pytester` (`pytest_plugins`) with `-x`/`--maxfail`, a CLI guard (no runner),
     // or -- once worker 0 reports its hooks -- a controller or session-end hook. The session is
     // pytest's then, decided without collecting it.
-    let pytester_files = options.pytest_fallback && names_pytester(&dispatch);
+    let scanned = if options.pytest_fallback {
+        pytester_targets(&dispatch)
+    } else {
+        Vec::new()
+    };
+    let pytester_files = !scanned.is_empty();
     // Under the xdist model a pool of two or more has a controller to replay the handed
     // process's reports into, and `-s` loses a worker's output as xdist's own does.
     let as_worker = xdist_model && dispatch.assignments.len() > 1;
@@ -1332,6 +1435,42 @@ fn run_attempt(
             vec![PYTESTER_WHOLE.to_string()],
             started,
         ));
+    }
+    // Start the handed pytest now, beside pool boot and collection: the barrier waits for it
+    // as it waited for the synchronous run, and every guard still decides there. Not when the
+    // initial conftests look like they hand the session over at worker 0's `ready` anyway.
+    // Nor when a node id points inside one of the files (only pytest selects inside them).
+    // Nor outside the xdist model: there a late conftest's session-end hook retries the run
+    // on one worker (`Attempt::Serial`), whose barrier then hands the session to pytest, so an
+    // early run would start once per attempt and again under pytest. There the handed run
+    // starts at the barrier, as it always did.
+    let named = dispatch.named_targets();
+    if let Some(hand) = options.hand_files.as_ref().filter(|_| {
+        pytester_files
+            && xdist_model
+            && (as_worker || !initial_conftests_may_need_one_process(&dispatch))
+            && !scanned.iter().any(|target| named.contains(target))
+    }) {
+        let targets = dispatch.relative_targets();
+        let mut relative: Vec<String> = scanned
+            .iter()
+            .map(|&index| targets[index].clone())
+            .collect();
+        relative.sort();
+        let files = relative
+            .iter()
+            .map(|path| {
+                dispatch
+                    .rootdir_path
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        let cache_dir = dispatch.cache_dir.to_string_lossy().into_owned();
+        // Its reports are recorded whether or not a controller turns out to replay them.
+        let worker = (dispatch.extra_workers > 0).then(|| handed_worker(&dispatch, true));
+        *handed_early = Some(HandedEarly::start(hand, relative, files, cache_dir, worker));
     }
     let early = |launcher: &WorkerLauncher| {
         (pytester_files
@@ -1622,6 +1761,17 @@ fn run_attempt(
             }
         }
 
+        // No pytester file after all (the text scan named one that collected natively): the run
+        // started early would execute it beside the native one.
+        if matches!(&staged, Ok(staged) if staged.pytester.is_empty() && staged.handoff.is_empty())
+        {
+            if let Some(early) = handed_early.take() {
+                // Said only when it matters: other collection errors end the session there.
+                let errors = matches!(&staged, Ok(staged) if !staged.errors.is_empty());
+                early.stop(errors.then_some("collection found no file that uses pytester"));
+            }
+        }
+
         // A selected test that uses a plugin rustest runs only while nothing uses it.
         if let Ok(staged) = &mut staged {
             if options.pytest_fallback && staged.handoff.is_empty() {
@@ -1701,11 +1851,32 @@ fn run_attempt(
                 let cache_dir = dispatch.cache_dir.to_string_lossy().into_owned();
                 let worker =
                     (dispatch.extra_workers > 0).then(|| handed_worker(&dispatch, controlled));
+                let mut barrier: Vec<String> = staged
+                    .pytester
+                    .iter()
+                    .map(|error| error.path.clone())
+                    .collect();
+                barrier.sort();
+                // The run started early answers when it ran exactly these files; a text-scan
+                // hit that collected natively after all is stopped, and they run here as before.
+                let early = handed_early
+                    .take_if(|early| !whole && early.relative == barrier)
+                    .map(HandedEarly::wait);
+                if !whole {
+                    if let Some(other) = handed_early.take() {
+                        other.stop(Some(
+                            "its files differ from those collection found; they run again now",
+                        ));
+                    }
+                }
                 let report = options
                     .hand_files
                     .as_ref()
                     .filter(|_| !whole)
-                    .and_then(|hand| (hand.0)(&files, &cache_dir, worker.as_ref()))
+                    .and_then(|hand| match early {
+                        Some(answer) => answer,
+                        None => (hand.run)(&files, &cache_dir, worker.as_ref()),
+                    })
                     .and_then(|json| serde_json::from_str::<HandedReport>(&json).ok())
                     // Exit 2 with a report and no collection error is an interrupt in a handed
                     // test (`KeyboardInterrupt`, `pytest.exit`): the session's, kept below --
@@ -1714,7 +1885,7 @@ fn run_attempt(
                     .filter(|report| {
                         report.collection_errors.is_empty()
                             && !report.workerinput_miss
-                            && !report.unwirable
+                            && !(report.unwirable && controlled)
                             && !(report.list_changed && !selecting)
                             && !(report.foreign_modifyitems && selecting)
                             && !((report.exit_code == 2 || report.exited) && controlled)

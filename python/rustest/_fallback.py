@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import threading
 import sys
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final
@@ -240,17 +241,23 @@ def _wait(child: subprocess.Popen[bytes]) -> int:
 
 
 def _wait_interruptible(child: subprocess.Popen[bytes]) -> tuple[int, bool]:
-    """:func:`_wait`, and whether this process was interrupted (Ctrl-C) while it waited."""
+    """:func:`_wait`, and whether this process was interrupted (Ctrl-C) while it waited.
+
+    Off the main thread (B-lite's handed run, started while the pool collects) no signal
+    reaches Python here: the engine watches for Ctrl-C itself and stops the child
+    (:func:`stop_handed`)."""
     import signal
+    import threading
 
     interrupted = False
+    main = threading.current_thread() is threading.main_thread()
 
     # A SIGTERM aimed at this process alone (`timeout`, a CI cancel) must not orphan pytest.
     def forward(signum: int, frame: object) -> None:
         del signum, frame
         child.terminate()
 
-    previous = signal.signal(signal.SIGTERM, forward)
+    previous = signal.signal(signal.SIGTERM, forward) if main else None
     try:
         while True:
             try:
@@ -259,9 +266,61 @@ def _wait_interruptible(child: subprocess.Popen[bytes]) -> tuple[int, bool]:
             except KeyboardInterrupt:
                 if interrupted:
                     child.terminate()
+                elif not _WINDOWS:
+                    # its own process group: the terminal's Ctrl-C did not reach it
+                    os.killpg(child.pid, signal.SIGINT)
                 interrupted = True
     finally:
-        _ = signal.signal(signal.SIGTERM, previous)
+        if previous is not None:
+            _ = signal.signal(signal.SIGTERM, previous)
+
+
+#: B-lite's handed pytest while it runs, so :func:`stop_handed` can end it and everything it
+#: started: Windows by parent links (``taskkill /T``), elsewhere its own process group.
+_running: set[subprocess.Popen[bytes]] = set()
+#: What :func:`stop_handed` ended: its `run_files` answers ``None`` without a word.
+_stopped: set[subprocess.Popen[bytes]] = set()
+#: Set by :func:`stop_handed`: a handed run on another thread that has not started its child
+#: yet must not start it (the engine's early run, stopped before it got that far).
+_stopping = False
+_lock = threading.Lock()
+
+
+def begin_handed() -> None:
+    """A new session's handed runs: forget the last session's stop."""
+    global _stopping
+    with _lock:
+        _stopping = False
+
+
+def stop_handed() -> None:
+    """End the handed pytest and its whole process tree (a ``runpytest_subprocess`` child
+    included): the session went to pytest whole while it ran, or the user pressed Ctrl-C."""
+    global _stopping
+    with _lock:
+        _stopping = True
+        running = list(_running)
+        _stopped.update(running)
+    for child in running:
+        _kill_tree(child)
+
+
+def _kill_tree(child: subprocess.Popen[bytes]) -> None:
+    import signal
+    import subprocess
+
+    if child.poll() is not None:
+        return
+    if _WINDOWS:
+        _ = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(child.pid)], capture_output=True, check=False
+        )
+    else:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)  # its own session: the whole group
+        except OSError:
+            pass
+    _ = child.wait()
 
 
 def _deliver(
@@ -381,16 +440,48 @@ def run_files(
             # ponytail: xdist importable but not loaded (`-p no:xdist` in addopts,
             # PYTEST_DISABLE_PLUGIN_AUTOLOAD) makes `-n0` a usage error and the session goes
             # to pytest whole; setting `config.option.dist` from the report plugin would not.
-            *(["-n0"] if worker is not None and _installed("xdist") else []),
+            # One process in every mode: without a worker identity too (a pool of one under the
+            # xdist model, `addopts = -n auto`), or it would become an xdist controller.
+            *(["-n0"] if _installed("xdist") else []),
             *files,
         ]
+        early = threading.current_thread() is not threading.main_thread()
+        if early and _stopping:
+            return None
         child = subprocess.Popen(
             command,
-            env={**os.environ, "RUSTEST_PYTEST_REPORT": report, **_worker_env(worker)},
+            env={
+                **os.environ,
+                "RUSTEST_PYTEST_REPORT": report,
+                "RUSTEST_HANDED_WATCH": "1",
+                **_worker_env(worker),
+            },
+            # A pipe nobody writes: its end of file means rustest is gone (killed, crashed),
+            # and the report plugin then ends this pytest's whole tree.
+            stdin=subprocess.PIPE,
             stdout=output,
             stderr=subprocess.STDOUT,
+            # Its own process group, so `stop_handed` can end the whole tree. Ctrl-Z no longer
+            # stops it with rustest and it has no `/dev/tty`; pytester's `spawn` makes its own.
+            start_new_session=not _WINDOWS,
         )
-        code, interrupted = _wait_interruptible(child)
+        with _lock:
+            _running.add(child)
+            stop_now = early and _stopping
+        try:
+            if stop_now:  # stopped while it was being started
+                _stopped.add(child)
+                _kill_tree(child)
+            code, interrupted = _wait_interruptible(child)
+        finally:
+            with _lock:
+                _running.discard(child)
+                stopped = child in _stopped
+                _stopped.discard(child)
+            if child.stdin is not None:
+                child.stdin.close()
+        if stopped:
+            return None  # ended on purpose: its partial output is nobody's business
         if interrupted:
             # The user pressed Ctrl-C: the session ends here, exit 2, and nothing is handed on
             # to a whole pytest run (`py.rs` re-raises a callback's exception).

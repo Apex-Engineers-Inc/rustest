@@ -587,19 +587,25 @@ _SIDE_EFFECT = (
 
 
 @pytest.mark.parametrize(
-    "files",
+    ("files", "warning"),
     [
         # no hook: the conftest still imports inside the plugin's initialization window
-        {"conftest.py": _SIDE_EFFECT},
+        ({"conftest.py": _SIDE_EFFECT}, "HypothesisSideeffectWarning"),
         # a hook: the same window, through the hook runtime
-        {"conftest.py": _SIDE_EFFECT + "\n\ndef pytest_configure(config):\n    pass\n"},
+        (
+            {"conftest.py": _SIDE_EFFECT + "\n\ndef pytest_configure(config):\n    pass\n"},
+            "HypothesisSideeffectWarning",
+        ),
         # an unpruned `.hypothesis` directory: the plugin warns of it
-        {"pytest.ini": "[pytest]\nnorecursedirs = build\n", ".hypothesis/examples/x": ""},
+        (
+            {"pytest.ini": "[pytest]\nnorecursedirs = build\n", ".hypothesis/examples/x": ""},
+            "Skipping collection of '.hypothesis' directory",
+        ),
     ],
     ids=["side-effect", "side-effect-with-hook", "hypothesis-dir"],
 )
 def test_a_warning_hypothesiss_plugin_gives_hands_the_session_to_pytest(
-    tmp_path: Path, files: dict[str, str]
+    tmp_path: Path, files: dict[str, str], warning: str
 ):
     """pytest counts these warnings in its summary (and a `filterwarnings = error` makes them
     errors), which rustest does not reproduce: review M7, M8."""
@@ -608,7 +614,11 @@ def test_a_warning_hypothesiss_plugin_gives_hands_the_session_to_pytest(
     result = _rustest(tree)
 
     assert "handing this session to pytest: rustest's hook runtime: hypothesis" in result.stderr
-    assert "1 passed, 1 warning" in result.stdout, result.stdout + result.stderr
+    # The warning this is about, not the count: under load Windows can deny pytest's own cache
+    # write for a moment (a `PytestCacheWarning`, "Access is denied"), a second warning that is
+    # the machine's, not hypothesis's.
+    assert "1 passed" in result.stdout, result.stdout + result.stderr
+    assert warning in result.stdout, result.stdout + result.stderr
 
 
 def test_p_plugin_hands_the_session_to_pytest_and_the_plugin_acts(tmp_path: Path):

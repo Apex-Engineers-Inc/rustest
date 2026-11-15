@@ -611,6 +611,7 @@ def _hand_files(
         return None
     from . import _fallback
 
+    _fallback.begin_handed()
     rootdir = str(resolved.get("rootdir") or os.getcwd())
     config_file = resolved.get("config_file")
     inifile = str(config_file) if config_file else None

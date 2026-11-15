@@ -386,13 +386,20 @@ one of these plugins added by a `pytest_collection_modifyitems` hook hands the s
 
 ### Test files that use `pytester`
 
-A test module whose `pytest_plugins` names `pytester` runs under pytest, and only that file:
-rustest collects the session, runs those files under one pytest process **first** (with the
-session's rootdir, ini file, cache directory and your own options, `-k` and `-m` included),
-then runs the rest itself and reports both as one run, in collection order: the progress
-lines, the warnings summary, the counts and the report all include the handed tests. A line on
-stderr names the files. An interrupt in a handed test (`KeyboardInterrupt`, `pytest.exit`) ends
-the session there, as pytest's does: nothing native runs after it.
+A test module whose `pytest_plugins` names `pytester` runs under pytest, and only that file: one
+pytest process runs those files (with the session's rootdir, ini file, cache directory and your
+own options, `-k` and `-m` included), and rustest runs the rest itself and reports both as one
+run, in collection order: the progress lines, the warnings summary, the counts and the report
+all include the handed tests. A line on stderr names the files. An interrupt in a handed test
+(`KeyboardInterrupt`, `pytest.exit`) ends the session there, as pytest's does: nothing native
+runs after it. Under the xdist model (pytest-xdist installed, or `-n`) that pytest process
+starts while rustest starts its workers and collects the rest; otherwise it starts once
+collection is done. When it started early and collection then shows the session must go to
+pytest whole, it is stopped with everything it started, and a stderr line says so (its tests run
+again in the whole session); one also appears when collection found the pytester files to be
+other than the ones it started with, and when other collection errors end the session. Ctrl-C
+stops it with the rest of the run. If rustest itself is killed, the pytest process notices and
+ends with everything it started.
 
 Under the xdist model (pytest-xdist installed, or `-n`) with a pool of two or more workers,
 the handed pytest is one more xdist worker, in one process: it has `config.workerinput` (set

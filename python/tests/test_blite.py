@@ -4,8 +4,12 @@ rest natively -- and every guard that sends the whole session to pytest instead.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -195,7 +199,13 @@ def test_what_ties_the_file_to_the_session_sends_the_whole_session(
 
     result, report = _rustest(tree, *args)
 
-    assert "running 1 file(s) under pytest first" not in result.stderr
+    started = "running 1 file(s) under pytest first" in result.stderr
+    if name in ("maxfail", "node-id", "capture", "last-failed"):
+        assert not started, result.stderr  # decided before anything starts
+    else:
+        # Started before the pool booted (under `-n`), the handed run is stopped when the
+        # barrier decides the session is pytest's, and says so; nothing of it is reported.
+        assert not started or "the pytester run" in result.stderr, result.stderr
     assert report.get("pytest_fallback"), result.stderr
     if name in ("node-id", "fixture"):
         assert result.returncode in (0, 1), result.stderr  # pytest's answer, not a usage error
@@ -571,8 +581,8 @@ def test_pytest_exit_in_a_handed_test_ends_the_session(tmp_path: Path, code: int
 def test_the_handed_pytest_gets_n0_after_the_user_s_arguments(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """With a worker identity and xdist importable, ``-n0`` follows the user's own arguments
-    (so it beats an ini ``addopts = -n auto``) and precedes the files."""
+    """With xdist importable, ``-n0`` follows the user's own arguments (so it beats an ini
+    ``addopts = -n auto``) and precedes the files, with a worker identity or without one."""
     from rustest import _fallback
 
     seen: list[list[str]] = []
@@ -596,10 +606,9 @@ def test_the_handed_pytest_gets_n0_after_the_user_s_arguments(
                 inifile=None,
                 worker=worker,
             )
-    with_worker, without = seen
-    assert with_worker.index("-k") < with_worker.index("-n0") < with_worker.index("t.py")
-    assert "4" not in with_worker  # the user's `-n 4` is dropped
-    assert "-n0" not in without
+    for command in seen:  # with a worker identity and without one (a pool of one)
+        assert command.index("-k") < command.index("-n0") < command.index("t.py")
+        assert "4" not in command  # the user's `-n 4` is dropped
 
 
 def test_ctrl_c_during_the_handed_run_ends_the_session(
@@ -639,3 +648,305 @@ def test_pytest_exit_in_a_handed_test_with_a_controller_goes_to_pytest(tmp_path:
 
     assert report.get("pytest_fallback"), result.stderr
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        listed = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
+        ).stdout
+        return str(pid) in listed
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_for(path: Path, seconds: float = 30) -> bool:
+    deadline = time.time() + seconds
+    while not path.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    return path.exists()
+
+
+def _waits_for(name: str, seconds: int = 30) -> str:
+    """A conftest whose *native* import waits (up to *seconds*) for ROOT/*name*, and leaves
+    ``deadline.txt`` when it gave up; the handed pytest (``RUSTEST_PYTEST_REPORT`` is set
+    there) does not wait."""
+    return (
+        "import os, pathlib, time\n"
+        "ROOT = pathlib.Path(__file__).parent\n"
+        "if 'RUSTEST_PYTEST_REPORT' not in os.environ:\n"
+        f"    deadline = time.time() + {seconds}\n"
+        f"    while not (ROOT / {name!r}).exists() and time.time() < deadline:\n"
+        "        time.sleep(0.05)\n"
+        f"    if not (ROOT / {name!r}).exists():\n"
+        "        (ROOT / 'deadline.txt').write_text('x', encoding='utf-8')\n"
+    )
+
+
+def _writes(name: str, then: str = "") -> str:
+    """A pytester file whose test writes its pid to ROOT/*name*, then runs *then*."""
+    return (
+        "import os, pathlib, time\n"
+        'pytest_plugins = ["pytester"]\n'
+        "def test_inner():\n"
+        f"    path = pathlib.Path(__file__).parent / {name!r}\n"
+        "    path.write_text(str(os.getpid()), encoding='utf-8')\n"
+        f"    {then or 'pass'}\n"
+    )
+
+
+def test_the_handed_run_starts_before_the_pool_and_reports_once(tmp_path: Path) -> None:
+    """Under ``-n`` the handed pytest runs while the native workers collect: their conftest,
+    which waits for the handed test's pid file, never reaches its deadline (synchronously it
+    would, the handed run coming only after collection), and the run reports it once."""
+    files = {
+        **_FILES,
+        "conftest.py": _waits_for("child.pid"),
+        "test_b_pytester.py": _writes("child.pid"),
+    }
+    tree = make_tree(tmp_path, "early", files)
+
+    result, report = _rustest(tree, "-n", "2")
+
+    assert not (tree / "deadline.txt").exists(), "the handed run did not overlap collection"
+    assert "pytest_fallback" not in report, result.stderr
+    assert result.stderr.count("running 1 file(s) under pytest first") == 1
+    assert sorted(_ids(report)) == [
+        ("test_a.py::test_one", "passed"),
+        ("test_b_pytester.py::test_inner", "passed"),
+        ("test_c.py::test_two", "passed"),
+    ]
+
+
+def _sleeping_grandchild(tmp_tree: Path) -> str:
+    """A pytester file whose test starts a `runpytest_subprocess` child that writes its pid to
+    ``grandchild.pid`` and sleeps; once that file exists (a whole pytest run after) it passes."""
+    inner = (
+        "import os, pathlib, time\n"
+        "def test_sleeps():\n"
+        f"    pathlib.Path(r'{tmp_tree}').joinpath('grandchild.pid')"
+        ".write_text(str(os.getpid()), encoding='utf-8')\n"
+        "    time.sleep(60)\n"
+    )
+    return (
+        "import os, pathlib\n"
+        'pytest_plugins = ["pytester"]\n'
+        f"INNER = {inner!r}\n"
+        "def test_spawns(pytester):\n"
+        "    root = pathlib.Path(__file__).parent\n"
+        "    if (root / 'grandchild.pid').exists():\n"
+        "        return\n"
+        "    (root / 'child.pid').write_text(str(os.getpid()), encoding='utf-8')\n"
+        "    pytester.makepyfile(test_inner=INNER)\n"
+        "    pytester.runpytest_subprocess('-p', 'no:cacheprovider')\n"
+    )
+
+
+def test_a_whole_hand_off_stops_the_handed_run_and_everything_it_started(
+    tmp_path: Path,
+) -> None:
+    """A collection error decides the session is pytest's at the barrier while the handed
+    pytest's `runpytest_subprocess` child sleeps: the whole tree is ended, one line says so,
+    and none of the stopped run's own output is shown."""
+    tree = tmp_path / "stop"
+    files = {
+        "conftest.py": _waits_for("grandchild.pid"),
+        "test_a.py": "def test_one():\n    pass\n",
+        "test_broken.py": "def test_x(:\n",
+        "test_b_pytester.py": _sleeping_grandchild(tree),
+    }
+    tree = make_tree(tmp_path, "stop", files)
+
+    result, report = _rustest(tree, "-n", "2")
+
+    assert report.get("pytest_fallback"), result.stderr
+    assert "stopped the pytester run: the session goes to pytest" in result.stderr
+    assert "test session starts" not in result.stderr, "the stopped run's output was shown"
+    pid = int((tree / "grandchild.pid").read_text(encoding="utf-8"))
+    assert not _alive(pid), "the handed pytest's own child outlived the stop"
+
+
+def _in_process(
+    monkeypatch: pytest.MonkeyPatch, tree: Path, *args: str
+) -> tuple[int, list[object]]:
+    """``cli.main`` in this process (a raised SIGINT reaches it), with the whole-pytest
+    hand-off recorded instead of run."""
+    from rustest import _fallback, cli
+
+    whole: list[object] = []
+    monkeypatch.setattr(_fallback, "run", lambda *a, **k: whole.append(a) or 0)
+    monkeypatch.chdir(tree)
+    return cli.main(list(args)), whole
+
+
+def _interrupt_after(waited: Path, then: Path | None = None, pause: float = 0.5) -> None:
+    """On a thread: once *waited* exists, raise SIGINT in this process, then create *then*."""
+
+    def act() -> None:
+        _ = _wait_for(waited)
+        time.sleep(pause)
+        signal.raise_signal(signal.SIGINT)
+        if then is not None:
+            _ = then.write_text("go", encoding="utf-8")
+
+    threading.Thread(target=act, daemon=True).start()
+
+
+def test_ctrl_c_while_the_handed_run_overlaps_collection_exits_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl-C while the handed pytest still runs, the barrier waiting for it: exit 2, nothing
+    handed on, and the handed process gone."""
+    files = {
+        **_FILES,
+        "conftest.py": _waits_for("child.pid"),
+        "test_b_pytester.py": _writes("child.pid", "time.sleep(60)"),
+    }
+    tree = make_tree(tmp_path, "interrupt-early", files)
+    _interrupt_after(tree / "child.pid")
+    began = time.time()
+
+    code, whole = _in_process(monkeypatch, tree, "-n", "2")
+
+    assert (code, whole) == (2, [])
+    assert time.time() - began < 45
+    assert not _alive(int((tree / "child.pid").read_text(encoding="utf-8")))
+
+
+def test_a_ctrl_c_pending_when_the_handed_run_is_stopped_still_stops_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl-C lands during collection, before the barrier decides (a collection error) that
+    the session is pytest's: the stop still ends the handed run at once, and the run exits 2
+    instead of going to pytest after it."""
+    tree = tmp_path / "pending"
+    files = {
+        "conftest.py": _waits_for("go.txt"),
+        "test_a.py": "def test_one():\n    pass\n",
+        "test_broken.py": "def test_x(:\n",
+        "test_b_pytester.py": _writes("child.pid", "time.sleep(60)"),
+    }
+    tree = make_tree(tmp_path, "pending", files)
+    _interrupt_after(tree / "child.pid", then=tree / "go.txt")
+    began = time.time()
+
+    code, whole = _in_process(monkeypatch, tree, "-n", "2")
+
+    assert (code, whole) == (2, [])
+    assert time.time() - began < 45, "the stop waited for the handed run to finish"
+    assert not _alive(int((tree / "child.pid").read_text(encoding="utf-8")))
+
+
+def test_a_ctrl_c_after_the_handed_run_finished_still_ends_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl-C after the handed run is done but before the barrier: no native test runs (no
+    progress observer under ``--llm`` would notice it later), and the run exits 2."""
+    files = {
+        **_FILES,
+        "conftest.py": _waits_for("go.txt"),
+        "test_b_pytester.py": _writes("child.pid"),
+        "test_c.py": (
+            "import pathlib\n"
+            "def test_two():\n"
+            "    (pathlib.Path(__file__).parent / 'native.txt').write_text('x')\n"
+        ),
+    }
+    tree = make_tree(tmp_path, "finished", files)
+    _interrupt_after(tree / "child.pid", then=tree / "go.txt", pause=5)
+
+    code, whole = _in_process(monkeypatch, tree, "--llm", "-n", "2")
+
+    assert (code, whole) == (2, [])
+    assert not (tree / "native.txt").exists(), "native tests ran after the Ctrl-C"
+
+
+def test_a_serial_retry_runs_the_handed_tests_once(tmp_path: Path) -> None:
+    """Outside the xdist model with a pool of two or more, a late conftest's session-end hook
+    retries the run on one worker and then hands it to pytest: the pytester test body runs
+    once, under that pytest, not once per attempt."""
+    files = {
+        "test_a.py": "def test_one():\n    pass\n",
+        "sub/conftest.py": "def pytest_sessionfinish(session):\n    pass\n",
+        "sub/test_b_pytester.py": (
+            "import pathlib\n"
+            'pytest_plugins = ["pytester"]\n'
+            "def test_counts():\n"
+            "    with open(pathlib.Path(__file__).parent / 'count.txt', 'a') as handle:\n"
+            "        handle.write('x')\n"
+        ),
+        "sub/test_c.py": "def test_two():\n    pass\n",
+    }
+    tree = make_tree(tmp_path, "serial", files)
+
+    result, report = _rustest(tree)
+
+    assert report.get("pytest_fallback"), result.stderr
+    assert (tree / "sub" / "count.txt").read_text() == "x", result.stderr
+
+
+def test_killing_rustest_during_the_overlap_ends_the_handed_tree(tmp_path: Path) -> None:
+    """rustest killed (SIGTERM; TerminateProcess on Windows) while the handed pytest and its
+    `runpytest_subprocess` child run: both are gone within seconds, through the pipe the
+    handed pytest watches for end of file."""
+    tree = tmp_path / "killed"
+    files = {
+        "conftest.py": _waits_for("never.txt", 60),
+        "test_a.py": "def test_one():\n    pass\n",
+        "test_b_pytester.py": _sleeping_grandchild(tree),
+    }
+    tree = make_tree(tmp_path, "killed", files)
+    rustest = subprocess.Popen(
+        [sys.executable, "-m", "rustest", "-n", "2"],
+        cwd=tree,
+        env=clean_env(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pids: list[int] = []
+    try:
+        assert _wait_for(tree / "grandchild.pid"), "the handed run never started its child"
+        pids = [
+            int((tree / name).read_text(encoding="utf-8"))
+            for name in ("child.pid", "grandchild.pid")
+        ]
+        if sys.platform == "win32":
+            rustest.kill()
+        else:
+            rustest.send_signal(signal.SIGTERM)
+        _ = rustest.wait(timeout=30)
+        deadline = time.time() + 10
+        while any(_alive(pid) for pid in pids) and time.time() < deadline:
+            time.sleep(0.2)
+        assert not [pid for pid in pids if _alive(pid)], "the handed tree outlived rustest"
+    finally:
+        rustest.kill()
+        for pid in pids:
+            if _alive(pid):
+                if sys.platform == "win32":
+                    _ = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+
+
+def test_the_watch_flag_stops_at_the_handed_pytest(tmp_path: Path) -> None:
+    """``RUSTEST_HANDED_WATCH`` is the handed pytest's own: a process below it that loads the
+    report plugin (its xdist workers) has another stdin, and would end itself at once."""
+    files = {
+        **_FILES,
+        "test_b_pytester.py": (
+            "import os\n"
+            'pytest_plugins = ["pytester"]\n'
+            "def test_inner():\n"
+            "    assert 'RUSTEST_HANDED_WATCH' not in os.environ\n"
+        ),
+    }
+    tree = make_tree(tmp_path, "watch-flag", files)
+
+    result, report = _rustest(tree)
+
+    assert "running 1 file(s) under pytest first" in result.stderr
+    assert ("test_b_pytester.py::test_inner", "passed") in _ids(report), result.stderr

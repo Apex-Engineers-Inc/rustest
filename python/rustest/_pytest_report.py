@@ -98,6 +98,49 @@ _foreign = False  # a pytest_collection_modifyitems neither pytest's own nor thi
 _exited = False  # `pytest.exit()` or an interrupt ended the session, whatever its returncode
 
 
+def _watch_rustest() -> None:
+    """End this pytest and everything it started when rustest is gone (killed, crashed, its
+    terminal closed): the pipe it gave this process as stdin, never written, then reads end
+    of file. B-lite's handed run only (``RUSTEST_HANDED_WATCH``).
+
+    The pipe is moved off fd 0 at import, before pytest's capture takes the descriptor: a test
+    that reads stdin gets what pytest gives it under capture, and end of file under ``-s``
+    (the null device), as a pytest-xdist worker's test has no terminal to read either."""
+    import threading
+
+    # Its own only: a process below it (its xdist workers, a pytest a test starts) that loads
+    # this plugin has another stdin, and would read end of file at once.
+    _ = os.environ.pop("RUSTEST_HANDED_WATCH", None)
+    pipe = os.dup(0)
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.close(null)
+
+    def watch() -> None:
+        try:
+            while os.read(pipe, 4096):
+                pass
+        except OSError:
+            pass
+        if os.name == "nt":
+            import subprocess
+
+            _ = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(os.getpid())], capture_output=True
+            )
+        else:
+            import signal
+
+            os.killpg(os.getpid(), signal.SIGKILL)  # its own session (`start_new_session`)
+        os._exit(1)
+
+    threading.Thread(target=watch, name="rustest-watch", daemon=True).start()
+
+
+if os.environ.get("RUSTEST_HANDED_WATCH") == "1":
+    _watch_rustest()
+
+
 class _WorkerInput(dict[str, object]):
     """``config.workerinput`` with xdist's three keys. Another key -- one another plugin's
     ``pytest_configure_node`` would have added -- is recorded and raises ``KeyError``: what the
