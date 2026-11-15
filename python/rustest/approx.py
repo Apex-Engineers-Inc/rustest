@@ -7,26 +7,23 @@ helpers it turns on.
 
 **MECHANISM M9 of the Phase 4 Task 1b sweep.** What was here before was a *reimplementation*
 — one class, a recursive ``_approx_compare``, and a signature of its own — and it diverged
-from pytest in three ways that each cost real tests in a real suite:
+from pytest in three ways:
 
 *(a) numpy dispatch.* ``ApproxBase.__array_ufunc__ = None`` and ``__array_priority__ = 100``
 are the entire reason ``ndarray == approx(scalar)`` works under pytest: they make numpy's
 ``ndarray.__eq__`` return ``NotImplemented`` so Python falls back to approx's own ``__eq__``,
 which returns a plain ``bool``. Without them numpy wins the dispatch and yields an
 *elementwise bool array*, so the enclosing ``assert`` raises ``ValueError: The truth value of
-an array with more than one element is ambiguous``. Measured in that suite's own venv:
+an array with more than one element is ambiguous``. Measured:
 ``np.array([5., 5., 5.]) == pytest.approx(5.0)`` → ``True``; the same against the old
 ``rustest.approx`` → ``array([True, True, True])``.
 
 *(b) ``None`` means "unspecified".* pytest's signature is ``approx(expected, rel=None,
 abs=None, nan_ok=False)`` and :attr:`ApproxScalar.tolerance` resolves the defaults. rustest's
 was ``approx(expected, rel=1e-6, abs=1e-12)``, taking what it was handed literally — so a
-helper spelled ``def approx(expected, abs_tol=None): return pytest.approx(expected,
-abs=abs_tol)``, which a real suite's own conftest has, passed ``abs=None`` on every call
-and produced ``TypeError: '>' not supported between instances of 'NoneType' and 'float'``.
-It only fired when the two floats were **not bit-identical**, because the exact-equality
-short circuit came first — which is why one test tripped it and hundreds of sibling
-``approx`` assertions did not.
+helper that forwards an optional tolerance as ``abs=None`` produced a ``TypeError``
+comparing ``None`` with a float. It only fired when the two floats were **not
+bit-identical**, because the exact-equality short circuit came first.
 
 *(c) ``nan_ok``* did not exist at all: ``TypeError: unexpected keyword argument``.
 
@@ -512,7 +509,7 @@ class ApproxScalar(ApproxBase):
         rather than being maxed against a relative one they never asked for. The old rustest
         implementation defaulted them to ``1e-6``/``1e-12`` in the signature and took a
         literal ``None`` at face value, which is exactly the ``TypeError: '>' not supported
-        between instances of 'NoneType' and 'float'`` a real suite hit (Task 1b, M9b).
+        between instances of 'NoneType' and 'float'`` (Task 1b, M9b).
         """
 
         def set_default(x: Any, default: Any) -> Any:

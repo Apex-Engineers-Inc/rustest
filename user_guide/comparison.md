@@ -131,7 +131,7 @@ consequence, not the goal.
 - Your suite defines hooks or custom collectors.
 - You need JUnit XML or HTML reports.
 - Your test bodies dominate the wall clock. A runner cannot make your own code faster, and
-  two of the seventeen suites benchmarked are in exactly that position.
+  one of the sixteen suites benchmarked are in exactly that position.
 
 ## Migration from pytest
 
@@ -324,12 +324,12 @@ class TestMath:
 where the work went; deeper performance work comes later. What follows is where things
 actually stand.
 
-Seventeen real open-source pytest suites have been run under both runners, with the outcome
-tallies diffed to confirm the two runs did the same work. Rustest is between **1.1x and
+Sixteen real open-source pytest suites have been run under both runners, with the outcome
+tallies diffed to confirm the two runs did the same work. Rustest is between **1.2x and
 5.7x** faster on them.
 
-Aggregated over all seventeen the figure is **1.23x**, because two of those suites are
-almost entirely their own code. Across the other fifteen it is **2.74x**.
+Aggregated over all sixteen the figure is **1.3x**, because one of those suites is
+almost entirely its own code. Across the other fifteen it is **2.74x**.
 
 The component numbers are further apart than the end-to-end ones, which is the shape you
 would expect: on 500 files and 5,000 tests, warm collection goes from 8.39s to 227.6ms

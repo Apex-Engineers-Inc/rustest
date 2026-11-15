@@ -6,7 +6,7 @@
 # translation path, and the no-config rootdir walk at once. `T Matrix Test.py` (spaces,
 # no test_ prefix) must be ignored by both engines -- a free naming-rule differential.
 #
-# Like a real suite, this is a LOCAL tree used strictly read-only.
+# This is a LOCAL tree used strictly read-only.
 
 [repo]
 kind = "local"

@@ -19,8 +19,8 @@ copy that makes speed the pitch.
 **The measured figures**, for anything that needs to state one. Do not invent a headline
 multiplier; these are what the tree can defend, and they are reported rather than sold:
 
-- **1.1x–5.7x** wall-clock across seventeen real open-source pytest suites (13 MATCH /
-  4 EXPLAINED / 0 DIVERGE). Aggregate over all seventeen **1.23x**; over the fifteen that
+- **1.2x–5.7x** wall-clock across sixteen real open-source pytest suites (12 MATCH /
+  4 EXPLAINED / 0 DIVERGE). Aggregate over all sixteen **1.3x**; over the fifteen that
   are not body-bound, **2.74x**.
 - **~37x** on warm collection and **~8x** on marginal per-test overhead (500 files /
   5,000 tests: 8.39s → 227.6ms, and 933.6µs → 117.9µs per test).

@@ -5,15 +5,14 @@ Port target: `_pytest/python_api.py` l. 20-806 -- `ApproxBase`, `ApproxNumpy`,
 dispatcher.
 
 MECHANISM M9 of the Phase 4 Task 1b sweep. What rustest shipped was a REIMPLEMENTATION,
-not a port, and it diverged in ways that cost real tests in a real suite:
+not a port, and it diverged in three ways:
 
   (a) no `__array_ufunc__`/`__array_priority__`, so `ndarray == approx(scalar)` produced an
       elementwise bool ARRAY and the enclosing assert raised ValueError (that half is the
       `builtins/approx-numpy` case, split out so a missing optional dependency can only
       move one case's verdict -- see its module docstring);
   (b) `rel`/`abs` defaulted to numbers instead of to None, so an explicit `abs=None` --
-      which that suite's own `def approx(expected, abs_tol=None)` helper passes on every call --
-      became `TypeError: '>' not supported between 'NoneType' and 'float'`;
+      which any helper that forwards an optional tolerance passes -- became a `TypeError`;
   (c) no `nan_ok` at all.
 
 Everything below is an oracle answer probed on pytest 8.4.2, and several of them are the
@@ -35,20 +34,19 @@ def test_none_tolerances_mean_unspecified():
     assert 1.0000001 == pytest.approx(1.0, rel=None, abs=None)
 
 
-def test_the_real_suite_helper_shape():
-    """That suite's conftest wraps approx and forwards `abs=abs_tol`, defaulting to None.
+def test_a_helper_forwarding_an_optional_tolerance():
+    """A wrapper passing `abs=None` through when its caller gave no tolerance.
 
-    It only ever failed for values that are NOT bit-identical, because exact equality
-    short-circuits before any tolerance is computed -- which is why one test tripped it and
-    hundreds of sibling assertions did not.
+    Only values that are NOT bit-identical reach the tolerance, because exact equality
+    short-circuits first.
     """
 
-    def md_approx(expected, abs_tol=None):
-        return pytest.approx(expected, abs=abs_tol)
+    def loose(target, *, tolerance=None):
+        return pytest.approx(target, abs=tolerance)
 
-    assert 1.0 == md_approx(1.0)  # bit-identical: never reached the tolerance
-    assert 1.0000001 == md_approx(1.0)  # not identical: this is the one that used to raise
-    assert 0.5000000001 == md_approx(0.5)
+    assert 2.0 == loose(2.0)  # bit-identical: the tolerance is never computed
+    assert 2.0000002 == loose(2.0)  # not identical: the case that used to raise
+    assert 0.25000000001 == loose(0.25, tolerance=None)
 
 
 def test_nan_ok():

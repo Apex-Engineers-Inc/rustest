@@ -175,7 +175,7 @@ def test_a_nextitem_teardown_hook_hands_off_before_any_test(tmp_path: Path) -> N
 
 # -- the session's end: one worker, or workers and a controller --------------------------
 
-#: A controller-only plugin (a file-sharding hook's shape) and a summary (a slow-test guard's): the session
+#: A controller-only plugin (registered where there is no `workerinput`) and a summary: the session
 #: end writes what the controller saw; its exit status is overridden on 5, as CI recipes do.
 _SESSION_END = """
 import json

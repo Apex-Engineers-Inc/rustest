@@ -17,9 +17,9 @@ has no ``.name``/``.args``/``.kwargs``, so it is not a mark when used as a **val
     pytestmark = pytest.mark.asyncio(scope=..)  # inner closure  -> refused the whole file
     pytestmark = pytest.mark.parametrize(..)    # inner closure  -> refused the whole file
 
-The first is a real suite's shape: four modules use it, and because
-``pytest_runtestloop`` raises ``Interrupted`` before the first item, four collection errors
-meant **none** of that suite's 6 132 tests ran.  ``asyncio`` was the one standard mark that
+The first is a common shape, and because ``pytest_runtestloop`` raises ``Interrupted``
+before the first item, one such collection error meant **none** of a suite's tests ran.
+``asyncio`` was the one standard mark that
 kept its method form after #136/#137 converted ``skipif``/``xfail``/``usefixtures``; this
 module pins it in the same family.
 
@@ -50,7 +50,7 @@ def _marks(obj: Any) -> list[dict[str, Any]]:
 
 
 def test_bare_asyncio_is_a_mark_value() -> None:
-    """``pytestmark = pytest.mark.asyncio`` — a real suite's four modules."""
+    """``pytestmark = pytest.mark.asyncio`` at module level."""
     assert isinstance(native_mark.asyncio, BareOrFactoryMark)
     assert _spec(native_mark.asyncio) == ("asyncio", (), {})
 

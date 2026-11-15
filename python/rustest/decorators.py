@@ -78,8 +78,8 @@ class ParameterSet:
         #: set's marks to the item built from it, so
         #: `pytest.param(x, marks=pytest.mark.xfail(...))` xfails **that case alone**.
         #: rustest stored the attribute and read it nowhere ("Currently not used, but stored
-        #: for future support") until Phase 4 Task 1's re-sweep measured the cost: 9 Apex
-        #: tests of a real suite reporting `failed` where pytest reports `xfailed`.
+        #: for future support") until a real-suite sweep showed parametrized xfails reported
+        #: as `failed` where pytest reports `xfailed`.
         self.marks: tuple[Any, ...] = _normalize_param_marks(marks)
 
     def __repr__(self) -> str:
@@ -255,9 +255,8 @@ def _build_fixture_params(
         # A fixture's params take marks too -- `pytest.fixture(params=[pytest.param(x,
         # marks=pytest.mark.xfail(...))])`. pytest reaches them through the same
         # `ParameterSet`, because `FixtureManager.pytest_generate_tests` hands
-        # `fixturedef.params` straight to `metafunc.parametrize`, and a real suite's
-        # CL scenarios are exactly this shape: 9 tests reporting `failed` where pytest
-        # reports `xfailed`.
+        # `fixturedef.params` straight to `metafunc.parametrize`: a fixture's params with
+        # per-case xfail marks report `xfailed`, not `failed`.
         if isinstance(param_value, ParameterSet) and param_value.marks:
             case["marks"] = _mark_payloads(param_value.marks)
         cases.append(case)
@@ -505,8 +504,7 @@ def parametrize(
             This is pytest's meaning (`_pytest/python.py::Metafunc._resolve_args_directness`,
             l. 1417-1454). **It is not what rustest's `indirect=` used to mean** — before
             Phase 4 the value was read as *the name of a fixture to resolve*, a
-            rustest-only feature that no pytest suite could use and that cost Apex Member
-            Designer 120 of the 129 failures in its `tests/test_startup` subtree.
+            rustest-only reading no pytest suite could use.
 
             Note that a **string is a Sequence**, so `indirect="data"` is iterated
             character by character exactly as it is in pytest, and fails with
@@ -668,7 +666,7 @@ def _build_cases(
     was unpacked, and the test received ``42`` where pytest hands it ``[42]``.  The test
     still runs, and usually still passes, having tested something other than what its author
     wrote.  It announced itself in four suites only because the wrong value happened to be
-    un-iterable (a real suite's ``LineString``), un-``len``-able (attrs), or unequal to
+    un-iterable, un-``len``-able (attrs), or unequal to
     the assertion (werkzeug's ``test_range_validates_ranges``, whose three length-1 sets
     failed while its one length-2 set passed -- four predictions, four hits); in attrs'
     ``test_setattr`` it changed nothing but the **node id**, both cases still passing.
@@ -683,7 +681,7 @@ def _build_cases(
       **keys** positionally (``len({"a": 1, "b": 2}) == 2``, and ``zip`` over a dict yields
       its keys), i.e. ``a="a", b="b"``. The old behaviour was a rustest-only reading of a
       shape pytest already accepts and reads differently -- the same silent-wrong-value class
-      M2 belongs to. Nothing in this repo, its docs or the seventeen-suite corpus uses it. A
+      M2 belongs to. Nothing in this repo, its docs or the real-suite corpus uses it. A
       single-name mapping -- ``@parametrize("value", [{"a": 1}])`` -- is unaffected:
       ``force_tuple`` makes the dict one value, exactly as before.
     """
@@ -1011,12 +1009,11 @@ class MarkGenerator:
     (defects #136 and #137).
 
     ``asyncio`` joined them in Phase 4 for the *other* half of the same defect: a method is
-    not a mark **value**, so ``pytestmark = pytest.mark.asyncio`` — four modules of
-    a real suite — refused the whole file with ``malformed pytestmark entry ... <bound
-    method MarkGenerator.asyncio ...> is not a mark``, and because pytest's
-    ``pytest_runtestloop`` (and `src/engine/execute.rs::stage`) raise ``Interrupted`` before the
-    first item, four such files meant *nothing* in that 6 132-test suite ran. Its factory
-    now returns an :class:`AsyncioMarkDecorator`, which is a mark value too.
+    not a mark **value**, so ``pytestmark = pytest.mark.asyncio`` refused the whole file with
+    ``malformed pytestmark entry ... <bound method MarkGenerator.asyncio ...> is not a mark``,
+    and because pytest's ``pytest_runtestloop`` (and `src/engine/execute.rs::stage`) raise
+    ``Interrupted`` before the first item, one such file meant *nothing* in the suite ran. Its
+    factory now returns an :class:`AsyncioMarkDecorator`, which is a mark value too.
     """
 
     if TYPE_CHECKING:
@@ -1332,7 +1329,7 @@ class ExceptionInfo:
     ``list`` subclass of ``TracebackEntry``, so ``len()``, indexing and iteration all work.
     It used to be an alias for the raw ``types.TracebackType``, on the recorded ground that
     modelling it meant modelling ``TracebackEntry``, ``Source`` and ``Frame`` and that no
-    suite then in the corpus read it. The seventeen-suite sweep found one that does
+    suite then in the corpus read it. The real-suite sweep found one that does
     (MECHANISM M3): werkzeug's ``test_import_string_provides_traceback`` iterates it and
     joins ``str(line)``, and got ``TypeError: 'traceback' object is not iterable``. So the
     three classes were built after all.  It is **settable**, because pytest's own callers

@@ -137,7 +137,7 @@ and ``test_lf_acts_twice_...``:
    reads marker names).
 4. ``-k`` / ``-m`` / ``--deselect`` (rustest's selection engine).
 5. :meth:`HookRunner.modify_collection_after_selection`: the ``trylast`` hooks, over what step 4
-   left (a file-sharding hook is one: it shards the *filtered* files).  Marks added in
+   left (a hook that filters by file is one: it splits the *filtered* files).  Marks added in
    step 3 are applied to these items by the runner; marks added here reach neither ``-m`` nor
    ``-k``.
 6. The ``--lf`` deselection of every test that did not fail last time.

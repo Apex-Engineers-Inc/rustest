@@ -2104,9 +2104,9 @@ fn walk(
             // named as an *argument* (`initial_file_target`), never when a directory walk
             // happens to pass over it. pytest walks the same tree and collects no markdown
             // at all, so a repo with python fences in its docs got extra tests under
-            // flagless rustest and nowhere else -- measured on a real suite, whose
-            // `tests/fixtures/SCENARIOS.md` contributed 13 ids pytest never sees, 4 of them
-            // failing because documentation snippets do not import what they reference.
+            // flagless rustest and nowhere else -- measured on a real suite, whose docs
+            // directory contributed ids pytest never sees, some failing because documentation
+            // snippets do not import what they reference.
             // Testing the docs is still one command away (`rustest README.md docs/`), which
             // is how this repo tests its own; it just is not something `rustest tests/`
             // does behind the user's back.

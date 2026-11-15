@@ -160,7 +160,7 @@ pip install --pre rustest                   # -> the candidate
 
 The eventual `1.0.0` is a **separate, later** bump. When it happens, the argument for the
 number is the one this section used to make: compatibility is no longer a mode, the
-conformance corpus and the seventeen-suite sweep are the evidence a 1.0 claim needs, and
+conformance corpus and the sixteen-suite sweep are the evidence a 1.0 claim needs, and
 the flag removals are the one-time breaking cleanup a project does before committing to
 semver discipline.
 
@@ -219,7 +219,7 @@ carry across, each with the reason and what closing it would take.
 | 5 | ~~Two new sections in `test-classes.md`~~ | `053fa89` doc half | **CLOSED on the RC.** `setup_method`/`teardown_method`, fresh-instance-per-test, teardown-runs-on-failure, `setup_class`/`teardown_class`, and class-method fixtures sharing `self` — each verified by running it before it was written. Written as **executable** examples rather than main's skip-marked ones, so CI now tests them. | Done. |
 | 6 | `pyproject.toml`'s `dev` extra → `[dependency-groups]` migration | `053fa89` | Functionally equivalent to this branch's `--all-extras` arrangement, and a merge-conflict candidate in the very file §1.2 flags. Note this arc **did** introduce a `[dependency-groups] docs` group, so the two mechanisms now coexist. | Move `dev` too, and update `uv sync --all-extras` to `--all-groups` in CI and `CLAUDE.md` together. |
 | 7 | `fixture_registry.py:89-96`'s dead async-rejection message (file since removed) | Found by triage | Cosmetic, on a path documented as dead for a rustest run (reachable only from `compat/pytest.py:453-486`). | Delete the branch, or make the path reachable and pin it. |
-| 8 | ~~Ten v1 speed claims across six pages~~ | Found by triage | **CLOSED by this wave** (`beba06d`). Listed here because the delta triage recorded it as the largest remaining docs debt, and it is now paid: every restatement of "8.5x average, up to 19x" is gone, replaced by the measured seventeen-suite figures. | Done. |
+| 8 | ~~Ten v1 speed claims across six pages~~ | Found by triage | **CLOSED by this wave** (`beba06d`). Listed here because the delta triage recorded it as the largest remaining docs debt, and it is now paid: every restatement of "8.5x average, up to 19x" is gone, replaced by the measured sixteen-suite figures. | Done. |
 | 9 | The version bump | `1780db3`, `d3f6d5f` | Release-wave work, and a maintainer decision. | §2. |
 
 **Three remain open** — item 6 (the `dev` extra → `[dependency-groups]` migration), item 7

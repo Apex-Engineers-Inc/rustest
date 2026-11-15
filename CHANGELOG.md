@@ -259,9 +259,9 @@ This entry covers a **ground-up rewrite of rustest's engine**, and it is worth b
 about what the rewrite was for: **compatibility, stability and reliability** — running
 your existing pytest suite unchanged, and agreeing with pytest, rather than a fast thing that mostly agrees with it.
 That is what the evidence measures. The engine is validated against a conformance corpus
-that diffs rustest against real pytest case by case, and against seventeen real open-source
+that diffs rustest against real pytest case by case, and against sixteen real open-source
 pytest suites graded on every node id and every outcome count
-(13 MATCH / 4 EXPLAINED / 0 DIVERGE).
+(12 MATCH / 4 EXPLAINED / 0 DIVERGE).
 
 **Speed is not this release's headline, and it is not where the work went.** rustest is
 still measurably faster than pytest (see Performance), but the large multipliers earlier
@@ -314,8 +314,7 @@ Seven, in rough order of how likely they are to reach you.
 6. **`indirect=` parametrization now means what it means in pytest.** A routed parameter's
    value reaches the fixture as `request.param` and the test receives the fixture's return
    value. It used to be read as *the name of a fixture to resolve*, a rustest-only reading
-   no pytest suite could use, and one that accounted for 120 of the 129 failures in one
-   real target's `tests/test_startup` subtree. Ids still come from the parameter, so making
+   no pytest suite could use. Ids still come from the parameter, so making
    a name indirect does not move a node id. Note that a **string is a Sequence**:
    `indirect="data"` is iterated character by character exactly as under pytest and fails
    with `indirect fixture 'd' doesn't exist`; pass `["data"]` or `True`.
@@ -323,8 +322,7 @@ Seven, in rough order of how likely they are to reach you.
 7. **A directory argument no longer collects markdown.** `rustest docs/` used to pick up
    `.md` files and run their python fences; it no longer does, because pytest walking the
    same tree collects none either and a repo with fences in its docs was silently getting
-   tests under `rustest tests/` that `pytest tests/` never sees. Measured on a real suite,
-   where a fixtures directory contributed 13 ids pytest never sees, 4 of them failing.
+   tests under `rustest tests/` that `pytest tests/` never sees.
    Markdown must be **named**: `rustest README.md user_guide/*.md`.
 
 > ### Release note for tooling authors: `--llm` schema 2
@@ -612,8 +610,7 @@ which is the worst answer a test runner can give.
   files each got their own instance and each queued its own teardown, where pytest builds one
   and tears it down once. The same applies to a session fixture reached through
   `pytest_plugins`, and to the session-scoped builtins (`tmp_path_factory`, `tmpdir_factory`,
-  `cache`, `pytestconfig`). On one 6,132-test real-world suite pinned to `-n 1`, this was the
-  difference between 0.72x and 1.10x against pytest. Narrower scopes are unchanged.
+  `cache`, `pytestconfig`). Narrower scopes are unchanged.
 - **A conftest reached under two path spellings is one module again on Windows.** The
   content-cache key was case-preserving while the module cache was case-insensitive, so a
   single conftest could produce two fixture blocks, silently reintroducing the per-file
@@ -697,7 +694,7 @@ which is the worst answer a test runner can give.
 - **A test that introspects the `pytest` module's identity cannot pass.** rustest installs
   its own implementation under that name, so a test asserting on the real module object
   (rather than using its API) is structurally out of reach. Exactly one test in the
-  seventeen-suite sweep does this.
+  sixteen-suite sweep does this.
 - **No `xdist_group` equivalent**, and worker distribution is at **file** granularity. A
   suite sharing a database, a port or a filesystem path across files needs `-n 1`.
 - **Async tests sharing a loop scope run sequentially**, but so do pytest's. pytest-asyncio
@@ -726,10 +723,10 @@ with their bounds rather than as a headline multiplier. Deeper performance work 
 for a later release. Full method, per-suite table and caveats in
 `user_guide/performance.md`.
 
-- **1.1x to 5.7x** wall-clock across seventeen real open-source pytest suites, run
+- **1.2x to 5.7x** wall-clock across sixteen real open-source pytest suites, run
   sequentially on one machine, each target's two runners one after the other.
-- **1.23x** aggregated over all seventeen, a figure dominated by two suites that are
-  almost entirely their own test bodies. **2.74x** across the other fifteen.
+- **1.3x** aggregated over all sixteen, a figure dominated by one suite that is
+  almost entirely its own test bodies. **2.74x** across the other fifteen.
 - **~37x** on warm collection and **~8x** on marginal per-test framework overhead
   (500 files / 5,000 tests: 8.39s → 227.6ms, and 933.6µs → 117.9µs per test).
 - **4.0x** on the 5,000-test synthetic baseline (pytest 8.30s, rustest 2.07s).

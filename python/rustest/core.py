@@ -289,7 +289,7 @@ def _escaping_unencodable_output() -> Iterator[None]:
 #: 3.73x). A default above that ceiling cannot be spent, and is charged anyway.
 #:
 #: **What this number is not.** It is not a claim about every machine: it was measured on one
-#: 16-core hybrid CPU (Intel Core Ultra 9 285H, 16 physical cores, no SMT). It is a *cap*, so
+#: 16-core hybrid CPU (16 physical cores, no SMT). It is a *cap*, so
 #: a smaller machine still gets ``cpu_count`` and nothing changed for it. A 64-core CI box
 #: running a body-bound suite is exactly the case where it will be wrong, and the answer for
 #: that case is ``-n``, which overrides it completely and always did.

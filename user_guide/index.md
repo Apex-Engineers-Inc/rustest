@@ -32,7 +32,7 @@ plain `pip install rustest` still gives the previous stable release.
 
 This release is the result of a ground-up rewrite of the engine, and the rewrite was
 spent on **compatibility, stability and reliability**: being a runner that genuinely
-agrees with pytest, measured against a conformance corpus and seventeen real open-source
+agrees with pytest, measured against a conformance corpus and sixteen real open-source
 suites. It is also faster than pytest, but that is not what this release is about, and
 [Performance](user-guide/performance.md) reports the numbers rather than advertising them. Speed is
 the next body of work.
@@ -85,7 +85,7 @@ Already running rustest
 
 - [CLI usage](user-guide/cli.md), every flag
 - [LLM output](user-guide/llm-output.md), JSONL for agents and tooling, and the `--llm --lf` loop
-- [Performance](user-guide/performance.md), the seventeen-suite measurement and how to work out what
+- [Performance](user-guide/performance.md), the sixteen-suite measurement and how to work out what
   *your* suite will get
 - [API Reference](reference/index.html), generated from the source
 :::
@@ -149,10 +149,9 @@ spelling, and the exit code is pytest's.
 ## Where it is fast, and where it is not
 
 rustest can only speed up the *framework* part of a run, never your own test bodies. On
-seventeen real open-source suites it ranged from **1.1x to 5.7x**, and the number a given
+sixteen real open-source suites it ranged from **1.2x to 5.7x**, and the number a given
 suite gets is predictable from how much of its time is framework rather than body.
-[Performance](user-guide/performance.md) has the full table, the method, and the caveats, including the
-one suite where rustest was slower until a fix landed.
+[Performance](user-guide/performance.md) has the full table, the method, and the caveats.
 
 ## Production notes
 

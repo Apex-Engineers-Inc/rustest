@@ -103,8 +103,7 @@ id_policy = "exact"
 #
 #    Under rustest's DEFAULT worker pool the test lands in a worker that never imported
 #    `jsonschema.cli`, so it fails: rustest 2 failed vs pytest 1. Under `-n 1` the priming
-#    import happens in the same process and the tallies become identical. Same shape as
-#    A real suite's shared-MongoDB entry: not a compat defect -- rustest runs exactly the
+#    import happens in the same process and the tallies become identical. Not a compat defect -- rustest runs exactly the
 #    tests the suite asked for -- but a real and reportable cost of running an
 #    order-dependent suite under a parallel runner. KNOWN-LIMITATION.
 #

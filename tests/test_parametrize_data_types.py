@@ -85,7 +85,7 @@ def test_parametrize_bytes(value: bytes) -> None:
 # was pinning a rustest-only double-unwrap that pytest does not perform. Probed on pytest
 # 8.4.2: `param(([],))` under one name binds `([],)`, a tuple, and fails `isinstance(value,
 # list)`; `param([])` binds `[]` and passes. This file skips itself under pytest, which is
-# why the divergence survived until the seventeen-suite sweep found it elsewhere.
+# why the divergence survived until the real-suite sweep found it elsewhere.
 @parametrize("value", [
     param([], id="empty_list"),
     param([1], id="single_list"),

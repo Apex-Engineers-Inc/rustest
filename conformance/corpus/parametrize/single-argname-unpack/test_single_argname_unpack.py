@@ -7,8 +7,8 @@ the `force_tuple` it gets from `_parse_parametrize_args` (l. 165-177) --
 MECHANISM M2 of the Phase 4 Task 1b sweep, and its priority item, because it is *usually
 silent*: rustest decided unpacking by comparing lengths, so `[[42]]` bound `value = 42`
 where pytest binds `value = [42]`. The test still runs and usually still passes, having
-tested something other than what its author wrote. Sighted five times across four
-independent suites (a real suite, marshmallow, werkzeug, attrs x2); in attrs'
+tested something other than what its author wrote. Sighted across independent suites
+(marshmallow, werkzeug, attrs x2, among others); in attrs'
 `test_setattr` the only observable effect was a changed **node id**, with both cases
 passing on both runners.
 

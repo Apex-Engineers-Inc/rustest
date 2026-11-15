@@ -93,8 +93,8 @@ The Rust engine owns test discovery, execution and reporting. Every hook call wo
 Rust/Python FFI boundary, several times per file during collection and several times per test
 during execution, which for a thousand tests is thousands of crossings that do not exist today.
 
-The margin being defended is not enormous. rustest ran seventeen real pytest suites between
-[1.1x and 5.7x](performance.md) faster, and what a runner can win at all is bounded by how much
+The margin being defended is not enormous. rustest ran sixteen real pytest suites between
+[1.2x and 5.7x](performance.md) faster, and what a runner can win at all is bounded by how much
 of a suite is framework rather than test body. Re-entering Python on every hook, for every
 item, is exactly the cost that margin is made of.
 

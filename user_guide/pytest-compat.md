@@ -565,7 +565,7 @@ dependencies, rather than keep a second answer alive behind a flag that no gate 
 Passing `--v1` exits **4** with a message naming the change. `rustest.run()`, which used to
 be that engine's Python API, now drives the default engine and returns pytest's exit code
 (see [the API overview](../reference/index.html)). If your suite ran under `--v1` and does not run
-under the default, that is a bug worth filing: the conformance corpus and the seventeen-suite
+under the default, that is a bug worth filing: the conformance corpus and the sixteen-suite
 real-world sweep exist to make it one.
 
 ## Performance
@@ -574,7 +574,7 @@ Correctness came first on purpose: a fast runner that reports a failing suite as
 not a faster runner. The compatibility work above is what the speed numbers are allowed to
 rest on.
 
-Across seventeen real open-source pytest suites rustest runs **1.1x to 5.7x** faster, and
+Across sixteen real open-source pytest suites rustest runs **1.2x to 5.7x** faster, and
 the ceiling in any given case is that suite's framework share, meaning the fraction of wall
 clock that is not your own test bodies. Collection is where the gap is widest. The
 per-suite table, the methodology and every caveat are in [Performance](performance.md).

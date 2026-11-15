@@ -193,9 +193,8 @@ not merely about what it passes."""
 #
 # THE FIX IS A FEATURE, NOT A PATCH: honouring `xdist_group` by routing a marked group to a
 # single worker. That is a collection-time marker read with its own design and its own
-# conformance evidence, and three targets in this corpus now own a shared-external-state
-# hazard of this class (jsonschema's import-order dependency and a real suite's shared
-# MongoDB are the other two, both handled today with an `-n 1` pin in [run]).
+# conformance evidence, and a target in this corpus already owns a hazard of this class
+# (jsonschema's import-order dependency, handled today with an `-n 1` pin in [run]).
 xdist_group = """\
 fastapi marks three files @pytest.mark.xdist_group("workdir_lock") because they share \
 <cwd>/static; rustest implements no xdist markers and routes by file stem, so the group can \

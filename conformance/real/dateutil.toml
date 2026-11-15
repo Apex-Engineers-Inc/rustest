@@ -20,7 +20,7 @@
 # ledgerable claim being tested here (see [divergence.global] modifyitems note below).
 #
 # Why this target earns its slot regardless of the hook: it is the only suite in the
-# seventeen that (a) mixes `unittest.TestCase` classes with native pytest functions in one
+# sixteen that (a) mixes `unittest.TestCase` classes with native pytest functions in one
 # tree, (b) declares `xfail_strict = true` GLOBALLY in ini rather than per-mark, (c) turns
 # DeprecationWarning and PendingDeprecationWarning into errors on top of a bare `error`, (d)
 # overrides `python_files` with a three-pattern list including the unusual `*_solution.py`,

@@ -2,9 +2,7 @@
 
 Before Phase 4 this file tested a rustest-only feature that borrowed pytest's keyword: an
 indirect value was read as *the name of a fixture to resolve*.  No pytest suite could use
-it, `pyproject.toml` had to `--ignore` this file so pytest would not fail on it, and
-a real suite's endpoint test class — which writes the ordinary pytest shape — lost 120
-tests to ``AttributeError: 'str' object has no attribute 'model_dump'``.
+it, and `pyproject.toml` had to `--ignore` this file so pytest would not fail on it.
 
 The semantics here are now `_pytest/python.py::Metafunc._resolve_args_directness`
 (l. 1417-1454): an indirect argname keeps its fixturedefs, the parametrized value is handed
@@ -45,7 +43,7 @@ def data_2():
 
 @fixture
 def chosen(request):
-    """A real suite's shape: the parameter names another fixture."""
+    """The parameter names another fixture."""
     return request.getfixturevalue(request.param)
 
 
@@ -70,7 +68,7 @@ def test_mixed_indirect_direct(plain, labelled):
 
 @parametrize("chosen", ["data_1", "data_2"], indirect=True)
 def test_getfixturevalue_through_request_param(chosen):
-    """``request.getfixturevalue(request.param)`` — a real suite's pattern."""
+    """``request.getfixturevalue(request.param)`` as the indirect fixture."""
     assert chosen["value"] in (42, 100)
 
 

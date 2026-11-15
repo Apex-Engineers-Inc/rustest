@@ -1,38 +1,36 @@
-"""The slow-test guard's shape: a pytest_fixture_setup wrapper adds up each test's
-function-scoped fixture setups in request.node.stash; a makereport wrapper copies the
-count into user_properties.  Directly parametrized names count too (pytest gives them
-a pseudo fixture), a cached module fixture only once, and a nested fixture is not
-inside its dependent's hook call."""
+"""A pytest_fixture_setup wrapper that lists, on each test item's stash, the function-scoped
+fixtures set up for it, and a makereport wrapper that reports how many on the call phase.
+Directly parametrized names count too (pytest gives them a pseudo fixture), a cached module
+fixture only once, and a nested fixture is not inside its dependent's hook call."""
 
 import pytest
 
 from hook_log import LOG
 
-_count = pytest.StashKey[int]()
-
-
-OURS = {"shared", "inner", "outer", "value", "letter"}
+SET_UP = pytest.StashKey[list]()
+WATCHED = frozenset({"shared", "inner", "outer", "value", "letter"})
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_fixture_setup(fixturedef, request):
-    if fixturedef.argname in OURS:
-        LOG.append(("setup", fixturedef.argname, fixturedef.scope))
+    name = fixturedef.argname
+    if name in WATCHED:
+        LOG.append(("setup", name, fixturedef.scope))
     try:
-        return (yield)
+        result = yield
     finally:
-        if fixturedef.argname in OURS:
-            LOG.append(("done", fixturedef.argname))
+        if name in WATCHED:
+            LOG.append(("done", name))
         if fixturedef.scope == "function":
-            stash = request.node.stash
-            stash[_count] = stash.get(_count, 0) + 1
+            request.node.stash.setdefault(SET_UP, []).append(name)
+    return result
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item, call):
     report = yield
-    if call.when == "call":
-        report.user_properties.append(("fixtures", item.stash.get(_count, 0)))
+    if report.when == "call":
+        report.user_properties.append(("fixtures", len(item.stash.get(SET_UP, []))))
     return report
 
 

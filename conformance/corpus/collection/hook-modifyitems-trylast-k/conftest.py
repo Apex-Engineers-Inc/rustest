@@ -1,5 +1,5 @@
 """A `trylast` `pytest_collection_modifyitems` runs *after* `-k` has deselected: it sees only what
-selection left, and what it marks is that list's first test (a file-sharding hook's shape)."""
+selection left, and what it marks is that list's first test (a hook that filters by file)."""
 
 import pytest
 

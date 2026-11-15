@@ -2,7 +2,7 @@
 
 Nothing here clones, provisions or runs a real suite -- those are the gate itself. What is
 tested is the machinery that decides whether a real run *passed*, because that machinery is
-the only thing standing between "6132 tests agree" and "6132 tests were never compared".
+the only thing standing between "N tests agree" and "N tests were never compared".
 """
 
 from __future__ import annotations
@@ -348,7 +348,7 @@ def test_a_wheel_older_than_the_source_is_refused_by_name(
     ``ensure_env`` returns the moment the venv's interpreter exists, so a `--real` run used
     to measure whatever rustest was installed last. That failure has **no symptom**: the
     suite runs, the ids match, the wall-clock is a real measurement -- of the wrong build.
-    One run of a private suite was started that way and caught only because a human thought to
+    One run was started that way and caught only because a human thought to
     check by hand.
 
     The message must name the wheel *and* the file that outran it: a fresh `git checkout`

@@ -3,7 +3,7 @@
 # functions (user/blog/serialized_user, with blog and serialized_user depending on user) and
 # no pytest_* hooks of any kind anywhere in the repo -- LIMITED, cleanly. New domain versus
 # the rest of the corpus: schema validation/serialization rather than CLI (click), templating
-# (jinja2), iterators (more-itertools), or structural engineering (a real suite).
+# (jinja2), iterators (more-itertools), or structural engineering (pynite).
 
 [repo]
 kind = "oss"

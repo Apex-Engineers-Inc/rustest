@@ -4,8 +4,7 @@
 `Metafunc.parametrize` hands each set's marks to the item built from it.
 `decorators.py::ParameterSet` stored the attribute and read it nowhere -- its own comment
 said "Currently not used, but stored for future support" -- so `xfail`ing a single case did
-nothing and 9 tests in a real suite reported `failed` where pytest reports `xfailed`
-(Phase 4 Task 1 re-sweep).
+nothing, and such a case reported `failed` where pytest reports `xfailed`.
 """
 
 import pytest
@@ -45,13 +44,13 @@ def test_marks_survive_a_cross_product(a, b):
     ]
 )
 def numbered(request):
-    """A **fixture's** params take marks too, and a real suite's CL scenarios are
-    exactly that shape: `pytest.fixture(params=[pytest.param(s, marks=xfail(...))])`.
+    """A **fixture's** params take marks too:
+    `pytest.fixture(params=[pytest.param(s, marks=xfail(...))])`.
 
     pytest reaches them through the same `ParameterSet`, because
     `FixtureManager.pytest_generate_tests` hands `fixturedef.params` straight to
     `metafunc.parametrize`. rustest's `_build_fixture_params` read only `.id` and `.value`,
-    so those 9 tests reported `failed` where pytest reports `xfailed`.
+    so such cases reported `failed` where pytest reports `xfailed`.
     """
     return request.param
 

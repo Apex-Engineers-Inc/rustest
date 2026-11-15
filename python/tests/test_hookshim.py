@@ -1,29 +1,29 @@
 """``rustest._hookshim``: real conftest hooks run against the strict shim, or hand off.
 
-The fixtures here are the hook bodies of real suites, copied verbatim (the provenance is in
-each docstring), so what is proved is that **those** hooks run to completion against the shim and
-have the effects pytest gives them.  Where an effect is observable from outside, the same
-conftest is run under real pytest in a subprocess and the two are compared.
+The fixtures here are hook bodies from public projects' conftests (the provenance is in each
+docstring) and synthetic ones, so what is proved is that **those** hooks run to completion against
+the shim and have the effects pytest gives them.  Where an effect is observable from outside, the
+same conftest is run under real pytest in a subprocess and the two are compared.
 
-The supported surface, and the real suite that exercises each piece:
+The supported surface, and what exercises each piece:
 
 | attribute | exercised by |
 |---|---|
 | ``config.addinivalue_line("markers", ...)`` | pillow (inside ``try/except Exception``), networkx |
-| ``config.getoption("--opt")``, ``config.option.x`` (declared defaults) | networkx (``--backend``, ``--runslow``), a slow-test guard plugin |
-| ``config.getini`` for ``addini`` keys, and ``markers`` | a slow-test guard plugin (``addini``) |
-| ``config.hook.pytest_deselected(items=...)`` | a file-sharding hook |
+| ``config.getoption("--opt")``, ``config.option.x`` (declared defaults) | networkx (``--backend``, ``--runslow``), pytest docs |
+| ``config.getini`` for ``addini`` keys, and ``markers`` | pytest docs (``addini``) |
+| ``config.hook.pytest_deselected(items=...)`` | the synthetic partitioning plugin |
 | user attributes on ``config`` (``config.backend = ...``) | networkx |
-| ``hasattr(config, "workerinput")`` is false | a file-sharding hook |
+| ``hasattr(config, "workerinput")`` is false | the synthetic partitioning plugin |
 | ``config.rootpath``, ``config.invocation_params.dir`` | pytest's documented ``Config`` contract |
 | ``parser.addoption``, ``getgroup().addoption``, ``addini`` | networkx (literal ``addoption``), pytest docs |
-| ``item.nodeid`` / ``name`` / ``path`` / ``config`` | a file-sharding hook (``nodeid``) |
+| ``item.nodeid`` / ``name`` / ``path`` / ``config`` | the synthetic partitioning plugin (``nodeid``) |
 | ``item.keywords`` (``in`` only) | networkx (``"slow" in item.keywords``) |
 | ``item.get_closest_marker`` | dateutil |
 | ``item.add_marker`` | dateutil, networkx |
 | ``item.iter_markers`` | pytest's documented ``Node`` contract |
 | ``isinstance(item, pytest.Function)`` | the common ``modifyitems`` filter |
-| ``items[:] = ...`` | a file-sharding hook |
+| ``items[:] = ...`` | the synthetic partitioning plugin |
 | ``session.config`` | pytest's documented ``Session`` contract |
 
 Any other ``pytest_*`` name (``runtest_setup``, ``sessionfinish``, ...) is ignored by the runner,
@@ -478,123 +478,98 @@ def test_user_attributes_round_trip_and_workerinput_is_absent(tmp_path: Path) ->
 
 
 # --------------------------------------------------------------------------------------
-# A file-sharding hook of the shape real suites use: a trylast hookimpl,
-# `config.hook.pytest_deselected`, `items[:] =`, and a timing plugin registered on a controller
+# A synthetic partitioning plugin: a trylast `pytest_collection_modifyitems` that keeps every
+# K-th of N files (`config.hook.pytest_deselected`, `items[:] =`), and a counter registered only
+# where there is no `workerinput`.
 # --------------------------------------------------------------------------------------
 
-_SHARDS = '''
-import json
+_PARTITION = """
 import os
-import sys
-from collections import defaultdict
-from pathlib import Path
 
 import pytest
 
-SHARD_ENV = "DEMO_TEST_SHARD"
-TIMES_ENV = "DEMO_TEST_SHARD_TIMES"
-WEIGHTS_PATH = Path(__file__).with_name("file_weights.json")
-DEFAULT_WEIGHT = 1.0
 
-
-def _spec(value: str) -> tuple[int, int]:
-    """``"2/4"``: the second of four parts."""
-    index, _, count = value.partition("/")
-    if not (index.isdigit() and count.isdigit() and 1 <= int(index) <= int(count)):
-        raise pytest.UsageError(f"{SHARD_ENV} must look like 2/4 (shard 2 of 4), not {value!r}")
-    return int(index), int(count)
-
-
-def _split(files: set[str], weights: dict[str, float], count: int) -> list[set[str]]:
-    """Greedy: heaviest file first, into the lightest part; ties by name, so every process agrees."""
-    shards: list[set[str]] = [set() for _ in range(count)]
-    loads = [0.0] * count
-    for file in sorted(files, key=lambda f: (-weights.get(f, DEFAULT_WEIGHT), f)):
-        lightest = loads.index(min(loads))
-        shards[lightest].add(file)
-        loads[lightest] += weights.get(file, DEFAULT_WEIGHT)
-    return shards
-
-
-def _file_of(nodeid: str) -> str:
-    return nodeid.split("::", 1)[0]
-
-
-def _weights() -> dict[str, float]:
-    return json.loads(WEIGHTS_PATH.read_text(encoding="utf-8")) if WEIGHTS_PATH.exists() else {}
+def _wanted():
+    spec = os.environ.get("RUSTEST_DEMO_PART", "")
+    if "/" not in spec:
+        return None
+    k, n = (int(part) for part in spec.split("/"))
+    return k - 1, n
 
 
 @pytest.hookimpl(trylast=True)
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if not (value := os.environ.get(SHARD_ENV)):
+def pytest_collection_modifyitems(config, items):
+    wanted = _wanted()
+    if wanted is None:
         return
-    index, count = _spec(value)
-    mine = _split({_file_of(item.nodeid) for item in items}, _weights(), count)[index - 1]
-    deselected = [item for item in items if _file_of(item.nodeid) not in mine]
-    if deselected:
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = [item for item in items if _file_of(item.nodeid) in mine]
+    remainder, count = wanted
+    files = sorted({item.nodeid.partition("::")[0] for item in items})
+    keep = {name for position, name in enumerate(files) if position % count == remainder}
+    dropped = [item for item in items if item.nodeid.partition("::")[0] not in keep]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = [item for item in items if item.nodeid.partition("::")[0] in keep]
 
 
-def pytest_configure(config: pytest.Config) -> None:
-    if (path := os.environ.get(TIMES_ENV)) and not hasattr(config, "workerinput"):
-        config.pluginmanager.register(_Timings(path))
+class Counter:
+    reports = 0
 
+    def pytest_runtest_logreport(self, report):
+        self.reports += 1
 
-class _Timings:
-    def __init__(self, path: str) -> None:
-        self.path = path
-        self.seconds: dict[str, float] = {}
-
-    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        self.seconds[report.nodeid] = report.duration
-
-    def pytest_sessionfinish(self) -> None:
+    def pytest_sessionfinish(self, session):
         pass
-'''
-
-_SHARD_FILES = {f"test_{name}.py": "def test_x(): pass\ndef test_y(): pass\n" for name in "abcde"}
 
 
-def test_shards_deselects_the_files_pytest_deselects(
+def pytest_configure(config):
+    if os.environ.get("RUSTEST_DEMO_COUNT") and not hasattr(config, "workerinput"):
+        config.pluginmanager.register(Counter(), "demo-counter")
+"""
+
+_PARTITION_FILES = {
+    f"test_{name}.py": "def test_x(): pass\ndef test_y(): pass\n" for name in "abcde"
+}
+
+
+def test_a_partitioning_hook_deselects_the_files_pytest_deselects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _module(tmp_path, "shards", _SHARDS)
-    monkeypatch.setenv("DEMO_TEST_SHARD", "1/2")
+    module = _module(tmp_path, "partition", _PARTITION)
+    monkeypatch.setenv("RUSTEST_DEMO_PART", "1/2")
     runner = _runner()
-    runner.register("tests/sharding.py", module)
-    runner.configure()  # TIMES unset: `hasattr(config, "workerinput")` is never reached
+    runner.register("tests/partition.py", module)
+    runner.configure()  # no counter requested: `hasattr(config, "workerinput")` is not reached
     records = [_record(f"test_{n}.py::test_{t}") for n in "abcde" for t in "xy"]
 
     effects = _modify(runner, records)
 
     assert runner.reasons == []
-    assert (
-        effects.vanished == [] and effects.deselected
-    )  # counted, via config.hook.pytest_deselected
+    assert effects.vanished == [] and effects.deselected  # via config.hook.pytest_deselected
     assert effects.order and set(effects.order).isdisjoint(effects.deselected)
 
     tree = make_tree(
-        tmp_path, "shards_tree", {"shards_plugin.py": textwrap.dedent(_SHARDS), **_SHARD_FILES}
+        tmp_path,
+        "partition_tree",
+        {"partition_plugin.py": textwrap.dedent(_PARTITION), **_PARTITION_FILES},
     )
     result = _real_pytest(
-        tree, ["-p", "shards_plugin", "--collect-only", "-q"], {"DEMO_TEST_SHARD": "1/2"}
+        tree, ["-p", "partition_plugin", "--collect-only", "-q"], {"RUSTEST_DEMO_PART": "1/2"}
     )
     real_ids = [line for line in result.stdout.splitlines() if "::" in line]
     assert real_ids == effects.order
     assert f"{len(effects.deselected)} deselected" in result.stdout
 
 
-def test_shards_registering_a_session_end_plugin_joins_the_session_end(
+def test_a_plugin_registered_where_there_is_no_workerinput_joins_the_session_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``config.pluginmanager.register`` from ``pytest_configure`` (``hasattr(config,
     "workerinput")`` answering False, a controller): the object's ``pytest_runtest_logreport``
     and ``pytest_sessionfinish`` both run natively -- the latter at the session's end."""
-    module = _module(tmp_path, "shards_times", _SHARDS)
-    monkeypatch.setenv("DEMO_TEST_SHARD_TIMES", str(tmp_path / "times.json"))
+    module = _module(tmp_path, "partition_count", _PARTITION)
+    monkeypatch.setenv("RUSTEST_DEMO_COUNT", "1")
     runner = _runner()
-    runner.register("tests/sharding.py", module)
+    runner.register("tests/partition.py", module)
 
     runner.configure()
 
@@ -2658,7 +2633,7 @@ def test_the_markers_of_a_parametrized_test_cannot_be_read_whole(tmp_path: Path)
 
 def test_a_loaded_plugins_options_answer_with_their_defaults(tmp_path: Path) -> None:
     """xdist's and hypothesis's options, as pytest answers them without the flags (which hand
-    off): a real suite's `getattr(config.option, "tx", None)`, pytest 8.4.2 + xdist 3.8."""
+    off): `getattr(config.option, "tx", None)`, pytest 8.4.2 + xdist 3.8."""
     seen: dict[str, object] = {}
     module = _module(
         tmp_path,

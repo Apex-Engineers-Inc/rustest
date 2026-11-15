@@ -175,8 +175,7 @@ def test_class_level_indirect_reaches_the_methods() -> None:
 
     Methods do not inherit class attributes, so `_indirect_names(method)` sees nothing and
     the routing has to be threaded down from `_collect_class` the way `outer_cases` already
-    is. A real suite's endpoint test class is exactly this shape, and it is why 120 of its
-    tests still failed after the function-level implementation landed.
+    is; a function-level implementation alone leaves the methods the raw value.
     """
 
     @parametrize("label,chosen", [("a", "alpha")], indirect=["chosen"])

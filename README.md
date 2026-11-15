@@ -31,13 +31,13 @@ That is the whole migration for most suites.
 
 ## Does it actually agree with pytest?
 
-This question matters more than speed, so it is measured rather than asserted. Seventeen
+This question matters more than speed, so it is measured rather than asserted. Sixteen
 real, unmodified open-source pytest suites are run under both runners and graded on **every
 node id and every outcome count**:
 
 | Verdict | Count | Meaning |
 |---|---:|---|
-| **MATCH** | 13 | Every node id and every outcome count identical to pytest's |
+| **MATCH** | 12 | Every node id and every outcome count identical to pytest's |
 | **EXPLAINED** | 4 | Every remaining difference covered by a ledger entry naming its mechanism |
 | **DIVERGE** | 0 | A difference with no such entry |
 
@@ -58,8 +58,8 @@ compatibility, stability and reliability: on running your pytest suite unchanged
 pytest, which is what the table above measures. Making it *fast* is the next body of work,
 not this one.
 
-What it does today, honestly: **1.1x to 5.7x** across those same seventeen suites,
-**1.23x** aggregated over all of them, **2.74x** across the fifteen that are not dominated
+What it does today, honestly: **1.2x to 5.7x** across those same sixteen suites,
+**1.3x** aggregated over all of them, **2.74x** across the fifteen that are not dominated
 by their own test bodies. Useful, and measured rather than asserted, but a long way from
 the headline multipliers rustest used to advertise. Those described an earlier engine that
 has since been deleted, and they are gone from every page rather than quietly inherited.
@@ -71,7 +71,6 @@ it is the ceiling:
 | Suite | Framework share | Speedup |
 |---|---:|---:|
 | werkzeug | 1% | 1.62x |
-| A real suite (6,132 tests) | 4% | 1.10x |
 | more-itertools | 13% | 1.82x |
 | jsonschema | 24% | 2.91x |
 | jinja2 | 72% | 2.38x |

@@ -1,8 +1,7 @@
 """Where ``tmp_path`` lives: ``<temproot>/pytest-of-<user>/pytest-<n>/<name><i>``.
 
 `_pytest/tmpdir.py::TempPathFactory.getbasetemp`. Under pytest-xdist each worker's base is
-``pytest-<n>/popen-gw<k>``, one ``pytest-<n>`` for the session. Suites key on this shape (a
-cleanup that only touches what lives under ``pytest-of-``), so it is graded, not cosmetic.
+``pytest-<n>/popen-gw<k>``, one ``pytest-<n>`` for the session. Suites key on this shape, so it is graded, not cosmetic.
 """
 
 import os

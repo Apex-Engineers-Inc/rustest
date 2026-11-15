@@ -6,10 +6,8 @@ return `NotImplemented`, so Python falls back to approx's own `__eq__`. Without 
 wins the dispatch and produces an elementwise bool ARRAY, and the enclosing `assert` raises
 `ValueError: The truth value of an array with more than one element is ambiguous`.
 
-Measured in a real suite's own venv during the Task 1b sweep:
-`np.array([5., 5., 5.]) == pytest.approx(5.0)` -> `True`;
-the same against the old `rustest.approx` -> `array([True, True, True])`.
-Two of that suite's four residual failures were exactly this.
+Measured: `np.array([5., 5., 5.]) == pytest.approx(5.0)` -> `True`; the same against the
+old `rustest.approx` -> `array([True, True, True])`.
 
 **Its own case directory, and numpy is a declared dev dependency, for one reason.** This
 file used to live beside `test_approx_numeric.py` in `builtins/approx-numeric`, and its

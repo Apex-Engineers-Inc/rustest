@@ -4716,10 +4716,9 @@ def _collect_function(
     parametrized = frozenset(name for _case_id, values, _m in direct_cases for name in values)
     # `outer_indirect` carries a **class-level** `@parametrize(..., indirect=[...])`, whose
     # metadata `decorators.py::parametrize` wrote onto the class object where a method cannot
-    # see it -- functions do not inherit class attributes. A real suite's endpoint test
-    # class is exactly that shape (a `@pytest.mark.parametrize(..., indirect=[...])` naming one
-    # fixture, on the *class*), and reading only the function's own metadata left 120 of its
-    # tests receiving the raw string instead of the fixture's return.
+    # see it -- functions do not inherit class attributes, so reading only the function's
+    # own metadata hands a class-level indirect parameter's methods the raw value instead of
+    # the fixture's return.
     # Threaded explicitly for the same reason `outer_cases` is, and it composes through
     # nested classes for free.
     indirect = (_indirect_names(_parametrize_source(func)) | outer_indirect) & parametrized
@@ -6637,7 +6636,7 @@ def _consume_test_result(plan: ExecutionPlan, runner: FixtureRunner, result: obj
     (l. 708-723) as ``runner.run(coro, context=context)``. Without it every test sharing a
     runner shares **one** context, which is the runner's own, so a ``ContextVar`` set in one
     test is still set in the next. Measured under ``asyncio_mode = auto`` with both loop
-    scopes ``session`` — the acceptance shape, and a real suite's config — where pytest
+    scopes ``session`` — the acceptance shape — where pytest
     printed ``unset`` for the second test and rustest printed ``from-test-one``. Anything
     that stores request state, a DB session or a trace id in a ``ContextVar`` (structlog,
     SQLAlchemy's async session, OpenTelemetry) leaks across tests on that shape, and leaks

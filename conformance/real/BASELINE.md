@@ -52,7 +52,7 @@ xdist was installed into each target venv by the harness (`pytest-xdist==3.8.0`)
   to pytest and xdist is installed. Its time is therefore xdist's, plus rustest's thrown-away collection
   (about a second), not "pytest's speed". attrs, dateutil and pillow are handed off by a conftest
   `pytest_configure` or `pytest_collection_modifyitems`.
-- **Not run:** jinja2, fastapi, werkzeug, pynite and a real suite, whose venvs are a different ABI
+- **Not run:** jinja2, fastapi, werkzeug, and pynite, whose venvs are a different ABI
   (3.13 or free-threaded) from the extension built in `python/` and need a wheel per ABI (maturin); and
   psutil (about 30 minutes alone, run monthly). Their previous results are in the old design notes, not here.
 - Node ids carried a repository-relative prefix for sqlparse and pillow, because the clones were then
@@ -74,11 +74,10 @@ xdist was installed into each target venv by the harness (`pytest-xdist==3.8.0`)
 
 ## Entry-point plugin allowlist (re-checked against this baseline)
 
-After the allowlist landed (`_fallback.SAFE_PLUGINS`; scan cost about 5 ms in a small venv and 20 ms in
-a real suite's, on every invocation that may fall back), the eight native suites were re-run
+After the allowlist landed (`_fallback.SAFE_PLUGINS`; scan cost about 5 ms in a small venv, on every invocation that may fall back), the eight native suites were re-run
 one at a time with `--real-tree` and all stayed native with unchanged verdicts: their only
 auto-loaded plugin is `xdist`, which the harness installs. Not re-run: attrs and dateutil (already handed
 off by a conftest hook; they now also name `hypothesispytest`), pillow (only `xdist`, so unchanged).
 The suites that would newly hand off are the ones whose venvs hold `hypothesispytest` (attrs,
-dateutil), `anyio` (fastapi, pynite, a real suite) or `timeout` (werkzeug); none of those were in
+dateutil), `anyio` (fastapi, pynite) or `timeout` (werkzeug); none of those were in
 the native set measured here.

@@ -12,9 +12,9 @@ multipliers; those described an engine that has since been deleted, and they hav
 removed from every page rather than quietly carried forward.
 :::
 
-**The short version.** On seventeen real open-source pytest suites, rustest ran between
-**1.1x and 5.7x** faster than pytest. Aggregated over all seventeen the figure is **1.23x**,
-because two of those suites are almost entirely their own code and a test runner cannot make
+**The short version.** On sixteen real open-source pytest suites, rustest ran between
+**1.2x and 5.7x** faster than pytest. Aggregated over all sixteen the figure is **1.3x**,
+because one of those suites is almost entirely its own code and a test runner cannot make
 your code faster. Across the other fifteen it is **2.74x**.
 
 There is no single "rustest is Nx faster" number, and this page will not give you one. What
@@ -29,7 +29,6 @@ That fraction was measured per suite rather than assumed:
 | Suite | Time spent in your test bodies | Framework share = the ceiling |
 |---|---:|---:|
 | werkzeug | 99% | 1% |
-| A real suite (private, 6,132 tests) | 96% | 4% |
 | more-itertools | 87% | 13% |
 | jsonschema | 76% | 24% |
 | attrs | 74% | 26% |
@@ -41,8 +40,8 @@ That fraction was measured per suite rather than assumed:
 | click | 22% | 78% |
 | marshmallow | 10% | 90% |
 
-Read that table before the one below. **A 1.10x on a real suite and a 2.73x on
-marshmallow are the same result**: a real suite spends 96% of its wall clock inside its
+Read that table before the one below. **A 1.62x on werkzeug and a 2.73x on
+marshmallow are the same result**: werkzeug spends 99% of its wall clock inside its
 own test bodies and marshmallow spends 10%. If your suite is 95% body (network calls,
 database round-trips, numeric work), no runner can give you more than a few percent, and any
 tool that promises otherwise is measuring something other than your suite.
@@ -50,7 +49,7 @@ tool that promises otherwise is measuring something other than your suite.
 Body share is measured at `-n 1`. A pooled run can exceed 100%, because several workers'
 bodies run inside one wall-clock second, which is why some targets are absent from the list.
 
-## The seventeen-suite sweep
+## The sixteen-suite sweep
 
 Each target is a real, unmodified open-source pytest suite at a pinned revision, run
 **sequentially**: one target at a time, each target's two runners one after the other and
@@ -73,16 +72,15 @@ entry naming its mechanism; **DIVERGE** means something is not.
 | 7 | jinja2 | MATCH | 4.59s | 1.93s | **2.38x** | 72% | 909 tests |
 | 8 | jsonschema | MATCH | 28.37s | 9.76s | **2.91x** | 24% | 7,815 ids; pinned `-n 1` for correctness |
 | 9 | marshmallow | EXPLAINED | 3.69s | 1.35s | **2.73x** | 90% | 4 ids: the target puts a wall-clock in a node id |
-| 10 | A real suite | MATCH | 309.68s | 280.61s | **1.10x** | 4% | 6,132 ids, full parity; median of five runs, see below |
-| 11 | more-itertools | MATCH | 11.36s | 6.25s | **1.82x** | 13% | 722 tests |
-| 12 | pillow | MATCH | 89.64s | 41.26s | **2.17x** | not measured | 4,036 ids |
-| 13 | psutil | EXPLAINED | 1948.05s | 1663.86s | **1.17x** | not measured | 713 ids, 712 statuses identical |
-| 14 | pynite | MATCH | 94.12s | 27.08s | **3.48x** | not measured | 181 tests, numeric/FEA |
-| 15 | rich | EXPLAINED | 9.44s | 4.79s | **1.97x** | 26% | 1 id: `test_suppress`, a known limitation |
-| 16 | sqlparse | MATCH | 3.61s | 1.62s | **2.23x** | 74% | 482 ids incl. 2 xfailed + 1 xpassed |
-| 17 | werkzeug | MATCH | 29.45s | 18.17s | **1.62x** | 1% | 969 ids; rustest leaks 0 processes, pytest leaks 6 |
+| 10 | more-itertools | MATCH | 11.36s | 6.25s | **1.82x** | 13% | 722 tests |
+| 11 | pillow | MATCH | 89.64s | 41.26s | **2.17x** | not measured | 4,036 ids |
+| 12 | psutil | EXPLAINED | 1948.05s | 1663.86s | **1.17x** | not measured | 713 ids, 712 statuses identical |
+| 13 | pynite | MATCH | 94.12s | 27.08s | **3.48x** | not measured | 181 tests, numeric/FEA |
+| 14 | rich | EXPLAINED | 9.44s | 4.79s | **1.97x** | 26% | 1 id: `test_suppress`, a known limitation |
+| 15 | sqlparse | MATCH | 3.61s | 1.62s | **2.23x** | 74% | 482 ids incl. 2 xfailed + 1 xpassed |
+| 16 | werkzeug | MATCH | 29.45s | 18.17s | **1.62x** | 1% | 969 ids; rustest leaks 0 processes, pytest leaks 6 |
 
-**Scoreboard: 13 MATCH, 4 EXPLAINED, 0 DIVERGE.** Seventeen of seventeen graded.
+**Scoreboard: 12 MATCH, 4 EXPLAINED, 0 DIVERGE.** Sixteen of sixteen graded.
 
 None of the four EXPLAINED rows is rustest getting a test result wrong:
 
@@ -97,42 +95,17 @@ None of the four EXPLAINED rows is rustest getting a test result wrong:
 
 ### The aggregate, and why it is not the headline
 
-**Totals across all seventeen: pytest 2,683.6s, rustest 2,184.5s, so 1.23x.**
+**Totals across all sixteen: pytest 2,339.8s, rustest 1,806.8s, so 1.3x.**
 
-That figure is dominated by the two suites that are almost entirely body time: psutil alone
-is 1,948s of pytest's total, and a real suite another 310s. Across the other fifteen,
+That figure is dominated by the one suite that is almost entirely body time: psutil alone
+is 1,948s of pytest's total. Across the other fifteen,
 pytest spends **391.7s** and rustest **142.9s**, so **2.74x**.
-
-The totals are the sweep's own, and the private suite's row in the table above is not: that
-row carries the post-fix medians described below, measured in a later window. Summing the
-table's columns therefore will not reproduce the two totals exactly.
 
 Both numbers are real, and neither answers "how much faster will *my* suite be". That answer
 is in the framework-share table at the top.
 
-**Do not average the per-suite ratios.** A mean over seventeen suites is a statement about
+**Do not average the per-suite ratios.** A mean over sixteen suites is a statement about
 which projects happened to be picked, not about the runner.
-
-### A real suite: the row that went the wrong way, then didn't
-
-This target, a private 6,132-test suite pinned to `-n 1` because it shares a MongoDB, was the
-sweep's one honest loss. rustest ran it at **0.72x**, genuinely *slower* than pytest. The
-cause was real and fixable: session- and package-scoped fixtures were being rebuilt once per
-*file* rather than once per run, and this suite's root `conftest.py` holds five expensive
-ones (a service manager, a database drop-and-reinitialise, a `ProcessPoolExecutor`, an ASGI
-transport). At `-n 1` across ~285 files, that cost was paid 285 times.
-
-After the fix, five runs give medians of **486.0s to 280.6s, i.e. 0.72x to 1.10x**, rustest
-crossing pytest on this target for the first time. Per-file fixture-registry construction
-went from 71.9µs to 1.2µs.
-
-Two honesty notes, because this is the one figure on the page produced by an A/B rather than
-a single measurement window. The pytest control (unchanged code) spans 290.33 to 395.65s
-across the five runs, so this target carries roughly ±15% run-to-run and **no single pair of
-runs is worth quoting**; the medians are. And the arms are confounded with run order (the
-pre-fix arm occupies the even slots, n=2 against n=3). The effect is far larger than that
-bias could plausibly account for and the mechanism explains it independently, but a
-replication should randomise the interleaving.
 
 ## Component numbers
 
@@ -188,9 +161,9 @@ Stated rather than implied, because they bound what the absolute seconds mean:
 - Every target's virtualenv was reinstalled from wheels built from the measured tree, and
   each was verified by the target's *own* interpreter to be importing the compiled extension
   under test, so no row is measuring a stale build.
-- Two targets are pinned to `-n 1` for correctness, not for speed: jsonschema has a proven
-  import-order dependency, and a real suite shares a MongoDB. jsonschema's pin costs it
-  roughly a third of its wall clock, and that cost is visible in its row.
+- One target is pinned to `-n 1` for correctness, not for speed: jsonschema has a proven
+  import-order dependency. The pin costs it roughly a third of its wall clock, and that cost
+  is visible in its row.
 
 ## Getting the most out of it
 
@@ -225,7 +198,7 @@ Everything above is regenerated by the repository's own conformance harness:
 # The synthetic baselines table (--quick for the smallest size only)
 uv run python -m conformance.bench.bench
 
-# One real-world target, or all seventeen
+# One real-world target, or all sixteen
 uv run python -m conformance --real sqlparse
 uv run python -m conformance --real all
 ```

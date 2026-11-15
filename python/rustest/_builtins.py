@@ -28,7 +28,7 @@ nothing from the package, so ``MonkeyPatch`` is imported at the top.
 ``logging`` **is** eager, and that is a measured exception rather than an oversight: 4.9 /
 4.5 / 5.6 / 5.0 / 12.3 ms marginal over five runs with ``rustest._worker`` already
 imported, against a ~300 ms worker boot that already pays ``unittest`` unconditionally — and
-against a real suite, which imports ``logging`` itself.  Deferring it would buy those
+against most real suites, which import ``logging`` themselves.  Deferring it would buy those
 milliseconds back only for suites that never log, at the cost of building
 ``LogCaptureHandler`` inside a function, where its type is unknowable to the type checker
 and every use of ``caplog.records`` becomes an ``Unknown``.

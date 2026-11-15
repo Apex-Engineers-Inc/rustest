@@ -1,4 +1,4 @@
-"""`pytestmark = pytest.mark.asyncio` -- the shape that cost a real suite its whole run."""
+"""`pytestmark = pytest.mark.asyncio` -- one such module used to stop a whole run."""
 
 import pytest
 
