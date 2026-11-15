@@ -124,6 +124,9 @@ NOT pre-waived any wider than this one id, deliberately. If this test starts fli
 
 NOT pre-waived any wider than this one id."""
 
+"tests/test_unicode.py::TestFSAPIs::test_proc_cmdline" = """THE TARGET'S OWN RACE, inside its own helper. The test spawns a child and the suite's `spawn_subproc` then calls `wait_for_pid`, which raised `psutil.NoSuchProcess`: the child had already exited before the helper looked for it. Every frame of that traceback is psutil's (`tests/__init__.py`: `spawn_subproc` -> `wait_for_pid`); none is rustest's.
+Measured 2026-11-15: in the sweep, rustest (4 workers, the whole suite) failed it once and pytest serial and pytest -n 4 passed it. Run as `tests/test_unicode.py` alone, pytest -n 4 failed it 1 time in 41 runs and rustest -n 4 0 times in 21 (alone, rustest runs that one file in one process). The same class as `test_pids` above: process start and exit timing under load.
+NOT pre-waived any wider than this one id."""
 [divergence.global]
 # The tally DOES still differ, by exactly one test moving between two buckets, and that is the
 # `test_cpu_freq` flake ledgered above showing up in the totals. Everything else is identical.

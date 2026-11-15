@@ -37,16 +37,18 @@ node id and every outcome count**:
 
 | Verdict | Count | Meaning |
 |---|---:|---|
-| **MATCH** | 12 | Every node id and every outcome count identical to pytest's |
-| **EXPLAINED** | 4 | Every remaining difference covered by a ledger entry naming its mechanism |
+| **MATCH** | 13 | Every node id and every outcome count identical to pytest's |
+| **EXPLAINED** | 3 | Every remaining difference covered by a ledger entry naming its mechanism |
 | **DIVERGE** | 0 | A difference with no such entry |
 
-None of the four EXPLAINED rows is rustest getting a test result wrong. **fastapi**
-deselects a different count under the `anyio` plugin. **marshmallow** puts a wall-clock
-reading inside a node id, and **psutil**'s one differing test is a live CPU-frequency
-reading, which failed on *pytest's* side and passed on rustest's. **rich**'s `test_suppress`
-introspects the *identity* of the `pytest` module object rather than using its API, and that
-is the one class of test rustest structurally cannot pass.
+None of the three EXPLAINED rows is rustest getting a test result wrong. **marshmallow**
+puts a wall-clock reading inside a node id. **psutil**'s differences are its own timing: a
+live CPU-frequency reading, and tests that race a process's start or exit under any parallel
+run (pytest-xdist fails one of them too). **rich**'s `test_suppress` introspects the
+*identity* of the `pytest` module object rather than using its API, and that is the one class
+of test rustest structurally cannot pass. Two of the thirteen MATCH, **fastapi** and
+**werkzeug**, use a plugin rustest does not run, so rustest hands those sessions to pytest
+whole, as it would yours.
 
 Underneath the sweep sits a conformance corpus that diffs rustest against real pytest on
 node ids, outcome tallies and exit codes, case by case, on every commit.

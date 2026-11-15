@@ -288,7 +288,7 @@ your existing pytest suite unchanged, and agreeing with pytest, rather than a fa
 That is what the evidence measures. The engine is validated against a conformance corpus
 that diffs rustest against real pytest case by case, and against sixteen real open-source
 pytest suites graded on every node id and every outcome count
-(12 MATCH / 4 EXPLAINED / 0 DIVERGE).
+(13 MATCH / 3 EXPLAINED / 0 DIVERGE).
 
 **Speed is not this release's headline, and it is not where the work went.** rustest is
 still measurably faster than pytest (see Performance), but the large multipliers earlier

@@ -80,15 +80,22 @@ entry naming its mechanism; **DIVERGE** means something is not.
 | 15 | sqlparse | MATCH | 3.61s | 1.62s | **2.23x** | 74% | 482 ids incl. 2 xfailed + 1 xpassed |
 | 16 | werkzeug | MATCH | 29.45s | 18.17s | **1.62x** | 1% | 969 ids; rustest leaks 0 processes, pytest leaks 6 |
 
-**Scoreboard: 12 MATCH, 4 EXPLAINED, 0 DIVERGE.** Sixteen of sixteen graded.
+**Scoreboard, run as a user runs each suite: 13 MATCH, 3 EXPLAINED, 0 DIVERGE.** Sixteen of
+sixteen graded.
 
-None of the four EXPLAINED rows is rustest getting a test result wrong:
+The fastapi row above is its engine-only run (rustest `--no-pytest-fallback`), which grades
+EXPLAINED: that partial run deselects a different count under the `anyio` plugin (18 vs 9), by
+design of how the target is invoked. Run as you would run it, fastapi has a plugin installed
+that rustest does not run (`inline_snapshot`), so rustest hands the session to pytest whole and
+it matches; werkzeug likewise, for a test that uses `timeout`.
 
-- **fastapi**, where the partial run deselects a different count under the `anyio` plugin
-  (18 vs 9), by design of how the target is invoked.
+None of the three EXPLAINED suites is rustest getting a test result wrong:
+
 - **marshmallow** and **psutil**, where the cause is the *target's* own nondeterminism.
-  marshmallow embeds a wall-clock reading in a node id; psutil's single differing test is a
-  live CPU-frequency reading, and it **failed on pytest's side and passed on rustest's**.
+  marshmallow embeds a wall-clock reading in a node id. psutil's differences are a live
+  CPU-frequency reading, which **failed on pytest's side and passed on rustest's**, and tests
+  that race a process's start or exit under any parallel run (pytest-xdist fails one of them
+  too).
 - **rich**, whose `test_suppress` is the one class of test rustest structurally cannot pass:
   it introspects the *identity* of the `pytest` module object rather than using its API. See
   [pytest compatibility](pytest-compat.md).
