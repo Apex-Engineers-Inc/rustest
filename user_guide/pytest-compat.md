@@ -394,14 +394,31 @@ lines, the warnings summary, the counts and the report all include the handed te
 stderr names the files. An interrupt in a handed test (`KeyboardInterrupt`, `pytest.exit`) ends
 the session there, as pytest's does: nothing native runs after it.
 
+Under the xdist model (pytest-xdist installed, or `-n`) with a pool of two or more workers,
+the handed pytest is one more xdist worker, in one process: it has `config.workerinput` (set
+before any conftest loads) and the next worker id, its reports reach the controller with the
+pool's, and its own terminal output is not shown, as an xdist worker's is not -- so a session
+with pytester files looks like `pytest -n N+1` to its controller hooks, and `-s` does not send
+it to pytest whole (rustest's own workers still show their output under `-s`; the handed one's
+is not shown). A conftest that reads a `workerinput` key a real xdist worker could have and this
+one lacks, by indexing or `get`, sends the session to pytest; an `in` test or iteration is not
+noticed.
+
 The whole session goes to pytest instead when something ties those files to the rest: another
 collection error, a node id that points inside such a file, a test elsewhere that asks for a
 `pytester` fixture (the plugin is the whole session's once a module names it), a
-`pytest_collection_modifyitems` that changed the selection or the order (it would run again
-over the handed files alone), a session-end or report hook a conftest registers (it would run,
-and write, twice), `-x` / `--maxfail` (which failure stops the session would change), `--lf` /
-`--ff`, `-s`, `--cov` or a coverage environment. A conftest that names `pytester` is the whole
-session's too.
+`pytest_collection_modifyitems` from a conftest or a `pytest_plugins` module that changed the
+selection, the order or the marks of either part (it would run again over the handed files
+alone; pytest's own reordering and an installed plugin's do not count), such a hook together
+with `-k` or `-m`, `-x` / `--maxfail` (which failure stops the session would change), an
+interrupt or `pytest.exit()` in a handed test when there is a controller (xdist's controller
+ends that session itself, with its summary hooks), `--lf` / `--ff`, `--cov` or a coverage
+environment, and -- outside the xdist model, with a pool of one, or when the hook comes from a
+conftest below the initial ones -- a session-end or report hook a conftest registers (it would
+run, and write, twice) or `-s`. A conftest that names `pytester` is the whole session's too. Not
+noticed: a hook whose decision depends on the whole list yet leaves both parts unchanged.
+Without a controller, `pytest.exit()` in a handed test ends the session there, with its
+`returncode`, and no native test runs.
 
 ### `-p no:cacheprovider` and `cache_dir`
 
@@ -420,6 +437,22 @@ environment before anything of the project is imported, `config.workerinput` wit
 `workerid`, `workercount` and `testrunuid`, and (with xdist installed) the `worker_id` and
 `testrun_uid` fixtures. With one worker it is serial pytest: `worker_id` is `"master"` and none
 of the rest exists. Suites that give each xdist worker its own database or port work unchanged.
+
+### A long test file can be split across workers
+
+Under `-n`, a test file's tests can run in more than one worker, as they can under `pytest
+-n`. The grouping differs: rustest cuts them into contiguous slices, in collection order,
+fixed before any test runs, and each slice runs on its own worker as its own module
+instance, so a module- or class-scoped fixture sets up once per slice. rustest splits a file
+only when the previous run's recorded call times say that file alone costs more than its
+share of the pool (`total / workers`), and then into at most one slice per worker, each
+carrying at least half a second of recorded tests, cut at a class boundary where one is
+close. Whole files remain the rule without `-n` (pytest-xdist installed or not), with no
+recorded call times, when node ids, `--lf` or `--ff` narrow the run, on a `--watch` rerun,
+and for a file whose name another test file shares. `--llm` prints one `split` line per
+split file, and `RUSTEST_SCHEDULE_TRACE=1` prints the same on stderr. A test that only
+passes after another test in the same file has run in the same process can fail when its
+slice moves, as it can under `pytest -n`.
 
 ### What is still not detected
 

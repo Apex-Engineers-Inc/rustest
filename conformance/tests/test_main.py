@@ -347,7 +347,9 @@ def test_corpus_case_count_is_pinned() -> None:
     # (serial vs pytest, and `popen-gw<k>` vs a pinned real pytest-xdist run).
     # `collection/pytester-file` (+1): a pytester file runs under pytest first, the rest natively.
     # `fixtures/wide-scope-setup-raises` (+1): a raising wide-scope setup runs once per scope.
-    assert len(discover_cases()) == 112
+    # `hooks/pytester-controller` (+1): the handed pytest as one more xdist worker, pinned.
+    # `collection/split-under-n` (+1): a recorded costly file split across two workers, pinned.
+    assert len(discover_cases()) == 114
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

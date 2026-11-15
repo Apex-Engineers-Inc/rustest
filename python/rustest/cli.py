@@ -597,15 +597,14 @@ def _hand_files(
     user_argv: Sequence[str],
     parser: argparse.ArgumentParser,
     resolved: Any,
-) -> Callable[[list[str], str], str | None] | None:
+) -> Callable[[list[str], str, tuple[str, int, str, bool] | None], str | None] | None:
     """B-lite's runner for this session (``_fallback.run_files``), or ``None`` when a file that
     uses ``pytester`` must take the whole session to pytest: ``--lf``/``--ff`` (the cache's
-    filter spans both runners), ``-s`` (pytest's output is not streamed), ``--cov`` or a
-    coverage environment (two processes would write one data file)."""
+    filter spans both runners), ``--cov`` or a coverage environment (two processes would write
+    one data file). ``-s`` is the engine's to decide: outside the xdist model it is whole too."""
     if (
         not args.pytest_fallback
         or _last_failed_mode(args) != "none"
-        or not args.capture_output
         or args.cov is not None
         or os.environ.get("COVERAGE_PROCESS_START")
     ):
@@ -618,8 +617,12 @@ def _hand_files(
 
     argv = _without_targets(parser, user_argv)
 
-    def run_files(files: list[str], cache_dir: str) -> str | None:
-        return _fallback.run_files(argv, files, cache_dir, rootdir=rootdir, inifile=inifile)
+    def run_files(
+        files: list[str], cache_dir: str, worker: tuple[str, int, str, bool] | None
+    ) -> str | None:
+        return _fallback.run_files(
+            argv, files, cache_dir, rootdir=rootdir, inifile=inifile, worker=worker
+        )
 
     return run_files
 
@@ -655,6 +658,9 @@ def _watch_main(args: argparse.Namespace, paths: list[str], resolved: dict[str, 
 
     def run_spec(spec: _watch.RunSpec) -> tuple[int, list[str]]:
         code = _run_with(args, spec.paths, keyword=spec.keyword, report_json=report)
+        context = getattr(args, "hook_context", None)
+        if isinstance(context, dict):  # every later run is a rerun: no file is split for it
+            cast("dict[str, object]", context)["watch_rerun"] = True
         try:
             with open(report, encoding="utf-8") as handle:
                 failed = _watch.failed_ids(json.load(handle))
@@ -762,7 +768,9 @@ def _hook_context(
         options[dest] = value
         for flag in flags:
             options[flag] = value
-    from ._fallback import installed_plugins
+    from ._fallback import installed_plugins, pytest_major
+
+    ini = _raw_ini(resolved.get("config_file"))
 
     xdist = "xdist" not in blocked_plugins and any(
         name == "xdist" for name, _ in installed_plugins()
@@ -770,14 +778,21 @@ def _hook_context(
     return {
         "args": list(user_argv),
         "options": options,
-        "ini": _raw_ini(resolved.get("config_file")),
+        "ini": ini,
         "blocked_plugins": list(blocked_plugins),
         # How a pool of two or more ends its session (step 3's tier rule, `execute.rs`): the
         # xdist model when xdist is installed or `-n` was asked for, else one worker when a
         # hook only a controller sees whole exists.
         "xdist_installed": xdist,
         "workers_explicit": args.workers is not None,
+        # pytest 9's strictness keys count only under pytest 9 (rustest emulates 8.4.2 without
+        # one); looked up only when the ini carries one of them.
+        "pytest9": bool(_PYTEST9_KEYS & set(ini)) and (pytest_major() or 0) >= 9,
     }
+
+
+#: The ini keys pytest 9 added whose meaning depends on the installed pytest.
+_PYTEST9_KEYS = frozenset({"strict", "strict_xfail", "strict_markers"})
 
 
 def _last_failed_mode(args: argparse.Namespace) -> str:

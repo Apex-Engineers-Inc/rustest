@@ -39,7 +39,9 @@ _WINDOWS = sys.platform == "win32"
 #: ``pytest11`` entry-point plugins pytest auto-loads and rustest runs without.  Everything
 #: else installed is a hand-off reason (a false positive costs speed; a silent difference
 #: costs a wrong answer).  Each entry is judged on the plugin's own source, as installed in
-#: the ``--real`` target venvs, and the rule is strict: *common* is not *safe*.
+#: the ``--real`` target venvs, and the rule is strict: *common* is not *safe*.  An entry must
+#: also not reorder or deselect in ``pytest_collection_modifyitems``: B-lite's handed pytest
+#: does not count an installed plugin's list changes (``_pytest_report``'s foreign check).
 #:
 #: | entry point | why running without it cannot change an outcome or an id |
 #: |---|---|
@@ -164,6 +166,24 @@ def _installed(module: str) -> bool:
     return importlib.util.find_spec(module) is not None
 
 
+def pytest_major() -> int | None:
+    """The installed pytest's major version, read from its ``*.dist-info`` directory name on
+    ``sys.path`` (not ``importlib.metadata``, ~0.2 s cold: see :func:`installed_plugins`)."""
+    for entry in sys.path:
+        try:
+            names = os.listdir(entry or ".")
+        except OSError:
+            continue
+        if "_pytest" not in names:  # a stale dist-info without the package answers nothing
+            continue
+        for name in names:
+            if name.startswith("pytest-") and name.endswith(".dist-info"):
+                head = name[len("pytest-") :].split(".")[0]
+                if head.isdigit():  # not `pytest-asyncio-1.3.0.dist-info`
+                    return int(head)
+    return None
+
+
 def pytest_available() -> bool:
     return _installed("pytest")
 
@@ -216,6 +236,11 @@ def _refuse(message: str) -> int:
 def _wait(child: subprocess.Popen[bytes]) -> int:
     """The child's exit code.  The console sends Ctrl-C to both processes, so the first one
     is pytest's to answer (it prints its own summary); a second means "stop now"."""
+    return _wait_interruptible(child)[0]
+
+
+def _wait_interruptible(child: subprocess.Popen[bytes]) -> tuple[int, bool]:
+    """:func:`_wait`, and whether this process was interrupted (Ctrl-C) while it waited."""
     import signal
 
     interrupted = False
@@ -230,7 +255,7 @@ def _wait(child: subprocess.Popen[bytes]) -> int:
         while True:
             try:
                 code = child.wait()
-                return 128 - code if code < 0 else code  # killed by signal N: 128+N
+                return (128 - code if code < 0 else code), interrupted  # by signal N: 128+N
             except KeyboardInterrupt:
                 if interrupted:
                     child.terminate()
@@ -286,6 +311,7 @@ def run_files(
     *,
     rootdir: str,
     inifile: str | None,
+    worker: tuple[str, int, str, bool] | None = None,
 ) -> str | None:
     """B-lite: run *files* -- test modules that use pytest's ``pytester`` -- under one pytest
     subprocess, before the native run, and answer with ``rustest._pytest_report``'s report plus
@@ -296,6 +322,12 @@ def run_files(
     directory, so node ids, configuration and ``--lf`` agree with the native run's. Its terminal
     output is kept back: the run renders these results with its own. pytest's ``nfplugin`` is
     off: its ``cache/nodeids`` would list the handed files only, which rustest never writes.
+
+    With *worker* -- ``(worker id, worker count, testrun uid, records)``, the session under the
+    xdist model -- pytest runs as one more xdist worker, in one process (``-n0``, as an xdist
+    worker is: a project's ``addopts = -n auto`` would make it a controller): the identity in
+    its environment, ``config.workerinput`` set by the report plugin before any conftest loads,
+    and, with *records* (the session has a controller), its phase reports for that controller.
     """
     import contextlib
     import json
@@ -346,15 +378,23 @@ def run_files(
             "rustest._pytest_report",
             "-p",
             "no:nfplugin",
+            # ponytail: xdist importable but not loaded (`-p no:xdist` in addopts,
+            # PYTEST_DISABLE_PLUGIN_AUTOLOAD) makes `-n0` a usage error and the session goes
+            # to pytest whole; setting `config.option.dist` from the report plugin would not.
+            *(["-n0"] if worker is not None and _installed("xdist") else []),
             *files,
         ]
         child = subprocess.Popen(
             command,
-            env={**os.environ, "RUSTEST_PYTEST_REPORT": report},
+            env={**os.environ, "RUSTEST_PYTEST_REPORT": report, **_worker_env(worker)},
             stdout=output,
             stderr=subprocess.STDOUT,
         )
-        code = _wait(child)
+        code, interrupted = _wait_interruptible(child)
+        if interrupted:
+            # The user pressed Ctrl-C: the session ends here, exit 2, and nothing is handed on
+            # to a whole pytest run (`py.rs` re-raises a callback's exception).
+            raise KeyboardInterrupt
         try:
             with open(report, encoding="utf-8") as handle:
                 data = json.load(handle)
@@ -364,6 +404,20 @@ def run_files(
             return None
     data["exit_code"] = code
     return json.dumps(data)
+
+
+def _worker_env(worker: tuple[str, int, str, bool] | None) -> dict[str, str]:
+    """xdist's worker environment (`remote.py`), and the flags the report plugin keys on."""
+    if worker is None:
+        return {}
+    workerid, count, uid, records = worker
+    return {
+        "PYTEST_XDIST_WORKER": workerid,
+        "PYTEST_XDIST_WORKER_COUNT": str(count),
+        "PYTEST_XDIST_TESTRUNUID": uid,
+        "RUSTEST_HANDED_WORKER": "1",
+        **({"RUSTEST_HANDED_RECORDS": "1"} if records else {}),
+    }
 
 
 def run(

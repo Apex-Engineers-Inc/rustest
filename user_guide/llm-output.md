@@ -9,7 +9,7 @@ rustest tests/ --llm
 ```
 
 ```json
-{"t":"meta","schema_version":4,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":5,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 {"t":"fail","id":"tests/test_auth.py::test_login","file":"tests/test_auth.py","line":42,"status":"failed","msg":"Traceback (most recent call last):\n  File \"/repo/tests/test_auth.py\", line 42, in test_login\n    assert response.status == 200\nAssertionError: assert 401 == 200","stdout":"POST /login user=admin"}
 {"t":"summary","total":412,"passed":411,"failed":1,"skipped":0,"xfailed":0,"xpassed":0,"error":0,"deselected":0,"collection_errors":0,"duration":1.24,"exit_code":1}
 ```
@@ -33,8 +33,9 @@ both with three properties that matter for machine consumption:
   colons.
 - **Deterministic.** Lines are emitted in manifest order (pytest's collection
   order), which the engine reassembles independently of which worker finished
-  first. Identical failures produce identical bytes across runs and across `-n`,
-  which is what makes prompt caching and run-to-run diffs work.
+  first. Identical failures produce identical bytes across runs and across `-n`
+  (`split` lines aside: they say how `-n` cut a file), which is what makes prompt
+  caching and run-to-run diffs work.
 - **Signal-only.** Only failures and errors get lines by default. Passing and
   skipped tests are counted in the summary, so a green-but-for-two-failures run of
   5 000 tests costs three lines.
@@ -44,11 +45,12 @@ both with three properties that matter for machine consumption:
 Lines are emitted once, at completion, in this fixed order:
 
 1. `meta`, first line, the wire header.
-2. `error`, one per collection error, then one per unattributable teardown failure.
-3. `fail`, one per failed or errored test, in manifest order.
-4. `skip`, one per skipped/xfailed/xpassed test, **only** under `-v`.
-5. `terminal_summary`, when a `pytest_terminal_summary` hook wrote something.
-6. `summary`, last line.
+2. `split`, one per file cut across workers under `-n`.
+3. `error`, one per collection error, then one per unattributable teardown failure.
+4. `fail`, one per failed or errored test, in manifest order.
+5. `skip`, one per skipped/xfailed/xpassed test, **only** under `-v`.
+6. `terminal_summary`, when a `pytest_terminal_summary` hook wrote something.
+7. `summary`, last line.
 
 Errors come before failures deliberately: a file that did not import is a larger
 problem than an assertion that did not hold, because none of its tests were even
@@ -64,7 +66,7 @@ absent, the run was interrupted, a signal your tooling can rely on.
 ### `meta`
 
 ```json
-{"t":"meta","schema_version":4,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
+{"t":"meta","schema_version":5,"tool":"rustest","version":"1.0.0rc1","rootdir":"/repo","total":412}
 ```
 
 | Field | Meaning |
@@ -132,6 +134,19 @@ off an aborted run.
 silently dropped: a non-strict XPASS is a test whose `xfail` mark has gone stale,
 which is worth seeing. (A *strict* XPASS is reported `failed` and gets a `fail`
 line.)
+
+### `split`
+
+```json
+{"t":"split","file":"tests/test_slow.py","workers":["gw0","gw2","gw3"],"tests":[14,13,13]}
+```
+
+A file whose tests ran in more than one worker under `-n`, as they can under `pytest -n`,
+here in contiguous slices: `workers[i]` was given the next `tests[i]` of them, in
+collection order. A file whose selected tests all fell in one slice gets no line. Each
+slice is its own module instance, so a module- or class-scoped fixture sets up once per
+slice; this line is the answer to "why did my module fixture run three times". See [pytest
+compatibility](pytest-compat.md) for when a file is split.
 
 ### `terminal_summary`
 

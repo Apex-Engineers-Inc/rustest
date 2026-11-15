@@ -33,7 +33,9 @@ import json
 #:
 #: **4** adds the ``terminal_summary`` line: a ``pytest_terminal_summary`` hook's output, which
 #: 3 dropped.
-SCHEMA_VERSION = 4
+#:
+#: **5** adds the ``split`` line: a file cut across workers under ``-n``, and where each slice ran.
+SCHEMA_VERSION = 5
 
 #: Statuses a ``fail`` line can carry -- the two that make a run red.
 #:
@@ -60,12 +62,14 @@ SCHEMA: dict[str, object] = {
     "version": SCHEMA_VERSION,
     "description": (
         "One JSON object per line, all emitted at completion. Line order is fixed: meta,"
-        " then error lines (collection and unattributable teardown), then fail lines,"
+        " then split lines (a file cut across workers under -n), then error lines (collection"
+        " and unattributable teardown), then fail lines,"
         " then skip lines (only under -v), then a terminal_summary line when a"
         " pytest_terminal_summary hook wrote something, then exactly one summary line. Fail and skip"
         " lines are in manifest order -- pytest's collection order -- which the engine"
         " reassembles independently of which worker finished first, so the byte stream is"
-        " identical across runs and across -n. The summary line is the completion"
+        " identical across runs and across -n, split lines aside (they say how -n cut a"
+        " file). The summary line is the completion"
         " sentinel: if it is absent, the run was interrupted."
     ),
     "oneOf": [
@@ -73,6 +77,7 @@ SCHEMA: dict[str, object] = {
         {"$ref": "#/$defs/error"},
         {"$ref": "#/$defs/fail"},
         {"$ref": "#/$defs/skip"},
+        {"$ref": "#/$defs/split"},
         {"$ref": "#/$defs/terminal_summary"},
         {"$ref": "#/$defs/summary"},
     ],
@@ -216,6 +221,32 @@ SCHEMA: dict[str, object] = {
                 },
             },
             "required": ["t", "id", "file", "status", "reason"],
+            "additionalProperties": False,
+        },
+        "split": {
+            "type": "object",
+            "title": "split",
+            "description": (
+                "A test file whose tests ran in more than one worker under -n, as they can under"
+                " pytest -n, here in contiguous slices: each slice ran as its own module instance,"
+                " so its module- and class-scoped fixtures set up once per slice. One line per"
+                " such file."
+            ),
+            "properties": {
+                "t": {"const": "split"},
+                "file": {"type": "string", "description": "Path relative to rootdir."},
+                "workers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Each slice's worker id (gwN), in run order.",
+                },
+                "tests": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "How many tests each slice was given there.",
+                },
+            },
+            "required": ["t", "file", "workers", "tests"],
             "additionalProperties": False,
         },
         "terminal_summary": {

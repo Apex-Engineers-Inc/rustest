@@ -146,8 +146,10 @@ def test_strict_xfail() -> None:
 - `strict`: When `True`, a test that unexpectedly passes fails the suite, with pytest's
   `[XPASS(strict)]` prefix.
 
-`strict` defaults to the `xfail_strict` ini option, which is `False` unless the project sets
-it. A `strict=` on the mark wins over the ini.
+`strict` defaults to the `xfail_strict` ini option. With pytest 9 or later installed, as in
+pytest 9, it defaults to `strict_xfail` (of which `xfail_strict` is the alias; the canonical
+name wins when both are set), then to the `strict` ini. It is `False` unless the project sets
+one of them. A `strict=` on the mark wins over the inis.
 
 A `skip` mark beats an `xfail` mark on the same test. An `xfail` also applies during setup and
 teardown, so a test with a broken fixture and an `xfail` mark reports XFAIL rather than ERROR.

@@ -202,6 +202,7 @@ _NEEDS_FALLBACK = frozenset(
         "marks/strict-markers-blocked-plugin",
         # its pytester file only pytest collects (a run hands it to pytest first)
         "collection/pytester-file",
+        "hooks/pytester-controller",
     }
 )
 

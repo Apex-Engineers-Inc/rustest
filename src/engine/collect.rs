@@ -688,8 +688,12 @@ pub(crate) struct Dispatch {
     /// the manifest back into walk order however the pool interleaves.
     pub(crate) assignments: Vec<Vec<(usize, PathBuf)>>,
     /// Per target: its expected cost in microseconds ([`file_weights`]), what [`route`] packs
-    /// by and what an idle worker reads to choose whom to take a file from.
+    /// by.
     pub(crate) weights: Vec<u64>,
+    /// The call-phase duration record (test id -> microseconds,
+    /// `cache::read_call_durations`): what a file's split is decided and its slices cut by
+    /// ([`Dispatch::split_costly_files`], [`cut_slices`]).
+    pub(crate) durations: BTreeMap<String, u64>,
     /// Per target: the file was named as an argument (a path or a node id), pytest's
     /// `Session.isinitpath`. `--lf` never filters such a file's tests at collection.
     pub(crate) initpath: Vec<bool>,
@@ -697,6 +701,10 @@ pub(crate) struct Dispatch {
     /// index the walk reaches after it ([`session_conftests`]). Empty without the runtime.
     pub(crate) late_conftests: LateConftests,
     init: WorkerRequest,
+    /// Worker processes beyond the pool in xdist's count (`PYTEST_XDIST_WORKER_COUNT`, the
+    /// controller's `tx`): 1 when a handed pytest process will be one more worker (B-lite under
+    /// the xdist model), so every process sees the session as `pytest -n N+1`.
+    pub(crate) extra_workers: usize,
 }
 
 impl Dispatch {
@@ -717,7 +725,116 @@ impl Dispatch {
         } else {
             workers.clamp(1, dynamic.len())
         };
-        self.assignments = route(&self.targets, &dynamic, pool_size, &self.weights);
+        self.assignments = route(
+            &self.targets,
+            &dynamic,
+            pool_size,
+            &self.weights,
+            &BTreeMap::new(),
+        );
+    }
+
+    /// Within-file splitting under `-n`, where `pytest -n N` (`--dist load`) also runs a file's
+    /// tests in several workers (here in contiguous slices, fixed before the run): a file whose recorded cost alone exceeds the pool's fair share
+    /// (`total / workers`) is collected by up to `workers` workers, and each runs one contiguous
+    /// slice of its tests ([`cut_slices`], at the barrier). Every other file stays whole. Only a
+    /// file the duration record knows is split, and only one whose stem no other file shares
+    /// (same-stem files share an interpreter, [`route`]), and into no more slices than carry
+    /// [`MIN_SLICE_US`] of recorded tests each. The pool may grow to `workers` for it.
+    ///
+    /// Which files split, and onto which workers, is fixed here, before any worker is spawned
+    /// (it decides what each one imports); the slices are cut at the barrier, over what was
+    /// selected. Both are pure functions of the tree, the record and the pool size.
+    pub(crate) fn split_costly_files(&mut self, workers: usize) {
+        let dynamic: Vec<usize> = (0..self.targets.len())
+            .filter(|index| self.static_tests[*index].is_none())
+            .collect();
+        if workers < 2 || dynamic.is_empty() {
+            return;
+        }
+        // Weighed by the call phase alone (the record the cut uses too): a module fixture's
+        // setup lands on the first test of every slice, so a total would grow with the split
+        // and move the next plan. A file without that record weighs its total and never splits.
+        // ponytail: the call phase leaves out function-scoped fixture setup too, so a file slow
+        // only through per-test fixtures never splits; record each test's own time (total minus
+        // wide-scope setup) if such files show up.
+        let mut recorded: HashMap<&str, (usize, u64)> = HashMap::new();
+        for (id, micros) in &self.durations {
+            let entry = recorded
+                .entry(crate::engine::cache::file_of(id))
+                .or_default();
+            entry.0 += 1;
+            entry.1 = entry.1.saturating_add(*micros);
+        }
+        let relative = self.relative_targets();
+        let weigh = |index: usize| {
+            recorded
+                .get(relative[index].as_str())
+                .map_or(self.weights[index], |(_, micros)| {
+                    micros.saturating_add(FILE_IMPORT_US)
+                })
+        };
+        let mut stems: HashMap<String, usize> = HashMap::new();
+        for index in &dynamic {
+            *stems
+                .entry(crate::engine::file_stem_lossy(&self.targets[*index]))
+                .or_default() += 1;
+        }
+        let total = dynamic
+            .iter()
+            .fold(0u64, |sum, index| sum.saturating_add(weigh(*index)));
+        let share = total / workers as u64;
+        let mut slices = BTreeMap::new();
+        for &index in &dynamic {
+            let Some(&(tests, _)) = recorded.get(relative[index].as_str()) else {
+                continue;
+            };
+            let weight = weigh(index);
+            if share == 0
+                || weight <= share
+                || stems[&crate::engine::file_stem_lossy(&self.targets[index])] > 1
+            {
+                continue;
+            }
+            let tested = weight.saturating_sub(FILE_IMPORT_US);
+            let count = (weight.div_ceil(share) as usize)
+                .min(workers)
+                .min(tests)
+                .min((tested / MIN_SLICE_US) as usize);
+            if count > 1 {
+                slices.insert(
+                    index,
+                    (
+                        count,
+                        (tested / count as u64).saturating_add(FILE_IMPORT_US),
+                    ),
+                );
+            }
+        }
+        if slices.is_empty() {
+            return;
+        }
+        let items = dynamic.len() + slices.values().map(|(count, _)| count - 1).sum::<usize>();
+        self.assignments = route(
+            &self.targets,
+            &dynamic,
+            workers.min(items),
+            &self.weights,
+            &slices,
+        );
+    }
+
+    /// The targets more than one worker collects (split by [`Dispatch::split_costly_files`]),
+    /// each with its workers in ascending order: slice *j* runs on the *j*-th.
+    pub(crate) fn split_targets(&self) -> BTreeMap<usize, Vec<usize>> {
+        let mut holders: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (worker, files) in self.assignments.iter().enumerate() {
+            for (target, _) in files {
+                holders.entry(*target).or_default().push(worker);
+            }
+        }
+        holders.retain(|_, workers| workers.len() > 1);
+        holders
     }
 
     /// The targets of node-id arguments (`test_m.py::test_a`), in argument order.
@@ -838,9 +955,17 @@ pub(crate) fn plan_with_options(
     // already on disk (plus the manifest cache), so it parallelises and shares nothing.
     // `--strict-markers` makes an unregistered mark a collection error, which only an import
     // (the worker's mark registry) can raise; Tier S would list the tests.
+    // pytest 9's strictness keys, only when the CLI found pytest 9 or later installed.
+    let pytest9 = options
+        .hook_context
+        .as_ref()
+        .and_then(|context| context.get("pytest9"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let strict_markers = options.strict_markers || (pytest9 && config.strict_markers);
     let (scanned, _cache) = match options.tier {
         TierMode::DynamicOnly => (targets.iter().map(|_| None).collect::<Vec<_>>(), None),
-        TierMode::Auto if options.strict_markers => {
+        TierMode::Auto if strict_markers => {
             (targets.iter().map(|_| None).collect::<Vec<_>>(), None)
         }
         TierMode::Auto => {
@@ -886,7 +1011,12 @@ pub(crate) fn plan_with_options(
         crate::engine::cache::read_durations(&config.cache_dir)
     };
     let weights = file_weights(&targets, &config.rootdir, &durations);
-    let assignments = route(&targets, &dynamic, pool_size, &weights);
+    let assignments = route(&targets, &dynamic, pool_size, &weights, &BTreeMap::new());
+    let durations = if crate::engine::cache::cache_provider_off(options.hook_context.as_ref()) {
+        BTreeMap::new()
+    } else {
+        crate::engine::cache::read_call_durations(&config.cache_dir)
+    };
 
     // Over `targets` rather than the dynamic subset, so the vector stays indexed by target
     // like every other per-file vector here.
@@ -922,9 +1052,9 @@ pub(crate) fn plan_with_options(
         // run without `--cov` register no monitoring tool in any worker.
         coverage: options.coverage.clone(),
         filterwarnings: config.filterwarnings.clone(),
-        xfail_strict: config.xfail_strict.clone(),
+        xfail_strict: config.xfail_strict_for(pytest9),
         markers: config.markers.clone(),
-        strict_markers: options.strict_markers,
+        strict_markers,
         conftests,
         hook_runtime,
         hypothesis_dir: hypothesis_dir.as_deref().map(to_posix),
@@ -945,9 +1075,11 @@ pub(crate) fn plan_with_options(
         assert_keys,
         assignments,
         weights,
+        durations,
         initpath,
         late_conftests,
         init,
+        extra_workers: 0,
     })
 }
 
@@ -1079,7 +1211,7 @@ pub(crate) fn spawn_pool(
         pool.push(Worker::spawn(
             index,
             launcher,
-            &xdist_identity(index, dispatch.assignments.len()),
+            &xdist_identity(index, dispatch.assignments.len() + dispatch.extra_workers),
         )?);
     }
     let hooks_run = matches!(
@@ -1108,7 +1240,11 @@ pub(crate) fn spawn_pool(
         }
     }
     let started = if controller && pool.len() > 1 && launcher.controller_hooks() {
-        Some(start_controller(dispatch, launcher, pool.len())?)
+        Some(start_controller(
+            dispatch,
+            launcher,
+            pool.len() + dispatch.extra_workers,
+        )?)
     } else {
         None
     };
@@ -2305,6 +2441,11 @@ const FILE_IMPORT_WEIGHT: u64 = 8 * 1024;
 /// profile's ~40 ms per file (see [`FILE_IMPORT_WEIGHT`]).
 const FILE_IMPORT_US: u64 = 40_000;
 
+/// The least recorded test time a split file's slice must carry, in microseconds. A slice costs
+/// its worker one more import and its module fixtures; below half a second of tests that is a
+/// noticeable share of what the split saves, and a suite of quick tests gains nothing from it.
+const MIN_SLICE_US: u64 = 500_000;
+
 /// Each target's expected cost in microseconds. A file the previous runs recorded
 /// (`cache::read_durations`) weighs its tests' measured time plus one import; a file with no
 /// record weighs its size plus [`FILE_IMPORT_WEIGHT`], scaled by what the recorded files cost
@@ -2380,11 +2521,16 @@ pub(crate) fn file_weights(
 /// moves with every run's timings: pass the same one, or `-p no:cacheprovider`).  Ties in
 /// weight break on [`worker_for`]'s stem hash and then on the stem itself, neither of which
 /// depends on walk order or filesystem timing.
+///
+/// **A split file** (`slices`: target -> slice count and each slice's weight,
+/// [`Dispatch::split_costly_files`]) is that many items, no two on one worker: the file is then
+/// in each of their lists.
 fn route(
     targets: &[PathBuf],
     dynamic: &[usize],
     pool_size: usize,
     weights: &[u64],
+    slices: &BTreeMap<usize, (usize, u64)>,
 ) -> Vec<Vec<(usize, PathBuf)>> {
     let mut assignments: Vec<Vec<(usize, PathBuf)>> = vec![Vec::new(); pool_size];
     if pool_size == 0 {
@@ -2420,15 +2566,42 @@ fn route(
             .then_with(|| left.cmp(right))
     });
 
+    // A split file's slices, each weighed as its share of the tests plus one import, enter
+    // the order where their weight puts them (stable: the group order above breaks ties).
+    let mut items: Vec<(u64, &String)> = Vec::new();
+    for stem in &order {
+        let (weight, members) = &groups[stem];
+        match (
+            members.as_slice(),
+            members.first().and_then(|m| slices.get(m)),
+        ) {
+            ([_], Some(&(count, slice))) if count > 1 => {
+                items.extend((0..count).map(|_| (slice, stem)));
+            }
+            _ => items.push((*weight, stem)),
+        }
+    }
+    items.sort_by_key(|item| std::cmp::Reverse(item.0));
+
     let mut load = vec![0u64; pool_size];
-    for stem in order {
-        let (weight, members) = &groups[&stem];
+    for (weight, stem) in items {
+        let (_, members) = &groups[stem];
         // `min_by_key` returns the **first** minimum, so an empty pool fills 0, 1, 2 … and
         // the plan for N equal files on N workers is the identity rather than a scramble.
+        // A slice skips a worker that already holds one of its file's.
+        // ponytail: a linear scan of the worker's list per slice, O(files) per split slice;
+        // a set per split target if a split of thousands of files ever shows in a profile.
+        let split = slices.contains_key(&members[0]);
         let worker = (0..pool_size)
+            .filter(|index| {
+                !split
+                    || !assignments[*index]
+                        .iter()
+                        .any(|(target, _)| *target == members[0])
+            })
             .min_by_key(|index| load[*index])
             .unwrap_or_default();
-        load[worker] = load[worker].saturating_add(*weight);
+        load[worker] = load[worker].saturating_add(weight);
         for member in members {
             assignments[worker].push((*member, targets[*member].clone()));
         }
@@ -2449,6 +2622,57 @@ fn route(
         files.sort_by_key(|(index, _)| *index);
     }
     assignments
+}
+
+/// Cut a split file's selected tests, in their run order, into `count` contiguous slices of
+/// about equal recorded cost: the slice of each test. A cut that would fall inside a class
+/// moves to that class's nearer edge when that keeps the slice within a quarter of a slice's
+/// cost of even; otherwise it stays (the class's fixtures then set up in both slices, as
+/// `pytest -n` sets them up in every worker that runs one of its tests). A slice may be empty.
+pub(crate) fn cut_slices(costs: &[u64], classes: &[Option<&str>], count: usize) -> Vec<usize> {
+    let total: u64 = costs.iter().sum();
+    let mut before = vec![0u64; costs.len() + 1]; // cost of the tests before each position
+    for (index, cost) in costs.iter().enumerate() {
+        before[index + 1] = before[index] + cost;
+    }
+    let inside = |at: usize| {
+        at > 0 && at < costs.len() && classes[at].is_some() && classes[at - 1] == classes[at]
+    };
+    let tolerance = total / (4 * count.max(1) as u64);
+    let mut cuts = vec![0usize];
+    for slice in 1..count {
+        let ideal = (total * slice as u64).div_ceil(count as u64);
+        let mut at = before
+            .partition_point(|&cost| cost < ideal)
+            .min(costs.len());
+        // The nearer boundary, so tests of near-equal cost are cut at the same place whichever
+        // way the timing noise of the last run fell.
+        if at > 0 && ideal - before[at - 1] < before[at] - ideal {
+            at -= 1;
+        }
+        if inside(at) {
+            let mut start = at;
+            while inside(start) {
+                start -= 1;
+            }
+            let mut end = at;
+            while inside(end) {
+                end += 1;
+            }
+            let near = if ideal - before[start] <= before[end] - ideal {
+                start
+            } else {
+                end
+            };
+            if before[near].abs_diff(ideal) <= tolerance {
+                at = near;
+            }
+        }
+        cuts.push(at.max(*cuts.last().unwrap_or(&0)));
+    }
+    (0..costs.len())
+        .map(|index| cuts.partition_point(|&cut| cut <= index) - 1)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -2612,6 +2836,18 @@ fn xdist_identity(index: usize, size: usize) -> Vec<(&'static str, Option<String
         ("PYTEST_XDIST_WORKER_COUNT", Some(size.to_string())),
         ("PYTEST_XDIST_TESTRUNUID", Some(testrun_uid().to_string())),
     ]
+}
+
+/// The handed pytest process's xdist identity (B-lite under the xdist model): the worker after
+/// the pool's, in the session's count and run, and whether a controller will replay its reports.
+pub(crate) fn handed_worker(dispatch: &Dispatch, records: bool) -> (String, usize, String, bool) {
+    let pool = dispatch.assignments.len();
+    (
+        format!("gw{pool}"),
+        pool + dispatch.extra_workers,
+        testrun_uid().to_string(),
+        records,
+    )
 }
 
 /// One id per session, 32 lowercase hex digits like xdist's `uuid.uuid4().hex`.
@@ -3186,6 +3422,7 @@ impl Worker {
                     id: echoed,
                     status,
                     duration_s,
+                    call_s,
                     message,
                     stdout,
                     stderr,
@@ -3230,6 +3467,7 @@ impl Worker {
                         id: echoed,
                         status,
                         duration_s,
+                        call_s,
                         message,
                         stdout,
                         stderr,
@@ -4705,6 +4943,97 @@ assert True
         )
         .unwrap();
         assert!(by_size(&plan(&tmp, None)));
+    }
+
+    /// **Within-file splitting.** A file whose recorded cost alone exceeds the pool's share is
+    /// collected by several workers, one slice each, at most one per worker; the plan is the
+    /// same every time for the same record. No record, or a stem another file shares, keeps
+    /// every file whole.
+    #[test]
+    fn a_costly_recorded_file_is_split_across_distinct_workers() {
+        let body = module("x");
+        let files = [
+            ("test_big.py", body.as_str()),
+            ("test_b.py", body.as_str()),
+            ("test_c.py", body.as_str()),
+            ("sub/test_c.py", body.as_str()),
+        ];
+        let tmp = tree(&files);
+        let plan = |workers: usize| {
+            let mut dispatch = plan_with_options(
+                tmp.path(),
+                &[],
+                workers,
+                &CollectOptions {
+                    tier: TierMode::DynamicOnly,
+                    cache: CacheMode::Off,
+                    ..CollectOptions::default()
+                },
+            )
+            .unwrap();
+            dispatch.split_costly_files(workers);
+            let relative = dispatch.relative_targets();
+            dispatch
+                .split_targets()
+                .into_iter()
+                .map(|(target, workers)| (relative[target].clone(), workers))
+                .collect::<Vec<_>>()
+        };
+        assert!(plan(4).is_empty(), "no record, no split");
+
+        let cache = tmp.path().join(crate::engine::cache::CACHE_DIR);
+        let mut ran: Vec<(String, f64)> = (0..10)
+            .map(|index| (format!("test_big.py::test_{index}"), 1.0))
+            .collect();
+        for file in ["test_b.py", "test_c.py", "sub/test_c.py"] {
+            ran.push((format!("{file}::test_x"), 5.0));
+        }
+        crate::engine::cache::record_call_durations(&cache, ran, true);
+
+        let split = plan(4);
+        assert_eq!(split.len(), 1, "{split:?}");
+        let (file, workers) = &split[0];
+        assert_eq!(file, "test_big.py");
+        assert!(workers.len() >= 2 && workers.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(plan(4), split, "deterministic for one record");
+        assert!(plan(1).is_empty(), "a pool of one splits nothing");
+    }
+
+    /// Slices are contiguous and about equal by cost; a cut inside a class moves to the
+    /// class's edge when that stays within a quarter slice of even, and stays put otherwise.
+    #[test]
+    fn slices_are_contiguous_by_cost_and_prefer_class_edges() {
+        let flat: Vec<Option<&str>> = vec![None; 4];
+        assert_eq!(cut_slices(&[1, 1, 1, 1], &flat, 2), vec![0, 0, 1, 1]);
+        assert_eq!(cut_slices(&[3, 1, 1, 1], &flat, 2), vec![0, 1, 1, 1]);
+        assert_eq!(cut_slices(&[1, 1, 1, 1], &flat, 4), vec![0, 1, 2, 3]);
+
+        let classes = [
+            Some("A"),
+            Some("A"),
+            Some("A"),
+            Some("A"),
+            Some("A"),
+            Some("B"),
+            Some("B"),
+            Some("B"),
+        ];
+        assert_eq!(
+            cut_slices(&[1; 8], &classes, 2),
+            vec![0, 0, 0, 0, 0, 1, 1, 1],
+            "the cut at 4 moves to A's end"
+        );
+        let one_class = [Some("A"); 8];
+        assert_eq!(
+            cut_slices(&[1; 8], &one_class, 2),
+            vec![0, 0, 0, 0, 1, 1, 1, 1],
+            "no edge near enough: cut inside the class"
+        );
+        assert_eq!(
+            cut_slices(&[1], &[None], 3),
+            vec![0],
+            "fewer tests than slices"
+        );
     }
 
     /// A complete run replaces its files' entries (a deleted test leaves the record); a

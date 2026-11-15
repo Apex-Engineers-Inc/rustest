@@ -158,6 +158,14 @@ pub struct ResolvedConfig {
     /// the `strict` an `xfail` mark gets when it does not say. Parsed by the worker where
     /// pytest parses it, at the first xfail evaluation, so a bad value errors that test.
     pub xfail_strict: Option<String>,
+    /// The same under pytest 9 (`evaluate_xfail_marks`): `strict_xfail`, else its alias
+    /// `xfail_strict` (the canonical name wins), else the `strict` ini. Used only when the
+    /// installed pytest is 9 or later ([`Self::xfail_strict_for`]).
+    pub xfail_strict_9: Option<String>,
+    /// pytest 9's `strict_markers` ini, else the `strict` ini it falls back to
+    /// (`_pytest/mark/structures.py`): an unregistered mark is an error, as under
+    /// `--strict-markers`. Used only under pytest 9 or later.
+    pub strict_markers: bool,
     /// Where every rustest cache lives (last-failed, the manifest store, compiled assertion
     /// rewrites): the `cache_dir` ini as pytest resolves it (`Cache.for_config`: the rootdir
     /// joined with the expanded value), else `<rootdir>/.rustest_cache`.
@@ -264,6 +272,14 @@ pub fn resolve_config(
         markers: getini_linelist(&inicfg, "markers"),
         filterwarnings: getini_linelist(&inicfg, "filterwarnings"),
         xfail_strict: getini_string(&inicfg, "xfail_strict"),
+        // ponytail: an unparseable `strict` is ignored, for xfail and markers alike, where
+        // pytest 9 raises `ValueError` at the first xfail or unregistered mark it decides.
+        xfail_strict_9: getini_string(&inicfg, "strict_xfail")
+            .or_else(|| getini_string(&inicfg, "xfail_strict"))
+            .or_else(|| getini_bool(&inicfg, "strict").map(|strict| strict.to_string())),
+        strict_markers: getini_bool(&inicfg, "strict_markers")
+            .or_else(|| getini_bool(&inicfg, "strict"))
+            .unwrap_or(false),
         cache_dir,
         // The three asyncio inis are `type=None`/`type="string"`, so they are taken raw
         // rather than shlex-split (`plugin.py::pytest_addoption` l. 106-128).
@@ -1099,7 +1115,19 @@ fn getini_linelist(cfg: &ConfigDict, name: &str) -> Vec<String> {
     }
 }
 
-/// pytest's ini boolean parsing, for the one rustest-only key that uses it.
+impl ResolvedConfig {
+    /// The `strict` default an `xfail` mark gets, as the installed pytest reads it: its 9.x
+    /// keys only under pytest 9 or later (under 8 they are unknown and do nothing).
+    pub fn xfail_strict_for(&self, pytest9: bool) -> Option<String> {
+        if pytest9 {
+            self.xfail_strict_9.clone()
+        } else {
+            self.xfail_strict.clone()
+        }
+    }
+}
+
+/// pytest's ini boolean parsing, for rustest's own key and the strictness inis.
 ///
 /// Source: `_pytest/config/__init__.py::Config._getini`, `type="bool"` branch —
 /// `_strtobool(str(value).strip())` — and `_strtobool` itself:

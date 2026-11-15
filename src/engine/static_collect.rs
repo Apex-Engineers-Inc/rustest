@@ -2950,6 +2950,8 @@ fn conftest_scan_config() -> ResolvedConfig {
         codeblocks: None,
         filterwarnings: Vec::new(),
         xfail_strict: None,
+        xfail_strict_9: None,
+        strict_markers: false,
         cache_dir: PathBuf::new(),
     }
 }

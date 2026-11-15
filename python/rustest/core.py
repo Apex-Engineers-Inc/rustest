@@ -81,6 +81,11 @@ if TYPE_CHECKING:
         terminal_summary: NotRequired[list[list[object]]]
         notes: NotRequired[list[str]]
         session_end_error: NotRequired[bool]
+        split: NotRequired[list[_SplitFile]]
+
+    class _SplitFile(TypedDict):
+        file: str
+        slices: list[tuple[str, int]]
 
 # The `TypedDict`s above live under `TYPE_CHECKING`, and that is a latency decision like the
 # ones below rather than a style one: on CPython 3.14 `typing` pulls `annotationlib` and
@@ -945,7 +950,8 @@ def run(
     hook_context: Mapping[str, object] | None = None,
     strict_markers: bool = False,
     conftest_args: Sequence[str] = (),
-    hand_files: Callable[[list[str], str], str | None] | None = None,
+    hand_files: Callable[[list[str], str, tuple[str, int, str, bool] | None], str | None]
+    | None = None,
 ) -> int:
     """Run tests with the **v2** engine and return pytest's exit code.
 

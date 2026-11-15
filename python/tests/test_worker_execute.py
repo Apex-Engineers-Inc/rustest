@@ -1523,11 +1523,12 @@ def test_a_passing_result_matches_the_golden_line(tmp_path: Path) -> None:
     with isolated_worker_state():
         (result,) = run_module(target, tmp_path)
 
-    assert list(result) == ["op", "id", "status", "duration_s"]
+    assert list(result) == ["op", "id", "status", "duration_s", "call_s"]
     assert result["op"] == "test_result"
     assert result["id"] == "test_ok.py::test_ok"
     assert result["status"] == "passed"
     assert isinstance(result["duration_s"], float)
+    assert 0.0 <= result.get("call_s", -1.0) <= result["duration_s"]
 
     encoded = encode_response(result)
     for key in ('"message":', '"stdout":', '"stderr":'):
@@ -1552,7 +1553,16 @@ def test_a_populated_result_keeps_the_serde_field_order(tmp_path: Path) -> None:
     with isolated_worker_state():
         (result,) = run_module(target, tmp_path)
 
-    assert list(result) == ["op", "id", "status", "duration_s", "message", "stdout", "stderr"]
+    assert list(result) == [
+        "op",
+        "id",
+        "status",
+        "duration_s",
+        "call_s",
+        "message",
+        "stdout",
+        "stderr",
+    ]
     assert result["status"] == "failed"
     assert "\n" not in encode_response(result), "the transport is JSON-lines"
 

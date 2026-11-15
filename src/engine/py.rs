@@ -425,22 +425,26 @@ pub fn py_run(
     let hand_raised: Arc<std::sync::Mutex<Option<PyErr>>> = Arc::default();
     let hand_files = on_handoff.map(|callback| {
         let hand_raised = Arc::clone(&hand_raised);
-        HandFiles(Arc::new(move |files: &[String], cache_dir: &str| {
-            Python::attach(|py| {
-                match callback
-                    .call1(py, (files.to_vec(), cache_dir))
-                    .and_then(|answer| answer.extract::<Option<String>>(py))
-                {
-                    Ok(answer) => answer,
-                    Err(err) => {
-                        if let Ok(mut slot) = hand_raised.lock() {
-                            slot.get_or_insert(err);
+        HandFiles(Arc::new(
+            move |files: &[String],
+                  cache_dir: &str,
+                  worker: Option<&(String, usize, String, bool)>| {
+                Python::attach(|py| {
+                    match callback
+                        .call1(py, (files.to_vec(), cache_dir, worker.cloned()))
+                        .and_then(|answer| answer.extract::<Option<String>>(py))
+                    {
+                        Ok(answer) => answer,
+                        Err(err) => {
+                            if let Ok(mut slot) = hand_raised.lock() {
+                                slot.get_or_insert(err);
+                            }
+                            None
                         }
-                        None
                     }
-                }
-            })
-        }))
+                })
+            },
+        ))
     });
     let options = RunOptions {
         fail_fast,
@@ -553,6 +557,8 @@ mod tests {
             codeblocks: None,
             filterwarnings: Vec::new(),
             xfail_strict: None,
+            xfail_strict_9: None,
+            strict_markers: false,
             cache_dir: PathBuf::from(ROOT).join(".rustest_cache"),
         }
     }

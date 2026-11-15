@@ -572,6 +572,9 @@ pub enum WorkerResponse {
         status: String,
         /// Wall-clock seconds for the test, as a JSON number.
         duration_s: f64,
+        /// The call phase's share of it (the body alone): what the split weighs and cuts by.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_s: Option<f64>,
         /// Failure detail: the formatted assertion/exception, or a skip/xfail reason.
         /// Omitted entirely for an unremarkable pass.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1121,6 +1124,7 @@ mod tests {
             id: "tests/test_math.py::test_add".to_string(),
             status: "passed".to_string(),
             duration_s: 0.125,
+            call_s: None,
             message: None,
             stdout: None,
             stderr: None,
@@ -1137,6 +1141,7 @@ mod tests {
             id: "tests/test_math.py::test_add".to_string(),
             status: "failed".to_string(),
             duration_s: 1.5,
+            call_s: None,
             message: Some("assert 1 == 2".to_string()),
             stdout: Some("computing\n".to_string()),
             stderr: Some("deprecated\n".to_string()),
@@ -1276,6 +1281,7 @@ mod tests {
                 id: "t.py::test_a".to_string(),
                 status: status.to_string(),
                 duration_s: 0.0,
+                call_s: None,
                 message: None,
                 stdout: None,
                 stderr: None,
@@ -1801,6 +1807,7 @@ mod tests {
             id: "tests/test_math.py::test_add".to_string(),
             status: "failed".to_string(),
             duration_s: 0.5,
+            call_s: None,
             message: Some(
                 "Traceback (most recent call last):\n  File \"t.py\", line 2\nAssertionError"
                     .to_string(),

@@ -2334,3 +2334,11 @@ def test_a_stat_gate_cannot_hide_an_edit_in_the_same_timestamp_tick(project: Pro
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # same size, same mtime
     second = recorder._digest(str(path), _deps._stat(str(path)))  # pyright: ignore[reportPrivateUsage]
     assert first != second
+
+
+def test_an_extension_module_import_during_a_test_keeps_it_cacheable() -> None:
+    """An extension module's ``import`` audit event carries ``None`` for ``sys.path`` (and the
+    meta path and path hooks): it is recorded as resolved against ``sys.path``, not a failure."""
+    _ = sys.modules.pop("_bz2", None)
+    rec = record(lambda: importlib.import_module("_bz2"))
+    assert rec.cacheable, rec.reasons

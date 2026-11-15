@@ -223,6 +223,11 @@ def test_conftest_chain_is_rootdir_down_and_stops_at_rootdir(tmp_path: Path) -> 
     assert conftest_chain(target, root) == [top, nested]
     assert above not in conftest_chain(target, root)
 
+    # Memoized per directory, and a caller's mutation of the answer does not reach the memo.
+    chain = conftest_chain(target, root)
+    chain.clear()
+    assert conftest_chain(target, root) == [top, nested]
+
 
 def test_module_fixture_shadows_the_conftest_one(tmp_path: Path) -> None:
     """Corpus `fixtures/override-nearest`: nearest definition wins.

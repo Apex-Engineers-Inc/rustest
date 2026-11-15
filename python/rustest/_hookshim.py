@@ -1566,9 +1566,12 @@ class _MarkView:
 def _strict_markers(st: _State) -> bool:
     """Whether an unknown ``pytest.mark.x`` is an error in pytest here (``--strict-markers``, or
     a ``filterwarnings`` line that turns ``PytestUnknownMarkWarning`` into one)."""
-    for key in ("strict_markers", "--strict-markers", "strict"):
-        if st.builtin.get(key) or str(st.ini.get(key, "")).strip().lower() in ("1", "true", "yes"):
-            return True
+    from .compat import pytest as compat
+
+    # The command line's flag, or the engine's answer from `init` (which reads the inis the
+    # way the installed pytest does): never the inis read again here by other rules.
+    if st.builtin.get("strict_markers") or compat._strict_markers:  # pyright: ignore[reportPrivateUsage]
+        return True
     lines = st.ini.get("filterwarnings", [])
     if isinstance(lines, str):
         lines = lines.splitlines()

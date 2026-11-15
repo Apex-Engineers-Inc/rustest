@@ -252,10 +252,13 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
         markers,
         filterwarnings,
         xfail_strict,
+        xfail_strict_9,
         asyncio_mode,
         asyncio_default_fixture_loop_scope,
         asyncio_default_test_loop_scope,
         codeblocks,
+        // Tier S does not run under strict markers at all.
+        strict_markers: _,
         // Where the store lives, not what goes into an entry.
         cache_dir: _,
     } = config;
@@ -294,6 +297,7 @@ pub fn digest_of_config(config: &ResolvedConfig) -> Digest {
     field("markers", markers);
     field("filterwarnings", filterwarnings);
     field("xfail_strict", xfail_strict.as_slice());
+    field("xfail_strict_9", xfail_strict_9.as_slice());
     // `asyncio_mode` is a **collection** input, not only an execution one: in `auto` mode an
     // `async def` + `yield` test acquires a synthesised `xfail(run=False)` mark
     // (`_worker.py::_async_generator_xfail`) that it does not get in `strict` mode, and the
@@ -759,6 +763,8 @@ mod tests {
             markers: Vec::new(),
             filterwarnings: Vec::new(),
             xfail_strict: None,
+            xfail_strict_9: None,
+            strict_markers: false,
             asyncio_mode: DEFAULT_ASYNCIO_MODE.to_string(),
             asyncio_default_fixture_loop_scope: None,
             asyncio_default_test_loop_scope: DEFAULT_ASYNCIO_TEST_LOOP_SCOPE.to_string(),

@@ -27,13 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    abbreviates by default; pytest's parser does not, and an abbreviation would swallow a
    conftest option that happens to be a prefix of a rustest flag. They are now unrecognized
    arguments, which hand the session to pytest. *Action:* spell the flag in full.
-3. **`--llm` output is schema 4.** An `error` line with `scope: "teardown"` now carries `id`,
-   the test whose teardown raised, and a `terminal_summary` line before `summary` carries what
-   a `pytest_terminal_summary` hook wrote; nothing else changed from schema 2. The published
-   schema marks `schema_version` as `const: 4`, so a consumer pinned to 2 can refuse the stream.
+3. **`--llm` output is schema 5.** An `error` line with `scope: "teardown"` now carries `id`,
+   the test whose teardown raised, a `terminal_summary` line before `summary` carries what
+   a `pytest_terminal_summary` hook wrote, and a `split` line after `meta` names a file cut
+   across workers under `-n`; nothing else changed from schema 2. The published schema marks
+   `schema_version` as `const: 5`, so a consumer pinned to 2 can refuse the stream.
 
 ### Added
 
+- **Under `-n`, a long test file's tests can run in more than one worker**, as they can under
+  `pytest -n`, here in contiguous slices, one per worker at most, each its own module instance.
+  A file is split when the previous run's recorded call times say it alone exceeds its share of
+  the pool; the plan is fixed before any test runs. A file of slow `async` tests no longer holds
+  one worker while the rest idle. Without `-n`, with no recorded durations, or when node ids,
+  `--lf`/`--ff` or a `--watch` rerun narrow the run, files stay whole. `--llm` and
+  `RUSTEST_SCHEDULE_TRACE` name each split.
+- **pytest 9's strictness inis, when pytest 9 or later is installed.** `strict_xfail` (with
+  `xfail_strict` as its alias, the canonical name winning) and `strict_markers` are read, and
+  both fall back to the `strict` ini, as pytest 9 does: with `strict = true` an `xfail` test
+  that passes (and gives no `strict=` of its own) fails, and an unregistered mark is an error.
+  Only `xfail_strict` was read before. Under pytest 8 these keys are unknown and do nothing, in
+  rustest too.
 - **`rustest --watch`.** Runs the tests, then reruns on every save: a changed test file runs
   again with last time's failures, a changed source file, conftest or config runs everything
   selected. Polls modification times (nothing to install), debounces a burst of saves into one
@@ -100,6 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pytester` fixture used elsewhere, a `pytest_collection_modifyitems` that changed something, a
   session-end or report hook, `-x`/`--maxfail`, `--lf`/`--ff`, `-s`, coverage). It handed the
   whole session over before.
+- **Under the xdist model with a pool of two or more, a `pytester` file runs as one more xdist
+  worker.** Its reports reach the controller with the pool's, so a controller-side summary or
+  session-end hook no longer sends the session to pytest whole, nor does `-s`; controller hooks
+  see the session as `pytest -n N+1`.
 - **A session that goes to pytest because of a `pytester` file goes before rustest collects
   it** when the reason is known up front (`-x`/`--maxfail`, a session-end hook in the first
   conftests): no test module is imported twice, and the hand-off no longer waits for a full
@@ -232,6 +250,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Selecting a class that contains no tests exits 4** (`ERROR: not found`) where pytest exits 5
   (no tests collected). Loud, and never runs the wrong tests.
+- **pytest 9's `strict_config` and `strict_parametrization_ids`**, set directly or through
+  `strict = true`, are not implemented: a config warning stays a warning, and duplicate
+  parametrize ids are made unique, where pytest 9 errors on both. A project whose pytest 9 run
+  is clean under them is unaffected.
 - **Gaps rc1 listed that are closed.** Conftest hooks: `pytest_addoption`,
   `pytest_configure`, `pytest_sessionstart` and `pytest_collection_modifyitems` run natively,
   and any other hook hands the session to pytest (rc1 ignored them). A `path::node::id`

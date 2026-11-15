@@ -55,9 +55,9 @@ use crate::engine::cache::{
     write_last_failed, LastFailedSkip,
 };
 use crate::engine::collect::{
-    assemble, initial_conftests_may_need_one_process, modify_items_line, plan, spawn_pool,
-    spawn_probe, CollectError, Dispatch, FileOutcome, ItemEffects, SessionEndReport, Worker,
-    WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
+    assemble, cut_slices, handed_worker, initial_conftests_may_need_one_process, modify_items_line,
+    plan, spawn_pool, spawn_probe, CollectError, Dispatch, FileOutcome, ItemEffects,
+    SessionEndReport, Worker, WorkerLauncher, IMPORT_FAILURE_PREFIX, MODIFY_ITEMS_DISAGREE,
 };
 use crate::engine::manifest::{CollectedTest, CollectionErrorEntry};
 use crate::engine::protocol::{CoverageWire, LateTeardown, RecordedWarning, SessionFacts};
@@ -166,8 +166,11 @@ pub struct RunOptions {
 #[derive(Clone)]
 pub struct HandFiles(pub Arc<HandFilesFn>);
 
-/// `(absolute paths, cache directory) -> report JSON`.
-pub type HandFilesFn = dyn Fn(&[String], &str) -> Option<String> + Send + Sync;
+/// `(absolute paths, cache directory, xdist identity) -> report JSON`. The identity
+/// `(worker id, worker count, testrun uid, records)` makes the handed process one more xdist
+/// worker; `records` asks for its phase reports, for a controller to replay.
+pub type HandFilesFn =
+    dyn Fn(&[String], &str, Option<&(String, usize, String, bool)>) -> Option<String> + Send + Sync;
 
 impl std::fmt::Debug for HandFiles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -194,6 +197,29 @@ struct HandedReport {
     /// Warnings recorded outside a test (collection); a test's own are on its entry.
     #[serde(default)]
     warnings: Vec<RecordedWarning>,
+    /// As one more xdist worker: its phase reports and logstart/logfinish, in the shape the
+    /// pool's workers ship, for the controller to replay.
+    #[serde(default)]
+    records: Vec<serde_json::Value>,
+    /// A conftest asked `config.workerinput` for a key a real xdist worker could have and this
+    /// one does not: what it would have done is unknown, so the session is pytest's.
+    #[serde(default)]
+    workerinput_miss: bool,
+    /// A `user_properties` value the wire to the controller cannot carry exactly.
+    #[serde(default)]
+    unwirable: bool,
+    /// Some `pytest_collection_modifyitems` changed the handed list (selection, order or marks).
+    /// Without `-k`/`-m` that was a conftest's, which may have answered differently over the
+    /// whole session (B1): the session is pytest's.
+    #[serde(default)]
+    list_changed: bool,
+    /// A `pytest_collection_modifyitems` other than pytest's own is registered there. With
+    /// `-k`/`-m` its changes cannot be told from pytest's selection: the session is pytest's.
+    #[serde(default)]
+    foreign_modifyitems: bool,
+    /// `pytest.exit()` or an interrupt ended pytest's session, whatever `returncode` it gave.
+    #[serde(default)]
+    exited: bool,
     exit_code: i32,
 }
 
@@ -336,6 +362,9 @@ pub struct TestOutcome {
     pub status: TestStatus,
     #[serde(rename = "duration")]
     pub duration_s: f64,
+    /// The call phase's share (the worker's `call_s`), recorded for the split; not reported.
+    #[serde(skip)]
+    pub call_s: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -485,6 +514,19 @@ pub struct RunReport {
     /// `summary_stats`). A raise exits 1. Omitted when false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub session_end_error: bool,
+    /// The files whose tests ran in more than one worker under `-n` (contiguous slices): each
+    /// worker's slice ran as its own module instance, so its module and class fixtures set up
+    /// once per slice. Omitted when nothing was split.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub split: Vec<SplitFile>,
+}
+
+/// One split file: its rootdir-relative path, and per slice the worker (`gwN`) and how many
+/// tests it ran there, in run order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SplitFile {
+    pub file: String,
+    pub slices: Vec<(String, usize)>,
 }
 
 /// `skip_serializing_if` needs a predicate over a reference; `bool::not` is not one.
@@ -867,11 +909,18 @@ fn import_everywhere(
 ) -> Result<(), CollectError> {
     let mut pending = Vec::with_capacity(txs.len());
     for (worker, tx) in txs.iter().enumerate() {
+        let own = &assignments[worker];
+        let mut seen = std::collections::HashSet::new();
         let files = assignments
             .iter()
             .enumerate()
             .filter(|(owner, _)| *owner != worker)
-            .flat_map(|(_, files)| files.iter().map(|(_, path)| path.clone()))
+            .flat_map(|(_, files)| files.iter())
+            // A split file is in several lists, its own worker's among them.
+            .filter(|(target, _)| {
+                !own.iter().any(|(mine, _)| mine == target) && seen.insert(*target)
+            })
+            .map(|(_, path)| path.clone())
             .collect();
         let (reply, answer) = channel();
         let _ = tx.send(ToWorker::Import { files, reply });
@@ -1249,12 +1298,34 @@ fn run_attempt(
         }
     }
 
+    // Under `-n` a costly file's tests can run in more than one worker, as under `pytest -n`
+    // (plain `pytest` never splits a file, xdist installed or not) -- unless the selection is
+    // narrowed before anything is collected: node ids, `--lf`/`--ff`, a `--watch` rerun. Each
+    // slice worker imports the file, which is only worth it for the whole of it.
+    if workers_explicit(options)
+        && dispatch.named_targets().is_empty()
+        && options.last_failed == LastFailedMode::None
+        && !context_flag(options, "watch_rerun")
+    {
+        dispatch.split_costly_files(workers);
+    }
+
     // B-lite's whole-session guards that hold before anything is collected: a test file whose
     // text names `pytester` (`pytest_plugins`) with `-x`/`--maxfail`, a CLI guard (no runner),
     // or -- once worker 0 reports its hooks -- a controller or session-end hook. The session is
     // pytest's then, decided without collecting it.
     let pytester_files = options.pytest_fallback && names_pytester(&dispatch);
-    let certain = options.max_fail > 0 || options.hand_files.is_none();
+    // Under the xdist model a pool of two or more has a controller to replay the handed
+    // process's reports into, and `-s` loses a worker's output as xdist's own does.
+    let as_worker = xdist_model && dispatch.assignments.len() > 1;
+    let certain =
+        options.max_fail > 0 || options.hand_files.is_none() || (options.no_capture && !as_worker);
+    if pytester_files && as_worker {
+        // ponytail: decided from a text scan, so a file that mentions pytester without naming
+        // it in `pytest_plugins` makes every process count N+1 with no handed worker; a count
+        // taken after collection would need the pool respawned.
+        dispatch.extra_workers = 1;
+    }
     if pytester_files && certain {
         return Ok(handed_off(
             dispatch.rootdir,
@@ -1263,8 +1334,10 @@ fn run_attempt(
         ));
     }
     let early = |launcher: &WorkerLauncher| {
-        (pytester_files && (launcher.controller_hooks() || launcher.session_end_hooks()))
-            .then(|| vec![PYTESTER_WHOLE.to_string()])
+        (pytester_files
+            && !as_worker
+            && (launcher.controller_hooks() || launcher.session_end_hooks()))
+        .then(|| vec![PYTESTER_WHOLE.to_string()])
     };
 
     let (mut pool, started_controller) = match spawn_pool(
@@ -1490,6 +1563,10 @@ fn run_attempt(
             Ok(())
         };
         let mut accepted = false;
+        // A stage that changed the list (deselected, reordered, marked): what a subset re-run in
+        // a handed pytest could disagree with (B-lite's B1). A hook that ran and changed
+        // nothing is not that.
+        let mut changed = false;
         let mut staged = {
             let txs = &exec_txs;
             let mut modify = |stage_number: u8, tests: &[CollectedTest]| {
@@ -1502,6 +1579,17 @@ fn run_attempt(
                     accepted,
                 )?;
                 accepted = matches!(modified, Modified::Effects(_));
+                if let Modified::Effects(effects) = &modified {
+                    changed |= !effects.deselected.is_empty()
+                        || !effects.vanished.is_empty()
+                        || !effects.marks.is_empty()
+                        || effects.order.len() != tests.len()
+                        || effects
+                            .order
+                            .iter()
+                            .zip(tests)
+                            .any(|(id, test)| *id != test.id);
+                }
                 Ok(modified)
             };
             imported.map_err(RunError::Collect).and_then(|()| {
@@ -1518,6 +1606,21 @@ fn run_attempt(
                 )
             })
         };
+
+        if let (Ok(staged), true) = (&staged, trace) {
+            for file in &staged.split {
+                let slices: Vec<String> = file
+                    .slices
+                    .iter()
+                    .map(|(worker, tests)| format!("{worker} {tests}"))
+                    .collect();
+                eprintln!(
+                    "rustest-schedule: split {} across {}",
+                    file.file,
+                    slices.join(", ")
+                );
+            }
+        }
 
         // A selected test that uses a plugin rustest runs only while nothing uses it.
         if let Ok(staged) = &mut staged {
@@ -1566,10 +1669,18 @@ fn run_attempt(
             if !staged.pytester.is_empty() {
                 // `-x` / `--maxfail`: running the handed files first would change which
                 // failure stops the session.
+                let hooked = launcher.controller_hooks() || launcher.session_end_hooks();
+                // B1 from both sides: a stage that changed the native list here, or (below) one
+                // that changed the handed list there. With `-k`/`-m` the handed side cannot tell
+                // a conftest's change from pytest's own deselection, so a conftest hook with them
+                // is whole. ponytail: a hook whose answer depends on the whole list yet changes
+                // neither sublist goes unseen (pytest-compat.md says so).
+                let selecting = keyword.is_some() || mark.is_some();
                 let whole = !staged.errors.is_empty()
-                    || (modifies && accepted)
-                    || launcher.controller_hooks()
-                    || launcher.session_end_hooks()
+                    || changed
+                    || (modifies && selecting)
+                    || (hooked && !controlled)
+                    || (options.no_capture && dispatch.extra_workers == 0)
                     || options.max_fail > 0
                     || staged.selected.iter().any(|test| {
                         test.fixtures
@@ -1588,16 +1699,25 @@ fn run_attempt(
                     })
                     .collect();
                 let cache_dir = dispatch.cache_dir.to_string_lossy().into_owned();
+                let worker =
+                    (dispatch.extra_workers > 0).then(|| handed_worker(&dispatch, controlled));
                 let report = options
                     .hand_files
                     .as_ref()
                     .filter(|_| !whole)
-                    .and_then(|hand| (hand.0)(&files, &cache_dir))
+                    .and_then(|hand| (hand.0)(&files, &cache_dir, worker.as_ref()))
                     .and_then(|json| serde_json::from_str::<HandedReport>(&json).ok())
                     // Exit 2 with a report and no collection error is an interrupt in a handed
-                    // test (`KeyboardInterrupt`, `pytest.exit`): the session's, kept below.
+                    // test (`KeyboardInterrupt`, `pytest.exit`): the session's, kept below --
+                    // unless a controller would have to end it, which xdist's does with the
+                    // interrupted status and its summary hooks: then pytest runs the session.
                     .filter(|report| {
                         report.collection_errors.is_empty()
+                            && !report.workerinput_miss
+                            && !report.unwirable
+                            && !(report.list_changed && !selecting)
+                            && !(report.foreign_modifyitems && selecting)
+                            && !((report.exit_code == 2 || report.exited) && controlled)
                             && matches!(report.exit_code, 0 | 1 | 2 | 5)
                     });
                 let Some(report) = report else {
@@ -1611,9 +1731,18 @@ fn run_attempt(
                         started,
                     ));
                 };
-                if report.exit_code == 2 {
-                    // pytest's session ended there: nothing native runs, and the run exits 2.
+                if report.exit_code == 2 || report.exited {
+                    // pytest's session ended there: nothing native runs, and the run exits as it did.
                     session_over.store(true, Ordering::SeqCst);
+                }
+                // Its reports reach the controller first, as one more worker's that finished
+                // before the rest started.
+                let mut report = report;
+                if controlled {
+                    shipped
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend(std::mem::take(&mut report.records));
                 }
                 handed = Some(report);
             }
@@ -1670,6 +1799,9 @@ fn run_attempt(
                     assignment.clone(),
                     accepted,
                     SessionEnd {
+                        // ponytail: the native workers' count leaves the handed tests out, where
+                        // an xdist worker's is the whole session's; only a worker-side
+                        // sessionfinish reading `testscollected` sees it.
                         testscollected: staged.collected,
                         collection_errors: staged.errors.len(),
                         maxfail: options.max_fail,
@@ -1794,14 +1926,48 @@ fn run_attempt(
         // exit status is 2, where a single process's is 1. A pool of one is that process.
         residue.interrupted = xdist_model && pool_size > 1 && stopped_early && !session_ended;
 
+        // The handed files' results join the session before the controller ends it: its facts
+        // (`testscollected`, `testsfailed`) are the whole session's.
+        let mut selection = Selection {
+            kept: staged.selected.len(),
+            deselected: staged.deselected,
+            module_skipped: staged.module_skipped,
+        };
+        let mut stopped_early = stopped_early;
+        if let Some(handed) = handed {
+            // pytest's own order: by file, as the session would have collected them.
+            let skipped = handed
+                .tests
+                .iter()
+                .filter(|test| test.status == TestStatus::Skipped)
+                .count();
+            selection.kept += handed.tests.len();
+            selection.deselected += handed.summary.deselected;
+            selection.module_skipped += handed.summary.skipped.saturating_sub(skipped);
+            stopped_early |= handed.stopped_early;
+            if handed.exit_code == 2 {
+                residue.interrupted = true;
+            } else if handed.exited {
+                // `pytest.exit(returncode=N)`: the session's status is N.
+                residue.session_end.returncode = Some(handed.exit_code);
+            }
+            residue.warnings.extend(handed.warnings);
+            let order = file_order(&dispatch);
+            outcomes.extend(handed.tests);
+            outcomes.sort_by_key(|test| order(&test.id));
+        }
+
         // The controller's session end (v18): after every worker's, as xdist's comes after
         // its workers finish. It replays every phase report, and ends the session with the
         // session's facts. A session `pytest.exit()` ended, or a declined run, leaves it to
         // `Controller`'s drop (unconfigure only).
-        if let (Some(mut controller), false, false) = (controller.0.take(), session_ended, quit) {
+        // Taken only when its session ends here: otherwise `Controller`'s drop quits it, so it
+        // still unconfigures (a taken-and-dropped worker would be killed instead).
+        let ends_here = !session_ended && !quit;
+        if let Some(mut controller) = controller.0.take_if(|_| ends_here) {
             let failed = failed_reports(outcomes.iter()) + residue.teardown_errors.len();
             let facts = SessionEnd {
-                testscollected: staged.collected,
+                testscollected: staged.collected + (selection.kept - staged.selected.len()),
                 collection_errors: staged.errors.len(),
                 maxfail: options.max_fail,
                 serial: false,
@@ -1860,32 +2026,7 @@ fn run_attempt(
             }
         }
 
-        let mut selection = Selection {
-            kept: staged.selected.len(),
-            deselected: staged.deselected,
-            module_skipped: staged.module_skipped,
-        };
-        let mut stopped_early = stopped_early;
-        if let Some(handed) = handed {
-            // pytest's own order: by file, as the session would have collected them.
-            let skipped = handed
-                .tests
-                .iter()
-                .filter(|test| test.status == TestStatus::Skipped)
-                .count();
-            selection.kept += handed.tests.len();
-            selection.deselected += handed.summary.deselected;
-            selection.module_skipped += handed.summary.skipped.saturating_sub(skipped);
-            stopped_early |= handed.stopped_early;
-            if handed.exit_code == 2 {
-                residue.interrupted = true;
-            }
-            residue.warnings.extend(handed.warnings);
-            let order = file_order(&dispatch);
-            outcomes.extend(handed.tests);
-            outcomes.sort_by_key(|test| order(&test.id));
-        }
-        let report = finish(
+        let mut report = finish(
             dispatch.rootdir.clone(),
             outcomes,
             staged.errors,
@@ -1894,6 +2035,7 @@ fn run_attempt(
             stopped_early,
             started,
         );
+        report.split = staged.split;
         let late = std::mem::take(
             &mut *handoff
                 .lock()
@@ -1921,6 +2063,14 @@ fn run_attempt(
                     .tests
                     .iter()
                     .map(|test| (test.id.clone(), test.duration_s)),
+                complete,
+            );
+            crate::engine::cache::record_call_durations(
+                &dispatch.cache_dir,
+                report
+                    .tests
+                    .iter()
+                    .filter_map(|test| Some((test.id.clone(), test.call_s?))),
                 complete,
             );
         }
@@ -1998,6 +2148,8 @@ struct Staged {
     /// Non-empty: a `pytest_collection_modifyitems` stage could not be answered natively,
     /// and the session goes to pytest with these reasons (nothing else here is used).
     handoff: Vec<String>,
+    /// The files whose selected tests were cut into slices across workers.
+    split: Vec<SplitFile>,
 }
 
 impl Staged {
@@ -2012,6 +2164,7 @@ impl Staged {
             per_worker: vec![Vec::new(); pool_size],
             warnings: Vec::new(),
             handoff: reasons,
+            split: Vec::new(),
         }
     }
 }
@@ -2043,6 +2196,35 @@ fn stage(
     if let Some(err) = failure {
         return Err(RunError::Collect(err));
     }
+    // A split file was collected by each of its workers: the first's (lowest) outcome is the
+    // file's. One that collected anything else (other ids, an error, a skip) leaves the file
+    // whole, on that first worker -- where `pytest -n` would refuse the session outright.
+    let mut first: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut unsplit = std::collections::HashSet::new();
+    let mut keep = Vec::with_capacity(outcomes.len());
+    for (position, (target, outcome)) in outcomes.iter().enumerate() {
+        match first.get(target) {
+            None => {
+                first.insert(*target, position);
+                keep.push(true);
+            }
+            Some(&earlier) => {
+                let other = &outcomes[earlier].1;
+                let ids = |found: &FileOutcome| -> Vec<String> {
+                    found.tests.iter().map(|test| test.id.clone()).collect()
+                };
+                if ids(other) != ids(outcome)
+                    || other.error.is_some() != outcome.error.is_some()
+                    || other.skipped.is_some() != outcome.skipped.is_some()
+                {
+                    unsplit.insert(*target);
+                }
+                keep.push(false);
+            }
+        }
+    }
+    let mut kept = keep.into_iter();
+    outcomes.retain(|_| kept.next().unwrap_or(true));
     let mut by_target: Vec<(usize, Vec<RecordedWarning>)> = outcomes
         .iter_mut()
         .map(|(target, outcome)| (*target, std::mem::take(&mut outcome.warnings)))
@@ -2185,6 +2367,7 @@ fn stage(
             per_worker: vec![Vec::new(); pool_size],
             warnings,
             handoff: Vec::new(),
+            split: Vec::new(),
         });
     }
 
@@ -2193,10 +2376,66 @@ fn stage(
     // the collect half about who imported a file — the property `ExecuteTest` depends on,
     // and one whose violation surfaces as a worker exiting 2 (i.e. as protocol drift) rather
     // than as the orchestrator bug it would be.
-    let mut owner = vec![0usize; dispatch.targets.len()];
+    let mut owner = vec![usize::MAX; dispatch.targets.len()];
     for (worker, files) in dispatch.assignments.iter().enumerate() {
         for (target, _) in files {
-            owner[*target] = worker;
+            if owner[*target] == usize::MAX {
+                owner[*target] = worker; // a split file's first worker
+            }
+        }
+    }
+
+    // A split file's selected tests, in run order, cut into one contiguous slice per worker
+    // that collected it, by recorded cost (a test with no record weighs its file's mean).
+    let mut slice_worker: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    let mut split = Vec::new();
+    let relative = dispatch.relative_targets();
+    for (target, holders) in dispatch.split_targets() {
+        let members: Vec<usize> = ordered
+            .iter()
+            .copied()
+            .filter(|&index| assembled.origin[index] == target)
+            .collect();
+        if unsplit.contains(&target) && std::env::var_os("RUSTEST_SCHEDULE_TRACE").is_some() {
+            eprintln!(
+                "rustest-schedule: {} runs whole: its workers collected different tests",
+                relative[target]
+            );
+        }
+        if members.is_empty() || unsplit.contains(&target) {
+            continue;
+        }
+        let recorded: Vec<Option<u64>> = members
+            .iter()
+            .map(|&index| dispatch.durations.get(&assembled.tests[index].id).copied())
+            .collect();
+        let known: Vec<u64> = recorded.iter().flatten().copied().collect();
+        let mean = (known.iter().sum::<u64>() / known.len().max(1) as u64).max(1);
+        let costs: Vec<u64> = recorded.iter().map(|cost| cost.unwrap_or(mean)).collect();
+        let classes: Vec<Option<&str>> = members
+            .iter()
+            .map(|&index| assembled.tests[index].class_name.as_deref())
+            .collect();
+        let slices = cut_slices(&costs, &classes, holders.len());
+        let mut counts = vec![0usize; holders.len()];
+        for (&index, &slice) in members.iter().zip(&slices) {
+            slice_worker.insert(index, holders[slice]);
+            counts[slice] += 1;
+        }
+        // What was assigned, slice by slice; a file that kept tests in one slice only (`-k`)
+        // was not split.
+        let slices: Vec<(String, usize)> = holders
+            .iter()
+            .zip(counts)
+            .filter(|(_, tests)| *tests > 0)
+            .map(|(worker, tests)| (format!("gw{worker}"), tests))
+            .collect();
+        if slices.len() > 1 {
+            split.push(SplitFile {
+                file: relative[target].clone(),
+                slices,
+            });
         }
     }
 
@@ -2210,7 +2449,7 @@ fn stage(
     for index in ordered {
         let test = assembled.tests[index].clone();
         let target = assembled.origin[index];
-        let worker = owner[target];
+        let worker = slice_worker.get(&index).copied().unwrap_or(owner[target]);
         if current[worker] != Some(target) {
             current[worker] = Some(target);
             batches[worker].push(Vec::new());
@@ -2231,6 +2470,7 @@ fn stage(
         per_worker: batches,
         warnings,
         handoff: Vec::new(),
+        split,
     })
 }
 
@@ -2323,6 +2563,7 @@ fn finish(
         terminal_summary: residue.session_end.summary,
         notes: Vec::new(),
         session_end_error,
+        split: Vec::new(),
     }
 }
 
@@ -2594,6 +2835,7 @@ mod tests {
             id: id.to_string(),
             status,
             duration_s: 0.0,
+            call_s: None,
             message: None,
             stdout: None,
             stderr: None,
@@ -2912,6 +3154,7 @@ mod tests {
                     id: "tests/test_a.py::test_bad".to_string(),
                     status: TestStatus::Failed,
                     duration_s: 0.5,
+                    call_s: None,
                     message: Some("assert 1 == 2".to_string()),
                     stdout: Some("computing\n".to_string()),
                     stderr: None,
@@ -2930,6 +3173,7 @@ mod tests {
             notes: Vec::new(),
             terminal_summary: Vec::new(),
             session_end_error: false,
+            split: Vec::new(),
         };
 
         assert_eq!(

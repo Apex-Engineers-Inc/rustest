@@ -70,7 +70,7 @@ is handed to pytest whole and runs at pytest's speed
 | `indirect=` | ✅ | ✅ | Routed through a fixture of the same name, as pytest's is |
 | **Marks** |
 | `@mark.skip` / `@mark.skipif` | ✅ | ✅ | Called and bare |
-| `@mark.xfail` | ✅ | ✅ | Including `strict=`, `raises=`, `run=False` and the `xfail_strict` ini. `--runxfail` is not implemented |
+| `@mark.xfail` | ✅ | ✅ | Including `strict=`, `raises=`, `run=False` and the `strict_xfail` / `xfail_strict` / `strict` inis. `--runxfail` is not implemented |
 | Custom marks (`@mark.slow`, etc.) | ✅ | ✅ | Including module-level `pytestmark` and class-level marks |
 | Mark with arguments | ✅ | ✅ | `@mark.timeout(30)` |
 | Selecting tests by mark (`-m`) | ✅ | ✅ | Full boolean expressions: `and` / `or` / `not`, parentheses, mark kwargs |
@@ -285,8 +285,8 @@ Both runners filter on these with `-m`, and rustest implements pytest's full exp
 grammar: `-m "slow and not integration"`, parentheses, and keyword matching on mark
 arguments. See [CLI Usage](cli.md).
 
-An unregistered mark is a warning, and an error under `--strict-markers` (or `--strict`),
-as in pytest.
+An unregistered mark is a warning, and an error under `--strict-markers` (or `--strict`), or
+with the `strict_markers` or `strict` ini set under pytest 9 or later, as in pytest.
 
 ### Assertion helpers
 

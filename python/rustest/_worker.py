@@ -447,13 +447,15 @@ class ResultResponse(TypedDict):
     that imports it — the same trap that renamed ``TestPlan`` to :class:`ExecutionPlan`.
 
     ``message``/``stdout``/``stderr`` are **omitted, never empty** — an unremarkable pass is
-    the four-key line, which is the shape the golden string pins.
+    the five-key line (``call_s`` included), the shape the golden test pins.
     """
 
     op: str
     id: str
     status: str
     duration_s: float
+    #: The call phase's share of it, the body alone (what the split weighs and cuts by).
+    call_s: NotRequired[float]
     message: NotRequired[str]
     stdout: NotRequired[str]
     stderr: NotRequired[str]
@@ -683,13 +685,27 @@ def _resolve_package_path(path: Path) -> Path | None:
     """
     result: Path | None = None
     for parent in (path, *path.parents):
-        if parent.is_dir():
-            if not (parent / "__init__.py").is_file():
-                break
-            if not parent.name.isidentifier():
-                break
-            result = parent
+        if parent in _package_dirs:
+            is_package = _package_dirs[parent]
+        else:
+            is_package = _package_dirs[parent] = (
+                (parent / "__init__.py").is_file() and parent.name.isidentifier()
+                if parent.is_dir()
+                else None
+            )
+        if is_package is None:
+            continue  # not a directory: the walk goes on, as pytest's does
+        if not is_package:
+            break
+        result = parent
     return result
+
+
+#: Per directory: a package directory pytest's walk continues through (``True``), a
+#: directory that stops it (``False``), or not a directory (``None``). Memoized for the
+#: worker's life, as pytest memoizes its own per-directory conftest lookups: a worker asks
+#: about the same few directories for every file it collects.
+_package_dirs: dict[Path, bool | None] = {}
 
 
 def _compute_module_name(root: Path, module_path: Path) -> str | None:
@@ -4150,6 +4166,8 @@ def reset_registry_caches() -> None:
     _conftest_modules.clear()
     _conftest_fixturedefs_cache.clear()
     _plugin_fixturedefs_cache.clear()
+    _conftest_chains.clear()
+    _package_dirs.clear()
     _builtins_registry = None
 
 
@@ -4176,6 +4194,10 @@ def conftest_chain(path: Path, rootdir: Path) -> list[Path]:
     walk to the filesystem root.
     """
     directory = path.parent if path.is_file() or path.suffix else path
+    key = (directory, rootdir)
+    cached = _conftest_chains.get(key)
+    if cached is not None:
+        return list(cached)
     chain: list[Path] = []
     for parent in (directory, *directory.parents):
         conftest = parent / "conftest.py"
@@ -4184,7 +4206,13 @@ def conftest_chain(path: Path, rootdir: Path) -> list[Path]:
         if parent == rootdir:
             break
     chain.reverse()
+    _conftest_chains[key] = tuple(chain)
     return chain
+
+
+#: ``conftest_chain`` per ``(directory, rootdir)``: pytest's ``_dirpath2confmods`` memo,
+#: which likewise answers each directory once per session.
+_conftest_chains: dict[tuple[Path, Path], tuple[Path, ...]] = {}
 
 
 def import_conftest(path: Path, rootdir: Path) -> types.ModuleType:
@@ -6525,7 +6553,23 @@ def _condition_namespace(plan: ExecutionPlan) -> Mapping[str, object]:
     return vars(plan.module)
 
 
+#: The current test's call-phase seconds (:func:`_run_call`), answered as ``call_s``: what the
+#: split weighs and cuts a file by, so a wide fixture's setup does not land on whichever test
+#: a slice starts with and move the cuts from run to run.
+_call_s = 0.0
+
+
 def _run_call(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, object]) -> None:
+    """Run the test body (timed into :data:`_call_s`)."""
+    global _call_s
+    started = time.perf_counter()
+    try:
+        _run_body(plan, runner, kwargs)
+    finally:
+        _call_s = time.perf_counter() - started
+
+
+def _run_body(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, object]) -> None:
     """Run the test body: a ``TestCase`` through ``unittest``, anything else directly."""
     if plan.unittest_case is not None:
         recorder = _UnittestOutcomeRecorder()
@@ -7194,6 +7238,8 @@ def execute_test(test_id: str) -> ResultResponse:
 
     capture = _worker_capture()
     _shipped.clear()
+    global _call_s
+    _call_s = 0.0  # a test whose body never ran (a skip, a setup error) costs no call time
     started = time.perf_counter()
     with capture.window(), warnings_window(plan.id, plan.marks, recorded):
         reports = _run_phases(plan, runner, capture)
@@ -7219,6 +7265,7 @@ def execute_test(test_id: str) -> ResultResponse:
         "id": plan.id,
         "status": status,
         "duration_s": duration,
+        "call_s": _call_s,
     }
     if message:
         result["message"] = message

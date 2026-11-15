@@ -323,6 +323,12 @@ def render(
 
     emit(_meta(report))
 
+    for split in report.get("split", []):
+        # A file cut across workers under -n: each slice set its module fixtures up anew.
+        workers = [worker for worker, _ in split["slices"]]
+        tests = [count for _, count in split["slices"]]
+        emit({"t": "split", "file": split["file"], "workers": workers, "tests": tests})
+
     for error in report["collection_errors"]:
         emit({"t": "error", "scope": "collection", "file": error["path"], "msg": error["message"]})
     for failure in report.get("teardown_errors", []):

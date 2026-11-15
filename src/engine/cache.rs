@@ -169,6 +169,12 @@ pub fn write_last_failed(cache_dir: &Path, entries: &BTreeMap<String, bool>) -> 
 /// test id -> seconds. What the scheduler weighs a file by (`collect.rs::file_weights`).
 const DURATIONS_FILE: &str = "rustest/durations";
 
+/// The same record of the call phase alone (the body, without fixture setup and teardown):
+/// what a split file is weighed and cut by (`collect.rs::Dispatch::split_costly_files`), so a
+/// module fixture's setup, which lands on the first test of each slice, cannot feed the next
+/// plan.
+const CALL_DURATIONS_FILE: &str = "rustest/durations-call";
+
 fn durations_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(CACHE_VALUES_DIR).join(DURATIONS_FILE)
 }
@@ -177,10 +183,36 @@ fn durations_path(cache_dir: &Path) -> PathBuf {
 /// sub-millisecond tests must not sum to nothing), or none: a missing, unreadable or corrupt
 /// record is no record. Never an error, like [`read_last_failed`].
 pub fn read_durations(cache_dir: &Path) -> BTreeMap<String, u64> {
-    std::fs::read_to_string(durations_path(cache_dir))
+    read_record(&durations_path(cache_dir))
+}
+
+/// [`read_durations`] of the call phase alone.
+pub fn read_call_durations(cache_dir: &Path) -> BTreeMap<String, u64> {
+    read_record(&cache_dir.join(CACHE_VALUES_DIR).join(CALL_DURATIONS_FILE))
+}
+
+fn read_record(path: &Path) -> BTreeMap<String, u64> {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
         .unwrap_or_default()
+}
+
+/// [`record_durations`] of the call phase alone.
+///
+/// ponytail: like the total record, entries of deleted or renamed files are pruned only by a
+/// complete run of their file; a stale entry can split a file by tests it no longer has
+/// (an empty slice), until then.
+pub fn record_call_durations(
+    cache_dir: &Path,
+    ran: impl IntoIterator<Item = (String, f64)>,
+    complete: bool,
+) {
+    record_into(
+        &cache_dir.join(CACHE_VALUES_DIR).join(CALL_DURATIONS_FILE),
+        ran,
+        complete,
+    );
 }
 
 /// Fold this run's durations (seconds) into the record. A run that selected everything it
@@ -193,24 +225,27 @@ pub fn record_durations(
     ran: impl IntoIterator<Item = (String, f64)>,
     complete: bool,
 ) {
+    record_into(&durations_path(cache_dir), ran, complete);
+}
+
+fn record_into(path: &Path, ran: impl IntoIterator<Item = (String, f64)>, complete: bool) {
     let ran: Vec<(String, u64)> = ran
         .into_iter()
         .map(|(id, seconds)| (id, (seconds.max(0.0) * 1e6) as u64))
         .collect();
-    let mut record = read_durations(cache_dir);
+    let mut record = read_record(path);
     if complete {
         let files: HashSet<&str> = ran.iter().map(|(id, _)| file_of(id)).collect();
         record.retain(|id, _| !files.contains(file_of(id)));
     }
     record.extend(ran);
-    let path = durations_path(cache_dir);
     let temporary = path.with_extension("tmp");
     let written = path
         .parent()
         .is_some_and(|parent| std::fs::create_dir_all(parent).is_ok())
         && serde_json::to_string(&record)
             .is_ok_and(|content| std::fs::write(&temporary, content).is_ok());
-    if written && std::fs::rename(&temporary, &path).is_err() {
+    if written && std::fs::rename(&temporary, path).is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
 }

@@ -738,7 +738,9 @@ class Recorder:
         elif event == "import":
             self._epoch += 1
             name = str(args[0])
-            snapshot = tuple(map(str, args[2])) if "." not in name else None
+            # An extension module's event carries None for sys.path: resolved against sys.path.
+            path = args[2] if "." not in name else None
+            snapshot = tuple(map(str, path)) if path is not None else None
             for facts in self._cur():
                 facts.imports.setdefault(name, snapshot)
         elif event == "sqlite3.connect":

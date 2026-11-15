@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Generator
 from typing import TYPE_CHECKING, Any, Final
 
 import pytest
@@ -85,6 +86,130 @@ def pytest_warning_recorded(
         _warnings.append({"location": where, "message": text})
 
 
+#: B-lite under the xdist model: this pytest is one more xdist worker of a rustest session.
+_HANDED = os.environ.get("RUSTEST_HANDED_WORKER") == "1"
+#: ... with a controller to replay its reports into: only then are they recorded.
+_RECORDS = _HANDED and os.environ.get("RUSTEST_HANDED_RECORDS") == "1"
+_records: list[dict[str, object]] = []  # what the controller replays, in event order
+_misses: list[str] = []  # workerinput keys a conftest asked for that this worker lacks
+_unwirable = False  # a user_properties value the wire to the controller cannot carry exactly
+_list_changed = False  # a pytest_collection_modifyitems changed this session's list
+_foreign = False  # a pytest_collection_modifyitems neither pytest's own nor this plugin's ran
+_exited = False  # `pytest.exit()` or an interrupt ended the session, whatever its returncode
+
+
+class _WorkerInput(dict[str, object]):
+    """``config.workerinput`` with xdist's three keys. Another key -- one another plugin's
+    ``pytest_configure_node`` would have added -- is recorded and raises ``KeyError``: what the
+    conftest would have done with it is unknown, so rustest hands the session to pytest."""
+
+    def __missing__(self, key: str) -> object:
+        _misses.append(key)
+        raise KeyError(key)
+
+    def get(self, key: str, default: object = None) -> object:
+        if key not in self:
+            _misses.append(key)
+        return super().get(key, default)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_load_initial_conftests(early_config: pytest.Config) -> None:
+    """Before any conftest is imported -- as xdist's ``remote.py`` sets them before the
+    session starts -- so a conftest's own ``tryfirst`` ``pytest_configure`` sees them too."""
+    if _HANDED:
+        early_config.workerinput = _WorkerInput(  # pyright: ignore[reportAttributeAccessIssue]
+            workerid=os.environ["PYTEST_XDIST_WORKER"],
+            workercount=int(os.environ["PYTEST_XDIST_WORKER_COUNT"]),
+            testrunuid=os.environ["PYTEST_XDIST_TESTRUNUID"],
+        )
+        early_config.workeroutput = {}  # pyright: ignore[reportAttributeAccessIssue]
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> Generator[None]:
+    """Outermost around every ``pytest_collection_modifyitems``: did the list change (selection,
+    order, marks), with an implementation other than pytest's own registered? Run over the
+    handed files alone, such a hook may have answered differently over the whole session, so
+    rustest hands the session over. pytest's own (fixture reordering, ``--deselect``) are
+    item-local and do not count; with ``-k``/``-m`` the change cannot be told from pytest's
+    selection, so rustest hands over on the foreign hook alone."""
+    global _list_changed, _foreign
+    manager = config.pluginmanager
+    # An installed plugin (an entry point) is one rustest's own autoload check already let
+    # through as item-local (hypothesis marks its tests); a conftest or `pytest_plugins`
+    # module is not.
+    installed = {id(plugin) for plugin, _ in manager.list_plugin_distinfo()}
+    for impl in manager.hook.pytest_collection_modifyitems.get_hookimpls():
+        module = getattr(impl.plugin, "__name__", None) or type(impl.plugin).__module__
+        if id(impl.plugin) not in installed and not (
+            module.startswith("_pytest.") or module == __name__
+        ):
+            _foreign = True
+
+    def shape() -> list[tuple[str, tuple[str, ...]]]:
+        return [(item.nodeid, tuple(mark.name for mark in item.iter_markers())) for item in items]
+
+    before = shape()
+    yield
+    _list_changed = _list_changed or shape() != before
+
+
+def _record(report: TestReport) -> dict[str, object]:
+    """One phase report in the shape rustest's workers ship (``_runtest.record_of``)."""
+    longrepr = report.longrepr
+    if longrepr is None:
+        wire: object = None
+    elif isinstance(longrepr, tuple):
+        wire = {"skip": list(longrepr)}
+    elif (crash := getattr(longrepr, "reprcrash", None)) is not None:
+        wire = {"crash": [crash.path, crash.lineno, crash.message]}
+    else:
+        wire = {"text": str(longrepr)}
+    record: dict[str, object] = {
+        "nodeid": report.nodeid,
+        "location": list(report.location),
+        "keywords": list(report.keywords),
+        "outcome": report.outcome,
+        "longrepr": wire,
+        "when": report.when,
+        "duration": report.duration,
+        "start": report.start,
+        "stop": report.stop,
+        "user_properties": [[name, value] for name, value in report.user_properties],
+        "worker_id": os.environ["PYTEST_XDIST_WORKER"],
+        "testrun_uid": os.environ["PYTEST_XDIST_TESTRUNUID"],
+    }
+    if hasattr(report, "wasxfail"):
+        record["wasxfail"] = report.wasxfail
+    from rustest._hookshim import wire_exact  # only a handed worker with a controller
+
+    # `{name: value}`: exact only when the name is a string and the value survives JSON.
+    if not all(wire_exact({n: v}) for n, v in report.user_properties):
+        global _unwirable
+        _unwirable = True  # the wire cannot carry it exactly: pytest's session
+    return record
+
+
+def pytest_keyboard_interrupt() -> None:
+    """pytest calls it for ``pytest.exit()`` too (``wrap_session``), whatever the returncode: the
+    session ended there, which a ``returncode`` of 0, 1 or 5 does not show."""
+    global _exited
+    _exited = True
+
+
+def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) -> None:
+    if _RECORDS:
+        _records.append({"hook": "logstart", "nodeid": nodeid, "location": list(location)})
+
+
+def pytest_runtest_logfinish(nodeid: str, location: tuple[str, int | None, str]) -> None:
+    if _RECORDS:
+        _records.append({"hook": "logfinish", "nodeid": nodeid, "location": list(location)})
+
+
 def pytest_collectreport(report: CollectReport) -> None:
     global _module_skips
     if report.failed:
@@ -103,6 +228,8 @@ def pytest_collection_finish(session: Session) -> None:
 
 
 def pytest_runtest_logreport(report: TestReport) -> None:
+    if _RECORDS:
+        _records.append(_record(report))
     status = _status(report)
     if report.when == "setup" or report.nodeid not in _open:
         _open[report.nodeid] = {"id": report.nodeid, "status": None, "duration": 0.0}
@@ -147,10 +274,10 @@ def pytest_testnodedown(node: Any, error: object) -> None:
 def pytest_sessionfinish(session: Session, exitstatus: int) -> None:
     path = os.environ.get("RUSTEST_PYTEST_REPORT")
     workeroutput = getattr(session.config, "workeroutput", None)
-    if isinstance(workeroutput, dict):  # an xdist worker: its count goes to the controller
+    if isinstance(workeroutput, dict) and not _HANDED:  # an xdist worker: count to controller
         workeroutput["rustest_deselected"] = _deselected
         return
-    if not path or hasattr(session.config, "workerinput"):
+    if not path or (hasattr(session.config, "workerinput") and not _HANDED):
         return
     tests = [t for t in _tests if t["status"] is not None]  # a phase that never reported
     counts = {name: sum(t["status"] == name for t in tests) for name in _PRECEDENCE}
@@ -171,7 +298,15 @@ def pytest_sessionfinish(session: Session, exitstatus: int) -> None:
         "collected": _collected,
         "warnings": _warnings,
     }
-    if session.shouldfail or session.shouldstop or exitstatus == 2:  # -x, pytest.exit, Ctrl-C
+    report["list_changed"] = _list_changed and _foreign
+    report["foreign_modifyitems"] = _foreign
+    report["exited"] = _exited
+    if _HANDED:
+        report["records"] = _records
+        report["workerinput_miss"] = bool(_misses)
+        report["unwirable"] = _unwirable
+    # -x, Ctrl-C, pytest.exit (whatever its returncode)
+    if session.shouldfail or session.shouldstop or exitstatus == 2 or _exited:
         report["stopped_early"] = True
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(report, handle)
