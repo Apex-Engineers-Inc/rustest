@@ -56,6 +56,7 @@ def survey_target(name: str, rounds: int, *, tree: bool) -> dict[str, Any]:
         real.verify_env(target)
         real.assert_build_is_current(target)
     real.ensure_xdist(target)
+    before = real._git_status(target)  # pyright: ignore[reportPrivateUsage]
     tmp = real.WORK_DIR / "_runs" / f"survey-{name}"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
@@ -82,6 +83,8 @@ def survey_target(name: str, rounds: int, *, tree: bool) -> dict[str, Any]:
             warm[label].append(run.duration_record)
         runs.append(this)
 
+    if real._git_status(target) != before:  # pyright: ignore[reportPrivateUsage]
+        errors["tree"] = "the run changed tracked files in the suite's clone"
     oracles = [r["pytest"] for r in runs if "pytest" in r]
     # The suite's own nondeterminism: any id pytest itself did not report identically in
     # every one of its legs, in every round.

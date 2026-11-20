@@ -977,12 +977,13 @@ def available_targets() -> list[str]:
 
 
 def _git_status(target: RealTarget) -> str | None:
-    """``git status --short`` of a local target's tree (``None`` when it is not a git tree):
-    the before-and-after check that a run wrote nothing there."""
-    if target.kind != "local":
-        return None
+    """``git status --short`` of a target's tree (``None`` when it is not a git tree): the
+    before-and-after check that a run wrote nothing there. A local target's tree must not
+    gain even an ignored file; a public clone only has its tracked files watched, since its
+    own suite may leave caches behind under pytest too."""
+    scope = "--ignored=matching" if target.kind == "local" else "--untracked-files=no"
     proc = subprocess.run(  # noqa: S603
-        ["git", "-C", str(target.repo), "status", "--short", "--ignored=matching"],
+        ["git", "-C", str(target.repo), "status", "--short", scope],
         capture_output=True,
         text=True,
         encoding=_ENCODING,
@@ -1075,8 +1076,11 @@ def run_target(
         engine_run: RunOutcome | None = None
         engine_status = ""
         if rustest_run.fallback:
-            engine_run = run_rustest_real(target, tmp, fallback=False, tree=tree)
-            engine_status = grade_real(target, pytest_run, engine_run).status
+            try:
+                engine_run = run_rustest_real(target, tmp, fallback=False, tree=tree)
+                engine_status = grade_real(target, pytest_run, engine_run).status
+            except Exception as exc:  # noqa: BLE001 - informational leg, as xdist is
+                engine_status = f"no engine run: {exc!r}"[:200]
         if before is not None and _git_status(target) != before:
             raise RuntimeError(f"{name}: the run changed `git status` in {target.repo}")
         return RealVerdict(
