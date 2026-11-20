@@ -259,6 +259,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--survey",
+        metavar="NAME",
+        help=(
+            "Run a public real-world suite (or 'all') under pytest and rustest at 1, 4 and "
+            "all-CPU workers, several rounds each, and write conformance/real/survey/NAME.json "
+            "and survey.md. Honours --real-tree and --real-resume."
+        ),
+    )
+    parser.add_argument("--survey-rounds", type=int, default=3, help="Rounds per leg (3).")
+    parser.add_argument(
         "--real-setup-only",
         action="store_true",
         help="With --real: clone and provision the isolated environment, then stop.",
@@ -289,6 +299,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.survey:
+        from .harness.survey import main_survey
+
+        return main_survey(
+            args.survey, args.survey_rounds, tree=args.real_tree, resume=args.real_resume
+        )
     if args.real or args.real_table:
         return main_real(
             args.real,

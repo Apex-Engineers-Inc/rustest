@@ -1571,3 +1571,27 @@ def test_o_cache_dir_moves_every_cache_out_of_the_tree(tmp_path: Path):
     assert (elsewhere / "v" / "cache" / "lastfailed").is_file()
     assert (elsewhere / "v" / "rustest" / "durations").is_file()
     assert not (tree / ".rustest_cache").exists()
+
+
+def test_reading_the_plugin_manager_hands_the_session_to_pytest(tmp_path: Path):
+    """``pytestconfig.pluginmanager`` is pytest's plugin system (flask's suite unregisters the
+    logging plugin through it): found while the test runs, and the session goes to pytest."""
+    tree = make_tree(
+        tmp_path,
+        "pluginmanager",
+        {
+            "test_pm.py": (
+                "def test_first():\n    pass\n\n"
+                "def test_pm(pytestconfig):\n"
+                "    assert pytestconfig.pluginmanager.get_plugin('logging-plugin')\n"
+            )
+        },
+    )
+
+    handed = _rustest(tree)
+    assert handed.returncode == 0, handed.stdout + handed.stderr
+    assert "config.pluginmanager" in handed.stderr
+    assert "2 passed" in handed.stdout  # pytest's summary line
+
+    kept = _rustest(tree, "--no-pytest-fallback")
+    assert kept.returncode == 1, kept.stdout + kept.stderr

@@ -14,7 +14,7 @@ before the last dot names a *module*; click's ``tests/test_shell_completion.py``
 
 from __future__ import annotations
 
-import os.path
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from rustest import builtin_fixtures
 from rustest.builtin_fixtures import MonkeyPatch
 
 
@@ -212,3 +213,21 @@ def test_syspath_prepend_and_chdir_still_round_trip(mp: MonkeyPatch, tmp_path: P
     assert sys.path[0] == os.fspath(tmp_path)
     mp.undo()
     assert sys.path == before
+
+
+def test_undo_restores_the_whole_of_sys_path_and_raising_is_positional(
+    mp: MonkeyPatch, tmp_path: Path
+) -> None:
+    """Three shapes flask's suite uses, each as pytest has it: ``delenv(name, False)``
+    positionally, an environment change undone from ``_setitem``, and an undo that drops
+    ``sys.path`` entries the code under test added after ``syspath_prepend``."""
+    before = sys.path[:]
+    mp.delenv("RUSTEST_NO_SUCH_VARIABLE", False)
+    mp.delitem({}, "missing", False)
+    mp.setenv("RUSTEST_PROBE", "1")
+    assert (os.environ, "RUSTEST_PROBE", builtin_fixtures.notset) in mp._setitem  # pyright: ignore[reportPrivateUsage]
+    mp.syspath_prepend(tmp_path)
+    sys.path.insert(0, str(tmp_path / "added by the code under test"))
+    mp.undo()
+    assert sys.path == before
+    assert "RUSTEST_PROBE" not in os.environ

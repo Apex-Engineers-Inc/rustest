@@ -7,22 +7,24 @@ The fixture itself, and every other builtin fixture, is registered by
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import os
 import sys
+import warnings
 from collections.abc import Generator, MutableMapping
 from contextlib import contextmanager
-from typing import Any, cast
+from typing import Any
 
 
-class _NotSet:
+class Notset:
     """Sentinel value for tracking missing attributes/items."""
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
-        return "<NOTSET>"
+        return "<notset>"
 
 
-_NOT_SET = _NotSet()
+notset = Notset()
 
 
 def _annotated_getattr(obj: object, name: str, ann: str) -> object:
@@ -92,10 +94,9 @@ class MonkeyPatch:
 
     def __init__(self) -> None:
         super().__init__()
-        self._setattrs: list[tuple[object, str, object | _NotSet]] = []
-        self._setitems: list[tuple[MutableMapping[Any, Any], Any, object | _NotSet]] = []
-        self._environ: list[tuple[str, str | _NotSet]] = []
-        self._syspath_prepend: list[str] = []
+        self._setattr: list[tuple[object, str, object | Notset]] = []
+        self._setitem: list[tuple[MutableMapping[Any, Any], Any, object | Notset]] = []
+        self._savesyspath: list[str] | None = None
         self._cwd_original: str | None = None
 
     @classmethod
@@ -110,8 +111,8 @@ class MonkeyPatch:
     def setattr(
         self,
         target: object | str,
-        name: object | str = _NOT_SET,
-        value: object = _NOT_SET,
+        name: object | str = notset,
+        value: object = notset,
         raising: bool = True,
     ) -> None:
         """Port of `_pytest/monkeypatch.py::MonkeyPatch.setattr` (pytest 8.4.2, l. 181-251).
@@ -120,7 +121,7 @@ class MonkeyPatch:
         False)`` is a shape real suites use, and a keyword-only parameter turned it into
         ``TypeError: takes from 2 to 4 positional arguments but 5 were given``.
         """
-        if value is _NOT_SET:
+        if value is notset:
             if not isinstance(target, str):
                 raise TypeError(
                     "use setattr(target, name, value) or "
@@ -134,26 +135,26 @@ class MonkeyPatch:
                 + "setattr(target, value) with target being a dotted import string"
             )
 
-        original = getattr(target, name, _NOT_SET)
-        if raising and original is _NOT_SET:
+        original = getattr(target, name, notset)
+        if raising and original is notset:
             raise AttributeError(f"{target!r} has no attribute {name!r}")
 
         # Avoid class descriptors like staticmethod/classmethod: `getattr` on a class
         # returns the *bound* object, and restoring that would silently turn a
         # `staticmethod` into a plain function (pytest l. 247-249).
         if inspect.isclass(target):
-            original = target.__dict__.get(name, _NOT_SET)
-        self._setattrs.append((target, name, original))
+            original = target.__dict__.get(name, notset)
+        self._setattr.append((target, name, original))
         setattr(target, name, value)
 
     def delattr(
         self,
         target: object | str,
-        name: str | _NotSet = _NOT_SET,
+        name: str | Notset = notset,
         raising: bool = True,
     ) -> None:
         """Port of `_pytest/monkeypatch.py::MonkeyPatch.delattr` (pytest 8.4.2, l. 253-289)."""
-        if isinstance(name, _NotSet):
+        if isinstance(name, Notset):
             if not isinstance(target, str):
                 raise TypeError(
                     "use delattr(target, name) or "
@@ -166,53 +167,53 @@ class MonkeyPatch:
                 raise AttributeError(name)
             return
 
-        original = getattr(target, name, _NOT_SET)
+        original = getattr(target, name, notset)
         if inspect.isclass(target):
-            original = target.__dict__.get(name, _NOT_SET)
-        self._setattrs.append((target, name, original))
+            original = target.__dict__.get(name, notset)
+        self._setattr.append((target, name, original))
         delattr(target, name)
 
-    def setitem(self, mapping: MutableMapping[Any, Any], key: Any, value: Any) -> None:
-        original = mapping.get(key, _NOT_SET)
-        mapping[key] = value
-        self._setitems.append((mapping, key, original))
+    def setitem(self, dic: MutableMapping[Any, Any], name: Any, value: Any) -> None:
+        self._setitem.append((dic, name, dic.get(name, notset)))
+        dic[name] = value
 
-    def delitem(self, mapping: MutableMapping[Any, Any], key: Any, *, raising: bool = True) -> None:
-        if key not in mapping:
-            if raising:
-                raise KeyError(key)
-            self._setitems.append((mapping, key, _NOT_SET))
-            return
-
-        original = mapping[key]
-        del mapping[key]
-        self._setitems.append((mapping, key, original))
-
-    def setenv(self, name: str, value: Any, prepend: str | None = None) -> None:
-        str_value = str(value)
-        if prepend and name in os.environ:
-            str_value = f"{str_value}{prepend}{os.environ[name]}"
-        original = os.environ.get(name)
-        os.environ[name] = str_value
-        stored_original: str | _NotSet = original if original is not None else _NOT_SET
-        self._environ.append((name, stored_original))
-
-    def delenv(self, name: str, *, raising: bool = True) -> None:
-        if name not in os.environ:
+    def delitem(self, dic: MutableMapping[Any, Any], name: Any, raising: bool = True) -> None:
+        if name not in dic:
             if raising:
                 raise KeyError(name)
-            self._environ.append((name, _NOT_SET))
-            return
+        else:
+            self._setitem.append((dic, name, dic.get(name, notset)))
+            del dic[name]
 
-        original = os.environ.pop(name)
-        self._environ.append((name, original))
+    def setenv(self, name: str, value: str, prepend: str | None = None) -> None:
+        """Port of `MonkeyPatch.setenv`: an environment change is a ``setitem`` on
+        ``os.environ``, so it is undone from the same list, in the same order, as pytest's."""
+        if not isinstance(value, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            from rustest.compat.pytest import PytestWarning
+
+            warnings.warn(
+                PytestWarning(
+                    f"Value of environment variable {name} type should be str, but got "
+                    + f"{value!r} (type: {type(value).__name__}); converted to str implicitly"
+                ),
+                stacklevel=2,
+            )
+            value = str(value)
+        if prepend and name in os.environ:
+            value = value + prepend + os.environ[name]
+        self.setitem(os.environ, name, value)
+
+    def delenv(self, name: str, raising: bool = True) -> None:
+        self.delitem(os.environ, name, raising=raising)
 
     def syspath_prepend(self, path: os.PathLike[str] | str) -> None:
-        str_path = os.fspath(path)
-        if str_path in sys.path:
-            return
-        sys.path.insert(0, str_path)
-        self._syspath_prepend.append(str_path)
+        """Port of `MonkeyPatch.syspath_prepend`. The undo restores the **whole** of
+        ``sys.path`` from this snapshot, so entries the code under test inserted go too:
+        flask's suite relies on that to forget an app directory between tests."""
+        if self._savesyspath is None:
+            self._savesyspath = sys.path[:]
+        sys.path.insert(0, os.fspath(path))
+        importlib.invalidate_caches()
 
     def chdir(self, path: os.PathLike[str] | str) -> None:
         if self._cwd_original is None:
@@ -233,36 +234,26 @@ class MonkeyPatch:
         was asked to arrange. Noted rather than silently different: a suite that *relies* on
         the raise (nothing plausibly does) would see a green teardown here.
         """
-        for obj, attr_name, original in reversed(self._setattrs):
-            if original is _NOT_SET:
+        for obj, attr_name, original in reversed(self._setattr):
+            if original is notset:
                 try:
                     delattr(obj, attr_name)
                 except AttributeError:  # the test already removed it; see the docstring
                     pass
             else:
                 setattr(obj, attr_name, original)
-        self._setattrs.clear()
+        self._setattr.clear()
 
-        for mapping, key, original in reversed(self._setitems):
-            if original is _NOT_SET:
+        for mapping, key, original in reversed(self._setitem):
+            if original is notset:
                 mapping.pop(key, None)
             else:
                 mapping[key] = original
-        self._setitems.clear()
+        self._setitem.clear()
 
-        for name, original in reversed(self._environ):
-            if original is _NOT_SET:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = cast(str, original)
-        self._environ.clear()
-
-        while self._syspath_prepend:
-            str_path = self._syspath_prepend.pop()
-            try:
-                sys.path.remove(str_path)
-            except ValueError:  # pragma: no cover - path already removed externally
-                pass
+        if self._savesyspath is not None:
+            sys.path[:] = self._savesyspath
+            self._savesyspath = None
 
         if self._cwd_original is not None:
             os.chdir(self._cwd_original)

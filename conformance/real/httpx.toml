@@ -1,0 +1,47 @@
+# httpx -- a suite with `filterwarnings = ["error"]`, a `-rxXs` addopts, custom markers, trio
+# and asyncio async tests driven by anyio (a pytest11 plugin that rustest does not run -- see
+# the report for how many tests that touches), and a real local uvicorn server fixture.
+
+[repo]
+kind = "oss"
+url = "https://github.com/encode/httpx.git"
+tag = "0.28.1"
+# Lightweight tag; commit SHA directly.
+rev = "26d48e0634e6ee9cdc0533996db289ce4b430177"
+test_paths = ["tests"]
+
+[env]
+# Test dependencies come from requirements.txt: the project with its brotli, cli, http2,
+# socks and zstd extras, chardet, cryptography, trio, trustme and uvicorn. That file pins
+# tooling and says package dependencies are deliberately NOT pinned so the tests run against
+# the latest releases, so those are left unpinned here; only pytest is pinned (to the corpus
+# oracle) rather than the file's 8.3.4. mkdocs, build, twine, mypy, ruff, coverage are
+# docs/lint/packaging tooling, not test dependencies.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "pytest==8.4.2", "chardet", "cryptography", "trio", "trustme", "uvicorn",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}[brotli,cli,http2,socks,zstd]"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]

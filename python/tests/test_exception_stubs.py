@@ -229,3 +229,20 @@ def test_outcome_catch_paths_match_real_pytest(tmp_path: Path, body: str, expect
     ours = _tally(tree, [sys.executable, "-m", "rustest"])
     assert oracle == expected, oracle
     assert ours == oracle, f"rustest={ours!r} pytest={oracle!r}"
+
+
+def test_pytest_monkeypatch_stub_is_the_fixture_class_and_its_sentinel() -> None:
+    """``_pytest.monkeypatch`` names are aliases too. flask's suite registers an undo by hand,
+    ``monkeypatch._setitem.append((os.environ, key, notset))``, so the list name and the
+    sentinel are pytest's."""
+    import os
+
+    from rustest import builtin_fixtures
+    from rustest._pytest_stub import monkeypatch as stub
+
+    assert stub.MonkeyPatch is builtin_fixtures.MonkeyPatch
+    patch = stub.MonkeyPatch()
+    os.environ["RUSTEST_STUB_PROBE"] = "set by the code under test"
+    patch._setitem.append((os.environ, "RUSTEST_STUB_PROBE", stub.notset))  # pyright: ignore[reportPrivateUsage]
+    patch.undo()
+    assert "RUSTEST_STUB_PROBE" not in os.environ

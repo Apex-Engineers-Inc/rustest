@@ -238,6 +238,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`monkeypatch` matches pytest's `MonkeyPatch` where suites reach into it.** Found by running
+  flask's suite. `delenv(name, False)` and `delitem(d, key, False)` take `raising`
+  positionally; `setenv`/`delenv` are undone from `_setitem`, in pytest's order; undo restores
+  the whole of `sys.path` after `syspath_prepend`, so paths the code under test added are
+  dropped too; and `_pytest.monkeypatch` exports the fixture's own class and the `notset`
+  sentinel (it was a placeholder class that could not be instantiated).
+- **A test or fixture that reads `config.pluginmanager` hands the session to pytest** instead
+  of failing with `AttributeError`.
 - **`request.fixturenames` works inside a fixture** (#144). It existed on the item only, so
   a fixture reading it raised `AttributeError`.
 - **Linux aarch64 and musllinux wheels** (#152, matrix from #153). An aarch64 container or an

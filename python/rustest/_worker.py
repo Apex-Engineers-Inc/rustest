@@ -7340,9 +7340,10 @@ def _drain_previous(
 
 def _faults_since(fault_mark: object) -> list[str]:
     """The hook-runtime faults since *fault_mark*, as hand-off reasons."""
+    found, _builtins.pytest_only[:] = list(_builtins.pytest_only), []
     if _hookwire_mod is None or fault_mark is None:
-        return []
-    return [_hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(fault_mark)]
+        return found
+    return found + [_hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(fault_mark)]
 
 
 def _result_for(

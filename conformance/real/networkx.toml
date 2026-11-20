@@ -1,0 +1,54 @@
+# networkx -- a large, numerically heavy suite (numpy / scipy / pandas / matplotlib), with
+# `filterwarnings = ["error"]`, a conftest that adds `--runslow` / `--backend` options and
+# skips slow tests without them, and a backend-dispatch layer. Tests live under
+# `networkx/**/tests/`.
+
+[repo]
+kind = "oss"
+url = "https://github.com/networkx/networkx.git"
+tag = "networkx-3.7"
+# Annotated tag; this is the commit it points at, not the tag object's own SHA.
+rev = "49ca2290b80c1389eb4d8d8e49dcba73f8fec016"
+test_paths = ["networkx"]
+
+[env]
+# Test dependencies are requirements/test.txt (pytest, pytest-cov, pytest-xdist), the
+# `default` extra (numpy, scipy, matplotlib, pandas) and the pure-Python members of the
+# `extra` extra (lxml, pydot, sympy). Installed here: the `default` and `extra` packages and
+# pytest-mpl (from test-extras.txt; inert without `--mpl`, it registers the
+# `mpl_image_compare` marker). Left out: pytest-cov and pytest-xdist (not engaged by any
+# addopts), pytest-randomly (from test-extras.txt; it reorders and reseeds tests per run, so
+# the two runners would never see the same order), and pygraphviz (needs a Graphviz install
+# and a compiler; its tests skip on ImportError).
+#
+# The project's CI runs `pytest --doctest-modules --pyargs networkx`; doctests are not
+# collected here because that needs `--doctest-modules`, which this config does not add.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "pytest==8.4.2", "pytest-mpl", "numpy>=2.2", "scipy>=1.15", "matplotlib>=3.10",
+    "pandas>=2.3", "lxml>=4.6", "pydot>=3.0.1", "sympy>=1.10",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 3600
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]

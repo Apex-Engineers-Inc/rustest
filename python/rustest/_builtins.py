@@ -1612,7 +1612,20 @@ class Config:
             found, value = _hooks.user_attribute(name)
             if found:
                 return value
+        if name in _PLUGIN_SYSTEM:
+            # Only pytest can answer (flask's suite unregisters the logging plugin through
+            # `pytestconfig.pluginmanager`): the reason rides on this test's result and the
+            # session is handed to pytest, unless `--no-pytest-fallback` keeps it here.
+            pytest_only.append(
+                f"a test or fixture reads config.{name}, which is pytest's plugin system"
+            )
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+
+#: ``Config`` attributes that are pytest's plugin system itself.
+_PLUGIN_SYSTEM: Final = frozenset({"pluginmanager", "hook"})
+#: Reasons found while a test ran that the session is pytest's to run; the worker drains it.
+pytest_only: list[str] = []
 
 
 class _OptionNamespace:

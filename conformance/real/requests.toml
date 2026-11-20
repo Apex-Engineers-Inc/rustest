@@ -1,0 +1,47 @@
+# requests -- a mainstream suite that leans on plugins for its fixtures: `pytest-httpbin`
+# supplies the `httpbin` / `httpbin_secure` servers (local, on 127.0.0.1) and `pytest-mock`
+# the `mocker` fixture. addopts is `--doctest-modules`, so doctests in the test files collect.
+
+[repo]
+kind = "oss"
+url = "https://github.com/psf/requests.git"
+tag = "v2.34.2"
+# Annotated or lightweight, this is the commit the tag points at.
+rev = "6e83187b8feb273ed4c6cdab5efd8d54901dfab3"
+test_paths = ["tests"]
+
+[env]
+# Test dependencies are the `dev` group in pyproject.toml / requirements-dev.txt:
+# pytest-httpbin==2.1.0, httpbin~=0.10.0, pytest-mock, trustme, plus the `socks` extra.
+# pytest-cov and pytest-xdist are in that group too but nothing in addopts uses them, so they
+# are left out rather than loaded as plugins that change nothing.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Same pytest as the corpus oracle, so the comparison does not measure version skew.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "pytest-httpbin==2.1.0", "httpbin~=0.10.0", "pytest-mock", "trustme",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}[socks]"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]
