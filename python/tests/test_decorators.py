@@ -372,3 +372,15 @@ class TestParametrizePytestKeywordSpelling:
     def test_neither_spelling_given_is_a_type_error(self) -> None:
         with pytest.raises(TypeError):
             parametrize(argvalues=[1, 2])  # pyright: ignore[reportCallIssue]
+
+
+def test_a_long_string_gets_an_argname_id_from_pytest_9_2_on(monkeypatch) -> None:
+    """pytest 9.2: an auto id for a str/bytes value over 100 characters is `<argname><index>`."""
+    from rustest import decorators
+
+    long, edge = "x" * 101, b"y" * 100
+    monkeypatch.setattr(decorators, "_short_long_ids", lambda: True)
+    assert decorators._generate_param_id(long, 3, "msg") == "msg3"
+    assert decorators._generate_param_id(edge, 3, "msg") == "y" * 100
+    monkeypatch.setattr(decorators, "_short_long_ids", lambda: False)
+    assert decorators._generate_param_id(long, 3, "msg") == long

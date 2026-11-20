@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import functools
 import inspect
 from types import GenericAlias
 from typing import TYPE_CHECKING, Any, Final, ParamSpec, TypeVar, overload, cast
@@ -327,8 +328,28 @@ def _generate_param_id(value: Any, index: int, argname: str = "param") -> str:
     ``pytest_make_parametrize_id``). The fallback is
     ``IdMaker._idval_from_argname`` (l. 1023-1027): ``str(argname) + str(idx)``.
     """
+    if isinstance(value, (str, bytes)) and len(value) > 100 and _short_long_ids():
+        return f"{argname}{index}"
     idval = _idval_from_value(value)
     return idval if idval is not None else f"{argname}{index}"
+
+
+@functools.cache
+def _short_long_ids() -> bool:
+    """pytest 9.2 gave a str/bytes value over 100 characters the id ``<argname><index>``
+    (``IdMaker._apply_long_str_strategy``); earlier pytests spell the value out. Follow the
+    installed pytest, so ids match whichever one the suite is compared with, and the newer
+    rule when there is none.
+    """
+    # ponytail: only the default "short" strategy; read the ini
+    # `parametrize_long_str_id_strategy` (sha256/legacy/disallow) when a suite sets it.
+    from importlib import metadata
+
+    try:
+        major, minor = metadata.version("pytest").split(".")[:2]
+        return (int(major), int(minor)) >= (9, 2)
+    except (metadata.PackageNotFoundError, ValueError):
+        return True
 
 
 def _resolve_case_id(

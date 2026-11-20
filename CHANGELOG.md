@@ -244,6 +244,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole of `sys.path` after `syspath_prepend`, so paths the code under test added are
   dropped too; and `_pytest.monkeypatch` exports the fixture's own class and the `notset`
   sentinel (it was a placeholder class that could not be instantiated).
+- **Long parametrize values get pytest 9.2's ids.** From pytest 9.2 an auto-generated id for a
+  `str` or `bytes` value over 100 characters is `<argname><index>`. rustest follows the
+  installed pytest: the short id from 9.2 on, the full value before. The
+  `parametrize_long_str_id_strategy` ini option is not read; only its default applies.
 - **A test or fixture that reads `config.pluginmanager` hands the session to pytest** instead
   of failing with `AttributeError`.
 - **`request.fixturenames` works inside a fixture** (#144). It existed on the item only, so
