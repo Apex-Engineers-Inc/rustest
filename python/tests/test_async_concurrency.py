@@ -408,3 +408,25 @@ def test_tmp_path_in_many_overlapped_tests_never_collides(tmp_path: Path) -> Non
     assert {status for _, status in _statuses(report)} == {"passed"}
     assert len(_statuses(report)) == 16
     assert _peak(_spans(tree)) >= 4
+
+
+_WARNERS = (
+    _HEAD
+    + "import warnings\n"
+    + "".join(
+        f"\n@pytest.mark.concurrent\nasync def test_{i}():\n    await span('t{i}', 0.05)\n"
+        + "    warnings.warn('old', DeprecationWarning)\n"
+        for i in range(8)
+    )
+)
+
+
+def test_an_error_warning_filter_still_fails_every_overlapped_test(tmp_path: Path) -> None:
+    """Building a neighbour's loop must not leave ``ignore::DeprecationWarning`` installed."""
+    tree = make_tree(tmp_path, "warn", {"test_w.py": _WARNERS})
+    # The mark is registered because an unknown mark is itself a warning, hence an error.
+    (tree / "pytest.ini").write_text(
+        "[pytest]\nfilterwarnings = error\nmarkers = concurrent: may overlap\n", "utf-8"
+    )
+    report, _ = _rustest(tree, "--asyncio-concurrency", "8")
+    assert _statuses(report) == [(f"test_w.py::test_{i}", "failed") for i in range(8)]

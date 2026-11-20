@@ -273,8 +273,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known gaps
 
-- **pytest 9's "Unknown config option" warning** for an unknown key in a native TOML config is
-  not printed; the run is otherwise the same.
+- **pytest's "Unknown config option" warning** for an unknown key in a config file is not
+  printed; the run is otherwise the same.
 - **Selecting a class that contains no tests exits 4** (`ERROR: not found`) where pytest exits 5
   (no tests collected). Loud, and never runs the wrong tests.
 - **pytest 9's `strict_config` and `strict_parametrization_ids`**, set directly or through

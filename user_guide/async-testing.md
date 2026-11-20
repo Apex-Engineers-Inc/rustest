@@ -575,7 +575,8 @@ asyncio_concurrency = 8
 ```
 
 `--asyncio-concurrency N` on the command line overrides the key, and `0` (the default) turns it
-off. Register the mark if you run with `--strict-markers`, under pytest as well:
+off. Register the mark if you run with `--strict-markers` or `filterwarnings = error`, under
+pytest as well:
 
 ```toml
 [tool.pytest.ini_options]
