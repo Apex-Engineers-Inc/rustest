@@ -231,7 +231,13 @@ impl std::fmt::Display for CollectError {
                 stderr,
             } => write!(
                 f,
-                "worker {worker} died while running {id}: {status}{}",
+                // The worker buffers results for up to LIVE_FLUSH_SECONDS, and a hard death
+                // loses the buffer: `id` is the first test with no result, which may have
+                // passed. Naming it as *the* crash blamed passing tests.
+                // ponytail: no rerun of the lost tests on a fresh worker; add crash recovery
+                // (as xdist replaces a worker) if suites that abort the process turn up often.
+                "worker {worker} died at or shortly after {id} (the first test with no \
+                 result received; the crash may be in one of the next few): {status}{}",
                 stderr_block(stderr)
             ),
             CollectError::WorkerDied {
