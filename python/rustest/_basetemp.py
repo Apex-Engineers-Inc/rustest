@@ -18,6 +18,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -29,6 +30,9 @@ KEEP = 3
 
 #: `_pytest/pathlib.py::LOCK_TIMEOUT`: a ``.lock`` older than this belongs to a dead session.
 LOCK_TIMEOUT = 60 * 60 * 24 * 3
+
+
+_NUMBER_LOCK = threading.Lock()
 
 
 def _numbers(root: Path, prefix: str) -> list[int]:
@@ -44,14 +48,18 @@ def _numbers(root: Path, prefix: str) -> list[int]:
 
 
 def make_numbered_dir(root: Path, prefix: str, mode: int = 0o700) -> Path:
-    """`_pytest/pathlib.py::make_numbered_dir`: ``<prefix><max + 1>``, created exclusively."""
-    for _ in range(10):
-        path = root / f"{prefix}{max(_numbers(root, prefix), default=-1) + 1}"
-        try:
-            path.mkdir(mode=mode)
-        except FileExistsError:
-            continue  # another session took that number: take the next
-        return path
+    """`_pytest/pathlib.py::make_numbered_dir`: ``<prefix><max + 1>``, created exclusively.
+
+    The lock keeps overlapped tests (``asyncio_concurrency``) in this process from racing
+    each other for one number; the ten tries are pytest's, for other processes."""
+    with _NUMBER_LOCK:
+        for _ in range(10):
+            path = root / f"{prefix}{max(_numbers(root, prefix), default=-1) + 1}"
+            try:
+                path.mkdir(mode=mode)
+            except FileExistsError:
+                continue  # another session took that number: take the next
+            return path
     raise OSError(f"could not create a numbered directory {prefix}* under {root}")
 
 

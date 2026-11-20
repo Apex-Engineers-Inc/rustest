@@ -856,6 +856,8 @@ struct WorkerRun {
     /// How this worker's session ended (v18). Only a pool of one's decides the run's
     /// summary and exit status; a worker in a larger pool is an xdist worker, whose are ignored.
     session: SessionEndReport,
+    /// `asyncio_concurrency` (v19): tests overlapped, and `concurrent` ones run alone.
+    overlap: (usize, Vec<(String, String)>),
 }
 
 /// What the main thread hands one worker across the barrier: its tests, in batches.
@@ -2049,6 +2051,8 @@ fn run_attempt(
                     }
                     // Worker order is deterministic, so "the first one" is too.
                     residue.session_exit = residue.session_exit.or(run.session_exit);
+                    residue.overlapped += run.overlap.0;
+                    residue.serial.extend(run.overlap.1);
                     let end = &mut residue.session_end;
                     end.end_error |= run.session.end_error;
                     end.aborted |= run.session.aborted;
@@ -2665,6 +2669,9 @@ struct WorkerResidue {
     session_end: SessionEndReport,
     /// The xdist model's `-x` / `--maxfail`: the controller interrupted the session (exit 2).
     interrupted: bool,
+    /// `asyncio_concurrency` (v19), summed over the pool: [`overlap_note`].
+    overlapped: usize,
+    serial: Vec<(String, String)>,
 }
 
 /// What the selection pass decided: how many tests the run will execute, and how many it
@@ -2717,6 +2724,9 @@ fn finish(
         })
     };
     let session_end_error = end.end_error || end.aborted;
+    let notes = overlap_note(residue.overlapped, &residue.serial)
+        .into_iter()
+        .collect();
     RunReport {
         version: REPORT_SCHEMA_VERSION,
         rootdir,
@@ -2732,10 +2742,34 @@ fn finish(
         pytest_fallback: Vec::new(),
         discarded: 0,
         terminal_summary: residue.session_end.summary,
-        notes: Vec::new(),
+        notes,
         session_end_error,
         split: Vec::new(),
     }
+}
+
+/// One line on what `asyncio_concurrency` did: how many tests overlapped, and why each
+/// `concurrent`-marked test that did not ran alone, grouped by reason, a few ids each.
+/// `None` when nothing was marked or overlapped.
+fn overlap_note(overlapped: usize, serial: &[(String, String)]) -> Option<String> {
+    if overlapped == 0 && serial.is_empty() {
+        return None;
+    }
+    let mut why: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    for (id, reason) in serial {
+        why.entry(reason).or_default().push(id);
+    }
+    let mut note = format!("rustest: asyncio_concurrency: {overlapped} tests overlapped");
+    for (reason, ids) in why {
+        let shown = ids.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+        let more = if ids.len() > 3 {
+            format!(" and {} more", ids.len() - 3)
+        } else {
+            String::new()
+        };
+        note.push_str(&format!("; ran alone ({reason}): {shown}{more}"));
+    }
+    Some(note)
 }
 
 /// Collect, wait at the barrier, execute, shut down.
@@ -2928,6 +2962,7 @@ fn worker_life(
                     stderr: String::new(),
                     session_exit: Some(stderr),
                     session: worker.take_session_end(),
+                    overlap: worker.take_overlap(),
                 });
             }
             Err(err) => return Err(err),
@@ -2990,12 +3025,31 @@ fn worker_life(
         stderr,
         session_exit: None,
         session,
+        overlap: worker.take_overlap(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One stderr line for the whole run: the count, then each reason once with a few ids.
+    #[test]
+    fn overlap_note_groups_reasons() {
+        assert_eq!(overlap_note(0, &[]), None);
+        let serial: Vec<(String, String)> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|id| (format!("t.py::{id}"), "uses capsys".to_string()))
+            .chain([("t.py::e".to_string(), "xfail-marked".to_string())])
+            .collect();
+        assert_eq!(
+            overlap_note(7, &serial).as_deref(),
+            Some(
+                "rustest: asyncio_concurrency: 7 tests overlapped; ran alone (uses capsys): \
+                 t.py::a, t.py::b, t.py::c and 1 more; ran alone (xfail-marked): t.py::e"
+            )
+        );
+    }
     use crate::engine::protocol::PROTOCOL_VERSION;
     use crate::engine::test_python;
     use std::fs;
@@ -4071,7 +4125,7 @@ def test_bails():
     // Scheduling and protocol, against scripted workers
     // =====================================================================
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":18}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":19}\n')"#;
 
     fn scripted(script: &str) -> WorkerLauncher {
         assert!(

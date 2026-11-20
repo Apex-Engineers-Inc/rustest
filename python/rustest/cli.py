@@ -387,6 +387,16 @@ def build_parser() -> _Parser:
         help="Exit after the first NUM failures or errors (0 means no limit).",
     )
     _ = parser.add_argument(
+        "--asyncio-concurrency",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Overlap up to N consecutive `concurrent`-marked async tests"
+            " (overrides [tool.rustest] asyncio_concurrency; 0 is off)."
+        ),
+    )
+    _ = parser.add_argument(
         "--codeblocks",
         dest="enable_codeblocks",
         action="store_true",
@@ -712,6 +722,34 @@ def _toml_table(path: Path) -> tuple[dict[str, object], bool]:
         return native, True
     options = tool.get("ini_options", {})
     return (dict(options) if isinstance(options, dict) else {}), False  # pyright: ignore[reportUnknownArgumentType]
+
+
+def _asyncio_concurrency(flag: int | None, rootdir: object) -> int | str:
+    """``--asyncio-concurrency``, else ``[tool.rustest] asyncio_concurrency`` in the rootdir's
+    ``pyproject.toml`` (where ``codeblocks`` is read), else 0; a message when not a count."""
+    value: object = flag
+    where = "--asyncio-concurrency"
+    if flag is None:
+        try:
+            text = (Path(str(rootdir or os.getcwd())) / "pyproject.toml").read_text("utf-8")
+        except OSError:
+            return 0
+        if "asyncio_concurrency" not in text:
+            return 0  # not set: skip the ~7 ms `tomllib` import every run would pay
+        import tomllib
+
+        try:
+            table: object = tomllib.loads(text).get("tool", {}).get("rustest", {})
+        except (OSError, ValueError):
+            return 0  # a broken file is the engine's config error, reported there
+        if isinstance(table, dict):
+            value = cast("dict[str, object]", table).get("asyncio_concurrency", 0)
+        else:
+            value = 0
+        where = "[tool.rustest] asyncio_concurrency"
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return f"{where} must be a whole number of tests (0 turns it off), not {value!r}"
+    return value
 
 
 def _raw_ini(config_file: object) -> dict[str, object]:
@@ -1500,6 +1538,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 4
+    concurrency = _asyncio_concurrency(args.asyncio_concurrency, resolved.get("rootdir"))
+    if isinstance(concurrency, str):
+        print(f"ERROR: {concurrency}", file=sys.stderr)
+        return 4
+    # The workers read it (`_worker.CONCURRENCY_ENV`): spawn configuration, like the capture.
+    if concurrency:
+        os.environ["RUSTEST_ASYNCIO_CONCURRENCY"] = str(concurrency)
+    else:
+        _ = os.environ.pop("RUSTEST_ASYNCIO_CONCURRENCY", None)
 
     # argparse hands back the *default object itself* when no positional was supplied, so
     # identity separates `rustest` (no argument, and therefore `testpaths` decides the roots,

@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in overlap of marked async tests: `asyncio_concurrency = N` in `[tool.rustest]` (or
+  `--asyncio-concurrency N`) and a `concurrent` mark.** Consecutive marked `async def` tests in
+  a file run up to N at a time, each on its own function-scoped loop, reported in collection
+  order. It is off unless you set both, and it is not pytest's behaviour: pytest runs the same
+  tests one at a time. Overlapping tests share the process, so tests that touch the same
+  module state, environment or files can interfere. A test that fails while overlapped is run
+  again alone and that outcome is reported; a pass is not checked. A marked test that cannot
+  safely overlap (it requests `monkeypatch`, `capsys` or `caplog`, is `xfail`-marked, uses a
+  wider loop, and more) runs alone, and one stderr line at the end of the run says how many
+  tests overlapped and why each marked test that did not ran alone. See "Overlapping tests" in
+  the async testing guide.
 - **pytest 9's native TOML configuration, when pytest 9 or later is installed.** `pytest.toml`
   and `.pytest.toml` are found first in each directory, and a `[tool.pytest]` table of typed
   values in `pyproject.toml` is read; both tables at once is pytest 9's usage error. A value of
@@ -227,6 +238,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`request.fixturenames` works inside a fixture** (#144). It existed on the item only, so
+  a fixture reading it raised `AttributeError`.
+- **Linux aarch64 and musllinux wheels** (#152, matrix from #153). An aarch64 container or an
+  Alpine image no longer builds rustest from source.
 - **`request.node.funcargs` is the closure's values**, filled in as each fixture is set up,
   as pytest's `item.funcargs` is.
 - **A fixture's finalizers run even when its setup failed.** A finalizer registered with

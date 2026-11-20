@@ -131,10 +131,20 @@ from __future__ import annotations
 # reference left is the annotation on `self._loop`, which `from __future__ import
 # annotations` never evaluates.  Measured: worker boot 550 ms -> 300 ms.
 from collections import Counter, defaultdict
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence, Set as AbstractSet
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+    Set as AbstractSet,
+)
 import ast
 import contextlib
 from contextlib import AbstractContextManager
+import contextvars
+import copy
 from dataclasses import dataclass, field, replace
 import fnmatch
 import functools
@@ -184,7 +194,6 @@ if TYPE_CHECKING:
     # the stdlib imports).  `from __future__ import annotations` makes every annotation a
     # string, so nothing here is evaluated at import time.
     import asyncio
-    import contextvars
 
     from ._hookshim import HookRunner
 
@@ -314,7 +323,11 @@ __all__ = [
 #:
 #: v14 carries the ``markers`` ini and ``--strict-markers`` on ``init`` and ``xfail_strict`` as its
 #: raw text; ``bye`` carries the shutdown teardown's warnings.
-PROTOCOL_VERSION: Final = 18
+#:
+#: v19: ``batch_done`` carries ``overlapped`` (how many tests ran overlapped under
+#: ``asyncio_concurrency``) and ``serial`` (``[id, why]`` for each ``concurrent``-marked test
+#: that ran alone). Both omitted when empty.
+PROTOCOL_VERSION: Final = 19
 
 #: The pytest the compat layer emulates: what ``PYTEST_VERSION`` says, which pytest sets for
 #: the whole run (:func:`handle_init`).
@@ -492,6 +505,8 @@ class BatchDoneResponse(TypedDict):
     op: str
     executed: int
     stopped: bool
+    overlapped: NotRequired[int]
+    serial: NotRequired[list[tuple[str, str]]]
 
 
 class ByeResponse(TypedDict):
@@ -2924,6 +2939,15 @@ class SubRequest:
         return node
 
     @property
+    def fixturenames(self) -> list[str]:
+        """`FixtureRequest.fixturenames`: the test's closure, in setup order.
+
+        ponytail: pytest appends names resolved dynamically by ``getfixturevalue``; this
+        lists the static closure only. Track the dynamic ones if a suite reads them here.
+        """
+        return list(self._closure.names)
+
+    @property
     def instance(self) -> object | None:
         """The test-class instance, or ``None`` at module level (`FixtureRequest.instance`)."""
         return self._runner.instance
@@ -3097,6 +3121,10 @@ class FixtureRunner:
     is dropped either way ("Even if finalization fails, we invalidate the cached fixture
     value").
     """
+
+    #: Set on an overlapped test's runner (:meth:`child`): the narrowest scope index that is
+    #: *wide* for that test, so a cache miss at or above it raises :class:`_DynamicWide`.
+    _wide_from: int | None = None
 
     def __init__(self, asyncio_config: AsyncioConfig = _DEFAULT_ASYNCIO) -> None:
         super().__init__()
@@ -3314,6 +3342,37 @@ class FixtureRunner:
         """
         self._current_module = None
 
+    # -- asyncio_concurrency ------------------------------------------------
+
+    def setup_wide(self, plan: ExecutionPlan) -> None:
+        """Set up *plan*'s wide fixtures (:func:`_wide_names`) on this runner, before its window.
+
+        A fixture that raises is cached with its error (:meth:`_resolve_active`), so each test
+        that depends on it reports it at setup, as each would serially.
+        """
+        self.note_test_boundary(plan.class_name)
+        self._active = (plan.closure, plan.fixture_params)
+        self.instance = self.build_instance(plan)
+        self.current_node = _ItemNode(plan, self.instance)
+        for name in _wide_names(plan):
+            _ = self._resolve_active(name, plan.closure, plan.fixture_params, (), "function")
+
+    def child(self, plan: ExecutionPlan) -> FixtureRunner:
+        """A runner for one overlapped test: this one's wide fixtures, its own everything else.
+
+        Function and class finalizers share one fresh list, so a class-scoped fixture of a
+        module-level test (pytest tears it down with the test) unwinds in the test's teardown.
+        """
+        child = copy.copy(self)
+        child._cache = dict(self._cache)
+        own: list[_Finalizer] = []
+        child._finalizers = {**self._finalizers, "function": own, "class": own}
+        child._extras_stack = []
+        child._loops = {scope: run for scope, run in self._loops.items() if scope != "function"}
+        child._loops_opening = set()
+        child._wide_from = _wide_from(plan)
+        return child
+
     def _resolve_active(
         self,
         name: str,
@@ -3395,6 +3454,14 @@ class FixtureRunner:
 
         param_key = params.get(name, _NO_PARAM)
         cached = self._cache.get(fixturedef)
+        if (
+            self._wide_from is not None
+            and _SCOPE_INDEX[fixturedef.scope] >= self._wide_from
+            and (cached is None or not _same_param(cached.param_key, param_key))
+        ):
+            # An overlapped test's runner (:meth:`child`) met a wide fixture the window did
+            # not set up: building it here would build it per test. The test runs serially.
+            raise _DynamicWide(f"{fixturedef.name!r} ({fixturedef.scope} scope)")
         if cached is not None:
             if cached.param_key is param_key or cached.param_key == param_key:
                 if cached.error is not None:
@@ -3724,12 +3791,20 @@ class FixtureRunner:
         existing = self._loops.get(scope)
         if existing is not None:
             return existing
-        policy = self._event_loop_policy(scope)
-        with _temporary_event_loop_policy(policy):
+        if self._wide_from is not None:
+            # An overlapped test's child runner, on a pool thread.  No policy lookup and no
+            # swap: both sit in `catch_warnings`, which rewrites the process-global filter
+            # list and would silence a neighbour's `DeprecationWarning` mid-body.  Nothing
+            # is lost — a suite with its own `event_loop_policy` fixture never overlaps.
             runner = asyncio.Runner()
-            # `__enter__` is `_lazy_init` — it builds the loop *now*, which has to happen
-            # inside the policy context or the policy would have no effect on it.
             _ = runner.__enter__()
+        else:
+            policy = self._event_loop_policy(scope)
+            with _temporary_event_loop_policy(policy):
+                runner = asyncio.Runner()
+                # `__enter__` is `_lazy_init` — it builds the loop *now*, which has to happen
+                # inside the policy context or the policy would have no effect on it.
+                _ = runner.__enter__()
         self._loops[scope] = runner
         self._finalizers[_SCOPE_BUCKET[scope]].append(
             _Finalizer(None, [functools.partial(self._close_loop, scope)])
@@ -7213,10 +7288,33 @@ def execute_test(test_id: str) -> ResultResponse:
     except KeyError as exc:
         raise UnknownTestError(str(exc.args[0]) if exc.args else test_id) from None
 
-    global _previous_plan
     runner = _execution_runner()
     recorded: list[RecordedWarningDict] = []
     fault_mark = _hookwire_mod.fault_mark() if _hookwire_mod is not None else None
+    late = _drain_previous(plan, runner, recorded)
+
+    capture = _worker_capture()
+    _shipped.clear()
+    global _call_s
+    _call_s = 0.0  # a test whose body never ran (a skip, a setup error) costs no call time
+    started = time.perf_counter()
+    with capture.window(), warnings_window(plan.id, plan.marks, recorded):
+        reports = _run_phases(plan, runner, capture)
+    duration = time.perf_counter() - started
+    result = _result_for(
+        plan, reports, duration, _call_s, capture.drain(), recorded, _faults_since(fault_mark)
+    )
+    if late is not None:
+        result["previous_teardown"] = late
+    return result
+
+
+def _drain_previous(
+    plan: ExecutionPlan, runner: FixtureRunner, recorded: list[RecordedWarningDict]
+) -> LateTeardownDict | None:
+    """:func:`execute_test`'s boundary: unwind what *plan* does not share with the previous
+    test, outside *plan*'s capture, and answer the previous test's late teardown error."""
+    global _previous_plan
     previous = _previous_plan
     if previous is not None and runner.has_wide_finalizers():
         with warnings_window(previous.id, previous.marks, recorded):
@@ -7235,24 +7333,33 @@ def execute_test(test_id: str) -> ResultResponse:
     if boundary_exc is not None:
         _wide_teardown_failed(previous)
     _previous_plan = plan
+    if boundary_exc is not None and previous is not None:
+        return _late_teardown(previous, boundary_exc)
+    return None
 
-    capture = _worker_capture()
-    _shipped.clear()
-    global _call_s
-    _call_s = 0.0  # a test whose body never ran (a skip, a setup error) costs no call time
-    started = time.perf_counter()
-    with capture.window(), warnings_window(plan.id, plan.marks, recorded):
-        reports = _run_phases(plan, runner, capture)
-    duration = time.perf_counter() - started
 
+def _faults_since(fault_mark: object) -> list[str]:
+    """The hook-runtime faults since *fault_mark*, as hand-off reasons."""
+    if _hookwire_mod is None or fault_mark is None:
+        return []
+    return [_hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(fault_mark)]
+
+
+def _result_for(
+    plan: ExecutionPlan,
+    reports: Sequence[PhaseReport],
+    duration: float,
+    call_s: float,
+    captured: tuple[str, str],
+    recorded: list[RecordedWarningDict],
+    handoff: list[str],
+) -> ResultResponse:
+    """One ``test_result`` from a test's phase reports and what it wrote and warned."""
     # pytest reports a failed teardown beside the test's own outcome (`1 passed, 1 error`).
     teardown = reports[-1]
     torn = teardown.phase == "teardown" and teardown.outcome == "failed" and len(reports) > 1
     report = reduce_reports(reports[:-1] if torn else reports)
     status, message = report.status, report.message
-    handoff: list[str] = []
-    if _hookwire_mod is not None and fault_mark is not None:
-        handoff = [_hookwire_mod.REASON_PREFIX + r for r in _hookwire_mod.faults_since(fault_mark)]
     if handoff:
         # A hook (or a shim a hook kept) touched what the runtime cannot answer while this test
         # ran.  The user may have swallowed the exception it raised (`except BaseException`,
@@ -7265,7 +7372,7 @@ def execute_test(test_id: str) -> ResultResponse:
         "id": plan.id,
         "status": status,
         "duration_s": duration,
-        "call_s": _call_s,
+        "call_s": call_s,
     }
     if message:
         result["message"] = message
@@ -7275,7 +7382,7 @@ def execute_test(test_id: str) -> ResultResponse:
         result["reports"] = list(_shipped)
     global _failed_reports
     _failed_reports += int(status in ("failed", "error")) + int(torn)
-    captured_out, captured_err = capture.drain()
+    captured_out, captured_err = captured
     if captured_out:
         result["stdout"] = captured_out
     if captured_err:
@@ -7284,8 +7391,6 @@ def execute_test(test_id: str) -> ResultResponse:
         result["warnings"] = recorded
     if torn:
         result["teardown_error"] = teardown.message or ""
-    if boundary_exc is not None and previous is not None:
-        result["previous_teardown"] = _late_teardown(previous, boundary_exc)
     return result
 
 
@@ -7486,9 +7591,10 @@ def _record_unraisable(unraisable: sys.UnraisableHookArgs, /) -> None:
             )
         )
         tail = "\n" + _tracemalloc_message(unraisable.object)
-        _unraisable.append(_Unraised(summary + trace + tail, summary + tail, unraisable.exc_value))
+        found = _routed("unraisable")
+        found.append(_Unraised(summary + trace + tail, summary + tail, unraisable.exc_value))
     except BaseException as exc:
-        _unraisable.append(exc)
+        _routed("unraisable").append(exc)
         raise
 
 
@@ -7501,9 +7607,10 @@ def _record_thread_exception(args: threading.ExceptHookArgs, /) -> None:
             traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
         )
         tail = "\n" + _tracemalloc_message(args.thread)
-        _thread_exceptions.append(_Unraised(summary + trace + tail, summary + tail, args.exc_value))
+        found = _routed("thread_exceptions")
+        found.append(_Unraised(summary + trace + tail, summary + tail, args.exc_value))
     except BaseException as exc:
-        _thread_exceptions.append(exc)
+        _routed("thread_exceptions").append(exc)
         raise
 
 
@@ -7549,8 +7656,22 @@ def collect_unraisable_exceptions() -> None:
         PytestUnraisableExceptionWarning,
     )
 
-    _collect(_thread_exceptions, PytestUnhandledThreadExceptionWarning, "thread exception")
-    _collect(_unraisable, PytestUnraisableExceptionWarning, "unraisable exception")
+    sink = _route.get()
+    threads, unraisable = (
+        (_thread_exceptions, _unraisable)
+        if sink is None
+        else (sink.thread_exceptions, sink.unraisable)
+    )
+    _collect(threads, PytestUnhandledThreadExceptionWarning, "thread exception")
+    _collect(unraisable, PytestUnraisableExceptionWarning, "unraisable exception")
+
+
+def _routed(kind: Literal["unraisable", "thread_exceptions"]) -> list[_Unraised | BaseException]:
+    """Where a hook's record goes: the overlapped test this thread runs, or the session."""
+    sink = _route.get()
+    if sink is None:
+        return _unraisable if kind == "unraisable" else _thread_exceptions
+    return sink.unraisable if kind == "unraisable" else sink.thread_exceptions
 
 
 def _finish_exception_hooks() -> BaseException | None:
@@ -8589,6 +8710,457 @@ def _reordered_by_fixtures(plan: ExecutionPlan) -> bool:
     return False
 
 
+# -- asyncio_concurrency: overlapping marked async tests --------------------------------
+#
+# Opt-in twice: ``asyncio_concurrency = N`` (the CLI puts it in :data:`CONCURRENCY_ENV`) and
+# a ``concurrent`` mark on the test. Consecutive eligible tests that share a window key run
+# on a pool of N threads, one function-scoped loop each. What makes that unlike pytest is
+# listed in ``user_guide/async-testing.md``; the guards here are the ones that can be checked.
+
+#: ``--asyncio-concurrency`` or ``[tool.rustest] asyncio_concurrency``, from the CLI. Spawn
+#: configuration like :data:`CAPTURE_ENV`: constant for the worker's life.
+CONCURRENCY_ENV: Final = "RUSTEST_ASYNCIO_CONCURRENCY"
+
+#: Fixtures that patch or read process-global state for one test (streams, logging,
+#: warnings, attributes, the loop policy): a test that requests one runs alone.
+_SERIAL_FIXTURES: Final = frozenset(
+    {
+        "capfd", "capfdbinary", "caplog", "capsys", "capsysbinary", "capteesys",
+        "class_mocker", "event_loop_policy", "mocker", "module_mocker", "monkeypatch",
+        "package_mocker", "pytester", "recwarn", "session_mocker", "testdir",
+    }
+)  # fmt: skip
+
+#: Names in a test body that do the same (:func:`_body_blocker`).
+_SERIAL_NAMES: Final = frozenset(
+    {
+        "all_tasks", "catch_warnings", "deprecated_call", "get_event_loop", "getfixturevalue",
+        "patch", "redirect_stderr", "redirect_stdout", "set_event_loop", "warns",
+    }
+)  # fmt: skip
+
+
+class _DynamicWide(Exception):
+    """An overlapped test needed a wide fixture its window did not set up: it reruns
+    serially, as every failure in a window does."""
+
+
+@dataclass
+class _Sink:
+    """What one overlapped test wrote, warned and left unraised, routed by :data:`_route`."""
+
+    plan: ExecutionPlan
+    out: list[str] = field(default_factory=list)
+    err: list[str] = field(default_factory=list)
+    recorded: list[RecordedWarningDict] = field(default_factory=list)
+    unraisable: list[_Unraised | BaseException] = field(default_factory=list)
+    thread_exceptions: list[_Unraised | BaseException] = field(default_factory=list)
+
+
+#: The overlapped test the current thread (or task) runs, if any.
+_route: Final[contextvars.ContextVar[_Sink | None]] = contextvars.ContextVar(
+    "rustest_route", default=None
+)
+
+#: Where a warning from no overlapped test's context goes while a window is open.
+_window_owner: _Sink | None = None
+
+#: This batch's ``batch_done`` extras: how many tests overlapped, and each ``concurrent``
+#: test that ran alone with why.
+_overlapped = 0
+_serial_notes: list[tuple[str, str]] = []
+_blockers: dict[str, str | None] = {}
+
+
+class _RoutingStream:
+    """``sys.stdout`` / ``sys.stderr`` while a window is open: a write lands on the test whose
+    thread made it, anything else on the stream underneath (the window's fd capture)."""
+
+    def __init__(self, base: TextIO, stderr: bool) -> None:
+        super().__init__()
+        self._base: Final = base
+        self._stderr: Final = stderr
+
+    def write(self, text: str) -> int:
+        sink = _route.get()
+        if sink is None:
+            return self._base.write(text)
+        (sink.err if self._stderr else sink.out).append(text)
+        return len(text)
+
+    def writelines(self, lines: Iterable[str]) -> None:
+        for line in lines:
+            _ = self.write(line)
+
+    def flush(self) -> None:
+        if _route.get() is None:
+            self._base.flush()
+
+    def close(self) -> None:
+        """A test closing "its" stream must not close the window's."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._base, name)
+
+
+def _show_routed(record: warnings.WarningMessage) -> None:
+    """``warnings._showwarnmsg_impl`` while a window is open."""
+    sink = _route.get() or _window_owner
+    if sink is not None:
+        sink.recorded.append({"location": sink.plan.id, "message": _warning_text(record)})
+
+
+@contextlib.contextmanager
+def _window_io(capture: _Capture, owner: _Sink) -> Iterator[None]:
+    """A window's capture and warnings, on the main thread around the pool.
+
+    One fd capture and one ``catch_warnings`` for all of it, because both are process-global;
+    ``print``, warnings and unraisable exceptions are told apart by :data:`_route`. The window
+    shares one set of ``filterwarnings`` marks (:func:`_window_key`). Output that no test's
+    context claimed (an ``os.write``, a thread the test started) goes to the worker's stderr.
+    """
+    global _window_owner
+    with capture.window(), warnings.catch_warnings(record=True) as log:
+        apply_session_warning_filters()
+        for mark in owner.plan.marks:
+            if mark.name == "filterwarnings":
+                for arg in mark.args:
+                    with contextlib.suppress(Exception):
+                        warnings.filterwarnings(*parse_warning_filter(str(arg)))
+        setattr(warnings, "_showwarnmsg_impl", _show_routed)
+        _window_owner = owner
+        saved = sys.stdout, sys.stderr
+        if capture_enabled():
+            sys.stdout = _RoutingStream(saved[0], stderr=False)
+            sys.stderr = _RoutingStream(saved[1], stderr=True)
+        try:
+            yield
+        finally:
+            sys.stdout, sys.stderr = saved
+            _window_owner = None
+    # Context-aware warnings (the free-threaded build) record past `_showwarnmsg_impl`: what
+    # this thread warned is the owner's (each pool thread keeps its own, `_overlapped_one`).
+    owner.recorded.extend({"location": owner.plan.id, "message": _warning_text(r)} for r in log)
+    out, err = capture.drain()
+    if out or err:
+        _ = sys.stderr.write(
+            f"rustest: output from overlapped tests near {owner.plan.id} that no test claimed:\n"
+            + out
+            + err
+        )
+
+
+def _asyncio_concurrency() -> int:
+    """:data:`CONCURRENCY_ENV` as a count; under 2 nothing overlaps."""
+    try:
+        return int(os.environ.get(CONCURRENCY_ENV) or 0)
+    except ValueError:
+        return 0
+
+
+def _wide_from(plan: ExecutionPlan) -> int:
+    """The narrowest wide scope for *plan*: class in a class, module at module level, where a
+    class-scoped fixture lives and dies with the test (``SubRequest.node``'s fallback)."""
+    return _SCOPE_INDEX["class" if plan.class_name is not None else "module"]
+
+
+def _wide_names(plan: ExecutionPlan) -> list[str]:
+    """*plan*'s closure members wider than the test, set up once before its window."""
+    limit = _wide_from(plan)
+    names: list[str] = []
+    for name in plan.closure.names:
+        defs = plan.closure.arg2defs.get(name)
+        if defs and name not in plan.direct_params and _SCOPE_INDEX[defs[-1].scope] >= limit:
+            names.append(name)
+    return names
+
+
+def _window_key(plan: ExecutionPlan) -> tuple[object, ...]:
+    """Tests overlap only with neighbours of the same key: one class, the same params for
+    every parametrized wide fixture, and one set of ``filterwarnings`` marks."""
+    wide = [name for name in _wide_names(plan) if name in plan.fixture_params]
+    return (
+        plan.class_name,
+        tuple((name, plan.fixture_params[name]) for name in wide),
+        tuple(mark.args for mark in plan.marks if mark.name == "filterwarnings"),
+    )
+
+
+def _same_param(left: object, right: object) -> bool:
+    """A cached fixture's param key against a requested one (``FixtureDef.execute``)."""
+    return left is right or bool(left == right)
+
+
+def _concurrency_blocker(plan: ExecutionPlan, runner: FixtureRunner) -> str | None:
+    """Why *plan* cannot overlap, ``""`` when it is not marked ``concurrent``, ``None`` when it
+    can. Asked once per test."""
+    if plan.id not in _blockers:
+        _blockers[plan.id] = _blocker(plan, runner)
+    return _blockers[plan.id]
+
+
+def _blocker(plan: ExecutionPlan, runner: FixtureRunner) -> str | None:
+    if not any(mark.name == "concurrent" for mark in plan.marks):
+        return ""
+    func = plan.func
+    if plan.unittest_case is not None or func is None:
+        return "a unittest case"
+    if not inspect.iscoroutinefunction(func):
+        return "not async def"
+    if _safe_getattr(func, "hypothesis", None) is not None:
+        return "a @given test"
+    if _safe_getattr(func, "patchings", None) is not None:
+        return "a mock.patch decorator"
+    if any(mark.name == "xfail" for mark in plan.marks):
+        return "xfail-marked"
+    try:
+        scope = runner.test_loop_scope(plan)
+    except ValueError:
+        return "an invalid asyncio mark"
+    if scope is None:
+        return "asyncio_mode = strict and no asyncio mark"
+    if scope != "function":
+        return f"runs on a {scope}-scoped loop"
+    serial = sorted(_SERIAL_FIXTURES.intersection(plan.closure.names))
+    if serial:
+        return f"uses {serial[0]}"
+    if plan.closure.registry.getfixturedefs("event_loop_policy"):
+        return "an event_loop_policy fixture is defined"
+    for name in plan.closure.names:
+        defs = plan.closure.arg2defs.get(name)
+        if not defs or not _is_coroutine_or_asyncgen(defs[-1].func):
+            continue
+        if not runner.wraps_async_fixture(defs[-1].func):
+            continue
+        try:
+            loop_scope = runner.fixture_loop_scope(defs[-1])
+        except (ValueError, ScopeMismatch):
+            return f"async fixture {name!r} has an invalid loop scope"
+        if loop_scope != "function":
+            return f"async fixture {name!r} runs on a {loop_scope}-scoped loop"
+    hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+    if hooks is not None and (
+        hooks.runs("pytest_fixture_setup")
+        or hooks.runs_any(_PER_TEST_HOOKS, _directory_key(plan.path))
+    ):
+        return "a conftest hook runs per test"
+    found = _body_blocker(func)
+    return f"its body uses {found}" if found else None
+
+
+@functools.lru_cache(maxsize=None)
+def _body_blocker(func: Callable[..., object]) -> str | None:
+    """The first :data:`_SERIAL_NAMES` name (or ``sys.stdout =``) in *func*'s source."""
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    except (OSError, TypeError, SyntaxError):
+        return "source rustest cannot read"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _SERIAL_NAMES:
+            return node.id
+        if isinstance(node, ast.Attribute):
+            if node.attr in _SERIAL_NAMES:
+                return node.attr
+            if node.attr in ("stdout", "stderr") and isinstance(node.ctx, ast.Store):
+                return f"sys.{node.attr} ="
+    return None
+
+
+def _window_at(ids: Sequence[str], start: int, runner: FixtureRunner) -> list[ExecutionPlan]:
+    """The longest run of eligible tests from *start* that share a :func:`_window_key`."""
+    window: list[ExecutionPlan] = []
+    key: tuple[object, ...] = ()
+    for index in range(start, len(ids)):
+        plan = _execution_plans.get(ids[index])
+        if plan is None or _concurrency_blocker(plan, runner) is not None:
+            break
+        plan_key = _window_key(plan)
+        try:
+            if window and plan_key != key:
+                break
+        except Exception:  # noqa: BLE001 - a param that cannot compare is a boundary
+            break
+        key = plan_key
+        window.append(plan)
+    return window
+
+
+def _concurrent_results(ids: Sequence[str], k: int) -> Iterator[ResultResponse]:
+    """:func:`execute_batch`'s results under ``asyncio_concurrency`` *k*: windows overlap
+    (:func:`_overlap_window`); every other test runs through :func:`execute_test`, and a
+    ``concurrent``-marked one says why."""
+    runner = _execution_runner()
+    index = 0
+    while index < len(ids):
+        window = _window_at(ids, index, runner)
+        if len(window) > 1:
+            yield from _overlap_window(window, k)
+            index += len(window)
+            continue
+        plan = _execution_plans.get(ids[index])
+        reason = _concurrency_blocker(plan, runner) if plan is not None else None
+        if reason:
+            _serial_notes.append((ids[index], reason))
+        yield execute_test(ids[index])
+        index += 1
+
+
+@dataclass
+class _Outcome:
+    """One overlapped test's phases, run on a pool thread."""
+
+    reports: list[PhaseReport]
+    started: float
+    ended: float
+    handoff: list[str]
+    failed: bool
+    neighbours: int = 0
+
+
+def _no_phase(when: str) -> AbstractContextManager[None]:
+    del when
+    return contextlib.nullcontext()
+
+
+def _overlapped_one(
+    plan: ExecutionPlan, runner: FixtureRunner, sink: _Sink, capture: _Capture
+) -> _Outcome:
+    """A pool thread's job: *plan*'s three phases on its own runner, routed to *sink*."""
+    _ = _route.set(sink)
+    mark = _hookwire_mod.fault_mark() if _hookwire_mod is not None else None
+    started = time.perf_counter()
+    if getattr(sys.flags, "context_aware_warnings", False):
+        # This thread's own record, safe when warnings are per context (the window's filters
+        # are inherited); otherwise `_show_routed` sorts them.
+        with warnings.catch_warnings(record=True) as log:
+            reports = _phases(plan, runner, capture, _no_phase)
+        sink.recorded.extend({"location": plan.id, "message": _warning_text(r)} for r in log)
+    else:
+        reports = _phases(plan, runner, capture, _no_phase)
+    ended = time.perf_counter()
+    handoff = _faults_since(mark)
+    failed = bool(handoff) or any(report.outcome == "failed" for report in reports)
+    return _Outcome(reports, started, ended, handoff, failed)
+
+
+def _run_overlapped(
+    plans: Sequence[ExecutionPlan],
+    sinks: Sequence[_Sink],
+    todo: Sequence[int],
+    k: int,
+    capture: _Capture,
+) -> dict[int, _Outcome]:
+    """Run *todo* (indices into *plans*) *k* at a time. The first failure stops new starts;
+    what already started finishes. Returns what ran."""
+    from concurrent.futures import Future, ThreadPoolExecutor
+
+    runner = _execution_runner()
+    stopping = threading.Event()
+    futures: list[Future[_Outcome]] = []
+
+    def stop_at_failure(future: Future[_Outcome]) -> None:
+        if future.cancelled() or (future.exception() is None and not future.result().failed):
+            return
+        stopping.set()
+        for other in futures:
+            _ = other.cancel()
+
+    with (
+        _window_io(capture, sinks[todo[0]]),
+        ThreadPoolExecutor(min(k, len(todo)), "rustest-overlap") as pool,
+    ):
+        for index in todo:
+            if stopping.is_set():
+                break
+            plan = plans[index]
+            future = pool.submit(
+                contextvars.copy_context().run,
+                _overlapped_one,
+                plan,
+                runner.child(plan),
+                sinks[index],
+                capture,
+            )
+            futures.append(future)
+            future.add_done_callback(stop_at_failure)
+    done = {index: f.result() for index, f in zip(todo, futures) if not f.cancelled()}
+    for outcome in done.values():
+        outcome.neighbours = sum(
+            other is not outcome and other.started < outcome.ended and other.ended > outcome.started
+            for other in done.values()
+        )
+    return done
+
+
+def _overlap_window(plans: list[ExecutionPlan], k: int) -> Iterator[ResultResponse]:
+    """One window: wide fixtures on this thread, then the tests *k* at a time, emitted in
+    collection order. A failure is never reported as it happened overlapped: the test reruns
+    serially and that outcome is the one reported, with a note (``batch_done.serial``)."""
+    global _previous_plan, _overlapped
+    runner = _execution_runner()
+    capture = _worker_capture()
+    sinks = [_Sink(plan) for plan in plans]
+    drained: list[RecordedWarningDict] = []
+    late = _drain_previous(plans[0], runner, drained)
+    token = _route.set(sinks[0])
+    try:
+        with _window_io(capture, sinks[0]):
+            for plan in plans:
+                try:
+                    if evaluate_skip_marks(plan.marks, _condition_namespace(plan)) is None:
+                        runner.setup_wide(plan)
+                except ABORT_EXCEPTIONS:
+                    raise
+                except BaseException:  # noqa: BLE001 - cached with its error, or rebuilt serially
+                    pass
+    finally:
+        _route.reset(token)
+    outcomes: dict[int, _Outcome] = {}
+    emitted = 0
+    while emitted < len(plans):
+        todo = [index for index in range(emitted, len(plans)) if index not in outcomes]
+        if todo:
+            outcomes.update(_run_overlapped(plans, sinks, todo, k, capture))
+        while emitted in outcomes:
+            outcome, plan, sink = outcomes.pop(emitted), plans[emitted], sinks[emitted]
+            _previous_plan = plan
+            if outcome.failed:
+                result = execute_test(plan.id)
+                _serial_notes.append(
+                    (
+                        plan.id,
+                        f"failed overlapped; serial rerun after {outcome.neighbours}"
+                        + f" overlapped neighbours: {result['status']}",
+                    )
+                )
+                if result["status"] == "passed":
+                    # Shown on the test itself: a pass that needed the rerun may be a real
+                    # race in the code under test, and a stderr note alone would bury it.
+                    flaky: RecordedWarningDict = {
+                        "location": plan.id,
+                        "message": "rustest: failed while overlapped (asyncio_concurrency),"
+                        + " passed when rerun alone",
+                    }
+                    result["warnings"] = [flaky, *result.get("warnings", [])]
+            else:
+                _overlapped += 1
+                # ponytail: each test reports its own wall time, so a file's duration record
+                # sums to more than the file took and routing (LPT, the -n split) over-weights
+                # it; safe, only an imbalance. Charge the window's wall if it matters.
+                duration = outcome.ended - outcome.started
+                captured = ("".join(sink.out), "".join(sink.err))
+                result = _result_for(
+                    plan, outcome.reports, duration, duration, captured, sink.recorded, []
+                )
+            if emitted == 0:
+                if drained:
+                    result["warnings"] = [*drained, *result.get("warnings", [])]
+                if late is not None:
+                    result["previous_teardown"] = late
+            yield result
+            emitted += 1
+
+
 def execute_batch(
     ids: Sequence[str],
     stop_on_failure: bool,
@@ -8623,27 +9195,39 @@ def execute_batch(
     single ``execute_test``: an id this worker never collected is a routing bug, and the
     results already emitted stay on the wire for the orchestrator to keep.
     """
-    global _ship_reports, _session_base
+    global _ship_reports, _session_base, _overlapped
     _ship_reports = ship_reports
     _session_base = dict(session) if session is not None else None
     _execution_runner().start_module_instance()
     executed = 0
     stopped = False
     failures = 0
-    for test_id in ids:
-        result = execute_test(test_id)
-        emit(result)
-        executed += 1
-        if stop_on_handoff and "handoff" in result:
-            # The session is going to pytest: nothing after this test is worth running.
-            stopped = True
-            break
-        if result["status"] in ("failed", "error"):
-            failures += 1
-            if stop_on_failure or (max_fail is not None and failures >= max_fail):
+    _overlapped = 0
+    _serial_notes.clear()
+    k = _asyncio_concurrency()
+    results = _concurrent_results(ids, k) if k > 1 and not ship_reports else map(execute_test, ids)
+    try:
+        for result in results:
+            emit(result)
+            executed += 1
+            if stop_on_handoff and "handoff" in result:
+                # The session is going to pytest: nothing after this test is worth running.
                 stopped = True
                 break
-    return {"op": "batch_done", "executed": executed, "stopped": stopped}
+            if result["status"] in ("failed", "error"):
+                failures += 1
+                if stop_on_failure or (max_fail is not None and failures >= max_fail):
+                    stopped = True
+                    break
+    finally:
+        if isinstance(results, Generator):
+            results.close()  # what an overlapped window ran past a stop is discarded
+    response: BatchDoneResponse = {"op": "batch_done", "executed": executed, "stopped": stopped}
+    if _overlapped:
+        response["overlapped"] = _overlapped
+    if _serial_notes:
+        response["serial"] = list(_serial_notes)
+    return response
 
 
 def encode_response(response: Mapping[str, object]) -> str:

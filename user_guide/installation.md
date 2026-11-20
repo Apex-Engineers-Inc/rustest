@@ -34,6 +34,12 @@ An explicit pre-release version needs no extra flag. To let uv choose one on its
 uv pip install --prerelease allow rustest
 ```
 
+## Platforms
+
+Prebuilt wheels cover Linux (x86_64 and aarch64, glibc and musl), macOS arm64 and Windows
+x86_64. Anywhere else pip builds the source distribution, which needs a Rust toolchain
+([rustup](https://rustup.rs)) and a C compiler.
+
 ## Verifying installation
 
 `--version` prints the installed version and runs nothing:

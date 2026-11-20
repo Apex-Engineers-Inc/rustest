@@ -843,6 +843,35 @@ def test_request_scope_reports_the_declared_scope_not_the_cache_bucket(tmp_path:
     assert seen == {"wide": "session", "middling": "class", "boxed": "package"}
 
 
+def test_request_fixturenames_inside_a_fixture(tmp_path: Path) -> None:
+    """``request.fixturenames`` answers in a fixture's request too, not only on the item (#144)."""
+    target = write(
+        tmp_path / "test_req_names.py",
+        """
+        import pytest
+
+        seen = {}
+
+        @pytest.fixture
+        def other():
+            return 1
+
+        @pytest.fixture
+        def fx(request):
+            seen["names"] = request.fixturenames
+
+        def test_x(fx, other):
+            pass
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        assert [status for _id, status in run_all(plans)] == ["passed"]
+        seen = getattr(module, "seen")
+    assert {"fx", "other"} <= set(seen["names"])
+
+
 def test_an_override_can_request_the_fixture_it_overrides(tmp_path: Path) -> None:
     """`_get_active_fixturedef` l. 596-608: one level up per matching request in the chain."""
     write(

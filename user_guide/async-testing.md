@@ -532,7 +532,7 @@ async def test_with_timeout():
 
 ## Concurrency
 
-Async tests do not overlap each other. Rustest drives each test coroutine to completion before
+By default, async tests do not overlap each other. Rustest drives each test coroutine to completion before
 starting the next one on that loop, which is what pytest-asyncio does as well: it runs each
 coroutine through `asyncio.Runner.run`, which cannot be re-entered. Ten tests that each
 `await asyncio.sleep(1)` take about ten seconds under both runners, not one.
@@ -562,6 +562,77 @@ async def test_concurrent_operations():
     assert len(results) == 3
     assert all(user["id"] for user in results)
 ```
+
+### Overlapping tests (opt-in, not pytest's behaviour)
+
+A file of slow async tests that mostly wait can overlap them, if you ask twice: set
+`asyncio_concurrency` to how many may run at once, and mark the tests that may take part
+`concurrent`.
+
+```toml
+[tool.rustest]
+asyncio_concurrency = 8
+```
+
+`--asyncio-concurrency N` on the command line overrides the key, and `0` (the default) turns it
+off. Register the mark if you run with `--strict-markers`, under pytest as well:
+
+```toml
+[tool.pytest.ini_options]
+markers = ["concurrent: may overlap other concurrent tests under rustest"]
+```
+
+```python
+import asyncio
+from rustest import mark
+
+@mark.concurrent
+async def test_waits_for_the_service():
+    await asyncio.sleep(0.01)
+```
+
+Consecutive marked tests in one file overlap, up to N at a time, each on its own
+function-scoped loop in its own thread. Results are still reported in collection order. Module,
+class and session fixtures are set up once, before the tests that share them start. pytest
+ignores both the key and the mark and runs the same tests one at a time.
+
+A marked test runs alone, as it would without the key, when it cannot safely share the process:
+it is not `async def`, runs on a wider loop, uses an async fixture on a wider loop, is
+`xfail`-marked, is a `@given` or `unittest` test, has a `mock.patch` decorator, requests a
+fixture that patches process-wide state (`monkeypatch`, `capsys`, `capfd`, `caplog`,
+`recwarn`, `mocker`, `pytester`, `event_loop_policy`), runs under a per-test conftest hook, or
+its body calls `pytest.warns`, `catch_warnings`, `patch`, `redirect_stdout`,
+`getfixturevalue`, `get_event_loop` or `all_tasks`, or assigns `sys.stdout`. The run ends with
+one line on stderr saying how many tests overlapped and, for each marked test that ran alone,
+why.
+
+**What can go wrong.** rustest checks the body of the test, not what it calls, so the list
+above is a guard, not a proof.
+
+- **Shared state.** Overlapping tests run at the same time in one process. Two tests that
+  touch the same module global, environment variable, file or database row can interfere.
+  pytest never runs them at the same time, so this is a difference from pytest, not a bug in
+  either test.
+- **Failures are checked; passes are not.** A test that fails while overlapped is run again,
+  alone, and the second outcome is the one reported. If it passes alone, the test is reported
+  as passed with a warning on it saying it failed while overlapped: that can be a real race
+  in the code under test, so read those warnings. The rerun means the test body and its
+  function fixtures ran twice, side effects included. A test that passes only *because* a
+  neighbour ran beside it is reported as passed. Run the suite without the key now and then
+  (in CI, for example) to catch that.
+- **Stopping.** `-x` and `--maxfail` stop the run after the failing test is reported, but the
+  tests overlapping with it have already run. Ctrl-C does not cancel an overlapped test the
+  way it cancels a serial one: a test stuck on an await with no timeout holds its worker
+  until rustest kills the worker.
+- **Output.** `print` output goes to the test that printed. Output written straight to the
+  file descriptor (`os.write`, a subprocess) or from a thread the test started cannot be told
+  apart and is printed on stderr instead.
+- **Warnings.** A warning that pytest would show once per test may be shown once per group of
+  overlapped tests. The warning filters are process-wide, so a library that changes them
+  inside one test (`warnings.catch_warnings`) changes them for the tests overlapping with it.
+- **Fixture order.** Module and class fixtures are set up before the group starts, not when
+  the first test that needs them runs, and the setups and teardowns of the overlapping tests'
+  own fixtures interleave.
 
 ## Advanced patterns
 
@@ -1057,7 +1128,8 @@ async def test_with_shared_pool():
 ## Limitations
 
 - Tests sharing a loop scope run one at a time. Parallelism comes from the worker pool, which
-  distributes files rather than tests.
+  distributes files rather than tests, unless you opt in to
+  [overlapping tests](#overlapping-tests-opt-in-not-pytests-behaviour).
 - `asyncio_debug` is not on the worker protocol, so the loop always runs with debug mode off.
   It changes the loop's own diagnostics and no test outcome.
 - A test's loop scope is never widened to match the fixtures it requests. Configure it with

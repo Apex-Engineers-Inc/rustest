@@ -349,7 +349,9 @@ def test_corpus_case_count_is_pinned() -> None:
     # `fixtures/wide-scope-setup-raises` (+1): a raising wide-scope setup runs once per scope.
     # `hooks/pytester-controller` (+1): the handed pytest as one more xdist worker, pinned.
     # `collection/split-under-n` (+1): a recorded costly file split across two workers, pinned.
-    assert len(discover_cases()) == 114
+    # `async/concurrency-overlap`, `-boundaries` (+2): `asyncio_concurrency = 8` overlaps the
+    # `concurrent` tests and pytest (which ignores both) still agrees.
+    assert len(discover_cases()) == 116
 
 
 def test_every_ledger_key_names_a_real_case() -> None:

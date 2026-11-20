@@ -262,6 +262,12 @@ premature if the release is aborted.
 | [#137](https://github.com/Apex-Engineers-Inc/rustest/issues/137) | Bare `@pytest.mark.xfail` silently deletes the test | **Fixed** | `344eab2` |
 | [#139](https://github.com/Apex-Engineers-Inc/rustest/issues/139) | Native `rustest.mark.skip` inert under v1 | **Moot** — v1-only, same disposition and same reasoning as #135. | cite `36113ba` / `eed8df4` |
 | [#140](https://github.com/Apex-Engineers-Inc/rustest/issues/140) | Worker process tree leaks orphans when parent dies mid-run | **Fixed** | `e0b9fe8` |
+| [#143](https://github.com/Apex-Engineers-Inc/rustest/issues/143) | Class-level marks and module `pytestmark` not propagated to methods | **Not reproducible on the engine** — probed 2026-11-19, matches pytest | old-engine bug |
+| [#144](https://github.com/Apex-Engineers-Inc/rustest/issues/144) | `request.fixturenames` / `request.addfinalizer` absent | **Fixed.** `addfinalizer` already worked; `fixturenames` was missing on a fixture's request | this branch, see CHANGELOG |
+| [#145](https://github.com/Apex-Engineers-Inc/rustest/issues/145) | `unittest.SkipTest` in a test body reported as failed | **Not reproducible on the engine** — probed 2026-11-19 | old-engine bug |
+| [#146](https://github.com/Apex-Engineers-Inc/rustest/issues/146) | Two doc inaccuracies about `pytest_asyncio.fixture` | **Moot** — the page was rewritten and the warning's source file is deleted | — |
+| [#151](https://github.com/Apex-Engineers-Inc/rustest/issues/151) | `monkeypatch.setattr("pkg.mod.Class.attr", v)` raises | **Not reproducible on the engine** — probed 2026-11-19 | old-engine bug |
+| [#152](https://github.com/Apex-Engineers-Inc/rustest/issues/152) | No Linux aarch64 wheels | **Fixed in `publish.yml`**, aarch64 + musllinux; first exercised by the rc publish | this branch |
 
 `Fixes #NNN` was not used at commit time — these were audit findings rather than
 issue-driven work — so there is no linked-PR auto-close. Close explicitly:
@@ -273,12 +279,20 @@ gh issue close 129 --comment "Fixed in 0a975de, released in v<version>."
 **#118, #120, #121 and #122 are already CLOSED** (they were the 0.17.0 line's issues). No
 action.
 
-### 5.2 Open pull requests — two, both to close rather than merge
+### 5.2 Pull requests
 
-| # | Title | Disposition |
+#125 and #138 are **closed**. Six are open, all from one outside contributor and all
+against `main`'s old engine, so none merges once PR #141 lands. Close each with thanks and
+the issue's disposition above — the reports were all accurate against 0.18.0.
+
+| # | Subject | Disposition |
 |---|---|---|
-| [#138](https://github.com/Apex-Engineers-Inc/rustest/pull/138) | `fix(compat): support bare @pytest.mark.xfail decorator` | **Duplicate.** This is a PR, not an issue — the earlier draft of this checklist mis-filed it. Its subject is #137, which `344eab2` fixes for both bare `skip` and bare `xfail`. Close as superseded and cite `344eab2`. |
-| [#125](https://github.com/Apex-Engineers-Inc/rustest/pull/125) | `fix: 3 pytest-compat bugs — monkeypatch paths, class fixtures, _pytest_stub` | **Needs a read before closing.** It targets v1 files that no longer exist, so it cannot merge — but its three subjects were **not** in the nine-commit delta §4 triaged, which means they have not been individually verified against v2. Check each against the current engine before closing, and file anything still real as a fresh issue. |
+| [#147](https://github.com/Apex-Engineers-Inc/rustest/pull/147) | stale async-fixture doc claims | superseded — #146 |
+| [#148](https://github.com/Apex-Engineers-Inc/rustest/pull/148) | class and module mark propagation | superseded — #143 |
+| [#149](https://github.com/Apex-Engineers-Inc/rustest/pull/149) | `unittest.SkipTest` | superseded — #145 |
+| [#150](https://github.com/Apex-Engineers-Inc/rustest/pull/150) | `request.fixturenames` / `addfinalizer` | superseded — #144 |
+| [#153](https://github.com/Apex-Engineers-Inc/rustest/pull/153) | aarch64 and musllinux wheels | **ported**: its matrix is in `publish.yml` here, credited in the changelog |
+| [#154](https://github.com/Apex-Engineers-Inc/rustest/pull/154) | monkeypatch class paths | superseded — #151 |
 
 ---
 

@@ -2814,6 +2814,10 @@ pub(crate) struct Worker {
     late_teardowns: Vec<LateTeardown>,
     /// Hand-off reasons a test's result carried (v17), until taken.
     handoff: Vec<String>,
+    /// `asyncio_concurrency` (v19): tests overlapped, and `concurrent` tests that ran alone
+    /// with why, until taken.
+    overlapped: usize,
+    serial: Vec<(String, String)>,
 }
 
 /// The environment a pytest-xdist worker has, for worker *index* of a pool of *size*
@@ -2948,6 +2952,8 @@ impl Worker {
             commit_marks: false,
             late_teardowns: Vec::new(),
             handoff: Vec::new(),
+            overlapped: 0,
+            serial: Vec::new(),
         })
     }
 
@@ -3494,7 +3500,14 @@ impl Worker {
                         returncode,
                     };
                 }
-                WorkerResponse::BatchDone { executed, stopped } => {
+                WorkerResponse::BatchDone {
+                    executed,
+                    stopped,
+                    overlapped,
+                    serial,
+                } => {
+                    self.overlapped += overlapped;
+                    self.serial.extend(serial);
                     if executed != seen {
                         return Err(self.execute_protocol(
                             expected,
@@ -3731,6 +3744,15 @@ impl Worker {
     /// module-scoped teardown output is drained at a boundary, outside the per-test capture
     /// window, so a *successful* run's stderr can carry legitimate user output (see the
     /// 1b.2 Task 3 divergence note).  The run surfaces it; it never grades it.
+    /// `asyncio_concurrency`'s account so far (v19): tests overlapped, and each
+    /// `concurrent` test that ran alone with why.
+    pub(crate) fn take_overlap(&mut self) -> (usize, Vec<(String, String)>) {
+        (
+            std::mem::take(&mut self.overlapped),
+            std::mem::take(&mut self.serial),
+        )
+    }
+
     /// The late teardown errors the worker sent since the last call.
     pub(crate) fn take_late_teardowns(&mut self) -> Vec<LateTeardown> {
         std::mem::take(&mut self.late_teardowns)
@@ -3977,7 +3999,7 @@ mod tests {
         WorkerLauncher::scripted(&worker_python(), vec!["-c".to_string(), script.to_string()])
     }
 
-    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":18}\n')"#;
+    const READY: &str = r#"sys.stdout.write('{"op":"ready","protocol_version":19}\n')"#;
 
     /// A well-behaved stand-in worker that collects nothing but **records itself**: one log
     /// file per process (named by pid, created at startup) listing the files it was asked

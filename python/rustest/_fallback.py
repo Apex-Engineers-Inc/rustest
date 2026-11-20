@@ -32,6 +32,7 @@ _DROPPED = {
     "--no-pytest-fallback": False,
     "--codeblocks": False,
     "--no-codeblocks": False,
+    "--asyncio-concurrency": True,
 }
 
 _EXIT_USAGE_ERROR = 4

@@ -141,7 +141,15 @@ use serde::{Deserialize, Serialize};
 /// carries the session's facts and `bye` the summary and an exit-status override;
 /// `execute_batch.ship_reports` puts each test's phase reports on its result, and a
 /// controller process (`init.controller`) replays them (`replay_reports`).
-pub const PROTOCOL_VERSION: u32 = 18;
+/// **v19**: `batch_done` carries `overlapped` (tests that ran overlapped under
+/// `asyncio_concurrency`) and `serial` (`[id, why]` per `concurrent` test that ran alone).
+pub const PROTOCOL_VERSION: u32 = 19;
+
+/// `skip_serializing_if` for a count; it needs a predicate over a reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
 
 /// A teardown error for a test whose result went out before the teardown ran: a scope drained
 /// at the next test's boundary, or at shutdown.
@@ -620,7 +628,17 @@ pub enum WorkerResponse {
     /// test failed. It is distinct from `executed < ids.len()` being *inferred*, because the
     /// orchestrator must tell "`-x` fired here" apart from "this worker dropped results":
     /// the first truncates the report legitimately, the second is a bug.
-    BatchDone { executed: usize, stopped: bool },
+    ///
+    /// `overlapped` and `serial` (v19) are `asyncio_concurrency`'s account of the batch:
+    /// how many tests ran overlapped, and why each `concurrent`-marked one did not.
+    BatchDone {
+        executed: usize,
+        stopped: bool,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        overlapped: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        serial: Vec<(String, String)>,
+    },
     /// Acknowledges [`WorkerRequest::Shutdown`]; the last line a worker writes before
     /// exiting 0. `warnings` are the shutdown teardown's (v14), located at the last test.
     Bye {
@@ -743,9 +761,9 @@ mod tests {
         }
     }
 
-    const INIT_LINE: &str = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
-    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
+    const INIT_LINE: &str = r#"{"op":"init","protocol_version":19,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_FIXTURE_SCOPE: &str = r#"{"op":"init","protocol_version":19,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_fixture_loop_scope":"session","asyncio_default_test_loop_scope":"session"}"#;
+    const INIT_LINE_WITH_COVERAGE: &str = r#"{"op":"init","protocol_version":19,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","coverage":{"sources":["/repo/src"],"data_dir":"/tmp/rustest-cov-abc"}}"#;
     const COLLECT_FILE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py"}"#;
     const COLLECT_FILE_REWRITE_LINE: &str = r#"{"op":"collect_file","path":"/repo/tests/test_math.py","assert_key":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     const EXECUTE_TEST_LINE: &str = r#"{"op":"execute_test","id":"tests/test_math.py::test_add"}"#;
@@ -846,7 +864,7 @@ mod tests {
             }
         });
 
-        let line = r#"{"op":"init","protocol_version":18,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
+        let line = r#"{"op":"init","protocol_version":19,"rootdir":"/repo","invocation_dir":"/repo/tests","python_files":["test_*.py","*_test.py"],"python_classes":["Test*"],"python_functions":["test*"],"asyncio_mode":"auto","asyncio_default_test_loop_scope":"session","pythonpath":["/repo/src","/repo/vendor"]}"#;
         assert_eq!(
             serde_json::to_string(&with_paths).expect("init serializes"),
             line
@@ -1021,6 +1039,8 @@ mod tests {
         let response = WorkerResponse::BatchDone {
             executed: 2,
             stopped: false,
+            overlapped: 0,
+            serial: Vec::new(),
         };
 
         assert_eq!(
@@ -1041,10 +1061,29 @@ mod tests {
         let stopped = WorkerResponse::BatchDone {
             executed: 1,
             stopped: true,
+            overlapped: 0,
+            serial: Vec::new(),
         };
         assert_eq!(
             serde_json::to_string(&stopped).expect("batch_done serializes"),
             r#"{"op":"batch_done","executed":1,"stopped":true}"#
+        );
+
+        // v19: `asyncio_concurrency`'s account rides on the same line, omitted when empty.
+        let overlap = r#"{"op":"batch_done","executed":3,"stopped":false,"overlapped":2,"serial":[["t.py::test_c","uses capsys"]]}"#;
+        let decoded: WorkerResponse = serde_json::from_str(overlap).expect("v19 batch_done");
+        assert_eq!(
+            decoded,
+            WorkerResponse::BatchDone {
+                executed: 3,
+                stopped: false,
+                overlapped: 2,
+                serial: vec![("t.py::test_c".to_string(), "uses capsys".to_string())],
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&decoded).expect("serializes"),
+            overlap
         );
     }
 
@@ -1062,7 +1101,7 @@ mod tests {
 
     // --- responses --------------------------------------------------------
 
-    const READY_LINE: &str = r#"{"op":"ready","protocol_version":18}"#;
+    const READY_LINE: &str = r#"{"op":"ready","protocol_version":19}"#;
     const COLLECTED_TESTS_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_math.py","tests":[{"id":"tests/test_math.py::test_add","path":"tests/test_math.py","qualname":"test_add"}]}"#;
     const COLLECTED_ERROR_LINE: &str = r#"{"op":"collected","path":"/repo/tests/test_broken.py","error":{"path":"tests/test_broken.py","message":"ImportError: No module named 'nope'"}}"#;
     const TEST_RESULT_PASSED_LINE: &str = r#"{"op":"test_result","id":"tests/test_math.py::test_add","status":"passed","duration_s":0.125}"#;
@@ -1838,6 +1877,8 @@ mod tests {
             WorkerResponse::BatchDone {
                 executed: 2,
                 stopped: false,
+                overlapped: 0,
+                serial: Vec::new(),
             },
             WorkerResponse::Bye {
                 warnings: Vec::new(),
