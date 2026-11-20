@@ -191,6 +191,9 @@ class RealTarget:
     #: ``[env] environ``: variables every leg runs with, as the target's own test task sets
     #: them (e.g. ``PYTHON_GIL=1``).
     environ: dict[str, str] = field(default_factory=dict[str, str])
+    #: ``[run] serial_only``: the suite cannot run on more than one worker under either
+    #: runner (a fixture binds a fixed port, say). The survey skips its parallel legs.
+    serial_only: bool = False
 
     @property
     def python(self) -> Path:
@@ -244,6 +247,7 @@ def load_target(name: str) -> RealTarget:
         pytest_args=_strings(run_tbl, "pytest_args"),
         rustest_args=_strings(run_tbl, "rustest_args"),
         timeout_s=_int(run_tbl, "timeout_s", 3600),
+        serial_only=run_tbl.get("serial_only") is True,
         id_policy=id_policy,
         ids_ledger=_ledger(div_tbl, "ids"),
         global_ledger=_ledger(div_tbl, "global"),

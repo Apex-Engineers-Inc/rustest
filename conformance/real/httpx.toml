@@ -38,8 +38,13 @@ setup = [
 pythonpath = []
 
 [run]
-pytest_args = []
-rustest_args = []
+# `test_load_ssl_with_keylog` aborts the interpreter itself on Windows builds of CPython
+# without OPENSSL_Applink, under pytest as much as under rustest, so neither runner is asked
+# to run it. The suite's server fixture binds port 8000 in every worker, so pytest-xdist and
+# rustest both hang on more than one worker.
+pytest_args = ["--deselect", "tests/test_config.py::test_load_ssl_with_keylog"]
+rustest_args = ["--deselect", "tests/test_config.py::test_load_ssl_with_keylog"]
+serial_only = true
 timeout_s = 1800
 id_policy = "exact"
 

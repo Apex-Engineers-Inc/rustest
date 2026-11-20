@@ -73,6 +73,9 @@ def survey_target(name: str, rounds: int, *, tree: bool) -> dict[str, Any]:
     for index in range(rounds):
         this: dict[str, real.RunOutcome] = {}
         for label, runner, workers in LEGS[index % len(LEGS) :] + LEGS[: index % len(LEGS)]:
+            if target.serial_only and workers > 1:
+                errors[label] = "not run: the suite cannot use more than one worker"
+                continue
             try:
                 run = leg(runner, workers)
             except Exception as exc:  # noqa: BLE001 - one leg's fault must not lose the rest
@@ -140,7 +143,9 @@ def render(rows: list[dict[str, Any]]) -> str:
         return f"{a / b:.2f}x" if a and b else ""
 
     def agree(row: dict[str, Any]) -> list[object]:
-        a = row["agreement"][f"rustest -n {real.WORKERS}"]
+        # A serial-only suite is graded on its one-worker leg.
+        label = f"rustest -n {real.WORKERS}"
+        a = row["agreement"]["rustest -n 1" if label in row.get("errors", {}) else label]
         tests = row["tests"] or 0
         same = tests - len(a["differing"]) - len(a["differing_on_flaky_tests"])
         return [
