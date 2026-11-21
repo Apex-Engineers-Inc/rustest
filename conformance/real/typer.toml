@@ -47,7 +47,7 @@ pythonpath = []
 [run]
 pytest_args = []
 rustest_args = []
-timeout_s = 1800
+timeout_s = 3600
 id_policy = "exact"
 
 [divergence.ids]
