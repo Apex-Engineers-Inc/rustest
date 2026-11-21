@@ -1362,7 +1362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # the command line's, so these are lifted out here rather than parsed and forgotten.
     addopts, ini_a, _ = _extract_ini_overrides(addopts)
     env_opts, ini_e, _ = _extract_ini_overrides(env_opts)
-    parser.cache_dir_set = bool(_raw_ini(resolved.get("config_file")).get("cache_dir"))
+    parser.cache_dir_set |= bool(_raw_ini(resolved.get("config_file")).get("cache_dir"))
     late_ini = [
         f"-o {key} is an ini option rustest cannot apply (from {where})"
         for where, found in (("addopts", ini_a), ("PYTEST_ADDOPTS", ini_e))
@@ -1370,6 +1370,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ]
     raw = addopts + env_opts + raw
     parser.default_workers = _default_workers(raw, _blocked_plugins(raw))
+    # Without the cache plugin pytest has no `cache_dir` option, and pytest 9 refuses an
+    # unknown one: the hand-off must not pass rustest's.
+    parser.cache_dir_set |= "cacheprovider" in _blocked_plugins(raw)
     parser.fallback = "--no-pytest-fallback" not in raw
     # pytest appends these two lines to **every** usage error, not only to one sourced from
     # a config file: they come from `_parser.extra_info`, which `Config._initini` fills in as

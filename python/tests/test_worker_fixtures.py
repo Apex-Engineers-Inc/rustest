@@ -2285,3 +2285,46 @@ def test_an_edited_conftest_is_not_served_from_the_cache(tmp_path: Path) -> None
         # code.  Stated so the next reader does not mistake this for hot reloading.
         assert first_defs[-1].func() == "before"
         assert second_defs[-1].func() == "before"
+
+
+def test_mark_shapes_pydantics_suite_uses(tmp_path: Path) -> None:
+    """Three shapes pytest accepts: ``ids=`` from any iterable, ``pytestmark =
+    pytest.mark.parametrize(...)`` on a module and on a class, and ``from _pytest.mark
+    import Mark``."""
+    target = write(
+        tmp_path / "test_shapes.py",
+        """
+        import pytest
+        from _pytest.mark import Mark, MarkDecorator
+
+        CASES = {"a": 1, "b": 2}
+        pytestmark = pytest.mark.parametrize("x", [1, 2])
+
+        @pytest.mark.parametrize("v", CASES.values(), ids=CASES.keys())
+        def test_ids(v, x):
+            assert v and x
+
+        class TestC:
+            pytestmark = [pytest.mark.parametrize("y", [7])]
+
+            def test_m(self, x, y):
+                assert (x, y) in ((1, 7), (2, 7))
+
+        def test_kept(x):
+            assert Mark and MarkDecorator
+        """,
+    )
+    with isolated_import_state():
+        module, registry = load(target, tmp_path)
+        _entries, plans = collect_module(module, target, tmp_path, DEFAULT_NAMING, registry)
+        results = dict(run_all(plans))
+    assert results == {
+        "test_shapes.py::test_ids[a-1]": "passed",
+        "test_shapes.py::test_ids[a-2]": "passed",
+        "test_shapes.py::test_ids[b-1]": "passed",
+        "test_shapes.py::test_ids[b-2]": "passed",
+        "test_shapes.py::TestC::test_m[7-1]": "passed",
+        "test_shapes.py::TestC::test_m[7-2]": "passed",
+        "test_shapes.py::test_kept[1]": "passed",
+        "test_shapes.py::test_kept[2]": "passed",
+    }

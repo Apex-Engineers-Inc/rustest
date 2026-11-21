@@ -572,6 +572,10 @@ def run(
     # run it replaces: pytest-xdist's `-n`, when it is installed and nothing chose otherwise.
     if workers and workers > 1 and _installed("xdist"):
         translated = ["-n", str(workers), *translated]
+        # xdist workers must collect the same ids in the same order, and a suite that
+        # parametrizes from a set does so only under one hash seed. The user did not ask
+        # for xdist, so rustest makes its own choice of it safe.
+        _ = os.environ.setdefault("PYTHONHASHSEED", "0")
     serial = (
         " -n was ignored because pytest-xdist is not installed, so it runs serially."
         if dropped_n

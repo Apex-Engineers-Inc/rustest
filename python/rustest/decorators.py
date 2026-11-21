@@ -557,6 +557,8 @@ def parametrize(
     # `ParameterSet._parse_parametrize_args` (l. 165-177): a **str** `argnames` naming
     # exactly one parameter is the only shape that wraps each argvalue as a single
     # value. A sequence -- even `("x",)` -- never does. See `_build_cases`.
+    if ids is not None and not callable(ids):
+        ids = list(ids)  # any iterable, as pytest takes: `ids=CASES.keys()`
     normalized_names = _normalize_arg_names(actual_names)
     force_tuple = isinstance(actual_names, str) and len(normalized_names) == 1
 
@@ -569,6 +571,9 @@ def parametrize(
             indirect, normalized_names, getattr(func, "__name__", "<unknown>")
         )
         new_cases = _build_cases(normalized_names, actual_values, ids, force_tuple=force_tuple)
+        case_ids = [str(case["id"]) for case in new_cases]
+        for case, unique in zip(new_cases, _unique_parameterset_ids(case_ids), strict=True):
+            case["id"] = unique
 
         # Check if there are already parametrizations from previous decorators
         existing_cases = getattr(func, "__rustest_parametrization__", None)
@@ -589,6 +594,9 @@ def parametrize(
 
         return func
 
+    # `pytestmark = pytest.mark.parametrize(...)`: the worker finds this decorator in a
+    # module's or class's `pytestmark` and applies it (`_worker._pytestmark_parametrized`).
+    setattr(decorator, "__rustest_parametrize__", True)
     return decorator
 
 
@@ -663,6 +671,38 @@ def _extract_from(case: object, force_tuple: bool) -> Any:
     if force_tuple:
         return (case,)
     return case
+
+
+def _unique_parameterset_ids(ids: list[str]) -> list[str]:
+    """Port of `_pytest/python.py::IdMaker.make_unique_parameterset_ids`.
+
+    Duplicate ids get a numeric suffix (``1`` -> ``1_0``, ``1_1``; ``a`` -> ``a0``,
+    ``a1``), the underscore appearing only when the id already ends in a digit.
+    Without this two cases would share a nodeid, which breaks the manifest's
+    addressability contract outright.
+
+    pytest applies it per ``parametrize`` call and only then joins stacked ids with ``-``, so
+    :func:`parametrize` applies it to each call's cases before the cross product.
+    """
+    if len(ids) == len(set(ids)):
+        return ids
+
+    from collections import Counter, defaultdict
+
+    counts = Counter(ids)
+    suffixes: defaultdict[str, int] = defaultdict(int)
+    resolved = list(ids)
+    for index, value in enumerate(ids):
+        if counts[value] <= 1:
+            continue
+        suffix = "_" if value and value[-1].isdigit() else ""
+        new_id = f"{value}{suffix}{suffixes[value]}"
+        while new_id in set(resolved):
+            suffixes[value] += 1
+            new_id = f"{value}{suffix}{suffixes[value]}"
+        resolved[index] = new_id
+        suffixes[value] += 1
+    return resolved
 
 
 def _build_cases(
@@ -966,10 +1006,8 @@ if TYPE_CHECKING:
         @overload
         def __call__(
             self,
-            condition: bool | str,
+            *conditions: bool | str,
             reason: str | None = ...,
-            *,
-            _kw_reason: str | None = ...,
         ) -> MarkDecorator: ...
         def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
 
@@ -1176,10 +1214,8 @@ class MarkGenerator:
 
     def _skipif(
         self,
-        condition: bool | str,
+        *conditions: bool | str,
         reason: str | None = None,
-        *,
-        _kw_reason: str | None = None,
     ) -> MarkDecorator:
         """The factory half of ``mark.skipif`` — see :class:`BareOrFactoryMark`.
 
@@ -1200,11 +1236,12 @@ class MarkGenerator:
             def test_never_runs():
                 pass
         """
-        # Support both positional and keyword-only 'reason' for pytest compatibility
-        # Some older pytest code uses: skipif(condition, reason) with positional
-        # Modern pytest uses: skipif(condition, reason="...") with keyword-only
-        actual_reason = _kw_reason if _kw_reason is not None else reason
-        return MarkDecorator("skipif", (condition,), {"reason": actual_reason})
+        # pytest takes any number of conditions and skips when one holds
+        # (`evaluate_skip_marks`). rustest's own positional reason,
+        # `skipif(condition, "why")`, is kept when no `reason=` says otherwise.
+        if reason is None and len(conditions) == 2 and isinstance(conditions[1], str):
+            conditions, reason = conditions[:1], conditions[1]
+        return MarkDecorator("skipif", conditions, {"reason": reason})
 
     def _xfail(
         self,

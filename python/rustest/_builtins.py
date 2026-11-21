@@ -1665,6 +1665,14 @@ def pytestconfig() -> Config:
     return current_config()
 
 
+@fixture(scope="session")
+def doctest_namespace() -> dict[str, Any]:
+    """pytest's ``doctest_namespace`` (`_pytest/doctest.py`): a session dict that doctests see
+    as globals. rustest collects no doctests, so nothing reads it; it exists because suites
+    fill it from an autouse fixture (networkx), which must not error."""
+    return {}
+
+
 @fixture
 def recwarn() -> Generator[WarningsRecorder, None, None]:
     """Record every warning the test raises — pytest's ``recwarn`` fixture.
@@ -1723,4 +1731,5 @@ BUILTIN_FIXTURES: Final[Sequence[str]] = (
     "pytestconfig",
     "recwarn",
     "record_property",
+    "doctest_namespace",
 )

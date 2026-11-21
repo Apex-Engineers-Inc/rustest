@@ -498,3 +498,24 @@ def test_a_fixture_finalizer_runs_even_when_its_setup_failed(tmp_path: Path) -> 
 
     assert _statuses(report) == {"test_a.py::test_one": "error", "test_a.py::test_two": "passed"}
     assert code == 1
+
+
+def test_getoption_with_a_default_for_an_undeclared_option_stays_native(tmp_path: Path) -> None:
+    """pytest answers `config.getoption("--nobody-declared", default=X)` with X."""
+    tree = make_tree(
+        tmp_path,
+        "getopt",
+        {
+            "conftest.py": (
+                "import pytest\n\n\n"
+                "def pytest_collection_modifyitems(config, items):\n"
+                '    if config.getoption("--runtime", default=None) is None:\n'
+                "        for item in items:\n"
+                '            item.add_marker(pytest.mark.skip(reason="no runtime"))\n'
+            ),
+            "test_a.py": _PASS,
+        },
+    )
+    code, report = _report(tree)
+    assert (code, _reasons(report)) == (0, "")
+    assert _statuses(report) == {"test_a.py::test_a": "skipped"}

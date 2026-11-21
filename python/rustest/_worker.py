@@ -130,7 +130,6 @@ from __future__ import annotations
 # `FixtureRunner._close_loop` -- import it in their own bodies, and the only module-scope
 # reference left is the annotation on `self._loop`, which `from __future__ import
 # annotations` never evaluates.  Measured: worker boot 550 ms -> 300 ms.
-from collections import Counter, defaultdict
 from collections.abc import (
     Callable,
     Generator,
@@ -1117,8 +1116,47 @@ def _pytestmark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpec]:
     specs: list[MarkSpec] = []
     for item in mark_lists:
         entries = cast(Sequence[object], item) if isinstance(item, list) else [item]
-        specs.extend(_spec_from_pytestmark(entry, obj) for entry in entries)
+        specs.extend(
+            _spec_from_pytestmark(entry, obj)
+            for entry in entries
+            if not _safe_getattr(entry, "__rustest_parametrize__", False)
+        )
     return specs
+
+
+def _pytestmark_parametrized(obj: object) -> object:
+    """*obj* (a module or class), or a stand-in carrying its parametrization plus every
+    ``pytestmark = pytest.mark.parametrize(...)`` entry applied on top, as pytest applies
+    a parametrize mark from ``pytestmark`` to each test underneath."""
+    # ponytail: a class's own `pytestmark` only; walk the MRO if a suite inherits one.
+    marks = (
+        vars(obj).get("pytestmark", [])
+        if isinstance(obj, type)
+        else _safe_getattr(obj, "pytestmark", [])
+    )
+    entries = [
+        entry
+        for entry in (cast(Sequence[object], marks) if isinstance(marks, list) else [marks])
+        if _safe_getattr(entry, "__rustest_parametrize__", False)
+    ]
+    if not entries:
+        return obj
+    own = isinstance(obj, type)
+    probe = types.SimpleNamespace(
+        __name__=_safe_getattr(obj, "__name__", "?"),
+        __qualname__=_safe_getattr(obj, "__qualname__", _safe_getattr(obj, "__name__", "?")),
+        __rustest_parametrization__=_safe_getattr(obj, "__rustest_parametrization__", None)
+        if own
+        else None,
+        __rustest_parametrization_indirect__=list(
+            cast("Any", _safe_getattr(obj, "__rustest_parametrization_indirect__", None) or ())
+            if own
+            else ()
+        ),
+    )
+    for entry in entries:
+        _ = cast("Any", entry)(probe)
+    return probe
 
 
 def _rustest_mark_specs(obj: object, *, consider_mro: bool) -> list[MarkSpec]:
@@ -1364,38 +1402,9 @@ def _indirect_names(func: object) -> frozenset[str]:
 
 
 def _unique_parameterset_ids(ids: list[str]) -> list[str]:
-    """Port of `_pytest/python.py::IdMaker.make_unique_parameterset_ids`.
+    from . import decorators
 
-    Duplicate ids get a numeric suffix (``1`` -> ``1_0``, ``1_1``; ``a`` -> ``a0``,
-    ``a1``), the underscore appearing only when the id already ends in a digit.
-    Without this two cases would share a nodeid, which breaks the manifest's
-    addressability contract outright.
-
-    Faithful for a single ``parametrize`` call, which is where pytest applies it.
-    pytest de-duplicates *per call* and only then joins stacked ids with ``-``; the
-    decorator hands over ids already cross-producted, so for stacked decorators whose *inner*
-    call contains duplicates the suffix lands on the joined id instead of the
-    component (``1-1_0`` where pytest writes ``1_0-1``).  Both are unique; only
-    pytest's is byte-exact, and the underlying stacked-duplicate id is already a
-    divergence.
-    """
-    if len(ids) == len(set(ids)):
-        return ids
-
-    counts = Counter(ids)
-    suffixes: defaultdict[str, int] = defaultdict(int)
-    resolved = list(ids)
-    for index, value in enumerate(ids):
-        if counts[value] <= 1:
-            continue
-        suffix = "_" if value and value[-1].isdigit() else ""
-        new_id = f"{value}{suffix}{suffixes[value]}"
-        while new_id in set(resolved):
-            suffixes[value] += 1
-            new_id = f"{value}{suffix}{suffixes[value]}"
-        resolved[index] = new_id
-        suffixes[value] += 1
-    return resolved
+    return decorators._unique_parameterset_ids(ids)  # pyright: ignore[reportPrivateUsage]
 
 
 #: pytest's message for a test it cannot run asynchronously
@@ -2015,14 +2024,12 @@ BUILTIN_FIXTURES: Final = _builtins.BUILTIN_FIXTURES
 #:   for ``capteesys``, a *tee* — output both captured and passed through;
 #: * ``pytester``/``testdir`` are pytest's own in-process test harness;
 #: * ``record_testsuite_property`` and ``record_xml_attribute`` write JUnit XML, and there is no
-#:   XML report (``record_property`` only appends to ``user_properties``, so it is supported);
-#: * ``doctest_namespace`` belongs to a doctest collector this engine does not have.
+#:   XML report (``record_property`` only appends to ``user_properties``, so it is supported).
 UNSUPPORTED_BUILTIN_FIXTURES: Final = frozenset(
     {
         "capfdbinary",
         "capsysbinary",
         "capteesys",
-        "doctest_namespace",
         "pytester",
         "record_testsuite_property",
         "record_xml_attribute",
@@ -5190,14 +5197,15 @@ def _collect_class(
     # explicitly, which is also what keeps them out of `_parametrization(func)` and stops the
     # same dimension being counted twice.  `_safe_getattr` walks the MRO, so a subclass of a
     # parametrized class inherits the parametrization exactly as it inherits pytest's marks.
-    class_cases = _parametrization(cls)
+    parametrized_cls = _pytestmark_parametrized(cls)
+    class_cases = _parametrization(parametrized_cls)
     if class_cases is not None:
         outer_cases = (
             class_cases if outer_cases is None else _cross_product_cases(outer_cases, class_cases)
         )
     # ...and the same for `indirect=`, which rides on the same decorator and therefore lands
     # on the same object.
-    outer_indirect = outer_indirect | _indirect_names(cls)
+    outer_indirect = outer_indirect | _indirect_names(parametrized_cls)
     entries: list[CollectedTestDict] = []
     for member_name, member in _mro_ordered_members(cls):
         entries.extend(
@@ -5338,11 +5346,20 @@ def collect_module(
         block_segment=block_segment,
     )
     module_marks = _mark_specs(module)
+    parametrized_module = _pytestmark_parametrized(module)
+    module_cases = None if parametrized_module is module else _parametrization(parametrized_module)
+    module_indirect = (
+        frozenset[str]() if parametrized_module is module else _indirect_names(parametrized_module)
+    )
     entries: list[CollectedTestDict] = []
     for name, obj in list(vars(module).items()):
         if name in IGNORED_ATTRIBUTES:
             continue
-        entries.extend(_make_items(obj, name, (), None, module_marks, registry, context))
+        entries.extend(
+            _make_items(
+                obj, name, (), None, module_marks, registry, context, module_cases, module_indirect
+            )
+        )
     return entries, context.plans
 
 

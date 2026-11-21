@@ -640,6 +640,14 @@ def test_getini_words_its_two_refusals_differently(tmp_path: Path) -> None:
         _ = config.getini("not_an_ini_name_at_all")
 
 
+def test_doctest_namespace_is_a_builtin_fixture() -> None:
+    """networkx's autouse fixture fills it; requesting it must not be an error."""
+    from rustest import _builtins, _worker
+
+    assert "doctest_namespace" in _builtins.BUILTIN_FIXTURES
+    assert "doctest_namespace" not in _worker.UNSUPPORTED_BUILTIN_FIXTURES
+
+
 def test_getoption_returns_a_default_and_otherwise_refuses(tmp_path: Path) -> None:
     """The v2 wire carries no options, so a fabricated answer is the thing to avoid."""
     config = _config(tmp_path)

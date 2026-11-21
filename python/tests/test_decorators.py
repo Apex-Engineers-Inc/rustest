@@ -384,3 +384,26 @@ def test_a_long_string_gets_an_argname_id_from_pytest_9_2_on(monkeypatch) -> Non
     assert decorators._generate_param_id(edge, 3, "msg") == "y" * 100
     monkeypatch.setattr(decorators, "_short_long_ids", lambda: False)
     assert decorators._generate_param_id(long, 3, "msg") == long
+
+
+def test_stacked_parametrize_numbers_duplicate_ids_per_call() -> None:
+    """pytest de-duplicates each `parametrize` call's ids, then joins: `a0-1`, not `a-1_0`."""
+    from rustest import parametrize
+
+    @parametrize("y", [1, 2])
+    @parametrize("x", ["a", b"a"])
+    def test_it(x: object, y: int) -> None: ...
+
+    ids = [case["id"] for case in test_it.__rustest_parametrization__]  # pyright: ignore[reportFunctionMemberAccess]
+    assert sorted(ids) == ["a0-1", "a0-2", "a1-1", "a1-2"]
+
+
+def test_skipif_takes_several_conditions_as_pytest_does() -> None:
+    """Every positional is a condition once `reason=` is given; a lone second string is still
+    rustest's positional reason."""
+    from rustest import mark
+
+    many = mark.skipif(False, True, reason="second holds")
+    assert (many.args, many.kwargs) == ((False, True), {"reason": "second holds"})
+    legacy = mark.skipif(True, "why")
+    assert (legacy.args, legacy.kwargs) == ((True,), {"reason": "why"})

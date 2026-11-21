@@ -83,13 +83,12 @@ FixtureLookupError: fixture 'pytester' is not supported by the rustest worker ye
 capsys, capfd, caplog, cache, mocker, pytestconfig, recwarn, record_property)
 ```
 
-The full not-yet list: `capfdbinary`, `capsysbinary`, `capteesys`, `doctest_namespace`,
+The full not-yet list: `capfdbinary`, `capsysbinary`, `capteesys`,
 `pytester`, `record_testsuite_property`, `record_xml_attribute`, `testdir`. Each needs a distinct piece of machinery rather than a variation on one that
 already exists. The `*binary` capture pair and `capteesys` need a bytes-flavoured capture
 class, and `capteesys` a tee besides; `record_testsuite_property` and
 `record_xml_attribute` write JUnit XML and there is no XML report (`record_property` only
-appends to the test's `user_properties`, which rustest has); `doctest_namespace` belongs to a doctest collector this engine does
-not have; `pytester` and `testdir` are pytest's own in-process harness.
+appends to the test's `user_properties`, which rustest has); `pytester` and `testdir` are pytest's own in-process harness.
 
 ### The `request` object
 

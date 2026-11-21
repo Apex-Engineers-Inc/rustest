@@ -43,7 +43,7 @@ is handed to pytest whole and runs at pytest's speed
 | `pytestconfig` | ✅ | ✅ | The same object `request.config` returns |
 | `recwarn` | ✅ | ✅ | |
 | `request` | ✅ | ✅ | See the row group below |
-| `capsysbinary`, `capfdbinary`, `capteesys`, `doctest_namespace`, `pytester`, `testdir`, `record_*` | ✅ | ❌ | Requesting one is an error that names it |
+| `capsysbinary`, `capfdbinary`, `capteesys`, `pytester`, `testdir`, `record_*` | ✅ | ❌ | Requesting one is an error that names it |
 | **The `request` object** |
 | `request.param` | ✅ | ✅ | Parameter value for parametrized fixtures |
 | `request.node` | ✅ | ✅ | A façade over the execution plan: `name`, `nodeid`, `path`, `cls`, `module`, `function`, `instance`, `keywords`, `own_markers`, `iter_markers`, `get_closest_marker`, `add_marker`, `config`. No `session`, `parent` or `listchain` |

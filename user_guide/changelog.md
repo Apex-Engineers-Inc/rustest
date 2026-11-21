@@ -244,6 +244,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole of `sys.path` after `syspath_prepend`, so paths the code under test added are
   dropped too; and `_pytest.monkeypatch` exports the fixture's own class and the `notset`
   sentinel (it was a placeholder class that could not be instantiated).
+- **Four mark shapes pydantic's suite uses now work as in pytest**:
+  `pytestmark = pytest.mark.parametrize(...)` on a module or class parametrizes every test
+  under it; `ids=` takes any iterable (`ids=CASES.keys()`); `skipif` takes several
+  conditions and skips when one holds; `from _pytest.mark import Mark, MarkDecorator`
+  imports the real classes, with no import-time warning.
+- **A session handed to pytest with rustest's own choice of xdist workers pins
+  `PYTHONHASHSEED`** (when unset), so a suite that parametrizes from a set collects the same
+  ids in every worker. A user's own `-n` or seed is left alone.
+- **A hand-off under `-p no:cacheprovider` no longer passes `-o cache_dir`**, which pytest 9
+  refuses as an unknown option; and a user's own `-o cache_dir=` now reaches pytest.
+- **`doctest_namespace` is provided**: an empty session dict, as in pytest. rustest runs
+  no doctests, but a suite whose autouse fixture fills it (networkx) errored on every test.
+- **Stacked `parametrize` numbers duplicate ids per decorator**, as pytest does:
+  `@parametrize("y", [1, 2])` over `@parametrize("x", ["a", b"a"])` gives `[a0-1]`, where
+  rustest gave `[a-1_0]`. Found on urllib3's suite, where 240 node ids differed.
+- **`config.getoption(name, default=X)` returns `X` for an option nobody declared**, as
+  pytest does. A conftest hook that asked this way sent the whole session to pytest, and
+  under `--no-pytest-fallback` the hook did not run at all.
+- **A worker process that dies no longer names a passing test as the crash.** Results are
+  buffered, so the message now says the crash is at or shortly after the named test.
 - **Long parametrize values get pytest 9.2's ids.** From pytest 9.2 an auto-generated id for a
   `str` or `bytes` value over 100 characters is `<argname><index>`. rustest follows the
   installed pytest: the short id from 9.2 on, the full value before. The

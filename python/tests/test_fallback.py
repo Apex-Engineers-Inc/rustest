@@ -7,6 +7,7 @@ replaced), the CLI wiring (a stubbed ``rust`` module), and real end-to-end runs.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,7 @@ class _Child:
 @pytest.fixture
 def windows(monkeypatch: pytest.MonkeyPatch) -> type[_Child]:
     monkeypatch.setattr(_fallback, "_WINDOWS", True)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")  # `run` sets it; this restores it after
     monkeypatch.setattr(_fallback, "_installed", lambda module: True)
     monkeypatch.setattr(subprocess, "Popen", _Child)
     _Child.calls.clear()
@@ -1595,3 +1597,36 @@ def test_reading_the_plugin_manager_hands_the_session_to_pytest(tmp_path: Path):
 
     kept = _rustest(tree, "--no-pytest-fallback")
     assert kept.returncode == 1, kept.stdout + kept.stderr
+
+
+def test_rustests_own_xdist_pins_the_hash_seed(
+    windows: type[_Child], monkeypatch: pytest.MonkeyPatch
+):
+    """xdist workers must collect identical ids, and a suite that parametrizes from a set does
+    so only under one hash seed (pydantic). The user's own seed is left alone."""
+    monkeypatch.delenv("PYTHONHASHSEED", raising=False)
+    _ = _fallback.run(["x"], ["why"], workers=1)
+    assert "PYTHONHASHSEED" not in os.environ
+    _ = _fallback.run(["x"], ["why"], workers=4)
+    assert os.environ["PYTHONHASHSEED"] == "0"
+    monkeypatch.setenv("PYTHONHASHSEED", "7")
+    _ = _fallback.run(["x"], ["why"], workers=4)
+    assert os.environ["PYTHONHASHSEED"] == "7"
+
+
+def test_a_hand_off_without_the_cache_plugin_passes_no_cache_dir(tmp_path: Path):
+    """`-p no:cacheprovider` removes pytest's `cache_dir` option, and pytest 9 refuses an unknown
+    one (pydantic's addopts). The user's own `-o cache_dir=` still reaches pytest."""
+    tree = make_tree(
+        tmp_path,
+        "nocache",
+        {"test_pm.py": "def test_pm(pytestconfig):\n    assert pytestconfig.pluginmanager\n"},
+    )
+    handed = _rustest(tree, "-p", "no:cacheprovider")
+    assert handed.returncode == 0, handed.stdout + handed.stderr
+    assert "1 passed" in handed.stdout
+    assert "cache_dir" not in handed.stdout + handed.stderr
+
+    own = _rustest(tree, "-o", "cache_dir=mine")
+    assert own.returncode == 0, own.stdout + own.stderr
+    assert (tree / "mine").is_dir() and not (tree / ".rustest_cache").exists()

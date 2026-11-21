@@ -1336,6 +1336,15 @@ class _Config(_Shim):
             value = st.builtin[dest]
         elif option is None and name in st.builtin:
             value = st.builtin[name]
+        elif (
+            option is None
+            and default is not _NOTSET
+            and name not in st.reserved
+            and dest not in _PYTEST_CORE_DESTS
+        ):
+            # Nobody declared it and it is not pytest's own: pytest answers with the default
+            # (`Config.getoption`'s `except AttributeError` arm).
+            return default
         else:
             st.violate(f"asks config.getoption({name!r}) for an option with no declared value")
         if value is None and skip:

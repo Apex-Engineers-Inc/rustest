@@ -139,7 +139,7 @@ Most suites need no plugins to migrate. rustest already provides:
   `record_property`
 
 Requesting one of pytest's remaining built-in fixtures is an error naming the gap rather than a
-"fixture not found": `capsysbinary`, `capfdbinary`, `capteesys`, `doctest_namespace`,
+"fixture not found": `capsysbinary`, `capfdbinary`, `capteesys`,
 `pytester`, `testdir`, `record_testsuite_property` and `record_xml_attribute`.
 
 Cosmetic pytest flags are accepted and ignored rather than rejected, so an `addopts` line that

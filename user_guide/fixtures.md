@@ -962,10 +962,10 @@ def test_database_documented(database):
 
 ## Built-in fixtures
 
-rustest ships ports of pytest's own built-in fixtures. They need no import and no `conftest.py` entry: `tmp_path`, `tmp_path_factory`, `tmpdir`, `tmpdir_factory`, `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `mocker`, `pytestconfig`, `recwarn` and `record_property`, plus `request`.
+rustest ships ports of pytest's own built-in fixtures. They need no import and no `conftest.py` entry: `tmp_path`, `tmp_path_factory`, `tmpdir`, `tmpdir_factory`, `monkeypatch`, `capsys`, `capfd`, `caplog`, `cache`, `mocker`, `pytestconfig`, `recwarn`, `record_property` and `doctest_namespace`, plus `request`.
 
-Eight of pytest's are still missing: `capsysbinary`, `capfdbinary`, `capteesys`,
-`doctest_namespace`, `pytester`, `testdir`, `record_testsuite_property` and
+Seven of pytest's are still missing: `capsysbinary`, `capfdbinary`, `capteesys`,
+`pytester`, `testdir`, `record_testsuite_property` and
 `record_xml_attribute`. Asking for one is an error that
 names the fixture, never a silent skip.
 
