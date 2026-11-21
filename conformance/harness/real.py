@@ -1061,7 +1061,9 @@ def run_target(
             shutil.rmtree(tmp)
         tmp.mkdir(parents=True, exist_ok=True)
         pytest_run = run_pytest_real(target, tmp)
-        rustest_run = run_rustest_real(target, tmp, tree=tree)
+        # A serial-only suite hangs on more than one worker under either runner.
+        n = 1 if target.serial_only else WORKERS
+        rustest_run = run_rustest_real(target, tmp, workers=n, tree=tree)
         # A handed-off leg is pytest's own run, graded exactly: the ledgers describe the
         # engine, and grade the engine leg below.
         verdict = grade_real(
@@ -1073,15 +1075,18 @@ def run_target(
         )
         xdist_run: RunOutcome | None = None
         xdist_error = ""
-        try:
-            xdist_run = run_pytest_real(target, tmp, workers=WORKERS)
-        except Exception as exc:  # noqa: BLE001 - informational leg
-            xdist_error = repr(exc)
+        if target.serial_only:
+            xdist_error = "skipped: serial_only"
+        else:
+            try:
+                xdist_run = run_pytest_real(target, tmp, workers=WORKERS)
+            except Exception as exc:  # noqa: BLE001 - informational leg
+                xdist_error = repr(exc)
         engine_run: RunOutcome | None = None
         engine_status = ""
         if rustest_run.fallback:
             try:
-                engine_run = run_rustest_real(target, tmp, fallback=False, tree=tree)
+                engine_run = run_rustest_real(target, tmp, workers=n, fallback=False, tree=tree)
                 engine_status = grade_real(target, pytest_run, engine_run).status
             except Exception as exc:  # noqa: BLE001 - informational leg, as xdist is
                 engine_status = f"no engine run: {exc!r}"[:200]
