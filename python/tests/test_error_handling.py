@@ -112,15 +112,15 @@ class TestErrorHandling:
         assert cases[0]["id"] == long_id
 
     def test_parametrize_with_duplicate_ids(self) -> None:
-        """Test handling of duplicate IDs (should be allowed)."""
+        """Duplicate ids are allowed and numbered per call, as pytest does (`same0`, `same1`)."""
 
         @parametrize("x", [(1,), (2,)], ids=["same", "same"])
         def test_func(x: int) -> int:
             return x
 
         cases = getattr(test_func, "__rustest_parametrization__")
-        assert cases[0]["id"] == "same"
-        assert cases[1]["id"] == "same"
+        assert cases[0]["id"] == "same0"
+        assert cases[1]["id"] == "same1"
 
 
 class TestEdgeCases:
