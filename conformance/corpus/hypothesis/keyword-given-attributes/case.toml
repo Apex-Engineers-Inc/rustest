@@ -1,0 +1,3 @@
+# `-k` matches the names in the test function's `__dict__`, and `@given` leaves several.
+[case]
+args = ["-k", "is_hypothesis_test and not parametrize"]

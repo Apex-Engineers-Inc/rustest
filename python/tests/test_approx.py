@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from rustest import approx
 
 
@@ -55,17 +57,30 @@ def test_approx_dict() -> None:
     assert {"x": 1.0, "y": 2.0} == approx({"x": 1.0000001, "y": 2.0000001})
 
 
-def test_approx_nested_structures() -> None:
-    """Test approx with nested data structures."""
-    actual = {
-        "values": [0.1 + 0.2, 0.3],
-        "nested": {"x": 1.0, "y": 2.0},
-    }
-    expected = {
-        "values": [0.3, 0.3],
-        "nested": {"x": 1.0000001, "y": 2.0000001},
-    }
-    assert actual == approx(expected)
+def test_approx_refuses_nested_structures() -> None:
+    """Nested containers are a TypeError, not a recursive comparison.
+
+    `ApproxMapping._check_type` / `ApproxSequenceLike._check_type`
+    (`_pytest/python_api.py` l. 297-303 and l. 370-375). rustest used to recurse, which is
+    the more permissive answer and the wrong one: a nested dict reaches `ApproxScalar` and
+    is compared by exact equality, so the tolerance silently stops applying. pytest refuses
+    the shape instead. Probed on 8.4.2: `pytest.approx({"nested": {"x": 1.0}})` raises
+    `pytest.approx() does not support nested dictionaries: key='nested' value={'x': 1.0}`.
+    """
+    with pytest.raises(TypeError, match="does not support nested dictionaries"):
+        approx({"values": [0.3, 0.3], "nested": {"x": 1.0, "y": 2.0}})
+
+    with pytest.raises(TypeError, match="does not support nested data structures"):
+        approx([[1.0, 2.0], [3.0]])
+
+    # A list inside a dict is not refused -- `_check_type` only rejects a value of the
+    # container's OWN type -- but it is compared by EXACT equality, because the inner list
+    # reaches `ApproxScalar` and falls through to the non-numeric branch. Probed on 8.4.2:
+    # `{"values": [0.1 + 0.2, 0.3]} == pytest.approx({"values": [0.3, 0.3]})` is False.
+    # This is the trap pytest's refusal of same-type nesting exists to make loud, and the
+    # reason rustest's old recursive comparison was a divergence rather than a courtesy.
+    assert not ({"values": [0.1 + 0.2, 0.3]} == approx({"values": [0.3, 0.3]}))
+    assert {"values": [0.3, 0.3]} == approx({"values": [0.3, 0.3]})
 
 
 def test_approx_complex_numbers() -> None:
@@ -149,16 +164,23 @@ def test_approx_with_none() -> None:
 
 
 def test_approx_repr() -> None:
-    """Test string representation of approx."""
-    a = approx(1.0)
-    assert "approx" in repr(a)
-    assert "1.0" in repr(a)
+    """`ApproxScalar.__repr__` is `<expected> ± <tolerance>` (l. 384-419).
 
-    a = approx(1.0, rel=1e-3, abs=1e-6)
-    assert "approx" in repr(a)
-    assert "1.0" in repr(a)
-    assert "rel=0.001" in repr(a) or "rel=1e-3" in repr(a)
-    assert "abs=1e-06" in repr(a) or "abs=1e-6" in repr(a)
+    Not `approx(...)` with the keywords echoed back, which is what rustest printed. The
+    tolerance is the *resolved* one, so it reflects `tolerance`'s rules -- with both `rel`
+    and `abs` given, the larger wins, and `1e-3 <= tol < 1e3` prints in `n` format while
+    anything outside prints in `.1e`. Probed on pytest 8.4.2: `repr(approx(1.0))` is
+    `1.0 \u00b1 1.0e-06` and `repr(approx(1.0, rel=1e-3, abs=1e-6))` is `1.0 \u00b1 0.001`.
+    """
+    assert repr(approx(1.0)) == "1.0 \u00b1 1.0e-06"
+    assert repr(approx(1.0, rel=1e-3, abs=1e-6)) == "1.0 \u00b1 0.001"
+
+    # Containers wrap their elements' reprs.
+    assert repr(approx([1.0])) == "approx([1.0 \u00b1 1.0e-06])"
+    assert repr(approx({"a": 1.0})) == "approx({'a': 1.0 \u00b1 1.0e-06})"
+
+    # No tolerance is shown for a value no tolerance applies to.
+    assert repr(approx(math.inf)) == "inf"
 
 
 def test_approx_with_scientific_notation() -> None:
@@ -178,10 +200,16 @@ def test_approx_relative_tolerance_scaling() -> None:
 
 
 def test_approx_percentage_style_tolerance() -> None:
-    """Test approx with percentage-style tolerance."""
-    # 1% tolerance
-    assert 100 == approx(101, rel=0.01, abs=0)
-    assert 100 == approx(99, rel=0.01, abs=0)
+    """The relative tolerance scales the EXPECTED value, not the larger of the two.
+
+    `ApproxScalar.tolerance` (l. 502-504): `rel * abs(self.expected)`. rustest used
+    `rel * max(abs(actual), abs(expected))`, which is a wider window and is not symmetric
+    with pytest's -- it made `100 == approx(99, rel=0.01)` true (window 1.0 from the actual)
+    where pytest makes it false (window 0.99 from the expected). Probed on 8.4.2: `False`.
+    """
+    assert 100 == approx(101, rel=0.01, abs=0)  # window 1.01 around 101
+    assert not (100 == approx(99, rel=0.01, abs=0))  # window 0.99 around 99 -- misses by .01
+    assert 100 == approx(99, rel=0.011, abs=0)  # widen it slightly and it lands
     assert not (100 == approx(102, rel=0.01, abs=0))
 
 

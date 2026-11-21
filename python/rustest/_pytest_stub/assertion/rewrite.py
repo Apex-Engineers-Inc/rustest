@@ -1,42 +1,28 @@
 """
 Stub for _pytest.assertion.rewrite
 
-MIGRATION GUIDE:
-Assertion rewriting is a pytest-specific feature that rewrites assert
-statements to provide detailed failure messages.
-
-rustest does not support assertion rewriting, but provides good assertion
-output through standard Python mechanisms.
-
-If your code imports this, it's likely setting up pytest-specific hooks
-that won't work in rustest. Consider removing these imports.
+rustest rewrites ``assert`` statements in test modules with its own import hook
+(``rustest._assertion_rewrite``). pytest's hook class is not part of it: code that installs
+``AssertionRewritingHook`` itself is configuring pytest's plugin machinery, which rustest
+does not have.
 """
 
 import warnings
 
 
 warnings.warn(
-    "Assertion rewriting (_pytest.assertion.rewrite) is not supported by rustest. "
-    "This is a pytest-specific feature. "
-    "Standard Python assertions work normally in rustest.",
+    "Importing from _pytest.assertion.rewrite is not recommended. "
+    "It is pytest's private API; rustest rewrites assertions with its own hook.",
     DeprecationWarning,
     stacklevel=2,
 )
 
 
 class AssertionRewritingHook:
-    """
-    Stub for assertion rewriting hook.
-
-    This is NOT supported in rustest. Assertion rewriting is a pytest-specific
-    feature that modifies bytecode to provide better error messages.
-
-    rustest uses standard Python assertions which work normally.
-    """
+    """Stub: rustest's own hook rewrites test modules; this one cannot be installed."""
 
     def __init__(self, *args, **kwargs):
         raise NotImplementedError(
-            "Assertion rewriting is not supported by rustest. "
-            "This is a pytest-specific feature. "
-            "Please remove imports from _pytest.assertion.rewrite."
+            "_pytest.assertion.rewrite.AssertionRewritingHook is pytest's; rustest rewrites "
+            "test-module assertions with its own hook. Remove the direct use."
         )

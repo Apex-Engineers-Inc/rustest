@@ -1,0 +1,3 @@
+# The plugin marks every `@given` test `hypothesis`, so `-m hypothesis` selects them.
+[case]
+args = ["-m", "hypothesis"]

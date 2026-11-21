@@ -11,20 +11,30 @@
 #   - Skip hooks for a commit: git commit --no-verify
 
 repos:
-  # Python formatting and linting with ruff
+  # Python formatting and linting with ruff.
+  #
+  # `rev` MUST match the version `[project.optional-dependencies] dev` resolves in
+  # `uv.lock` (#134). They were v0.8.4 here against 0.14.x there -- six minor releases
+  # apart -- and the two disagree about real formatting decisions, so a file that
+  # satisfied `pre-commit run` was reformatted by the CI `ruff format` step and vice
+  # versa. The lock pins one version; this pins the same one; `pyproject.toml`'s
+  # `ruff>=0.14.3,<0.15` keeps a `uv lock --upgrade` from silently walking away from it.
+  #
+  # To bump: change the floor in `pyproject.toml`, run `uv lock --upgrade-package ruff`,
+  # then set `rev` to whatever the lock now says. All three in one commit.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.14.3
     hooks:
       # Run the formatter
       - id: ruff-format
         name: ruff format
-        files: ^python/
+        files: ^(python|conformance)/
 
       # Run the linter
       - id: ruff
         name: ruff check
         args: [--fix]
-        files: ^python/
+        files: ^(python|conformance)/
 
   # Python type checking with basedpyright
   - repo: https://github.com/RobertCraigie/pyright-python
@@ -33,12 +43,16 @@ repos:
       - id: pyright
         name: basedpyright
         entry: basedpyright
-        args: [python]
+        args: [python, conformance]
         language: python
         types: [python]
         pass_filenames: false
+        # Pinned to the version `uv.lock` resolves, for the same reason `rev` is pinned
+        # above: an unbounded floor here resolves to "whatever was latest when the hook
+        # environment was built", which is a different type checker from the one the CI
+        # `basedpyright` step runs on any machine whose hook cache is older.
         additional_dependencies:
-          - basedpyright>=1.19
+          - basedpyright==1.32.1
           - packaging>=20.0
           - py>=1.11
 
@@ -63,12 +77,17 @@ repos:
         types: [rust]
         pass_filenames: false
 
-  # Sync root CHANGELOG.md to docs/
+  # Sync root CHANGELOG.md into the documentation site.
+  #
+  # The target moved from `docs/CHANGELOG.md` to `user_guide/changelog.md` with the
+  # great-docs cutover: `user_guide/` is the site's content directory now, and great-docs'
+  # own `changelog:` key (which scrapes GitHub Releases) is disabled in `great-docs.yml`
+  # precisely so this file stays the single authored source.
   - repo: local
     hooks:
       - id: sync-changelog
         name: sync changelog to docs
-        entry: bash -c 'cp CHANGELOG.md docs/CHANGELOG.md && git add docs/CHANGELOG.md'
+        entry: bash -c 'cp CHANGELOG.md user_guide/changelog.md && git add user_guide/changelog.md'
         language: system
         files: ^CHANGELOG\.md$
         pass_filenames: false

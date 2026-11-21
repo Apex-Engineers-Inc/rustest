@@ -126,14 +126,14 @@ def model_c():
     return {"type": "C", "value": 3}
 
 
-MODEL_CONFIGS = [
+TYPE_CASES = [
     ("model_a", "A", 1),
     ("model_b", "B", 2),
     ("model_c", "C", 3),
 ]
 
 
-@pytest.mark.parametrize("fixture_name,expected_type,expected_value", MODEL_CONFIGS)
+@pytest.mark.parametrize("fixture_name,expected_type,expected_value", TYPE_CASES)
 @_skip_if_native_mode
 def test_model_types(request, fixture_name, expected_type, expected_value):
     """Test multiple model types using getfixturevalue.

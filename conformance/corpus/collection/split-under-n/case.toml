@@ -1,0 +1,17 @@
+# A file whose recorded call time (seeded_cache/v/rustest/durations-call; seeded_cache is the
+# case's cache_dir) alone exceeds its share of a pool of two is cut into two contiguous slices,
+# one per worker, each its own module instance; `pytest -n 2` (xdist's default --dist load) also
+# spreads it. Graded against REAL pytest-xdist by outcome: module- and class-scoped fixtures, an
+# xfail and a skip inside the split file. This repository's .venv must not have xdist, so the
+# oracle's answer is pinned; re-derive it with `conformance/tests/test_pinned.py` (its docstring
+# has the command).
+[case]
+args = ["-n", "2"]
+
+[pinned]
+source = "pytest 9.0.2 + pytest-xdist 3.8.0, -n 2"
+pytest = "9.0.2"
+xdist = "3.8.0"
+ids = ["test_heavy.py::test_0", "test_heavy.py::test_1", "test_heavy.py::test_2", "test_heavy.py::TestGroup::test_3", "test_heavy.py::TestGroup::test_4", "test_heavy.py::TestGroup::test_5", "test_heavy.py::test_6", "test_heavy.py::test_7", "test_heavy.py::test_8", "test_light.py::test_light"]
+exit_code = 0
+outcomes = { passed = 8, failed = 0, skipped = 1, xfailed = 1, xpassed = 0, errors = 0, deselected = 0 }

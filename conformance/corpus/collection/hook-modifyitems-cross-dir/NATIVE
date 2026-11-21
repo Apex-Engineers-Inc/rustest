@@ -1,0 +1,1 @@
+rustest runs this case itself: a hand-off to pytest is a DIVERGE (conformance/harness/grade.py).

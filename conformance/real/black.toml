@@ -1,0 +1,49 @@
+# black -- a formatter whose suite is dominated by data-driven format tests (`tests/data/`),
+# with `filterwarnings = ["error"]`, `--strict-config`, `--strict-markers`, `xfail_strict`, and a
+# project-local pytest plugin (`tests/optional.py`, loaded from the conftest) that adds a
+# `--run-optional` option and an `optional-tests` ini key for marker-gated tests.
+
+[repo]
+kind = "oss"
+url = "https://github.com/psf/black.git"
+tag = "26.10.1"
+# Lightweight tag; commit SHA directly.
+rev = "258e7dbf348bc23cb70b8cdf693481c04634ebcc"
+test_paths = ["tests"]
+
+[env]
+# Test dependencies are the `tests` dependency group in pyproject.toml (pytest, pytest-xdist)
+# plus the project's `d` extra (aiohttp, for blackd) and `jupyter` extra (ipython,
+# tokenize-rt). pytest-xdist is left out (distribution; nothing in addopts uses it).
+#
+# The maintainers' tox env runs the suite TWICE: once with only the `d` extra and
+# `--run-optional no_jupyter`, once with only `jupyter` and `--run-optional jupyter -m jupyter`
+# (so the `no_jupyter` / `no_blackd` marker-gated tests can run). This config installs BOTH
+# extras into one environment and passes no `--run-optional`, so those two optional sets are
+# skipped on both runners; it is one honest pass, not the maintainers' full matrix. tox also
+# sets PYTHONWARNDEFAULTENCODING=1, which this config does not.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}[d,jupyter]"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]

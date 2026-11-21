@@ -1,35 +1,6 @@
-"""
-Stub for _pytest.mark.structures
+"""``_pytest.mark.structures``: the mark classes rustest uses, under pytest's names."""
 
-MIGRATION GUIDE:
-These are typically used for type hints.
-Use pytest's or rustest's public mark API instead.
-"""
+from rustest._hookshim import Mark
+from rustest.decorators import MarkDecorator, MarkGenerator, ParameterSet
 
-import warnings
-
-
-warnings.warn(
-    "Importing from _pytest.mark.structures is not recommended. "
-    "Use pytest.mark or rustest.mark instead.",
-    DeprecationWarning,
-    stacklevel=2,
-)
-
-
-class MarkDecorator:
-    """Stub for mark decorator type (for type hints only)"""
-
-    pass
-
-
-class Mark:
-    """Stub for mark type (for type hints only)"""
-
-    pass
-
-
-class ParameterSet:
-    """Stub for parametrize parameter set (for type hints only)"""
-
-    pass
+__all__ = ["Mark", "MarkDecorator", "MarkGenerator", "ParameterSet"]

@@ -1,0 +1,511 @@
+/* rustest documentation theme.
+ *
+ * Loaded after great-docs' own SCSS (Quarto puts `format.html.css` last), so declarations
+ * here win without needing `!important` except where great-docs already used it.
+ *
+ * The palette is the one the previous Zensical site ran: Material's deep orange for the
+ * chrome, orange for accents, and the logo's teal as the "this passed" colour. Type is
+ * Inter and JetBrains Mono, which is also what that site loaded.
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+/* ─── Tokens ──────────────────────────────────────────────────────────────── */
+
+:root {
+  --rt-orange: #f4511e;
+  --rt-orange-bright: #ff5722;
+  --rt-orange-deep: #d84315;
+  --rt-amber: #ff9100;
+  --rt-teal: #15ae9f;
+
+  --rt-ink: #1b1d21;
+  --rt-ink-soft: #5b6068;
+  --rt-surface: #ffffff;
+  --rt-surface-sunk: #f7f7f9;
+  --rt-line: rgba(27, 29, 33, 0.12);
+
+  /* The bar is a translucent pane over whatever scrolls beneath it, which is the effect
+   * the previous site had and the one worth keeping: measured off it, the header was the
+   * page background at 70% alpha with an 8px blur, not a coloured fill. Orange stays on
+   * the mark and the accents, where it reads as brand rather than as chrome. */
+  --rt-navbar-tint: rgba(255, 255, 255, 0.72);
+  --rt-navbar-ink: #1b1d21;
+  --rt-navbar-line: rgba(27, 29, 33, 0.1);
+
+  --rt-radius: 10px;
+  --rt-radius-lg: 16px;
+  --rt-shadow: 0 1px 2px rgba(16, 18, 22, 0.06), 0 8px 24px rgba(16, 18, 22, 0.06);
+  --rt-shadow-lift: 0 2px 4px rgba(16, 18, 22, 0.08), 0 16px 40px rgba(16, 18, 22, 0.12);
+}
+
+:root[data-bs-theme="dark"] {
+  --rt-orange: #ff7043;
+  --rt-orange-bright: #ff8a65;
+  --rt-orange-deep: #ff5722;
+  --rt-amber: #ffab40;
+  --rt-teal: #2fd0bd;
+
+  --rt-ink: #e6e8ec;
+  --rt-ink-soft: #a0a6b0;
+  --rt-surface: #21242c;
+  --rt-surface-sunk: #1a1c22;
+  --rt-line: rgba(230, 232, 236, 0.14);
+
+  --rt-navbar-tint: rgba(11, 12, 15, 0.62);
+  --rt-navbar-ink: #e6e8ec;
+  --rt-navbar-line: rgba(230, 232, 236, 0.1);
+
+  --rt-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --rt-shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.5), 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* ─── Type ────────────────────────────────────────────────────────────────── */
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-feature-settings: "cv05" 1, "cv11" 1;
+  letter-spacing: -0.003em;
+}
+
+code,
+kbd,
+pre,
+samp,
+.sourceCode {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+  font-variant-ligatures: none;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+  font-weight: 650;
+  letter-spacing: -0.021em;
+}
+
+h1 {
+  font-size: 2.1rem;
+}
+
+/* A hairline under the section rules, which is what makes a long reference page
+ * scannable without the headings having to shout. */
+main.content h2 {
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--rt-line);
+  margin-top: 2.75rem;
+}
+
+main.content a {
+  color: var(--rt-orange-deep);
+  text-decoration-color: rgba(244, 81, 30, 0.35);
+  text-underline-offset: 0.18em;
+}
+
+:root[data-bs-theme="dark"] main.content a {
+  color: var(--rt-orange-bright);
+  text-decoration-color: rgba(255, 138, 101, 0.4);
+}
+
+main.content a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ─── The top bar ─────────────────────────────────────────────────────────── */
+
+.navbar {
+  background: var(--rt-navbar-tint) !important;
+  /* `saturate` is what keeps the blurred pane from going grey over a colourful hero. */
+  -webkit-backdrop-filter: saturate(180%) blur(10px);
+  backdrop-filter: saturate(180%) blur(10px);
+  border-bottom: 1px solid var(--rt-navbar-line);
+  box-shadow: none;
+  /* Both Safari and Firefox want the pane on its own compositing layer before the blur
+   * samples anything behind it; without this the bar is a flat translucent colour. */
+  isolation: isolate;
+}
+
+.navbar .navbar-title,
+.navbar .nav-link,
+.navbar .navbar-toggler,
+.navbar .quarto-navbar-tools a {
+  color: var(--rt-navbar-ink) !important;
+}
+
+/* great-docs draws the site name as an outlined chip. Next to a logo that already has a
+ * strong silhouette it reads as two competing marks, so the wordmark loses the box. */
+.navbar-brand .navbar-title {
+  border: none;
+  padding: 0;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.navbar .nav-link:hover,
+.navbar .nav-link:focus {
+  color: var(--rt-orange-deep) !important;
+  background-color: transparent !important;
+}
+
+:root[data-bs-theme="dark"] .navbar .nav-link:hover,
+:root[data-bs-theme="dark"] .navbar .nav-link:focus {
+  color: var(--rt-orange-bright) !important;
+}
+
+.navbar .nav-link.active {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--rt-orange);
+  text-underline-offset: 0.45em;
+}
+
+/* ─── Hero ────────────────────────────────────────────────────────────────── */
+
+/* The homepage carries a `title:` only so the sidebar has something to call it other than
+ * "Index" -- Quarto labels a sidebar entry from the target document's title and falls back
+ * to the filename when it is empty. The hero says the page's name well enough, so the
+ * title block itself does not need to appear.
+ */
+body.gd-homepage #title-block-header {
+  display: none;
+}
+
+/* Written by hand in `user_guide/index.md` rather than generated from a `hero:` block --
+ * great-docs.yml says why. */
+.rt-hero {
+  position: relative;
+  padding: 3.25rem 1rem 2.25rem;
+  margin-bottom: 0.5rem;
+  border-radius: var(--rt-radius-lg);
+  overflow: hidden;
+  text-align: center;
+  background:
+    radial-gradient(120% 130% at 12% -10%, rgba(255, 145, 0, 0.16) 0%, transparent 55%),
+    radial-gradient(110% 120% at 92% 0%, rgba(21, 174, 159, 0.14) 0%, transparent 50%),
+    linear-gradient(180deg, rgba(244, 81, 30, 0.06) 0%, transparent 70%);
+}
+
+:root[data-bs-theme="dark"] .rt-hero {
+  background:
+    radial-gradient(120% 130% at 12% -10%, rgba(255, 112, 67, 0.18) 0%, transparent 55%),
+    radial-gradient(110% 120% at 92% 0%, rgba(47, 208, 189, 0.12) 0%, transparent 50%),
+    linear-gradient(180deg, rgba(255, 112, 67, 0.07) 0%, transparent 70%);
+}
+
+.rt-hero-logo {
+  max-height: 160px;
+  filter: drop-shadow(0 8px 26px rgba(21, 174, 159, 0.28));
+}
+
+.rt-hero-tagline {
+  font-size: clamp(1.1rem, 2.4vw, 1.4rem);
+  line-height: 1.45;
+  font-weight: 400;
+  color: var(--rt-ink-soft);
+  max-width: 34rem;
+  margin: 1.25rem auto 0;
+}
+
+.rt-hero-tagline em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--rt-orange-deep);
+}
+
+:root[data-bs-theme="dark"] .rt-hero-tagline em {
+  color: var(--rt-orange-bright);
+}
+
+.rt-hero-install {
+  margin-top: 1.5rem;
+}
+
+.rt-hero-install code {
+  display: inline-block;
+  padding: 0.55rem 1.1rem;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  color: var(--rt-ink);
+  background: var(--rt-surface);
+  border: 1px solid var(--rt-line);
+  box-shadow: var(--rt-shadow);
+}
+
+/* ─── Landing-page cards ──────────────────────────────────────────────────── */
+
+.rt-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin: 1.75rem 0 2.5rem;
+}
+
+.rt-card {
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem 1.35rem 1.35rem;
+  border: 1px solid var(--rt-line);
+  border-radius: var(--rt-radius);
+  background: var(--rt-surface);
+  box-shadow: var(--rt-shadow);
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.rt-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(244, 81, 30, 0.45);
+  box-shadow: var(--rt-shadow-lift);
+}
+
+/* The heading inside a card is a label, not a document section, so it drops the rule the
+ * `main.content h2` rule above adds. */
+.rt-card > :first-child,
+.rt-card h2,
+.rt-card h3,
+.rt-card h4 {
+  margin-top: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+}
+
+.rt-card > :last-child {
+  margin-bottom: 0;
+}
+
+.rt-card p,
+.rt-card li {
+  color: var(--rt-ink-soft);
+  font-size: 0.94rem;
+}
+
+.rt-card ul {
+  padding-left: 1.1rem;
+  margin-bottom: 0;
+}
+
+/* An eyebrow line above a card's heading, used for the "who are you" cards. */
+.rt-eyebrow {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--rt-orange-deep);
+  margin-bottom: 0.35rem;
+}
+
+:root[data-bs-theme="dark"] .rt-eyebrow {
+  color: var(--rt-orange-bright);
+}
+
+/* Written as a fenced div in the source, so the label arrives wrapped in a paragraph. */
+.rt-eyebrow p {
+  margin: 0;
+}
+
+/* ─── Call to action ──────────────────────────────────────────────────────── */
+
+/* The links are written as one line of markdown, so they arrive wrapped in a paragraph --
+ * which is what has to become the flex row. */
+.rt-cta,
+.rt-cta p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: center;
+  margin: 0;
+}
+
+.rt-cta {
+  margin: 1.5rem 0 2rem;
+}
+
+.rt-cta a {
+  display: inline-block;
+  padding: 0.6rem 1.35rem;
+  border-radius: 999px;
+  font-weight: 550;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition:
+    transform 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.rt-cta a:hover {
+  transform: translateY(-1px);
+  text-decoration: none;
+}
+
+.rt-cta a:first-child {
+  background: linear-gradient(96deg, var(--rt-orange-deep), var(--rt-orange-bright));
+  color: #fff !important;
+  box-shadow: 0 6px 18px rgba(244, 81, 30, 0.35);
+}
+
+.rt-cta a:not(:first-child) {
+  border-color: var(--rt-line);
+  color: var(--rt-ink) !important;
+  background: var(--rt-surface);
+}
+
+.rt-cta a:not(:first-child):hover {
+  border-color: rgba(244, 81, 30, 0.5);
+}
+
+/* ─── Code ────────────────────────────────────────────────────────────────── */
+
+div.sourceCode,
+pre.sourceCode {
+  border-radius: var(--rt-radius);
+  border: 1px solid var(--rt-line);
+}
+
+main.content p > code,
+main.content li > code,
+main.content td > code {
+  padding: 0.12em 0.38em;
+  border-radius: 5px;
+  font-size: 0.875em;
+  background: var(--rt-surface-sunk);
+  border: 1px solid var(--rt-line);
+  color: var(--rt-orange-deep);
+}
+
+:root[data-bs-theme="dark"] main.content p > code,
+:root[data-bs-theme="dark"] main.content li > code,
+:root[data-bs-theme="dark"] main.content td > code {
+  color: var(--rt-orange-bright);
+}
+
+/* ─── Callouts ────────────────────────────────────────────────────────────── */
+
+.callout {
+  border-radius: var(--rt-radius);
+  border-left-width: 3px;
+}
+
+.callout.callout-style-default > .callout-header {
+  font-weight: 600;
+}
+
+.callout-note {
+  border-left-color: var(--rt-teal);
+}
+
+.callout-tip {
+  border-left-color: var(--rt-teal);
+}
+
+.callout-warning,
+.callout-important {
+  border-left-color: var(--rt-amber);
+}
+
+/* ─── Sidebar ─────────────────────────────────────────────────────────────── */
+
+.sidebar-navigation .sidebar-item-container .sidebar-item-text.active,
+.sidebar-navigation .sidebar-item-container a.active {
+  color: var(--rt-orange-deep);
+  font-weight: 600;
+}
+
+:root[data-bs-theme="dark"] .sidebar-navigation .sidebar-item-container a.active {
+  color: var(--rt-orange-bright);
+}
+
+#quarto-margin-sidebar .nav-link.active,
+#TOC .nav-link.active {
+  color: var(--rt-orange-deep);
+  border-left-color: var(--rt-orange);
+}
+
+:root[data-bs-theme="dark"] #quarto-margin-sidebar .nav-link.active,
+:root[data-bs-theme="dark"] #TOC .nav-link.active {
+  color: var(--rt-orange-bright);
+}
+
+/* ─── Tables ──────────────────────────────────────────────────────────────── */
+
+main.content table {
+  border-radius: var(--rt-radius);
+  overflow: hidden;
+  border: 1px solid var(--rt-line);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+main.content thead th {
+  background: var(--rt-surface-sunk);
+  font-weight: 600;
+  border-bottom: 1px solid var(--rt-line);
+}
+
+/* ─── Terminal recordings ─────────────────────────────────────────────────── */
+
+/* The recordings are sized to their content by the recorder -- `rows` in the .termshow
+ * header is the number of lines the session actually produced -- so the job here is only
+ * to stop a wide one from overflowing the column and to give it a frame that reads as a
+ * terminal rather than as another code block. */
+.gd-termshow {
+  margin: 1.75rem 0;
+  border-radius: var(--rt-radius);
+  overflow: hidden;
+  border: 1px solid var(--rt-line);
+  box-shadow: var(--rt-shadow);
+  background: var(--rt-surface-sunk);
+}
+
+.gd-termshow .gd-tp-viewport,
+.gd-termshow .gd-tp-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.gd-termshow .gd-tp-chapter-bar {
+  font-family: "Inter", sans-serif;
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+}
+
+/* The play/replay button sits in the middle of the viewport, on top of the output. That is
+ * the right place for it on a video and the wrong place on eight lines of text, so it fades
+ * back once the recording has run and returns on hover. */
+.gd-termshow .gd-tp-center-overlay {
+  transition: opacity 0.25s ease;
+}
+
+.gd-termshow.gd-tp-ended .gd-tp-center-overlay {
+  opacity: 0.35;
+}
+
+.gd-termshow:hover .gd-tp-center-overlay,
+.gd-termshow:focus-within .gd-tp-center-overlay {
+  opacity: 1;
+}
+
+/* ─── Footer ──────────────────────────────────────────────────────────────── */
+
+.nav-footer {
+  border-top: 1px solid var(--rt-line);
+}
+
+/* ─── Motion ──────────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .rt-card,
+  .rt-cta a {
+    transition: none;
+  }
+
+  .rt-card:hover,
+  .rt-cta a:hover {
+    transform: none;
+  }
+}

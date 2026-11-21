@@ -1,0 +1,13 @@
+# tmp_path's layout under pytest-xdist: one `pytest-<n>` for the session, `popen-gw<k>` per
+# worker. This repository's .venv must not have xdist, so the oracle's answer is pinned; re-derive
+# it with `conformance/tests/test_pinned.py` (its docstring has the one command).
+[case]
+args = ["-n", "2"]
+
+[pinned]
+source = "pytest 9.0.2 + pytest-xdist 3.8.0, -n 2"
+pytest = "9.0.2"
+xdist = "3.8.0"
+ids = ["test_a.py::test_the_base_is_pytests", "test_a.py::test_mktemp_numbers_per_name", "test_b.py::test_another_file_has_its_own_numbering"]
+exit_code = 0
+outcomes = { passed = 3, failed = 0, skipped = 0, xfailed = 0, xpassed = 0, errors = 0, deselected = 0 }

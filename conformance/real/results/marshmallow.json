@@ -1,0 +1,19 @@
+{
+  "suite": "marshmallow",
+  "date": "2026-11-11 16:21",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "EXPLAINED",
+  "tests": 1178,
+  "pytest_s": 3.62,
+  "xdist_s": 4.37,
+  "rustest_s": 1.76,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 4,
+  "xdist_error": "",
+  "pytest_exit": 1,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 0
+}
