@@ -52,6 +52,10 @@ setup = [
   ],
 ]
 pythonpath = []
+# The suite parametrizes from sets, so two processes collect the same ids only under one
+# hash seed: `pytest -n 4` on its own fails here with "Different tests were collected".
+# Every leg of both runners gets the same pinned seed.
+environ = { PYTHONHASHSEED = "0" }
 
 [run]
 pytest_args = []
