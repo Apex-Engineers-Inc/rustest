@@ -48,8 +48,11 @@ setup = [
 pythonpath = []
 
 [run]
-pytest_args = []
-rustest_args = []
+# `test_sslkeylogfile` aborts the interpreter itself on Windows builds of CPython without
+# OPENSSL_Applink, under pytest as much as under rustest, so neither runner is asked to
+# run it.
+pytest_args = ["-k", "not test_sslkeylogfile"]
+rustest_args = ["-k", "not test_sslkeylogfile"]
 timeout_s = 1800
 id_policy = "exact"
 
