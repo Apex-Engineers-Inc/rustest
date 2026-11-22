@@ -1630,3 +1630,35 @@ def test_a_hand_off_without_the_cache_plugin_passes_no_cache_dir(tmp_path: Path)
     own = _rustest(tree, "-o", "cache_dir=mine")
     assert own.returncode == 0, own.stdout + own.stderr
     assert (tree / "mine").is_dir() and not (tree / ".rustest_cache").exists()
+
+
+def test_one_worker_is_handed_over_as_plain_pytest():
+    """`pytest -n 1` starts xdist for a single worker, which is slower than no xdist at all."""
+    assert _fallback.pytest_argv(["-n", "1", "--workers=1", "-n1", "x"]) == (["x"], False)
+
+
+def test_a_session_that_needed_pytest_goes_straight_there_next_time(tmp_path: Path):
+    """The first run finds out under rustest and remembers; the second starts in pytest; an
+    edited file makes rustest look again."""
+    tree = make_tree(
+        tmp_path,
+        "memo",
+        {"test_pm.py": "def test_pm(pytestconfig):\n    assert pytestconfig.pluginmanager\n"},
+    )
+    memo = tree / ".rustest_cache" / "handoff.json"
+
+    first = _rustest(tree)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert memo.is_file()
+    root, argv = str(tree), list[str]()
+    assert _fallback.recall(str(memo), root, argv, [])
+
+    second = _rustest(tree)
+    assert second.returncode == 0 and "1 passed" in second.stdout
+    assert "handing this session to pytest" in second.stderr
+    assert "discarding" not in second.stderr
+
+    _ = (tree / "test_pm.py").write_text("def test_pm():\n    pass\n", encoding="utf-8")
+    assert _fallback.recall(str(memo), root, argv, []) == []
+    third = _rustest(tree)
+    assert third.returncode == 0 and "handing" not in third.stderr

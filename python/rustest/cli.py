@@ -1633,10 +1633,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         except NeedsPytest as needs:
             return _hand_to_pytest(parser, raw, user_argv, needs.reasons, needs.optout)
 
+    # A session that went to pytest after rustest had started on it goes straight there the
+    # next time, while nothing it could depend on has changed (`_fallback.recall`).
+    rootdir = str(resolved.get("rootdir") or os.getcwd())
+    memo = ""
+    if args.pytest_fallback and "cacheprovider" not in blocked_plugins:
+        cache = args.hook_context.get("cache_dir") or _raw_ini(resolved.get("config_file")).get(
+            "cache_dir"
+        )
+        memo = os.path.join(rootdir, str(cache or ".rustest_cache"), "handoff.json")
+    if memo and os.path.isfile(memo):
+        from . import _fallback
+
+        if remembered := _fallback.recall(memo, rootdir, user_argv, paths):
+            return _hand_to_pytest(parser, raw, user_argv, remembered)
+
     try:
         args.hand_files = _hand_files(args, user_argv, parser, resolved)
         code = _run_with(args, paths, keyword=args.pattern, report_json=args.report_json)
     except NeedsPytest as needs:
+        if memo:
+            from . import _fallback
+
+            _fallback.remember(memo, rootdir, user_argv, paths, needs.reasons)
         if needs.discarded:
             sys.stdout.flush()
             print(

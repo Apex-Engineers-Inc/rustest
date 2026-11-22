@@ -244,6 +244,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole of `sys.path` after `syspath_prepend`, so paths the code under test added are
   dropped too; and `_pytest.monkeypatch` exports the fixture's own class and the `notset`
   sentinel (it was a placeholder class that could not be instantiated).
+- **A session that had to be handed to pytest starts there the next time.** rustest
+  used to collect, and sometimes half run, such a suite on every invocation before
+  starting over under pytest (flask: about 12 s against pytest's 5 s). The reason is now
+  remembered in the cache directory and reused while the arguments, the rustest and
+  Python versions and every `.py` and config file under the rootdir are unchanged.
+- **`-n 1` on a handed-off session runs plain pytest**, not pytest-xdist with a single
+  worker, which starts noticeably slower for the same result.
 - **Four mark shapes pydantic's suite uses now work as in pytest**:
   `pytestmark = pytest.mark.parametrize(...)` on a module or class parametrizes every test
   under it; `ids=` takes any iterable (`ids=CASES.keys()`); `skipif` takes several

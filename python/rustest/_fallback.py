@@ -36,6 +36,53 @@ _DROPPED = {
 }
 
 _EXIT_USAGE_ERROR = 4
+
+
+def _memo_key(rootdir: str, argv: Sequence[str], paths: Sequence[str]) -> str:
+    """What a remembered hand-off is good for: these arguments, this rustest and Python, and
+    every ``.py`` and config file under the rootdir exactly as it is now."""
+    import hashlib
+
+    from ._version import package_version
+    from ._watch import choose_roots, scan
+
+    files = sorted(scan(choose_roots(rootdir, paths, os.getcwd())).items())
+    blob = repr((package_version(), sys.version, list(argv), files))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def recall(memo: str, rootdir: str, argv: Sequence[str], paths: Sequence[str]) -> list[str]:
+    """The reasons the last identical session went to pytest after rustest had started on it,
+    or ``[]``. A stale or unreadable memo is ``[]``: rustest then finds out again."""
+    import json
+
+    try:
+        with open(memo, encoding="utf-8") as handle:
+            saved = json.load(handle)
+        if saved["key"] == _memo_key(rootdir, argv, paths):
+            return [str(reason) for reason in saved["reasons"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return []
+
+
+def remember(
+    memo: str, rootdir: str, argv: Sequence[str], paths: Sequence[str], reasons: Sequence[str]
+) -> None:
+    """Record that this session needs pytest, so the next identical one starts there instead
+    of collecting (or half running) under rustest first. Best effort."""
+    import json
+
+    # ponytail: one entry, the last session's; a second argv overwrites it. Keep several
+    # if alternating invocations ever matter.
+    try:
+        os.makedirs(os.path.dirname(memo), exist_ok=True)
+        with open(memo, "w", encoding="utf-8") as handle:
+            json.dump({"key": _memo_key(rootdir, argv, paths), "reasons": list(reasons)}, handle)
+    except OSError:
+        pass
+
+
 _WINDOWS = sys.platform == "win32"
 
 
@@ -226,12 +273,16 @@ def pytest_argv(argv: Sequence[str]) -> tuple[list[str], bool]:
                 out.append("--color=" + {"always": "yes", "never": "no"}.get(value, value))
             elif name in ("--pattern", "--marks"):
                 out += ["-k" if name == "--pattern" else "-m", value]
+            elif value == "1":
+                pass  # one worker is plain pytest, which starts faster than xdist with one
             elif xdist:
                 out += ["-n", value]
             else:
                 dropped_n = True
         elif token.startswith("-n") and not token.startswith("--"):  # `-n4`, `-nauto`
-            if xdist:
+            if token == "-n1":
+                pass
+            elif xdist:
                 out.append(token)
             else:
                 dropped_n = True
