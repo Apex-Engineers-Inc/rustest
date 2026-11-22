@@ -1,0 +1,124 @@
+{
+  "suite": "typer",
+  "url": "https://github.com/fastapi/typer.git",
+  "tag": "0.29.2",
+  "rev": "2517edde5a1292a712e2f16e600754c52c6f00d9",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 1665,
+  "pytest_tally": {
+    "passed": 1632,
+    "failed": 7,
+    "skipped": 23,
+    "xfailed": 3,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [
+    "tests/test_tutorial/test_parameter_types/test_path/test_tutorial002.py::test_not_exists[tutorial002]",
+    "tests/test_tutorial/test_parameter_types/test_path/test_tutorial002.py::test_not_exists[tutorial002_non_an]",
+    "tests/test_type_conversion.py::test_path_convert_failures[False-option_kwargs1-None-is a directory]",
+    "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs0-None-is a file]",
+    "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs2-4-is not readable]",
+    "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs3-2-is not writable]"
+  ],
+  "seconds": {
+    "pytest": [
+      935.57,
+      902.31,
+      915.92
+    ],
+    "rustest -n 1": [
+      928.81,
+      1001.22,
+      879.02
+    ],
+    "pytest -n 4": [
+      261.51,
+      249.99,
+      231.39
+    ],
+    "rustest -n 4": [
+      252.88,
+      208.11,
+      223.63
+    ],
+    "pytest -n 16": [
+      200.65,
+      213.61,
+      185.34
+    ],
+    "rustest -n 16": [
+      237.3,
+      237.64,
+      221.52
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      false,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [
+        "tests/test_tutorial/test_parameter_types/test_path/test_tutorial002.py::test_not_exists[tutorial002]",
+        "tests/test_tutorial/test_parameter_types/test_path/test_tutorial002.py::test_not_exists[tutorial002_non_an]",
+        "tests/test_type_conversion.py::test_path_convert_failures[False-option_kwargs1-None-is a directory]",
+        "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs0-None-is a file]",
+        "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs2-4-is not readable]",
+        "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs3-2-is not writable]"
+      ],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [
+        "tests/test_tutorial/test_parameter_types/test_path/test_tutorial002.py::test_not_exists[tutorial002]",
+        "tests/test_tutorial/test_parameter_types/test_path/test_tutorial002.py::test_not_exists[tutorial002_non_an]",
+        "tests/test_type_conversion.py::test_path_convert_failures[False-option_kwargs1-None-is a directory]",
+        "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs0-None-is a file]",
+        "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs2-4-is not readable]",
+        "tests/test_type_conversion.py::test_path_convert_failures[True-option_kwargs3-2-is not writable]"
+      ],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

@@ -1,0 +1,109 @@
+{
+  "suite": "werkzeug",
+  "url": "https://github.com/pallets/werkzeug.git",
+  "tag": "3.1.8",
+  "rev": "c1a26b45fb06d5e086b4d6be820c3302f588d815",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 964,
+  "pytest_tally": {
+    "passed": 962,
+    "failed": 0,
+    "skipped": 2,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 5,
+    "collection_errors": 0
+  },
+  "pytest_exit": 0,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      36.02,
+      32.64,
+      33.77
+    ],
+    "rustest -n 1": [
+      37.66,
+      37.57,
+      35.46
+    ],
+    "pytest -n 4": [
+      29.16,
+      24.59,
+      20.25
+    ],
+    "rustest -n 4": [
+      25.15,
+      30.76,
+      22.05
+    ],
+    "pytest -n 16": [
+      17.79,
+      14.48,
+      13.98
+    ],
+    "rustest -n 16": [
+      20.22,
+      16.35,
+      21.5
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin timeout is used (mark 'timeout'), and rustest does not run it (tests/test_debug.py::test_chained_exception_cycle)"
+      ]
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin timeout is used (mark 'timeout'), and rustest does not run it (tests/test_debug.py::test_chained_exception_cycle)"
+      ]
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin timeout is used (mark 'timeout'), and rustest does not run it (tests/test_debug.py::test_chained_exception_cycle)"
+      ]
+    }
+  },
+  "errors": {}
+}

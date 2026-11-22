@@ -1,0 +1,82 @@
+{
+  "suite": "httpx",
+  "url": "https://github.com/encode/httpx.git",
+  "tag": "0.28.1",
+  "rev": "26d48e0634e6ee9cdc0533996db289ce4b430177",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 1417,
+  "pytest_tally": {
+    "passed": 1407,
+    "failed": 9,
+    "skipped": 1,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 1,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [
+    "tests/test_timeouts.py::test_write_timeout[trio]"
+  ],
+  "seconds": {
+    "pytest": [
+      18.28,
+      16.93,
+      15.64
+    ],
+    "rustest -n 1": [
+      19.79,
+      20.29,
+      19.83
+    ],
+    "pytest -n 4": [],
+    "rustest -n 4": [],
+    "pytest -n 16": [],
+    "rustest -n 16": []
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      false,
+      false,
+      false
+    ],
+    "pytest -n 4": [],
+    "rustest -n 4": [],
+    "pytest -n 16": [],
+    "rustest -n 16": []
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [
+        "tests/test_timeouts.py::test_write_timeout[trio]"
+      ],
+      "handed_to_pytest": [
+        "--deselect is not a rustest option"
+      ]
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {
+    "pytest -n 4": "not run: the suite cannot use more than one worker",
+    "rustest -n 4": "not run: the suite cannot use more than one worker",
+    "pytest -n 16": "not run: the suite cannot use more than one worker",
+    "rustest -n 16": "not run: the suite cannot use more than one worker"
+  }
+}

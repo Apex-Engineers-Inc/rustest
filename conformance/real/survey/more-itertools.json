@@ -1,0 +1,103 @@
+{
+  "suite": "more-itertools",
+  "url": "https://github.com/more-itertools/more-itertools.git",
+  "tag": "v11.1.0",
+  "rev": "64be96ceb2a6e836f76f069f4a96d2394d59fd0c",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 722,
+  "pytest_tally": {
+    "passed": 722,
+    "failed": 0,
+    "skipped": 0,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 0,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      9.43,
+      11.47,
+      10.03
+    ],
+    "rustest -n 1": [
+      9.44,
+      8.94,
+      9.03
+    ],
+    "pytest -n 4": [
+      9.17,
+      8.19,
+      9.21
+    ],
+    "rustest -n 4": [
+      5.57,
+      5.42,
+      5.25
+    ],
+    "pytest -n 16": [
+      12.34,
+      17.48,
+      12.24
+    ],
+    "rustest -n 16": [
+      6.3,
+      6.08,
+      6.46
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

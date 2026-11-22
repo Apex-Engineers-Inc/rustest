@@ -1,0 +1,109 @@
+{
+  "suite": "rich",
+  "url": "https://github.com/Textualize/rich.git",
+  "tag": "v15.0.0",
+  "rev": "6ac483cbea39cab124dfd3483bba70ffafb71050",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 1007,
+  "pytest_tally": {
+    "passed": 976,
+    "failed": 8,
+    "skipped": 23,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      10.36,
+      14.14,
+      8.94
+    ],
+    "rustest -n 1": [
+      11.31,
+      8.22,
+      8.13
+    ],
+    "pytest -n 4": [
+      7.85,
+      11.81,
+      7.61
+    ],
+    "rustest -n 4": [
+      4.74,
+      4.15,
+      5.0
+    ],
+    "pytest -n 16": [
+      12.24,
+      15.9,
+      10.71
+    ],
+    "rustest -n 16": [
+      8.82,
+      5.5,
+      12.1
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [
+        "test_traceback.py::test_suppress"
+      ],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [
+        "test_traceback.py::test_suppress"
+      ],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [
+        "test_traceback.py::test_suppress"
+      ],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

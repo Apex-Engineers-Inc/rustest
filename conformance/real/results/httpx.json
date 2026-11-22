@@ -1,0 +1,22 @@
+{
+  "suite": "httpx",
+  "date": "2026-11-21 08:45",
+  "mode": "handed off",
+  "reasons": [
+    "--deselect is not a rustest option"
+  ],
+  "verdict": "MATCH",
+  "tests": 1417,
+  "pytest_s": 17.35,
+  "xdist_s": null,
+  "rustest_s": 23.14,
+  "duration_record": false,
+  "engine_s": null,
+  "engine_verdict": "no engine run: RuntimeError('rustest wrote no report (exit 4):\\nNOTE: -rxXs is a pytest reporting option rustest does not implement; it was ignored.\\nusage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-",
+  "xdist_status_diffs": null,
+  "xdist_error": "skipped: serial_only",
+  "pytest_exit": 1,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 0
+}

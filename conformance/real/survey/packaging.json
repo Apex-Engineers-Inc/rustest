@@ -1,0 +1,103 @@
+{
+  "suite": "packaging",
+  "url": "https://github.com/pypa/packaging.git",
+  "tag": "26.3",
+  "rev": "929fd4b1410ac7ef61ef3f45b2f5d7e87711a9b5",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 62423,
+  "pytest_tally": {
+    "passed": 62422,
+    "failed": 0,
+    "skipped": 1,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 427,
+    "collection_errors": 0
+  },
+  "pytest_exit": 0,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      60.12,
+      52.63,
+      55.72
+    ],
+    "rustest -n 1": [
+      17.52,
+      16.47,
+      16.1
+    ],
+    "pytest -n 4": [
+      32.34,
+      32.75,
+      31.25
+    ],
+    "rustest -n 4": [
+      11.37,
+      11.37,
+      11.19
+    ],
+    "pytest -n 16": [
+      39.7,
+      44.07,
+      48.18
+    ],
+    "rustest -n 16": [
+      13.41,
+      13.2,
+      12.39
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

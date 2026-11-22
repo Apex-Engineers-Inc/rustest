@@ -1,0 +1,109 @@
+{
+  "suite": "urllib3",
+  "url": "https://github.com/urllib3/urllib3.git",
+  "tag": "2.8.0",
+  "rev": "b1d30ab61fe0db8f11092805e8c5ac43e091064a",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 2673,
+  "pytest_tally": {
+    "passed": 2307,
+    "failed": 48,
+    "skipped": 293,
+    "xfailed": 25,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 32,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      164.86,
+      156.33,
+      155.01
+    ],
+    "rustest -n 1": [
+      160.69,
+      169.55,
+      164.5
+    ],
+    "pytest -n 4": [
+      52.78,
+      58.74,
+      58.37
+    ],
+    "rustest -n 4": [
+      53.62,
+      59.67,
+      56.42
+    ],
+    "pytest -n 16": [
+      47.94,
+      53.71,
+      48.58
+    ],
+    "rustest -n 16": [
+      52.12,
+      49.14,
+      49.69
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin socket (pytest_socket-0.8.1) is installed and rustest does not run it (`-p no:socket` disables it)"
+      ]
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin socket (pytest_socket-0.8.1) is installed and rustest does not run it (`-p no:socket` disables it)"
+      ]
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin socket (pytest_socket-0.8.1) is installed and rustest does not run it (`-p no:socket` disables it)"
+      ]
+    }
+  },
+  "errors": {}
+}

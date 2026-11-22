@@ -1,0 +1,103 @@
+{
+  "suite": "dateutil",
+  "url": "https://github.com/dateutil/dateutil.git",
+  "tag": "2.9.0.post0",
+  "rev": "1ae807774053c071acc9e7d3d27778fba0a7773e",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 2095,
+  "pytest_tally": {
+    "passed": 2001,
+    "failed": 0,
+    "skipped": 74,
+    "xfailed": 20,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 0,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      7.03,
+      7.79,
+      6.33
+    ],
+    "rustest -n 1": [
+      3.78,
+      4.4,
+      4.17
+    ],
+    "pytest -n 4": [
+      8.15,
+      9.17,
+      7.43
+    ],
+    "rustest -n 4": [
+      3.14,
+      3.68,
+      4.33
+    ],
+    "pytest -n 16": [
+      13.65,
+      12.8,
+      14.15
+    ],
+    "rustest -n 16": [
+      8.44,
+      7.44,
+      5.46
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

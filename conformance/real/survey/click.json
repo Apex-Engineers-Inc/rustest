@@ -1,0 +1,103 @@
+{
+  "suite": "click",
+  "url": "https://github.com/pallets/click.git",
+  "tag": "8.4.2",
+  "rev": "b2e30a175449cfda909ee4fbf4a29a6a071cad53",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 1686,
+  "pytest_tally": {
+    "passed": 1590,
+    "failed": 0,
+    "skipped": 95,
+    "xfailed": 1,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 31000,
+    "collection_errors": 0
+  },
+  "pytest_exit": 0,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      6.72,
+      11.54,
+      6.59
+    ],
+    "rustest -n 1": [
+      5.14,
+      5.08,
+      4.93
+    ],
+    "pytest -n 4": [
+      6.38,
+      8.03,
+      13.35
+    ],
+    "rustest -n 4": [
+      3.14,
+      3.07,
+      5.49
+    ],
+    "pytest -n 16": [
+      12.31,
+      13.6,
+      16.6
+    ],
+    "rustest -n 16": [
+      5.68,
+      4.28,
+      4.31
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

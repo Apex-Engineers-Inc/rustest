@@ -1,0 +1,109 @@
+{
+  "suite": "black",
+  "url": "https://github.com/psf/black.git",
+  "tag": "26.10.1",
+  "rev": "258e7dbf348bc23cb70b8cdf693481c04634ebcc",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 654,
+  "pytest_tally": {
+    "passed": 642,
+    "failed": 5,
+    "skipped": 7,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      78.95,
+      76.12,
+      70.83
+    ],
+    "rustest -n 1": [
+      70.76,
+      78.25,
+      75.28
+    ],
+    "pytest -n 4": [
+      21.71,
+      29.12,
+      22.78
+    ],
+    "rustest -n 4": [
+      25.41,
+      25.0,
+      25.2
+    ],
+    "pytest -n 16": [
+      29.79,
+      27.35,
+      24.72
+    ],
+    "rustest -n 16": [
+      30.0,
+      29.06,
+      33.08
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "rustest's hook runtime: tests.optional::pytest_configure uses config.inicfg, which rustest's hook runtime does not support"
+      ]
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "rustest's hook runtime: tests.optional::pytest_configure uses config.inicfg, which rustest's hook runtime does not support"
+      ]
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "rustest's hook runtime: tests.optional::pytest_configure uses config.inicfg, which rustest's hook runtime does not support"
+      ]
+    }
+  },
+  "errors": {}
+}
