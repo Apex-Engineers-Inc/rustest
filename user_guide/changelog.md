@@ -244,6 +244,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole of `sys.path` after `syspath_prepend`, so paths the code under test added are
   dropped too; and `_pytest.monkeypatch` exports the fixture's own class and the `notset`
   sentinel (it was a placeholder class that could not be instantiated).
+- **`--deselect NODEID_PREFIX` runs natively.** It used to hand the whole session to
+  pytest. Tests whose node id starts with a prefix are dropped and counted as deselected,
+  as pytest counts them, in a run and under `--collect-only`.
 - **Free-threaded Python stays free-threaded.** Importing rustest's Rust extension on a
   free-threaded build (3.14t) turned the GIL back on in rustest's main process, with
   CPython's warning. The extension now declares that it runs without the GIL. Tests

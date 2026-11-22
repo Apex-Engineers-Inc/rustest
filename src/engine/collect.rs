@@ -1531,12 +1531,20 @@ fn collect_with_launcher(
     }
     launcher.warn_unrun_hooks();
     let mut assembled = assemble(&dispatch, outcomes, None)?;
-    let deselected = deselect_in_place(
+    let mut deselected = deselect_in_place(
         &mut assembled.tests,
         options.keyword.as_deref(),
         options.mark.as_deref(),
     )
     .map_err(CollectError::Selection)?;
+    let prefixes = crate::engine::selection::deselect_prefixes(options.hook_context.as_ref());
+    if !prefixes.is_empty() {
+        let mut keep = vec![true; assembled.tests.len()];
+        crate::engine::selection::drop_prefixed(&mut keep, &assembled.tests, &prefixes);
+        deselected += keep.iter().filter(|keep| !**keep).count();
+        let mut keep = keep.into_iter();
+        assembled.tests.retain(|_| keep.next().unwrap_or(true));
+    }
     let needs = if options.pytest_fallback {
         crate::engine::manifest::plugin_handoff(&assembled.tests, false)
     } else {

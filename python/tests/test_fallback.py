@@ -1662,3 +1662,20 @@ def test_a_session_that_needed_pytest_goes_straight_there_next_time(tmp_path: Pa
     assert _fallback.recall(str(memo), root, argv, []) == []
     third = _rustest(tree)
     assert third.returncode == 0 and "handing" not in third.stderr
+
+
+def test_deselect_runs_natively_and_counts_as_pytest_counts(tmp_path: Path):
+    """`--deselect PREFIX` drops every test whose node id starts with it: a test, a class, a
+    file or a directory."""
+    tree = make_tree(
+        tmp_path,
+        "deselect",
+        {
+            "test_one.py": "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n",
+            "sub/test_two.py": "def test_z():\n    pass\n",
+        },
+    )
+    result = _rustest(tree, "--deselect", "test_one.py::test_a", "--deselect", "sub")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed, 2 deselected" in result.stdout + result.stderr
+    assert "handing" not in result.stderr

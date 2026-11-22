@@ -692,6 +692,34 @@ pub fn deselect_in_place(
     Ok(deselected)
 }
 
+/// `--deselect PREFIX` (repeatable), as the CLI carries it in `hook_context.deselect`: pytest
+/// drops every item whose node id starts with one (`_pytest/main.py`,
+/// `pytest_collection_modifyitems`) and counts it as deselected.
+pub(crate) fn deselect_prefixes(hook_context: Option<&serde_json::Value>) -> Vec<String> {
+    hook_context
+        .and_then(|context| context.get("deselect"))
+        .and_then(serde_json::Value::as_array)
+        .map(|prefixes| {
+            prefixes
+                .iter()
+                .filter_map(|prefix| prefix.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Clear the flag of every test a `--deselect` prefix names.
+pub(crate) fn drop_prefixed(keep: &mut [bool], tests: &[CollectedTest], prefixes: &[String]) {
+    for (flag, test) in keep.iter_mut().zip(tests) {
+        if prefixes
+            .iter()
+            .any(|prefix| test.id.starts_with(prefix.as_str()))
+        {
+            *flag = false;
+        }
+    }
+}
+
 /// The same decision as [`deselect_in_place`], expressed as one flag per input test.
 ///
 /// The execute half needs this shape rather than a filtered `Vec`: it carries a parallel
@@ -1277,6 +1305,22 @@ mod tests {
             ]
         );
         assert_eq!(selection.deselected, 0);
+    }
+
+    #[test]
+    fn deselect_prefixes_drop_what_starts_with_one() {
+        let tests = corpus();
+        let context = serde_json::json!({ "deselect": [tests[0].id.clone(), "no/such"] });
+        let prefixes = deselect_prefixes(Some(&context));
+        let mut keep = vec![true; tests.len()];
+        drop_prefixed(&mut keep, &tests, &prefixes);
+        assert!(!keep[0]);
+        let dropped = tests
+            .iter()
+            .filter(|test| test.id.starts_with(&tests[0].id))
+            .count();
+        assert_eq!(keep.iter().filter(|keep| !**keep).count(), dropped);
+        assert!(deselect_prefixes(None).is_empty());
     }
 
     #[test]

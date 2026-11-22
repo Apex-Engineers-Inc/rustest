@@ -1739,6 +1739,7 @@ fn run_attempt(
                     inbox,
                     keyword,
                     mark,
+                    &crate::engine::selection::deselect_prefixes(options.hook_context.as_ref()),
                     &previously_failed,
                     options.last_failed,
                     skip.as_ref(),
@@ -2352,6 +2353,7 @@ fn stage(
     inbox: CollectInbox,
     keyword: Option<&str>,
     mark: Option<&str>,
+    deselect: &[String],
     previously_failed: &std::collections::HashSet<String>,
     last_failed: LastFailedMode,
     lf_skip: Option<&LastFailedSkip>,
@@ -2476,7 +2478,8 @@ fn stage(
     // does: `pytest_collection_modifyitems` is called from inside `perform_collect`, i.e.
     // *before* `pytest_runtestloop` can interrupt, so a malformed `-k` is a usage error (4)
     // that outranks the collection error (2).
-    let keep = select_mask(&assembled.tests, keyword, mark)?;
+    let mut keep = select_mask(&assembled.tests, keyword, mark)?;
+    crate::engine::selection::drop_prefixed(&mut keep, &assembled.tests, deselect);
     deselected += keep.iter().filter(|keep| !**keep).count();
 
     // `--lf`/`--ff` run **after** `-k`/`-m`.  `LFPlugin.pytest_collection_modifyitems` is a

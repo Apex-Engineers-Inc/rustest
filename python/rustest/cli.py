@@ -299,6 +299,12 @@ def build_parser() -> _Parser:
         help='Run tests matching the given mark expression (e.g., "slow", "not slow", "slow and integration").',
     )
     _ = parser.add_argument(
+        "--deselect",
+        action="append",
+        metavar="NODEID_PREFIX",
+        help="Deselect tests whose node id starts with this prefix (repeatable), as pytest does.",
+    )
+    _ = parser.add_argument(
         "-n",
         "--workers",
         type=int,
@@ -812,6 +818,7 @@ def _hook_context(
         ("verbose", ("-v", "--verbose"), _verbose_count(parsed_argv)),
         ("keyword", ("-k",), args.pattern or ""),
         ("markexpr", ("-m",), args.mark_expr or ""),
+        ("deselect", ("--deselect",), list(args.deselect or [])),
         ("maxfail", ("--maxfail",), maxfail),
         ("collectonly", ("--collect-only", "--collectonly", "--co"), bool(args.collect_only)),
         ("lf", ("--lf", "--last-failed"), mode == "only"),
@@ -834,6 +841,8 @@ def _hook_context(
         "options": options,
         "ini": ini,
         "blocked_plugins": list(blocked_plugins),
+        # `--deselect`, which the engine applies with `-k`/`-m` (`selection.rs`).
+        "deselect": list(args.deselect or []),
         # How a pool of two or more ends its session (step 3's tier rule, `execute.rs`): the
         # xdist model when xdist is installed or `-n` was asked for, else one worker when a
         # hook only a controller sees whole exists.
