@@ -244,6 +244,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole of `sys.path` after `syspath_prepend`, so paths the code under test added are
   dropped too; and `_pytest.monkeypatch` exports the fixture's own class and the `notset`
   sentinel (it was a placeholder class that could not be instantiated).
+- **Free-threaded Python stays free-threaded.** Importing rustest's Rust extension on a
+  free-threaded build (3.14t) turned the GIL back on in rustest's main process, with
+  CPython's warning. The extension now declares that it runs without the GIL. Tests
+  already ran in workers with the GIL off.
 - **A first run splits a large test file across workers.** Splitting a costly file used
   to need the duration record a previous run leaves, so a first run (and a CI job with
   no cached `.rustest_cache`) kept such a file on one worker. With no record at all, a

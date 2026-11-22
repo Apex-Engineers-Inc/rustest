@@ -729,3 +729,15 @@ def test_the_env_var_forces_tier_d_through_the_cli(tmp_path: Path) -> None:
     assert collect("d") == ["test_a.py::test_one"]
     # An unrecognised value is the default, not a usage error.
     assert collect("nonsense") == ["test_a.py::test_one"]
+
+
+@pytest.mark.skipif(
+    getattr(sys, "_is_gil_enabled", lambda: True)(),
+    reason="needs a free-threaded interpreter running with the GIL off",
+)
+def test_importing_the_extension_leaves_the_gil_off() -> None:
+    """A module that does not declare ``gil_used = false`` turns the GIL back on at import."""
+    import rustest.rust
+
+    assert rustest.rust is not None
+    assert not sys._is_gil_enabled()  # pyright: ignore[reportAttributeAccessIssue]

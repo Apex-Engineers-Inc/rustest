@@ -14,7 +14,11 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
 /// Entry point for the Python extension module.
-#[pymodule]
+///
+/// `gil_used = false`: on a free-threaded build, importing a module that does not declare
+/// this turns the GIL back on for the whole process. The module holds no Python objects
+/// between calls and no state behind the GIL (its statics are a `OnceLock` and an atomic).
+#[pymodule(gil_used = false)]
 fn rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `resolve_config` is internal (exercised by the pytest-oracle differential tests);
     // `collect` backs `rustest --collect-only` and `run` backs a flagless `rustest`.
