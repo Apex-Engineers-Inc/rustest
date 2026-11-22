@@ -791,8 +791,28 @@ impl Dispatch {
             .fold(0u64, |sum, index| sum.saturating_add(weigh(*index)));
         let share = total / workers as u64;
         let mut slices = BTreeMap::new();
+        // A first run has no record at all, and is the run a CI job without a cached
+        // `.rustest_cache` always makes. A file that is then more than one worker's share of
+        // the suite by size is split evenly by test count, as `pytest -n` would spread it.
+        // ponytail: size is a weak stand-in for time; steal work from a busy worker at run
+        // time if first runs still lose to xdist on files that are slow but small.
+        let cold = self.durations.is_empty();
+        // With no record a weight is the file's size plus the fixed import term; the share is
+        // taken over the sizes alone, or many small files would hide the one large one.
+        let bytes = |index: usize| self.weights[index].saturating_sub(FILE_IMPORT_WEIGHT);
+        let byte_share = dynamic.iter().map(|index| bytes(*index)).sum::<u64>() / workers as u64;
         for &index in &dynamic {
             let Some(&(tests, _)) = recorded.get(relative[index].as_str()) else {
+                let size = bytes(index);
+                if cold
+                    && byte_share > 0
+                    && size > byte_share
+                    && size >= COLD_SPLIT_MIN_BYTES
+                    && stems[&crate::engine::file_stem_lossy(&self.targets[index])] == 1
+                {
+                    let count = (size.div_ceil(byte_share) as usize).min(workers);
+                    slices.insert(index, (count, self.weights[index] / count as u64));
+                }
                 continue;
             };
             let weight = weigh(index);
@@ -2442,6 +2462,10 @@ fn worker_for(path: &Path, workers: usize) -> usize {
 /// and its content cost are comparable at the median, and size only dominates for the
 /// genuine outliers (jsonschema's 93.8%-of-tests mega-file) where it should.
 const FILE_IMPORT_WEIGHT: u64 = 8 * 1024;
+
+/// The smallest file a first run (no duration record) splits, in bytes: a small file's tests
+/// are over before a second worker has imported it.
+const COLD_SPLIT_MIN_BYTES: u64 = 2 * FILE_IMPORT_WEIGHT;
 
 /// The module import a file costs a worker beyond its tests, in microseconds: the Phase 4b
 /// profile's ~40 ms per file (see [`FILE_IMPORT_WEIGHT`]).
@@ -5007,7 +5031,7 @@ assert True
                 .map(|(target, workers)| (relative[target].clone(), workers))
                 .collect::<Vec<_>>()
         };
-        assert!(plan(4).is_empty(), "no record, no split");
+        assert!(plan(4).is_empty(), "no record, files of one size: no split");
 
         let cache = tmp.path().join(crate::engine::cache::CACHE_DIR);
         let mut ran: Vec<(String, f64)> = (0..10)
@@ -5025,6 +5049,52 @@ assert True
         assert!(workers.len() >= 2 && workers.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(plan(4), split, "deterministic for one record");
         assert!(plan(1).is_empty(), "a pool of one splits nothing");
+    }
+
+    /// **A first run.** With no record at all, a file that is more than one worker's share of
+    /// the suite by size is split; once any record exists, only the record decides.
+    #[test]
+    fn a_first_run_splits_a_file_that_outweighs_a_workers_share_by_size() {
+        let small = module("x");
+        let big = format!(
+            "{small}
+# {}
+",
+            "x".repeat(64 * 1024)
+        );
+        let files = [
+            ("test_big.py", big.as_str()),
+            ("test_b.py", small.as_str()),
+            ("test_c.py", small.as_str()),
+        ];
+        let tmp = tree(&files);
+        let plan = |workers: usize| {
+            let mut dispatch = plan_with_options(
+                tmp.path(),
+                &[],
+                workers,
+                &CollectOptions {
+                    tier: TierMode::DynamicOnly,
+                    cache: CacheMode::Off,
+                    ..CollectOptions::default()
+                },
+            )
+            .unwrap();
+            dispatch.split_costly_files(workers);
+            let relative = dispatch.relative_targets();
+            dispatch
+                .split_targets()
+                .into_iter()
+                .map(|(target, workers)| (relative[target].clone(), workers.len()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(plan(4), [("test_big.py".to_string(), 4)]);
+        assert!(plan(1).is_empty(), "a pool of one splits nothing");
+
+        let cache = tmp.path().join(crate::engine::cache::CACHE_DIR);
+        let ran = vec![("test_b.py::test_x".to_string(), 0.001)];
+        crate::engine::cache::record_call_durations(&cache, ran, true);
+        assert!(plan(4).is_empty(), "a record exists: it decides, not size");
     }
 
     /// Slices are contiguous and about equal by cost; a cut inside a class moves to the

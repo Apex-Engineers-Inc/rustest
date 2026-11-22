@@ -244,6 +244,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole of `sys.path` after `syspath_prepend`, so paths the code under test added are
   dropped too; and `_pytest.monkeypatch` exports the fixture's own class and the `notset`
   sentinel (it was a placeholder class that could not be instantiated).
+- **A first run splits a large test file across workers.** Splitting a costly file used
+  to need the duration record a previous run leaves, so a first run (and a CI job with
+  no cached `.rustest_cache`) kept such a file on one worker. With no record at all, a
+  file that is more than one worker's share of the suite by size is now split evenly by
+  test count. Once a record exists it decides, as before.
 - **A session that had to be handed to pytest starts there the next time.** rustest
   used to collect, and sometimes half run, such a suite on every invocation before
   starting over under pytest (flask: about 12 s against pytest's 5 s). The reason is now
