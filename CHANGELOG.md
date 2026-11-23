@@ -247,6 +247,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--deselect NODEID_PREFIX` runs natively.** It used to hand the whole session to
   pytest. Tests whose node id starts with a prefix are dropped and counted as deselected,
   as pytest counts them, in a run and under `--collect-only`.
+- **`--ignore PATH` and `--ignore-glob PATTERN` run natively.** Either used to hand the
+  whole session to pytest. The walk skips a file or directory that equals an ignored path
+  or matches an ignored glob, as pytest's does.
+- **pytest-timeout's `timeout` mark runs natively.** A test marked `timeout(N)` used to send
+  the session to pytest when the plugin was installed. The mark now bounds the test as the
+  plugin does: a failure where `SIGALRM` exists, and on Windows or with `method="thread"`
+  the worker process ends. The `timeout` ini key, `--timeout` and `PYTEST_TIMEOUT` still
+  hand off.
+- **More of `config` is answered in a conftest hook.** `config.inicfg` (the config file's raw
+  values), `config.stash` and its older spelling `config._store` no longer hand the session
+  to pytest, and a hook may read the names of a parametrized test's marks
+  (`{m.name for m in item.iter_markers()}`).
+- **Unregistering pytest's logging plugin stays with rustest.** A fixture that calls
+  `pytestconfig.pluginmanager.unregister(name="logging-plugin")` and registers it again
+  afterwards, so no handler of pytest's sits on the root logger, no longer hands off.
+  Any other use of the plugin manager inside a test still does.
 - **Free-threaded Python stays free-threaded.** Importing rustest's Rust extension on a
   free-threaded build (3.14t) turned the GIL back on in rustest's main process, with
   CPython's warning. The extension now declares that it runs without the GIL. Tests

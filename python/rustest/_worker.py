@@ -4721,6 +4721,67 @@ def _plugin_needs(marks: Sequence[MarkSpec], closure: "FixtureClosure | None") -
     ]
 
 
+@contextlib.contextmanager
+def _timeout(marks: Sequence[MarkSpec]) -> Iterator[None]:
+    """pytest-timeout's ``timeout`` mark, when the plugin is installed: the closest mark's
+    seconds bound the whole test, fixtures included.
+
+    As the plugin does: where ``SIGALRM`` exists the test fails with the plugin's message; with
+    ``method="thread"``, or on Windows, every thread's stack is dumped and the process ends
+    (here a worker, whose death the orchestrator reports).  The ``timeout`` ini, ``--timeout``
+    and ``PYTEST_TIMEOUT`` are still pytest's (``_fallback.autoload_reasons``).
+    """
+    mark = next((m for m in marks if m.name == "timeout"), None)
+    if mark is None or "timeout" not in _loaded_plugin_uses:
+        yield
+        return
+    seconds = mark.args[0] if mark.args else mark.kwargs.get("timeout")
+    # ponytail: `func_only=True` times the body alone, which this window cannot; such a test
+    # runs with no timer rather than a wrong one.
+    if not isinstance(seconds, (int, float)) or seconds <= 0 or mark.kwargs.get("func_only"):
+        yield
+        return
+    import signal
+    import threading
+
+    alarm = getattr(signal, "SIGALRM", None)
+    if (
+        alarm is not None
+        and mark.kwargs.get("method", mark.args[1] if len(mark.args) > 1 else None) != "thread"
+        and threading.current_thread() is threading.main_thread()
+    ):
+
+        def expired(signum: int, frame: object) -> None:
+            from .decorators import fail
+
+            fail(f"Timeout (>{seconds}s) from pytest-timeout.")
+
+        previous = signal.signal(alarm, expired)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            _ = signal.signal(alarm, previous)
+        return
+
+    def dump_and_exit() -> None:
+        import faulthandler
+
+        stream = sys.__stderr__ or sys.stderr
+        _ = stream.write(f"\n+++ Timeout (>{seconds}s) from pytest-timeout +++\n")
+        faulthandler.dump_traceback(file=stream)
+        os._exit(1)
+
+    timer = threading.Timer(seconds, dump_and_exit)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+
+
 def _function_attrs(func: object, has_marks: bool) -> list[str]:
     """The keys of the test function's ``__dict__`` as pytest sees them: ``pytestmark`` when a
     decorator marked it, where rustest's own ``__rustest_*`` attributes stand in for it."""
@@ -7315,7 +7376,7 @@ def execute_test(test_id: str) -> ResultResponse:
     global _call_s
     _call_s = 0.0  # a test whose body never ran (a skip, a setup error) costs no call time
     started = time.perf_counter()
-    with capture.window(), warnings_window(plan.id, plan.marks, recorded):
+    with capture.window(), warnings_window(plan.id, plan.marks, recorded), _timeout(plan.marks):
         reports = _run_phases(plan, runner, capture)
     duration = time.perf_counter() - started
     result = _result_for(

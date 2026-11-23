@@ -176,6 +176,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, NoReturn, cast
 
+from ._runtest import Stash
+
 __all__ = [
     "CONTROLLER_HOOKS",
     "NATIVE_HOOKS",
@@ -824,7 +826,8 @@ _PLUGIN_USES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = {
             }
         ),
     ),
-    "timeout": (frozenset({"timeout"}), frozenset()),
+    # Its mark runs natively (`_worker._timeout`); listed so the worker knows it is installed.
+    "timeout": (frozenset(), frozenset()),
     "syrupy": (frozenset({"syrupy_snapshot"}), frozenset({"snapshot"})),
     "textual-snapshot": (frozenset(), frozenset({"snap_compare"})),
     "platformdirs": (frozenset(), frozenset({"platformdirs_isolated"})),
@@ -1034,6 +1037,8 @@ class _State:
     reads_workerinput: bool = False
     #: pytest 9's TOML mode: its values are typed and checked against each declaration.
     ini_toml: bool = False
+    #: ``config.stash``: one per session, as pytest's.
+    stash: Stash = field(default_factory=Stash)
 
     def violate(self, what: str) -> NoReturn:
         """Record a use the shim does not support and raise.  Outside a hook call it is a stale
@@ -1370,6 +1375,20 @@ class _Config(_Shim):
             st.violate(f"asks config.getini({name!r}) of a pytest 9 native TOML config")
         return _coerce_ini(st, name, kind, st.ini[name])
 
+    @property
+    def stash(self) -> Stash:
+        return self._st.stash
+
+    _store = stash  # pytest's older private spelling, which suites still use (black)
+
+    @property
+    def inicfg(self) -> dict[str, object]:
+        """The config file's raw values, as pytest 8 holds them (a copy: writes do not land)."""
+        if self._st.ini_toml:
+            # ponytail: pytest 9's native TOML wraps each value in a `ConfigValue`.
+            self._st.violate("reads config.inicfg of a pytest 9 native TOML config")
+        return dict(self._st.ini)
+
     def addinivalue_line(self, name: str, line: str) -> None:
         if name != "markers":
             self._st.violate(f"calls config.addinivalue_line({name!r}, ...)")
@@ -1535,6 +1554,21 @@ class _Kwargs(Mapping[str, Any]):
     update = pop = popitem = clear = setdefault = _write
 
 
+class _ParametrizeView:
+    """The ``parametrize`` mark, which the collector consumes and the record leaves out: its
+    name is readable (``{m.name for m in item.iter_markers()}``), anything else violates."""
+
+    __slots__ = ("_st",)
+    name: Final = "parametrize"
+
+    def __init__(self, st: _State) -> None:
+        super().__init__()
+        self._st = st
+
+    def __getattr__(self, name: str) -> object:
+        self._st.violate(f"reads the .{name} of a parametrized test's parametrize mark")
+
+
 class _MarkView:
     """What ``get_closest_marker`` / ``iter_markers`` return: pytest's ``Mark``, read-only."""
 
@@ -1661,14 +1695,15 @@ class _Item(_Shim):
     nodeid: str
     path: Path
 
-    def iter_markers(self, name: str | None = None) -> Iterator[_MarkView]:
-        if self._rs_param and (name is None or name == "parametrize"):
-            self._st.violate(
-                "reads the markers of a parametrized test, including its parametrize mark"
-            )
+    def iter_markers(self, name: str | None = None) -> Iterator[_MarkView | _ParametrizeView]:
         for view in list(self._rs_views):
             if name is None or view.name == name:
                 yield view
+        if self._rs_param and (name is None or name == "parametrize"):
+            # ponytail: one view, last, whatever the number and position of the test's
+            # parametrize marks; a hook that counts marks or indexes them sees pytest differ.
+            # Carry the marks in the record if one turns up.
+            yield _ParametrizeView(self._st)
 
     def get_closest_marker(self, name: str, default: object = None) -> object:
         return next(self.iter_markers(name), default)

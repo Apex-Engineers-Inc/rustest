@@ -829,7 +829,6 @@ _GAPS = {
     "setattr(config, 'rootpath', 1)": "config.rootpath",
     "setattr(config.option, 'x', 1)": "config.option.x",
     "config.hook.pytest_collection_modifyitems": "config.hook.pytest_collection_modifyitems",
-    "config.stash": "config.stash",
     "config._xyz": "config._xyz",
     "config.__dict__": "config.__dict__",
     "vars(config.option)": "config.option.__dict__",
@@ -2601,34 +2600,55 @@ def test_only_values_that_survive_json_unchanged_are_wire_exact(value: object, e
     assert wire_exact(value) is exact
 
 
-def test_the_markers_of_a_parametrized_test_cannot_be_read_whole(tmp_path: Path) -> None:
-    """pytest's list holds a ``parametrize`` mark per decorator, which the worker cannot place."""
-    reads = {
-        "all": "list(items[0].iter_markers())",
-        "parametrize": "items[0].get_closest_marker('parametrize')",
-    }
-    for label, expression in reads.items():
-        module = _module(
-            tmp_path,
-            f"param_{label}",
-            f"def pytest_collection_modifyitems(items):\n    {expression}\n",
-        )
-        runner = _runner()
-        runner.register("conftest.py", module)
-        _ = _modify(runner, [_record("a.py::t[1]", Mark("slow"), parametrized=True)])
-        assert runner.reasons and "parametrized test" in runner.reasons[0], label
-
+def test_a_parametrized_tests_parametrize_mark_gives_its_name_only(tmp_path: Path) -> None:
+    """The record leaves the ``parametrize`` mark out: a hook may read the names of a
+    parametrized test's marks (black's ``{m.name for m in item.iter_markers()}``), not the
+    mark's arguments."""
     module = _module(
         tmp_path,
-        "param_named",
+        "param_names",
         "seen = []\n"
         "def pytest_collection_modifyitems(items):\n"
+        "    seen.append(sorted(m.name for m in items[0].iter_markers()))\n"
         "    seen.append(items[0].get_closest_marker('slow') is not None)\n",
     )
     runner = _runner()
     runner.register("conftest.py", module)
     _ = _modify(runner, [_record("a.py::t[1]", Mark("slow"), parametrized=True)])
-    assert runner.reasons == [] and module.seen == [True]  # pyright: ignore[reportAttributeAccessIssue]
+    assert runner.reasons == []
+    assert module.seen[:2] == [["parametrize", "slow"], True]  # pyright: ignore[reportAttributeAccessIssue]
+
+    module = _module(
+        tmp_path,
+        "param_args",
+        "def pytest_collection_modifyitems(items):\n"
+        "    items[0].get_closest_marker('parametrize').args\n",
+    )
+    runner = _runner()
+    runner.register("conftest.py", module)
+    _ = _modify(runner, [_record("a.py::t[1]", Mark("slow"), parametrized=True)])
+    assert runner.reasons and "parametrize mark" in runner.reasons[0]
+
+
+def test_config_inicfg_and_stash_carry_a_plugins_state_between_hooks(tmp_path: Path) -> None:
+    """black's ``tests/optional.py``: ``pytest_configure`` reads the raw ini through
+    ``config.inicfg`` and keeps what it derives in ``config._store`` for a later hook."""
+    module = _module(
+        tmp_path,
+        "inicfg_stash",
+        "seen = []\n"
+        "KEY = object()\n"
+        "def pytest_configure(config):\n"
+        "    config._store[KEY] = config.inicfg.get('optional-tests')\n"
+        "def pytest_collection_modifyitems(config, items):\n"
+        "    seen.append(config.stash[KEY])\n",
+    )
+    runner = _runner(ini={"optional-tests": ["no_jupyter: x"]})
+    runner.register("conftest.py", module)
+    runner.configure()
+    _ = _modify(runner, [_record("a.py::t")])
+    assert runner.reasons == []
+    assert module.seen[0] == ["no_jupyter: x"]  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_a_loaded_plugins_options_answer_with_their_defaults(tmp_path: Path) -> None:

@@ -47,7 +47,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::engine::config::{
-    absolutepath, matches_file_pattern, normpath, resolve_config, ConfigError, ResolvedConfig,
+    absolutepath, fnmatch, matches_file_pattern, normpath, resolve_config, ConfigError,
+    ResolvedConfig,
 };
 use crate::engine::execute::{TestOutcome, TestStatus, SESSION_EXIT_EXIT, SHUTDOWN_TEARDOWN_EXIT};
 use crate::engine::manifest::{
@@ -957,8 +958,9 @@ pub(crate) fn plan_with_options(
     // default, pytest's own answer.  Resolved here — after the one config resolution this
     // function does, before the walk decides what a markdown argument means.
     let codeblocks = options.codeblocks.or(config.codeblocks).unwrap_or(false);
+    let ignore = Ignore::from_context(options.hook_context.as_ref(), &invocation_dir);
     let (targets, entries, walked_conftests, hypothesis_dir) =
-        discover_targets(&config, &invocation_dir, args, codeblocks)?;
+        discover_targets(&config, &invocation_dir, args, codeblocks, &ignore)?;
     let (conftests, late_conftests, hook_runtime) = session_conftests(
         &config,
         &invocation_dir,
@@ -1582,7 +1584,13 @@ fn discover(
     // free of `.`/`..`; normalising here gives callers the same guarantee for free.
     let invocation_dir = normpath(invocation_dir);
     let config = resolve_config(&invocation_dir, args).map_err(CollectError::Config)?;
-    let (targets, _, _, _) = discover_targets(&config, &invocation_dir, args, codeblocks)?;
+    let (targets, _, _, _) = discover_targets(
+        &config,
+        &invocation_dir,
+        args,
+        codeblocks,
+        &Ignore::default(),
+    )?;
     Ok((config, targets))
 }
 
@@ -1604,6 +1612,7 @@ fn discover_targets(
     invocation_dir: &Path,
     args: &[PathBuf],
     codeblocks: bool,
+    ignore: &Ignore,
 ) -> Result<Discovered, CollectError> {
     let args = initial_paths(invocation_dir, args, config)?;
     // `Config._decide_confcutdir`: the ini file's directory, else the rootdir.
@@ -1667,6 +1676,7 @@ fn discover_targets(
             walk(
                 &arg.path,
                 config,
+                ignore,
                 &mut files,
                 &mut walked_conftests,
                 &mut hypothesis_dir,
@@ -2216,6 +2226,7 @@ fn initial_paths(
 fn walk(
     dir: &Path,
     config: &ResolvedConfig,
+    ignore: &Ignore,
     out: &mut Vec<PathBuf>,
     conftests: &mut Vec<(PathBuf, usize)>,
     hypothesis_dir: &mut Option<PathBuf>,
@@ -2256,7 +2267,7 @@ fn walk(
         // `is_dir`/`is_file` follow symlinks, matching `os.DirEntry.is_dir()`'s default;
         // `DirEntry::file_type` does **not**, so a symlink falls back to the following call.
         if is_dir(&path, file_type) {
-            if should_prune(&name, &path, config) {
+            if should_prune(&name, &path, config) || ignore.matches(&path) {
                 continue;
             }
             // hypothesis's plugin warns of a `.hypothesis` directory `norecursedirs` does
@@ -2265,10 +2276,11 @@ fn walk(
             if name == ".hypothesis" && hypothesis_dir.is_none() {
                 *hypothesis_dir = Some(path.clone());
             }
-            walk(&path, config, out, conftests, hypothesis_dir);
+            walk(&path, config, ignore, out, conftests, hypothesis_dir);
         } else if is_file(&path, file_type)
             && is_python_source(&path)
             && matches_python_files(&path, config)
+            && !ignore.matches(&path)
         {
             // **No `.md` here, deliberately.** A markdown file is collected only when it is
             // named as an *argument* (`initial_file_target`), never when a directory walk
@@ -2303,6 +2315,49 @@ pub(crate) fn is_file(path: &Path, file_type: Option<std::fs::FileType>) -> bool
     match file_type {
         Some(file_type) if !file_type.is_symlink() => file_type.is_file(),
         _ => path.is_file(),
+    }
+}
+
+/// `--ignore PATH` and `--ignore-glob PATTERN`, which the CLI carries in `hook_context`
+/// (`_pytest/main.py::pytest_ignore_collect`): both are made absolute against the invocation
+/// directory; a path is ignored when it equals one, or `fnmatch`es a glob as a whole string.
+///
+/// ponytail: applied to what the walk reaches, not to a path named on the command line
+/// (`rustest a.py --ignore=a.py`), and an `--ignore` path is compared case-sensitively on
+/// Windows too.
+#[derive(Default)]
+struct Ignore {
+    paths: Vec<PathBuf>,
+    globs: Vec<String>,
+}
+
+impl Ignore {
+    fn from_context(context: Option<&serde_json::Value>, invocation_dir: &Path) -> Self {
+        let absolute = |key: &str| -> Vec<PathBuf> {
+            context
+                .and_then(|context| context.get(key))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(|raw| absolutepath(invocation_dir, Path::new(raw)))
+                .collect()
+        };
+        Ignore {
+            paths: absolute("ignore"),
+            globs: absolute("ignore_glob")
+                .iter()
+                .map(|glob| glob.to_string_lossy().into_owned())
+                .collect(),
+        }
+    }
+
+    fn matches(&self, path: &Path) -> bool {
+        self.paths.iter().any(|ignored| ignored == path)
+            || (!self.globs.is_empty() && {
+                let text = path.to_string_lossy();
+                self.globs.iter().any(|glob| fnmatch(&text, glob))
+            })
     }
 }
 
@@ -4231,6 +4286,41 @@ mod tests {
         assert_eq!(discovered(&tmp, &[]), vec!["keep/test_keep.py"]);
     }
 
+    /// `--ignore` drops a file or a whole directory the walk reaches; `--ignore-glob`
+    /// matches the absolute path as one string.
+    #[test]
+    fn ignore_and_ignore_glob_drop_what_the_walk_reaches() {
+        let tmp = TempDir::new().unwrap();
+        for file in [
+            "test_a.py",
+            "sub/test_b.py",
+            "sub/test_c.py",
+            "gen/test_d.py",
+        ] {
+            let path = tmp.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "def test_x(): pass\n").unwrap();
+        }
+        let config = resolve_config(tmp.path(), &[]).unwrap();
+        let found = |context: serde_json::Value| -> Vec<String> {
+            let ignore = Ignore::from_context(Some(&context), tmp.path());
+            let (targets, _, _, _) =
+                discover_targets(&config, tmp.path(), &[], false, &ignore).unwrap();
+            targets
+                .iter()
+                .map(|path| to_posix(path.strip_prefix(tmp.path()).unwrap()))
+                .collect()
+        };
+        assert_eq!(
+            found(serde_json::json!({"ignore": ["gen", "sub/test_b.py"]})),
+            ["sub/test_c.py", "test_a.py"]
+        );
+        assert_eq!(
+            found(serde_json::json!({"ignore_glob": ["*/test_[bd].py"]})),
+            ["sub/test_c.py", "test_a.py"]
+        );
+    }
+
     /// Setting `norecursedirs` **replaces** the default list (it is a plain `args` ini),
     /// so `build/` becomes collectable and the configured name is pruned instead.
     #[test]
@@ -4461,7 +4551,8 @@ mod tests {
         let dir = normpath(tmp.path());
         let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
         let config = resolve_config(&dir, &args).unwrap();
-        let (targets, entries, _, _) = discover_targets(&config, &dir, &args, false)?;
+        let (targets, entries, _, _) =
+            discover_targets(&config, &dir, &args, false, &Ignore::default())?;
         Ok(entries
             .iter()
             .map(|entry| {
@@ -4482,7 +4573,7 @@ mod tests {
             let dir = normpath(tmp.path());
             let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
             let config = resolve_config(&dir, &args).unwrap();
-            discover_targets(&config, &dir, &args, false)
+            discover_targets(&config, &dir, &args, false, &Ignore::default())
                 .unwrap()
                 .0
                 .len()
@@ -6569,7 +6660,8 @@ assert True
         let dir = normpath(dir);
         let args: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
         let config = resolve_config(&dir, &args).unwrap();
-        let (_, _, walked, _) = discover_targets(&config, &dir, &args, false).unwrap();
+        let (_, _, walked, _) =
+            discover_targets(&config, &dir, &args, false, &Ignore::default()).unwrap();
         let root = to_posix(&config.rootdir);
         session_conftests(&config, &dir, &args, &[], &walked)
             .unwrap()
@@ -6616,7 +6708,8 @@ assert True
         ]);
         let dir = normpath(tmp.path());
         let config = resolve_config(&dir, &[]).unwrap();
-        let (_, _, walked, _) = discover_targets(&config, &dir, &[], false).unwrap();
+        let (_, _, walked, _) =
+            discover_targets(&config, &dir, &[], false, &Ignore::default()).unwrap();
         let (_, late, _) = session_conftests(&config, &dir, &[], &[], &walked).unwrap();
         let names: Vec<(usize, String)> = late
             .iter()
@@ -6678,7 +6771,8 @@ assert True
         );
         let dir = normpath(tmp.path());
         let config = resolve_config(&dir, &[]).unwrap();
-        let (_, _, walked, _) = discover_targets(&config, &dir, &[], false).unwrap();
+        let (_, _, walked, _) =
+            discover_targets(&config, &dir, &[], false, &Ignore::default()).unwrap();
         let (_, late, hook_runtime) = session_conftests(&config, &dir, &[], &[], &walked).unwrap();
         assert!(late.is_empty() && !hook_runtime);
     }

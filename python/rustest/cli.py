@@ -305,6 +305,18 @@ def build_parser() -> _Parser:
         help="Deselect tests whose node id starts with this prefix (repeatable), as pytest does.",
     )
     _ = parser.add_argument(
+        "--ignore",
+        action="append",
+        metavar="PATH",
+        help="Ignore this file or directory during collection (repeatable), as pytest does.",
+    )
+    _ = parser.add_argument(
+        "--ignore-glob",
+        action="append",
+        metavar="PATTERN",
+        help="Ignore paths matching this glob during collection (repeatable), as pytest does.",
+    )
+    _ = parser.add_argument(
         "-n",
         "--workers",
         type=int,
@@ -819,6 +831,8 @@ def _hook_context(
         ("keyword", ("-k",), args.pattern or ""),
         ("markexpr", ("-m",), args.mark_expr or ""),
         ("deselect", ("--deselect",), list(args.deselect or [])),
+        ("ignore", ("--ignore",), list(args.ignore or [])),
+        ("ignore_glob", ("--ignore-glob",), list(args.ignore_glob or [])),
         ("maxfail", ("--maxfail",), maxfail),
         ("collectonly", ("--collect-only", "--collectonly", "--co"), bool(args.collect_only)),
         ("lf", ("--lf", "--last-failed"), mode == "only"),
@@ -843,6 +857,9 @@ def _hook_context(
         "blocked_plugins": list(blocked_plugins),
         # `--deselect`, which the engine applies with `-k`/`-m` (`selection.rs`).
         "deselect": list(args.deselect or []),
+        # `--ignore` / `--ignore-glob`, which the engine's walk applies (`collect.rs`).
+        "ignore": list(args.ignore or []),
+        "ignore_glob": list(args.ignore_glob or []),
         # How a pool of two or more ends its session (step 3's tier rule, `execute.rs`): the
         # xdist model when xdist is installed or `-n` was asked for, else one worker when a
         # hook only a controller sees whole exists.

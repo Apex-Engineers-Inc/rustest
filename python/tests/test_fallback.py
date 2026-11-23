@@ -1264,6 +1264,70 @@ _MARKED = (
 )
 
 
+#: A stand-in for pytest-timeout: installed, registering its mark and nothing else.
+_FAKE_TIMEOUT = _site_plugin(
+    "timeout",
+    "fake_timeout_plugin",
+    "def pytest_configure(config):\n"
+    "    config.addinivalue_line('markers', 'timeout: bound a test')\n",
+)
+
+
+def test_a_timeout_mark_runs_natively_and_ends_a_test_that_overruns(tmp_path: Path):
+    """pytest-timeout's mark: a test inside its bound is untouched; one that overruns is
+    failed where ``SIGALRM`` exists, and elsewhere takes its worker down, as the plugin's
+    thread method takes pytest down."""
+    env = clean_env()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    fine = make_tree(
+        tmp_path,
+        "fine",
+        {
+            **_FAKE_TIMEOUT,
+            "test_t.py": "import pytest\n\n\n@pytest.mark.timeout(60)\ndef test_ok():\n    pass\n",
+        },
+    )
+    env["PYTHONPATH"] = str(fine / "site")
+    result = run([sys.executable, "-m", "rustest", "-p", "no:cacheprovider"], fine, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "handing" not in result.stderr
+    assert "1 passed" in result.stdout + result.stderr
+
+    slow = make_tree(
+        tmp_path,
+        "slow",
+        {
+            **_FAKE_TIMEOUT,
+            "test_t.py": (
+                "import time\n\nimport pytest\n\n\n"
+                "@pytest.mark.timeout(0.3)\ndef test_slow():\n    time.sleep(60)\n"
+            ),
+        },
+    )
+    env["PYTHONPATH"] = str(slow / "site")
+    result = run([sys.executable, "-m", "rustest", "-p", "no:cacheprovider"], slow, env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "1 passed" not in result.stdout + result.stderr
+
+
+def test_ignore_and_ignore_glob_run_natively(tmp_path: Path):
+    """`--ignore PATH` and `--ignore-glob PATTERN` drop files and directories from the walk."""
+    tree = make_tree(
+        tmp_path,
+        "ignore",
+        {
+            "test_one.py": "def test_a():\n    pass\n",
+            "sub/test_two.py": "def test_b():\n    pass\n",
+            "gen/test_three.py": "def test_c():\n    raise SystemExit(3)\n",
+            "gen/conftest.py": "raise SystemExit(3)\n",
+        },
+    )
+    result = _rustest(tree, "--ignore", "gen", "--ignore-glob", "*/test_tw?.py")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout + result.stderr
+    assert "handing" not in result.stderr
+
+
 def _both_with_site(
     tree: Path, args: list[str]
 ) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]]:
@@ -1575,6 +1639,41 @@ def test_o_cache_dir_moves_every_cache_out_of_the_tree(tmp_path: Path):
     assert not (tree / ".rustest_cache").exists()
 
 
+#: A test only pytest can run: it asks the plugin manager for a plugin.
+_NEEDS_PYTEST = (
+    "def test_pm(pytestconfig):\n"
+    "    assert pytestconfig.pluginmanager.get_plugin('logging-plugin')\n"
+)
+
+
+def test_unregistering_the_logging_plugin_stays_with_rustest(tmp_path: Path):
+    """flask's suite takes pytest's logging plugin out for each test and puts it back, so no
+    handler of pytest's sits on the root logger: rustest's capture steps aside the same way."""
+    tree = make_tree(
+        tmp_path,
+        "logging_plugin",
+        {
+            "test_log.py": (
+                "import logging\n\nimport pytest\n\n\n"
+                "@pytest.fixture(autouse=True)\n"
+                "def reset_logging(pytestconfig):\n"
+                "    plugin = pytestconfig.pluginmanager.unregister(name='logging-plugin')\n"
+                "    yield\n"
+                "    if plugin:\n"
+                "        pytestconfig.pluginmanager.register(plugin, 'logging-plugin')\n\n\n"
+                "def test_no_handler(caplog):\n"
+                "    assert caplog.handler not in logging.root.handlers\n\n\n"
+                "def test_again():\n"
+                "    pass\n"
+            )
+        },
+    )
+    result = _rustest(tree)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "handing" not in result.stderr
+    assert "2 passed" in result.stdout + result.stderr
+
+
 def test_reading_the_plugin_manager_hands_the_session_to_pytest(tmp_path: Path):
     """``pytestconfig.pluginmanager`` is pytest's plugin system (flask's suite unregisters the
     logging plugin through it): found while the test runs, and the session goes to pytest."""
@@ -1620,7 +1719,7 @@ def test_a_hand_off_without_the_cache_plugin_passes_no_cache_dir(tmp_path: Path)
     tree = make_tree(
         tmp_path,
         "nocache",
-        {"test_pm.py": "def test_pm(pytestconfig):\n    assert pytestconfig.pluginmanager\n"},
+        {"test_pm.py": _NEEDS_PYTEST},
     )
     handed = _rustest(tree, "-p", "no:cacheprovider")
     assert handed.returncode == 0, handed.stdout + handed.stderr
@@ -1643,7 +1742,7 @@ def test_a_session_that_needed_pytest_goes_straight_there_next_time(tmp_path: Pa
     tree = make_tree(
         tmp_path,
         "memo",
-        {"test_pm.py": "def test_pm(pytestconfig):\n    assert pytestconfig.pluginmanager\n"},
+        {"test_pm.py": _NEEDS_PYTEST},
     )
     memo = tree / ".rustest_cache" / "handoff.json"
 

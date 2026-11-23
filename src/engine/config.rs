@@ -403,7 +403,7 @@ fn normcase(s: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// `fnmatch.fnmatch(name, pattern)`.
-fn fnmatch(name: &str, pattern: &str) -> bool {
+pub(super) fn fnmatch(name: &str, pattern: &str) -> bool {
     fnmatchcase(&normcase(name), &normcase(pattern))
 }
 

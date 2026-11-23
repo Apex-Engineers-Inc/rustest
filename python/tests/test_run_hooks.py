@@ -121,7 +121,7 @@ def test_a_name_pytests_item_lacks_is_a_plain_attribute_error_in_a_hook(tmp_path
 
 
 def test_item_config_in_a_hook_is_the_hooks_config(tmp_path: Path) -> None:
-    """``item.config.getoption`` answers natively; ``item.config.stash`` -- something the hook
+    """``item.config.getoption`` answers natively; ``item.config.inifile`` -- something the hook
     runtime's ``config`` does not provide -- hands the session off instead of erroring tests."""
     native = make_tree(
         tmp_path,
@@ -140,7 +140,7 @@ def test_item_config_in_a_hook_is_the_hooks_config(tmp_path: Path) -> None:
         tmp_path,
         "stash",
         {
-            "conftest.py": "def pytest_runtest_setup(item):\n    item.config.stash\n",
+            "conftest.py": "def pytest_runtest_setup(item):\n    item.config.inifile\n",
             "test_a.py": _PASS,
         },
     )
@@ -151,7 +151,7 @@ def test_item_config_in_a_hook_is_the_hooks_config(tmp_path: Path) -> None:
     result = _rustest(stash)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "discarding the 1 results so far" in result.stderr
-    assert "config.stash" in result.stderr
+    assert "config.inifile" in result.stderr
 
 
 # -- hand-offs: up front and mid-run ----------------------------------------------------

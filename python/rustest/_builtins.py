@@ -742,6 +742,9 @@ class LogCapture:
         root = logging.getLogger()
         self.handler.reset()
         self.records_by_phase[when] = self.handler.records
+        if logging_plugin_off[0]:  # the test unregistered pytest's logging plugin
+            yield
+            return
         root.addHandler(self.handler)
         try:
             yield
@@ -1612,10 +1615,11 @@ class Config:
             found, value = _hooks.user_attribute(name)
             if found:
                 return value
+        if name == "pluginmanager":
+            return _PluginManager()
         if name in _PLUGIN_SYSTEM:
-            # Only pytest can answer (flask's suite unregisters the logging plugin through
-            # `pytestconfig.pluginmanager`): the reason rides on this test's result and the
-            # session is handed to pytest, unless `--no-pytest-fallback` keeps it here.
+            # Only pytest can answer: the reason rides on this test's result and the session
+            # is handed to pytest, unless `--no-pytest-fallback` keeps it here.
             pytest_only.append(
                 f"a test or fixture reads config.{name}, which is pytest's plugin system"
             )
@@ -1626,6 +1630,36 @@ class Config:
 _PLUGIN_SYSTEM: Final = frozenset({"pluginmanager", "hook"})
 #: Reasons found while a test ran that the session is pytest's to run; the worker drains it.
 pytest_only: list[str] = []
+#: Whether a test unregistered pytest's logging plugin: :meth:`LogCapture.phase` then leaves
+#: the root logger alone, as pytest's unregistered plugin does.
+logging_plugin_off: Final = [False]
+_LOGGING_PLUGIN: Final = object()
+
+
+class _PluginManager:
+    """``pytestconfig.pluginmanager`` inside a test: taking pytest's ``logging-plugin`` out and
+    putting it back (flask's suite does, so no handler of pytest's sits on the root logger).
+    Any other use is pytest's plugin system and hands the session to pytest."""
+
+    def unregister(self, plugin: object = None, name: str | None = None) -> object:
+        if name != "logging-plugin" or plugin is not None:
+            return self.__getattr__("unregister")
+        if logging_plugin_off[0]:
+            return None  # pluggy: nothing registered under that name
+        logging_plugin_off[0] = True
+        return _LOGGING_PLUGIN
+
+    def register(self, plugin: object, name: str | None = None) -> str | None:
+        if plugin is not _LOGGING_PLUGIN:
+            return self.__getattr__("register")
+        logging_plugin_off[0] = False
+        return name
+
+    def __getattr__(self, name: str) -> Any:
+        pytest_only.append(
+            f"a test or fixture uses config.pluginmanager.{name}, which is pytest's plugin system"
+        )
+        raise AttributeError(f"'PytestPluginManager' object has no attribute {name!r}")
 
 
 class _OptionNamespace:
