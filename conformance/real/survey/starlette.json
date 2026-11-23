@@ -20,34 +20,34 @@
   "flaky_under_pytest": [],
   "seconds": {
     "pytest": [
-      43.5,
-      27.65,
-      27.24
+      38.57,
+      48.56,
+      27.28
     ],
     "rustest -n 1": [
-      41.85,
-      38.95,
-      34.64
+      33.08,
+      41.71,
+      38.98
     ],
     "pytest -n 4": [
-      11.89,
-      11.77,
-      11.07
+      24.75,
+      13.3,
+      17.3
     ],
     "rustest -n 4": [
-      13.46,
-      17.52,
-      15.58
+      9.12,
+      10.48,
+      15.42
     ],
     "pytest -n 16": [
-      17.69,
-      15.49,
-      12.74
+      24.36,
+      21.84,
+      30.14
     ],
     "rustest -n 16": [
-      25.02,
-      20.64,
-      22.02
+      15.24,
+      22.63,
+      13.5
     ]
   },
   "rustest_warm": {
@@ -86,29 +86,17 @@
     "rustest -n 1": {
       "differing": [],
       "differing_on_flaky_tests": [],
-      "handed_to_pytest": [
-        "the pytest plugin anyio is used (fixture 'anyio_backend_name'), and rustest does not run it (tests/middleware/test_base.py::test_custom_middleware)",
-        "the pytest plugin anyio is used (fixture 'anyio_backend_options'), and rustest does not run it (tests/middleware/test_base.py::test_custom_middleware)",
-        "the pytest plugin anyio is used (mark 'anyio'), and rustest does not run it (tests/middleware/test_base.py::test_run_background_tasks_even_if_client_disconnects)"
-      ]
+      "handed_to_pytest": []
     },
     "rustest -n 4": {
       "differing": [],
       "differing_on_flaky_tests": [],
-      "handed_to_pytest": [
-        "the pytest plugin anyio is used (fixture 'anyio_backend_name'), and rustest does not run it (tests/middleware/test_base.py::test_custom_middleware)",
-        "the pytest plugin anyio is used (fixture 'anyio_backend_options'), and rustest does not run it (tests/middleware/test_base.py::test_custom_middleware)",
-        "the pytest plugin anyio is used (mark 'anyio'), and rustest does not run it (tests/middleware/test_base.py::test_run_background_tasks_even_if_client_disconnects)"
-      ]
+      "handed_to_pytest": []
     },
     "rustest -n 16": {
       "differing": [],
       "differing_on_flaky_tests": [],
-      "handed_to_pytest": [
-        "the pytest plugin anyio is used (fixture 'anyio_backend_name'), and rustest does not run it (tests/middleware/test_base.py::test_custom_middleware)",
-        "the pytest plugin anyio is used (fixture 'anyio_backend_options'), and rustest does not run it (tests/middleware/test_base.py::test_custom_middleware)",
-        "the pytest plugin anyio is used (mark 'anyio'), and rustest does not run it (tests/middleware/test_base.py::test_run_background_tasks_even_if_client_disconnects)"
-      ]
+      "handed_to_pytest": []
     }
   },
   "errors": {}

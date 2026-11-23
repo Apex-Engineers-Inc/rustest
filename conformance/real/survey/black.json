@@ -20,34 +20,34 @@
   "flaky_under_pytest": [],
   "seconds": {
     "pytest": [
-      78.95,
-      76.12,
-      70.83
+      110.22,
+      90.93,
+      94.68
     ],
     "rustest -n 1": [
-      70.76,
-      78.25,
-      75.28
+      99.41,
+      80.44,
+      118.72
     ],
     "pytest -n 4": [
-      21.71,
-      29.12,
-      22.78
+      44.35,
+      25.25,
+      43.63
     ],
     "rustest -n 4": [
-      25.41,
-      25.0,
-      25.2
+      32.0,
+      41.63,
+      45.13
     ],
     "pytest -n 16": [
-      29.79,
-      27.35,
-      24.72
+      67.75,
+      39.2,
+      45.1
     ],
     "rustest -n 16": [
-      30.0,
-      29.06,
-      33.08
+      50.48,
+      31.12,
+      38.59
     ]
   },
   "rustest_warm": {
@@ -86,23 +86,17 @@
     "rustest -n 1": {
       "differing": [],
       "differing_on_flaky_tests": [],
-      "handed_to_pytest": [
-        "rustest's hook runtime: tests.optional::pytest_configure uses config.inicfg, which rustest's hook runtime does not support"
-      ]
+      "handed_to_pytest": []
     },
     "rustest -n 4": {
       "differing": [],
       "differing_on_flaky_tests": [],
-      "handed_to_pytest": [
-        "rustest's hook runtime: tests.optional::pytest_configure uses config.inicfg, which rustest's hook runtime does not support"
-      ]
+      "handed_to_pytest": []
     },
     "rustest -n 16": {
       "differing": [],
       "differing_on_flaky_tests": [],
-      "handed_to_pytest": [
-        "rustest's hook runtime: tests.optional::pytest_configure uses config.inicfg, which rustest's hook runtime does not support"
-      ]
+      "handed_to_pytest": []
     }
   },
   "errors": {}

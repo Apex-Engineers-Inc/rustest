@@ -17,19 +17,17 @@
     "collection_errors": 0
   },
   "pytest_exit": 1,
-  "flaky_under_pytest": [
-    "tests/test_timeouts.py::test_write_timeout[trio]"
-  ],
+  "flaky_under_pytest": [],
   "seconds": {
     "pytest": [
-      18.28,
-      16.93,
-      15.64
+      26.68,
+      23.39,
+      25.43
     ],
     "rustest -n 1": [
-      19.79,
-      20.29,
-      19.83
+      29.2,
+      21.39,
+      15.0
     ],
     "pytest -n 4": [],
     "rustest -n 4": [],
@@ -44,8 +42,8 @@
     ],
     "rustest -n 1": [
       false,
-      false,
-      false
+      true,
+      true
     ],
     "pytest -n 4": [],
     "rustest -n 4": [],
@@ -55,12 +53,8 @@
   "agreement": {
     "rustest -n 1": {
       "differing": [],
-      "differing_on_flaky_tests": [
-        "tests/test_timeouts.py::test_write_timeout[trio]"
-      ],
-      "handed_to_pytest": [
-        "--deselect is not a rustest option"
-      ]
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
     },
     "rustest -n 4": {
       "differing": [],
