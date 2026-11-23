@@ -182,6 +182,9 @@ pub const PLUGIN_FIXTURES: &[&str] = &[
     "anyio_backend",
     "anyio_backend_name",
     "anyio_backend_options",
+    "benchmark",
+    "benchmark_weave",
+    "fail_after_cannot_order",
     "faker",
     "free_tcp_port",
     "free_tcp_port_factory",
@@ -1862,9 +1865,12 @@ impl<'a> Scan<'a> {
             ));
         }
         // A plugin's own mark (anyio's runs a test once per backend, with `[asyncio]` ids;
-        // pytest-timeout's arms a timer): whether that plugin is installed is the worker's
+        // pytest-timeout's arms a timer, pytest-repeat's parametrizes): whether that plugin is installed is the worker's
         // question (`_worker._plugin_needs`), so the file is answered there.
-        if matches!(name, "anyio" | "timeout") {
+        if matches!(
+            name,
+            "anyio" | "timeout" | "flaky" | "benchmark" | "repeat" | "order"
+        ) {
             return Err(Dynamic::new(
                 Reason::NonLiteralMark,
                 format!("@mark.{name} belongs to a pytest plugin"),

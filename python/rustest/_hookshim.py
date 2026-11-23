@@ -704,6 +704,79 @@ _PLUGIN_FLAGS: Final[Mapping[str, frozenset[str]]] = {
             "--hypothesis-verbosity",
         }
     ),
+    # Probed with pytest 8.4.2: pytest-rerunfailures 16.7, pytest-benchmark 5.3.1, pytest-sugar
+    # 1.1.1, pytest-instafail 0.5.0, pytest-repeat 0.9.4, pytest-order 1.5.0, pytest-env 1.2.0.
+    "rerunfailures": frozenset(
+        {
+            "--fail-on-flaky",
+            "--force-reruns",
+            "--max-suite-reruns",
+            "--only-rerun",
+            "--rerun-except",
+            "--rerun-exclude-path",
+            "--rerun-show-tracebacks",
+            "--reruns",
+            "--reruns-delay",
+            "--reruns-delay-backoff-factor",
+            "--reruns-mode",
+        }
+    ),
+    "benchmark": frozenset(
+        {
+            "--benchmark-autosave",
+            "--benchmark-calibration-precision",
+            "--benchmark-columns",
+            "--benchmark-compare",
+            "--benchmark-compare-fail",
+            "--benchmark-confidence",
+            "--benchmark-cprofile",
+            "--benchmark-cprofile-dump",
+            "--benchmark-cprofile-loops",
+            "--benchmark-cprofile-top",
+            "--benchmark-disable",
+            "--benchmark-disable-gc",
+            "--benchmark-enable",
+            "--benchmark-group-by",
+            "--benchmark-histogram",
+            "--benchmark-json",
+            "--benchmark-max-time",
+            "--benchmark-min-rounds",
+            "--benchmark-min-time",
+            "--benchmark-name",
+            "--benchmark-netrc",
+            "--benchmark-only",
+            "--benchmark-precision",
+            "--benchmark-quiet",
+            "--benchmark-save",
+            "--benchmark-save-data",
+            "--benchmark-skip",
+            "--benchmark-sort",
+            "--benchmark-storage",
+            "--benchmark-time-unit",
+            "--benchmark-timer",
+            "--benchmark-verbose",
+            "--benchmark-warmup",
+            "--benchmark-warmup-iterations",
+        }
+    ),
+    "sugar": frozenset({"--force-sugar", "--old-summary", "--sugar-no-trace", "--sugar-trace-dir"}),
+    "instafail": frozenset({"--instafail"}),
+    "repeat": frozenset({"--count", "--repeat-scope"}),
+    "pytest_order": frozenset(
+        {
+            "--error-on-failed-ordering",
+            "--fail-all-on-failed-ordering",
+            "--indulgent-ordering",
+            "--order-after-ff",
+            "--order-dependencies",
+            "--order-group-scope",
+            "--order-marker-prefix",
+            "--order-scope",
+            "--order-scope-level",
+            "--sparse-ordering",
+        }
+    ),
+    "env": frozenset(),
 }
 
 #: What ``getoption`` and ``config.option`` answer for a loaded plugin's options: their
@@ -805,6 +878,17 @@ _PLUGIN_MARKER_LINES: Final[Mapping[str, tuple[str, ...]]] = {
     "hydra_pytest": (),
     "faker": (),
     "typeguard": (),
+    "rerunfailures": (
+        "flaky(reruns=1, reruns_delay=0, reruns_delay_backoff_factor=1.0): mark test to re-run up to 'reruns' times. Add a delay of 'reruns_delay' seconds between re-runs, multiplied by 'reruns_delay_backoff_factor' after each attempt for an exponential backoff.",
+    ),
+    "benchmark": ("benchmark: mark a test with custom benchmark settings.",),
+    "sugar": (),
+    "instafail": (),
+    "repeat": ("repeat(n): run the given test function `n` times.",),
+    "pytest_order": (
+        "order: specify ordering information for when tests should run in relation to one another. Provided by pytest-order. See also: https://pytest-order.readthedocs.io/",
+    ),
+    "env": (),
 }
 
 #: Installed plugins rustest runs without while no selected test uses them
@@ -836,6 +920,10 @@ _PLUGIN_USES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = {
         frozenset({"hydra_restore_singletons", "hydra_sweep_runner", "hydra_task_runner"}),
     ),
     "faker": (frozenset(), frozenset({"faker"})),
+    "rerunfailures": (frozenset({"flaky"}), frozenset()),
+    "benchmark": (frozenset({"benchmark"}), frozenset({"benchmark", "benchmark_weave"})),
+    "repeat": (frozenset({"repeat"}), frozenset()),
+    "pytest_order": (frozenset({"order"}), frozenset({"fail_after_cannot_order"})),
 }
 
 #: Plugin fixtures a plugin acts on **by name**, defined by the user or not: anyio's hooks key

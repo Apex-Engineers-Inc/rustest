@@ -1286,10 +1286,19 @@ def _retention_reasons(config_file: object) -> list[str]:
     return reasons
 
 
-def _autoloaded_plugins(blocked: Sequence[str], config_file: object) -> list[str]:
+def _autoloaded_plugins(blocked: Sequence[str], config_file: object, rootdir: str) -> list[str]:
     from . import _fallback
 
-    return _fallback.autoload_reasons(blocked, _raw_ini(config_file))
+    ini = _raw_ini(config_file)
+    # pytest-timeout's ini defaults, for the workers (`_worker._timeout`), which do not carry
+    # the ini; process-wide like RUSTEST_PYTEST9.
+    os.environ["RUSTEST_TIMEOUT_INI"] = (
+        f"{ini.get('timeout') or ''}\n{ini.get('timeout_method') or ''}"
+    )
+    reasons = _fallback.autoload_reasons(blocked, ini)
+    if not reasons:
+        _fallback.apply_pytest_env(rootdir, ini, blocked)
+    return reasons
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1509,7 +1518,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "cacheprovider" in blocked_plugins
             and any(f in raw for f in ("--lf", "--last-failed", "--ff", "--failed-first"))
         )
-        + _autoloaded_plugins(blocked_plugins, resolved.get("config_file"))
+        + _autoloaded_plugins(
+            blocked_plugins, resolved.get("config_file"), str(rootdir or os.getcwd())
+        )
         + _retention_reasons(resolved.get("config_file"))
         # ponytail: under --no-pytest-fallback a wrongly typed TOML value is read leniently,
         # without a note that pytest 9 would reject it.

@@ -179,9 +179,9 @@ fn is_zero(count: &usize) -> bool {
 
 /// Plugins that change the collection itself when used: anyio parametrizes a test by backend
 /// (`[asyncio]`/`[trio]` ids) and syrupy 7 marks it `syrupy_snapshot`, both before `-k`/`-m`
-/// and node-id selection. Their [`CollectedTest::needs`] are decided on the whole collection;
+/// and node-id selection; pytest-repeat parametrizes a `repeat`-marked test. Their [`CollectedTest::needs`] are decided on the whole collection;
 /// the others' only on what selection keeps.
-const COLLECTION_CHANGING: &[&str] = &["anyio", "syrupy"];
+const COLLECTION_CHANGING: &[&str] = &["anyio", "syrupy", "repeat"];
 
 /// The hand-off reasons the given tests' [`CollectedTest::needs`] add up to, each once and
 /// naming the first test that has it: on the whole collection only those of

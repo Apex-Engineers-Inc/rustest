@@ -253,8 +253,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **pytest-timeout's `timeout` mark runs natively.** A test marked `timeout(N)` used to send
   the session to pytest when the plugin was installed. The mark now bounds the test as the
   plugin does: a failure where `SIGALRM` exists, and on Windows or with `method="thread"`
-  the worker process ends. The `timeout` ini key, `--timeout` and `PYTEST_TIMEOUT` still
+  the worker process ends. The `timeout` and `timeout_method` ini keys and `PYTEST_TIMEOUT`
+  are honoured the same way. `--timeout`, `session_timeout` and `timeout_func_only` still
   hand off.
+- **pytest-env runs natively.** With the plugin installed, the `env` ini lines (with their
+  `D:` and `R:` flags) or the `[tool.pytest_env]` table set the environment before any
+  worker starts, as pytest-env 1.2.0 does. It used to hand the session to pytest.
+- **Six more installed plugins no longer hand the session off on sight.**
+  pytest-rerunfailures, pytest-benchmark, pytest-repeat and pytest-order are inert until
+  something uses them, so a session stays with rustest until a selected test carries their
+  mark (`flaky`, `benchmark`, `repeat`, `order`) or requests their fixture, or a flag or ini
+  key of theirs asks for the behaviour. pytest-sugar and pytest-instafail only change
+  terminal output.
 - **More of `config` is answered in a conftest hook.** `config.inicfg` (the config file's raw
   values), `config.stash` and its older spelling `config._store` no longer hand the session
   to pytest, and a hook may read the names of a parametrized test's marks

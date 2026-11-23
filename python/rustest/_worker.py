@@ -4723,31 +4723,43 @@ def _plugin_needs(marks: Sequence[MarkSpec], closure: "FixtureClosure | None") -
 
 @contextlib.contextmanager
 def _timeout(marks: Sequence[MarkSpec]) -> Iterator[None]:
-    """pytest-timeout's ``timeout`` mark, when the plugin is installed: the closest mark's
-    seconds bound the whole test, fixtures included.
+    """pytest-timeout, when the plugin is installed: a bound on the whole test, fixtures
+    included.  The closest ``timeout`` mark gives the seconds and the method; what it leaves
+    out comes from ``PYTEST_TIMEOUT``, then the ``timeout`` and ``timeout_method`` ini keys
+    (which the CLI passes down in ``RUSTEST_TIMEOUT_INI``), as in the plugin.
 
     As the plugin does: where ``SIGALRM`` exists the test fails with the plugin's message; with
-    ``method="thread"``, or on Windows, every thread's stack is dumped and the process ends
-    (here a worker, whose death the orchestrator reports).  The ``timeout`` ini, ``--timeout``
-    and ``PYTEST_TIMEOUT`` are still pytest's (``_fallback.autoload_reasons``).
+    the ``thread`` method, or on Windows, every thread's stack is dumped and the process ends
+    (here a worker, whose death the orchestrator reports).  ``--timeout``, ``session_timeout``
+    and ``timeout_func_only`` are still pytest's (``_fallback.autoload_reasons``).
     """
-    mark = next((m for m in marks if m.name == "timeout"), None)
-    if mark is None or "timeout" not in _loaded_plugin_uses:
+    if "timeout" not in _loaded_plugin_uses:
         yield
         return
-    seconds = mark.args[0] if mark.args else mark.kwargs.get("timeout")
+    mark = next((m for m in marks if m.name == "timeout"), None)
+    args: Sequence[Any] = mark.args if mark is not None else ()
+    kwargs: Mapping[str, Any] = mark.kwargs if mark is not None else {}
+    ini_seconds, _, ini_method = os.environ.get("RUSTEST_TIMEOUT_INI", "").partition("\n")
+    raw: Any = args[0] if args else kwargs.get("timeout")
+    if raw is None:
+        raw = os.environ.get("PYTEST_TIMEOUT") or ini_seconds
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):  # ponytail: the plugin makes a bad value a usage error
+        seconds = 0.0
     # ponytail: `func_only=True` times the body alone, which this window cannot; such a test
     # runs with no timer rather than a wrong one.
-    if not isinstance(seconds, (int, float)) or seconds <= 0 or mark.kwargs.get("func_only"):
+    if seconds <= 0 or kwargs.get("func_only"):
         yield
         return
+    method = (args[1] if len(args) > 1 else kwargs.get("method")) or ini_method
     import signal
     import threading
 
     alarm = getattr(signal, "SIGALRM", None)
     if (
         alarm is not None
-        and mark.kwargs.get("method", mark.args[1] if len(mark.args) > 1 else None) != "thread"
+        and method != "thread"
         and threading.current_thread() is threading.main_thread()
     ):
 

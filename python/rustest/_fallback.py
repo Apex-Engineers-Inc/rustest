@@ -16,7 +16,7 @@ import re
 import sys
 import threading
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 if TYPE_CHECKING:
     import subprocess
@@ -103,6 +103,9 @@ _WINDOWS = sys.platform == "win32"
 #: | ``rich`` (pytest-rich) | terminal reporting, and only with ``--rich`` (an unrecognized flag, so it hands off by itself) |
 #: | ``codeblocks`` | collects markdown fences only with ``--codeblocks``, which rustest implements itself |
 #: | ``anyio``, ``timeout``, ``syrupy``, ``textual-snapshot``, ``platformdirs``, ``hydra_pytest``, ``faker``, ``typeguard`` | inert until something uses them: a selected test with the plugin's mark or one of its fixtures hands the session off (``_worker._PLUGIN_USES``), as do their flags, and the ini keys and environment that switch them on (:func:`autoload_reasons`) -- anyio's ``anyio_mode = auto``, pytest-timeout's ``timeout``/``session_timeout``/``PYTEST_TIMEOUT``, typeguard's ``typeguard-*`` keys (faker's autouse ``_session_faker`` only builds a ``Faker`` with its own ``random.Random``) |
+#: | ``rerunfailures``, ``benchmark``, ``repeat``, ``pytest_order`` | inert until used, read in their sources: rerunfailures returns from every hook when no rerun count is set (its flags hand off, as do the ``reruns``, ``only_rerun`` and ``rerun_except`` ini keys and its ``flaky`` mark); pytest-benchmark acts through its ``benchmark`` fixtures, its mark and its flags; pytest-repeat parametrizes only for ``--count`` or its ``repeat`` mark; pytest-order sorts only tests carrying its ``order`` mark, or under its flags |
+#: | ``sugar``, ``instafail`` | terminal reporting only, never an outcome; their options are flags (unknown ones hand off) |
+#: | ``env`` (pytest-env) | sets environment variables from the ``env`` ini key or ``[tool.pytest_env]`` before anything is imported; rustest does the same (:func:`apply_pytest_env`) |
 #: | ``hypothesispytest`` | what it does to outcomes is ported (``_hypothesis``), for the releases checked there and later ones whose plugin is unchanged: another hands off (:func:`autoload_reasons`), as do its ``--hypothesis-*`` flags |
 #:
 #: Judged and **not** allowed, with the evidence: ``inline_snapshot`` (an autouse fixture
@@ -128,6 +131,13 @@ SAFE_PLUGINS: Final = frozenset(
         "hydra_pytest",
         "faker",
         "typeguard",
+        "rerunfailures",
+        "benchmark",
+        "sugar",
+        "instafail",
+        "repeat",
+        "pytest_order",
+        "env",
     }
 )
 
@@ -182,10 +192,19 @@ def autoload_reasons(blocked: Sequence[str], ini: Mapping[str, object] | None = 
     ini = ini or {}
     switched_on = {
         "timeout": [
-            *(f"the {key} ini option" for key in ("timeout", "session_timeout") if ini.get(key)),
-            *(["PYTEST_TIMEOUT"] * bool(os.environ.get("PYTEST_TIMEOUT"))),
+            # `timeout`, `timeout_method` and PYTEST_TIMEOUT are honoured (`_worker._timeout`)
+            *(
+                f"the {key} ini option"
+                for key in ("session_timeout", "timeout_func_only")
+                if str(ini.get(key) or "").strip().lower() not in ("", "0", "false", "no", "off")
+            ),
         ],
         "anyio": ["anyio_mode = auto"] * (str(ini.get("anyio_mode", "")).strip() == "auto"),
+        "rerunfailures": [
+            f"the {key} ini option"
+            for key in ("reruns", "only_rerun", "rerun_except")
+            if ini.get(key)
+        ],
         "typeguard": [f"the {key} ini option" for key in ini if key.startswith("typeguard-")],
     }
     low, high = (".".join(map(str, bound)) for bound in VERIFIED)
@@ -210,6 +229,67 @@ def autoload_reasons(blocked: Sequence[str], ini: Mapping[str, object] | None = 
         for name, dist in loaded
         if name not in SAFE_PLUGINS or (name == "hypothesispytest" and not supported(dist))
     ]
+
+
+def apply_pytest_env(rootdir: str, ini: Mapping[str, object], blocked: Sequence[str]) -> None:
+    """pytest-env 1.2.0's ``pytest_load_initial_conftests``, when the plugin is installed: set
+    the environment variables the project configures, before any worker starts.
+
+    ``[tool.pytest_env]`` of the nearest ``pyproject.toml`` at or above the rootdir wins; else
+    the ``env`` ini lines, ``(FLAG:)NAME=VALUE`` with ``D:`` (only if unset) and ``R:`` (raw:
+    no ``{VAR}`` substitution).
+    """
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") or "env" in blocked:
+        return
+    if not any(name == "env" for name, _ in installed_plugins()):
+        return
+    entries: list[tuple[str, str, bool, bool]] = []  # key, value, transform, skip_if_set
+    table: object = None
+    directory = os.path.abspath(rootdir)
+    while True:
+        candidate = os.path.join(directory, "pyproject.toml")
+        if os.path.exists(candidate):
+            import tomllib
+
+            with open(candidate, "rb") as handle:
+                table = tomllib.load(handle).get("tool", {}).get("pytest_env")
+            break
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    if isinstance(table, dict):
+        for key, entry in cast("dict[str, object]", table).items():
+            if isinstance(entry, dict):
+                options = cast("dict[str, object]", entry)
+                entries.append(
+                    (
+                        key,
+                        str(options["value"]),
+                        bool(options.get("transform")),
+                        bool(options.get("skip_if_set")),
+                    )
+                )
+            else:
+                entries.append((key, str(entry), False, False))
+    else:
+        raw = ini.get("env") or []
+        lines = (
+            raw.splitlines()
+            if isinstance(raw, str)
+            else [str(x) for x in cast("list[object]", raw)]
+        )
+        for line in (line.strip() for line in lines):
+            if not line:
+                continue
+            head, _, value = line.partition("=")
+            *flag_parts, key = head.split(":")
+            flag_set = {flag.strip().upper() for flag in flag_parts}
+            entries.append((key.strip(), value.strip(), "R" not in flag_set, "D" in flag_set))
+    for key, value, transform, skip_if_set in entries:
+        if skip_if_set and key in os.environ:
+            continue
+        os.environ[key] = value.format(**os.environ) if transform else value
 
 
 def _installed(module: str) -> bool:

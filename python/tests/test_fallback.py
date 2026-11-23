@@ -1126,6 +1126,15 @@ def test_only_the_judged_safe_plugins_are_allowed():
         "hydra_pytest",
         "faker",
         "typeguard",
+        "rerunfailures",
+        "benchmark",
+        "repeat",
+        "pytest_order",
+        # terminal reporting only
+        "sugar",
+        "instafail",
+        # ported (`_fallback.apply_pytest_env`)
+        "env",
     }
     # Each of these was probed or read and found able to change an outcome or an id.
     for unsafe in ("inline_snapshot", "randomly"):
@@ -1308,6 +1317,97 @@ def test_a_timeout_mark_runs_natively_and_ends_a_test_that_overruns(tmp_path: Pa
     result = run([sys.executable, "-m", "rustest", "-p", "no:cacheprovider"], slow, env)
     assert result.returncode != 0, result.stdout + result.stderr
     assert "1 passed" not in result.stdout + result.stderr
+
+
+def test_the_timeout_ini_and_environment_bound_every_test(tmp_path: Path):
+    """pytest-timeout's ``timeout`` ini key and ``PYTEST_TIMEOUT`` run natively: a suite inside
+    the bound passes untouched, one over it does not pass; ``session_timeout`` is pytest's."""
+    env = clean_env()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    def rustest(name: str, body: str, ini: str, **extra: str) -> subprocess.CompletedProcess[str]:
+        tree = make_tree(
+            tmp_path,
+            name,
+            {**_FAKE_TIMEOUT, "test_t.py": body, "pytest.ini": f"[pytest]\n{ini}\n"},
+        )
+        child = {**env, **extra, "PYTHONPATH": str(tree / "site")}
+        return run([sys.executable, "-m", "rustest", "-p", "no:cacheprovider"], tree, child)
+
+    quick = "def test_ok():\n    pass\n"
+    slow = "import time\n\n\ndef test_slow():\n    time.sleep(60)\n"
+
+    result = rustest("ini_ok", quick, "timeout = 60")
+    assert result.returncode == 0 and "handing" not in result.stderr, result.stderr
+    result = rustest("ini_slow", slow, "timeout = 0.3")
+    assert result.returncode != 0 and "handing" not in result.stderr, result.stderr
+    result = rustest("env_slow", slow, "", PYTEST_TIMEOUT="0.3")
+    assert result.returncode != 0 and "handing" not in result.stderr, result.stderr
+    result = rustest("session", quick, "session_timeout = 60")
+    assert "handing this session to pytest" in result.stderr
+
+
+def test_pytest_env_sets_the_environment_as_the_plugin_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """pytest-env 1.2.0: ``env`` ini lines with the ``D:`` and ``R:`` flags, and a
+    ``[tool.pytest_env]`` table that wins over them; nothing without the plugin."""
+    for name in ("RT_A", "RT_B", "RT_RAW", "RT_KEPT", "RT_T"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
+    ini = {"env": "RT_A=one\nD:RT_B={RT_A}/two\nR:RT_RAW={RT_A}\nD:RT_KEPT=new\n"}
+
+    monkeypatch.setattr(_fallback, "installed_plugins", lambda: [])
+    _fallback.apply_pytest_env(str(tmp_path), ini, [])
+    assert "RT_A" not in os.environ
+
+    monkeypatch.setattr(_fallback, "installed_plugins", lambda: [("env", "pytest_env-1.2.0")])
+    _fallback.apply_pytest_env(str(tmp_path), ini, ["env"])  # `-p no:env`
+    assert "RT_A" not in os.environ
+
+    monkeypatch.setenv("RT_KEPT", "old")
+    _fallback.apply_pytest_env(str(tmp_path), ini, [])
+    assert [os.environ[k] for k in ("RT_A", "RT_B", "RT_RAW", "RT_KEPT")] == [
+        "one",
+        "one/two",
+        "{RT_A}",
+        "old",
+    ]
+
+    _ = (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest_env]\nRT_T = {value = "{RT_A}!", transform = true}\nRT_A = "table"\n',
+        encoding="utf-8",
+    )
+    _fallback.apply_pytest_env(str(tmp_path), ini, [])
+    assert os.environ["RT_T"] == "one!" and os.environ["RT_A"] == "table"
+
+
+def test_an_installed_rerunfailures_is_inert_until_something_asks_for_a_rerun(tmp_path: Path):
+    """Installed and unused it changes nothing, so the session stays; its ``flaky`` mark or its
+    ``reruns`` ini key is a request only the plugin can honour."""
+    plugin = _site_plugin(
+        "rerunfailures",
+        "fake_rerun_plugin",
+        "def pytest_addoption(parser):\n"
+        "    parser.addini('reruns', 'x')\n\n\n"
+        "def pytest_configure(config):\n"
+        "    config.addinivalue_line('markers', 'flaky: rerun')\n",
+    )
+    env = clean_env()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    def rustest(name: str, body: str, ini: str = "") -> subprocess.CompletedProcess[str]:
+        tree = make_tree(
+            tmp_path, name, {**plugin, "test_t.py": body, "pytest.ini": f"[pytest]\n{ini}\n"}
+        )
+        child = {**env, "PYTHONPATH": str(tree / "site")}
+        return run([sys.executable, "-m", "rustest", "-p", "no:cacheprovider"], tree, child)
+
+    plain = "def test_ok():\n    pass\n"
+    marked = "import pytest\n\n\n@pytest.mark.flaky(reruns=2)\ndef test_ok():\n    pass\n"
+    assert "handing" not in rustest("plain", plain).stderr
+    assert "mark 'flaky'" in rustest("marked", marked).stderr
+    assert "the reruns ini option" in rustest("ini", plain, "reruns = 2").stderr
 
 
 def test_ignore_and_ignore_glob_run_natively(tmp_path: Path):
