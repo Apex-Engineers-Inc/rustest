@@ -1,0 +1,21 @@
+{
+  "suite": "fastapi",
+  "date": "2026-11-14 02:03",
+  "mode": "handed off",
+  "reasons": [
+    "the pytest plugin inline_snapshot (inline_snapshot-0.34.2) is installed and rustest does not run it (`-p no:inline_snapshot` disables it)"
+  ],
+  "verdict": "MATCH",
+  "tests": 3289,
+  "pytest_s": 86.09,
+  "xdist_s": 20.94,
+  "rustest_s": 21.36,
+  "engine_s": 14.2,
+  "engine_verdict": "EXPLAINED",
+  "xdist_status_diffs": 1,
+  "xdist_error": "",
+  "pytest_exit": 1,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 0
+}

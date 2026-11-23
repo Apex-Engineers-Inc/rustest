@@ -1,0 +1,20 @@
+{
+  "suite": "pillow",
+  "date": "2026-11-14 03:50",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "MATCH",
+  "tests": 4036,
+  "pytest_s": 59.26,
+  "xdist_s": 20.15,
+  "rustest_s": 12.76,
+  "duration_record": true,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

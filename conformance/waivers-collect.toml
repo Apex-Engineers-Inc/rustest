@@ -1,0 +1,11 @@
+# Documented divergences between pytest's collection and `rustest --collect-only`
+# (the `--collect` gate). Node ids are compared as an ORDERED list.
+#
+# Entry: `"<case path>" = "<mechanism, file:line, and the fix shape>"`. A waiver whose case
+# starts matching is reported as STALE-WAIVER and fails the run, so this file only shrinks.
+#
+# Gate: `uv run python -m conformance --collect`
+
+[cases]
+
+"fixtures/module-param-reorder" = "PREDICTED and CONFIRMED (added at 1c Task 2): v2 does not implement pytest's reorder_items pass, so a module-scoped PARAMETRIZED fixture requested by two tests is emitted -- and executed -- in source order instead of grouped by parameter. pytest: alpha[one], beta[one], alpha[two], beta[two]. v2: alpha[one], alpha[two], beta[one], beta[two]. MECHANISM: _pytest/fixtures.py::reorder_items runs as part of pytest_collection_modifyitems and needs the WHOLE session's item list to group by the higher-scoped parameter; v2 collects file by file in a worker pool and has no such pass -- the limitation is already written down at python/rustest/_worker.py:97-102, which predicted exactly this outcome: a module-scoped two-value fixture costs 2 setups under pytest (grouped) and 4 here. Both halves PROBED with a printing fixture: pytest 2 setups (SETUP one, SETUP two), v2 4 (SETUP one, SETUP two, SETUP one, SETUP two). WHAT THE GATE ACTUALLY SEES, and why the case earns its place: the TALLY MATCHES -- 4 passed on both sides, exit 0 on both sides -- and the id SETS are identical. The divergence is visible ONLY through the ordered id comparison. A set-based or tally-based grader certifies this green, which is precisely what happens on the v1 gate, where this case MATCHES. That makes it the corpus's demonstration that ordered ids are load-bearing rather than pedantic. It is also a real behavioural cost, not a cosmetic one: double the fixture setups, paid in full by any fixture whose setup is expensive or non-idempotent. DEFERRED to the Phase 2/3 decision on item reordering (1c Task 1 report Sec 8, behavioural gap 9): the pass needs the manifest assembled before dispatch, which is a scheduler change, not a worker change. Pre-waiver detail: id order: first divergence at index 1 (pytest='test_module_param_reorder.py::test_beta[one]', v2='test_module_param_reorder.py::test_alpha[two]')."

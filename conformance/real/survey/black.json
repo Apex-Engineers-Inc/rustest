@@ -1,0 +1,103 @@
+{
+  "suite": "black",
+  "url": "https://github.com/psf/black.git",
+  "tag": "26.10.1",
+  "rev": "258e7dbf348bc23cb70b8cdf693481c04634ebcc",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 654,
+  "pytest_tally": {
+    "passed": 642,
+    "failed": 5,
+    "skipped": 7,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      110.22,
+      90.93,
+      94.68
+    ],
+    "rustest -n 1": [
+      99.41,
+      80.44,
+      118.72
+    ],
+    "pytest -n 4": [
+      44.35,
+      25.25,
+      43.63
+    ],
+    "rustest -n 4": [
+      32.0,
+      41.63,
+      45.13
+    ],
+    "pytest -n 16": [
+      67.75,
+      39.2,
+      45.1
+    ],
+    "rustest -n 16": [
+      50.48,
+      31.12,
+      38.59
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

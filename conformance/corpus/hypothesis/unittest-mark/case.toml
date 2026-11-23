@@ -1,0 +1,3 @@
+# The plugin marks a hypothesis `TestCase` method and a state machine's `runTest`.
+[case]
+args = ["-m", "not hypothesis"]

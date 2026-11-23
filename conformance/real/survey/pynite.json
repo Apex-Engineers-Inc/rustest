@@ -1,0 +1,103 @@
+{
+  "suite": "pynite",
+  "url": "",
+  "tag": "",
+  "rev": "59aca05",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 182,
+  "pytest_tally": {
+    "passed": 182,
+    "failed": 0,
+    "skipped": 0,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 0,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      99.82,
+      45.49,
+      43.53
+    ],
+    "rustest -n 1": [
+      46.07,
+      49.4,
+      43.04
+    ],
+    "pytest -n 4": [
+      28.56,
+      27.51,
+      27.66
+    ],
+    "rustest -n 4": [
+      23.35,
+      23.58,
+      22.99
+    ],
+    "pytest -n 16": [
+      38.34,
+      40.81,
+      43.19
+    ],
+    "rustest -n 16": [
+      30.58,
+      43.34,
+      33.48
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

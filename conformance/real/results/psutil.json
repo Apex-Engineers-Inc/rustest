@@ -1,0 +1,19 @@
+{
+  "suite": "psutil",
+  "date": "2026-11-14 02:27",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "DIVERGE",
+  "tests": 713,
+  "pytest_s": 576.84,
+  "xdist_s": 417.86,
+  "rustest_s": 420.83,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 1,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 1
+}

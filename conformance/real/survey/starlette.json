@@ -1,0 +1,103 @@
+{
+  "suite": "starlette",
+  "url": "https://github.com/encode/starlette.git",
+  "tag": "1.10.0",
+  "rev": "8aa828ceaff764a2e57932fb42fdf105a47c4c83",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 1416,
+  "pytest_tally": {
+    "passed": 1396,
+    "failed": 14,
+    "skipped": 4,
+    "xfailed": 2,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      38.57,
+      48.56,
+      27.28
+    ],
+    "rustest -n 1": [
+      33.08,
+      41.71,
+      38.98
+    ],
+    "pytest -n 4": [
+      24.75,
+      13.3,
+      17.3
+    ],
+    "rustest -n 4": [
+      9.12,
+      10.48,
+      15.42
+    ],
+    "pytest -n 16": [
+      24.36,
+      21.84,
+      30.14
+    ],
+    "rustest -n 16": [
+      15.24,
+      22.63,
+      13.5
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

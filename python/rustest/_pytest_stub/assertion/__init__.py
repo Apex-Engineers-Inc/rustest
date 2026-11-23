@@ -1,13 +1,9 @@
 """
 Stub for _pytest.assertion
 
-MIGRATION GUIDE:
-Assertion rewriting is pytest-specific and not supported by rustest.
-rustest uses Python's standard assertion mechanism.
-
-Your tests should work fine with standard asserts:
-    assert value == expected
-    assert value in collection
+rustest rewrites ``assert`` statements in test modules itself, the way pytest does
+(``rustest._assertion_rewrite``), so a failing ``assert a == b`` reports both operands.
+Nothing in this stub is needed for that; it exists so the import does not fail.
 """
 
 import warnings
@@ -17,8 +13,7 @@ from . import rewrite
 
 warnings.warn(
     "Importing from _pytest.assertion is not recommended. "
-    "Assertion rewriting is pytest-specific and not supported by rustest. "
-    "Use standard Python assertions.",
+    "It is pytest's private API; rustest rewrites assertions without it.",
     DeprecationWarning,
     stacklevel=2,
 )

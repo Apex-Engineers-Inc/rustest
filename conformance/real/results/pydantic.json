@@ -1,0 +1,25 @@
+{
+  "suite": "pydantic",
+  "date": "2026-11-21 08:13",
+  "mode": "handed off",
+  "reasons": [
+    "the pytest plugin benchmark (pytest_benchmark-5.3.1) is installed and rustest does not run it (`-p no:benchmark` disables it)",
+    "the pytest plugin examples (pytest_examples-0.0.18) is installed and rustest does not run it (`-p no:examples` disables it)",
+    "the pytest plugin run-parallel (pytest_run_parallel-0.10.0) is installed and rustest does not run it (`-p no:run-parallel` disables it)",
+    "the pytest plugin time_machine (time_machine-3.6.0) is installed and rustest does not run it (`-p no:time_machine` disables it)"
+  ],
+  "verdict": "MATCH",
+  "tests": 11259,
+  "pytest_s": 30.75,
+  "xdist_s": 19.61,
+  "rustest_s": 19.81,
+  "duration_record": false,
+  "engine_s": null,
+  "engine_verdict": "no engine run: RuntimeError('rustest wrote no report (exit 4):\\nusage: rustest [-h] [-k PATTERN] [-m MARK_EXPR] [-n WORKERS] [-s] [-v] [-q]\\n               [--ascii] [--color {auto,always,never,yes,no",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

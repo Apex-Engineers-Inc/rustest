@@ -1,0 +1,2 @@
+[tool.rustest]
+asyncio_concurrency = 8

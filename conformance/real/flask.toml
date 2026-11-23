@@ -1,0 +1,41 @@
+# flask -- a mainstream suite with `filterwarnings = ["error"]`, `testpaths = ["tests"]`,
+# and fixtures that build apps, test clients and import-path fixtures on disk.
+
+[repo]
+kind = "oss"
+url = "https://github.com/pallets/flask.git"
+tag = "3.1.3"
+# Annotated tag; this is the commit it points at, not the tag object's own SHA.
+rev = "22d924701a6ae2e4cd01e9a15bbaf3946094af65"
+test_paths = ["tests"]
+
+[env]
+# The `tests` dependency group in pyproject.toml is exactly: asgiref, greenlet, pytest,
+# python-dotenv. Flask's own dependencies (werkzeug, jinja2, click, blinker, itsdangerous)
+# come with the editable install.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  # Same pytest as the corpus oracle, so the comparison does not measure version skew.
+  ["uv", "pip", "install", "--python", "{py}", "pytest==8.4.2", "asgiref", "greenlet", "python-dotenv"],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]

@@ -1,0 +1,67 @@
+# pydantic -- a large, heavily parametrized suite with `filterwarnings = ['error']`, markers
+# and `strict = true`, all configured in pytest 9's native `[tool.pytest]` TOML table (see the
+# note under [env]). Includes `tests/test_docs.py`, which runs the documentation examples
+# through pytest-examples.
+
+[repo]
+kind = "oss"
+url = "https://github.com/pydantic/pydantic.git"
+tag = "v2.14.4"
+# Annotated tag; this is the commit it points at, not the tag object's own SHA.
+rev = "1642a816171707dd8c58da6fff8061a59348402c"
+test_paths = ["tests"]
+
+[env]
+# Test dependencies are the `dev` dependency group in pyproject.toml: coverage, pytz,
+# dirty-equals, pytest-mock, pytest-pretty, pytest-examples, faker, pytest-benchmark,
+# pytest-codspeed, pytest-run-parallel, packaging, jsonschema, time-machine.
+# Installed: everything the tests import (dirty-equals, pytest-mock, pytest-examples, faker,
+# packaging, jsonschema, pytz, time-machine), pytest-benchmark (whose `--benchmark-*` options
+# the project's own addopts passes) and pytest-run-parallel (it registers the
+# `thread_unsafe` marker the tests use; inert without `--parallel-threads`). Left out:
+# coverage and pytest-codspeed (tracing and benchmark collection, nothing the tests import)
+# and pytest-pretty (cosmetic reporting).
+#
+# pytest 9.2.0, not the corpus's 8.4.2: the project configures pytest only through the native
+# `[tool.pytest]` table (strict, filterwarnings = error, `--benchmark-*` addopts), which pytest 8
+# does not read; 9.2.0 is the newest stable pytest 9.
+#
+# pydantic-core is a Rust extension (maturin workspace member). It is installed as the
+# published wheel at the exact version pydantic pins, so no Rust compile is needed here.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "pytest==9.2.0", "pydantic-core==2.50.5", "dirty-equals", "pytest-mock", "pytest-examples",
+    "pytest-benchmark", "pytest-run-parallel", "faker", "packaging", "jsonschema", "pytz", "time-machine",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "--no-deps", "-e", "{repo}"],
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "annotated-types", "typing-extensions", "typing-inspection",
+  ],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+# The suite parametrizes from sets, so two processes collect the same ids only under one
+# hash seed: `pytest -n 4` on its own fails here with "Different tests were collected".
+# Every leg of both runners gets the same pinned seed.
+environ = { PYTHONHASHSEED = "0" }
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 3600
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]

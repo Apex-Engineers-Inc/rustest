@@ -1,0 +1,118 @@
+{
+  "suite": "pydantic",
+  "url": "https://github.com/pydantic/pydantic.git",
+  "tag": "v2.14.4",
+  "rev": "1642a816171707dd8c58da6fff8061a59348402c",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 11259,
+  "pytest_tally": {
+    "passed": 10883,
+    "failed": 0,
+    "skipped": 348,
+    "xfailed": 28,
+    "xpassed": 0,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 0,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      47.04,
+      32.1,
+      35.76
+    ],
+    "rustest -n 1": [
+      44.88,
+      44.45,
+      47.86
+    ],
+    "pytest -n 4": [
+      24.3,
+      19.03,
+      20.39
+    ],
+    "rustest -n 4": [
+      25.39,
+      20.57,
+      22.33
+    ],
+    "pytest -n 16": [
+      34.23,
+      31.91,
+      30.06
+    ],
+    "rustest -n 16": [
+      32.59,
+      29.67,
+      34.77
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      false,
+      false,
+      false
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      false,
+      false,
+      false
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      false,
+      false,
+      false
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin benchmark (pytest_benchmark-5.3.1) is installed and rustest does not run it (`-p no:benchmark` disables it)",
+        "the pytest plugin examples (pytest_examples-0.0.18) is installed and rustest does not run it (`-p no:examples` disables it)",
+        "the pytest plugin run-parallel (pytest_run_parallel-0.10.0) is installed and rustest does not run it (`-p no:run-parallel` disables it)",
+        "the pytest plugin time_machine (time_machine-3.6.0) is installed and rustest does not run it (`-p no:time_machine` disables it)"
+      ]
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin benchmark (pytest_benchmark-5.3.1) is installed and rustest does not run it (`-p no:benchmark` disables it)",
+        "the pytest plugin examples (pytest_examples-0.0.18) is installed and rustest does not run it (`-p no:examples` disables it)",
+        "the pytest plugin run-parallel (pytest_run_parallel-0.10.0) is installed and rustest does not run it (`-p no:run-parallel` disables it)",
+        "the pytest plugin time_machine (time_machine-3.6.0) is installed and rustest does not run it (`-p no:time_machine` disables it)"
+      ]
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin benchmark (pytest_benchmark-5.3.1) is installed and rustest does not run it (`-p no:benchmark` disables it)",
+        "the pytest plugin examples (pytest_examples-0.0.18) is installed and rustest does not run it (`-p no:examples` disables it)",
+        "the pytest plugin run-parallel (pytest_run_parallel-0.10.0) is installed and rustest does not run it (`-p no:run-parallel` disables it)",
+        "the pytest plugin time_machine (time_machine-3.6.0) is installed and rustest does not run it (`-p no:time_machine` disables it)"
+      ]
+    }
+  },
+  "errors": {}
+}

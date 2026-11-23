@@ -1,0 +1,22 @@
+{
+  "suite": "urllib3",
+  "date": "2026-11-21 08:20",
+  "mode": "handed off",
+  "reasons": [
+    "the pytest plugin socket (pytest_socket-0.8.1) is installed and rustest does not run it (`-p no:socket` disables it)"
+  ],
+  "verdict": "MATCH",
+  "tests": 2673,
+  "pytest_s": 159.13,
+  "xdist_s": 57.54,
+  "rustest_s": 60.3,
+  "duration_record": false,
+  "engine_s": 81.47,
+  "engine_verdict": "MATCH",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 1,
+  "rustest_exit": 1,
+  "detail": "",
+  "unexplained": 0
+}

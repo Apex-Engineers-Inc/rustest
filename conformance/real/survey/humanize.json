@@ -1,0 +1,103 @@
+{
+  "suite": "humanize",
+  "url": "https://github.com/python-humanize/humanize.git",
+  "tag": "4.16.0",
+  "rev": "3c577d7650508d52aa2982e930b0e744c343082f",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 784,
+  "pytest_tally": {
+    "passed": 700,
+    "failed": 0,
+    "skipped": 69,
+    "xfailed": 0,
+    "xpassed": 0,
+    "error": 15,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      3.18,
+      3.13,
+      2.91
+    ],
+    "rustest -n 1": [
+      3.11,
+      2.73,
+      2.18
+    ],
+    "pytest -n 4": [
+      4.8,
+      5.6,
+      4.52
+    ],
+    "rustest -n 4": [
+      2.2,
+      1.73,
+      2.05
+    ],
+    "pytest -n 16": [
+      10.73,
+      7.62,
+      8.56
+    ],
+    "rustest -n 16": [
+      1.83,
+      2.06,
+      1.86
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    },
+    "rustest -n 16": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": []
+    }
+  },
+  "errors": {}
+}

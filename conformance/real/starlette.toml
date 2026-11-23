@@ -1,0 +1,50 @@
+# starlette -- an ASGI toolkit whose suite runs through anyio's pytest plugin (tests are
+# marked `pytest.mark.anyio` and parametrized over backends by that plugin, which rustest
+# does not run), with `filterwarnings = ["error"]`, `--strict-markers`, `--strict-config`
+# and `xfail_strict`.
+
+[repo]
+kind = "oss"
+url = "https://github.com/encode/starlette.git"
+tag = "1.10.0"
+# Lightweight tag; commit SHA directly.
+rev = "8aa828ceaff764a2e57932fb42fdf105a47c4c83"
+test_paths = ["tests"]
+
+[env]
+# Test dependencies are the `dev` group in pyproject.toml: `starlette[full]` (itsdangerous,
+# jinja2, opentelemetry-api, python-multipart, pyyaml, httpx, httpx2), httpx2[zstd],
+# blockbuster, importlib-metadata, opentelemetry-sdk and trio. Left out: coverage,
+# pytest-codspeed, mypy, ruff, twine and types-PyYAML (tracing, benchmarking, lint, packaging).
+#
+# pytest 9.2.0, not the corpus's 8.4.2: the dev group requires `pytest>=9.1.1`; 9.2.0 is the
+# newest stable pytest 9.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "pytest==9.2.0", "httpx2[zstd]>=2.0.0", "blockbuster>=1.5.23", "importlib-metadata",
+    "opentelemetry-sdk", "trio",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}[full]"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[run]
+pytest_args = []
+rustest_args = []
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]

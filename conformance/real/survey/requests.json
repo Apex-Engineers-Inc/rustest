@@ -1,0 +1,113 @@
+{
+  "suite": "requests",
+  "url": "https://github.com/psf/requests.git",
+  "tag": "v2.34.2",
+  "rev": "6e83187b8feb273ed4c6cdab5efd8d54901dfab3",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 633,
+  "pytest_tally": {
+    "passed": 628,
+    "failed": 1,
+    "skipped": 3,
+    "xfailed": 0,
+    "xpassed": 1,
+    "error": 0,
+    "deselected": 0,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [],
+  "seconds": {
+    "pytest": [
+      174.99,
+      173.15,
+      172.21
+    ],
+    "rustest -n 1": [
+      175.71,
+      177.95,
+      182.3
+    ],
+    "pytest -n 4": [
+      71.87,
+      67.47,
+      75.61
+    ],
+    "rustest -n 4": [
+      72.43,
+      71.53,
+      74.57
+    ],
+    "pytest -n 16": [
+      38.53,
+      43.93,
+      39.06
+    ],
+    "rustest -n 16": [
+      40.09,
+      39.55,
+      38.91
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      false,
+      false,
+      false
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      false,
+      false,
+      false
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      false,
+      false,
+      false
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [
+        "tests/test_lowlevel.py::test_redirect_rfc1808_to_non_ascii_location"
+      ],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin httpbin (pytest_httpbin-2.1.0) is installed and rustest does not run it (`-p no:httpbin` disables it)"
+      ]
+    },
+    "rustest -n 4": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin httpbin (pytest_httpbin-2.1.0) is installed and rustest does not run it (`-p no:httpbin` disables it)"
+      ]
+    },
+    "rustest -n 16": {
+      "differing": [
+        "tests/test_requests.py::TestRequests::test_getattr_proxy_stream_follows_redirect"
+      ],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin httpbin (pytest_httpbin-2.1.0) is installed and rustest does not run it (`-p no:httpbin` disables it)"
+      ]
+    }
+  },
+  "errors": {}
+}

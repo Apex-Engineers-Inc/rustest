@@ -1,0 +1,4 @@
+# The same file named twice is collected twice; the hook marks only the second copy.
+# The worker keeps one plan per node id, so this hands off, and pytest answers.
+[case]
+args = ["test_a.py", "test_a.py"]

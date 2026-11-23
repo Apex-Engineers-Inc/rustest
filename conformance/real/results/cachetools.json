@@ -1,0 +1,19 @@
+{
+  "suite": "cachetools",
+  "date": "2026-11-14 01:56",
+  "mode": "native",
+  "reasons": [],
+  "verdict": "MATCH",
+  "tests": 291,
+  "pytest_s": 5.8,
+  "xdist_s": 9.28,
+  "rustest_s": 5.3,
+  "engine_s": null,
+  "engine_verdict": "",
+  "xdist_status_diffs": 0,
+  "xdist_error": "",
+  "pytest_exit": 0,
+  "rustest_exit": 0,
+  "detail": "",
+  "unexplained": 0
+}

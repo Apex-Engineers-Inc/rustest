@@ -1,0 +1,60 @@
+# urllib3 -- a socket-heavy suite: real local servers (hypercorn / quart dummy servers and raw
+# socket servers on localhost), TLS fixtures from trustme, `filterwarnings = ["error"]` with a
+# long list of `default:` carve-outs, `xfail_strict`, `log_level = "DEBUG"`, and
+# `@pytest.mark.timeout(...)` markers handled by pytest-timeout.
+
+[repo]
+kind = "oss"
+url = "https://github.com/urllib3/urllib3.git"
+tag = "2.8.0"
+# Annotated tag; this is the commit it points at, not the tag object's own SHA.
+rev = "b1d30ab61fe0db8f11092805e8c5ac43e091064a"
+test_paths = ["test"]
+
+[env]
+# Test dependencies are the `dev` dependency group in pyproject.toml: the `test` group
+# (anyio[trio], h2, httpx, hypercorn, pysocks, pytest-socket, pytest-timeout, quart,
+# quart-trio, trio) plus cryptography, idna, pyopenssl and trustme, and the project's
+# brotli, h2 and socks extras (zstd is the stdlib's on 3.14). Left out: coverage, build,
+# towncrier (maintainer tooling) and pytest-memray (not available on Windows; the project's
+# own marker excludes it there too).
+#
+# The project's CI (noxfile.py) also passes `--disable-socket --allow-unix-socket
+# --allow-hosts=...` and `--strict-markers` on the command line, not through addopts; this
+# config leaves pytest_args empty, so pytest-socket is installed but inert.
+# `requires_network` tests exist; if a real run shows them failing offline, that is the
+# project's own offline behaviour.
+setup = [
+  ["uv", "venv", "--python", "3.14", "{venv}"],
+  [
+    "uv", "pip", "install", "--python", "{py}",
+    "pytest==8.4.2", "anyio[trio]>=4.8.0", "h2>=4.1.0", "httpx>=0.28.1", "hypercorn>=0.15.0",
+    "pysocks>=1.7.1", "pytest-socket>=0.7.0", "pytest-timeout>=2.3.1", "quart>=0.20.0",
+    "quart-trio>=0.12.0", "trio>=0.27.0",
+    "cryptography>=44.0.2", "idna>=3.10", "pyopenssl>=25.0.0", "trustme>=1.2.1",
+  ],
+  ["uv", "pip", "install", "--python", "{py}", "-e", "{repo}[socks,brotli,h2]"],
+  [
+    "uv",
+    "pip",
+    "install",
+    "--python",
+    "{py}",
+    "--reinstall-package",
+    "rustest",
+    "{wheels}/rustest-1.0.0rc1-cp314-cp314-win_amd64.whl",
+  ],
+]
+pythonpath = []
+
+[run]
+# `test_sslkeylogfile` aborts the interpreter itself on Windows builds of CPython without
+# OPENSSL_Applink, under pytest as much as under rustest, so neither runner is asked to
+# run it.
+pytest_args = ["-k", "not test_sslkeylogfile"]
+rustest_args = ["-k", "not test_sslkeylogfile"]
+timeout_s = 1800
+id_policy = "exact"
+
+[divergence.ids]
+[divergence.global]

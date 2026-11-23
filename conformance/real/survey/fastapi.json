@@ -1,0 +1,118 @@
+{
+  "suite": "fastapi",
+  "url": "https://github.com/fastapi/fastapi.git",
+  "tag": "0.140.7",
+  "rev": "98b12fe56f97107e71a20fc1cf334ccfa590efb5",
+  "cpus": 16,
+  "rounds": 3,
+  "tests": 3289,
+  "pytest_tally": {
+    "passed": 3248,
+    "failed": 8,
+    "skipped": 5,
+    "xfailed": 5,
+    "xpassed": 0,
+    "error": 23,
+    "deselected": 18,
+    "collection_errors": 0
+  },
+  "pytest_exit": 1,
+  "flaky_under_pytest": [
+    "tests/test_tutorial/test_additional_responses/test_tutorial002.py::test_path_operation_img[tutorial002_py310]",
+    "tests/test_tutorial/test_custom_docs_ui/test_tutorial002.py::test_redoc_html",
+    "tests/test_tutorial/test_static_files/test_tutorial001.py::test_openapi_schema"
+  ],
+  "seconds": {
+    "pytest": [
+      74.55,
+      70.76,
+      63.91
+    ],
+    "rustest -n 1": [
+      53.93,
+      55.67,
+      54.58
+    ],
+    "pytest -n 4": [
+      24.85,
+      21.54,
+      25.93
+    ],
+    "rustest -n 4": [
+      22.69,
+      25.72,
+      24.73
+    ],
+    "pytest -n 16": [
+      52.23,
+      45.38,
+      42.13
+    ],
+    "rustest -n 16": [
+      44.44,
+      46.11,
+      43.99
+    ]
+  },
+  "rustest_warm": {
+    "pytest": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 1": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 4": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 4": [
+      true,
+      true,
+      true
+    ],
+    "pytest -n 16": [
+      null,
+      null,
+      null
+    ],
+    "rustest -n 16": [
+      true,
+      true,
+      true
+    ]
+  },
+  "agreement": {
+    "rustest -n 1": {
+      "differing": [],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin inline_snapshot (inline_snapshot-0.34.2) is installed and rustest does not run it (`-p no:inline_snapshot` disables it)"
+      ]
+    },
+    "rustest -n 4": {
+      "differing": [
+        "tests/test_tutorial/test_static_files/test_tutorial001.py::test_static_files_not_found"
+      ],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin inline_snapshot (inline_snapshot-0.34.2) is installed and rustest does not run it (`-p no:inline_snapshot` disables it)"
+      ]
+    },
+    "rustest -n 16": {
+      "differing": [
+        "tests/test_tutorial/test_custom_docs_ui/test_tutorial002.py::test_api",
+        "tests/test_tutorial/test_static_files/test_tutorial001.py::test_static_files"
+      ],
+      "differing_on_flaky_tests": [],
+      "handed_to_pytest": [
+        "the pytest plugin inline_snapshot (inline_snapshot-0.34.2) is installed and rustest does not run it (`-p no:inline_snapshot` disables it)"
+      ]
+    }
+  },
+  "errors": {}
+}
