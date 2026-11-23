@@ -256,6 +256,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the worker process ends. The `timeout` and `timeout_method` ini keys and `PYTEST_TIMEOUT`
   are honoured the same way. `--timeout`, `session_timeout` and `timeout_func_only` still
   hand off.
+- **anyio tests run natively.** With anyio installed, an `async def` test marked `anyio`
+  used to send the whole session to pytest. It now gets the `anyio_backend` fixture as
+  under pytest (ids like `test_x[asyncio]` and `test_x[trio]`), and the test and its async
+  fixtures run on anyio's own test runner for that backend, trio included.
+  `anyio_mode = auto` and the `free_tcp_port` family of fixtures still hand off.
+- **rustest's import hook no longer makes a blocking call for each import.** It called
+  `os.path.abspath` on every module found, which blocking-call detectors such as
+  blockbuster reject when a lazy import happens inside a running event loop.
 - **pytest-env runs natively.** With the plugin installed, the `env` ini lines (with their
   `D:` and `R:` flags) or the `[tool.pytest_env]` table set the environment before any
   worker starts, as pytest-env 1.2.0 does. It used to hand the session to pytest.

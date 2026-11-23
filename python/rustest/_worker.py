@@ -3142,6 +3142,9 @@ class FixtureRunner:
         self._finalizers: dict[str, list[_Finalizer]] = {name: [] for name in _BUCKET_ORDER}
         #: One entry per fixture body currently executing; ``addfinalizer`` targets the top.
         self._extras_stack: list[list[Callable[[], object]]] = []
+        #: The ``anyio_backend`` value the fixture about to be called runs on, set by
+        #: :meth:`_resolve_active` and taken by :meth:`_call`; ``_NO_PARAM`` for any other.
+        self._anyio_pending: object = _NO_PARAM
         #: The class chain of the last test :meth:`note_test_boundary` saw, so a change of
         #: class can drain class scope.  ``None`` means "module level, or nothing yet".
         self._current_class: str | None = None
@@ -3273,6 +3276,8 @@ class FixtureRunner:
         """
         if plan.func is None or not _is_coroutine_or_asyncgen(plan.func):
             return
+        if _anyio_mod is not None and "anyio_backend" in plan.closure.names:
+            return  # anyio's runner owns the loop (and trio refuses a second one's signals)
         scope = self.test_loop_scope(plan)
         if scope is not None:
             _ = self.loop_runner(scope)
@@ -3458,6 +3463,26 @@ class FixtureRunner:
             kwargs[argname] = value
             if dependency is not None:
                 dependencies.append(dependency)
+        # anyio's `pytest_fixture_setup`: an async fixture of a test that has `anyio_backend`
+        # among its fixtures depends on it too, and runs on that backend's runner.
+        anyio_backend: object = _NO_PARAM
+        if (
+            _anyio_mod is not None
+            and name != "anyio_backend"
+            and "anyio_backend" in closure.names
+            and (
+                inspect.iscoroutinefunction(fixturedef.func)
+                or inspect.isasyncgenfunction(fixturedef.func)
+            )
+        ):
+            if "anyio_backend" in kwargs:
+                anyio_backend = kwargs["anyio_backend"]
+            else:
+                anyio_backend, dependency = self._resolve_active(
+                    "anyio_backend", closure, params, sub_chain, fixturedef.scope
+                )
+                if dependency is not None:
+                    dependencies.append(dependency)
 
         param_key = params.get(name, _NO_PARAM)
         cached = self._cache.get(fixturedef)
@@ -3491,6 +3516,7 @@ class FixtureRunner:
                 dependency_cache.finalizer.calls.append(functools.partial(self._finish, finalizer))
 
         hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+        self._anyio_pending = anyio_backend
         try:
             if hooks is not None and hooks.runs("pytest_fixture_setup"):
                 value = self._hooked_call(
@@ -3607,6 +3633,12 @@ class FixtureRunner:
             + f"Requested fixture:\n{_format_fixturedef_line(fixturedef)}"
         )
 
+    def fixture_value(self, name: str, plan: ExecutionPlan) -> object:
+        """The value *plan*'s closest fixture *name* has now, or ``None`` when it is not set up."""
+        defs = plan.closure.arg2defs.get(name)
+        cached = self._cache.get(defs[-1]) if defs else None
+        return None if cached is None else cached.value
+
     def _call(
         self, fixturedef: FixtureDef, kwargs: Mapping[str, object], finalizer: _Finalizer
     ) -> object:
@@ -3641,9 +3673,16 @@ class FixtureRunner:
         if fixturedef.needs_instance and self.instance is not None:
             func = cast(Callable[..., object], cast(Any, func).__get__(self.instance))
         wraps_async = self.wraps_async_fixture(fixturedef.func)
+        anyio_backend, self._anyio_pending = self._anyio_pending, _NO_PARAM
         self._extras_stack.append(finalizer.calls)
         try:
-            if wraps_async and inspect.isasyncgenfunction(func):
+            if anyio_backend is not _NO_PARAM:
+                generator = _anyio_mod.fixture_generator(func, kwargs, anyio_backend)
+                value = cast(object, next(generator))
+                teardown: Callable[[], object] | None = functools.partial(
+                    _teardown_yield, fixturedef, generator
+                )
+            elif wraps_async and inspect.isasyncgenfunction(func):
                 import contextvars
 
                 loop_scope = self.fixture_loop_scope(fixturedef)
@@ -3656,7 +3695,7 @@ class FixtureRunner:
                     value = self.run_coroutine(agen.__anext__(), loop_scope, context=context)
                 except StopAsyncIteration:
                     raise FixtureLookupError(f"{fixturedef.name} did not yield a value") from None
-                teardown: Callable[[], object] | None = functools.partial(
+                teardown = functools.partial(
                     _teardown_async_yield,
                     self,
                     fixturedef,
@@ -4383,6 +4422,19 @@ def _register_builtin_fixtures(registry: FixtureRegistry) -> None:
                 argnames=tuple(_requested_argnames(func, name, None)),
             )
         )
+    for name in _anyio_mod.FIXTURES if _anyio_mod is not None else ():
+        func = getattr(_anyio_mod, name)
+        registry.register(
+            FixtureDef(
+                name=name,
+                func=cast(Callable[..., object], func),
+                scope=cast(str, getattr(func, "__rustest_fixture_scope__", "function")),
+                params=_fixture_param_cases(func, name),
+                autouse=False,
+                baseid="",
+                argnames=tuple(_requested_argnames(func, name, None)),
+            )
+        )
 
 
 def _builtin_registry() -> FixtureRegistry:
@@ -4695,6 +4747,22 @@ _loaded_plugin_dists: list[tuple[str, str]] = []
 
 #: ``_hookshim._PLUGIN_USES`` for the plugins pytest would load here (``handle_init``).
 _loaded_plugin_uses: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+#: :mod:`rustest._anyio` when anyio's plugin is loaded and its runner is usable; else ``None``.
+_anyio_mod: Any = None
+
+
+def _anyio_usefixtures(func: object, marks: Sequence[MarkSpec]) -> list[str]:
+    """anyio's ``pytest_pycollect_makeitem``: an ``async def`` test marked ``anyio`` (itself,
+    its class or its module) is marked ``usefixtures("anyio_backend")``.
+
+    ponytail: the name lands after every other ``usefixtures`` name, where pytest puts it
+    among the function's own marks; the order of id components differs only when a class or
+    module ``usefixtures`` names another parametrized fixture.
+    """
+    if _anyio_mod is None or not any(mark.name == "anyio" for mark in marks):
+        return []
+    inner = getattr(getattr(func, "hypothesis", None), "inner_test", func)
+    return ["anyio_backend"] if inspect.iscoroutinefunction(inner) else []
 
 
 def _plugin_needs(marks: Sequence[MarkSpec], closure: "FixtureClosure | None") -> list[str]:
@@ -4917,7 +4985,7 @@ def _collect_function(
         registry,
         argnames,
         ignore_args=direct_argnames,
-        usefixtures=usefixtures_names(marks),
+        usefixtures=[*usefixtures_names(marks), *_anyio_usefixtures(func, marks)],
     )
     # Both direct and indirect names are excluded here: pytest skips a fixture's own
     # `params=` whenever "the test itself parametrizes using this argname"
@@ -6759,6 +6827,17 @@ def _run_body(plan: ExecutionPlan, runner: FixtureRunner, kwargs: Mapping[str, o
     func = plan.func
     if func is None:  # pragma: no cover - collection always supplies one of the two
         raise RuntimeError(f"collected test {plan.id!r} has no function and no unittest case")
+    if (
+        _anyio_mod is not None
+        and "anyio_backend" in plan.closure.names
+        and inspect.iscoroutinefunction(func)
+    ):
+        # anyio's `pytest_pyfunc_call`: the body runs on the backend the fixture names.
+        backend = kwargs.get("anyio_backend") or runner.fixture_value("anyio_backend", plan)
+        if backend:
+            bound = func.__get__(runner.instance) if runner.instance is not None else func
+            _anyio_mod.run_test(bound, kwargs, backend)
+            return
     if _hypothesis_mod is not None:
         obj = func.__get__(runner.instance) if runner.instance is not None else func
         with (
@@ -8054,6 +8133,17 @@ def handle_init(message: Mapping[str, object]) -> ReadyResponse:
     _loaded_plugin_uses.update(
         (name, _PLUGIN_USES[name]) for name, _ in plugins if name in _PLUGIN_USES
     )
+    if "anyio" in _loaded_plugin_uses:
+        from . import _anyio
+
+        if _anyio.available():
+            # Its mark and backend fixtures run here; the rest of its fixtures are pytest's.
+            global _anyio_mod
+            _anyio_mod = _anyio
+            _loaded_plugin_uses["anyio"] = (
+                frozenset(),
+                _loaded_plugin_uses["anyio"][1] - frozenset(_anyio.FIXTURES),
+            )
     _builtins.cache_provider_off = "cacheprovider" in blocked_names
 
     # The assertion-rewriting hook goes on `sys.meta_path` here rather than in `main`,

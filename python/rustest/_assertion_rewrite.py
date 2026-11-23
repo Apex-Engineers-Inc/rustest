@@ -200,8 +200,14 @@ def register(path: str, key: str) -> None:
 
 
 def registered_key(path: str) -> str | None:
-    """The cache key for *path*, or ``None`` when it is not rewrite-eligible."""
-    return _REGISTRY.get(os.path.normcase(os.path.abspath(path)))
+    """The cache key for *path*, or ``None`` when it is not rewrite-eligible.
+
+    An absolute path (what the import system hands :meth:`find_spec`) is normalised without
+    ``os.path.abspath``: that is a system call on Windows, this runs for every import, and an
+    import inside a running event loop is watched by blocking-call detectors (blockbuster).
+    """
+    absolute = os.path.normpath(path) if os.path.isabs(path) else os.path.abspath(path)
+    return _REGISTRY.get(os.path.normcase(absolute))
 
 
 def reset() -> None:

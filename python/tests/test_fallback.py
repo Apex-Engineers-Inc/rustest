@@ -1410,6 +1410,78 @@ def test_an_installed_rerunfailures_is_inert_until_something_asks_for_a_rerun(tm
     assert "the reruns ini option" in rustest("ini", plain, "reruns = 2").stderr
 
 
+#: A stand-in for the anyio distribution with the runner API ``rustest._anyio`` drives: one
+#: backend, whose test runner records what it ran in ``anyio.LOG``.
+_FAKE_ANYIO_PACKAGE = {
+    "site/anyio-4.99.dist-info/METADATA": "Metadata-Version: 2.1\nName: anyio\nVersion: 4.99\n",
+    "site/anyio-4.99.dist-info/entry_points.txt": "[pytest11]\nanyio = anyio.pytest_plugin\n",
+    "site/anyio/__init__.py": (
+        "LOG = []\n\n\ndef get_available_backends():\n    return ('asyncio',)\n"
+    ),
+    "site/anyio/pytest_plugin.py": "raise ImportError('rustest must not import this')\n",
+    "site/anyio/_core/__init__.py": "",
+    "site/anyio/_core/_eventloop.py": (
+        "import asyncio\nimport contextlib\n\nimport anyio\n\n\n"
+        "class _Runner:\n"
+        "    def __init__(self):\n        self.loop = asyncio.new_event_loop()\n\n"
+        "    def is_running(self):\n        return self.loop.is_running()\n\n"
+        "    def run_test(self, func, kwargs):\n"
+        "        anyio.LOG.append('test')\n"
+        "        self.loop.run_until_complete(func(**kwargs))\n\n"
+        "    def run_fixture(self, func, kwargs):\n"
+        "        anyio.LOG.append('fixture')\n"
+        "        return self.loop.run_until_complete(func(**kwargs))\n\n"
+        "    def run_asyncgen_fixture(self, func, kwargs):\n"
+        "        anyio.LOG.append('asyncgen')\n"
+        "        agen = func(**kwargs)\n"
+        "        yield self.loop.run_until_complete(agen.__anext__())\n"
+        "        with contextlib.suppress(StopAsyncIteration):\n"
+        "            self.loop.run_until_complete(agen.__anext__())\n\n\n"
+        "class _Backend:\n"
+        "    @contextlib.contextmanager\n"
+        "    def create_test_runner(self, options):\n"
+        "        runner = _Runner()\n"
+        "        try:\n            yield runner\n"
+        "        finally:\n            runner.loop.close()\n\n\n"
+        "def get_async_backend(name):\n    return _Backend()\n"
+    ),
+}
+
+
+def test_an_anyio_test_runs_on_anyios_runner_with_the_backend_in_its_id(tmp_path: Path):
+    """anyio's plugin, natively: an ``async def`` test marked ``anyio`` gets ``anyio_backend``
+    (so its id carries the backend) and it and its async fixtures run on anyio's test runner;
+    an unmarked test is untouched, and the session stays with rustest."""
+    tree = make_tree(
+        tmp_path,
+        "anyio_native",
+        {
+            **_FAKE_ANYIO_PACKAGE,
+            "test_a.py": (
+                "import anyio\nimport pytest\n\nDONE = []\n\n\n"
+                "@pytest.fixture\nasync def value():\n    return 2\n\n\n"
+                "@pytest.fixture\nasync def resource():\n"
+                "    yield 'open'\n    DONE.append('closed')\n\n\n"
+                "@pytest.mark.anyio\n"
+                "async def test_marked(value, resource, anyio_backend_name):\n"
+                "    assert (value, resource, anyio_backend_name) == (2, 'open', 'asyncio')\n"
+                "    assert anyio.LOG == ['fixture', 'asyncgen', 'test']\n\n\n"
+                "def test_plain():\n    assert DONE == ['closed']\n"
+            ),
+        },
+    )
+    env = clean_env()
+    env["PYTHONPATH"] = str(tree / "site")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = run(
+        [sys.executable, "-m", "rustest", "-p", "no:cacheprovider", "-v", "--color=no"], tree, env
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "handing" not in result.stderr
+    assert "test_marked[asyncio]" in output and "2 passed" in output
+
+
 def test_ignore_and_ignore_glob_run_natively(tmp_path: Path):
     """`--ignore PATH` and `--ignore-glob PATTERN` drop files and directories from the walk."""
     tree = make_tree(
