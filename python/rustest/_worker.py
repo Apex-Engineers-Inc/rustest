@@ -57,9 +57,9 @@ traceback filtering — because those distinguish one outcome from another.
   ``BaseExceptionGroup`` — which :meth:`FixtureRunner.teardown` raises when several fixtures
   fail at once — are rendered unfiltered, so a runner frame can still appear inside a group's
   sub-traceback.  The status is unaffected; only the message is noisier.
-* *No ``pytest_generate_tests`` hook.*  Decorator metadata (function **and** class level)
-  and fixture ``params=`` are the only sources of parametrization; a module- or class-level
-  ``pytest_generate_tests`` is not called.
+* *``pytest_generate_tests`` without a parameter scope.*  The hook runs on a test class, in
+  a test module and in a conftest (:func:`_generated_cases`); ``metafunc.parametrize(scope=)``
+  wider than the function, which makes pytest reorder the session, hands off.
 * *Async tests sharing a loop run **sequentially**, never batched into one
   ``asyncio.gather``.*  pytest-asyncio drives each coroutine through ``asyncio.Runner.run``
   (`plugin.py::_synchronize_coroutine` l. 708-723), which runs one coroutine to completion
@@ -4899,6 +4899,127 @@ class _CollectContext:
     block_segment: str | None = None
 
 
+def _chain_cases(first: list[_Case], second: list[_Case]) -> list[_Case]:
+    """Two ``metafunc.parametrize`` calls in a row: the first call's id component leads and its
+    cases vary slowest."""
+    return [
+        (f"{a_id}-{b_id}", {**a_values, **b_values}, (*a_marks, *b_marks))
+        for a_id, a_values, a_marks in first
+        for b_id, b_values, b_marks in second
+    ]
+
+
+class _Definition:
+    """``metafunc.definition``: the test function's marks, closest first."""
+
+    def __init__(self, name: str, marks: Sequence[MarkSpec]) -> None:
+        super().__init__()
+        self.name = name
+        self._marks = tuple(marks)
+
+    def iter_markers(self, name: str | None = None) -> Iterator[MarkSpec]:
+        return (mark for mark in self._marks if name is None or mark.name == name)
+
+    def get_closest_marker(self, name: str, default: object = None) -> object:
+        return next(self.iter_markers(name), default)
+
+
+class Metafunc:
+    """pytest's ``Metafunc``, as a ``pytest_generate_tests`` hook uses it: what the test is and
+    asks for, and :meth:`parametrize`, which records cases exactly as a ``parametrize`` mark
+    would have declared them."""
+
+    def __init__(
+        self,
+        func: Callable[..., object],
+        cls: type | None,
+        module: types.ModuleType,
+        config: object,
+        fixturenames: Sequence[str],
+        marks: Sequence[MarkSpec],
+    ) -> None:
+        super().__init__()
+        self.function = func
+        self.cls = cls
+        self.module = module
+        self.config = config
+        self.fixturenames = list(fixturenames)
+        self.definition = _Definition(func.__name__, marks)
+        self.cases: list[_Case] | None = None
+        self.indirect: frozenset[str] = frozenset()
+
+    def parametrize(
+        self,
+        argnames: str | Sequence[str],
+        argvalues: Any,
+        indirect: bool | Sequence[str] = False,
+        ids: Any = None,
+        scope: str | None = None,
+    ) -> None:
+        if scope not in (None, "function"):
+            # pytest reorders the session's tests by such a parameter's scope.
+            _generate_refusals.add(
+                f"{HOOK_REASON_PREFIX}a pytest_generate_tests hook calls"
+                + f" metafunc.parametrize(scope={scope!r}), which rustest's hook runtime does"
+                + " not support"
+            )
+        from . import decorators
+
+        def holder() -> None: ...
+
+        _ = decorators.parametrize(argnames, list(argvalues), ids=ids, indirect=indirect)(holder)
+        new = _parametrization(holder) or []
+        self.indirect |= _indirect_names(holder)
+        self.cases = new if self.cases is None else _chain_cases(self.cases, new)
+
+
+#: How the engine recognises a whole hand-off reason from the hook runtime
+#: (``_hookwire.REASON_PREFIX``, ``collect.rs::HOOK_RUNTIME_PREFIX``).
+HOOK_REASON_PREFIX: Final = "rustest's hook runtime: "
+#: Reasons a ``pytest_generate_tests`` hook gave this worker to hand the session to pytest.
+_generate_refusals: set[str] = set()
+
+
+def _generated_cases(
+    func: Callable[..., object],
+    owner: type | None,
+    marks: Sequence[MarkSpec],
+    fixturenames: Callable[[], Sequence[str]],
+    context: _CollectContext,
+) -> tuple[list[_Case] | None, list[_Case] | None, frozenset[str]]:
+    """Run every ``pytest_generate_tests`` that applies to *func*; returns the cases that come
+    before the fixture parameters in a node id, those that come after, and the indirect names.
+
+    pytest's order, probed on 8.4.2 (``test_all[M1-lowid-f1-T1-k1]``): the test class's method,
+    the module's function, the conftests loaded during collection (nearest first), then
+    ``FixtureManager``'s fixture parameters, the initial conftests and plugins, and last the
+    ``parametrize`` marks.
+    """
+    module_hook = _safe_getattr(context.module, "pytest_generate_tests", None)
+    class_hook = _safe_getattr(owner, "pytest_generate_tests", None) if owner is not None else None
+    hooks = _hookwire_mod.hook_runner() if _hookwire_mod is not None else None
+    conftest_hooks = hooks is not None and hooks.implements("pytest_generate_tests")
+    if not (callable(module_hook) or callable(class_hook) or conftest_hooks):
+        return None, None, frozenset()
+
+    config = hooks.config if hooks is not None else _builtins.current_config()
+    directory = _directory_key(context.path)
+    names = fixturenames()
+
+    def metafunc() -> Metafunc:
+        return Metafunc(func, owner, context.module, config, names, marks)
+
+    lead, trail = metafunc(), metafunc()
+    if callable(class_hook) and owner is not None:
+        getattr(owner(), "pytest_generate_tests")(lead)
+    if callable(module_hook):
+        _ = module_hook(lead)
+    if hooks is not None and conftest_hooks:
+        hooks.generate_tests(directory, lead, initial=False)
+        hooks.generate_tests(directory, trail, initial=True)
+    return lead.cases, trail.cases, lead.indirect | trail.indirect
+
+
 def _collect_function(
     obj: object,
     name: str,
@@ -4959,12 +5080,30 @@ def _collect_function(
         )
     else:
         cases = own_cases
+    argnames = _requested_argnames(func, name, owner)
+    # `pytest_generate_tests`, shown the names pytest's hook sees: the closure before any
+    # parametrization prunes it.
+    usefixtures = [*usefixtures_names(marks), *_anyio_usefixtures(func, marks)]
+    lead_cases, trail_cases, generated_indirect = _generated_cases(
+        func,
+        owner,
+        marks,
+        lambda: build_closure(registry, argnames, usefixtures=usefixtures).names,
+        context,
+    )
+    if trail_cases is not None:
+        cases = trail_cases if cases is None else _chain_cases(trail_cases, cases)
+    lead: list[tuple[str | None, Mapping[str, object], tuple[MarkSpec, ...]]] = (
+        [(None, {}, ())] if lead_cases is None else list(lead_cases)
+    )
     direct_cases: list[tuple[str | None, Mapping[str, object], tuple[MarkSpec, ...]]] = (
         [(None, {}, ())]
         if cases is None
         else [(case_id, values, case_marks) for case_id, values, case_marks in cases]
     )
-    parametrized = frozenset(name for _case_id, values, _m in direct_cases for name in values)
+    parametrized = frozenset(
+        name for _case_id, values, _m in (*direct_cases, *lead) for name in values
+    )
     # `outer_indirect` carries a **class-level** `@parametrize(..., indirect=[...])`, whose
     # metadata `decorators.py::parametrize` wrote onto the class object where a method cannot
     # see it -- functions do not inherit class attributes, so reading only the function's
@@ -4972,7 +5111,9 @@ def _collect_function(
     # the fixture's return.
     # Threaded explicitly for the same reason `outer_cases` is, and it composes through
     # nested classes for free.
-    indirect = (_indirect_names(_parametrize_source(func)) | outer_indirect) & parametrized
+    indirect = (
+        _indirect_names(_parametrize_source(func)) | outer_indirect | generated_indirect
+    ) & parametrized
     # `_pytest/fixtures.py::FixtureManager.getfixtureinfo` passes
     # `_get_direct_parametrize_args`, which is the **direct** names only
     # (`_pytest/python.py::Metafunc._get_direct_parametrize_args` filters on
@@ -4980,12 +5121,11 @@ def _collect_function(
     # because routing the value through that fixture is the whole feature.
     direct_argnames = parametrized - indirect
 
-    argnames = _requested_argnames(func, name, owner)
     closure = build_closure(
         registry,
         argnames,
         ignore_args=direct_argnames,
-        usefixtures=[*usefixtures_names(marks), *_anyio_usefixtures(func, marks)],
+        usefixtures=usefixtures,
     )
     # Both direct and indirect names are excluded here: pytest skips a fixture's own
     # `params=` whenever "the test itself parametrizes using this argname"
@@ -5000,10 +5140,13 @@ def _collect_function(
     hypothesis_mark = _hypothesis_mark(func)
     # A decorator leaves `pytestmark` on the function; a class's `@parametrize` does not.
     has_function_marks = bool(func_marks) or own_cases is not None
-    keywords = _function_keywords(func, has_function_marks, cases is not None)
+    is_parametrized = cases is not None or lead_cases is not None
+    keywords = _function_keywords(func, has_function_marks, is_parametrized)
 
     entries: list[CollectedTestDict] = []
-    for combination in itertools.product(*(values for _name, values in dimensions)):
+    for (lead_id, lead_values, lead_marks), combination in itertools.product(
+        lead, itertools.product(*(values for _name, values in dimensions))
+    ):
         fixture_ids = [param_id for param_id, _value, _marks in combination]
         fixture_params = {
             dimension[0]: value for dimension, (_id, value, _marks) in zip(dimensions, combination)
@@ -5011,8 +5154,14 @@ def _collect_function(
         # A `pytest.param(..., marks=...)` inside a fixture's `params=` marks the tests that
         # draw that value, exactly as one inside `@parametrize` marks its own case.
         fixture_marks = [mark for _id, _value, marks in combination for mark in marks]
-        for case_id, case_values, case_marks in direct_cases:
-            id_parts = [*fixture_ids, *([] if case_id is None else [case_id])]
+        for case_id, own_values, own_marks in direct_cases:
+            case_values = {**lead_values, **own_values}
+            case_marks = (*lead_marks, *own_marks)
+            id_parts = [
+                *([] if lead_id is None else [lead_id]),
+                *fixture_ids,
+                *([] if case_id is None else [case_id]),
+            ]
             param_id = "-".join(id_parts) if id_parts else None
             # `iter_markers` order: the item's own marks (the function's, then the callspec's
             # -- fixture params', then the parameter set's) before the class's and module's,
@@ -5057,7 +5206,7 @@ def _collect_function(
                     record_marks=(*func_marks, *fixture_marks, *case_marks, *outer_marks),
                     record_own=len(func_marks) + len(fixture_marks) + len(case_marks),
                     record_kind="markdown" if context.block_segment else "function",
-                    parametrized=cases is not None,
+                    parametrized=is_parametrized,
                     func_mark_count=len(own),
                     has_function_marks=has_function_marks,
                 )
@@ -8540,7 +8689,7 @@ def new_hooks() -> list[str]:
     Called after each ``collect_file``: a file's conftest chain is imported while it is
     collected, so its hooks are known by the time its ``collected`` line is written.
     """
-    labels = [*unrun_hooks(), *sorted(_conftest_import_failures)]
+    labels = [*unrun_hooks(), *sorted(_conftest_import_failures), *sorted(_generate_refusals)]
     if _hookwire_mod is not None:
         labels.extend(_hookwire_mod.pending_reasons())
     fresh = [label for label in labels if label not in _reported_hooks]

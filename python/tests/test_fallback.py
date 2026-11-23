@@ -1483,6 +1483,63 @@ def test_an_anyio_test_runs_on_anyios_runner_with_the_backend_in_its_id(tmp_path
     assert "test_marked[asyncio]" in output and "2 passed" in output
 
 
+_GENERATE_TREE = {
+    "conftest.py": (
+        "import pytest\n\n\n"
+        "def pytest_generate_tests(metafunc):\n"
+        "    if 'top' in metafunc.fixturenames:\n"
+        "        metafunc.parametrize('top', ['T1', 'T2'])\n\n\n"
+        "@pytest.fixture(params=['f1', 'f2'])\n"
+        "def fix(request):\n    return request.param\n"
+    ),
+    "sub/conftest.py": (
+        "def pytest_generate_tests(metafunc):\n"
+        "    if 'low' in metafunc.fixturenames:\n"
+        "        metafunc.parametrize('low', ['L1'], ids=['lowid'])\n"
+    ),
+    "sub/test_g.py": (
+        "import pytest\n\n\n"
+        "def pytest_generate_tests(metafunc):\n"
+        "    if 'mod' in metafunc.fixturenames:\n"
+        "        metafunc.parametrize('mod', ['M1', 'M2'])\n\n\n"
+        "@pytest.mark.parametrize('mark', ['k1'])\n"
+        "def test_all(top, low, mod, fix, mark):\n"
+        "    assert (top[0], low, mod[0], fix[0], mark) == ('T', 'L1', 'M', 'f', 'k1')\n\n\n"
+        "def test_plain():\n    pass\n\n\n"
+        "class TestC:\n"
+        "    def pytest_generate_tests(self, metafunc):\n"
+        "        assert metafunc.cls is TestC and metafunc.function.__name__ == 'test_c'\n"
+        "        if metafunc.definition.get_closest_marker('slow') is None:\n"
+        "            metafunc.parametrize('cls', ['C1'])\n\n"
+        "    def test_c(self, cls, mod, top):\n"
+        "        assert cls == 'C1'\n"
+    ),
+}
+
+
+def test_pytest_generate_tests_runs_natively_with_pytests_ids(tmp_path: Path):
+    """``pytest_generate_tests`` on a test class, in a test module, in a conftest loaded during
+    collection and in an initial conftest: the ids and their order are pytest's (class, module
+    and late conftests before the fixture parameters; initial conftests after; marks last)."""
+    tree = make_tree(tmp_path, "generate", _GENERATE_TREE)
+    env = clean_env()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    args = ["--collect-only", "-q", "-p", "no:cacheprovider"]
+    oracle = run([sys.executable, "-m", "pytest", *args], tree, env)
+    ours = run([sys.executable, "-m", "rustest", *args], tree, env)
+
+    def ids(text: str) -> list[str]:
+        return [line for line in text.splitlines() if "::" in line]
+
+    assert "handing" not in ours.stderr, ours.stderr
+    assert ids(ours.stdout) == ids(oracle.stdout) and len(ids(ours.stdout)) == 13
+    assert "sub/test_g.py::test_all[M1-lowid-f1-T1-k1]" in ids(ours.stdout)
+
+    result = _rustest(tree)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "13 passed" in result.stdout + result.stderr
+
+
 def test_ignore_and_ignore_glob_run_natively(tmp_path: Path):
     """`--ignore PATH` and `--ignore-glob PATTERN` drop files and directories from the walk."""
     tree = make_tree(

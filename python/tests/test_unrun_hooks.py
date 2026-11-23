@@ -48,7 +48,7 @@ def test_nested_conftests_across_workers_are_deduped_and_sorted(tmp_path: Path) 
         "conftest.py": "def pytest_report_header(config):\n    pass\n",
         "tests/conftest.py": (
             "def pytest_report_header(config):\n    pass\n"
-            "def pytest_generate_tests(metafunc):\n    pass\n"
+            "def pytest_itemcollected(item):\n    pass\n"
             # run natively, so not named
             "def pytest_addoption(parser):\n    pass\n"
             "pytest_plugins = []\n"
@@ -67,7 +67,7 @@ def test_nested_conftests_across_workers_are_deduped_and_sorted(tmp_path: Path) 
         _NOTE
         + "3 pytest hooks in conftest files are not run (rustest has no plugin system):"
         + " conftest.py::pytest_report_header,"
-        + " tests/conftest.py::pytest_generate_tests,"
+        + " tests/conftest.py::pytest_itemcollected,"
         + " tests/conftest.py::pytest_report_header"
     ]
 

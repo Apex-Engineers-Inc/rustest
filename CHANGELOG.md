@@ -256,6 +256,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the worker process ends. The `timeout` and `timeout_method` ini keys and `PYTEST_TIMEOUT`
   are honoured the same way. `--timeout`, `session_timeout` and `timeout_func_only` still
   hand off.
+- **`pytest_generate_tests` runs natively.** A conftest defining it used to hand the session
+  to pytest, and one written in a test module or on a test class was silently ignored, so
+  its tests were collected without their parameters. The hook now runs at all three
+  levels with a `metafunc` that answers `fixturenames`, `function`, `cls`, `module`,
+  `config`, `definition` and `parametrize`, and the ids come out in pytest's order.
+  `metafunc.parametrize(scope=...)` with a scope wider than the function still hands off.
 - **anyio tests run natively.** With anyio installed, an `async def` test marked `anyio`
   used to send the whole session to pytest. It now gets the `anyio_backend` fixture as
   under pytest (ids like `test_x[asyncio]` and `test_x[trio]`), and the test and its async

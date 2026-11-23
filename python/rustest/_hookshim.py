@@ -402,6 +402,8 @@ _RUN_HOOKS: Final = {
     "pytest_runtest_makereport": ("item", "call"),
     "pytest_runtest_logreport": ("report",),
     "pytest_fixture_setup": ("fixturedef", "request"),
+    # Called by the worker's collector, once per test function (`HookRunner.generate_tests`).
+    "pytest_generate_tests": ("metafunc",),
     # The session's end: once per session in a pool of one (the worker is the session), and
     # in every worker plus the controller process in a pool of two or more, as under xdist.
     "pytest_sessionfinish": ("session", "exitstatus"),
@@ -2805,6 +2807,19 @@ class HookRunner:
                 or directory.startswith(scope.rstrip(os.sep) + os.sep)
             ):
                 yield impl
+
+    def generate_tests(self, directory: str | None, metafunc: object, *, initial: bool) -> None:
+        """Call the ``pytest_generate_tests`` implementations reachable from *directory* that
+        were registered before ``pytest_sessionstart`` (*initial*) or after it, last-registered
+        first.  The two halves sit either side of pytest's ``FixtureManager``, whose own
+        implementation adds the fixture parameters between them."""
+        plain: list[_Impl] = []
+        for impl in self._impls_for("pytest_generate_tests", directory):
+            if impl.initial is initial:
+                _insert(plain, impl)
+        if plain:
+            # ponytail: a wrapper implementation of this hook is called as a plain one.
+            _ = _multicall(self, "pytest_generate_tests", plain, [], {"metafunc": metafunc})
 
     def run_hook(
         self,

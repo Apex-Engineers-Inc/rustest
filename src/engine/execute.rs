@@ -4982,9 +4982,9 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.skip(reason='need --runslow'))
 ";
 
-    /// A hook the runtime never runs natively (`pytest_generate_tests`).
+    /// A hook the runtime never runs natively (`pytest_itemcollected`).
     const GENERATE_TESTS_CONFTEST: &str = "\
-def pytest_generate_tests(metafunc):
+def pytest_itemcollected(item):
     pass
 ";
 
@@ -5021,7 +5021,7 @@ def pytest_generate_tests(metafunc):
 
         assert_eq!(
             report.pytest_fallback,
-            vec!["conftest.py::pytest_generate_tests".to_string()]
+            vec!["conftest.py::pytest_itemcollected".to_string()]
         );
         assert!(report.tests.is_empty());
         assert!(

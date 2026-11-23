@@ -1284,6 +1284,7 @@ def test_the_native_hooks_are_the_collection_four_the_per_test_ones_and_the_end(
         "pytest_runtest_makereport",
         "pytest_runtest_logreport",
         "pytest_fixture_setup",
+        "pytest_generate_tests",  # called by the collector, once per test function
         "pytest_sessionfinish",
         "pytest_terminal_summary",
         "pytest_unconfigure",

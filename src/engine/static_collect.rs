@@ -1081,6 +1081,15 @@ pub fn scan_module(
             format!("{rel_path} names the plugin fixture {name}"),
         ));
     }
+    // A module's or a test class's own `pytest_generate_tests` parametrizes its tests when the
+    // worker calls it; only an import can say with what. A mention anywhere is enough to
+    // defer: a false positive costs this file the static tier, a miss wrong ids.
+    if source.contains("pytest_generate_tests") {
+        return Err(Dynamic::new(
+            Reason::Hooks,
+            format!("{rel_path} mentions pytest_generate_tests"),
+        ));
+    }
     let parsed = parse_module(source)
         .map_err(|err| Dynamic::new(Reason::ParseError, format!("{rel_path}: {err}")))?;
     let mut scan = Scan::new(config, shadows);

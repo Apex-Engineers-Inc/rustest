@@ -185,7 +185,7 @@ def test_a_hook_the_runtime_does_not_run_is_named_once_as_unrun(tmp_path: Path) 
     _ = _write(
         tmp_path / "conftest.py",
         "def pytest_report_header(config):\n    pass\n"
-        + "def pytest_generate_tests(metafunc):\n    pass\n",
+        + "def pytest_itemcollected(item):\n    pass\n",
     )
     _ = _write(tmp_path / "test_a.py", "def test_a(): pass\n")
 
@@ -198,7 +198,7 @@ def test_a_hook_the_runtime_does_not_run_is_named_once_as_unrun(tmp_path: Path) 
 
     assert "hooks" not in responses[0]
     assert responses[1]["hooks"] == [
-        "conftest.py::pytest_generate_tests",
+        "conftest.py::pytest_itemcollected",
         "conftest.py::pytest_report_header",
     ]
 
