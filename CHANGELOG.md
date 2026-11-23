@@ -267,10 +267,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **pytest-env runs natively.** With the plugin installed, the `env` ini lines (with their
   `D:` and `R:` flags) or the `[tool.pytest_env]` table set the environment before any
   worker starts, as pytest-env 1.2.0 does. It used to hand the session to pytest.
-- **Six more installed plugins no longer hand the session off on sight.**
-  pytest-rerunfailures, pytest-benchmark, pytest-repeat and pytest-order are inert until
+- **Seven more installed plugins no longer hand the session off on sight.**
+  pytest-rerunfailures, pytest-benchmark, pytest-repeat, pytest-order and pytest-socket are inert until
   something uses them, so a session stays with rustest until a selected test carries their
-  mark (`flaky`, `benchmark`, `repeat`, `order`) or requests their fixture, or a flag or ini
+  mark (`flaky`, `benchmark`, `repeat`, `order`, `disable_socket` and its siblings) or requests their fixture, or a flag or ini
   key of theirs asks for the behaviour. pytest-sugar and pytest-instafail only change
   terminal output.
 - **More of `config` is answered in a conftest hook.** `config.inicfg` (the config file's raw

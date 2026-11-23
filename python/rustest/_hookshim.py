@@ -777,6 +777,10 @@ _PLUGIN_FLAGS: Final[Mapping[str, frozenset[str]]] = {
         }
     ),
     "env": frozenset(),
+    # pytest-socket 0.8.1
+    "socket": frozenset(
+        {"--allow-hosts", "--allow-unix-socket", "--disable-socket", "--force-enable-socket"}
+    ),
 }
 
 #: What ``getoption`` and ``config.option`` answer for a loaded plugin's options: their
@@ -889,6 +893,11 @@ _PLUGIN_MARKER_LINES: Final[Mapping[str, tuple[str, ...]]] = {
         "order: specify ordering information for when tests should run in relation to one another. Provided by pytest-order. See also: https://pytest-order.readthedocs.io/",
     ),
     "env": (),
+    "socket": (
+        "disable_socket(): Disable socket connections for a specific test",
+        "enable_socket(): Enable socket connections for a specific test",
+        "allow_hosts([hosts]): Restrict socket connection to defined list of hosts",
+    ),
 }
 
 #: Installed plugins rustest runs without while no selected test uses them
@@ -924,6 +933,10 @@ _PLUGIN_USES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = {
     "benchmark": (frozenset({"benchmark"}), frozenset({"benchmark", "benchmark_weave"})),
     "repeat": (frozenset({"repeat"}), frozenset()),
     "pytest_order": (frozenset({"order"}), frozenset({"fail_after_cannot_order"})),
+    "socket": (
+        frozenset({"disable_socket", "enable_socket", "allow_hosts"}),
+        frozenset({"socket_disabled", "socket_enabled"}),
+    ),
 }
 
 #: Plugin fixtures a plugin acts on **by name**, defined by the user or not: anyio's hooks key

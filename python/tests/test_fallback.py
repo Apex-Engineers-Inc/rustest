@@ -1130,6 +1130,7 @@ def test_only_the_judged_safe_plugins_are_allowed():
         "benchmark",
         "repeat",
         "pytest_order",
+        "socket",
         # terminal reporting only
         "sugar",
         "instafail",

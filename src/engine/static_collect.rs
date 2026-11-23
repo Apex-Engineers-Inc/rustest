@@ -196,6 +196,8 @@ pub const PLUGIN_FIXTURES: &[&str] = &[
     "platformdirs_isolated",
     "snap_compare",
     "snapshot",
+    "socket_disabled",
+    "socket_enabled",
 ];
 
 /// The first [`PLUGIN_FIXTURES`] name *source* mentions as a whole word -- a parameter, a
@@ -1869,7 +1871,15 @@ impl<'a> Scan<'a> {
         // question (`_worker._plugin_needs`), so the file is answered there.
         if matches!(
             name,
-            "anyio" | "timeout" | "flaky" | "benchmark" | "repeat" | "order"
+            "anyio"
+                | "timeout"
+                | "flaky"
+                | "benchmark"
+                | "repeat"
+                | "order"
+                | "disable_socket"
+                | "enable_socket"
+                | "allow_hosts"
         ) {
             return Err(Dynamic::new(
                 Reason::NonLiteralMark,
